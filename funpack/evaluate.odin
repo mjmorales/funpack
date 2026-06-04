@@ -7,7 +7,14 @@ package funpack
 stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
 	result := Eval_Result{}
 	for test in typed.ast.tests {
-		for node in test.asserts {
+		for stmt in test.body {
+			// Only asserts evaluate in the thin layer; a let binding's
+			// value is a later seam (its expression is parsed and
+			// type-gated, never executed here).
+			node, is_assert := stmt.(Assert_Node)
+			if !is_assert {
+				continue
+			}
 			if eval_assert(node) {
 				result.passed += 1
 			} else {
@@ -19,7 +26,7 @@ stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
 }
 
 eval_assert :: proc(node: Assert_Node) -> bool {
-	return eval_operand(node.lhs) == eval_operand(node.rhs)
+	return eval_operand(node.expr.lhs) == eval_operand(node.expr.rhs)
 }
 
 // eval_operand sees only Fixed-domain operands — the typecheck rejected

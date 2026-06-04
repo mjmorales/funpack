@@ -13,19 +13,31 @@ Value_Type :: enum {
 Type_Error :: enum {
 	None,
 	Assert_Operand_Not_Fixed,
+	Assert_Not_Bool, // an assert whose expression is not the == form
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 	for test in ast.tests {
-		for node in test.asserts {
-			check_assert(node) or_return
+		for stmt in test.body {
+			// A let binding carries no checkable domain in the thin
+			// layer — name resolution and binding types are later seams;
+			// only asserts are judged here.
+			node, is_assert := stmt.(Assert_Node)
+			if is_assert {
+				check_assert(node) or_return
+			}
 		}
 	}
 	return Typed_Ast{ast = ast}, .None
 }
 
 check_assert :: proc(node: Assert_Node) -> Type_Error {
-	if operand_type(node.lhs) != .Fixed || operand_type(node.rhs) != .Fixed {
+	// assert demands a Bool; the thin expression surface produces one
+	// only through ==.
+	if !node.expr.is_equal {
+		return .Assert_Not_Bool
+	}
+	if operand_type(node.expr.lhs) != .Fixed || operand_type(node.expr.rhs) != .Fixed {
 		return .Assert_Operand_Not_Fixed
 	}
 	return .None

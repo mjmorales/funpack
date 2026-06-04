@@ -5,7 +5,9 @@
 package funpack
 
 Ast :: struct {
-	tests: []Test_Node,
+	module_doc: string,
+	imports:    []Import_Node,
+	tests:      []Test_Node,
 }
 
 Typed_Ast :: struct {
