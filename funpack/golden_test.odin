@@ -49,6 +49,29 @@ test_golden_numerics_full_file_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, let_count, 3)
 }
 
+@(test)
+test_golden_numerics_full_pipeline_passes :: proc(t: ^testing.T) {
+	// The numeric kernel's defining outcome: every golden assertion
+	// evaluates to its golden value — 30 passed, 0 failed, bit-identical.
+	dir := resolve_golden_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
+		return
+	}
+	project, read_err := read_project(dir)
+	testing.expect_value(t, read_err, Project_Error.None)
+	testing.expect(t, len(project.sources) > 0)
+
+	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0], context.temp_allocator)
+	testing.expect(t, file_err == nil)
+
+	report, err := run_test_pipeline(string(source_bytes))
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 30)
+	testing.expect_value(t, report.failed, 0)
+	testing.expect_value(t, report.exit_code, 0)
+}
+
 resolve_golden_dir :: proc() -> string {
 	dir, has_env := os.lookup_env("FUNPACK_NUMERICS_DIR", context.temp_allocator)
 	if !has_env || dir == "" {
