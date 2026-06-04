@@ -13,9 +13,9 @@ vars:
 
 tasks:
   build:
-    desc: Compile all packages
+    desc: Compile all packages, discarding the output binary
     cmds:
-      - '{{.GO}} build {{.GO_PKG}}'
+      - '{{.GO}} build -o /dev/null {{.GO_PKG}}'
 
   lint:
     desc: Vet and gofmt check

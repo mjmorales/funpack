@@ -1,2 +1,5 @@
 .prove/
 .claude-env
+
+# build outputs
+warden/warden
