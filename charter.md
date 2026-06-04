@@ -5,7 +5,7 @@ provenance:
   created_at: 2026-06-04T11:48:26.453Z
   last_modified_by: null
   last_modified_at: 2026-06-04T11:48:26.453Z
-operator_of_record: null
+operator_of_record: ct-manuel-morales-1b03670f-5de8-4cd6-ba5b-a6e5d94f61d6
 ---
 
 # Project Charter
