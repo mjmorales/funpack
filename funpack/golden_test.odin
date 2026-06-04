@@ -3,7 +3,6 @@ package funpack
 import "core:log"
 import "core:os"
 import "core:path/filepath"
-import "core:strings"
 import "core:testing"
 
 // The golden numerics tree lives in the funpack-spec sibling checkout.
@@ -13,7 +12,7 @@ import "core:testing"
 GOLDEN_DEFAULT_DIR :: "../funpack-spec/examples/numerics"
 
 @(test)
-test_golden_numerics_first_assertion_passes :: proc(t: ^testing.T) {
+test_golden_numerics_full_file_parses :: proc(t: ^testing.T) {
 	dir := resolve_golden_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
@@ -26,15 +25,28 @@ test_golden_numerics_first_assertion_passes :: proc(t: ^testing.T) {
 
 	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0], context.temp_allocator)
 	testing.expect(t, file_err == nil)
-	assert_stmt, found := first_assert_statement(string(source_bytes))
-	testing.expect(t, found)
 
-	wrapped := strings.concatenate({"test \"golden first assertion\" {\n", assert_stmt, "\n}\n"}, context.temp_allocator)
-	report, err := run_test_pipeline(wrapped)
-	testing.expect_value(t, err, Pipeline_Error.None)
-	testing.expect_value(t, report.passed, 1)
-	testing.expect_value(t, report.failed, 0)
-	testing.expect_value(t, report.exit_code, 0)
+	ast, parse_err := stage_parse(stage_lex(string(source_bytes)))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	testing.expect(t, ast.module_doc != "")
+	testing.expect_value(t, len(ast.imports), 3)
+	testing.expect_value(t, len(ast.tests), 12)
+
+	assert_count := 0
+	let_count := 0
+	for test in ast.tests {
+		// Every golden test block carries its own @doc.
+		testing.expect(t, test.doc != "")
+		for stmt in test.body {
+			if _, is_assert := stmt.(Assert_Node); is_assert {
+				assert_count += 1
+			} else if _, is_let := stmt.(Let_Node); is_let {
+				let_count += 1
+			}
+		}
+	}
+	testing.expect_value(t, assert_count, 30)
+	testing.expect_value(t, let_count, 3)
 }
 
 resolve_golden_dir :: proc() -> string {
@@ -48,36 +60,6 @@ resolve_golden_dir :: proc() -> string {
 	// #directory is this package dir; the repo root is one level up.
 	resolved, _ := filepath.join({#directory, "..", dir}, context.temp_allocator)
 	return resolved
-}
-
-// first_assert_statement returns the first `assert …` statement in the
-// golden source. The thin pipeline parses only the trivial-assert
-// grammar, so the golden test drives exactly one statement through it;
-// the widening grammar retires this extraction in favor of feeding the
-// whole file.
-first_assert_statement :: proc(source: string) -> (stmt: string, found: bool) {
-	it := source
-	for raw_line in strings.split_lines_iterator(&it) {
-		trimmed := strings.trim_space(raw_line)
-		if strings.has_prefix(trimmed, "assert ") {
-			return trimmed, true
-		}
-	}
-	return "", false
-}
-
-@(test)
-test_first_assert_statement_finds_leading_assert :: proc(t: ^testing.T) {
-	source := "@doc(\"…\")\nimport engine.math.to_fixed\n\ntest \"x\" {\n  assert to_fixed(2) == 2.0\n  assert to_fixed(2) + 0.5 == 2.5\n}\n"
-	stmt, found := first_assert_statement(source)
-	testing.expect(t, found)
-	testing.expect_value(t, stmt, "assert to_fixed(2) == 2.0")
-}
-
-@(test)
-test_first_assert_statement_none :: proc(t: ^testing.T) {
-	_, found := first_assert_statement("test \"empty\" {\n}\n")
-	testing.expect(t, !found)
 }
 
 @(test)
