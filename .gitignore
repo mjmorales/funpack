@@ -3,3 +3,6 @@
 
 # build outputs
 warden/warden
+
+# machine-local symlinks (written by claude-prove install init/local-env)
+.claude/prove-plugin

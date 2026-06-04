@@ -1,20 +1,55 @@
 {
   "schema_version": "10",
+  "dev_mode": false,
   "validators": [
-    { "name": "build", "command": "task build", "phase": "build" },
-    { "name": "lint", "command": "task lint", "phase": "lint" },
-    { "name": "tests", "command": "task test", "phase": "test" },
-    { "name": "comment-audit", "skill": "claude-skills:comment-audit", "phase": "llm" }
+    {
+      "name": "build",
+      "command": "task build",
+      "phase": "build"
+    },
+    {
+      "name": "lint",
+      "command": "task lint",
+      "phase": "lint"
+    },
+    {
+      "name": "tests",
+      "command": "task test",
+      "phase": "test"
+    },
+    {
+      "name": "comment-audit",
+      "skill": "claude-skills:comment-audit",
+      "phase": "llm"
+    }
   ],
   "reporters": [],
   "claude_md": {
     "references": [
-      { "path": "/Users/manuelmorales/dev/claude-prove/references/creator-conventions.md", "label": "Creator Conventions" },
-      { "path": "/Users/manuelmorales/dev/claude-prove/references/interaction-patterns.md", "label": "Interaction Patterns" },
-      { "path": "/Users/manuelmorales/dev/claude-prove/references/llm-coding-standards.md", "label": "LLM Coding Standards" },
-      { "path": "/Users/manuelmorales/dev/claude-prove/references/prompt-engineering-guide.md", "label": "Prompt Engineering Guide" },
-      { "path": "/Users/manuelmorales/dev/claude-prove/references/validation-config.md", "label": "Validation Config" },
-      { "path": "~/.claude-envs/pool/plugins/marketplaces/prove/references/passive-triggers.md", "label": "Passive Triggers" }
+      {
+        "path": "/Users/manuelmorales/dev/claude-prove/references/creator-conventions.md",
+        "label": "Creator Conventions"
+      },
+      {
+        "path": "/Users/manuelmorales/dev/claude-prove/references/interaction-patterns.md",
+        "label": "Interaction Patterns"
+      },
+      {
+        "path": "/Users/manuelmorales/dev/claude-prove/references/llm-coding-standards.md",
+        "label": "LLM Coding Standards"
+      },
+      {
+        "path": "/Users/manuelmorales/dev/claude-prove/references/prompt-engineering-guide.md",
+        "label": "Prompt Engineering Guide"
+      },
+      {
+        "path": "/Users/manuelmorales/dev/claude-prove/references/validation-config.md",
+        "label": "Validation Config"
+      },
+      {
+        "path": "~/.claude-envs/pool/plugins/marketplaces/prove/references/passive-triggers.md",
+        "label": "Passive Triggers"
+      }
     ]
   }
 }
