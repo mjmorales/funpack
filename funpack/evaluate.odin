@@ -51,6 +51,48 @@ eval_expr :: proc(expr: Expr) -> (value: Value, ok: bool) {
 		return eval_call(e)
 	case ^Variant_Expr:
 		return eval_variant(e)
+	case ^Record_Expr:
+		return eval_record(e)
+	}
+	return nil, false
+}
+
+// eval_record lowers Vec2/Vec3 record literals: named Fixed fields onto
+// the component slots, unnamed components defaulting to zero.
+eval_record :: proc(e: ^Record_Expr) -> (value: Value, ok: bool) {
+	switch e.type_name {
+	case "Vec2":
+		v := Vec2_Value{}
+		for field in e.fields {
+			component := eval_expr(field.value) or_return
+			f := component.(Fixed) or_return
+			switch field.name {
+			case "x":
+				v.x = f
+			case "y":
+				v.y = f
+			case:
+				return nil, false
+			}
+		}
+		return v, true
+	case "Vec3":
+		v := Vec3_Value{}
+		for field in e.fields {
+			component := eval_expr(field.value) or_return
+			f := component.(Fixed) or_return
+			switch field.name {
+			case "x":
+				v.x = f
+			case "y":
+				v.y = f
+			case "z":
+				v.z = f
+			case:
+				return nil, false
+			}
+		}
+		return v, true
 	}
 	return nil, false
 }
@@ -138,25 +180,33 @@ eval_binary :: proc(e: ^Binary_Expr) -> (value: Value, ok: bool) {
 	return nil, false
 }
 
-// eval_member resolves a type's associated constants — the evaluable
-// member surface is exactly Fixed.MAX / Fixed.MIN.
+// eval_member resolves a type's associated constants: Fixed.MAX,
+// Fixed.MIN, Quat.identity.
 eval_member :: proc(e: ^Member_Expr) -> (value: Value, ok: bool) {
 	recv, is_name := e.receiver.(^Name_Expr)
 	if !is_name {
 		return nil, false
 	}
-	if recv.name == "Fixed" {
+	switch recv.name {
+	case "Fixed":
 		switch e.member {
 		case "MAX":
 			return FIXED_MAX, true
 		case "MIN":
 			return FIXED_MIN, true
 		}
+	case "Quat":
+		if e.member == "identity" {
+			return QUAT_IDENTITY, true
+		}
 	}
 	return nil, false
 }
 
 eval_call :: proc(e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if member, is_method := e.callee.(^Member_Expr); is_method {
+		return eval_method_call(member, e.args)
+	}
 	name, is_name := e.callee.(^Name_Expr)
 	if !is_name {
 		return nil, false
@@ -201,6 +251,62 @@ eval_call :: proc(e: ^Call_Expr) -> (value: Value, ok: bool) {
 		boxed := new(Value, context.temp_allocator)
 		boxed^ = quotient
 		return Option_Value{is_some = true, payload = boxed}, true
+	case "dot":
+		if len(e.args) != 2 {
+			return nil, false
+		}
+		lhs := eval_expr(e.args[0]) or_return
+		rhs := eval_expr(e.args[1]) or_return
+		if a2, is_vec2 := lhs.(Vec2_Value); is_vec2 {
+			b2 := rhs.(Vec2_Value) or_return
+			return vec2_dot(a2, b2), true
+		}
+		a3 := lhs.(Vec3_Value) or_return
+		b3 := rhs.(Vec3_Value) or_return
+		return vec3_dot(a3, b3), true
+	case "cross":
+		if len(e.args) != 2 {
+			return nil, false
+		}
+		lhs := eval_expr(e.args[0]) or_return
+		rhs := eval_expr(e.args[1]) or_return
+		a3 := lhs.(Vec3_Value) or_return
+		b3 := rhs.(Vec3_Value) or_return
+		return vec3_cross(a3, b3), true
+	case "length":
+		if len(e.args) != 1 {
+			return nil, false
+		}
+		arg := eval_expr(e.args[0]) or_return
+		if v2, is_vec2 := arg.(Vec2_Value); is_vec2 {
+			return vec2_length(v2), true
+		}
+		v3 := arg.(Vec3_Value) or_return
+		return vec3_length(v3), true
+	}
+	return nil, false
+}
+
+// eval_method_call dispatches receiver.method(args) — the quaternion
+// surface the golden asserts exercise.
+eval_method_call :: proc(callee: ^Member_Expr, args: []Expr) -> (value: Value, ok: bool) {
+	receiver := eval_expr(callee.receiver) or_return
+	q := receiver.(Quat_Value) or_return
+	switch callee.member {
+	case "rotate":
+		if len(args) != 1 {
+			return nil, false
+		}
+		arg := eval_expr(args[0]) or_return
+		v := arg.(Vec3_Value) or_return
+		return quat_rotate(q, v), true
+	case "mul":
+		if len(args) != 1 {
+			return nil, false
+		}
+		arg := eval_expr(args[0]) or_return
+		other := arg.(Quat_Value) or_return
+		return quat_mul(q, other), true
 	}
 	return nil, false
 }

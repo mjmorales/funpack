@@ -12,6 +12,9 @@ Value_Type :: enum {
 	Fixed,
 	Bool,
 	Option, // opaque here — payload types are the full checker's seam
+	Vec2,
+	Vec3,
+	Quat,
 }
 
 Type_Error :: enum {
@@ -81,6 +84,19 @@ expr_check :: proc(expr: Expr) -> (type: Value_Type, err: Type_Error) {
 		if is_name && recv.name == "Fixed" && (e.member == "MAX" || e.member == "MIN") {
 			return .Fixed, .None
 		}
+		if is_name && recv.name == "Quat" && e.member == "identity" {
+			return .Quat, .None
+		}
+		return .Int, .Unsupported_Expr
+	case ^Record_Expr:
+		switch e.type_name {
+		case "Vec2":
+			record_fields_check(e, {"x", "y"}) or_return
+			return .Vec2, .None
+		case "Vec3":
+			record_fields_check(e, {"x", "y", "z"}) or_return
+			return .Vec3, .None
+		}
 		return .Int, .Unsupported_Expr
 	case ^Call_Expr:
 		return call_check(e)
@@ -107,13 +123,39 @@ expr_check :: proc(expr: Expr) -> (type: Value_Type, err: Type_Error) {
 }
 
 // call_check types the builtin surface: each name has one signature,
-// checked argument by argument with no promotion.
+// checked argument by argument with no promotion. dot/length accept
+// either vector width, so they dispatch on the first argument's type.
 call_check :: proc(e: ^Call_Expr) -> (type: Value_Type, err: Type_Error) {
+	if member, is_method := e.callee.(^Member_Expr); is_method {
+		return method_check(member, e)
+	}
 	name, is_name := e.callee.(^Name_Expr)
 	if !is_name {
 		return .Int, .Unsupported_Expr
 	}
 	switch name.name {
+	case "dot":
+		if len(e.args) != 2 {
+			return .Int, .Type_Mismatch
+		}
+		lhs := expr_check(e.args[0]) or_return
+		rhs := expr_check(e.args[1]) or_return
+		if lhs != rhs || (lhs != .Vec2 && lhs != .Vec3) {
+			return .Int, .Type_Mismatch
+		}
+		return .Fixed, .None
+	case "cross":
+		check_args(e, {.Vec3, .Vec3}) or_return
+		return .Vec3, .None
+	case "length":
+		if len(e.args) != 1 {
+			return .Int, .Type_Mismatch
+		}
+		arg := expr_check(e.args[0]) or_return
+		if arg != .Vec2 && arg != .Vec3 {
+			return .Int, .Type_Mismatch
+		}
+		return .Fixed, .None
 	case "to_fixed":
 		check_args(e, {.Int}) or_return
 		return .Fixed, .None
@@ -140,6 +182,48 @@ check_args :: proc(e: ^Call_Expr, signature: []Value_Type) -> Type_Error {
 			return err
 		}
 		if got != want {
+			return .Type_Mismatch
+		}
+	}
+	return .None
+}
+
+// method_check types receiver.method(args) — the quaternion surface.
+method_check :: proc(callee: ^Member_Expr, e: ^Call_Expr) -> (type: Value_Type, err: Type_Error) {
+	receiver := expr_check(callee.receiver) or_return
+	if receiver != .Quat {
+		return .Int, .Unsupported_Expr
+	}
+	switch callee.member {
+	case "rotate":
+		check_args(e, {.Vec3}) or_return
+		return .Vec3, .None
+	case "mul":
+		check_args(e, {.Quat}) or_return
+		return .Quat, .None
+	}
+	return .Int, .Unsupported_Expr
+}
+
+// record_fields_check demands every field name belong to the record's
+// component set and every component expression be Fixed.
+record_fields_check :: proc(e: ^Record_Expr, allowed: []string) -> Type_Error {
+	for field in e.fields {
+		known := false
+		for name in allowed {
+			if field.name == name {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return .Type_Mismatch
+		}
+		got, err := expr_check(field.value)
+		if err != .None {
+			return err
+		}
+		if got != .Fixed {
 			return .Type_Mismatch
 		}
 	}

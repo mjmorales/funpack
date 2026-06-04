@@ -10,6 +10,9 @@ Value :: union {
 	i64,  // Int — counts and indices
 	bool, // Bool — the result of ==
 	Option_Value,
+	Vec2_Value,
+	Vec3_Value,
+	Quat_Value,
 }
 
 // Option_Value is the runtime Option: a present payload or none. The
@@ -41,6 +44,15 @@ value_equal :: proc(a, b: Value) -> bool {
 			return true
 		}
 		return value_equal(av.payload^, bv.payload^)
+	case Vec2_Value:
+		bv, ok := b.(Vec2_Value)
+		return ok && av == bv
+	case Vec3_Value:
+		bv, ok := b.(Vec3_Value)
+		return ok && av == bv
+	case Quat_Value:
+		bv, ok := b.(Quat_Value)
+		return ok && av == bv
 	}
 	return false
 }

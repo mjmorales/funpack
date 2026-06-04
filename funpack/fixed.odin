@@ -129,6 +129,34 @@ int_neg :: proc(a: i64) -> i64 {
 	return -a
 }
 
+// fixed_sqrt is the integer square-root kernel: digit-by-digit binary
+// restoring over u128, bit-exact on perfect squares (sqrt(25.0) is
+// exactly 5.0) and floor-rounded otherwise. sqrt of Q32.32 bits b is
+// isqrt(b << 32) because sqrt(b·2⁻³²)·2³² = sqrt(b·2³²). Total: a
+// non-positive input yields zero.
+fixed_sqrt :: proc(f: Fixed) -> Fixed {
+	if f <= 0 {
+		return Fixed(0)
+	}
+	n := u128(f) << FIXED_FRACTION_BITS
+	bit := u128(1) << 126
+	for bit > n {
+		bit >>= 2
+	}
+	remainder := n
+	result: u128 = 0
+	for bit != 0 {
+		if remainder >= result + bit {
+			remainder -= result + bit
+			result = (result >> 1) + bit
+		} else {
+			result >>= 1
+		}
+		bit >>= 2
+	}
+	return Fixed(i64(result))
+}
+
 // fixed_trunc rounds toward zero — i64 division truncates, so the raw
 // bits over one whole unit give the rule directly.
 fixed_trunc :: proc(f: Fixed) -> i64 {
