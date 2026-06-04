@@ -49,6 +49,32 @@ eval_expr :: proc(expr: Expr) -> (value: Value, ok: bool) {
 		return eval_member(e)
 	case ^Call_Expr:
 		return eval_call(e)
+	case ^Variant_Expr:
+		return eval_variant(e)
+	}
+	return nil, false
+}
+
+// eval_variant lowers Option::Some/None — the one variant family in
+// the evaluable domain.
+eval_variant :: proc(e: ^Variant_Expr) -> (value: Value, ok: bool) {
+	if e.type_name != "Option" {
+		return nil, false
+	}
+	switch e.variant {
+	case "Some":
+		if !e.has_payload || len(e.payload) != 1 {
+			return nil, false
+		}
+		inner := eval_expr(e.payload[0]) or_return
+		boxed := new(Value, context.temp_allocator)
+		boxed^ = inner
+		return Option_Value{is_some = true, payload = boxed}, true
+	case "None":
+		if e.has_payload {
+			return nil, false
+		}
+		return Option_Value{is_some = false, payload = nil}, true
 	}
 	return nil, false
 }
@@ -146,6 +172,45 @@ eval_call :: proc(e: ^Call_Expr) -> (value: Value, ok: bool) {
 			return nil, false
 		}
 		return to_fixed(n), true
+	case "trunc":
+		f := eval_fixed_arg(e, 0, 1) or_return
+		return fixed_trunc(f), true
+	case "floor":
+		f := eval_fixed_arg(e, 0, 1) or_return
+		return fixed_floor(f), true
+	case "round":
+		f := eval_fixed_arg(e, 0, 1) or_return
+		return fixed_round(f), true
+	case "clamp":
+		x := eval_fixed_arg(e, 0, 3) or_return
+		lo := eval_fixed_arg(e, 1, 3) or_return
+		hi := eval_fixed_arg(e, 2, 3) or_return
+		return fixed_clamp(x, lo, hi), true
+	case "lerp":
+		a := eval_fixed_arg(e, 0, 3) or_return
+		b := eval_fixed_arg(e, 1, 3) or_return
+		t := eval_fixed_arg(e, 2, 3) or_return
+		return fixed_lerp(a, b, t), true
+	case "checked_div":
+		a := eval_fixed_arg(e, 0, 2) or_return
+		b := eval_fixed_arg(e, 1, 2) or_return
+		quotient, has_quotient := fixed_checked_div(a, b)
+		if !has_quotient {
+			return Option_Value{is_some = false, payload = nil}, true
+		}
+		boxed := new(Value, context.temp_allocator)
+		boxed^ = quotient
+		return Option_Value{is_some = true, payload = boxed}, true
 	}
 	return nil, false
+}
+
+// eval_fixed_arg evaluates argument i of an expected-arity call and
+// demands a Fixed — the shared shape of the scalar-surface builtins.
+eval_fixed_arg :: proc(e: ^Call_Expr, i: int, arity: int) -> (f: Fixed, ok: bool) {
+	if len(e.args) != arity {
+		return Fixed(0), false
+	}
+	value := eval_expr(e.args[i]) or_return
+	return value.(Fixed)
 }

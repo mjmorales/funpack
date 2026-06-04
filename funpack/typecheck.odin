@@ -11,6 +11,7 @@ Value_Type :: enum {
 	Int,
 	Fixed,
 	Bool,
+	Option, // opaque here — payload types are the full checker's seam
 }
 
 Type_Error :: enum {
@@ -82,15 +83,65 @@ expr_check :: proc(expr: Expr) -> (type: Value_Type, err: Type_Error) {
 		}
 		return .Int, .Unsupported_Expr
 	case ^Call_Expr:
-		name, is_name := e.callee.(^Name_Expr)
-		if is_name && name.name == "to_fixed" && len(e.args) == 1 {
-			arg := expr_check(e.args[0]) or_return
-			if arg != .Int {
-				return .Int, .Type_Mismatch
+		return call_check(e)
+	case ^Variant_Expr:
+		if e.type_name != "Option" {
+			return .Int, .Unsupported_Expr
+		}
+		switch e.variant {
+		case "Some":
+			if !e.has_payload || len(e.payload) != 1 {
+				return .Int, .Unsupported_Expr
 			}
-			return .Fixed, .None
+			expr_check(e.payload[0]) or_return
+			return .Option, .None
+		case "None":
+			if e.has_payload {
+				return .Int, .Unsupported_Expr
+			}
+			return .Option, .None
 		}
 		return .Int, .Unsupported_Expr
 	}
 	return .Int, .Unsupported_Expr
+}
+
+// call_check types the builtin surface: each name has one signature,
+// checked argument by argument with no promotion.
+call_check :: proc(e: ^Call_Expr) -> (type: Value_Type, err: Type_Error) {
+	name, is_name := e.callee.(^Name_Expr)
+	if !is_name {
+		return .Int, .Unsupported_Expr
+	}
+	switch name.name {
+	case "to_fixed":
+		check_args(e, {.Int}) or_return
+		return .Fixed, .None
+	case "trunc", "floor", "round":
+		check_args(e, {.Fixed}) or_return
+		return .Int, .None
+	case "clamp", "lerp":
+		check_args(e, {.Fixed, .Fixed, .Fixed}) or_return
+		return .Fixed, .None
+	case "checked_div":
+		check_args(e, {.Fixed, .Fixed}) or_return
+		return .Option, .None
+	}
+	return .Int, .Unsupported_Expr
+}
+
+check_args :: proc(e: ^Call_Expr, signature: []Value_Type) -> Type_Error {
+	if len(e.args) != len(signature) {
+		return .Type_Mismatch
+	}
+	for want, i in signature {
+		got, err := expr_check(e.args[i])
+		if err != .None {
+			return err
+		}
+		if got != want {
+			return .Type_Mismatch
+		}
+	}
+	return .None
 }

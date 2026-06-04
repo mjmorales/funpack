@@ -122,6 +122,39 @@ test_pipeline_exact_arithmetic_golden_values :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pipeline_rounding_golden_values :: proc(t: ^testing.T) {
+	report, err := run_golden_asserts(
+		"assert trunc(1.5) == 1\n" +
+		"assert trunc(-1.5) == -1\n" +
+		"assert floor(-1.5) == -2\n" +
+		"assert round(1.5) == 2\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 4)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_clamp_lerp_golden_values :: proc(t: ^testing.T) {
+	report, err := run_golden_asserts(
+		"assert clamp(5.0, 0.0, 3.0) == 3.0\n" +
+		"assert clamp(-1.0, 0.0, 3.0) == 0.0\n" +
+		"assert lerp(0.0, 10.0, 0.5) == 5.0\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 3)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_checked_div_golden_values :: proc(t: ^testing.T) {
+	report, err := run_golden_asserts(
+		"assert checked_div(6.0, 2.0) == Option::Some(3.0)\n" +
+		"assert checked_div(1.0, 0.0) == Option::None\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
 test_pipeline_empty_source_is_noop_pass :: proc(t: ^testing.T) {
 	report, err := run_test_pipeline("")
 	testing.expect_value(t, err, Pipeline_Error.None)

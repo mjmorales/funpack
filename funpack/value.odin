@@ -9,6 +9,14 @@ Value :: union {
 	Fixed,
 	i64,  // Int — counts and indices
 	bool, // Bool — the result of ==
+	Option_Value,
+}
+
+// Option_Value is the runtime Option: a present payload or none. The
+// payload is a pointer because a union cannot contain itself by value.
+Option_Value :: struct {
+	is_some: bool,
+	payload: ^Value, // nil when none
 }
 
 // value_equal is structural: tags must match, then the payloads compare
@@ -24,6 +32,15 @@ value_equal :: proc(a, b: Value) -> bool {
 	case bool:
 		bv, ok := b.(bool)
 		return ok && av == bv
+	case Option_Value:
+		bv, ok := b.(Option_Value)
+		if !ok || av.is_some != bv.is_some {
+			return false
+		}
+		if !av.is_some {
+			return true
+		}
+		return value_equal(av.payload^, bv.payload^)
 	}
 	return false
 }

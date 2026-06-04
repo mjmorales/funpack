@@ -75,6 +75,36 @@ test_int_kernel_saturates :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fixed_rounding_conversions :: proc(t: ^testing.T) {
+	one_half := fixed_from_decimal(1, "5")
+	testing.expect_value(t, fixed_trunc(one_half), 1)
+	testing.expect_value(t, fixed_trunc(fixed_neg(one_half)), -1)
+	testing.expect_value(t, fixed_floor(fixed_neg(one_half)), -2)
+	testing.expect_value(t, fixed_round(one_half), 2)
+	testing.expect_value(t, fixed_round(fixed_neg(one_half)), -2)
+	// Ties away from zero, not banker's rounding: 2.5 → 3.
+	testing.expect_value(t, fixed_round(fixed_from_decimal(2, "5")), 3)
+}
+
+@(test)
+test_fixed_clamp_and_lerp :: proc(t: ^testing.T) {
+	testing.expect_value(t, fixed_clamp(to_fixed(5), to_fixed(0), to_fixed(3)), to_fixed(3))
+	testing.expect_value(t, fixed_clamp(to_fixed(-1), to_fixed(0), to_fixed(3)), to_fixed(0))
+	testing.expect_value(t, fixed_clamp(to_fixed(2), to_fixed(0), to_fixed(3)), to_fixed(2))
+	half := fixed_from_decimal(0, "5")
+	testing.expect_value(t, fixed_lerp(to_fixed(0), to_fixed(10), half), to_fixed(5))
+}
+
+@(test)
+test_fixed_checked_div :: proc(t: ^testing.T) {
+	quotient, ok := fixed_checked_div(to_fixed(6), to_fixed(2))
+	testing.expect(t, ok)
+	testing.expect_value(t, quotient, to_fixed(3))
+	_, zero_ok := fixed_checked_div(to_fixed(1), Fixed(0))
+	testing.expect(t, !zero_ok)
+}
+
+@(test)
 test_to_fixed_saturates :: proc(t: ^testing.T) {
 	// |n| ≥ 2^31 has no Q32.32 representation — the lift saturates like
 	// every other kernel operation.

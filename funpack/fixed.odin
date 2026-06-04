@@ -129,6 +129,55 @@ int_neg :: proc(a: i64) -> i64 {
 	return -a
 }
 
+// fixed_trunc rounds toward zero — i64 division truncates, so the raw
+// bits over one whole unit give the rule directly.
+fixed_trunc :: proc(f: Fixed) -> i64 {
+	return i64(f) / (i64(1) << FIXED_FRACTION_BITS)
+}
+
+// fixed_floor rounds toward negative infinity — exactly what an
+// arithmetic right shift does to two's-complement bits.
+fixed_floor :: proc(f: Fixed) -> i64 {
+	return i64(f) >> FIXED_FRACTION_BITS
+}
+
+// fixed_round rounds to nearest with ties away from zero: floor(|f| +
+// 0.5) on the magnitude, sign reapplied, over i128 so the +0.5 cannot
+// overflow near the rails.
+fixed_round :: proc(f: Fixed) -> i64 {
+	half := i128(1) << (FIXED_FRACTION_BITS - 1)
+	if f >= 0 {
+		return i64((i128(f) + half) >> FIXED_FRACTION_BITS)
+	}
+	return -i64((-i128(f) + half) >> FIXED_FRACTION_BITS)
+}
+
+fixed_clamp :: proc(x, lo, hi: Fixed) -> Fixed {
+	if x < lo {
+		return lo
+	}
+	if x > hi {
+		return hi
+	}
+	return x
+}
+
+// fixed_lerp is ordinary funpack over the saturating kernel:
+// a + (b - a) * t (spec §10 Tier-2).
+fixed_lerp :: proc(a, b, t: Fixed) -> Fixed {
+	return fixed_add(a, fixed_mul(fixed_sub(b, a), t))
+}
+
+// fixed_checked_div surfaces the zero divisor instead of saturating —
+// ok is false exactly when b == 0 (spec §10: detecting the zero divisor
+// is the caller's point here).
+fixed_checked_div :: proc(a, b: Fixed) -> (quotient: Fixed, ok: bool) {
+	if b == 0 {
+		return Fixed(0), false
+	}
+	return fixed_div(a, b), true
+}
+
 // fixed_from_decimal converts a literal's integer part and fractional
 // digits to Q32.32 bits, rounding to nearest (spec §10: deterministic
 // compile-time rounding). All-integer arithmetic — no float anywhere in
