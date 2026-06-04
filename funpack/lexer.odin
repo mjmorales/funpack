@@ -1,24 +1,54 @@
-// Lexer for the trivial-assert lexis (spec §02): the test/assert
-// keywords, identifiers, Int and Fixed literals, string literals,
-// parens, braces, ==, and the newline statement terminator. The lexer
+// Lexer for the golden-file lexis (spec §02): keywords, identifiers,
+// Int and Fixed literals, string literals, the operator/separator/
+// bracket glyph set, and the newline statement terminator. The lexer
 // is total — an unrecognized character becomes an Invalid token for the
-// parser to reject. The full lexis widens this behind the same stage
-// seam.
+// parser to reject — and has no comment production (P6): `//` lexes as
+// two division glyphs, never a swallowed span. Unary minus is a
+// separate token, not part of a numeric literal. Newline suppression
+// inside brackets and casing classification widen this behind the same
+// stage seam.
 package funpack
 
 Token_Kind :: enum {
 	Invalid,
+	// declaration/statement keywords (one unique opener per production)
 	Test,
 	Assert,
+	Import,
+	Let,
+	Return,
+	Fn,
+	// names and literals
 	Ident,
 	Int_Lit,
 	Fixed_Lit,
 	String_Lit,
+	// brackets
 	L_Paren,
 	R_Paren,
 	L_Brace,
 	R_Brace,
+	L_Bracket,
+	R_Bracket,
+	// operators and separators — one concept per glyph (spec §02)
+	At,          // directive prefix
+	Dot,         // member access / import path
+	Colon_Colon, // enum-variant selector, only
+	Colon,       // type ascription / record-field separator
+	Comma,
+	Arrow, // function return type
+	Eq,    // binding, never equality
 	Eq_Eq,
+	Not_Eq,
+	Lt,
+	Lt_Eq,
+	Gt,
+	Gt_Eq,
+	Plus,
+	Minus,
+	Star,
+	Slash,
+	Percent,
 	Newline,
 }
 
@@ -58,25 +88,69 @@ stage_lex :: proc(source: string) -> []Token {
 	return tokens[:]
 }
 
+// scan_punct applies maximal munch: the two-glyph operators are matched
+// before their one-glyph prefixes (== before =, :: before :, -> before -).
 scan_punct :: proc(source: string, start: int) -> (tok: Token, next: int) {
-	text := source[start : start+1]
+	two := source[start:min(start + 2, len(source))]
+	switch two {
+	case "==":
+		return Token{kind = .Eq_Eq, text = two}, start + 2
+	case "!=":
+		return Token{kind = .Not_Eq, text = two}, start + 2
+	case "<=":
+		return Token{kind = .Lt_Eq, text = two}, start + 2
+	case ">=":
+		return Token{kind = .Gt_Eq, text = two}, start + 2
+	case "::":
+		return Token{kind = .Colon_Colon, text = two}, start + 2
+	case "->":
+		return Token{kind = .Arrow, text = two}, start + 2
+	}
+	one := source[start : start+1]
+	one_kind: Token_Kind
 	switch source[start] {
 	case '\n':
-		return Token{kind = .Newline, text = text}, start + 1
+		one_kind = .Newline
 	case '(':
-		return Token{kind = .L_Paren, text = text}, start + 1
+		one_kind = .L_Paren
 	case ')':
-		return Token{kind = .R_Paren, text = text}, start + 1
+		one_kind = .R_Paren
 	case '{':
-		return Token{kind = .L_Brace, text = text}, start + 1
+		one_kind = .L_Brace
 	case '}':
-		return Token{kind = .R_Brace, text = text}, start + 1
+		one_kind = .R_Brace
+	case '[':
+		one_kind = .L_Bracket
+	case ']':
+		one_kind = .R_Bracket
+	case '@':
+		one_kind = .At
+	case '.':
+		one_kind = .Dot
+	case ':':
+		one_kind = .Colon
+	case ',':
+		one_kind = .Comma
 	case '=':
-		if start+1 < len(source) && source[start+1] == '=' {
-			return Token{kind = .Eq_Eq, text = source[start : start+2]}, start + 2
-		}
+		one_kind = .Eq
+	case '<':
+		one_kind = .Lt
+	case '>':
+		one_kind = .Gt
+	case '+':
+		one_kind = .Plus
+	case '-':
+		one_kind = .Minus
+	case '*':
+		one_kind = .Star
+	case '/':
+		one_kind = .Slash
+	case '%':
+		one_kind = .Percent
+	case:
+		one_kind = .Invalid
 	}
-	return Token{kind = .Invalid, text = text}, start + 1
+	return Token{kind = one_kind, text = one}, start + 1
 }
 
 // scan_string returns the contents between the quotes; an unterminated
@@ -123,6 +197,14 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .Test, text = text}, i
 	case "assert":
 		return Token{kind = .Assert, text = text}, i
+	case "import":
+		return Token{kind = .Import, text = text}, i
+	case "let":
+		return Token{kind = .Let, text = text}, i
+	case "return":
+		return Token{kind = .Return, text = text}, i
+	case "fn":
+		return Token{kind = .Fn, text = text}, i
 	}
 	return Token{kind = .Ident, text = text}, i
 }
