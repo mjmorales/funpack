@@ -26,14 +26,25 @@ stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
 }
 
 eval_assert :: proc(node: Assert_Node) -> bool {
-	return eval_operand(node.expr.lhs) == eval_operand(node.expr.rhs)
+	// The typecheck admitted only the == form over the thin domain.
+	bin, is_binary := node.expr.(^Binary_Expr)
+	if !is_binary {
+		return false
+	}
+	return eval_expr(bin.lhs) == eval_expr(bin.rhs)
 }
 
-// eval_operand sees only Fixed-domain operands — the typecheck rejected
-// bare Int literals before evaluation.
-eval_operand :: proc(op: Operand) -> Fixed {
-	if op.kind == .To_Fixed_Call {
-		return to_fixed(op.int_value)
+// eval_expr sees only the Fixed-domain forms the typecheck admitted:
+// Fixed literals and the explicit to_fixed(Int) lift.
+eval_expr :: proc(expr: Expr) -> Fixed {
+	#partial switch e in expr {
+	case ^Fixed_Lit_Expr:
+		return e.bits
+	case ^Call_Expr:
+		arg, is_int := e.args[0].(^Int_Lit_Expr)
+		if is_int {
+			return to_fixed(arg.value)
+		}
 	}
-	return op.fixed_bits
+	return Fixed(0)
 }

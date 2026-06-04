@@ -4,32 +4,8 @@
 // group), and test blocks whose body is an ordered sequence of let and
 // assert statements. Every production opens with a unique keyword, so
 // one token of lookahead selects it. Expressions route through the
-// single parse_expression seam, stubbed at the trivial-assert surface
-// (an operand, optionally == an operand); the full Pratt cascade
-// (spec §02) fills that seam without touching the statement layer.
+// single parse_expression seam owned by the Pratt cascade (expr.odin).
 package funpack
-
-Operand_Kind :: enum {
-	Int_Literal,
-	Fixed_Literal,
-	To_Fixed_Call,
-}
-
-Operand :: struct {
-	kind:       Operand_Kind,
-	int_value:  i64,   // Int_Literal value; To_Fixed_Call argument
-	fixed_bits: Fixed, // Fixed_Literal value
-}
-
-// Expr is the thin expression shape the stub parse_expression yields:
-// exactly the `<operand> == <operand>` and bare-operand forms the
-// trivial surface needs. The Pratt cascade replaces this with the full
-// expression tree behind the same seam.
-Expr :: struct {
-	lhs:      Operand,
-	is_equal: bool,    // the `==` form was parsed
-	rhs:      Operand, // valid when is_equal
-}
 
 Assert_Node :: struct {
 	expr: Expr,
@@ -212,60 +188,32 @@ parse_let :: proc(p: ^Parser) -> (node: Let_Node, err: Parse_Error) {
 	return Let_Node{name = name.text, value = value}, .None
 }
 
-// parse_expression is the single expression seam: every statement RHS
-// enters here. The stub covers the trivial surface only.
-parse_expression :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
-	lhs := parse_operand(p) or_return
-	if peek_kind(p) == .Eq_Eq {
-		p.pos += 1
-		rhs := parse_operand(p) or_return
-		return Expr{lhs = lhs, is_equal = true, rhs = rhs}, .None
-	}
-	return Expr{lhs = lhs}, .None
-}
-
-parse_operand :: proc(p: ^Parser) -> (op: Operand, err: Parse_Error) {
-	tok := advance(p) or_return
-	#partial switch tok.kind {
-	case .Int_Lit:
-		return Operand{kind = .Int_Literal, int_value = tok.int_value}, .None
-	case .Fixed_Lit:
-		return Operand{kind = .Fixed_Literal, fixed_bits = tok.fixed_bits}, .None
-	case .Ident:
-		check_ident_case(tok, peek_kind(p)) or_return
-		if tok.text == "to_fixed" {
-			return parse_to_fixed_call(p)
-		}
-	}
-	return Operand{}, .Unexpected_Token
-}
-
 // check_ident_case enforces the casing-is-structural rule (spec §02): a
 // name followed by `{` (record-literal constructor) or `::` (variant
-// selector) stands in type position and must be UpperCamel; any other
-// value/function name must be snake_case, or UPPER_SNAKE for a bare
-// constant. The casing verdict fires before the construct is parsed, so
-// a wrong-case name in a not-yet-supported production still reports
-// Wrong_Case rather than a generic Unexpected_Token.
+// selector) stands in type position and must be UpperCamel; a name
+// followed by `.` is a member-access receiver — a value name or a
+// type's associated module (Fixed.MAX, Quat.identity) — so any
+// sanctioned class passes; any other value/function name must be
+// snake_case, or UPPER_SNAKE for a bare constant. The casing verdict
+// fires before the construct is parsed, so a wrong-case name always
+// reports Wrong_Case rather than a generic Unexpected_Token.
 check_ident_case :: proc(tok: Token, following: Token_Kind) -> Parse_Error {
-	type_position := following == .L_Brace || following == .Colon_Colon
-	if type_position {
+	if tok.class == .Mixed {
+		return .Wrong_Case
+	}
+	#partial switch following {
+	case .L_Brace, .Colon_Colon:
 		if tok.class != .Upper_Camel {
 			return .Wrong_Case
 		}
-		return .None
-	}
-	if tok.class != .Snake_Case && tok.class != .Upper_Snake {
-		return .Wrong_Case
+	case .Dot:
+		// any sanctioned class
+	case:
+		if tok.class != .Snake_Case && tok.class != .Upper_Snake {
+			return .Wrong_Case
+		}
 	}
 	return .None
-}
-
-parse_to_fixed_call :: proc(p: ^Parser) -> (op: Operand, err: Parse_Error) {
-	expect(p, .L_Paren) or_return
-	arg := expect(p, .Int_Lit) or_return
-	expect(p, .R_Paren) or_return
-	return Operand{kind = .To_Fixed_Call, int_value = arg.int_value}, .None
 }
 
 // terminate_statement consumes the newline statement terminator

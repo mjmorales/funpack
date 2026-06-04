@@ -61,13 +61,15 @@ test_parse_wrong_case_value_position :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_right_case_type_position_not_wrong_case :: proc(t: ^testing.T) {
-	// A correctly-cased type name passes the casing check; the construct
-	// itself is just not parseable yet, so the error must be the generic
-	// one, never Wrong_Case.
-	tokens := stage_lex("test \"x\" {\nassert Option::None == 2.0\n}\n")
-	_, err := stage_parse(tokens)
-	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+test_parse_right_case_type_position_parses :: proc(t: ^testing.T) {
+	// A correctly-cased variant selector parses to a structural AST; it
+	// sits outside the thin evaluation domain, so the pipeline rejects
+	// it at typecheck — never at parse, never as Wrong_Case.
+	source := "test \"x\" {\nassert Option::None == 2.0\n}\n"
+	_, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
 }
 
 @(test)

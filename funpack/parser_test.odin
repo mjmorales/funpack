@@ -79,7 +79,8 @@ test_parse_test_body_let_then_assert :: proc(t: ^testing.T) {
 	let_node, is_let := ast.tests[0].body[0].(Let_Node)
 	testing.expect(t, is_let)
 	testing.expect_value(t, let_node.name, "v")
-	testing.expect(t, !let_node.value.is_equal)
+	_, value_is_fixed := let_node.value.(^Fixed_Lit_Expr)
+	testing.expect(t, value_is_fixed)
 	_, is_assert := ast.tests[0].body[1].(Assert_Node)
 	testing.expect(t, is_assert)
 }
