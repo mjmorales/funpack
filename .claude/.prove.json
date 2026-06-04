@@ -1,5 +1,19 @@
 {
   "schema_version": "10",
-  "validators": [],
-  "reporters": []
+  "validators": [
+    { "name": "check", "command": "odin check .", "phase": "build" },
+    { "name": "vet", "command": "odin check . -vet -strict-style", "phase": "lint" },
+    { "name": "tests", "command": "odin test .", "phase": "test" },
+    { "name": "comment-audit", "skill": "claude-skills:comment-audit", "phase": "llm" }
+  ],
+  "reporters": [],
+  "claude_md": {
+    "references": [
+      { "path": "/Users/manuelmorales/dev/claude-prove/references/creator-conventions.md", "label": "Creator Conventions" },
+      { "path": "/Users/manuelmorales/dev/claude-prove/references/interaction-patterns.md", "label": "Interaction Patterns" },
+      { "path": "/Users/manuelmorales/dev/claude-prove/references/llm-coding-standards.md", "label": "LLM Coding Standards" },
+      { "path": "/Users/manuelmorales/dev/claude-prove/references/prompt-engineering-guide.md", "label": "Prompt Engineering Guide" },
+      { "path": "/Users/manuelmorales/dev/claude-prove/references/validation-config.md", "label": "Validation Config" }
+    ]
+  }
 }
