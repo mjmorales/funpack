@@ -41,6 +41,14 @@ eval_expr :: proc(expr: Expr) -> (value: Value, ok: bool) {
 		return e.value, true
 	case ^Fixed_Lit_Expr:
 		return e.bits, true
+	case ^Name_Expr:
+		// The sanctioned lowercase constants are the only resolvable
+		// bare names; user bindings resolve through the evaluation
+		// environment behind the same seam.
+		if e.name == "pi" {
+			return PI_FIXED, true
+		}
+		return nil, false
 	case ^Unary_Expr:
 		return eval_unary(e)
 	case ^Binary_Expr:
@@ -283,13 +291,31 @@ eval_call :: proc(e: ^Call_Expr) -> (value: Value, ok: bool) {
 		}
 		v3 := arg.(Vec3_Value) or_return
 		return vec3_length(v3), true
+	case "sin":
+		angle := eval_fixed_arg(e, 0, 1) or_return
+		return fixed_sin(angle), true
+	case "cos":
+		angle := eval_fixed_arg(e, 0, 1) or_return
+		return fixed_cos(angle), true
 	}
 	return nil, false
 }
 
 // eval_method_call dispatches receiver.method(args) — the quaternion
-// surface the golden asserts exercise.
+// surface the golden asserts exercise. A type-name receiver selects an
+// associated constructor (Quat.axis_angle); a value receiver selects a
+// method on the evaluated quaternion.
 eval_method_call :: proc(callee: ^Member_Expr, args: []Expr) -> (value: Value, ok: bool) {
+	if recv, is_type := callee.receiver.(^Name_Expr); is_type && recv.name == "Quat" {
+		if callee.member != "axis_angle" || len(args) != 2 {
+			return nil, false
+		}
+		axis_value := eval_expr(args[0]) or_return
+		axis := axis_value.(Vec3_Value) or_return
+		angle_value := eval_expr(args[1]) or_return
+		angle := angle_value.(Fixed) or_return
+		return quat_axis_angle(axis, angle), true
+	}
 	receiver := eval_expr(callee.receiver) or_return
 	q := receiver.(Quat_Value) or_return
 	switch callee.member {
@@ -307,6 +333,15 @@ eval_method_call :: proc(callee: ^Member_Expr, args: []Expr) -> (value: Value, o
 		arg := eval_expr(args[0]) or_return
 		other := arg.(Quat_Value) or_return
 		return quat_mul(q, other), true
+	case "slerp":
+		if len(args) != 2 {
+			return nil, false
+		}
+		other_value := eval_expr(args[0]) or_return
+		other := other_value.(Quat_Value) or_return
+		t_value := eval_expr(args[1]) or_return
+		t := t_value.(Fixed) or_return
+		return quat_slerp(q, other, t), true
 	}
 	return nil, false
 }

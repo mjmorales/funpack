@@ -77,6 +77,50 @@ quat_normalize :: proc(q: Quat_Value) -> Quat_Value {
 	}
 }
 
+// quat_axis_angle builds the rotation of `angle` radians about `axis`:
+// q = (â·sin(θ/2), cos(θ/2)) with the axis normalized first (total —
+// a zero axis yields a zero vector part) and the result renormalized.
+quat_axis_angle :: proc(axis: Vec3_Value, angle: Fixed) -> Quat_Value {
+	length := vec3_length(axis)
+	unit := axis
+	if length != 0 && length != FIXED_ONE {
+		unit = Vec3_Value{
+			x = fixed_div(axis.x, length),
+			y = fixed_div(axis.y, length),
+			z = fixed_div(axis.z, length),
+		}
+	}
+	half := fixed_div(angle, to_fixed(2))
+	s := fixed_sin(half)
+	c := fixed_cos(half)
+	return quat_normalize(Quat_Value{
+		x = fixed_mul(unit.x, s),
+		y = fixed_mul(unit.y, s),
+		z = fixed_mul(unit.z, s),
+		w = c,
+	})
+}
+
+// quat_slerp returns its endpoints by identity — t=0 yields a and t=1
+// yields b bit-exactly, with no recomputation, independent of any
+// constant's inexact representation. The interior is nlerp
+// (component-wise lerp, renormalized), the default interpolation
+// (spec §10).
+quat_slerp :: proc(a, b: Quat_Value, t: Fixed) -> Quat_Value {
+	if t == 0 {
+		return a
+	}
+	if t == FIXED_ONE {
+		return b
+	}
+	return quat_normalize(Quat_Value{
+		x = fixed_lerp(a.x, b.x, t),
+		y = fixed_lerp(a.y, b.y, t),
+		z = fixed_lerp(a.z, b.z, t),
+		w = fixed_lerp(a.w, b.w, t),
+	})
+}
+
 // quat_rotate applies v' = v + 2w·(q⃗ × v) + 2·(q⃗ × (q⃗ × v)) — the
 // expansion of q v q* that needs no division. With the identity's zero
 // vector part both cross terms vanish, so v returns bit-exactly.

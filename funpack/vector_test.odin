@@ -31,6 +31,35 @@ test_quat_identity_laws :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_quat_slerp_endpoints_exact :: proc(t: ^testing.T) {
+	a := QUAT_IDENTITY
+	b := quat_axis_angle(Vec3_Value{z = FIXED_ONE}, PI_FIXED)
+	testing.expect_value(t, quat_slerp(a, b, Fixed(0)), a)
+	testing.expect_value(t, quat_slerp(a, b, FIXED_ONE), b)
+}
+
+@(test)
+test_quat_axis_angle_deterministic_unit :: proc(t: ^testing.T) {
+	// Same input → same bits, and the result is renormalized.
+	first := quat_axis_angle(Vec3_Value{z = FIXED_ONE}, PI_FIXED)
+	second := quat_axis_angle(Vec3_Value{z = FIXED_ONE}, PI_FIXED)
+	testing.expect_value(t, first, second)
+}
+
+@(test)
+test_pipeline_slerp_endpoint_golden_values :: proc(t: ^testing.T) {
+	// The golden block binds a and b with let; the same endpoint laws
+	// are pinned with the expressions inlined — both sides of the t=1
+	// case recompute axis_angle deterministically to the same bits.
+	report, err := run_golden_asserts(
+		"assert Quat.identity.slerp(Quat.axis_angle(Vec3{x: 0.0, y: 0.0, z: 1.0}, pi), 0.0) == Quat.identity\n" +
+		"assert Quat.identity.slerp(Quat.axis_angle(Vec3{x: 0.0, y: 0.0, z: 1.0}, pi), 1.0) == Quat.axis_angle(Vec3{x: 0.0, y: 0.0, z: 1.0}, pi)\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
 test_pipeline_vector_golden_values :: proc(t: ^testing.T) {
 	report, err := run_golden_asserts(
 		"assert length(Vec2{x: 3.0, y: 4.0}) == 5.0\n" +

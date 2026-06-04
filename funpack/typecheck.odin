@@ -53,6 +53,13 @@ expr_check :: proc(expr: Expr) -> (type: Value_Type, err: Type_Error) {
 		return .Int, .None
 	case ^Fixed_Lit_Expr:
 		return .Fixed, .None
+	case ^Name_Expr:
+		// The sanctioned lowercase constants; user bindings type through
+		// the evaluation environment behind the same seam.
+		if e.name == "pi" {
+			return .Fixed, .None
+		}
+		return .Int, .Unsupported_Expr
 	case ^Unary_Expr:
 		if e.op.kind != .Minus {
 			return .Int, .Unsupported_Expr
@@ -168,6 +175,9 @@ call_check :: proc(e: ^Call_Expr) -> (type: Value_Type, err: Type_Error) {
 	case "checked_div":
 		check_args(e, {.Fixed, .Fixed}) or_return
 		return .Option, .None
+	case "sin", "cos":
+		check_args(e, {.Fixed}) or_return
+		return .Fixed, .None
 	}
 	return .Int, .Unsupported_Expr
 }
@@ -189,7 +199,15 @@ check_args :: proc(e: ^Call_Expr, signature: []Value_Type) -> Type_Error {
 }
 
 // method_check types receiver.method(args) — the quaternion surface.
+// A type-name receiver selects the associated constructor.
 method_check :: proc(callee: ^Member_Expr, e: ^Call_Expr) -> (type: Value_Type, err: Type_Error) {
+	if recv, is_type := callee.receiver.(^Name_Expr); is_type && recv.name == "Quat" {
+		if callee.member != "axis_angle" {
+			return .Int, .Unsupported_Expr
+		}
+		check_args(e, {.Vec3, .Fixed}) or_return
+		return .Quat, .None
+	}
 	receiver := expr_check(callee.receiver) or_return
 	if receiver != .Quat {
 		return .Int, .Unsupported_Expr
@@ -200,6 +218,9 @@ method_check :: proc(callee: ^Member_Expr, e: ^Call_Expr) -> (type: Value_Type, 
 		return .Vec3, .None
 	case "mul":
 		check_args(e, {.Quat}) or_return
+		return .Quat, .None
+	case "slerp":
+		check_args(e, {.Quat, .Fixed}) or_return
 		return .Quat, .None
 	}
 	return .Int, .Unsupported_Expr
