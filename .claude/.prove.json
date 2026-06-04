@@ -13,7 +13,8 @@
       { "path": "/Users/manuelmorales/dev/claude-prove/references/interaction-patterns.md", "label": "Interaction Patterns" },
       { "path": "/Users/manuelmorales/dev/claude-prove/references/llm-coding-standards.md", "label": "LLM Coding Standards" },
       { "path": "/Users/manuelmorales/dev/claude-prove/references/prompt-engineering-guide.md", "label": "Prompt Engineering Guide" },
-      { "path": "/Users/manuelmorales/dev/claude-prove/references/validation-config.md", "label": "Validation Config" }
+      { "path": "/Users/manuelmorales/dev/claude-prove/references/validation-config.md", "label": "Validation Config" },
+      { "path": "~/.claude-envs/pool/plugins/marketplaces/prove/references/passive-triggers.md", "label": "Passive Triggers" }
     ]
   }
 }

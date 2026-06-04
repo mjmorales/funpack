@@ -48,6 +48,10 @@ Run before committing:
 
 @~/dev/claude-prove/references/validation-config.md
 
+### Passive Triggers
+
+@~/.claude-envs/pool/plugins/marketplaces/prove/references/passive-triggers.md
+
 ## Prove Commands
 
 - `/prove:brainstorm` — Explore options and record decisions
