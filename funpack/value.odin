@@ -13,6 +13,19 @@ Value :: union {
 	Vec2_Value,
 	Vec3_Value,
 	Quat_Value,
+	List_Value,
+	Lambda_Value,
+}
+
+List_Value :: struct {
+	elements: []Value,
+}
+
+// Lambda_Value captures its defining environment; application binds
+// parameters in a child frame off it.
+Lambda_Value :: struct {
+	node: ^Lambda_Expr,
+	env:  ^Env,
 }
 
 // Option_Value is the runtime Option: a present payload or none. The
@@ -53,6 +66,22 @@ value_equal :: proc(a, b: Value) -> bool {
 	case Quat_Value:
 		bv, ok := b.(Quat_Value)
 		return ok && av == bv
+	case List_Value:
+		bv, ok := b.(List_Value)
+		if !ok || len(av.elements) != len(bv.elements) {
+			return false
+		}
+		for element, i in av.elements {
+			if !value_equal(element, bv.elements[i]) {
+				return false
+			}
+		}
+		return true
+	case Lambda_Value:
+		// Functions have no extensional equality; comparing them is
+		// always false rather than an identity check the language never
+		// promises.
+		return false
 	}
 	return false
 }

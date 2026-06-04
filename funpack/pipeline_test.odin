@@ -155,6 +155,68 @@ test_pipeline_checked_div_golden_values :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pipeline_fold_saturation_golden_value :: proc(t: ^testing.T) {
+	// The golden fold pin distinguishes direction: left-to-right gives
+	// (MAX + 1.0) saturating to MAX, then - 1.0; a right fold would sum
+	// the list first and yield MAX.
+	report, err := run_golden_asserts(
+		"assert fold([1.0, -1.0], Fixed.MAX, fn(acc, x) { return acc + x }) == Fixed.MAX - 1.0\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_let_bound_quaternion_golden_block :: proc(t: ^testing.T) {
+	// The golden quaternion-identity block verbatim, lets included.
+	source := "test \"quaternion identity laws\" {\n" +
+		"  let v = Vec3{x: 1.0, y: 2.0, z: 3.0}\n" +
+		"  assert Quat.identity.rotate(v) == v\n" +
+		"  assert Quat.identity.mul(Quat.identity) == Quat.identity\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_let_bound_slerp_golden_block :: proc(t: ^testing.T) {
+	// The golden slerp-endpoints block verbatim, lets included.
+	source := "test \"slerp endpoints are exact\" {\n" +
+		"  let a = Quat.identity\n" +
+		"  let b = Quat.axis_angle(Vec3{x: 0.0, y: 0.0, z: 1.0}, pi)\n" +
+		"  assert a.slerp(b, 0.0) == a\n" +
+		"  assert a.slerp(b, 1.0) == b\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_lambda_frames_isolated :: proc(t: ^testing.T) {
+	// A lambda parameter binds per application and never leaks into the
+	// test scope: x resolves to the let binding after the fold.
+	source := "test \"frames\" {\n" +
+		"  let x = 10.0\n" +
+		"  assert fold([1.0, 2.0], 0.0, fn(acc, x) { return acc + x }) == 3.0\n" +
+		"  assert x == 10.0\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_unresolved_name_is_type_error :: proc(t: ^testing.T) {
+	_, err := run_test_pipeline("test \"x\" {\nassert nope == 1.0\n}\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
 test_pipeline_empty_source_is_noop_pass :: proc(t: ^testing.T) {
 	report, err := run_test_pipeline("")
 	testing.expect_value(t, err, Pipeline_Error.None)
