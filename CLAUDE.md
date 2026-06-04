@@ -1,8 +1,8 @@
 <!-- prove:managed:start -->
 # funpack
 
-<!-- prove:plugin-version:3.1.0 -->
-**Prove plugin v3.1.0** — if `claude-prove --version` does not match v3.1.0, run `/prove:update` to sync.
+<!-- prove:plugin-version:3.3.2 -->
+**Prove plugin v3.3.2** — if `claude-prove --version` does not match v3.3.2, run `/prove:update` to sync.
 
 
 ## Validation
@@ -18,35 +18,35 @@ Run before committing:
 
 ### claude-prove CLI Reference
 
-@/Users/manuelmorales/.claude-envs/default/plugins/cache/prove/prove/3.1.0/references/claude-prove-reference.md
+@~/.claude-envs/pool/plugins/marketplaces/prove/references/claude-prove-reference.md
 
 ### Design Principles
 
-@/Users/manuelmorales/.claude-envs/default/plugins/cache/prove/prove/3.1.0/references/design-principles.md
+@~/.claude-envs/pool/plugins/marketplaces/prove/references/design-principles.md
 
 ### Agent Routing Map
 
-@/Users/manuelmorales/.claude-envs/default/plugins/cache/prove/prove/3.1.0/references/agent-routing.md
+@~/.claude-envs/pool/plugins/marketplaces/prove/references/agent-routing.md
 
 ### Creator Conventions
 
-@/Users/manuelmorales/dev/claude-prove/references/creator-conventions.md
+@~/dev/claude-prove/references/creator-conventions.md
 
 ### Interaction Patterns
 
-@/Users/manuelmorales/dev/claude-prove/references/interaction-patterns.md
+@~/dev/claude-prove/references/interaction-patterns.md
 
 ### LLM Coding Standards
 
-@/Users/manuelmorales/dev/claude-prove/references/llm-coding-standards.md
+@~/dev/claude-prove/references/llm-coding-standards.md
 
 ### Prompt Engineering Guide
 
-@/Users/manuelmorales/dev/claude-prove/references/prompt-engineering-guide.md
+@~/dev/claude-prove/references/prompt-engineering-guide.md
 
 ### Validation Config
 
-@/Users/manuelmorales/dev/claude-prove/references/validation-config.md
+@~/dev/claude-prove/references/validation-config.md
 
 ## Prove Commands
 
