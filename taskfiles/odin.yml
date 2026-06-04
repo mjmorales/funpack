@@ -9,25 +9,27 @@ version: '3'
 #       flatten: true
 #
 # Override a verb by excluding it from the include (excludes: [test]) and
-# redefining it locally. PKG/ODIN use the default pattern so including
-# Taskfiles can override them via the include's vars block.
+# redefining it locally. ODIN/ODIN_PKG use the default pattern so including
+# Taskfiles can override them via the include's vars block. Var names are
+# toolchain-prefixed: the root Taskfile merges every base's top-level vars
+# into one global scope, so unprefixed names collide across odin.yml/go.yml.
 
 vars:
   ODIN: '{{.ODIN | default "odin"}}'
-  PKG: '{{.PKG | default "."}}'
+  ODIN_PKG: '{{.ODIN_PKG | default "."}}'
 
 tasks:
   build:
     desc: Type-check the package without codegen
     cmds:
-      - '{{.ODIN}} check {{.PKG}}'
+      - '{{.ODIN}} check {{.ODIN_PKG}}'
 
   lint:
     desc: Type-check with vet and strict style
     cmds:
-      - '{{.ODIN}} check {{.PKG}} -vet -strict-style'
+      - '{{.ODIN}} check {{.ODIN_PKG}} -vet -strict-style'
 
   test:
     desc: Run the package test runner
     cmds:
-      - '{{.ODIN}} test {{.PKG}}'
+      - '{{.ODIN}} test {{.ODIN_PKG}}'

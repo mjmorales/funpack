@@ -1,0 +1,29 @@
+version: '3'
+
+# Shared Go verbs — the Go-toolchain counterpart to odin.yml, included
+# the same way (flatten: true) by Go embedded projects. GO/GO_PKG use the
+# default pattern so including Taskfiles can override them via the
+# include's vars block. Var names are toolchain-prefixed: the root
+# Taskfile merges every base's top-level vars into one global scope, so
+# unprefixed names collide across odin.yml/go.yml.
+
+vars:
+  GO: '{{.GO | default "go"}}'
+  GO_PKG: '{{.GO_PKG | default "./..."}}'
+
+tasks:
+  build:
+    desc: Compile all packages
+    cmds:
+      - '{{.GO}} build {{.GO_PKG}}'
+
+  lint:
+    desc: Vet and gofmt check
+    cmds:
+      - '{{.GO}} vet {{.GO_PKG}}'
+      - test -z "$(gofmt -l .)"
+
+  test:
+    desc: Run the package tests
+    cmds:
+      - '{{.GO}} test {{.GO_PKG}}'

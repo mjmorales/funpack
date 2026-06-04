@@ -1,0 +1,6 @@
+version: '3'
+
+includes:
+  base:
+    taskfile: ../taskfiles/go.yml
+    flatten: true
