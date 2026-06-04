@@ -30,7 +30,7 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 		return Project{}, .Missing_Configs_Dir
 	}
 	fcfg_path, _ := filepath.join({configs_dir, "project.fcfg"}, context.temp_allocator)
-	fcfg_bytes, read_err := os.read_entire_file_from_path(fcfg_path, context.allocator)
+	fcfg_bytes, read_err := os.read_entire_file_from_path(fcfg_path, context.temp_allocator)
 	if read_err != nil {
 		return Project{}, .Missing_Project_Fcfg
 	}
@@ -71,7 +71,7 @@ collect_sources :: proc(root: string) -> ([]string, Project_Error) {
 		return nil, .Missing_Src_Dir
 	}
 	pattern, _ := filepath.join({src_dir, "*.fun"}, context.temp_allocator)
-	sources, glob_err := filepath.glob(pattern)
+	sources, glob_err := filepath.glob(pattern, context.temp_allocator)
 	if glob_err != nil || len(sources) == 0 {
 		return nil, .No_Sources
 	}
