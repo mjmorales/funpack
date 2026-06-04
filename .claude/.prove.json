@@ -1,9 +1,9 @@
 {
   "schema_version": "10",
   "validators": [
-    { "name": "check", "command": "odin check .", "phase": "build" },
-    { "name": "vet", "command": "odin check . -vet -strict-style", "phase": "lint" },
-    { "name": "tests", "command": "odin test .", "phase": "test" },
+    { "name": "build", "command": "task build", "phase": "build" },
+    { "name": "lint", "command": "task lint", "phase": "lint" },
+    { "name": "tests", "command": "task test", "phase": "test" },
     { "name": "comment-audit", "skill": "claude-skills:comment-audit", "phase": "llm" }
   ],
   "reporters": [],

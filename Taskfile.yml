@@ -1,0 +1,29 @@
+version: '3'
+
+# Monorepo build orchestration. Each embedded project (funpack, warden,
+# runtime — directories land with the module-layout decision) owns its own
+# Taskfile that flatten-includes taskfiles/odin.yml for the shared Odin
+# verbs. This root file composes them by namespace:
+#
+#   includes:
+#     funpack: { taskfile: ./funpack, dir: ./funpack }
+#
+# and each root verb aggregates the per-project ones:
+#
+#   - task: funpack:build
+#
+# Root verbs are intentionally green no-ops until the first project lands,
+# so the .claude/.prove.json validators stay stable across layout changes.
+
+tasks:
+  build:
+    desc: Type-check every embedded project
+    cmds: []
+
+  lint:
+    desc: Vet + strict-style check every embedded project
+    cmds: []
+
+  test:
+    desc: Run every embedded project's tests
+    cmds: []

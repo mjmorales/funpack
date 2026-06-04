@@ -1,0 +1,33 @@
+version: '3'
+
+# Shared Odin verbs. Embedded projects inherit these by flatten-including
+# this file from their own Taskfile:
+#
+#   includes:
+#     base:
+#       taskfile: ../taskfiles/odin.yml
+#       flatten: true
+#
+# Override a verb by excluding it from the include (excludes: [test]) and
+# redefining it locally. PKG/ODIN use the default pattern so including
+# Taskfiles can override them via the include's vars block.
+
+vars:
+  ODIN: '{{.ODIN | default "odin"}}'
+  PKG: '{{.PKG | default "."}}'
+
+tasks:
+  build:
+    desc: Type-check the package without codegen
+    cmds:
+      - '{{.ODIN}} check {{.PKG}}'
+
+  lint:
+    desc: Type-check with vet and strict style
+    cmds:
+      - '{{.ODIN}} check {{.PKG}} -vet -strict-style'
+
+  test:
+    desc: Run the package test runner
+    cmds:
+      - '{{.ODIN}} test {{.PKG}}'

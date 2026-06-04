@@ -1,17 +1,17 @@
 <!-- prove:managed:start -->
 # funpack
 
-<!-- prove:plugin-version:3.3.2 -->
-**Prove plugin v3.3.2** — if `claude-prove --version` does not match v3.3.2, run `/prove:update` to sync.
+<!-- prove:plugin-version:3.4.0 -->
+**Prove plugin v3.4.0** — if `claude-prove --version` does not match v3.4.0, run `/prove:update` to sync.
 
 
 ## Validation
 
 Run before committing:
 
-- **build**: `odin check .`
-- **lint**: `odin check . -vet -strict-style`
-- **test**: `odin test .`
+- **build**: `task build`
+- **lint**: `task lint`
+- **test**: `task test`
 - **llm**: `skill claude-skills:comment-audit`
 
 ## References
