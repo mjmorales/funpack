@@ -4,9 +4,12 @@
 // is total — an unrecognized character becomes an Invalid token for the
 // parser to reject — and has no comment production (P6): `//` lexes as
 // two division glyphs, never a swallowed span. Unary minus is a
-// separate token, not part of a numeric literal. Newline suppression
-// inside brackets and casing classification widen this behind the same
-// stage seam.
+// separate token, not part of a numeric literal. A Newline token is a
+// statement terminator, so newlines that are mere layout — inside
+// ( ) [ ] nesting, inside record-literal braces, or before a
+// leading-dot chain continuation — are dropped here and never reach
+// the parser. Casing classification widens this behind the same stage
+// seam.
 package funpack
 
 Token_Kind :: enum {
@@ -61,31 +64,83 @@ Token :: struct {
 
 stage_lex :: proc(source: string) -> []Token {
 	tokens := make([dynamic]Token, 0, 16, context.temp_allocator)
+	nesting := Nesting {
+		brace_is_record = make([dynamic]bool, 0, 8, context.temp_allocator),
+	}
+	prev_kind := Token_Kind.Invalid
 	i := 0
 	for i < len(source) {
 		ch := source[i]
+		tok: Token
+		next: int
 		switch {
 		case ch == ' ' || ch == '\t' || ch == '\r':
 			i += 1
+			continue
 		case ch == '"':
-			tok, next := scan_string(source, i)
-			append(&tokens, tok)
-			i = next
+			tok, next = scan_string(source, i)
 		case is_digit(ch):
-			tok, next := scan_number(source, i)
-			append(&tokens, tok)
-			i = next
+			tok, next = scan_number(source, i)
 		case is_ident_start(ch):
-			tok, next := scan_ident(source, i)
-			append(&tokens, tok)
-			i = next
+			tok, next = scan_ident(source, i)
 		case:
-			tok, next := scan_punct(source, i)
-			append(&tokens, tok)
-			i = next
+			tok, next = scan_punct(source, i)
 		}
+		if tok.kind == .Newline && newline_suppressed(&nesting, source, next) {
+			i = next
+			continue
+		}
+		update_nesting(&nesting, tok.kind, prev_kind)
+		append(&tokens, tok)
+		prev_kind = tok.kind
+		i = next
 	}
 	return tokens[:]
+}
+
+// Nesting tracks the bracket context that decides whether a newline is
+// a statement terminator (spec §02). Newlines inside ( ) [ ] and inside
+// record-literal { } are layout; block { } interiors are statement
+// sequences, so theirs are kept. The two brace roles are told apart by
+// the predecessor token: a `{` directly after an identifier is a
+// record-literal constructor (Vec2{…}); any other `{` (after a test
+// name string, a lambda's `)`) opens a block.
+Nesting :: struct {
+	paren_bracket_depth: int,
+	record_brace_depth:  int,
+	brace_is_record:     [dynamic]bool,
+}
+
+newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
+	if n.paren_bracket_depth > 0 || n.record_brace_depth > 0 {
+		return true
+	}
+	// Leading-dot chain continuation (spec §02): a newline whose next
+	// line opens with `.` joins the statement instead of ending it.
+	j := after
+	for j < len(source) && (source[j] == ' ' || source[j] == '\t' || source[j] == '\r') {
+		j += 1
+	}
+	return j < len(source) && source[j] == '.'
+}
+
+update_nesting :: proc(n: ^Nesting, kind: Token_Kind, prev: Token_Kind) {
+	#partial switch kind {
+	case .L_Paren, .L_Bracket:
+		n.paren_bracket_depth += 1
+	case .R_Paren, .R_Bracket:
+		n.paren_bracket_depth = max(0, n.paren_bracket_depth - 1)
+	case .L_Brace:
+		is_record := prev == .Ident
+		append(&n.brace_is_record, is_record)
+		if is_record {
+			n.record_brace_depth += 1
+		}
+	case .R_Brace:
+		if len(n.brace_is_record) > 0 && pop(&n.brace_is_record) {
+			n.record_brace_depth = max(0, n.record_brace_depth - 1)
+		}
+	}
 }
 
 // scan_punct applies maximal munch: the two-glyph operators are matched
