@@ -32,6 +32,7 @@ Parse_Error :: enum {
 	None,
 	Unexpected_Token,
 	Unexpected_End,
+	Wrong_Case, // an identifier whose casing class is wrong for its grammar position (spec §02)
 }
 
 Parser :: struct {
@@ -89,11 +90,33 @@ parse_operand :: proc(p: ^Parser) -> (op: Operand, err: Parse_Error) {
 	case .Fixed_Lit:
 		return Operand{kind = .Fixed_Literal, fixed_bits = tok.fixed_bits}, .None
 	case .Ident:
+		check_ident_case(tok, peek_kind(p)) or_return
 		if tok.text == "to_fixed" {
 			return parse_to_fixed_call(p)
 		}
 	}
 	return Operand{}, .Unexpected_Token
+}
+
+// check_ident_case enforces the casing-is-structural rule (spec §02): a
+// name followed by `{` (record-literal constructor) or `::` (variant
+// selector) stands in type position and must be UpperCamel; any other
+// value/function name must be snake_case, or UPPER_SNAKE for a bare
+// constant. The casing verdict fires before the construct is parsed, so
+// a wrong-case name in a not-yet-supported production still reports
+// Wrong_Case rather than a generic Unexpected_Token.
+check_ident_case :: proc(tok: Token, following: Token_Kind) -> Parse_Error {
+	type_position := following == .L_Brace || following == .Colon_Colon
+	if type_position {
+		if tok.class != .Upper_Camel {
+			return .Wrong_Case
+		}
+		return .None
+	}
+	if tok.class != .Snake_Case && tok.class != .Upper_Snake {
+		return .Wrong_Case
+	}
+	return .None
 }
 
 parse_to_fixed_call :: proc(p: ^Parser) -> (op: Operand, err: Parse_Error) {

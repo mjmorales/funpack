@@ -173,6 +173,30 @@ test_lex_block_inside_call_keeps_statement_newlines :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_classify_ident_classes :: proc(t: ^testing.T) {
+	testing.expect_value(t, classify_ident("Vec2"), Ident_Class.Upper_Camel)
+	testing.expect_value(t, classify_ident("Option"), Ident_Class.Upper_Camel)
+	testing.expect_value(t, classify_ident("to_fixed"), Ident_Class.Snake_Case)
+	testing.expect_value(t, classify_ident("x"), Ident_Class.Snake_Case)
+	testing.expect_value(t, classify_ident("MAX"), Ident_Class.Upper_Snake)
+	testing.expect_value(t, classify_ident("UPPER_SNAKE"), Ident_Class.Upper_Snake)
+	testing.expect_value(t, classify_ident("fooBar"), Ident_Class.Mixed)
+	testing.expect_value(t, classify_ident("Foo_Bar"), Ident_Class.Mixed)
+	// The sanctioned lowercase constants classify as plain snake_case —
+	// the exception needs no special case in the taxonomy.
+	testing.expect_value(t, classify_ident("pi"), Ident_Class.Snake_Case)
+	testing.expect_value(t, classify_ident("tau"), Ident_Class.Snake_Case)
+}
+
+@(test)
+test_lex_ident_carries_class :: proc(t: ^testing.T) {
+	tokens := stage_lex("Vec2 to_fixed MAX")
+	testing.expect_value(t, tokens[0].class, Ident_Class.Upper_Camel)
+	testing.expect_value(t, tokens[1].class, Ident_Class.Snake_Case)
+	testing.expect_value(t, tokens[2].class, Ident_Class.Upper_Snake)
+}
+
+@(test)
 test_lex_no_comment_production :: proc(t: ^testing.T) {
 	// P6: the lexer has no comment production — `//` is two division
 	// glyphs and the rest of the line lexes as ordinary tokens, never a

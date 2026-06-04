@@ -38,6 +38,45 @@ test_pipeline_malformed_source_is_parse_error :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_wrong_case_type_position_record :: proc(t: ^testing.T) {
+	// A record-literal constructor is a type position: a snake_case name
+	// there is a casing compile error (spec §02), not a silent accept.
+	tokens := stage_lex("test \"x\" {\nassert vec2{} == 2.0\n}\n")
+	_, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
+}
+
+@(test)
+test_parse_wrong_case_type_position_variant :: proc(t: ^testing.T) {
+	tokens := stage_lex("test \"x\" {\nassert option::None == 2.0\n}\n")
+	_, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
+}
+
+@(test)
+test_parse_wrong_case_value_position :: proc(t: ^testing.T) {
+	tokens := stage_lex("test \"x\" {\nassert ToFixed(2) == 2.0\n}\n")
+	_, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
+}
+
+@(test)
+test_parse_right_case_type_position_not_wrong_case :: proc(t: ^testing.T) {
+	// A correctly-cased type name passes the casing check; the construct
+	// itself is just not parseable yet, so the error must be the generic
+	// one, never Wrong_Case.
+	tokens := stage_lex("test \"x\" {\nassert Option::None == 2.0\n}\n")
+	_, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
+test_pipeline_wrong_case_is_parse_failed :: proc(t: ^testing.T) {
+	_, err := run_test_pipeline("test \"x\" {\nassert vec2{} == 2.0\n}\n")
+	testing.expect_value(t, err, Pipeline_Error.Parse_Failed)
+}
+
+@(test)
 test_pipeline_empty_source_is_noop_pass :: proc(t: ^testing.T) {
 	report, err := run_test_pipeline("")
 	testing.expect_value(t, err, Pipeline_Error.None)

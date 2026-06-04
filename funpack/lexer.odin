@@ -8,8 +8,9 @@
 // statement terminator, so newlines that are mere layout — inside
 // ( ) [ ] nesting, inside record-literal braces, or before a
 // leading-dot chain continuation — are dropped here and never reach
-// the parser. Casing classification widens this behind the same stage
-// seam.
+// the parser. Every identifier carries its casing class: casing is a
+// structural signal (spec §02), and a wrong case is a compile error,
+// never a silent rename.
 package funpack
 
 Token_Kind :: enum {
@@ -55,11 +56,24 @@ Token_Kind :: enum {
 	Newline,
 }
 
+// Ident_Class is the closed casing taxonomy of spec §02. The class is
+// decided by spelling alone; which class a grammar position demands is
+// the parser's call. pi/tau — the sanctioned lowercase constants —
+// classify as Snake_Case by construction.
+Ident_Class :: enum {
+	None,        // non-identifier tokens
+	Upper_Camel, // type names and enum variants
+	Snake_Case,  // values, functions, behaviors, fields, parameters, modules
+	Upper_Snake, // module-level let constants
+	Mixed,       // matches no sanctioned class — always a compile error
+}
+
 Token :: struct {
 	kind:       Token_Kind,
 	text:       string,
-	int_value:  i64,   // Int_Lit value
-	fixed_bits: Fixed, // Fixed_Lit value
+	class:      Ident_Class, // Ident casing class
+	int_value:  i64,         // Int_Lit value
+	fixed_bits: Fixed,       // Fixed_Lit value
 }
 
 stage_lex :: proc(source: string) -> []Token {
@@ -261,7 +275,31 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 	case "fn":
 		return Token{kind = .Fn, text = text}, i
 	}
-	return Token{kind = .Ident, text = text}, i
+	return Token{kind = .Ident, text = text, class = classify_ident(text)}, i
+}
+
+classify_ident :: proc(text: string) -> Ident_Class {
+	has_lower, has_upper, has_underscore: bool
+	for ch in text {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+			has_lower = true
+		case ch >= 'A' && ch <= 'Z':
+			has_upper = true
+		case ch == '_':
+			has_underscore = true
+		}
+	}
+	first := text[0]
+	switch {
+	case first >= 'A' && first <= 'Z' && !has_lower:
+		return .Upper_Snake
+	case first >= 'A' && first <= 'Z' && !has_underscore:
+		return .Upper_Camel
+	case !has_upper:
+		return .Snake_Case
+	}
+	return .Mixed
 }
 
 parse_digits :: proc(text: string) -> i64 {
