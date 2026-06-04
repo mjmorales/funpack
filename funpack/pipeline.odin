@@ -1,19 +1,11 @@
 // The funpack test stage pipeline: lex → parse → typecheck → evaluate →
-// report. Every stage body is a deliberate typed stub: the seams keep the
-// pipeline runnable end-to-end so each stage can be implemented
-// independently behind its signature without breaking the spine.
+// report. Each stage is owned by its own file (lexer.odin, parser.odin,
+// typecheck.odin, evaluate.odin); this file owns the pipeline-level
+// types and the driver that threads a source string through the seams.
 package funpack
 
-Token :: struct {
-	text: string,
-}
-
-Assert_Node :: struct {
-	source: string,
-}
-
 Ast :: struct {
-	asserts: []Assert_Node,
+	tests: []Test_Node,
 }
 
 Typed_Ast :: struct {
@@ -31,28 +23,27 @@ Test_Report :: struct {
 	exit_code: int,
 }
 
-run_test_pipeline :: proc() -> Test_Report {
-	tokens := stage_lex("")
-	ast := stage_parse(tokens)
-	typed := stage_typecheck(ast)
+// Pipeline_Error distinguishes a source that failed to compile from a
+// source whose assertions failed — a compile error is never counted as
+// a failed test.
+Pipeline_Error :: enum {
+	None,
+	Parse_Failed,
+	Typecheck_Failed,
+}
+
+run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline_Error) {
+	tokens := stage_lex(source)
+	ast, parse_err := stage_parse(tokens)
+	if parse_err != .None {
+		return Test_Report{}, .Parse_Failed
+	}
+	typed, type_err := stage_typecheck(ast)
+	if type_err != .None {
+		return Test_Report{}, .Typecheck_Failed
+	}
 	result := stage_evaluate(typed)
-	return stage_report(result)
-}
-
-stage_lex :: proc(source: string) -> []Token {
-	return nil
-}
-
-stage_parse :: proc(tokens: []Token) -> Ast {
-	return Ast{}
-}
-
-stage_typecheck :: proc(ast: Ast) -> Typed_Ast {
-	return Typed_Ast{ast = ast}
-}
-
-stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
-	return Eval_Result{}
+	return stage_report(result), .None
 }
 
 stage_report :: proc(result: Eval_Result) -> Test_Report {

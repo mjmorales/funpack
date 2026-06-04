@@ -12,7 +12,14 @@ main :: proc() {
 	}
 	switch os.args[1] {
 	case "test":
-		report := run_test_pipeline()
+		// TODO: feed the §14 project tree's sources here; the empty
+		// source keeps `funpack test` a runnable no-op until the golden
+		// numerics wiring lands.
+		report, err := run_test_pipeline("")
+		if err != .None {
+			fmt.eprintfln("funpack test: %v", err)
+			os.exit(2)
+		}
 		fmt.printfln("funpack test: %d passed, %d failed", report.passed, report.failed)
 		os.exit(report.exit_code)
 	case:
