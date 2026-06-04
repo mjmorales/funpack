@@ -5,10 +5,14 @@
 // (spec §10) — equality and arithmetic demand same-typed sides, and
 // the Int → Fixed lift is the explicit to_fixed call. Each test block
 // carries a Scope built by checking let RHS types in statement order.
-// Lambda bodies are deliberately delegated to evaluation: typing them
-// statically needs parameter types the opaque List/Lambda surface does
-// not carry — that is the full checker's seam. Full static name
-// resolution widens this behind the same stage seam.
+// The stage opens by resolving imports against the stdlib surface
+// (surface.odin) into the Bindings carrier; expression checking does
+// not consume it yet — name resolution will route through it when it
+// replaces the builtin-name fallback below. Lambda bodies are
+// deliberately delegated to evaluation: typing them statically needs
+// parameter types the opaque List/Lambda surface does not carry — that
+// is the full checker's seam. Full static name resolution widens this
+// behind the same stage seam.
 package funpack
 
 Value_Type :: enum {
@@ -28,6 +32,8 @@ Type_Error :: enum {
 	Assert_Not_Bool,  // an assert whose expression is not Bool-typed
 	Type_Mismatch,    // differently-typed sides — no implicit promotion
 	Unsupported_Expr, // a parsed form outside the evaluable domain
+	Unknown_Module,   // an import naming a module outside the surface
+	Unknown_Member,   // an import naming a member its module lacks
 }
 
 // Scope maps a test block's let-bound names to their checked types.
@@ -35,6 +41,7 @@ Type_Error :: enum {
 Scope :: map[string]Value_Type
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
+	bindings := resolve_imports(ast) or_return
 	for test in ast.tests {
 		scope := make(Scope, context.temp_allocator)
 		for stmt in test.body {
@@ -47,7 +54,7 @@ stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 			}
 		}
 	}
-	return Typed_Ast{ast = ast}, .None
+	return Typed_Ast{ast = ast, bindings = bindings}, .None
 }
 
 check_assert :: proc(scope: Scope, node: Assert_Node) -> Type_Error {

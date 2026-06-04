@@ -11,7 +11,8 @@ Ast :: struct {
 }
 
 Typed_Ast :: struct {
-	ast: Ast,
+	ast:      Ast,
+	bindings: Bindings, // imported-name resolutions (surface.odin)
 }
 
 Eval_Result :: struct {
