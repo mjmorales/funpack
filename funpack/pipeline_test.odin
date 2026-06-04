@@ -1,5 +1,6 @@
 package funpack
 
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -76,6 +77,48 @@ test_parse_right_case_type_position_parses :: proc(t: ^testing.T) {
 test_pipeline_wrong_case_is_parse_failed :: proc(t: ^testing.T) {
 	_, err := run_test_pipeline("test \"x\" {\nassert vec2{} == 2.0\n}\n")
 	testing.expect_value(t, err, Pipeline_Error.Parse_Failed)
+}
+
+// run_golden_asserts drives a synthetic test block holding the given
+// assert statements through the full pipeline.
+run_golden_asserts :: proc(asserts: string) -> (report: Test_Report, err: Pipeline_Error) {
+	source := strings.concatenate({"test \"golden\" {\n", asserts, "}\n"}, context.temp_allocator)
+	return run_test_pipeline(source)
+}
+
+@(test)
+test_pipeline_saturation_golden_values :: proc(t: ^testing.T) {
+	// The spec §10 example block: saturate at the rails, never wrap.
+	report, err := run_golden_asserts(
+		"assert Fixed.MAX + 1.0 == Fixed.MAX\n" +
+		"assert Fixed.MIN - 1.0 == Fixed.MIN\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_div_by_zero_golden_values :: proc(t: ^testing.T) {
+	report, err := run_golden_asserts(
+		"assert 1.0 / 0.0 == Fixed.MAX\n" +
+		"assert -1.0 / 0.0 == Fixed.MIN\n" +
+		"assert 0.0 / 0.0 == 0.0\n" +
+		"assert 5.0 % 0.0 == 0.0\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 4)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_exact_arithmetic_golden_values :: proc(t: ^testing.T) {
+	report, err := run_golden_asserts(
+		"assert 0.5 * 0.5 == 0.25\n" +
+		"assert 1.0 / 4.0 == 0.25\n" +
+		"assert 0.25 + 0.5 == 0.75\n" +
+		"assert to_fixed(2) + 0.5 == 2.5\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 4)
+	testing.expect_value(t, report.failed, 0)
 }
 
 @(test)
