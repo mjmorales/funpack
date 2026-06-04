@@ -12,9 +12,9 @@ main :: proc() {
 	}
 	switch os.args[1] {
 	case "test":
-		// TODO: feed the §14 project tree's sources here; the empty
-		// source keeps `funpack test` a runnable no-op until the golden
-		// numerics wiring lands.
+		// TODO: feed the §14 project tree's sources here once the
+		// grammar parses them; the empty source keeps `funpack test` a
+		// runnable no-op until then.
 		report, err := run_test_pipeline("")
 		if err != .None {
 			fmt.eprintfln("funpack test: %v", err)
