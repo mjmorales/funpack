@@ -520,25 +520,6 @@ nesting_depth :: proc(expr: Expr) -> int {
 	return 0
 }
 
-// statement_expr is the single RHS expression a statement contributes to
-// the gate walks: a let's bound value or an assert's asserted expression.
-statement_expr :: proc(stmt: Statement) -> Expr {
-	switch node in stmt {
-	case Let_Node:
-		return node.value
-	case Assert_Node:
-		return node.expr
-	case Return_Node:
-		// Return/If are fn-body statements, never present in a test block —
-		// the gate unit. Return's value is its single contributed expr; an
-		// If guard contributes no single expression here.
-		return node.value
-	case If_Node:
-		return nil
-	}
-	return nil
-}
-
 // gate_duplication enforces §29's dup_class rule: each declaration body — a
 // test block, a fn, or a behavior step — is the declaration unit,
 // canonicalized to a normalized-AST string and hashed into a dup_class key.
