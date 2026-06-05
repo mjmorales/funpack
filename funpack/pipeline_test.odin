@@ -316,11 +316,13 @@ test_pipeline_unimported_tau_rejected :: proc(t: ^testing.T) {
 @(test)
 test_exit_code_contract :: proc(t: ^testing.T) {
 	// The funpack test CLI's exit contract: compile errors are 2 (never
-	// a counted failure), failed assertions 1, all-pass 0. A gate
-	// violation is a compile error, so it shares the 2 exit code.
+	// a counted failure), failed assertions 1, all-pass 0. A gate violation
+	// and a behavior-contract node-check violation are both compile errors,
+	// so they share the 2 exit code.
 	testing.expect_value(t, test_exit_code(.Typecheck_Failed, Test_Report{}), 2)
 	testing.expect_value(t, test_exit_code(.Parse_Failed, Test_Report{}), 2)
 	testing.expect_value(t, test_exit_code(.Gate_Failed, Test_Report{}), 2)
+	testing.expect_value(t, test_exit_code(.Contract_Failed, Test_Report{}), 2)
 	testing.expect_value(t, test_exit_code(.None, Test_Report{passed = 1, failed = 1}), 1)
 	testing.expect_value(t, test_exit_code(.None, Test_Report{passed = 30}), 0)
 }
@@ -700,4 +702,128 @@ test_pipeline_exhaustive_user_enum_match_clears_gate :: proc(t: ^testing.T) {
 	_, err := run_user_enum_match_fixture(
 		"\tassert match s { Side::Left => 1, Side::Right => 2 } == 1\n")
 	testing.expect(t, err != Pipeline_Error.Gate_Failed)
+}
+
+// gate_verdict_of lex/parses a source (no name resolution — the gate walk is
+// resolution-free) and returns the named gate verdict, the window the
+// declaration-body gate fixtures read both the error and the offending
+// declaration's name through.
+gate_verdict_of :: proc(source: string) -> Gate_Verdict {
+	ast, parse_err := stage_parse(stage_lex(source))
+	if parse_err != .None {
+		return Gate_Verdict{}
+	}
+	return gate_verdict(ast)
+}
+
+@(test)
+test_gate_walks_fn_body_match_over_user_enum :: proc(t: ^testing.T) {
+	// The gap the gates close: a user-enum match inside a FN BODY (not a test
+	// block) is gate-checked for exhaustiveness against the variant set the
+	// resolver registered. A `fn` returning `match side { Side::Left => … }`
+	// drops Right, so the body match is non-total and the gate rejects it —
+	// naming the fn, not a test-block index (spec §02 §5 / §01 P5).
+	source := "enum Side { Left, Right }\n" +
+		"fn pick(side: Side) -> Int {\n" +
+		"  return match side {\n" +
+		"    Side::Left => 1\n" +
+		"  }\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Non_Exhaustive_Match)
+	testing.expect_value(t, verdict.declaration, "pick")
+}
+
+@(test)
+test_gate_walks_behavior_step_match_over_user_enum :: proc(t: ^testing.T) {
+	// The same exhaustiveness gate over a BEHAVIOR step body: a `match side {
+	// Side::Left => … }` in a behavior's step drops Right and rejects, with the
+	// diagnostic anchored on the behavior's own name (not the reserved `step`,
+	// not a positional index).
+	source := "enum Side { Left, Right }\n" +
+		"thing Paddle { defends: Side }\n" +
+		"behavior classify on Paddle {\n" +
+		"  fn step(self: Paddle) -> Int {\n" +
+		"    return match self.defends {\n" +
+		"      Side::Left => 1\n" +
+		"    }\n" +
+		"  }\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Non_Exhaustive_Match)
+	testing.expect_value(t, verdict.declaration, "classify")
+}
+
+@(test)
+test_gate_complete_fn_body_match_clears :: proc(t: ^testing.T) {
+	// The control: a fn-body match covering both Side variants clears the gate,
+	// proving the body walk reads the full registered variant set and does not
+	// false-positive on a total match.
+	source := "enum Side { Left, Right }\n" +
+		"fn pick(side: Side) -> Int {\n" +
+		"  return match side {\n" +
+		"    Side::Left => 1\n" +
+		"    Side::Right => 2\n" +
+		"  }\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.None)
+}
+
+@(test)
+test_gate_oversized_fn_body_fires_named_fn_size :: proc(t: ^testing.T) {
+	// An over-budget fn body fires the fn-size gate with its named Gate_Error,
+	// proving the gates run over declaration bodies, not just test blocks — and
+	// the diagnostic names the fn (spec §01 P5: the budget is a per-declaration
+	// constant). MAX_FN_STATEMENTS `let` bindings plus a return overshoot the
+	// size budget.
+	lets := strings.repeat("  let n = 1\n", MAX_FN_STATEMENTS, context.temp_allocator)
+	source := strings.concatenate(
+		{"fn oversized() -> Int {\n", lets, "  return 1\n}\n"},
+		context.temp_allocator,
+	)
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Fn_Size_Exceeded)
+	testing.expect_value(t, verdict.declaration, "oversized")
+}
+
+@(test)
+test_gate_over_arity_fn_body_lambda_fires_named_arity :: proc(t: ^testing.T) {
+	// An over-arity lambda buried in a fn body fires the arity gate, naming the
+	// fn — proving the arity walk descends fn-body expressions (a lambda in a
+	// return position), not just test-block asserts.
+	source := "fn build() -> Int {\n" +
+		"  let f = fn(a, b, c, d, e, f) { return a }\n" +
+		"  return 1\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Arity_Exceeded)
+	testing.expect_value(t, verdict.declaration, "build")
+}
+
+@(test)
+test_gate_over_nested_fn_body_fires_named_nesting :: proc(t: ^testing.T) {
+	// An over-nested fn-body return fires the nesting gate, naming the fn. Four
+	// nested non-method calls reach compositional depth 4, over the budget of 3
+	// — the same metric the test-block nesting fixtures pin, now over a fn body.
+	source := "fn deep() -> Int {\n" +
+		"  return f(f(f(f(1))))\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Nesting_Exceeded)
+	testing.expect_value(t, verdict.declaration, "deep")
+}
+
+@(test)
+test_gate_pong_golden_clears_with_declaration_bodies :: proc(t: ^testing.T) {
+	// The defining positive over the gameplay surface: the full pong golden —
+	// every fn helper and behavior step body, with its builder chains, nested
+	// constructions, and user-enum body matches — clears all the structural
+	// gates now that they run over declaration bodies, not just test blocks.
+	source, ok := pong_source()
+	if !ok {
+		return
+	}
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.None)
 }

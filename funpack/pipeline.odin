@@ -1,8 +1,10 @@
 // The funpack test stage pipeline: lex → parse → gates → typecheck →
-// evaluate → report. Each stage is owned by its own file (lexer.odin,
-// parser.odin, gates.odin, typecheck.odin, evaluate.odin); this file owns
-// the pipeline-level types and the driver that threads a source string
-// through the seams.
+// contracts → evaluate → report. Each stage is owned by its own file
+// (lexer.odin, parser.odin, gates.odin, typecheck.odin, contracts.odin,
+// evaluate.odin); this file owns the pipeline-level types and the driver that
+// threads a source string through the seams. The contracts stage is the §06
+// §6 behavior-contract node check — it reads the typed signatures, so it
+// follows typecheck.
 package funpack
 
 // Ast is the parsed module: the file-leading @doc, the imports, the §06/§07
@@ -45,12 +47,16 @@ Test_Report :: struct {
 // Pipeline_Error distinguishes a source that failed to compile from a
 // source whose assertions failed — a compile error is never counted as
 // a failed test. Gate_Failed is its own arm so a structural-budget
-// violation is a distinct compile error from a parse or typecheck failure.
+// violation is a distinct compile error from a parse or typecheck failure;
+// Contract_Failed is the §06 §6 behavior-contract node-check reject, a
+// distinct compile error from a typecheck failure (it runs after typing,
+// reading the typed signatures).
 Pipeline_Error :: enum {
 	None,
 	Parse_Failed,
 	Gate_Failed,
 	Typecheck_Failed,
+	Contract_Failed,
 }
 
 run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline_Error) {
@@ -66,6 +72,9 @@ run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline
 	typed, type_err := stage_typecheck(ast)
 	if type_err != .None {
 		return Test_Report{}, .Typecheck_Failed
+	}
+	if verdict := stage_contracts(typed); verdict.err != .None {
+		return Test_Report{}, .Contract_Failed
 	}
 	result := stage_evaluate(typed)
 	return stage_report(result), .None
