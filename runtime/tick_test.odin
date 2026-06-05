@@ -377,46 +377,6 @@ test_spawn_batch_at_tick_boundary :: proc(t: ^testing.T) {
 	testing.expect(t, !gone)
 }
 
-// --- world-equality for the determinism assertion -------------------------
-
-// world_versions_equal reports whether two committed versions are BIT-IDENTICAL:
-// same tick, same table set, same rows in the same stable Id order, same
-// blackboard columns down to the fixed-point bits. This is the determinism
-// comparison — two runs of the same fold must compare equal here.
-@(private = "file")
-world_versions_equal :: proc(a, b: World_Version) -> bool {
-	if a.tick != b.tick || len(a.tables) != len(b.tables) {
-		return false
-	}
-	for table_a, i in a.tables {
-		table_b := b.tables[i]
-		if table_a.thing != table_b.thing || len(table_a.rows) != len(table_b.rows) {
-			return false
-		}
-		for row_a, j in table_a.rows {
-			row_b := table_b.rows[j]
-			if row_a.id != row_b.id || !blackboards_equal(row_a.fields, row_b.fields) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// blackboards_equal compares two row blackboards column-for-column: same field
-// set, same Field_Value per field (the union compares structurally, so a Fixed
-// column compares by its raw bits). A column present in one but not the other is
-// a mismatch.
-@(private = "file")
-blackboards_equal :: proc(a, b: map[string]Field_Value) -> bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for key, value_a in a {
-		value_b, present := b[key]
-		if !present || value_a != value_b {
-			return false
-		}
-	}
-	return true
-}
+// The determinism assertions read world_versions_equal — the package-visible
+// bit-identity comparison (state.odin). The replay re-fold acceptance shares the
+// same comparison, so it lives in the read layer rather than file-private here.
