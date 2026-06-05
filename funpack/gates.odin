@@ -320,6 +320,14 @@ nesting_depth :: proc(expr: Expr) -> int {
 	case ^Lambda_Expr:
 		return 1 + nesting_depth(e.body)
 	case ^Variant_Expr:
+		// A bare variant (Side::Left, Option::None) carries no sub-
+		// expressions — it is a 0-arg constructor, a value atom like a name
+		// or constant (spec §03 §2), so it opens no nesting level. Only a
+		// payload-bearing variant (Option::Some(v), Draw::Rect{…}) is a
+		// compositional container that adds one level over its contents.
+		if !e.has_payload && !e.has_fields {
+			return 0
+		}
 		inner := 0
 		for arg in e.payload {
 			inner = max(inner, nesting_depth(arg))
@@ -657,20 +665,47 @@ Closed_Variant_Set :: struct {
 	variants:  []string,
 }
 
-// CLOSED_VARIANT_SETS is the closed table of enum types whose variant set
-// the surface fixes (spec §26 prelude). Option is the concrete case the
-// golden surface and stdlib expose — engine.prelude Option, with variants
-// Some and None. A match on any type outside this table carries no known
-// denominator, so the gate leaves it for a later stage (typecheck
-// contains the whole Match_Expr as Unsupported_Expr). Growing this table
-// is a deliberate edit, mirroring STDLIB_SURFACE.
+// CLOSED_VARIANT_SETS is the closed table of stdlib enum types whose
+// variant set the surface fixes (spec §26 prelude). Option is the concrete
+// case the golden surface and stdlib expose — engine.prelude Option, with
+// variants Some and None. User enums (Side, Steer) are not listed here:
+// they are derived from the source AST per file and folded in alongside
+// this prelude table by closed_variant_sets, so the gate can prove
+// exhaustiveness over a user enum too. Growing this static table is a
+// deliberate edit, mirroring STDLIB_SURFACE.
 @(rodata)
 CLOSED_VARIANT_SETS := []Closed_Variant_Set{
 	{type_name = "Option", variants = {"Some", "None"}},
 }
 
-closed_variant_set :: proc(type_name: string) -> (set: Closed_Variant_Set, found: bool) {
-	for candidate in CLOSED_VARIANT_SETS {
+// closed_variant_sets is the per-file closed table the exhaustiveness gate
+// proves coverage against: the static stdlib prelude sets plus every user
+// `enum` the source declares, registered with its declared variant set
+// (spec §03 §2). A user enum is closed by construction — its declaration
+// fixes the variant set — so a match over Side or Steer carries a known
+// denominator just as a match over Option does. A `data`/`thing`/`signal`
+// declares no variants, so only ast.enums contribute.
+closed_variant_sets :: proc(ast: Ast) -> []Closed_Variant_Set {
+	sets := make([dynamic]Closed_Variant_Set, 0, len(CLOSED_VARIANT_SETS) + len(ast.enums), context.temp_allocator)
+	for set in CLOSED_VARIANT_SETS {
+		append(&sets, set)
+	}
+	for decl in ast.enums {
+		variants := make([]string, len(decl.variants), context.temp_allocator)
+		for variant, i in decl.variants {
+			variants[i] = variant.name
+		}
+		append(&sets, Closed_Variant_Set{type_name = decl.name, variants = variants})
+	}
+	return sets[:]
+}
+
+// closed_variant_set looks a type name up in a per-file closed table (the
+// stdlib prelude plus the source's user enums). A name absent from the
+// table carries no fixed denominator, so the gate leaves its match for a
+// later stage.
+closed_variant_set :: proc(sets: []Closed_Variant_Set, type_name: string) -> (set: Closed_Variant_Set, found: bool) {
+	for candidate in sets {
 		if candidate.type_name == type_name {
 			return candidate, true
 		}
@@ -685,15 +720,16 @@ closed_variant_set :: proc(type_name: string) -> (set: Closed_Variant_Set, found
 // statements, descends each expression to find match nodes, and proves
 // each match total against the closed variant set its arms name.
 check_match_exhaustiveness :: proc(ast: Ast) -> Gate_Error {
+	sets := closed_variant_sets(ast)
 	for test in ast.tests {
 		for stmt in test.body {
 			switch node in stmt {
 			case Let_Node:
-				if err := match_walk_expr(node.value); err != .None {
+				if err := match_walk_expr(node.value, sets); err != .None {
 					return err
 				}
 			case Assert_Node:
-				if err := match_walk_expr(node.expr); err != .None {
+				if err := match_walk_expr(node.expr, sets); err != .None {
 					return err
 				}
 			case Return_Node, If_Node:
@@ -709,77 +745,77 @@ check_match_exhaustiveness :: proc(ast: Ast) -> Gate_Error {
 // contains (scrutinees and arm bodies nest matches). It mirrors the Expr
 // union arm-for-arm so a new expression form is a visible compile gap
 // here, not a silently-unwalked branch.
-match_walk_expr :: proc(expr: Expr) -> Gate_Error {
+match_walk_expr :: proc(expr: Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 	switch e in expr {
 	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
 		return .None
 	case ^Call_Expr:
-		if err := match_walk_expr(e.callee); err != .None {
+		if err := match_walk_expr(e.callee, sets); err != .None {
 			return err
 		}
 		for arg in e.args {
-			if err := match_walk_expr(arg); err != .None {
+			if err := match_walk_expr(arg, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^Member_Expr:
-		return match_walk_expr(e.receiver)
+		return match_walk_expr(e.receiver, sets)
 	case ^Variant_Expr:
 		for arg in e.payload {
-			if err := match_walk_expr(arg); err != .None {
+			if err := match_walk_expr(arg, sets); err != .None {
 				return err
 			}
 		}
 		for field in e.fields {
-			if err := match_walk_expr(field.value); err != .None {
+			if err := match_walk_expr(field.value, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^Record_Expr:
 		for field in e.fields {
-			if err := match_walk_expr(field.value); err != .None {
+			if err := match_walk_expr(field.value, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^List_Expr:
 		for element in e.elements {
-			if err := match_walk_expr(element); err != .None {
+			if err := match_walk_expr(element, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^Lambda_Expr:
-		return match_walk_expr(e.body)
+		return match_walk_expr(e.body, sets)
 	case ^Unary_Expr:
-		return match_walk_expr(e.operand)
+		return match_walk_expr(e.operand, sets)
 	case ^Binary_Expr:
-		if err := match_walk_expr(e.lhs); err != .None {
+		if err := match_walk_expr(e.lhs, sets); err != .None {
 			return err
 		}
-		return match_walk_expr(e.rhs)
+		return match_walk_expr(e.rhs, sets)
 	case ^With_Expr:
-		if err := match_walk_expr(e.base); err != .None {
+		if err := match_walk_expr(e.base, sets); err != .None {
 			return err
 		}
 		for field in e.fields {
-			if err := match_walk_expr(field.value); err != .None {
+			if err := match_walk_expr(field.value, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^Match_Expr:
-		if err := match_walk_expr(e.scrutinee); err != .None {
+		if err := match_walk_expr(e.scrutinee, sets); err != .None {
 			return err
 		}
 		for arm in e.arms {
-			if err := match_walk_expr(arm.body); err != .None {
+			if err := match_walk_expr(arm.body, sets); err != .None {
 				return err
 			}
 		}
-		return check_match_total(e)
+		return check_match_total(e, sets)
 	}
 	return .None
 }
@@ -791,7 +827,7 @@ match_walk_expr :: proc(expr: Expr) -> Gate_Error {
 // set appear in some arm. A match whose arms name no known closed set
 // carries no fixed denominator the gate can count against, so it passes
 // here and is left for a later stage.
-check_match_total :: proc(match: ^Match_Expr) -> Gate_Error {
+check_match_total :: proc(match: ^Match_Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 	type_name := ""
 	for arm in match.arms {
 		if arm.pattern.kind == .Wildcard {
@@ -803,7 +839,7 @@ check_match_total :: proc(match: ^Match_Expr) -> Gate_Error {
 			type_name = arm.pattern.type_name
 		}
 	}
-	set, known := closed_variant_set(type_name)
+	set, known := closed_variant_set(sets, type_name)
 	if !known {
 		return .None
 	}

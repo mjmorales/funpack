@@ -429,6 +429,27 @@ test_gate_nesting_member_chain_stays_flat :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_gate_bare_variant_is_a_flat_atom :: proc(t: ^testing.T) {
+	// A bare enum variant is a 0-arg constructor — a value atom, not a
+	// compositional container (spec §03 §2). So a list of records each
+	// carrying a bare variant field nests call(0)→list(1)→record(1)→bare-
+	// variant(0) = 2, NOT 3: the pong `tally` assert shape clears the
+	// nesting gate. A payload-bearing variant still opens a level, so a
+	// regression that re-counted bare variants would fire here.
+	chain := "assert tally([Goal{side: Side::Left}, Goal{side: Side::Left}]) == 2\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+@(test)
+test_gate_payload_variant_still_opens_a_level :: proc(t: ^testing.T) {
+	// The bare-variant fix is scoped: a payload-bearing variant nested under
+	// three containers is still depth 4 and fires the gate. call(1)→arg
+	// Some(2)→arg Some(3)→arg Some(4) overshoots the budget of 3.
+	chain := "assert wrap(Box::A(Box::B(Box::C(1)))) == 1\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.Nesting_Exceeded)
+}
+
+@(test)
 test_golden_source_clears_both_expr_gates :: proc(t: ^testing.T) {
 	// The defining positive: the full golden numerics file — every real
 	// assert, with its calls, records, lambdas, and member chains — clears
@@ -629,5 +650,48 @@ test_pipeline_wildcard_match_clears_gate :: proc(t: ^testing.T) {
 	// Gate_Failed, is the proof the gate treated `_` as exhaustive.
 	_, err := run_match_fixture(
 		"\tassert match opt { Option::Some(v) => 1.0, _ => 2.0 } == 1.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+// USER_ENUM_HEADER declares a user enum (Side) and a scrutinee let, so the
+// match fixtures below dispatch on a user-declared closed variant set the
+// resolver registers into the gate's table — proving exhaustiveness is
+// computed over user enums, not just Option.
+USER_ENUM_HEADER :: "enum Side { Left, Right }\n" +
+	"test \"user enum match\" {\n" +
+	"\tlet s = Side::Left\n"
+
+// run_user_enum_match_fixture drives a Side-scrutinee match through the
+// full pipeline: the user enum declaration, the scrutinee let, the given
+// assert, and the closing brace.
+run_user_enum_match_fixture :: proc(asserts: string) -> (report: Test_Report, err: Pipeline_Error) {
+	source := strings.concatenate(
+		{USER_ENUM_HEADER, asserts, "}\n"},
+		context.temp_allocator,
+	)
+	return run_test_pipeline(source)
+}
+
+@(test)
+test_pipeline_non_exhaustive_user_enum_match_fires_gate :: proc(t: ^testing.T) {
+	// A match over the user enum Side covering only Left — no Right, no
+	// wildcard — is non-total. Because the resolver registers Side's variant
+	// set into the gate's closed table, the exhaustiveness gate has a known
+	// denominator and rejects it as Gate_Failed (spec §02 §5), exactly as it
+	// does for Option.
+	_, err := run_user_enum_match_fixture(
+		"\tassert match s { Side::Left => 1 } == 1\n")
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
+@(test)
+test_pipeline_exhaustive_user_enum_match_clears_gate :: proc(t: ^testing.T) {
+	// Covering both Side variants (Left and Right) clears the gate — proof
+	// the user enum's full set is registered, not a partial. It still
+	// rejects later (Match_Expr is Unsupported_Expr at typecheck), so the
+	// verdict is Typecheck_Failed, never Gate_Failed: a Gate_Failed here
+	// would mean the total user-enum match was wrongly rejected.
+	_, err := run_user_enum_match_fixture(
+		"\tassert match s { Side::Left => 1, Side::Right => 2 } == 1\n")
 	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
 }
