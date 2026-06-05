@@ -5,9 +5,23 @@
 // through the seams.
 package funpack
 
+// Ast is the parsed module: the file-leading @doc, the imports, the §06/§07
+// top-level declarations the golden pong surface exercises, and the test
+// blocks. The declaration slices are parse-only — no name resolution and
+// no typing live here (those are sibling stages); this struct just carries
+// every top-level node stage_parse recognized, in source order within each
+// kind.
 Ast :: struct {
 	module_doc: string,
 	imports:    []Import_Node,
+	lets:       []Let_Decl_Node, // module-level `let NAME: T = expr` constants
+	datas:      []Data_Node,     // `data Name { … }` value records
+	enums:      []Enum_Node,     // `enum Name { … }`, incl. the `Name: Kind` role form
+	things:     []Thing_Node,    // `thing`/`singleton Name { … }` entities
+	signals:    []Signal_Node,   // `signal Name { … }` message values
+	fns:        []Fn_Node,       // top-level `fn name(…) -> R { … }`
+	behaviors:  []Behavior_Node, // `behavior name on Thing { fn step(…) … }`
+	pipelines:  []Pipeline_Node, // `pipeline Name { stage: [behaviors] … }`
 	tests:      []Test_Node,
 }
 

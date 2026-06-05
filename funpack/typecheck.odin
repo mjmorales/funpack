@@ -47,6 +47,9 @@ stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 				ctx.scope[node.name] = type
 			case Assert_Node:
 				check_assert(ctx, node) or_return
+			case Return_Node, If_Node:
+				// Return/If are fn-body statements, never present in a test
+				// block — the only statement sequence this stage checks.
 			}
 		}
 	}

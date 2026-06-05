@@ -231,3 +231,131 @@ test_expr_index_form_is_rejected :: proc(t: ^testing.T) {
 	_, err := stage_parse(tokens)
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
 }
+
+@(test)
+test_expr_with_update :: proc(t: ^testing.T) {
+	// `value with { field: v }` — a record-update expression (spec §02 §5).
+	expr, err := parse_expr_text("score with { left: score.left + 1 }")
+	testing.expect_value(t, err, Parse_Error.None)
+	with, is_with := expr.(^With_Expr)
+	testing.expect(t, is_with)
+	if !is_with {
+		return
+	}
+	base, base_is_name := with.base.(^Name_Expr)
+	testing.expect(t, base_is_name)
+	if base_is_name {
+		testing.expect_value(t, base.name, "score")
+	}
+	testing.expect_value(t, len(with.fields), 1)
+	testing.expect_value(t, with.fields[0].name, "left")
+	_, field_is_binary := with.fields[0].value.(^Binary_Expr)
+	testing.expect(t, field_is_binary)
+}
+
+@(test)
+test_expr_with_binds_tighter_than_unary :: proc(t: ^testing.T) {
+	// `with` binds just above unary in the precedence ladder (spec §02 §3:
+	// … unary → with → call/member), so a unary minus wraps the whole
+	// `self with { … }` rather than only `self`.
+	expr, err := parse_expr_text("-self with { y: 1.0 }")
+	testing.expect_value(t, err, Parse_Error.None)
+	unary, is_unary := expr.(^Unary_Expr)
+	testing.expect(t, is_unary)
+	if is_unary {
+		_, operand_is_with := unary.operand.(^With_Expr)
+		testing.expect(t, operand_is_with)
+	}
+}
+
+@(test)
+test_expr_struct_payload_variant :: proc(t: ^testing.T) {
+	// A struct-payload variant `Draw::Rect{ at: …, size: … }` (spec §03 §2):
+	// the `::` selector then a named-field body.
+	expr, err := parse_expr_text("Draw::Rect{at: Vec2{x: 1.0, y: 2.0}, color: Color::White}")
+	testing.expect_value(t, err, Parse_Error.None)
+	variant, is_variant := expr.(^Variant_Expr)
+	testing.expect(t, is_variant)
+	if !is_variant {
+		return
+	}
+	testing.expect_value(t, variant.type_name, "Draw")
+	testing.expect_value(t, variant.variant, "Rect")
+	testing.expect(t, variant.has_fields)
+	testing.expect(t, !variant.has_payload)
+	testing.expect_value(t, len(variant.fields), 2)
+	testing.expect_value(t, variant.fields[0].name, "at")
+	testing.expect_value(t, variant.fields[1].name, "color")
+}
+
+@(test)
+test_expr_tuple_payload_command_wrap :: proc(t: ^testing.T) {
+	// The tuple-payload command-wrap `Spawn( Paddle{…} )` (spec §02 §2,
+	// fun.ll1.md §5A): an UpperCamel callee applied to a single thing-literal
+	// argument — parsed as a Call_Expr, the command-wrap-is-call shape.
+	expr, err := parse_expr_text("Spawn( Ball{pos: Vec2{x: 1.0, y: 2.0}} )")
+	testing.expect_value(t, err, Parse_Error.None)
+	call, is_call := expr.(^Call_Expr)
+	testing.expect(t, is_call)
+	if !is_call {
+		return
+	}
+	callee, callee_is_name := call.callee.(^Name_Expr)
+	testing.expect(t, callee_is_name)
+	if callee_is_name {
+		testing.expect_value(t, callee.name, "Spawn")
+	}
+	testing.expect_value(t, len(call.args), 1)
+	_, arg_is_record := call.args[0].(^Record_Expr)
+	testing.expect(t, arg_is_record)
+}
+
+@(test)
+test_expr_variant_tuple_payload :: proc(t: ^testing.T) {
+	// A tuple-payload enum variant via `::` — Option::Some(Side::Right) —
+	// nests a bare variant inside the payload (spec §03 §2).
+	expr, err := parse_expr_text("Option::Some(Side::Right)")
+	testing.expect_value(t, err, Parse_Error.None)
+	variant, is_variant := expr.(^Variant_Expr)
+	testing.expect(t, is_variant)
+	if !is_variant {
+		return
+	}
+	testing.expect(t, variant.has_payload)
+	testing.expect(t, !variant.has_fields)
+	testing.expect_value(t, len(variant.payload), 1)
+	inner, inner_is_variant := variant.payload[0].(^Variant_Expr)
+	testing.expect(t, inner_is_variant)
+	if inner_is_variant {
+		testing.expect_value(t, inner.variant, "Right")
+	}
+}
+
+@(test)
+test_expr_string_interpolation_literal :: proc(t: ^testing.T) {
+	// A string-interpolation literal `"{self.left}   {self.right}"` parses to
+	// a String_Lit_Expr that retains its raw inner text, holes included
+	// (spec §02 §2 — the split is a later concern, not grammar).
+	expr, err := parse_expr_text("\"{self.left}   {self.right}\"")
+	testing.expect_value(t, err, Parse_Error.None)
+	str, is_str := expr.(^String_Lit_Expr)
+	testing.expect(t, is_str)
+	if is_str {
+		testing.expect_value(t, str.text, "{self.left}   {self.right}")
+	}
+}
+
+@(test)
+test_expr_chained_with_updates :: proc(t: ^testing.T) {
+	// `with` nests left-to-right (spec §02 §5): `a with {…} with {…}` wraps
+	// the first update as the base of the second.
+	expr, err := parse_expr_text("self with { x: 1.0 } with { y: 2.0 }")
+	testing.expect_value(t, err, Parse_Error.None)
+	outer, is_with := expr.(^With_Expr)
+	testing.expect(t, is_with)
+	if is_with {
+		_, base_is_with := outer.base.(^With_Expr)
+		testing.expect(t, base_is_with)
+		testing.expect_value(t, outer.fields[0].name, "y")
+	}
+}

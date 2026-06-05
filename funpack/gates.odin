@@ -98,6 +98,9 @@ gate_arity :: proc(ast: Ast) -> Gate_Error {
 				if err := arity_walk_expr(s.value); err != .None {
 					return err
 				}
+			case Return_Node, If_Node:
+				// Fn-body statements; never present in a test block, the
+				// arity gate's unit.
 			}
 		}
 	}
@@ -111,7 +114,7 @@ gate_arity :: proc(ast: Ast) -> Gate_Error {
 // bodies).
 arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 	switch e in expr {
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^Name_Expr:
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
 		// Leaf atoms host no sub-expressions.
 	case ^Call_Expr:
 		if err := arity_walk_expr(e.callee); err != .None {
@@ -127,6 +130,12 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 	case ^Variant_Expr:
 		for arg in e.payload {
 			if err := arity_walk_expr(arg); err != .None {
+				return err
+			}
+		}
+		// A struct-payload variant (Draw::Rect{…}) hosts its field values.
+		for field in e.fields {
+			if err := arity_walk_expr(field.value); err != .None {
 				return err
 			}
 		}
@@ -154,6 +163,15 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 			return err
 		}
 		return arity_walk_expr(e.rhs)
+	case ^With_Expr:
+		if err := arity_walk_expr(e.base); err != .None {
+			return err
+		}
+		for field in e.fields {
+			if err := arity_walk_expr(field.value); err != .None {
+				return err
+			}
+		}
 	case ^Match_Expr:
 		if err := arity_walk_expr(e.scrutinee); err != .None {
 			return err
@@ -220,6 +238,14 @@ count_short_circuit :: proc(expr: Expr) -> int {
 	case ^Variant_Expr:
 		for arg in e.payload {
 			count += count_short_circuit(arg)
+		}
+		for field in e.fields {
+			count += count_short_circuit(field.value)
+		}
+	case ^With_Expr:
+		count += count_short_circuit(e.base)
+		for field in e.fields {
+			count += count_short_circuit(field.value)
 		}
 	case ^Match_Expr:
 		count += count_short_circuit(e.scrutinee)
@@ -298,6 +324,17 @@ nesting_depth :: proc(expr: Expr) -> int {
 		for arg in e.payload {
 			inner = max(inner, nesting_depth(arg))
 		}
+		for field in e.fields {
+			inner = max(inner, nesting_depth(field.value))
+		}
+		return 1 + inner
+	case ^With_Expr:
+		// A `with` update is a compositional container like a record: its
+		// field replacements open one nesting level over the base.
+		inner := nesting_depth(e.base)
+		for field in e.fields {
+			inner = max(inner, nesting_depth(field.value))
+		}
 		return 1 + inner
 	case ^Match_Expr:
 		inner := nesting_depth(e.scrutinee)
@@ -318,6 +355,13 @@ statement_expr :: proc(stmt: Statement) -> Expr {
 		return node.value
 	case Assert_Node:
 		return node.expr
+	case Return_Node:
+		// Return/If are fn-body statements, never present in a test block —
+		// the gate unit. Return's value is its single contributed expr; an
+		// If guard contributes no single expression here.
+		return node.value
+	case If_Node:
+		return nil
 	}
 	return nil
 }
@@ -376,6 +420,18 @@ canon_body :: proc(b: ^strings.Builder, body: []Statement, alpha: ^[dynamic]stri
 			strings.write_string(b, " (assert ")
 			canon_expr(b, s.expr, alpha)
 			strings.write_byte(b, ')')
+		case Return_Node:
+			// Return/If are fn-body statements; the dup gate's unit is the
+			// test block, so these never reach canon_body. Canonicalize them
+			// faithfully anyway so the function stays total over Statement.
+			strings.write_string(b, " (return ")
+			canon_expr(b, s.value, alpha)
+			strings.write_byte(b, ')')
+		case If_Node:
+			strings.write_string(b, " (if ")
+			canon_expr(b, s.cond, alpha)
+			canon_body(b, s.body, alpha)
+			strings.write_byte(b, ')')
 		}
 	}
 	strings.write_byte(b, ')')
@@ -396,6 +452,12 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 	case ^Fixed_Lit_Expr:
 		strings.write_string(b, "(fixed ")
 		strings.write_i64(b, i64(e.bits))
+		strings.write_byte(b, ')')
+	case ^String_Lit_Expr:
+		// A string literal's raw text — interpolation holes included — is
+		// structural, so the canonical form keeps it verbatim.
+		strings.write_string(b, "(string ")
+		strings.write_string(b, e.text)
 		strings.write_byte(b, ')')
 	case ^Name_Expr:
 		canon_name(b, e.name, alpha)
@@ -423,6 +485,15 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 		for arg in e.payload {
 			strings.write_byte(b, ' ')
 			canon_expr(b, arg, alpha)
+		}
+		// A struct-payload variant's named fields, canonicalized like a
+		// record's — the field name is a structural selector, kept verbatim.
+		for field in e.fields {
+			strings.write_string(b, " (")
+			strings.write_string(b, field.name)
+			strings.write_byte(b, ' ')
+			canon_expr(b, field.value, alpha)
+			strings.write_byte(b, ')')
 		}
 		strings.write_byte(b, ')')
 	case ^Record_Expr:
@@ -471,6 +542,17 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 		canon_expr(b, e.lhs, alpha)
 		strings.write_byte(b, ' ')
 		canon_expr(b, e.rhs, alpha)
+		strings.write_byte(b, ')')
+	case ^With_Expr:
+		strings.write_string(b, "(with ")
+		canon_expr(b, e.base, alpha)
+		for field in e.fields {
+			strings.write_string(b, " (")
+			strings.write_string(b, field.name)
+			strings.write_byte(b, ' ')
+			canon_expr(b, field.value, alpha)
+			strings.write_byte(b, ')')
+		}
 		strings.write_byte(b, ')')
 	case ^Match_Expr:
 		strings.write_string(b, "(match ")
@@ -614,6 +696,9 @@ check_match_exhaustiveness :: proc(ast: Ast) -> Gate_Error {
 				if err := match_walk_expr(node.expr); err != .None {
 					return err
 				}
+			case Return_Node, If_Node:
+				// Fn-body statements; never present in a test block, the
+				// exhaustiveness gate's unit.
 			}
 		}
 	}
@@ -626,7 +711,7 @@ check_match_exhaustiveness :: proc(ast: Ast) -> Gate_Error {
 // here, not a silently-unwalked branch.
 match_walk_expr :: proc(expr: Expr) -> Gate_Error {
 	switch e in expr {
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^Name_Expr:
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
 		return .None
 	case ^Call_Expr:
 		if err := match_walk_expr(e.callee); err != .None {
@@ -643,6 +728,11 @@ match_walk_expr :: proc(expr: Expr) -> Gate_Error {
 	case ^Variant_Expr:
 		for arg in e.payload {
 			if err := match_walk_expr(arg); err != .None {
+				return err
+			}
+		}
+		for field in e.fields {
+			if err := match_walk_expr(field.value); err != .None {
 				return err
 			}
 		}
@@ -670,6 +760,16 @@ match_walk_expr :: proc(expr: Expr) -> Gate_Error {
 			return err
 		}
 		return match_walk_expr(e.rhs)
+	case ^With_Expr:
+		if err := match_walk_expr(e.base); err != .None {
+			return err
+		}
+		for field in e.fields {
+			if err := match_walk_expr(field.value); err != .None {
+				return err
+			}
+		}
+		return .None
 	case ^Match_Expr:
 		if err := match_walk_expr(e.scrutinee); err != .None {
 			return err
