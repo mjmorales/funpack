@@ -113,6 +113,7 @@ Let_Decl_Node :: struct {
 	value: Expr,
 	doc:   string,
 	gtags: []string, // @gtag("…") labels attached to this declaration
+	line:  int,       // 1-based source line of the `let` keyword (artifact-format §9 span provenance)
 }
 
 Data_Node :: struct {
@@ -160,6 +161,7 @@ Fn_Node :: struct {
 	body:        []Statement,
 	doc:         string,
 	gtags:       []string,
+	line:        int, // 1-based source line of the `fn` keyword (artifact-format §9 span provenance)
 }
 
 // Behavior_Node is a pure transition attached to a thing (spec §06 §3):
@@ -477,7 +479,7 @@ parse_let :: proc(p: ^Parser) -> (node: Let_Node, err: Parse_Error) {
 // or snake_case (spec §02: the sanctioned constant exceptions pi/tau
 // classify snake_case).
 parse_let_decl :: proc(p: ^Parser) -> (node: Let_Decl_Node, err: Parse_Error) {
-	expect(p, .Let) or_return
+	let_tok := expect(p, .Let) or_return
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case && name.class != .Upper_Snake {
 		return node, .Wrong_Case
@@ -487,7 +489,7 @@ parse_let_decl :: proc(p: ^Parser) -> (node: Let_Decl_Node, err: Parse_Error) {
 	expect(p, .Eq) or_return
 	value := parse_expression(p) or_return
 	terminate_statement(p) or_return
-	return Let_Decl_Node{name = name.text, type = type, value = value}, .None
+	return Let_Decl_Node{name = name.text, type = type, value = value, line = let_tok.line}, .None
 }
 
 // parse_data parses `data Name { field: T = default … }` (spec §03 §1),
@@ -625,13 +627,14 @@ parse_variant :: proc(p: ^Parser) -> (variant: Variant_Decl, err: Parse_Error) {
 // statement sequence (let/return/if early-return) — generalizing the
 // single-return lambda the Pratt cascade carries (expr.odin).
 parse_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
-	expect(p, .Fn) or_return
+	fn_tok := expect(p, .Fn) or_return
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case {
 		return node, .Wrong_Case
 	}
 	fn := parse_fn_rest(p) or_return
 	fn.name = name.text
+	fn.line = fn_tok.line
 	return fn, .None
 }
 
