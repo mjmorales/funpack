@@ -37,8 +37,11 @@ Emit_Input :: struct {
 
 // Emit_Error distinguishes the ways emission can refuse before it writes bytes:
 // the source failed to compile (Parse/Gate/Typecheck/Contract/Flatten — the same
-// checked-pipeline floors the test verb runs), or the entrypoint config was
-// malformed. The emitter only serializes a fully-checked program (spec §09: the
+// checked-pipeline floors the test verb runs), or the entrypoint config failed —
+// malformed, more than one block, or a pipeline/bindings reference the checked
+// source does not declare (§07's dangling-reference obligation, enforced at
+// emission so a [entrypoint] section can never name wiring the runtime cannot
+// resolve). The emitter only serializes a fully-checked program (spec §09: the
 // artifact is the checked AST), so a source that does not compile yields no
 // artifact.
 Emit_Error :: enum {
@@ -53,11 +56,13 @@ Emit_Error :: enum {
 
 // stage_emit is the source → artifact seam: it runs the full checked pipeline
 // (lex → parse → gates → typecheck → contracts → flatten) over one project
-// source, bundles the checked AST, flattened pipeline, §14 project identity, and
-// §14 entrypoint config into an Emit_Input, and serializes it. Emission is a
-// pure function of the three inputs — the source bytes, the project identity,
-// and the entrypoint config text — so two calls on the same inputs are byte-
-// identical. A source that fails any checked-pipeline floor returns the matching
+// source, parses the §14 entrypoint config through the one entrypoints
+// production and validates its references against the checked AST, then bundles
+// the checked AST, flattened pipeline, §14 project identity, and selected
+// entrypoint into an Emit_Input and serializes it. Emission is a pure function
+// of the three inputs — the source bytes, the project identity, and the
+// entrypoint config text — so two calls on the same inputs are byte-identical.
+// A source that fails any checked-pipeline floor returns the matching
 // Emit_Error and no bytes.
 stage_emit :: proc(
 	source: string,
@@ -84,8 +89,15 @@ stage_emit :: proc(
 	if verdict.err != .None {
 		return "", .Flatten_Failed
 	}
-	entrypoint, ep_err := read_entrypoint(entrypoint_fcfg)
+	entrypoints, ep_err := parse_entrypoints_fcfg(entrypoint_fcfg)
 	if ep_err != .None {
+		return "", .Entrypoint_Failed
+	}
+	if validate_entrypoints(entrypoints, ast) != .None {
+		return "", .Entrypoint_Failed
+	}
+	entrypoint, sel_err := select_entrypoint(entrypoints)
+	if sel_err != .None {
 		return "", .Entrypoint_Failed
 	}
 	input := Emit_Input {

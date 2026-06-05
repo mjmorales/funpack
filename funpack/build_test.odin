@@ -264,10 +264,16 @@ write_broken_pong_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 
 // write_minimal_valid_tree materializes a minimal valid §14 project tree whose
 // configs and single source all compile, so stage_build emits both products. The
-// source is a lone `@doc` declaration with no pipeline — it parses, types, and
-// flattens to the empty schedule, exercising the full build path without
-// reproducing the pong source. It is the pong-independent fixture the
+// source declares exactly what the entrypoint references — an empty pipeline
+// and a deviceless bindings fn — so emission's reference validation (§07)
+// resolves and the schedule flattens empty, exercising the full build path
+// without reproducing the pong source. It is the pong-independent fixture the
 // determinism test builds twice, so the byte-identity check holds on any host.
+// MINI_SOURCE is the minimal compileable module the valid-tree fixture carries:
+// it declares the `Loop` pipeline and `bindings` fn the fixture's
+// entrypoints.fcfg references, so emission's reference validation resolves.
+MINI_SOURCE :: "@doc(\"Minimal buildable module: an empty pipeline and a deviceless bindings fn.\")\n\nimport engine.input.{Bindings}\n\n@doc(\"No bindings — the minimal deviceless map.\")\nfn bindings() -> Bindings {\n  return Bindings.empty()\n}\n\n@doc(\"The empty schedule.\")\npipeline Loop {\n}\n"
+
 write_minimal_valid_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-mini")})
 	remove_scratch_tree(root)
@@ -282,7 +288,7 @@ write_minimal_valid_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use mini.{Loop, bindings}\n\nentrypoint main {\n  pipeline = Loop\n  tick = 60hz\n  bindings = bindings\n}\n") == nil &&
 		os.write_entire_file(scratch_join({configs, "builds.fcfg"}), "build native {\n  platform = desktop\n}\n") == nil &&
 		os.write_entire_file(scratch_join({configs, "tags.fcfg"}), "tags {\n  game\n}\n") == nil &&
-		os.write_entire_file(src_path, "@doc(\"scratch\")\n") == nil
+		os.write_entire_file(src_path, MINI_SOURCE) == nil
 	if !ok_writes {
 		remove_scratch_tree(root)
 		log.warnf("SKIP build minimal tree: cannot write files under %s", root)
