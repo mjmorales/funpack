@@ -22,6 +22,34 @@ FIXED_ONE :: Fixed(i64(1) << FIXED_FRACTION_BITS)
 
 QUAT_IDENTITY :: Quat_Value{x = Fixed(0), y = Fixed(0), z = Fixed(0), w = FIXED_ONE}
 
+// vec2_add / vec2_sub are component-wise over the saturating Fixed kernel —
+// the `at + vel*dt` form the pong `advance` helper takes (spec §10: vector
+// arithmetic is component-wise, each lane through the same scalar rule).
+vec2_add :: proc(a, b: Vec2_Value) -> Vec2_Value {
+	return Vec2_Value{x = fixed_add(a.x, b.x), y = fixed_add(a.y, b.y)}
+}
+
+vec2_sub :: proc(a, b: Vec2_Value) -> Vec2_Value {
+	return Vec2_Value{x = fixed_sub(a.x, b.x), y = fixed_sub(a.y, b.y)}
+}
+
+// vec2_scale scales each component by a Fixed scalar — the `vel * dt` form.
+vec2_scale :: proc(v: Vec2_Value, s: Fixed) -> Vec2_Value {
+	return Vec2_Value{x = fixed_mul(v.x, s), y = fixed_mul(v.y, s)}
+}
+
+vec3_add :: proc(a, b: Vec3_Value) -> Vec3_Value {
+	return Vec3_Value{x = fixed_add(a.x, b.x), y = fixed_add(a.y, b.y), z = fixed_add(a.z, b.z)}
+}
+
+vec3_sub :: proc(a, b: Vec3_Value) -> Vec3_Value {
+	return Vec3_Value{x = fixed_sub(a.x, b.x), y = fixed_sub(a.y, b.y), z = fixed_sub(a.z, b.z)}
+}
+
+vec3_scale :: proc(v: Vec3_Value, s: Fixed) -> Vec3_Value {
+	return Vec3_Value{x = fixed_mul(v.x, s), y = fixed_mul(v.y, s), z = fixed_mul(v.z, s)}
+}
+
 vec2_dot :: proc(a, b: Vec2_Value) -> Fixed {
 	return fixed_add(fixed_mul(a.x, b.x), fixed_mul(a.y, b.y))
 }
