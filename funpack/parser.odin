@@ -42,6 +42,11 @@ Parse_Error :: enum {
 Parser :: struct {
 	tokens: []Token,
 	pos:    int,
+	// no_record_brace marks the no-struct-literal context of a match
+	// scrutinee (spec §02 §5): the `{` after the scrutinee opens the
+	// match block, so a name in scrutinee position must not consume it as
+	// a record literal. Set only while parsing the scrutinee.
+	no_record_brace: bool,
 }
 
 stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
