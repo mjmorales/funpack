@@ -74,3 +74,11 @@ Only fall back to Glob/Grep when the index doesn't cover what you need.
 - `/prove:workflow` — Run a milestone/task tree as parallel waves via orchestrator full-mode, mirroring status to scrum
 
 <!-- prove:managed:end -->
+
+## Odin-First Dependency Policy
+
+For backend engine work, exhaust what Odin ships before writing anything new:
+
+- Before implementing any engine subsystem or utility (allocators, containers, math, serialization, platform/IO, asset loading, windowing, input), check Odin built-ins, `core:` stdlib packages, and `vendor:` libraries — in that order — and use the existing solution when one covers the need.
+- Never reimplement functionality Odin already provides; instead, wrap or extend the existing `core:`/`vendor:` package and document the gap that forced the extension.
+- When no built-in, `core:`, or `vendor:` option fits, state that verification in one line before writing the custom implementation or adding an external dependency.
