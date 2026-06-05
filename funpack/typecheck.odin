@@ -8,9 +8,10 @@
 // types, lambdas carry a function type. The stage opens by resolving
 // imports against the stdlib surface (surface.odin) into the Bindings
 // carrier; name, callee, and receiver checking all route through it.
-// Lambda parameter types are inferred only at evaluation: the
-// placeholder Func signature is the seam where combinator inference
-// plugs in.
+// Lambda parameters are inferred from the combinator's expected
+// function type at fold position and the body is statically typed
+// against them; outside combinator position a lambda still types as
+// the opaque placeholder Func.
 package funpack
 
 Type_Error :: enum {
@@ -165,8 +166,8 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		}
 		return list_of(element_type), .None
 	case ^Lambda_Expr:
-		// The opaque placeholder signature — the combinator-inference
-		// seam.
+		// Outside combinator position a lambda has no expected type to
+		// infer params from — the opaque placeholder signature.
 		return func_of(nil, nil), .None
 	case ^Call_Expr:
 		return call_check(ctx, e)
@@ -231,18 +232,36 @@ call_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 	return overloads_check(ctx, e, overloads)
 }
 
-// fold is (List[T], A, Func) -> A: the accumulator type is the init's.
-// The lambda's parameters stay unchecked until combinator inference.
+// fold is (List[T], A, (A, T) -> A) -> A: T unifies from the list's
+// element type, A from the init, and the lambda's parameters are
+// inferred as (A, T) — the expected function type at the combinator
+// call site. The body is then statically typed against the inferred
+// params in a child scope holding exactly them (closure references are
+// out of the evaluable domain here) and must come back as A.
 fold_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
 	if len(e.args) != 3 {
 		return nil, .Type_Mismatch
 	}
-	list := expr_check(ctx, e.args[0]) or_return
+	list_type := expr_check(ctx, e.args[0]) or_return
 	init := expr_check(ctx, e.args[1]) or_return
-	lambda := expr_check(ctx, e.args[2]) or_return
-	_, is_list := list.(^List_Type)
-	_, is_func := lambda.(^Func_Type)
-	if !is_list || !is_func {
+	list, is_list := list_type.(^List_Type)
+	if !is_list {
+		return nil, .Type_Mismatch
+	}
+	lambda, is_lambda := e.args[2].(^Lambda_Expr)
+	if !is_lambda {
+		// Only a literal lambda carries a body to type; an opaque
+		// function value waits on real lambda signatures.
+		return nil, .Unsupported_Expr
+	}
+	if len(lambda.params) != 2 {
+		return nil, .Type_Mismatch
+	}
+	body_ctx := Check_Ctx{bindings = ctx.bindings, scope = make(Scope, context.temp_allocator)}
+	body_ctx.scope[lambda.params[0]] = init      // acc : A
+	body_ctx.scope[lambda.params[1]] = list.elem // x   : T
+	body := expr_check(body_ctx, lambda.body) or_return
+	if !types_compatible(body, init) {
 		return nil, .Type_Mismatch
 	}
 	return init, .None

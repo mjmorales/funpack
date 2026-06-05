@@ -224,6 +224,42 @@ test_pipeline_lambda_frames_isolated :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pipeline_fold_body_mismatch_rejected :: proc(t: ^testing.T) {
+	// acc infers Fixed from the init, x infers Int from the list — the
+	// body's acc + x mixes them, which no implicit promotion saves.
+	_, err := run_golden_asserts("assert fold([1, 2], 0.0, fn(acc, x) { return acc + x }) == 3.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_pipeline_fold_wrong_arity_rejected :: proc(t: ^testing.T) {
+	// fold's expected function type is (A, T) -> A: a one-param lambda
+	// cannot take that shape.
+	_, err := run_golden_asserts("assert fold([1.0], 0.0, fn(x) { return x }) == 1.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_pipeline_fold_body_result_must_be_accumulator :: proc(t: ^testing.T) {
+	// The body comes back Bool while the accumulator is Fixed.
+	_, err := run_golden_asserts("assert fold([1.0], 0.0, fn(acc, x) { return acc == x }) == 0.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_pipeline_fold_closure_reference_rejected :: proc(t: ^testing.T) {
+	// The lambda body types in a child scope holding exactly the
+	// inferred params — closure references sit outside the evaluable
+	// domain at fold position.
+	source := with_golden_imports("test \"closure\" {\n" +
+		"  let y = 1.0\n" +
+		"  assert fold([1.0], 0.0, fn(acc, x) { return acc + y }) == 1.0\n" +
+		"}\n")
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
 test_pipeline_unresolved_name_is_type_error :: proc(t: ^testing.T) {
 	_, err := run_test_pipeline("test \"x\" {\nassert nope == 1.0\n}\n")
 	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)

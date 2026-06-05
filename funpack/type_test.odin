@@ -101,6 +101,24 @@ test_lambda_types_as_placeholder_func :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fold_infers_lambda_params_and_types_body :: proc(t: ^testing.T) {
+	// acc and x infer as Fixed from the init and the list element; the
+	// body types statically and the whole fold comes back as A.
+	type, err := check_expr_source("fold([1.0, -1.0], 2.0, fn(acc, x) { return acc + x })")
+	testing.expect_value(t, err, Type_Error.None)
+	testing.expect(t, is_ground(type, .Fixed))
+}
+
+@(test)
+test_fold_over_empty_list_types_via_unknown_element :: proc(t: ^testing.T) {
+	// The empty list's element is the nil unknown: x unifies with the
+	// Fixed accumulator on the body's right-hand side.
+	type, err := check_expr_source("fold([], 2.0, fn(acc, x) { return acc + x })")
+	testing.expect_value(t, err, Type_Error.None)
+	testing.expect(t, is_ground(type, .Fixed))
+}
+
+@(test)
 test_surface_signature_checked_div :: proc(t: ^testing.T) {
 	overloads, found := surface_signatures("checked_div")
 	testing.expect(t, found)
