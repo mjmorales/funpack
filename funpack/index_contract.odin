@@ -44,7 +44,8 @@ INDEX_SCHEMA_VERSION :: 1
 // Entrypoint_Record is one authored entrypoint's lifted wiring (§14 §4): the
 // entrypoint name and the root pipeline ↔ tick ↔ bindings it binds. tick_hz
 // is the tick rate in hertz (the `60hz` value carried as its integer rate);
-// bindings is the named bindings fn ("" when an entrypoint declares none).
+// bindings is the named bindings fn — always present, the §14 grammar
+// requires all three keys.
 Entrypoint_Record :: struct {
 	name:     string,
 	pipeline: string,
@@ -369,11 +370,12 @@ source_has_audio_stage :: proc(ast: Ast) -> bool {
 }
 
 // read_entrypoints reads entrypoints.fcfg into the authored entrypoint records
-// (§14 §4): each `entrypoint <name> { pipeline = …, tick = …hz, bindings = … }`
-// block's lifted wiring. An absent file is an empty-but-present field (no
-// entrypoints), never an error — the §14 tree may omit it. The reader is
-// scoped to the `project` record's needs (the pipeline/tick/bindings wiring)
-// and is read-only: it parses the authored config and never writes a seam,
+// (§14 §4) through the ONE §14 entrypoints production (parse_entrypoints_fcfg)
+// — there is no second grammar here, so a config the compiler would reject is
+// never lifted into the contract. An absent file is an empty-but-present field
+// (no entrypoints), never an error — the §14 tree may omit it; a present file
+// that violates the grammar is Malformed_Entrypoints, never line-skipped. The
+// reader is read-only: it parses the authored config and never writes a seam,
 // matching §14 §3's import-terminal config rule.
 read_entrypoints :: proc(configs_dir: string) -> (entrypoints: []Entrypoint_Record, err: Index_Contract_Error) {
 	path, _ := filepath.join({configs_dir, "entrypoints.fcfg"}, context.temp_allocator)
@@ -381,29 +383,38 @@ read_entrypoints :: proc(configs_dir: string) -> (entrypoints: []Entrypoint_Reco
 	if read_err != nil {
 		return nil, .None
 	}
-	records := make([dynamic]Entrypoint_Record, 0, 2, context.temp_allocator)
-	blocks := fcfg_blocks(string(bytes), "entrypoint")
-	for block in blocks {
-		record := Entrypoint_Record{name = block.label}
-		ok := true
-		for assignment in block.assignments {
-			switch assignment.key {
-			case "pipeline":
-				record.pipeline = assignment.value
-			case "tick":
-				hz, parsed := parse_tick_hz(assignment.value)
-				record.tick_hz = hz
-				ok = ok && parsed
-			case "bindings":
-				record.bindings = assignment.value
-			}
-		}
-		if !ok {
-			return nil, .Malformed_Entrypoints
-		}
-		append(&records, record)
+	parsed, parse_err := parse_entrypoints_fcfg(string(bytes))
+	if parse_err != .None {
+		return nil, .Malformed_Entrypoints
 	}
-	return records[:], .None
+	records, ok := lift_entrypoint_records(parsed)
+	if !ok {
+		return nil, .Malformed_Entrypoints
+	}
+	return records, .None
+}
+
+// lift_entrypoint_records converts the parsed §14 entrypoints onto the
+// contract's record shape, converting each block's `Nhz` tick token to its
+// integer rate. Every block lifts — the contract reports all authored
+// entrypoints, unlike the emit path's single selection. ok is false when a
+// tick passes the grammar's `hz`-suffix check but is not an integer rate
+// (`60khz`), the one value error the grammar cannot catch.
+lift_entrypoint_records :: proc(parsed: Entrypoints) -> (records: []Entrypoint_Record, ok: bool) {
+	lifted := make([]Entrypoint_Record, len(parsed.entrypoints), context.temp_allocator)
+	for block, i in parsed.entrypoints {
+		hz, parsed_hz := parse_tick_hz(block.tick)
+		if !parsed_hz {
+			return nil, false
+		}
+		lifted[i] = Entrypoint_Record {
+			name     = block.name,
+			pipeline = block.pipeline,
+			tick_hz  = hz,
+			bindings = block.bindings,
+		}
+	}
+	return lifted, true
 }
 
 // read_builds reads builds.fcfg into the authored build records (§14 §4/§6):
@@ -472,8 +483,9 @@ Fcfg_Block :: struct {
 // is line-oriented over the §14 smaller config grammar: a block opens on a line
 // whose first token is the keyword (the label is the second token), each body
 // line is one `key = value` assignment until the closing `}`, and a leading
-// `use mod.{…}` reference and `@doc` directives are skipped. It is read-only
-// and scoped to the authored declaration blocks the `project` record projects.
+// `use mod.{…}` reference and `@doc` directives are skipped. It serves the
+// configs with no validated production of their own (builds.fcfg) —
+// entrypoints.fcfg rides parse_entrypoints_fcfg, the one entrypoints grammar.
 fcfg_blocks :: proc(content: string, keyword: string) -> []Fcfg_Block {
 	blocks := make([dynamic]Fcfg_Block, 0, 2, context.temp_allocator)
 	lines := strings.split_lines(content, context.temp_allocator)

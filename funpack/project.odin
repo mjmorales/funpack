@@ -213,11 +213,15 @@ Entrypoint :: struct {
 // reject. Malformed_Entrypoints_Fcfg is any grammar violation (a missing key,
 // a value of the wrong shape, a stray construct); Dangling_Reference is the
 // §07 obligation — the `pipeline`/`bindings` reference names something the
-// source module does not declare.
+// source module does not declare; Multiple_Entrypoints is the emit-selection
+// reject — the v1 artifact carries exactly one [entrypoint] record and there
+// is no selection mechanism, so read_entrypoint refuses a config declaring
+// more than one block rather than silently picking the first.
 Entrypoints_Error :: enum {
 	None,
 	Malformed_Entrypoints_Fcfg,
 	Dangling_Reference,
+	Multiple_Entrypoints,
 }
 
 // parse_entrypoints_fcfg parses the entrypoints.fcfg grammar: a single

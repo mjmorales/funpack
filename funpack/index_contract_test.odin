@@ -19,14 +19,36 @@ import "core:testing"
 // on-disk tree, so the authored projection is provable without a checkout.
 
 @(test)
-test_index_read_entrypoint_block :: proc(t: ^testing.T) {
-	content := "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick     = 60hz\n  bindings = bindings\n}\n"
-	blocks := fcfg_blocks(content, "entrypoint")
-	testing.expect_value(t, len(blocks), 1)
-	if len(blocks) == 1 {
-		testing.expect_value(t, blocks[0].label, "main")
-		testing.expect_value(t, len(blocks[0].assignments), 3)
+test_index_lift_entrypoint_records :: proc(t: ^testing.T) {
+	// The contract's entrypoints lift rides the one §14 production: parse,
+	// then convert every block onto the record shape with its integer tick
+	// rate. Two blocks lift two records — the contract reports all authored
+	// entrypoints, unlike the emit path's single selection.
+	content := "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick     = 60hz\n  bindings = bindings\n}\nentrypoint replay {\n  pipeline = Pong\n  tick = 30hz\n  bindings = bindings\n}\n"
+	parsed, parse_err := parse_entrypoints_fcfg(content)
+	testing.expect_value(t, parse_err, Entrypoints_Error.None)
+	records, ok := lift_entrypoint_records(parsed)
+	testing.expect(t, ok)
+	testing.expect_value(t, len(records), 2)
+	if len(records) == 2 {
+		testing.expect_value(t, records[0].name, "main")
+		testing.expect_value(t, records[0].pipeline, "Pong")
+		testing.expect_value(t, records[0].tick_hz, 60)
+		testing.expect_value(t, records[0].bindings, "bindings")
+		testing.expect_value(t, records[1].name, "replay")
+		testing.expect_value(t, records[1].tick_hz, 30)
 	}
+}
+
+@(test)
+test_index_lift_entrypoint_records_bad_rate_rejected :: proc(t: ^testing.T) {
+	// `60khz` passes the grammar's `hz`-suffix check but is not an integer
+	// rate — the lift catches the one value error the grammar cannot.
+	content := "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick = 60khz\n  bindings = bindings\n}\n"
+	parsed, parse_err := parse_entrypoints_fcfg(content)
+	testing.expect_value(t, parse_err, Entrypoints_Error.None)
+	_, ok := lift_entrypoint_records(parsed)
+	testing.expect(t, !ok)
 }
 
 @(test)
