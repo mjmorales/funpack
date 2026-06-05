@@ -15,10 +15,41 @@ Value :: union {
 	Quat_Value,
 	List_Value,
 	Lambda_Value,
+	Enum_Value,
+	Record_Value,
 }
 
 List_Value :: struct {
 	elements: []Value,
+}
+
+// Enum_Value is a bare enum variant value — a user enum (Side::Left) or an
+// engine enum (Color::White, PlayerId::P1). The pong surface's user enums
+// carry no payload, so a variant is identified by its owning type and its
+// variant name alone. Equality is by (type_name, variant): two variants are
+// equal iff they name the same variant of the same enum (spec §10 demands
+// matching tags; §03 §2 closes the variant set).
+Enum_Value :: struct {
+	type_name: string,
+	variant:   string,
+}
+
+// Record_Value is a constructed record value: a user thing/data/signal
+// (Goal{side: …}, Scoreboard{left: …}) or an engine struct-payload command
+// variant (Draw::Rect{at: …}). type_name is the declared/engine type;
+// variant is the struct-variant tag ("" for a plain record). fields carry
+// the field name→value pairs in construction order; equality matches by
+// field name, so construction order never reaches the result (§10).
+Record_Value :: struct {
+	type_name: string,
+	variant:   string, // the engine struct-variant tag; "" for a plain record
+	fields:    []Record_Field_Value,
+}
+
+// Record_Field_Value is one named field slot of a Record_Value.
+Record_Field_Value :: struct {
+	name:  string,
+	value: Value,
 }
 
 // Lambda_Value captures its defining environment; application binds
@@ -82,6 +113,44 @@ value_equal :: proc(a, b: Value) -> bool {
 		// always false rather than an identity check the language never
 		// promises.
 		return false
+	case Enum_Value:
+		bv, ok := b.(Enum_Value)
+		return ok && av.type_name == bv.type_name && av.variant == bv.variant
+	case Record_Value:
+		bv, ok := b.(Record_Value)
+		if !ok || av.type_name != bv.type_name || av.variant != bv.variant {
+			return false
+		}
+		return record_fields_equal(av.fields, bv.fields)
 	}
 	return false
+}
+
+// record_fields_equal compares two record field sets by name: every field on
+// one side must match a same-named field on the other with an equal value, and
+// the two sides must carry the same field count. Matching by name (not
+// position) makes construction order irrelevant — a `with`-update or a
+// reordered literal compares equal to the canonical value (spec §10).
+record_fields_equal :: proc(a, b: []Record_Field_Value) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for field in a {
+		other, found := record_field_value(b, field.name)
+		if !found || !value_equal(field.value, other) {
+			return false
+		}
+	}
+	return true
+}
+
+// record_field_value reads a field's value off a record value by name — a
+// linear lookup, so field order never reaches the verdict.
+record_field_value :: proc(fields: []Record_Field_Value, name: string) -> (value: Value, found: bool) {
+	for field in fields {
+		if field.name == name {
+			return field.value, true
+		}
+	}
+	return nil, false
 }

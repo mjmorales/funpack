@@ -190,6 +190,16 @@ fixed_clamp :: proc(x, lo, hi: Fixed) -> Fixed {
 	return x
 }
 
+// fixed_abs is the saturating magnitude — negating through fixed_neg so the
+// MIN rail maps to MAX rather than wrapping (spec §10: every operation is
+// total and saturating).
+fixed_abs :: proc(f: Fixed) -> Fixed {
+	if f < 0 {
+		return fixed_neg(f)
+	}
+	return f
+}
+
 // fixed_lerp is ordinary funpack over the saturating kernel:
 // a + (b - a) * t (spec §10 Tier-2).
 fixed_lerp :: proc(a, b, t: Fixed) -> Fixed {

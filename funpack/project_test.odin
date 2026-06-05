@@ -225,6 +225,133 @@ test_read_project_reserved_engine_bare_root_rejected :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Project_Error.Reserved_Engine_Root)
 }
 
+// ── §23/§07 entrypoints.fcfg ───────────────────────────────────────────
+// parse_entrypoints_fcfg owns the entrypoints production of the §14 smaller
+// config grammar; validate_entrypoints checks its references against a parsed
+// source module. These exercise both, snippet-shaped and against the live
+// pong golden tree.
+
+// PONG_ENTRYPOINTS is the golden entrypoints.fcfg shape: the `use
+// pong.{Pong, bindings}` reference and the `entrypoint main { pipeline = Pong,
+// tick = 60hz, bindings = bindings }` block — the literal surface the pong
+// tree carries.
+PONG_ENTRYPOINTS :: "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick     = 60hz\n  bindings = bindings\n}\n"
+
+@(test)
+test_parse_entrypoints_fcfg_happy :: proc(t: ^testing.T) {
+	// The golden shape parses to its use reference and its single entrypoint:
+	// module `pong`, members {Pong, bindings}, and a `main` entrypoint wiring
+	// the Pong pipeline at 60hz with the bindings fn.
+	entrypoints, err := parse_entrypoints_fcfg(PONG_ENTRYPOINTS)
+	testing.expect_value(t, err, Entrypoints_Error.None)
+	testing.expect_value(t, entrypoints.use_module, "pong")
+	testing.expect_value(t, len(entrypoints.use_members), 2)
+	testing.expect_value(t, entrypoints.use_members[0], "Pong")
+	testing.expect_value(t, entrypoints.use_members[1], "bindings")
+	testing.expect_value(t, len(entrypoints.entrypoints), 1)
+	if len(entrypoints.entrypoints) == 1 {
+		block := entrypoints.entrypoints[0]
+		testing.expect_value(t, block.name, "main")
+		testing.expect_value(t, block.pipeline, "Pong")
+		testing.expect_value(t, block.tick, "60hz")
+		testing.expect_value(t, block.bindings, "bindings")
+	}
+}
+
+@(test)
+test_parse_entrypoints_fcfg_missing_key_rejected :: proc(t: ^testing.T) {
+	// An entrypoint block missing a required key (tick) is malformed — all
+	// three of pipeline/tick/bindings are required.
+	content := "use pong.{Pong, bindings}\nentrypoint main {\n  pipeline = Pong\n  bindings = bindings\n}\n"
+	_, err := parse_entrypoints_fcfg(content)
+	testing.expect_value(t, err, Entrypoints_Error.Malformed_Entrypoints_Fcfg)
+}
+
+@(test)
+test_parse_entrypoints_fcfg_no_use_rejected :: proc(t: ^testing.T) {
+	// The `use` reference is mandatory — an entrypoints.fcfg that opens with an
+	// entrypoint block but names no source is malformed.
+	content := "entrypoint main {\n  pipeline = Pong\n  tick = 60hz\n  bindings = bindings\n}\n"
+	_, err := parse_entrypoints_fcfg(content)
+	testing.expect_value(t, err, Entrypoints_Error.Malformed_Entrypoints_Fcfg)
+}
+
+@(test)
+test_parse_entrypoints_fcfg_bad_tick_rejected :: proc(t: ^testing.T) {
+	// The tick value must carry the `hz` unit; a bare number rejects.
+	content := "use pong.{Pong, bindings}\nentrypoint main {\n  pipeline = Pong\n  tick = 60\n  bindings = bindings\n}\n"
+	_, err := parse_entrypoints_fcfg(content)
+	testing.expect_value(t, err, Entrypoints_Error.Malformed_Entrypoints_Fcfg)
+}
+
+@(test)
+test_validate_entrypoints_pong_resolves :: proc(t: ^testing.T) {
+	// End-to-end: the live pong entrypoints.fcfg parses, and its Pong/bindings
+	// references resolve against the parsed pong source module — the Pong
+	// pipeline and the bindings fn are both declared. The fixture reads the
+	// live golden source (or FUNPACK_PONG_DIR) and SKIPs loudly when absent.
+	source, ok := pong_source()
+	if !ok {
+		return
+	}
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	entrypoints, cfg_err := parse_entrypoints_fcfg(pong_entrypoints_source())
+	testing.expect_value(t, cfg_err, Entrypoints_Error.None)
+	testing.expect_value(t, validate_entrypoints(entrypoints, ast), Entrypoints_Error.None)
+}
+
+@(test)
+test_validate_entrypoints_dangling_pipeline_rejected :: proc(t: ^testing.T) {
+	// A `pipeline` reference naming a pipeline the module does not declare is a
+	// dangling reference and rejects — validation against the source module is
+	// the §07 obligation the config reader enforces. The bindings fn still
+	// resolves, isolating the pipeline miss.
+	source, ok := pong_source()
+	if !ok {
+		return
+	}
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	content := "use pong.{Missing, bindings}\nentrypoint main {\n  pipeline = Missing\n  tick = 60hz\n  bindings = bindings\n}\n"
+	entrypoints, cfg_err := parse_entrypoints_fcfg(content)
+	testing.expect_value(t, cfg_err, Entrypoints_Error.None)
+	testing.expect_value(t, validate_entrypoints(entrypoints, ast), Entrypoints_Error.Dangling_Reference)
+}
+
+@(test)
+test_validate_entrypoints_dangling_bindings_rejected :: proc(t: ^testing.T) {
+	// A `bindings` reference naming a fn the module does not declare is also a
+	// dangling reference — the pipeline resolves, isolating the bindings miss.
+	source, ok := pong_source()
+	if !ok {
+		return
+	}
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	content := "use pong.{Pong, missing_bindings}\nentrypoint main {\n  pipeline = Pong\n  tick = 60hz\n  bindings = missing_bindings\n}\n"
+	entrypoints, cfg_err := parse_entrypoints_fcfg(content)
+	testing.expect_value(t, cfg_err, Entrypoints_Error.None)
+	testing.expect_value(t, validate_entrypoints(entrypoints, ast), Entrypoints_Error.Dangling_Reference)
+}
+
+// pong_entrypoints_source reads the pong project's entrypoints.fcfg via the
+// §14 project-tree layout, resolving the same dir pong_source uses; it falls
+// back to the embedded golden shape only if the on-disk file is unreadable,
+// so the validation tests run against the literal golden surface.
+pong_entrypoints_source :: proc() -> string {
+	dir := resolve_pong_dir()
+	fcfg_path, _ := filepath.join({dir, "funpack_configs", "entrypoints.fcfg"}, context.temp_allocator)
+	bytes, read_err := os.read_entire_file_from_path(fcfg_path, context.temp_allocator)
+	if read_err != nil {
+		return PONG_ENTRYPOINTS
+	}
+	return string(bytes)
+}
+
 // write_scratch_tree materializes a minimal §14 project tree under a
 // unique temp root: funpack_configs/project.fcfg carrying the given config
 // plus a single src/x.fun so collect_sources succeeds. ok = false (with a

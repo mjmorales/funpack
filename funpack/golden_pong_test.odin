@@ -99,6 +99,29 @@ test_golden_pong_full_file_typechecks :: proc(t: ^testing.T) {
 	testing.expect_value(t, type_err, Type_Error.None)
 }
 
+@(test)
+test_golden_pong_full_pipeline_passes :: proc(t: ^testing.T) {
+	// The §06/§07 gameplay golden's defining outcome: the full pong source
+	// compiles clean through every stage — parse → gates → typecheck →
+	// contracts → flatten → effect-closure — and its four inline test blocks
+	// evaluate to their golden values. The four are advance (a user fn call
+	// over Vec2 arithmetic), score.step (the §04 name.step behavior invocation
+	// emitting a Goal signal record), tally.step (a fold over the add_goal user
+	// fn with a `with`-update on a user thing), and draw_ball.step (a render
+	// behavior emitting a Draw::Rect command) — so passing all four exercises
+	// every §06 evaluable form. The fixture reads the live golden source (or
+	// FUNPACK_PONG_DIR) and SKIPs loudly when absent.
+	source, ok := pong_source()
+	if !ok {
+		return
+	}
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 4)
+	testing.expect_value(t, report.failed, 0)
+	testing.expect_value(t, report.exit_code, 0)
+}
+
 // pong_source reads the pong project's single source file via the §14
 // project-tree reader; ok = false (with a SKIP warning) when the sibling
 // checkout is absent, matching the numerics golden's skip semantics.
