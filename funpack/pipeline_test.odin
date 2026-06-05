@@ -314,6 +314,117 @@ test_pipeline_gate_stage_passes_golden_source :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.failed, 0)
 }
 
+// parse_only lexes + parses an assert-only test block and returns just
+// the parse verdict, so a gate fixture can assert it parses cleanly
+// before measuring the gate (a parse failure would otherwise mask the
+// gate signal).
+parse_only :: proc(asserts: string) -> Parse_Error {
+	source := strings.concatenate({"test \"gate\" {\n", asserts, "}\n"}, context.temp_allocator)
+	_, err := stage_parse(stage_lex(source))
+	return err
+}
+
+// gate_error_of lexes + parses an assert-only test block (no imports, so
+// the gate stage sees the bare AST it runs on) and returns the gate
+// verdict directly — the gate walk is name-resolution-free, so an
+// over-budget fixture need not bind its free names.
+gate_error_of :: proc(asserts: string) -> Gate_Error {
+	source := strings.concatenate({"test \"gate\" {\n", asserts, "}\n"}, context.temp_allocator)
+	ast, parse_err := stage_parse(stage_lex(source))
+	if parse_err != .None {
+		return .None // a parse failure is a separate signal; surfaced by the parse assertion in the caller
+	}
+	return stage_gates(ast)
+}
+
+// CHAIN_11_SHORT_CIRCUITS is one assert chaining 11 `or` short-circuits
+// across 12 names — cyclomatic complexity 1 + 11 = 12, one over the
+// MAX_CYCLOMATIC budget of 10.
+CHAIN_11_SHORT_CIRCUITS :: "assert a or b or c or d or e or f or g or h or i or j or k or l\n"
+
+@(test)
+test_gate_cyclomatic_over_budget_chain :: proc(t: ^testing.T) {
+	// Eleven and/or short-circuits push complexity to 12, over the budget
+	// of 10 — the cyclomatic gate fires its dedicated arm.
+	parse_err := parse_only(CHAIN_11_SHORT_CIRCUITS)
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	testing.expect_value(t, gate_error_of(CHAIN_11_SHORT_CIRCUITS), Gate_Error.Cyclomatic_Exceeded)
+}
+
+@(test)
+test_pipeline_cyclomatic_over_budget_is_gate_failed :: proc(t: ^testing.T) {
+	// Through the whole pipeline the same over-budget chain rejects as
+	// Gate_Failed — a structural compile error, never a counted test.
+	source := strings.concatenate({"test \"chain\" {\n", CHAIN_11_SHORT_CIRCUITS, "}\n"}, context.temp_allocator)
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
+@(test)
+test_gate_cyclomatic_at_budget_clears :: proc(t: ^testing.T) {
+	// Nine short-circuits give complexity 10 — exactly the budget, so the
+	// gate clears: the ceiling is inclusive, only the eleventh-over case
+	// fires.
+	chain := "assert a or b or c or d or e or f or g or h or i or j\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+// NEST_4_CALLS nests four calls in argument position — compositional
+// depth 4, one over the MAX_NESTING_DEPTH budget of 3. Member chains and
+// operator spines stay flat, so only genuine container nesting counts.
+NEST_4_CALLS :: "assert to_fixed(to_fixed(to_fixed(to_fixed(2)))) == 2.0\n"
+
+@(test)
+test_gate_nesting_over_budget_calls :: proc(t: ^testing.T) {
+	// Four nested calls reach compositional depth 4, over the budget of 3
+	// — the nesting gate fires its dedicated arm.
+	parse_err := parse_only(NEST_4_CALLS)
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	testing.expect_value(t, gate_error_of(NEST_4_CALLS), Gate_Error.Nesting_Exceeded)
+}
+
+@(test)
+test_pipeline_nesting_over_budget_is_gate_failed :: proc(t: ^testing.T) {
+	// Through the whole pipeline the over-nested expression rejects as
+	// Gate_Failed before typecheck ever sees it.
+	source := strings.concatenate({"test \"nest\" {\n", NEST_4_CALLS, "}\n"}, context.temp_allocator)
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
+@(test)
+test_gate_nesting_at_budget_clears :: proc(t: ^testing.T) {
+	// Three nested calls reach depth 3 — exactly the budget, so the gate
+	// clears: only the fourth level fires.
+	chain := "assert to_fixed(to_fixed(to_fixed(2))) == 2.0\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+@(test)
+test_gate_nesting_member_chain_stays_flat :: proc(t: ^testing.T) {
+	// A deep member chain off a call is not compositional nesting:
+	// `Quat.identity.rotate(v)`-style chains sit at depth 1 (the one
+	// call), so they clear with room to spare — the metric measures
+	// containers, not member-access edges.
+	chain := "assert Quat.identity.rotate.compose.fold(v) == v\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+@(test)
+test_golden_source_clears_both_expr_gates :: proc(t: ^testing.T) {
+	// The defining positive: the full golden numerics file — every real
+	// assert, with its calls, records, lambdas, and member chains — clears
+	// both Expr-tree gates. The shallow-asserts claim is pinned to the
+	// live source, not assumed.
+	source, ok := golden_source()
+	if !ok {
+		return
+	}
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	testing.expect_value(t, stage_gates(ast), Gate_Error.None)
+}
+
 @(test)
 test_pipeline_empty_source_is_noop_pass :: proc(t: ^testing.T) {
 	report, err := run_test_pipeline("")
