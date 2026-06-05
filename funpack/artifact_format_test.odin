@@ -241,7 +241,7 @@ test_body_forest_well_formedness :: proc(t: ^testing.T) {
 
 // Every function and behavior body in the golden fixture is a well-formed
 // pre-order node forest: the record's declared `body_count` accounts for every
-// body `node` line and no more (§2.7). This is the core finding-1 guarantee —
+// body `node` line and no more (§2.7). This is the load-bearing guarantee:
 // the runtime parses and interprets pong's bodies FROM THE ARTIFACT, with zero
 // funpack source, so a body that does not reconstruct from its own declared
 // counts is unloadable. The check walks the fixture's records the way the
