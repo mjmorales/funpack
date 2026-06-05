@@ -80,10 +80,10 @@ SUB_RECORD_KEYWORDS := []string{
 	"gtag", // a thing's/behavior's registered tag (§8, §10)
 	"param", // a function's/behavior-step's parameter (§9, §10)
 	"emit", // a behavior-step's return-side emission (§10)
-	"value", // a const's evaluated field (§9)
 	"producer", // a signal route's producer (§12)
 	"consumer", // a signal route's consumer (§12)
 	"set", // a setup spawn's supplied field (§13)
+	"node", // a body checked-AST node line (§2.7) — every fn/step/const/bindings/setup body is a run of these
 }
 
 // Artifact_Section is one parsed `[name N]` block from an artifact: the
@@ -245,4 +245,91 @@ artifact_find_section :: proc(doc: Artifact_Doc, name: string) -> (section: Arti
 		}
 	}
 	return Artifact_Section{}, false
+}
+
+// NODE_LINE_KEYWORD is the lead token of every body line (§2.7). A body is a
+// pre-order run of these — one checked-AST node per line, each declaring how
+// many of the immediately-following lines are its children.
+NODE_LINE_KEYWORD :: "node"
+
+// ARM_NODE_KIND is the one node kind whose child count is fixed at 0 by its
+// kind rather than read as the trailing token: an `arm` line ends in its
+// variable-length `binders` list, not a `child_count` (§2.7). Every other
+// node line ends in its child count.
+ARM_NODE_KIND :: "arm"
+
+// node_line_kind returns a body node line's KIND token — the second
+// space-separated field after the `node` keyword (`node KIND field… count`).
+// ok is false when the line is not a `node …` line or carries no kind.
+node_line_kind :: proc(line: string) -> (kind: string, ok: bool) {
+	prefix := NODE_LINE_KEYWORD + " "
+	if !strings.has_prefix(line, prefix) {
+		return "", false
+	}
+	tail := line[len(prefix):]
+	if end := strings.index_byte(tail, ' '); end >= 0 {
+		return tail[:end], true
+	}
+	return tail, true
+}
+
+// node_child_count returns a body node line's declared child count: the
+// trailing decimal token (§2.7), except an `arm` line whose child count is
+// fixed at 0 by its kind (its trailing field is the binder list). ok is false
+// on a malformed line or a non-integer trailing token.
+node_child_count :: proc(line: string) -> (count: int, ok: bool) {
+	kind, kind_ok := node_line_kind(line)
+	if !kind_ok {
+		return 0, false
+	}
+	if kind == ARM_NODE_KIND {
+		return 0, true
+	}
+	space := strings.last_index_byte(line, ' ')
+	if space < 0 {
+		return 0, false
+	}
+	return strconv.parse_int(line[space + 1:])
+}
+
+// consume_node_subtree consumes one pre-order checked-AST subtree from a body
+// node-line slice starting at index `start`: the node line, then recursively
+// its declared `child_count` children (§2.7). It returns the index one past
+// the subtree, or ok = false on a malformed node or a child run that overruns
+// the slice. This is the runtime's count-driven body reader, expressed on the
+// funpack side so the golden fixture's bodies are checked under `odin test`.
+consume_node_subtree :: proc(nodes: []string, start: int) -> (next: int, ok: bool) {
+	if start >= len(nodes) {
+		return start, false
+	}
+	child_count, count_ok := node_child_count(nodes[start])
+	if !count_ok {
+		return start, false
+	}
+	i := start + 1
+	for _ in 0 ..< child_count {
+		i, ok = consume_node_subtree(nodes, i)
+		if !ok {
+			return i, false
+		}
+	}
+	return i, true
+}
+
+// body_forest_is_well_formed reports whether a body's node-line slice is
+// exactly `statement_count` back-to-back pre-order subtrees with no leftover
+// lines (§2.7): the `body_count` a `function`/`behavior` record declares must
+// account for every body `node` line and no more. A leftover line or an
+// overrun is an under-/over-shaped body — the same exact-match discipline
+// section counts enforce (§29).
+body_forest_is_well_formed :: proc(nodes: []string, statement_count: int) -> bool {
+	i := 0
+	for _ in 0 ..< statement_count {
+		next, ok := consume_node_subtree(nodes, i)
+		if !ok {
+			return false
+		}
+		i = next
+	}
+	return i == len(nodes)
 }

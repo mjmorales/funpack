@@ -2,6 +2,7 @@ package funpack
 
 import "core:os"
 import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:testing"
 
@@ -185,4 +186,179 @@ test_golden_artifact_setup_carries_kernel_bits :: proc(t: ^testing.T) {
 	// raw bits, the same kernel the emitter will run through.
 	p2_x := encode_fixed(to_fixed(152), context.temp_allocator)
 	testing.expect(t, strings.contains(content, strings.concatenate({"set x =", p2_x, "\n"}, context.temp_allocator)))
+}
+
+// node_child_count reads the trailing child count off a body node line, and
+// an `arm` line is fixed at 0 children (its trailing field is the binder list,
+// §2.7). These are the primitives the body forest reader is built on.
+@(test)
+test_node_child_count_reads_trailing_count :: proc(t: ^testing.T) {
+	c, ok := node_child_count("node binary add 2")
+	testing.expect(t, ok)
+	testing.expect_value(t, c, 2)
+	c, ok = node_child_count("node name self 0")
+	testing.expect(t, ok)
+	testing.expect_value(t, c, 0)
+	// A `match` line carries arm_count then child_count; the LAST token is the
+	// child count (1 + 2*arm_count).
+	c, ok = node_child_count("node match 2 5")
+	testing.expect(t, ok)
+	testing.expect_value(t, c, 5)
+	// An `arm` line ends in its binder list, not a child count — it is fixed
+	// at 0 children regardless of the trailing binder token.
+	c, ok = node_child_count("node arm variant_binds Option Some 1 side")
+	testing.expect(t, ok)
+	testing.expect_value(t, c, 0)
+	c, ok = node_child_count("node arm wildcard - - 0")
+	testing.expect(t, ok)
+	testing.expect_value(t, c, 0)
+}
+
+// body_forest_is_well_formed accepts a pre-order run that exactly fills the
+// declared statement count and rejects an over- or under-shaped one (§2.7).
+// `goal_side`'s body is three statements (two if_return, one return); a
+// hand-built fragment proves the count-driven shape directly.
+@(test)
+test_body_forest_well_formedness :: proc(t: ^testing.T) {
+	// One `return` of `at + vel * dt` — `advance`'s body, exactly.
+	advance_body := []string {
+		"node return 1",
+		"node binary add 2",
+		"node name at 0",
+		"node binary mul 2",
+		"node name vel 0",
+		"node name dt 0",
+	}
+	testing.expect(t, body_forest_is_well_formed(advance_body, 1))
+	// Declaring 2 statements over a 1-statement run under-consumes (overruns
+	// the slice) — rejected.
+	testing.expect(t, !body_forest_is_well_formed(advance_body, 2))
+	// A leftover trailing node (the `return` declares too few children) is an
+	// over-shaped body — rejected.
+	malformed := []string{"node return 0", "node name self 0"}
+	testing.expect(t, !body_forest_is_well_formed(malformed, 1))
+}
+
+// Every function and behavior body in the golden fixture is a well-formed
+// pre-order node forest: the record's declared `body_count` accounts for every
+// body `node` line and no more (§2.7). This is the core finding-1 guarantee —
+// the runtime parses and interprets pong's bodies FROM THE ARTIFACT, with zero
+// funpack source, so a body that does not reconstruct from its own declared
+// counts is unloadable. The check walks the fixture's records the way the
+// runtime does: lead line, declared counts, then the body node run.
+@(test)
+test_golden_artifact_bodies_are_well_formed :: proc(t: ^testing.T) {
+	content, ok := read_golden_artifact()
+	if !ok {
+		return
+	}
+	lines := split_artifact_lines(content)
+	checked := 0
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		switch {
+		case strings.has_prefix(line, "function "):
+			fields := strings.fields(line, context.temp_allocator)
+			// function NAME KIND param_count return:TYPE body_count span:…
+			param_count, _ := strconv.parse_int(fields[3])
+			body_count, _ := strconv.parse_int(fields[5])
+			i += 1
+			i = skip_lead_run(lines, i, "param", param_count)
+			body: [dynamic]string
+			body, i = collect_node_run(lines, i)
+			testing.expectf(
+				t,
+				body_forest_is_well_formed(body[:], body_count),
+				"function %s body is not well-formed against body_count %d",
+				fields[1],
+				body_count,
+			)
+			checked += 1
+		case strings.has_prefix(line, "behavior "):
+			fields := strings.fields(line, context.temp_allocator)
+			// behavior NAME on: stage: contract: gtag_count param_count emits_count body_count
+			gtag_count, _ := strconv.parse_int(fields[5])
+			param_count, _ := strconv.parse_int(fields[6])
+			emits_count, _ := strconv.parse_int(fields[7])
+			body_count, _ := strconv.parse_int(fields[8])
+			i += 1
+			i = skip_lead_run(lines, i, "gtag", gtag_count)
+			i = skip_lead_run(lines, i, "param", param_count)
+			i = skip_lead_run(lines, i, "emit", emits_count)
+			body: [dynamic]string
+			body, i = collect_node_run(lines, i)
+			testing.expectf(
+				t,
+				body_forest_is_well_formed(body[:], body_count),
+				"behavior %s body is not well-formed against body_count %d",
+				fields[1],
+				body_count,
+			)
+			checked += 1
+		case:
+			i += 1
+		}
+	}
+	// 10 functions + 10 behaviors all carry a checked body.
+	testing.expect_value(t, checked, 20)
+}
+
+// skip_lead_run advances past exactly `count` consecutive sub-record lines
+// whose keyword is `keyword`, asserting the shape the record's scalar count
+// declares. It is the test-side mirror of the runtime shaping each record's
+// sub-records by its declared counts (§16 step 3).
+skip_lead_run :: proc(lines: []string, start: int, keyword: string, count: int) -> int {
+	prefix := strings.concatenate({keyword, " "}, context.temp_allocator)
+	i := start
+	for _ in 0 ..< count {
+		if i < len(lines) && strings.has_prefix(lines[i], prefix) {
+			i += 1
+		}
+	}
+	return i
+}
+
+// collect_node_run gathers the maximal run of body `node` lines starting at
+// `start` — a record's serialized body (§2.7) — returning the run and the
+// index just past it.
+collect_node_run :: proc(lines: []string, start: int) -> (run: [dynamic]string, next: int) {
+	run = make([dynamic]string, 0, 16, context.temp_allocator)
+	i := start
+	for i < len(lines) && strings.has_prefix(lines[i], "node ") {
+		append(&run, lines[i])
+		i += 1
+	}
+	return run, i
+}
+
+// Pin the exact body bytes of a representative record — BOARD's const
+// initializer — so a drift in the node encoding is caught here before it
+// desyncs the runtime's body reader. BOARD is `return Board{ w: 160.0,
+// h: 120.0 }`: a single `return` of a 2-field record, fixed bits raw (§2.3).
+@(test)
+test_const_body_encoding_is_pinned :: proc(t: ^testing.T) {
+	content, ok := read_golden_artifact()
+	if !ok {
+		return
+	}
+	w_bits := encode_fixed(to_fixed(160), context.temp_allocator)
+	h_bits := encode_fixed(to_fixed(120), context.temp_allocator)
+	expected := strings.concatenate(
+		{
+			"function BOARD const 0 return:Board 1 span:pong:19\n",
+			"node return 1\n",
+			"node record Board 2 2\n",
+			"node recfield w 1\n",
+			"node fixed ",
+			w_bits,
+			" 0\n",
+			"node recfield h 1\n",
+			"node fixed ",
+			h_bits,
+			" 0\n",
+		},
+		context.temp_allocator,
+	)
+	testing.expect(t, strings.contains(content, expected))
 }

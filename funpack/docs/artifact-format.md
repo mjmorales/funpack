@@ -72,16 +72,29 @@ no field whose value depends on when, where, or on which machine it was emitted.
   it.
 - A **section** is a `[section_name N]` header line stating the section name and
   its exact **top-level record count** `N`, followed by `N` top-level records.
-- A top-level record may be **variable-length**: it carries its own count field
-  and is followed by exactly that many **sub-records** (e.g. `enum Side - 2` is
-  followed by 2 `variant` lines; `thing Paddle false 1 5` is followed by 1 `gtag`
-  and 5 `field` lines). A **section body runs to the next `[` header** — header
-  lines are the only line class that opens with `[`, so a parser reads a section's
-  body unambiguously, then re-derives `N` by counting the **lead** lines (those
-  whose keyword is *not* a sub-record keyword). The closed sub-record keyword set
-  is: `variant`, `field`, `gtag`, `param`, `emit`, `value`, `producer`,
-  `consumer`, `set`. A declared `N` that disagrees with the lead-line count is an
-  error (an under- or over-shaped section, §29-style exact-match).
+- A top-level record may be **variable-length**: it is followed by a run of
+  **sub-records** (e.g. `enum Side - 2` is followed by 2 `variant` lines; `thing
+  Paddle false 1 5` is followed by 1 `gtag` and 5 `field` lines; a `function`/
+  `behavior` record is followed by its `param`/`emit`/… lines **and** its body
+  `node` run, §2.7). A **section body runs to the next `[` header** — header lines
+  are the only line class that opens with `[`, so a parser reads a section's body
+  unambiguously, then re-derives `N` by counting the **lead** lines (those whose
+  keyword is *not* a sub-record keyword). The closed sub-record keyword set is:
+  `variant`, `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`,
+  `node`. A declared `N` that disagrees with the lead-line count is an error (an
+  under- or over-shaped section, §29-style exact-match).
+
+  This **lead-line reader is the single parse discipline** for top-level record
+  boundaries: a top-level record runs from its lead line up to the next lead line
+  (or the next `[` header). Per-record scalar count fields (`param_count`,
+  `emits_count`, `body_count`, an enum's `variant_count`) tell a reader how to
+  shape each sub-record run *within* a record — but the **record count `N`** is
+  always the lead-line count, never a sum of declared sub-counts. The format does
+  **not** offer a second, grammar-only reader that derives `N` from declared
+  sub-counts: a `const`'s body `node` run and a record's mixed `param`/`emit`/
+  `node` sub-records are not all reachable from a single declared sub-count on the
+  lead line, so only the lead-line discipline is sound. `node` being a sub-record
+  keyword keeps every body line a sub-record, so the lead-line count is exact.
 
 ### 2.2 Integer encoding (`Int`)
 
@@ -141,6 +154,102 @@ Example: the doc string `Move the paddle` (15 bytes) is `L15:Move the paddle`.
 A name (module, type, field, behavior, stage, enum, variant, signal, function) is
 a bare UTF-8 token with no spaces. Qualified names use `.` as the segment
 separator (`engine.math`, `Side::Left` uses `::` for an enum variant).
+
+### 2.7 Body encoding — the serialized checked-AST node line
+
+Every executable body the runtime must interpret — each `fn` body, each behavior
+`step` body, each `const` initializer, the `bindings()` body, and the `setup()`
+body — is serialized **into** the artifact as a tree of checked-AST nodes. The
+runtime parses pong from this document with **zero `funpack` imports** and **no
+`funpack` source on disk**, so a body cannot be a span reference into source the
+runtime can never read: the artifact carries the whole node graph and the runtime
+interprets it directly (§09 §1 — the interpreter is the canonical semantics).
+
+A body is a flat, **pre-order** (depth-first, node-then-children) run of `node`
+lines. Each node is exactly one line:
+
+```
+node KIND field… child_count
+```
+
+- `node` is the line's sub-record keyword (it is in the closed
+  `SUB_RECORD_KEYWORDS` set, §2.1), so a body run is read by the same lead-line
+  discipline as every other sub-record.
+- `KIND` is a closed node-kind tag (the table below).
+- `field…` are that kind's **scalar** fields in the documented order, each a
+  primitive (`Int` §2.2, `Fixed` §2.3, `String` §2.4, name §2.6) — never a nested
+  node.
+- `child_count` is the **last** field on every node line: the count of immediately
+  following `node` lines that are this node's children, in their documented order.
+  A reader consumes the node, reads its scalar fields, then recursively consumes
+  exactly `child_count` child subtrees. The encoding is therefore total and
+  count-driven — a reader never looks ahead past a node's own declared children.
+  The **one exception** is the `arm` node (below): an `arm` always has 0 children
+  and its trailing field is a variable-length `binders` list (sized by its
+  `binder_count` scalar), so `arm`'s child count is fixed at 0 by its kind rather
+  than read as a trailing token. Every other node ends in `child_count`.
+
+The node-kind set is closed (a new kind is a schema-version bump, §1) and mirrors
+the checked surface AST (spec §02 §5–§6). Children are listed **in evaluation /
+source order**; a node's `child_count` plus the kinds below fully determine the
+subtree shape:
+
+| KIND | Scalar fields | Children (in order) | Surface form |
+|---|---|---|---|
+| `int` | `value:Int` | 0 | integer literal `0` |
+| `fixed` | `bits:Fixed` | 0 | fixed literal `4.0` (raw Q32.32, §2.3) |
+| `name` | `ident:name` | 0 | a bare name `self`, `BOARD`, `add_goal` |
+| `field` | `member:name` | 1 = receiver | field access `a.b` |
+| `call` | (none) | 1 + N = callee then N args | `f(a, b)` |
+| `variant` | `type:name` `case:name` `has_payload:Bool` | N = payload args | `Side::Left`, `Option::Some(x)` |
+| `record` | `type:name` `field_count:Int` `child_count:Int` | `child_count` = `field_count` `recfield` nodes (one per field) | `Vec2{x: …, y: …}` |
+| `recfield` | `name:name` | 1 = the field's value subtree | one `name: value` pair inside a `record`/`with` |
+| `with` | `field_count:Int` `child_count:Int` | `child_count` = `1 + field_count`: the base value, then `field_count` `recfield` nodes | `value with { f: v }` |
+| `list` | `len:Int` | `len` element subtrees | `[a, b]`, `[]` |
+| `lambda` | `param_count:Int` `params:name…` | 1 = the single-`return` body expr | `fn(p) { return e }` |
+| `unary` | `op:name` | 1 = operand | `-x`, `not x` (`op` ∈ `neg`,`not`) |
+| `binary` | `op:name` | 2 = lhs, rhs | `a + b` (`op` table below) |
+| `match` | `arm_count:Int` `child_count:Int` | `child_count` = 1 scrutinee + (per arm: an `arm` then its body) = `1 + 2*arm_count` | `match e { … }` |
+| `arm` | `pat:name` `type:name` `case:name` `binder_count:Int` `binders:name…` | 0 (fixed by kind; no trailing `child_count`) | one match arm's pattern (its body is the following sibling) |
+| `let` | `name:name` | 1 = the bound value expr | `let n = e` |
+| `if_return` | (none) | 2 = condition, returned value | early-return `if cond { return v }` |
+| `return` | (none) | 1 = the returned value expr | `return e` |
+
+- `binary` `op` is the closed glyph set, by name: `add` `sub` `mul` `div` `mod`
+  `eq` `ne` `lt` `le` `gt` `ge` `and` `or`. `unary` `op` is `neg` or `not`.
+- `arm` `pat` is the pattern kind: `wildcard` (`type`/`case` are `-`,
+  `binder_count` 0), `bare_variant` (`type::case`, `binder_count` 0), or
+  `variant_binds` (`type::case` with `binder_count` payload binder names following
+  on the same line — a binder of `_` is the discard binder). An `arm` carries no
+  child of its own; the arm's body is the **next** sibling subtree under the
+  `match`. A `match` therefore declares a `child_count` of `1 + 2*arm_count`: the
+  scrutinee subtree, then for each arm an `arm` node immediately followed by its
+  body subtree. (For pong every match is two-armed, so `arm_count` is `2` and
+  `child_count` is `5`.)
+- A body's **top** is a single statement subtree per body line of the source: a
+  `fn`/`step`/`const` body is a sequence of statements (`let`, `if_return`,
+  `return`), so the owning record declares a `body_count` of top-level statement
+  subtrees and the run is those subtrees back-to-back (§9, §10). A `const`
+  initializer and the `setup`/`bindings` bodies are a single top-level statement.
+
+Example — `goal_side`'s body (`if at.x < 0.0 { return Option::Some(Side::Right) }`
+then `if at.x > BOARD.w { … }` then `return Option::None`) serializes to three
+top-level statement subtrees, the first being:
+
+```
+node if_return 2
+node binary lt 2
+node field x 1
+node name at 0
+node fixed 0 0
+node variant Option Some true 1
+node variant Side Right false 0
+```
+
+The `if_return` declares 2 children (condition, value); the `binary lt` declares 2
+(`at.x`, `0.0`); the `field x` declares 1 (its receiver `at`); the literals and
+the leaf `variant Side Right` declare 0. A reader rebuilds the tree by consuming
+exactly each node's declared child count, with no source and no lookahead.
 
 ---
 
@@ -291,15 +400,16 @@ score as a once-spawned `thing` in `setup`, not a `singleton`).
 
 One record per module-level `fn`, `let`, the `bindings()` function, and the
 `setup()` function, in source order. The function **body** is the serialized
-checked AST; this format records the **signature and a body-AST reference**, not a
-re-rendering of every expression — the runtime interprets bodies, and the body
-node graph is the cheapest loadable form. For v1 the body is recorded as a
-**source-span reference** (`module:line`) plus its **return shape**, sufficient
-for the runtime to locate and interpret it against the same checked AST:
+checked AST, carried **in** the record as a run of `node` lines (§2.7) — never a
+span reference into source the runtime can never read. The record opens with the
+signature and a body statement count; the `param` lines and the `node` body run
+follow:
 
 ```
-function NAME KIND param_count return:TYPE span:MODULE:LINE
+function NAME KIND param_count return:TYPE body_count span:MODULE:LINE
 param NAME TYPE
+…
+node …
 …
 ```
 
@@ -310,19 +420,30 @@ param NAME TYPE
 - `return:TYPE` is the declared return type (a name or generic per §2.6; `[Goal]`
   for a signal list, `[Spawn]` for the setup command list, `Bindings` for the
   binding head, `Option[Side]` for an option).
-- `span:MODULE:LINE` is the §15 module name and 1-based source line — **never** a
-  filesystem path (§2 purity).
+- `body_count` is the number of **top-level statement subtrees** in the body
+  (§2.7): one per source statement line (`let`/`if_return`/`return`). A `const`
+  initializer and the `bindings`/`setup` bodies are a single top-level `return`
+  subtree, so their `body_count` is `1`. The body `node` run follows the `param`
+  lines and is exactly those statement subtrees back-to-back, in source order.
+- `span:MODULE:LINE` is the §15 module name and 1-based source line, kept as
+  **diagnostic provenance** — never a filesystem path (§2 purity) and never the
+  sole body representation. A runtime executes the carried `node` tree; the span
+  only locates the construct in a diagnostic.
 - `param` records carry each parameter's name and type, in declaration order.
 
-The `const` record for `BOARD` additionally carries its evaluated fields as an
-inline `value` record per field (`value w =ENCODED`), because a default and a
-Spawn may reference `BOARD.w` / `BOARD.h`, so the runtime needs the constant's
-fixed bits without re-interpreting its initializer:
+The `const` record for `BOARD` carries its initializer as the body `node` run
+(here a single `return` of a `Board{ w: 160.0, h: 120.0 }` record), so the runtime
+evaluates the constant from the artifact alone — a default or a Spawn that reads
+`BOARD.w` / `BOARD.h` resolves against the interpreted constant, no source needed:
 
 ```
-function BOARD const 0 return:Board span:pong:19
-value w =687194767360
-value h =515396075520
+function BOARD const 0 return:Board 1 span:pong:19
+node return 1
+node record Board 2 2
+node recfield w 1
+node fixed 687194767360 0
+node recfield h 1
+node fixed 515396075520 0
 ```
 
 ---
@@ -334,11 +455,13 @@ node-check ran in). Each carries the stage slot it occupies, its reserved-step
 signature, and its `@gtag` set:
 
 ```
-behavior NAME on:THING stage:STAGE contract:CONTRACT gtag_count param_count emits_count
+behavior NAME on:THING stage:STAGE contract:CONTRACT gtag_count param_count emits_count body_count
 gtag L4:ball
 param NAME TYPE
 …
 emit TYPE
+…
+node …
 …
 ```
 
@@ -360,6 +483,13 @@ emit TYPE
   `[Draw]`), the signal lists `[S]` it emits, and the command lists (`[Draw]`,
   `[Spawn]`) it returns. Its return is its writes (§06 §3). `emits_count` is the
   count of `emit` records.
+- `body_count` is the number of **top-level statement subtrees** in `step`'s body
+  (§2.7), one per source statement line. The body `node` run (§2.7) follows the
+  `emit` lines and is exactly those statement subtrees back-to-back, in source
+  order — the runtime interprets it as the behavior's per-tick transition, with no
+  `funpack` source on its path. `wall_bounce`'s body, for instance, is two
+  statements (`if self.pos.y <= 0.0 or … { return self with { vel: … } }`, then
+  `return self`), so its `body_count` is `2`.
 
 A behavior with no `param` beyond `self` and no `emit` beyond its blackboard is
 dead code (§06 §6 Update "must write or emit *something*") — that is an upstream
@@ -505,19 +635,29 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
 1. Read line 1; split on space; assert literal `funpack-artifact` and the integer
    version equals the runtime's built-for version, else **refuse** (§1).
 2. For each section in the §3 fixed order: read the `[name N]` header, parse `N`,
-   then read `N` top-level records of that section's grammar — each top-level
-   record consumes its own count of sub-records (§2.1), and the section body ends
-   at the next `[` header. A runtime may read records by grammar (consuming each
-   record's declared sub-count) or read the whole body to the next header and
-   split on lead lines; both yield the same `N` top-level records.
-3. Decode each field by its **position** in the record's documented signature:
-   a `Fixed` is the raw decimal `i64` (§2.3), an `Int` is decimal (§2.2), a
-   `String` is `Lk:bytes` (§2.4), a name is a bare token (§2.6).
+   read the section body up to the next `[` header, and split it into `N`
+   top-level records using the **single lead-line discipline** (§2.1) — a record
+   spans its lead line up to the next lead line. Lead lines are those whose
+   leading keyword is *not* in the closed sub-record keyword set (`variant`,
+   `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`, `node`). This
+   is the **only** parse discipline; the format does not promise a
+   second grammar-only reader that derives `N` from declared sub-counts (it cannot
+   be sound where a record carries an uncounted run, e.g. a `const`'s body `node`
+   lines). Assert the lead-line count equals `N` or **refuse** (§29-style
+   exact-match).
+3. Within each record, decode each field by its **position** in the record's
+   documented signature: a `Fixed` is the raw decimal `i64` (§2.3), an `Int` is
+   decimal (§2.2), a `String` is `Lk:bytes` (§2.4), a name is a bare token (§2.6).
+   Shape the record's sub-records using its declared scalar counts (`variant_count`,
+   `param_count`, `emits_count`, `body_count`); read each body `node` run (§2.7) as
+   a pre-order tree, consuming exactly each node's declared `child_count`.
 4. Build the in-memory game model (enums, data/signal/thing schemas, function
-   spans, behaviors, the flattened pipeline, the routing map, the spawn batch, the
-   binding table, the entrypoint) and interpret the checked AST per the §09
-   canonical semantics.
+   bodies, behaviors with their step bodies, the flattened pipeline, the routing
+   map, the spawn batch, the binding table, the entrypoint) and interpret the
+   carried checked-AST nodes per the §09 canonical semantics.
 
-Because every section states its count and every field is positionally typed and
-length-explicit, the parse is total and the byte layout is unambiguous. No
-`funpack` source is needed — this document is the whole contract.
+Because every section's `N` is the lead-line count, every record shapes its
+sub-records by declared scalar counts, every body `node` declares its `child_count`,
+and every field is positionally typed and length-explicit, the parse is total and
+the byte layout is unambiguous. No `funpack` source is needed — this document is
+the whole contract, bodies included.
