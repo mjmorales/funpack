@@ -1,0 +1,150 @@
+funpack-artifact 1
+[meta 2]
+project pong
+version L5:0.1.0
+[enums 2]
+enum Side - 2
+variant Left unit
+variant Right unit
+enum Steer Axis 1
+variant Move unit
+[data 1]
+data Board 2 false
+field w Fixed -
+field h Fixed -
+[signals 1]
+signal Goal 1
+field side Side -
+[things 3]
+thing Paddle false 1 5
+gtag L6:paddle
+field player PlayerId -
+field side Side -
+field x Fixed -
+field y Fixed -
+field speed Fixed -
+thing Ball false 1 2
+gtag L4:ball
+field pos Vec2 -
+field vel Vec2 -
+thing Scoreboard false 1 2
+gtag L5:score
+field left Int =0
+field right Int =0
+[functions 10]
+function advance fn 3 return:Vec2 span:pong:50
+param at Vec2
+param vel Vec2
+param dt Fixed
+function reflect_y fn 1 return:Vec2 span:pong:55
+param v Vec2
+function reflect_x fn 1 return:Vec2 span:pong:60
+param v Vec2
+function overlaps fn 2 return:Bool span:pong:65
+param ball Vec2
+param paddle Vec2
+function goal_side fn 1 return:Option[Side] span:pong:70
+param at Vec2
+function serve_velocity fn 1 return:Vec2 span:pong:77
+param side Side
+function add_goal fn 2 return:Scoreboard span:pong:85
+param score Scoreboard
+param goal Goal
+function BOARD const 0 return:Board span:pong:19
+value w =687194767360
+value h =515396075520
+function bindings bindings 0 return:Bindings span:pong:187
+function setup startup 0 return:[Spawn] span:pong:197
+[behaviors 10]
+behavior paddle_move on:Paddle stage:control contract:Update 1 3 1
+gtag L6:paddle
+param self Paddle
+param input Input
+param time Time
+emit Paddle
+behavior ball_move on:Ball stage:control contract:Update 1 2 1
+gtag L4:ball
+param self Ball
+param time Time
+emit Ball
+behavior wall_bounce on:Ball stage:collision contract:Update 1 1 1
+gtag L4:ball
+param self Ball
+emit Ball
+behavior paddle_bounce on:Ball stage:collision contract:Update 2 2 1
+gtag L4:ball
+gtag L6:paddle
+param self Ball
+param paddles View[Paddle]
+emit Ball
+behavior score on:Ball stage:scoring contract:Update 2 1 1
+gtag L4:ball
+gtag L5:score
+param self Ball
+emit [Goal]
+behavior tally on:Scoreboard stage:scoring contract:Update 1 2 1
+gtag L5:score
+param self Scoreboard
+param goals [Goal]
+emit Scoreboard
+behavior serve on:Ball stage:scoring contract:Update 2 2 1
+gtag L4:ball
+gtag L5:score
+param self Ball
+param goals [Goal]
+emit Ball
+behavior draw_paddle on:Paddle stage:render contract:Render 1 1 1
+gtag L6:render
+param self Paddle
+emit [Draw]
+behavior draw_ball on:Ball stage:render contract:Render 1 1 1
+gtag L6:render
+param self Ball
+emit [Draw]
+behavior draw_score on:Scoreboard stage:render contract:Render 1 1 1
+gtag L6:render
+param self Scoreboard
+emit [Draw]
+[pipeline_flattened 11]
+step 0 stage:startup behavior:setup
+step 1 stage:control behavior:paddle_move
+step 2 stage:control behavior:ball_move
+step 3 stage:collision behavior:wall_bounce
+step 4 stage:collision behavior:paddle_bounce
+step 5 stage:scoring behavior:score
+step 6 stage:scoring behavior:tally
+step 7 stage:scoring behavior:serve
+step 8 stage:render behavior:draw_paddle
+step 9 stage:render behavior:draw_ball
+step 10 stage:render behavior:draw_score
+[signal_routing 1]
+route Goal 1 2
+producer 5 behavior:score
+consumer 6 behavior:tally
+consumer 7 behavior:serve
+[setup 4]
+spawn Paddle 5
+set player =PlayerId::P1
+set side =Side::Left
+set x =34359738368
+set y =257698037760
+set speed =386547056640
+spawn Paddle 5
+set player =PlayerId::P2
+set side =Side::Right
+set x =652835028992
+set y =257698037760
+set speed =386547056640
+spawn Ball 2
+set pos =vec2 343597383680 257698037760
+set vel =vec2 300647710720 171798691840
+spawn Scoreboard 2
+set left =0
+set right =0
+[bindings 4]
+bind axis P1 Steer::Move source:keys_axis(Key::W,Key::S)
+bind axis P1 Steer::Move source:stick_y(Stick::Left)
+bind axis P2 Steer::Move source:keys_axis(Key::Up,Key::Down)
+bind axis P2 Steer::Move source:stick_y(Stick::Left)
+[entrypoint 1]
+entrypoint main pipeline:Pong tick_hz:60 bindings:bindings
