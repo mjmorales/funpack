@@ -154,9 +154,10 @@ eval_input_value :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Va
 	if !player_resolved {
 		return Fixed(0), true
 	}
-	registry := build_action_registry(interp.program^, interp.allocator)
+	// The registry is minted once per program (new_interp), so this read is an
+	// index lookup, not a per-instance rebuild.
 	action_name := variant_to_token(action_variant, interp.allocator)
-	def, action_found := registry.by_name[action_name]
+	def, action_found := interp.registry.by_name[action_name]
 	if !action_found {
 		return Fixed(0), true
 	}
@@ -238,7 +239,7 @@ builtin_abs :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return (v < 0 ? fixed_neg(v) : v), true
 	case i64:
 		return (v < 0 ? int_neg(v) : v), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value:
 		return nil, false
 	}
 	return nil, false

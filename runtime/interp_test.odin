@@ -16,13 +16,8 @@ import "core:testing"
 make_interp :: proc(program: ^Program, version: ^World_Version) -> Interp {
 	dt_fields := make(map[string]Value, context.temp_allocator)
 	dt_fields["dt"] = dt_60hz()
-	return Interp {
-		program = program,
-		version = version,
-		input = empty(),
-		time = Record_Value{type_name = "Time", fields = dt_fields},
-		allocator = context.temp_allocator,
-	}
+	time := Record_Value{type_name = "Time", fields = dt_fields}
+	return new_interp(program, version, nil, empty(), time, context.temp_allocator)
 }
 
 // dt_60hz is the fixed 60hz step the Time resource carries: 1/60 in Q32.32,

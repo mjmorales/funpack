@@ -217,14 +217,7 @@ step_tick :: proc(
 ) -> World_Version {
 	state := new_tick_state(prior, allocator)
 	prior_version := prior
-	interp := Interp {
-		program   = program,
-		version   = &prior_version,
-		tick      = &state, // a mid-tick cross-thing read observes the working tables
-		input     = input,
-		time      = time,
-		allocator = allocator,
-	}
+	interp := new_interp(program, &prior_version, &state, input, time, allocator)
 
 	for step in program.pipeline {
 		// Startup ran pre-tick-0; render's [Draw] projection is not produced by this
