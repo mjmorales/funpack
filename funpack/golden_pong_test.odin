@@ -79,6 +79,26 @@ test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+test_golden_pong_full_file_typechecks :: proc(t: ^testing.T) {
+	// The load-bearing acceptance: the full pong golden source typechecks
+	// end-to-end through stage_typecheck — every behavior step body, helper
+	// fn, bindings(), and setup() types over the resolved environment, with
+	// the View[Paddle]/first, fold(goals, self, add_goal),
+	// input.value(self.player, Steer::Move), and `with`-update sites all
+	// checking. The fixture resolves the live golden source (or
+	// FUNPACK_PONG_DIR) and SKIPs loudly when absent.
+	source, ok := pong_source()
+	if !ok {
+		return
+	}
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	testing.expect_value(t, stage_gates(ast), Gate_Error.None)
+	_, type_err := stage_typecheck(ast)
+	testing.expect_value(t, type_err, Type_Error.None)
+}
+
 // pong_source reads the pong project's single source file via the §14
 // project-tree reader; ok = false (with a SKIP warning) when the sibling
 // checkout is absent, matching the numerics golden's skip semantics.

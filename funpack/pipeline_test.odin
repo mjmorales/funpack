@@ -265,16 +265,20 @@ test_pipeline_fold_body_result_must_be_accumulator :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_pipeline_fold_closure_reference_rejected :: proc(t: ^testing.T) {
-	// The lambda body types in a child scope holding exactly the
-	// inferred params — closure references sit outside the evaluable
-	// domain at fold position.
+test_pipeline_fold_closure_reference_typechecks :: proc(t: ^testing.T) {
+	// A combinator lambda is a closure: its body sees the enclosing scope
+	// with the inferred params laid over it (the paddle_bounce predicate
+	// reads `self`). So a fold body referencing a let-bound `y` types (y is
+	// Fixed in scope, acc + y is Fixed) and evaluates — the captured env
+	// carries y to the application frame.
 	source := with_golden_imports("test \"closure\" {\n" +
 		"  let y = 1.0\n" +
 		"  assert fold([1.0], 0.0, fn(acc, x) { return acc + y }) == 1.0\n" +
 		"}\n")
-	_, err := run_test_pipeline(source)
-	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
 }
 
 @(test)
@@ -631,26 +635,26 @@ test_pipeline_non_exhaustive_match_fires_gate :: proc(t: ^testing.T) {
 @(test)
 test_pipeline_exhaustive_match_clears_gate :: proc(t: ^testing.T) {
 	// The control: covering both Option variants (Some and None) clears
-	// the exhaustiveness gate. It still rejects LATER — stage_typecheck
-	// contains Match_Expr as Unsupported_Expr — so the pipeline verdict is
-	// Typecheck_Failed, NOT None. Asserting Typecheck_Failed (never None)
-	// is the proof the gate did NOT fire: a Gate_Failed here would mean the
-	// total match was wrongly rejected as non-exhaustive.
+	// the exhaustiveness gate. The proof the gate did NOT fire is that the
+	// verdict is never Gate_Failed — a Gate_Failed here would mean the total
+	// match was wrongly rejected as non-exhaustive. The match itself now
+	// types (Some(v) binds v:Fixed, both arms Fixed), so the verdict reaches
+	// the evaluator, which carries no match-evaluation path — the assert then
+	// fails rather than erroring, never reflecting on the gate.
 	_, err := run_match_fixture(
 		"\tassert match opt { Option::Some(v) => 1.0, Option::None => 2.0 } == 1.0\n")
-	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+	testing.expect(t, err != Pipeline_Error.Gate_Failed)
 }
 
 @(test)
 test_pipeline_wildcard_match_clears_gate :: proc(t: ^testing.T) {
 	// A wildcard `_` arm is full coverage, so a Some + `_` match is total
 	// and clears the gate even though None is never named explicitly. As
-	// with the two-variant control, it then rejects at typecheck
-	// (Match_Expr is Unsupported_Expr) — so Typecheck_Failed, never
-	// Gate_Failed, is the proof the gate treated `_` as exhaustive.
+	// with the two-variant control, the proof the gate treated `_` as
+	// exhaustive is that the verdict is never Gate_Failed.
 	_, err := run_match_fixture(
 		"\tassert match opt { Option::Some(v) => 1.0, _ => 2.0 } == 1.0\n")
-	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+	testing.expect(t, err != Pipeline_Error.Gate_Failed)
 }
 
 // USER_ENUM_HEADER declares a user enum (Side) and a scrutinee let, so the
@@ -687,11 +691,13 @@ test_pipeline_non_exhaustive_user_enum_match_fires_gate :: proc(t: ^testing.T) {
 @(test)
 test_pipeline_exhaustive_user_enum_match_clears_gate :: proc(t: ^testing.T) {
 	// Covering both Side variants (Left and Right) clears the gate — proof
-	// the user enum's full set is registered, not a partial. It still
-	// rejects later (Match_Expr is Unsupported_Expr at typecheck), so the
-	// verdict is Typecheck_Failed, never Gate_Failed: a Gate_Failed here
-	// would mean the total user-enum match was wrongly rejected.
+	// the user enum's full set is registered, not a partial. The proof the
+	// gate did not fire is that the verdict is never Gate_Failed: a
+	// Gate_Failed here would mean the total user-enum match was wrongly
+	// rejected. The match types over the registered Side enum (both arm
+	// bodies Int), then the evaluator's missing match path fails the assert
+	// rather than reflecting on the gate.
 	_, err := run_user_enum_match_fixture(
 		"\tassert match s { Side::Left => 1, Side::Right => 2 } == 1\n")
-	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+	testing.expect(t, err != Pipeline_Error.Gate_Failed)
 }

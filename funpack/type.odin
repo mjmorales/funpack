@@ -17,6 +17,37 @@ Type :: union {
 	^List_Type,
 	^Func_Type,
 	^User_Type,
+	^Engine_Type,
+}
+
+// Engine_Type is the nominal handle for an engine/stdlib type the value
+// kernel does not ground (spec §08/§20/§23/§04): the §08 read table View[T],
+// the §04 command constructors Spawn/Draw, the §23 Input/Bindings resources,
+// the §04 Time resource, the engine String, and the engine enums
+// (PlayerId/Key/Stick/Color). Engine_Kind is the closed set of those names;
+// View carries its element type in elem (nil for the non-parameterized
+// kinds). Two engine types are compatible only when their kind matches and,
+// for View, their element types unify — nominal like User_Type, never
+// structural across kinds.
+Engine_Type :: struct {
+	kind: Engine_Kind,
+	elem: Type, // View[T]'s element; nil for every non-parameterized kind
+}
+
+// Engine_Kind is the closed set of engine/stdlib type names the typing pass
+// grounds. Growing it is a deliberate edit, mirroring STDLIB_SURFACE.
+Engine_Kind :: enum {
+	View,     // §08 read table View[T]
+	Spawn,    // §04 spawn command
+	Draw,     // §20 draw command
+	Input,    // §23 input resource
+	Bindings, // §23 input-binding builder
+	Time,     // §04 frame-time resource
+	String,   // engine String (string literals, Draw::Text)
+	PlayerId, // §23 player-id enum
+	Key,      // §23 keyboard-key enum
+	Stick,    // §23 gamepad-stick enum
+	Color,    // §20 palette enum
 }
 
 // User_Type is the nominal handle for a name the source declares
@@ -104,6 +135,22 @@ user_type_of :: proc(name: string, kind: User_Kind) -> Type {
 	return node
 }
 
+// engine_type_of builds an engine-type handle; elem is the View[T] element
+// (nil for every non-parameterized kind).
+engine_type_of :: proc(kind: Engine_Kind, elem: Type = nil) -> Type {
+	node := new(Engine_Type, context.temp_allocator)
+	node.kind = kind
+	node.elem = elem
+	return node
+}
+
+// is_engine reports an engine type of a specific kind — the engine analogue
+// of is_ground over Ground_Type.
+is_engine :: proc(t: Type, kind: Engine_Kind) -> bool {
+	v, ok := t.(^Engine_Type)
+	return ok && v.kind == kind
+}
+
 is_ground :: proc(t: Type, g: Ground_Type) -> bool {
 	v, ok := t.(Ground_Type)
 	return ok && v == g
@@ -113,6 +160,12 @@ is_ground :: proc(t: Type, g: Ground_Type) -> bool {
 // Fixed, never anything parameterized.
 is_numeric_ground :: proc(t: Type) -> bool {
 	return is_ground(t, .Int) || is_ground(t, .Fixed)
+}
+
+// is_vector_ground reports a vector ground type — Vec2 or Vec3 — the
+// component-wise arithmetic and vector-scalar scaling sides.
+is_vector_ground :: proc(t: Type) -> bool {
+	return is_ground(t, .Vec2) || is_ground(t, .Vec3)
 }
 
 // types_compatible is the structural equality judgment with one
@@ -157,6 +210,12 @@ types_compatible :: proc(a, b: Type) -> bool {
 		// meaning — the resolver rejects a name reused across kinds).
 		bv, ok := b.(^User_Type)
 		return ok && av.name == bv.name
+	case ^Engine_Type:
+		// An engine type is nominal by kind; View[T] additionally unifies its
+		// element so View[Paddle] and View[Ball] never cross (nil elem is the
+		// unknown that unifies, mirroring Option/List).
+		bv, ok := b.(^Engine_Type)
+		return ok && av.kind == bv.kind && types_compatible(av.elem, bv.elem)
 	}
 	return false
 }

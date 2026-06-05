@@ -287,6 +287,11 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 	if ref.name == "Option" && len(ref.args) == 1 {
 		return option_of(resolve_type_ref(env, bindings, ref.args[0]))
 	}
+	// View[T] is the §08 read table over an element type; the element
+	// resolves like any other ref (a user thing for View[Paddle]).
+	if ref.name == "View" && len(ref.args) == 1 {
+		return engine_type_of(.View, resolve_type_ref(env, bindings, ref.args[0]))
+	}
 	if len(ref.args) == 0 {
 		if ground, is_ground := ground_type_name(ref.name); is_ground {
 			return ground
@@ -297,11 +302,44 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 		if _, is_enum := env.enums[ref.name]; is_enum {
 			return user_type_of(ref.name, .Enum)
 		}
+		if engine, is_engine := engine_type_name(ref.name); is_engine {
+			return engine
+		}
 	}
-	// An imported engine type with no checker ground (View[Paddle], Input,
-	// Draw) or any other unresolved ref: the schema slot stays nil for the
-	// typing pass.
+	// A ref naming nothing the checker grounds — an engine type with no
+	// handle (View's bare head, an axis-role kind) or any other unresolved
+	// ref: the schema slot stays nil for the typing pass.
 	return nil
+}
+
+// engine_type_name maps the bare engine/stdlib type-name spellings the
+// typing pass grounds to their Engine_Type handle (spec §04/§08/§20/§23).
+// View is omitted: it is only ever parameterized (View[T]) and is grounded
+// by the View[T] arm above.
+engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
+	switch name {
+	case "Spawn":
+		return engine_type_of(.Spawn), true
+	case "Draw":
+		return engine_type_of(.Draw), true
+	case "Input":
+		return engine_type_of(.Input), true
+	case "Bindings":
+		return engine_type_of(.Bindings), true
+	case "Time":
+		return engine_type_of(.Time), true
+	case "String":
+		return engine_type_of(.String), true
+	case "PlayerId":
+		return engine_type_of(.PlayerId), true
+	case "Key":
+		return engine_type_of(.Key), true
+	case "Stick":
+		return engine_type_of(.Stick), true
+	case "Color":
+		return engine_type_of(.Color), true
+	}
+	return nil, false
 }
 
 // ground_type_name maps the bare type-name spellings the checker grounds to
