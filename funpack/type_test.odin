@@ -26,13 +26,24 @@ golden_import_bindings :: proc() -> Bindings {
 }
 
 @(test)
-test_match_expr_contained_as_unsupported :: proc(t: ^testing.T) {
-	// A Match_Expr parses structurally but is outside the evaluable
-	// domain: stage_typecheck contains it as Unsupported_Expr — the same
-	// containment the other right-cased-but-unevaluable forms get, with
-	// no evaluation path added.
-	_, err := check_expr_source("match seen {\n  Option::None => 0\n  _ => 1\n}\n")
-	testing.expect_value(t, err, Type_Error.Unsupported_Expr)
+test_match_expr_types_unified_arm_type :: proc(t: ^testing.T) {
+	// A match over an Option[Fixed] scrutinee types each arm and unifies
+	// them: Some(v) binds v to the element (Fixed), both arm bodies are
+	// Fixed, so the match's type is Fixed. The scrutinee is itself a typed
+	// expression — checked_div returns Option[Fixed] (§10).
+	type, err := check_expr_source(
+		"match checked_div(6.0, 2.0) {\n  Option::Some(v) => v\n  Option::None => 0.0\n}\n")
+	testing.expect_value(t, err, Type_Error.None)
+	testing.expect(t, is_ground(type, .Fixed))
+}
+
+@(test)
+test_match_arms_disagreeing_rejected :: proc(t: ^testing.T) {
+	// Arm bodies must agree: a Fixed arm and an Int arm over the same match
+	// is a Type_Mismatch — no implicit promotion across arms (§10).
+	_, err := check_expr_source(
+		"match checked_div(6.0, 2.0) {\n  Option::Some(v) => v\n  Option::None => 0\n}\n")
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
 }
 
 @(test)

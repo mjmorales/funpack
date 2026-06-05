@@ -67,8 +67,26 @@ test_parse_wrong_case_type_position_variant :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_wrong_case_value_position :: proc(t: ^testing.T) {
-	tokens := stage_lex("test \"x\" {\nassert ToFixed(2) == 2.0\n}\n")
+test_parse_uppercamel_callee_is_command_wrap_shape :: proc(t: ^testing.T) {
+	// An UpperCamel name in callee position is the command-wrap call shape
+	// (Spawn(thing), Despawn()) — grammar/fun.ll1.md §5A resolves command
+	// wrap to plain call syntax, so `Ʉ '(' … ')'` is a structurally valid
+	// call, not a parse-level casing error. A bad callee like `ToFixed(2)`
+	// (no such function) is therefore caught at resolution, not at parse —
+	// mirroring the variant-selector case below.
+	source := "test \"x\" {\nassert ToFixed(2) == 2.0\n}\n"
+	_, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_parse_mixed_case_value_position_rejected :: proc(t: ^testing.T) {
+	// A Mixed-case name (fooBar — matches no sanctioned class, spec §02) in
+	// a value position is still a parse-level Wrong_Case, the casing-is-
+	// structural floor that survives the command-wrap loosening.
+	tokens := stage_lex("test \"x\" {\nassert fooBar == 2.0\n}\n")
 	_, err := stage_parse(tokens)
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
@@ -247,16 +265,20 @@ test_pipeline_fold_body_result_must_be_accumulator :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_pipeline_fold_closure_reference_rejected :: proc(t: ^testing.T) {
-	// The lambda body types in a child scope holding exactly the
-	// inferred params — closure references sit outside the evaluable
-	// domain at fold position.
+test_pipeline_fold_closure_reference_typechecks :: proc(t: ^testing.T) {
+	// A combinator lambda is a closure: its body sees the enclosing scope
+	// with the inferred params laid over it (the paddle_bounce predicate
+	// reads `self`). So a fold body referencing a let-bound `y` types (y is
+	// Fixed in scope, acc + y is Fixed) and evaluates — the captured env
+	// carries y to the application frame.
 	source := with_golden_imports("test \"closure\" {\n" +
 		"  let y = 1.0\n" +
 		"  assert fold([1.0], 0.0, fn(acc, x) { return acc + y }) == 1.0\n" +
 		"}\n")
-	_, err := run_test_pipeline(source)
-	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
 }
 
 @(test)
@@ -294,11 +316,13 @@ test_pipeline_unimported_tau_rejected :: proc(t: ^testing.T) {
 @(test)
 test_exit_code_contract :: proc(t: ^testing.T) {
 	// The funpack test CLI's exit contract: compile errors are 2 (never
-	// a counted failure), failed assertions 1, all-pass 0. A gate
-	// violation is a compile error, so it shares the 2 exit code.
+	// a counted failure), failed assertions 1, all-pass 0. A gate violation
+	// and a behavior-contract node-check violation are both compile errors,
+	// so they share the 2 exit code.
 	testing.expect_value(t, test_exit_code(.Typecheck_Failed, Test_Report{}), 2)
 	testing.expect_value(t, test_exit_code(.Parse_Failed, Test_Report{}), 2)
 	testing.expect_value(t, test_exit_code(.Gate_Failed, Test_Report{}), 2)
+	testing.expect_value(t, test_exit_code(.Contract_Failed, Test_Report{}), 2)
 	testing.expect_value(t, test_exit_code(.None, Test_Report{passed = 1, failed = 1}), 1)
 	testing.expect_value(t, test_exit_code(.None, Test_Report{passed = 30}), 0)
 }
@@ -408,6 +432,27 @@ test_gate_nesting_member_chain_stays_flat :: proc(t: ^testing.T) {
 	// containers, not member-access edges.
 	chain := "assert Quat.identity.rotate.compose.fold(v) == v\n"
 	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+@(test)
+test_gate_bare_variant_is_a_flat_atom :: proc(t: ^testing.T) {
+	// A bare enum variant is a 0-arg constructor — a value atom, not a
+	// compositional container (spec §03 §2). So a list of records each
+	// carrying a bare variant field nests call(0)→list(1)→record(1)→bare-
+	// variant(0) = 2, NOT 3: the pong `tally` assert shape clears the
+	// nesting gate. A payload-bearing variant still opens a level, so a
+	// regression that re-counted bare variants would fire here.
+	chain := "assert tally([Goal{side: Side::Left}, Goal{side: Side::Left}]) == 2\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+@(test)
+test_gate_payload_variant_still_opens_a_level :: proc(t: ^testing.T) {
+	// The bare-variant fix is scoped: a payload-bearing variant nested under
+	// three containers is still depth 4 and fires the gate. call(1)→arg
+	// Some(2)→arg Some(3)→arg Some(4) overshoots the budget of 3.
+	chain := "assert wrap(Box::A(Box::B(Box::C(1)))) == 1\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.Nesting_Exceeded)
 }
 
 @(test)
@@ -592,24 +637,193 @@ test_pipeline_non_exhaustive_match_fires_gate :: proc(t: ^testing.T) {
 @(test)
 test_pipeline_exhaustive_match_clears_gate :: proc(t: ^testing.T) {
 	// The control: covering both Option variants (Some and None) clears
-	// the exhaustiveness gate. It still rejects LATER — stage_typecheck
-	// contains Match_Expr as Unsupported_Expr — so the pipeline verdict is
-	// Typecheck_Failed, NOT None. Asserting Typecheck_Failed (never None)
-	// is the proof the gate did NOT fire: a Gate_Failed here would mean the
-	// total match was wrongly rejected as non-exhaustive.
+	// the exhaustiveness gate. The proof the gate did NOT fire is that the
+	// verdict is never Gate_Failed — a Gate_Failed here would mean the total
+	// match was wrongly rejected as non-exhaustive. The match itself now
+	// types (Some(v) binds v:Fixed, both arms Fixed), so the verdict reaches
+	// the evaluator, which carries no match-evaluation path — the assert then
+	// fails rather than erroring, never reflecting on the gate.
 	_, err := run_match_fixture(
 		"\tassert match opt { Option::Some(v) => 1.0, Option::None => 2.0 } == 1.0\n")
-	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+	testing.expect(t, err != Pipeline_Error.Gate_Failed)
 }
 
 @(test)
 test_pipeline_wildcard_match_clears_gate :: proc(t: ^testing.T) {
 	// A wildcard `_` arm is full coverage, so a Some + `_` match is total
 	// and clears the gate even though None is never named explicitly. As
-	// with the two-variant control, it then rejects at typecheck
-	// (Match_Expr is Unsupported_Expr) — so Typecheck_Failed, never
-	// Gate_Failed, is the proof the gate treated `_` as exhaustive.
+	// with the two-variant control, the proof the gate treated `_` as
+	// exhaustive is that the verdict is never Gate_Failed.
 	_, err := run_match_fixture(
 		"\tassert match opt { Option::Some(v) => 1.0, _ => 2.0 } == 1.0\n")
-	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+	testing.expect(t, err != Pipeline_Error.Gate_Failed)
+}
+
+// USER_ENUM_HEADER declares a user enum (Side) and a scrutinee let, so the
+// match fixtures below dispatch on a user-declared closed variant set the
+// resolver registers into the gate's table — proving exhaustiveness is
+// computed over user enums, not just Option.
+USER_ENUM_HEADER :: "enum Side { Left, Right }\n" +
+	"test \"user enum match\" {\n" +
+	"\tlet s = Side::Left\n"
+
+// run_user_enum_match_fixture drives a Side-scrutinee match through the
+// full pipeline: the user enum declaration, the scrutinee let, the given
+// assert, and the closing brace.
+run_user_enum_match_fixture :: proc(asserts: string) -> (report: Test_Report, err: Pipeline_Error) {
+	source := strings.concatenate(
+		{USER_ENUM_HEADER, asserts, "}\n"},
+		context.temp_allocator,
+	)
+	return run_test_pipeline(source)
+}
+
+@(test)
+test_pipeline_non_exhaustive_user_enum_match_fires_gate :: proc(t: ^testing.T) {
+	// A match over the user enum Side covering only Left — no Right, no
+	// wildcard — is non-total. Because the resolver registers Side's variant
+	// set into the gate's closed table, the exhaustiveness gate has a known
+	// denominator and rejects it as Gate_Failed (spec §02 §5), exactly as it
+	// does for Option.
+	_, err := run_user_enum_match_fixture(
+		"\tassert match s { Side::Left => 1 } == 1\n")
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
+@(test)
+test_pipeline_exhaustive_user_enum_match_clears_gate :: proc(t: ^testing.T) {
+	// Covering both Side variants (Left and Right) clears the gate — proof
+	// the user enum's full set is registered, not a partial. The proof the
+	// gate did not fire is that the verdict is never Gate_Failed: a
+	// Gate_Failed here would mean the total user-enum match was wrongly
+	// rejected. The match types over the registered Side enum (both arm
+	// bodies Int), then the evaluator's missing match path fails the assert
+	// rather than reflecting on the gate.
+	_, err := run_user_enum_match_fixture(
+		"\tassert match s { Side::Left => 1, Side::Right => 2 } == 1\n")
+	testing.expect(t, err != Pipeline_Error.Gate_Failed)
+}
+
+// gate_verdict_of lex/parses a source (no name resolution — the gate walk is
+// resolution-free) and returns the named gate verdict, the window the
+// declaration-body gate fixtures read both the error and the offending
+// declaration's name through.
+gate_verdict_of :: proc(source: string) -> Gate_Verdict {
+	ast, parse_err := stage_parse(stage_lex(source))
+	if parse_err != .None {
+		return Gate_Verdict{}
+	}
+	return gate_verdict(ast)
+}
+
+@(test)
+test_gate_walks_fn_body_match_over_user_enum :: proc(t: ^testing.T) {
+	// The gap the gates close: a user-enum match inside a FN BODY (not a test
+	// block) is gate-checked for exhaustiveness against the variant set the
+	// resolver registered. A `fn` returning `match side { Side::Left => … }`
+	// drops Right, so the body match is non-total and the gate rejects it —
+	// naming the fn, not a test-block index (spec §02 §5 / §01 P5).
+	source := "enum Side { Left, Right }\n" +
+		"fn pick(side: Side) -> Int {\n" +
+		"  return match side {\n" +
+		"    Side::Left => 1\n" +
+		"  }\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Non_Exhaustive_Match)
+	testing.expect_value(t, verdict.declaration, "pick")
+}
+
+@(test)
+test_gate_walks_behavior_step_match_over_user_enum :: proc(t: ^testing.T) {
+	// The same exhaustiveness gate over a BEHAVIOR step body: a `match side {
+	// Side::Left => … }` in a behavior's step drops Right and rejects, with the
+	// diagnostic anchored on the behavior's own name (not the reserved `step`,
+	// not a positional index).
+	source := "enum Side { Left, Right }\n" +
+		"thing Paddle { defends: Side }\n" +
+		"behavior classify on Paddle {\n" +
+		"  fn step(self: Paddle) -> Int {\n" +
+		"    return match self.defends {\n" +
+		"      Side::Left => 1\n" +
+		"    }\n" +
+		"  }\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Non_Exhaustive_Match)
+	testing.expect_value(t, verdict.declaration, "classify")
+}
+
+@(test)
+test_gate_complete_fn_body_match_clears :: proc(t: ^testing.T) {
+	// The control: a fn-body match covering both Side variants clears the gate,
+	// proving the body walk reads the full registered variant set and does not
+	// false-positive on a total match.
+	source := "enum Side { Left, Right }\n" +
+		"fn pick(side: Side) -> Int {\n" +
+		"  return match side {\n" +
+		"    Side::Left => 1\n" +
+		"    Side::Right => 2\n" +
+		"  }\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.None)
+}
+
+@(test)
+test_gate_oversized_fn_body_fires_named_fn_size :: proc(t: ^testing.T) {
+	// An over-budget fn body fires the fn-size gate with its named Gate_Error,
+	// proving the gates run over declaration bodies, not just test blocks — and
+	// the diagnostic names the fn (spec §01 P5: the budget is a per-declaration
+	// constant). MAX_FN_STATEMENTS `let` bindings plus a return overshoot the
+	// size budget.
+	lets := strings.repeat("  let n = 1\n", MAX_FN_STATEMENTS, context.temp_allocator)
+	source := strings.concatenate(
+		{"fn oversized() -> Int {\n", lets, "  return 1\n}\n"},
+		context.temp_allocator,
+	)
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Fn_Size_Exceeded)
+	testing.expect_value(t, verdict.declaration, "oversized")
+}
+
+@(test)
+test_gate_over_arity_fn_body_lambda_fires_named_arity :: proc(t: ^testing.T) {
+	// An over-arity lambda buried in a fn body fires the arity gate, naming the
+	// fn — proving the arity walk descends fn-body expressions (a lambda in a
+	// return position), not just test-block asserts.
+	source := "fn build() -> Int {\n" +
+		"  let f = fn(a, b, c, d, e, f) { return a }\n" +
+		"  return 1\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Arity_Exceeded)
+	testing.expect_value(t, verdict.declaration, "build")
+}
+
+@(test)
+test_gate_over_nested_fn_body_fires_named_nesting :: proc(t: ^testing.T) {
+	// An over-nested fn-body return fires the nesting gate, naming the fn. Four
+	// nested non-method calls reach compositional depth 4, over the budget of 3
+	// — the same metric the test-block nesting fixtures pin, now over a fn body.
+	source := "fn deep() -> Int {\n" +
+		"  return f(f(f(f(1))))\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Nesting_Exceeded)
+	testing.expect_value(t, verdict.declaration, "deep")
+}
+
+@(test)
+test_gate_pong_golden_clears_with_declaration_bodies :: proc(t: ^testing.T) {
+	// The defining positive over the gameplay surface: the full pong golden —
+	// every fn helper and behavior step body, with its builder chains, nested
+	// constructions, and user-enum body matches — clears all the structural
+	// gates now that they run over declaration bodies, not just test blocks.
+	source, ok := pong_source()
+	if !ok {
+		return
+	}
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.None)
 }

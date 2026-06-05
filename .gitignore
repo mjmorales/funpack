@@ -3,6 +3,10 @@
 
 # build outputs
 warden/warden
+funpack/funpack
+
+# §14 derived build products — gitignored, rebuilt on demand
+.funpack/
 
 # machine-local symlinks (written by claude-prove install init/local-env)
 .claude/prove-plugin

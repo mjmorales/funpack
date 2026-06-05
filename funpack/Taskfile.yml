@@ -4,3 +4,14 @@ includes:
   base:
     taskfile: ../taskfiles/odin.yml
     flatten: true
+
+tasks:
+  # binary compiles the funpack CLI executable the `build`/`test` verbs run
+  # through (odin build, not odin check), emitting it as `funpack/funpack`. The
+  # shared odin.yml verbs only type-check (no codegen); this verb is the one that
+  # produces the runnable binary the project-tree acceptance invokes. The
+  # executable is a derived build product (gitignored), rebuilt on demand.
+  binary:
+    desc: Compile the funpack CLI executable
+    cmds:
+      - odin build . -out:funpack

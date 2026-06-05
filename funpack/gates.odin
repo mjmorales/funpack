@@ -39,65 +39,148 @@ Gate_Error :: enum {
 	Duplicate_Declaration,  // two declaration units normalize to the same AST hash
 }
 
-// stage_gates walks the parsed AST and returns the first budget it
-// overshoots. The gate unit is the test block: each block's statement RHS
-// expressions are the only code on the golden surface, so every gate folds
-// over a Test_Node body and the seam returns the first violation found.
+// Gate_Unit is one declaration body the structural gates score: a test
+// block, a top-level fn, or a behavior's reserved `step`. Each carries its
+// declaration name (the diagnostic anchor — a gate verdict names the
+// declaration, never a test-block index) and its statement sequence. Every
+// gate folds over the same unit set with the same fixed budgets, so a fn body
+// and a test block are held to one ceiling (spec §01 P5: no per-site waiver).
+Gate_Unit :: struct {
+	name: string,
+	body: []Statement,
+}
+
+// gate_units collects every declaration body the gates score, in a fixed
+// order — tests, then top-level fns, then behavior steps. The order is
+// stable so a multi-violation source always reports the same first offender.
+// A behavior step's unit name is the behavior's own name, not the reserved
+// `step`, so the diagnostic anchors on the behavior the author wrote.
+gate_units :: proc(ast: Ast) -> []Gate_Unit {
+	units := make([dynamic]Gate_Unit, 0, len(ast.tests) + len(ast.fns) + len(ast.behaviors), context.temp_allocator)
+	for test in ast.tests {
+		append(&units, Gate_Unit{name = test.name, body = test.body})
+	}
+	for fn in ast.fns {
+		append(&units, Gate_Unit{name = fn.name, body = fn.body})
+	}
+	for behavior in ast.behaviors {
+		append(&units, Gate_Unit{name = behavior.name, body = behavior.step.body})
+	}
+	return units[:]
+}
+
+// Gate_Verdict pairs a gate failure with the declaration body it indicts, so
+// the diagnostic names the declaration (a fn, a behavior, or a test block) —
+// never a positional test-block index (spec §01 P5: the budget is a
+// per-declaration compiler constant). declaration is "" only when err is None,
+// or for the duplication gate, whose violation is a colliding PAIR of units,
+// not a single overshooting one.
+Gate_Verdict :: struct {
+	err:         Gate_Error,
+	declaration: string,
+}
+
+// stage_gates is the pipeline seam: it returns just the first gate error a
+// source overshoots (the form the pipeline driver and the gate-error fixtures
+// consume). The named-declaration diagnostic rides gate_verdict.
 stage_gates :: proc(ast: Ast) -> Gate_Error {
-	if err := gate_fn_size(ast); err != .None {
-		return err
-	}
-	if err := gate_arity(ast); err != .None {
-		return err
-	}
-	for test in ast.tests {
-		if err := check_cyclomatic(test); err != .None {
-			return err
-		}
-		if err := check_nesting(test); err != .None {
-			return err
-		}
-	}
-	if err := check_match_exhaustiveness(ast); err != .None {
-		return err
-	}
-	if err := gate_duplication(ast); err != .None {
-		return err
-	}
-	return .None
+	return gate_verdict(ast).err
 }
 
-// gate_fn_size rejects a test block whose statement count exceeds
-// MAX_FN_STATEMENTS. The Test_Node.body slice is the only
-// statement-sequence unit the surface has, so its length is the
-// function-size budget.
-gate_fn_size :: proc(ast: Ast) -> Gate_Error {
-	for test in ast.tests {
-		if len(test.body) > MAX_FN_STATEMENTS {
-			return .Fn_Size_Exceeded
+// gate_verdict walks every declaration body and returns the first budget it
+// overshoots, naming the offending declaration. The gate unit is the
+// declaration body — a test block, a top-level fn, or a behavior step
+// (gate_units) — so the fixed budgets (cyclomatic, nesting, fn size, arity,
+// match exhaustiveness, duplication) hold uniformly over all code, not just
+// test blocks. It returns the first violation found, in the per-gate, then
+// per-unit, order below.
+gate_verdict :: proc(ast: Ast) -> Gate_Verdict {
+	units := gate_units(ast)
+	sets := closed_variant_sets(ast)
+	for unit in units {
+		if len(statements_count(unit.body)) > MAX_FN_STATEMENTS {
+			return Gate_Verdict{err = .Fn_Size_Exceeded, declaration = unit.name}
 		}
 	}
-	return .None
+	for unit in units {
+		if err := gate_arity_unit(unit); err != .None {
+			return Gate_Verdict{err = err, declaration = unit.name}
+		}
+	}
+	for unit in units {
+		if err := check_cyclomatic(unit); err != .None {
+			return Gate_Verdict{err = err, declaration = unit.name}
+		}
+		if err := check_nesting(unit); err != .None {
+			return Gate_Verdict{err = err, declaration = unit.name}
+		}
+	}
+	for unit in units {
+		if err := check_match_exhaustiveness_unit(unit, sets); err != .None {
+			return Gate_Verdict{err = err, declaration = unit.name}
+		}
+	}
+	if err := gate_duplication(units); err != .None {
+		return Gate_Verdict{err = err}
+	}
+	return Gate_Verdict{err = .None}
 }
 
-// gate_arity rejects a Lambda_Expr whose parameter list exceeds
-// MAX_PARAM_ARITY. It walks every statement RHS in every test block and
-// every nested expression, so a lambda buried in a call argument or
-// another lambda's body is still checked. Running here — before
-// stage_typecheck — means an over-arity lambda is a structural Gate_Error,
-// not a downstream type mismatch.
-gate_arity :: proc(ast: Ast) -> Gate_Error {
-	for test in ast.tests {
-		for stmt in test.body {
-			switch s in stmt {
-			case Assert_Node:
-				if err := arity_walk_expr(s.expr); err != .None {
-					return err
-				}
-			case Let_Node:
-				if err := arity_walk_expr(s.value); err != .None {
-					return err
-				}
+// statements_count flattens a body into the statement sequence the fn-size
+// budget counts (spec §29 §4 / §01 P5). An `if cond { … }` early-return guard
+// contributes the guard statement itself plus its guarded block's statements,
+// so a long guarded sequence cannot dodge the size ceiling by nesting under an
+// `if`. A test body holds no `if`, so it flattens to itself.
+statements_count :: proc(body: []Statement) -> []Statement {
+	flat := make([dynamic]Statement, 0, len(body), context.temp_allocator)
+	for stmt in body {
+		append(&flat, stmt)
+		if guard, is_if := stmt.(If_Node); is_if {
+			inner := statements_count(guard.body)
+			for s in inner {
+				append(&flat, s)
+			}
+		}
+	}
+	return flat[:]
+}
+
+// gate_arity_unit rejects a Lambda_Expr whose parameter list exceeds
+// MAX_PARAM_ARITY anywhere in one declaration body. It walks every statement's
+// expressions — a let's value, an assert's/return's expression, an `if`
+// guard's condition and its nested body — and descends every sub-expression,
+// so a lambda buried in a call argument, another lambda's body, or under an
+// early-return guard is still checked. Running here — before stage_typecheck —
+// means an over-arity lambda is a structural Gate_Error, not a downstream type
+// mismatch.
+gate_arity_unit :: proc(unit: Gate_Unit) -> Gate_Error {
+	return arity_walk_body(unit.body)
+}
+
+// arity_walk_body folds the arity walk over a statement body, recursing into
+// an `if` guard's condition and its nested block so an over-arity lambda
+// cannot hide under an early-return guard.
+arity_walk_body :: proc(body: []Statement) -> Gate_Error {
+	for stmt in body {
+		switch s in stmt {
+		case Assert_Node:
+			if err := arity_walk_expr(s.expr); err != .None {
+				return err
+			}
+		case Let_Node:
+			if err := arity_walk_expr(s.value); err != .None {
+				return err
+			}
+		case Return_Node:
+			if err := arity_walk_expr(s.value); err != .None {
+				return err
+			}
+		case If_Node:
+			if err := arity_walk_expr(s.cond); err != .None {
+				return err
+			}
+			if err := arity_walk_body(s.body); err != .None {
+				return err
 			}
 		}
 	}
@@ -111,7 +194,7 @@ gate_arity :: proc(ast: Ast) -> Gate_Error {
 // bodies).
 arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 	switch e in expr {
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^Name_Expr:
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
 		// Leaf atoms host no sub-expressions.
 	case ^Call_Expr:
 		if err := arity_walk_expr(e.callee); err != .None {
@@ -127,6 +210,12 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 	case ^Variant_Expr:
 		for arg in e.payload {
 			if err := arity_walk_expr(arg); err != .None {
+				return err
+			}
+		}
+		// A struct-payload variant (Draw::Rect{…}) hosts its field values.
+		for field in e.fields {
+			if err := arity_walk_expr(field.value); err != .None {
 				return err
 			}
 		}
@@ -154,6 +243,15 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 			return err
 		}
 		return arity_walk_expr(e.rhs)
+	case ^With_Expr:
+		if err := arity_walk_expr(e.base); err != .None {
+			return err
+		}
+		for field in e.fields {
+			if err := arity_walk_expr(field.value); err != .None {
+				return err
+			}
+		}
 	case ^Match_Expr:
 		if err := arity_walk_expr(e.scrutinee); err != .None {
 			return err
@@ -167,22 +265,42 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 	return .None
 }
 
-// check_cyclomatic enforces the branch-count budget over a test block.
-// Cyclomatic complexity is 1 + the number of decision points; on the
-// golden surface the only branching construct is boolean short-circuit, so
-// each `and`/`or` Binary_Expr is the sole decision point. The `and`/`or`
-// operators are word operators carried as Ident tokens keyed by text (see
-// infix_power in expr.odin), so the count keys off op text the same way —
-// no glyph operator (`+`, `==`, …) is a branch.
-check_cyclomatic :: proc(test: Test_Node) -> Gate_Error {
-	decisions := 0
-	for stmt in test.body {
-		decisions += count_short_circuit(statement_expr(stmt))
-	}
-	if 1 + decisions > MAX_CYCLOMATIC {
+// check_cyclomatic enforces the branch-count budget over one declaration
+// body. Cyclomatic complexity is 1 + the number of decision points; the
+// branching constructs are the boolean short-circuit `and`/`or` and the `if`
+// early-return guard, each one decision point. The `and`/`or` operators are
+// word operators carried as Ident tokens keyed by text (see infix_power in
+// expr.odin), so the count keys off op text the same way — no glyph operator
+// (`+`, `==`, …) is a branch. An `if` guard adds one for the branch plus the
+// decisions inside its condition and nested body, so a deeply guarded body is
+// scored fully.
+check_cyclomatic :: proc(unit: Gate_Unit) -> Gate_Error {
+	if 1 + body_decisions(unit.body) > MAX_CYCLOMATIC {
 		return .Cyclomatic_Exceeded
 	}
 	return .None
+}
+
+// body_decisions folds the decision-point count over a statement body: each
+// statement's expression short-circuits, plus one per `if` guard and the
+// decisions in its condition and nested block.
+body_decisions :: proc(body: []Statement) -> int {
+	decisions := 0
+	for stmt in body {
+		switch s in stmt {
+		case Let_Node:
+			decisions += count_short_circuit(s.value)
+		case Assert_Node:
+			decisions += count_short_circuit(s.expr)
+		case Return_Node:
+			decisions += count_short_circuit(s.value)
+		case If_Node:
+			decisions += 1
+			decisions += count_short_circuit(s.cond)
+			decisions += body_decisions(s.body)
+		}
+	}
+	return decisions
 }
 
 // count_short_circuit folds the and/or decision points over one Expr
@@ -221,6 +339,14 @@ count_short_circuit :: proc(expr: Expr) -> int {
 		for arg in e.payload {
 			count += count_short_circuit(arg)
 		}
+		for field in e.fields {
+			count += count_short_circuit(field.value)
+		}
+	case ^With_Expr:
+		count += count_short_circuit(e.base)
+		for field in e.fields {
+			count += count_short_circuit(field.value)
+		}
 	case ^Match_Expr:
 		count += count_short_circuit(e.scrutinee)
 		for arm in e.arms {
@@ -238,33 +364,77 @@ is_short_circuit :: proc(op: Token) -> bool {
 	return op.kind == .Ident && (op.text == "and" || op.text == "or")
 }
 
-// check_nesting enforces the Expr-tree nesting budget over a test block.
+// check_nesting enforces the Expr-tree nesting budget over one declaration
+// body (spec §01 P5: nesting ≤ MAX_NESTING_DEPTH, a fixed compiler constant).
 //
-// The metric counts only *compositional* nesting — the constructs that
-// hold sub-expressions inside a container: a call's argument list, a
-// record's field values, a list's elements, and a lambda body. Each opens
-// one nesting level. Descending through a binary/unary operator spine or a
-// member-access receiver does NOT open a level: `a == b`, `-x`, and the
-// `Quat.identity.rotate` member chain are flat, not nested, so the
-// operator/receiver passes through at the same depth and keeps looking for
-// containers underneath. This matches spec §29 §4 / §01 P5, which frame
-// the nesting budget as a *scope-creep inside one function* control on
-// composition depth, not a count of every AST edge. (A naive raw edge
-// count would flag shallow golden asserts like
-// `cross(Vec3{…}, Vec3{…}) == Vec3{…}` whose intent is plainly flat.)
-check_nesting :: proc(test: Test_Node) -> Gate_Error {
-	for stmt in test.body {
-		if nesting_depth(statement_expr(stmt)) > MAX_NESTING_DEPTH {
-			return .Nesting_Exceeded
+// The metric counts *computational composition* — the constructs that fold a
+// sub-computation one level deeper: a call's arguments, a lambda body, a
+// payload-variant constructor, a `with`-update, and a match's arm bodies.
+// Each opens one nesting level. What it deliberately does NOT count is the
+// flat structure the spec frames as "plainly flat", not scope-creep:
+//   - operator spines (`a == b`, `-x`) and member-access receivers
+//     (`Quat.identity.rotate`) pass their child's depth through unchanged;
+//   - a method-call chain (`Bindings.empty().axis(…).axis(…)`) is a postfix
+//     spine — the receiver passes through and only each call's arguments
+//     deepen, so chaining builder calls is flat, not one level per link;
+//   - a record literal (`Vec2{…}`, `Ball{…}`) and a list literal are
+//     transparent aggregates — pure value construction, not control nesting —
+//     so they contribute their deepest field/element value without adding a
+//     level (a `[Spawn(Ball{pos: Vec2{…}})]` startup program is flat
+//     construction, not depth-4 scope-creep);
+//   - a match scrutinee sits at the match's own level (like an `if` guard's
+//     condition), since the discriminant is computed before the branch opens;
+//     only the arm bodies deepen.
+// This matches spec §29 §4 / §01 P5, which frame the nesting budget as a
+// *scope-creep inside one function* control on composition depth, not a count
+// of every AST edge — so the canonical gameplay surface (the pong golden)
+// clears it, while genuine nested computation (four nested calls, a chain of
+// payload-variant constructors) still fires.
+check_nesting :: proc(unit: Gate_Unit) -> Gate_Error {
+	return nesting_walk_body(unit.body, 0)
+}
+
+// nesting_walk_body scores the compositional-container nesting of every
+// statement in a body, with an `if` early-return guard opening one nesting
+// level for its guarded block (the block is a container of statements, like a
+// call's argument list opens one for its contents). depth is the level the
+// body itself sits at; a guarded block recurses at depth+1. A condition
+// expression is scored at the body's own depth — the guard does not deepen its
+// own condition.
+nesting_walk_body :: proc(body: []Statement, depth: int) -> Gate_Error {
+	for stmt in body {
+		switch s in stmt {
+		case Let_Node:
+			if depth + nesting_depth(s.value) > MAX_NESTING_DEPTH {
+				return .Nesting_Exceeded
+			}
+		case Assert_Node:
+			if depth + nesting_depth(s.expr) > MAX_NESTING_DEPTH {
+				return .Nesting_Exceeded
+			}
+		case Return_Node:
+			if depth + nesting_depth(s.value) > MAX_NESTING_DEPTH {
+				return .Nesting_Exceeded
+			}
+		case If_Node:
+			if depth + nesting_depth(s.cond) > MAX_NESTING_DEPTH {
+				return .Nesting_Exceeded
+			}
+			if err := nesting_walk_body(s.body, depth + 1); err != .None {
+				return err
+			}
 		}
 	}
 	return .None
 }
 
-// nesting_depth returns the deepest compositional-container nesting in one
-// Expr tree. A container (call args, record fields, list elements, lambda
-// body) adds one to the depth of its contents; an operator spine or member
-// receiver passes its child's depth through unchanged.
+// nesting_depth returns the deepest computational-composition nesting in one
+// Expr tree (the check_nesting metric). A computational construct (a call's
+// arguments, a lambda body, a payload-variant constructor, a `with`-update, a
+// match arm body) adds one level over its contents; a transparent aggregate (a
+// record or list literal), an operator spine, a member-access receiver, a
+// method-call chain's receiver spine, and a match scrutinee all pass their
+// child's depth through unchanged.
 nesting_depth :: proc(expr: Expr) -> int {
 	#partial switch e in expr {
 	case ^Unary_Expr:
@@ -274,66 +444,95 @@ nesting_depth :: proc(expr: Expr) -> int {
 	case ^Member_Expr:
 		return nesting_depth(e.receiver)
 	case ^Call_Expr:
+		// A method call (callee is a member access) is a postfix spine: the
+		// receiver passes through at the same depth and only the arguments
+		// deepen, so a builder chain (Bindings.empty().axis(…).axis(…)) is flat,
+		// not one level per chained call.
+		if method, is_method := e.callee.(^Member_Expr); is_method {
+			inner := nesting_depth(method.receiver)
+			for arg in e.args {
+				inner = max(inner, 1 + nesting_depth(arg))
+			}
+			return inner
+		}
 		inner := nesting_depth(e.callee)
 		for arg in e.args {
 			inner = max(inner, nesting_depth(arg))
 		}
 		return 1 + inner
 	case ^Record_Expr:
+		// A record literal is a transparent aggregate — pure value construction,
+		// not control nesting — so it contributes its deepest field value without
+		// adding a level (`cross(Vec3{…}, Vec3{…})`, `Ball{pos: Vec2{…}}` stay
+		// flat).
 		inner := 0
 		for field in e.fields {
 			inner = max(inner, nesting_depth(field.value))
 		}
-		return 1 + inner
+		return inner
 	case ^List_Expr:
+		// A list literal is a transparent aggregate like a record: a
+		// `[Spawn(…), Spawn(…)]` startup program is flat construction.
 		inner := 0
 		for element in e.elements {
 			inner = max(inner, nesting_depth(element))
 		}
-		return 1 + inner
+		return inner
 	case ^Lambda_Expr:
 		return 1 + nesting_depth(e.body)
 	case ^Variant_Expr:
+		// A bare variant (Side::Left, Option::None) carries no sub-
+		// expressions — it is a 0-arg constructor, a value atom like a name
+		// or constant (spec §03 §2), so it opens no nesting level. A
+		// payload-bearing variant (Option::Some(v), Draw::Rect{…}) is a
+		// constructor application that adds one level over its contents — the
+		// computational composition a chain of `Box::A(Box::B(…))` builds up.
+		if !e.has_payload && !e.has_fields {
+			return 0
+		}
 		inner := 0
 		for arg in e.payload {
 			inner = max(inner, nesting_depth(arg))
 		}
-		return 1 + inner
-	case ^Match_Expr:
-		inner := nesting_depth(e.scrutinee)
-		for arm in e.arms {
-			inner = max(inner, nesting_depth(arm.body))
+		for field in e.fields {
+			inner = max(inner, nesting_depth(field.value))
 		}
 		return 1 + inner
+	case ^With_Expr:
+		// A `with` update is a record-update computation: its field
+		// replacements open one nesting level over the base.
+		inner := nesting_depth(e.base)
+		for field in e.fields {
+			inner = max(inner, nesting_depth(field.value))
+		}
+		return 1 + inner
+	case ^Match_Expr:
+		// The scrutinee is the discriminant computed before the branch opens,
+		// so it sits at the match's own level (like an `if` guard's condition);
+		// only the arm bodies deepen.
+		inner := nesting_depth(e.scrutinee)
+		for arm in e.arms {
+			inner = max(inner, 1 + nesting_depth(arm.body))
+		}
+		return inner
 	}
 	// An atom (literal or bare name) is a leaf — depth zero.
 	return 0
 }
 
-// statement_expr is the single RHS expression a statement contributes to
-// the gate walks: a let's bound value or an assert's asserted expression.
-statement_expr :: proc(stmt: Statement) -> Expr {
-	switch node in stmt {
-	case Let_Node:
-		return node.value
-	case Assert_Node:
-		return node.expr
-	}
-	return nil
-}
-
-// gate_duplication enforces §29's dup_class rule: each test-block body is
-// the declaration unit, canonicalized to a normalized-AST string and
-// hashed into a dup_class key. Two units that normalize to the same key
-// are structurally identical modulo bound-name alpha-renaming, which
-// overshoots MAX_DUPLICATE_UNITS and is a compile error. The whole-block
-// body (not the single assert) is the §29-faithful unit: per-assert
-// hashing would false-positive on legitimately similar single asserts
-// (e.g. the golden file's repeated `assert a.slerp(b, …) == …` shapes).
-gate_duplication :: proc(ast: Ast) -> Gate_Error {
+// gate_duplication enforces §29's dup_class rule: each declaration body — a
+// test block, a fn, or a behavior step — is the declaration unit,
+// canonicalized to a normalized-AST string and hashed into a dup_class key.
+// Two units that normalize to the same key are structurally identical modulo
+// bound-name alpha-renaming, which overshoots MAX_DUPLICATE_UNITS and is a
+// compile error. The whole-body (not the single statement) is the §29-faithful
+// unit: per-statement hashing would false-positive on legitimately similar
+// single statements (e.g. the golden file's repeated `assert a.slerp(b, …) ==
+// …` shapes, or two one-line `with`-update behaviors over different things).
+gate_duplication :: proc(units: []Gate_Unit) -> Gate_Error {
 	seen := make(map[u64]int, context.temp_allocator)
-	for test in ast.tests {
-		key := dup_class(test.body)
+	for unit in units {
+		key := dup_class(unit.body)
 		seen[key] += 1
 		if seen[key] > MAX_DUPLICATE_UNITS {
 			return .Duplicate_Declaration
@@ -376,6 +575,18 @@ canon_body :: proc(b: ^strings.Builder, body: []Statement, alpha: ^[dynamic]stri
 			strings.write_string(b, " (assert ")
 			canon_expr(b, s.expr, alpha)
 			strings.write_byte(b, ')')
+		case Return_Node:
+			// Return/If are fn-body statements; the dup gate's unit is the
+			// test block, so these never reach canon_body. Canonicalize them
+			// faithfully anyway so the function stays total over Statement.
+			strings.write_string(b, " (return ")
+			canon_expr(b, s.value, alpha)
+			strings.write_byte(b, ')')
+		case If_Node:
+			strings.write_string(b, " (if ")
+			canon_expr(b, s.cond, alpha)
+			canon_body(b, s.body, alpha)
+			strings.write_byte(b, ')')
 		}
 	}
 	strings.write_byte(b, ')')
@@ -396,6 +607,12 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 	case ^Fixed_Lit_Expr:
 		strings.write_string(b, "(fixed ")
 		strings.write_i64(b, i64(e.bits))
+		strings.write_byte(b, ')')
+	case ^String_Lit_Expr:
+		// A string literal's raw text — interpolation holes included — is
+		// structural, so the canonical form keeps it verbatim.
+		strings.write_string(b, "(string ")
+		strings.write_string(b, e.text)
 		strings.write_byte(b, ')')
 	case ^Name_Expr:
 		canon_name(b, e.name, alpha)
@@ -423,6 +640,15 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 		for arg in e.payload {
 			strings.write_byte(b, ' ')
 			canon_expr(b, arg, alpha)
+		}
+		// A struct-payload variant's named fields, canonicalized like a
+		// record's — the field name is a structural selector, kept verbatim.
+		for field in e.fields {
+			strings.write_string(b, " (")
+			strings.write_string(b, field.name)
+			strings.write_byte(b, ' ')
+			canon_expr(b, field.value, alpha)
+			strings.write_byte(b, ')')
 		}
 		strings.write_byte(b, ')')
 	case ^Record_Expr:
@@ -471,6 +697,17 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 		canon_expr(b, e.lhs, alpha)
 		strings.write_byte(b, ' ')
 		canon_expr(b, e.rhs, alpha)
+		strings.write_byte(b, ')')
+	case ^With_Expr:
+		strings.write_string(b, "(with ")
+		canon_expr(b, e.base, alpha)
+		for field in e.fields {
+			strings.write_string(b, " (")
+			strings.write_string(b, field.name)
+			strings.write_byte(b, ' ')
+			canon_expr(b, field.value, alpha)
+			strings.write_byte(b, ')')
+		}
 		strings.write_byte(b, ')')
 	case ^Match_Expr:
 		strings.write_string(b, "(match ")
@@ -575,20 +812,47 @@ Closed_Variant_Set :: struct {
 	variants:  []string,
 }
 
-// CLOSED_VARIANT_SETS is the closed table of enum types whose variant set
-// the surface fixes (spec §26 prelude). Option is the concrete case the
-// golden surface and stdlib expose — engine.prelude Option, with variants
-// Some and None. A match on any type outside this table carries no known
-// denominator, so the gate leaves it for a later stage (typecheck
-// contains the whole Match_Expr as Unsupported_Expr). Growing this table
-// is a deliberate edit, mirroring STDLIB_SURFACE.
+// CLOSED_VARIANT_SETS is the closed table of stdlib enum types whose
+// variant set the surface fixes (spec §26 prelude). Option is the concrete
+// case the golden surface and stdlib expose — engine.prelude Option, with
+// variants Some and None. User enums (Side, Steer) are not listed here:
+// they are derived from the source AST per file and folded in alongside
+// this prelude table by closed_variant_sets, so the gate can prove
+// exhaustiveness over a user enum too. Growing this static table is a
+// deliberate edit, mirroring STDLIB_SURFACE.
 @(rodata)
 CLOSED_VARIANT_SETS := []Closed_Variant_Set{
 	{type_name = "Option", variants = {"Some", "None"}},
 }
 
-closed_variant_set :: proc(type_name: string) -> (set: Closed_Variant_Set, found: bool) {
-	for candidate in CLOSED_VARIANT_SETS {
+// closed_variant_sets is the per-file closed table the exhaustiveness gate
+// proves coverage against: the static stdlib prelude sets plus every user
+// `enum` the source declares, registered with its declared variant set
+// (spec §03 §2). A user enum is closed by construction — its declaration
+// fixes the variant set — so a match over Side or Steer carries a known
+// denominator just as a match over Option does. A `data`/`thing`/`signal`
+// declares no variants, so only ast.enums contribute.
+closed_variant_sets :: proc(ast: Ast) -> []Closed_Variant_Set {
+	sets := make([dynamic]Closed_Variant_Set, 0, len(CLOSED_VARIANT_SETS) + len(ast.enums), context.temp_allocator)
+	for set in CLOSED_VARIANT_SETS {
+		append(&sets, set)
+	}
+	for decl in ast.enums {
+		variants := make([]string, len(decl.variants), context.temp_allocator)
+		for variant, i in decl.variants {
+			variants[i] = variant.name
+		}
+		append(&sets, Closed_Variant_Set{type_name = decl.name, variants = variants})
+	}
+	return sets[:]
+}
+
+// closed_variant_set looks a type name up in a per-file closed table (the
+// stdlib prelude plus the source's user enums). A name absent from the
+// table carries no fixed denominator, so the gate leaves its match for a
+// later stage.
+closed_variant_set :: proc(sets: []Closed_Variant_Set, type_name: string) -> (set: Closed_Variant_Set, found: bool) {
+	for candidate in sets {
 		if candidate.type_name == type_name {
 			return candidate, true
 		}
@@ -596,24 +860,43 @@ closed_variant_set :: proc(type_name: string) -> (set: Closed_Variant_Set, found
 	return Closed_Variant_Set{}, false
 }
 
-// check_match_exhaustiveness rejects any non-total match (spec §02 §5: a
-// non-total match is a compile error). It is pure-AST and runs before
-// name resolution: it reads the arm patterns' own type_name/variant
-// strings, never a resolved scrutinee type. It walks every test block's
-// statements, descends each expression to find match nodes, and proves
-// each match total against the closed variant set its arms name.
-check_match_exhaustiveness :: proc(ast: Ast) -> Gate_Error {
-	for test in ast.tests {
-		for stmt in test.body {
-			switch node in stmt {
-			case Let_Node:
-				if err := match_walk_expr(node.value); err != .None {
-					return err
-				}
-			case Assert_Node:
-				if err := match_walk_expr(node.expr); err != .None {
-					return err
-				}
+// check_match_exhaustiveness_unit rejects any non-total match in one
+// declaration body (spec §02 §5: a non-total match is a compile error). It is
+// pure-AST and reads the arm patterns' own type_name/variant strings against
+// the closed variant sets (the stdlib prelude plus the source's user enums),
+// never a resolved scrutinee type — so a body match over a user enum (Side,
+// Steer) is proven exhaustive against that enum's declared variant set
+// (closed_variant_sets), just as a test-block match over Option is. It descends
+// every statement's expressions, including an `if` guard's condition and its
+// nested body, to find match nodes.
+check_match_exhaustiveness_unit :: proc(unit: Gate_Unit, sets: []Closed_Variant_Set) -> Gate_Error {
+	return match_walk_body(unit.body, sets)
+}
+
+// match_walk_body folds the match-exhaustiveness walk over a statement body,
+// recursing into an `if` guard's condition and its nested block so a match
+// under an early-return guard is still proven total.
+match_walk_body :: proc(body: []Statement, sets: []Closed_Variant_Set) -> Gate_Error {
+	for stmt in body {
+		switch node in stmt {
+		case Let_Node:
+			if err := match_walk_expr(node.value, sets); err != .None {
+				return err
+			}
+		case Assert_Node:
+			if err := match_walk_expr(node.expr, sets); err != .None {
+				return err
+			}
+		case Return_Node:
+			if err := match_walk_expr(node.value, sets); err != .None {
+				return err
+			}
+		case If_Node:
+			if err := match_walk_expr(node.cond, sets); err != .None {
+				return err
+			}
+			if err := match_walk_body(node.body, sets); err != .None {
+				return err
 			}
 		}
 	}
@@ -624,62 +907,77 @@ check_match_exhaustiveness :: proc(ast: Ast) -> Gate_Error {
 // contains (scrutinees and arm bodies nest matches). It mirrors the Expr
 // union arm-for-arm so a new expression form is a visible compile gap
 // here, not a silently-unwalked branch.
-match_walk_expr :: proc(expr: Expr) -> Gate_Error {
+match_walk_expr :: proc(expr: Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 	switch e in expr {
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^Name_Expr:
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
 		return .None
 	case ^Call_Expr:
-		if err := match_walk_expr(e.callee); err != .None {
+		if err := match_walk_expr(e.callee, sets); err != .None {
 			return err
 		}
 		for arg in e.args {
-			if err := match_walk_expr(arg); err != .None {
+			if err := match_walk_expr(arg, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^Member_Expr:
-		return match_walk_expr(e.receiver)
+		return match_walk_expr(e.receiver, sets)
 	case ^Variant_Expr:
 		for arg in e.payload {
-			if err := match_walk_expr(arg); err != .None {
+			if err := match_walk_expr(arg, sets); err != .None {
+				return err
+			}
+		}
+		for field in e.fields {
+			if err := match_walk_expr(field.value, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^Record_Expr:
 		for field in e.fields {
-			if err := match_walk_expr(field.value); err != .None {
+			if err := match_walk_expr(field.value, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^List_Expr:
 		for element in e.elements {
-			if err := match_walk_expr(element); err != .None {
+			if err := match_walk_expr(element, sets); err != .None {
 				return err
 			}
 		}
 		return .None
 	case ^Lambda_Expr:
-		return match_walk_expr(e.body)
+		return match_walk_expr(e.body, sets)
 	case ^Unary_Expr:
-		return match_walk_expr(e.operand)
+		return match_walk_expr(e.operand, sets)
 	case ^Binary_Expr:
-		if err := match_walk_expr(e.lhs); err != .None {
+		if err := match_walk_expr(e.lhs, sets); err != .None {
 			return err
 		}
-		return match_walk_expr(e.rhs)
-	case ^Match_Expr:
-		if err := match_walk_expr(e.scrutinee); err != .None {
+		return match_walk_expr(e.rhs, sets)
+	case ^With_Expr:
+		if err := match_walk_expr(e.base, sets); err != .None {
 			return err
 		}
-		for arm in e.arms {
-			if err := match_walk_expr(arm.body); err != .None {
+		for field in e.fields {
+			if err := match_walk_expr(field.value, sets); err != .None {
 				return err
 			}
 		}
-		return check_match_total(e)
+		return .None
+	case ^Match_Expr:
+		if err := match_walk_expr(e.scrutinee, sets); err != .None {
+			return err
+		}
+		for arm in e.arms {
+			if err := match_walk_expr(arm.body, sets); err != .None {
+				return err
+			}
+		}
+		return check_match_total(e, sets)
 	}
 	return .None
 }
@@ -691,7 +989,7 @@ match_walk_expr :: proc(expr: Expr) -> Gate_Error {
 // set appear in some arm. A match whose arms name no known closed set
 // carries no fixed denominator the gate can count against, so it passes
 // here and is left for a later stage.
-check_match_total :: proc(match: ^Match_Expr) -> Gate_Error {
+check_match_total :: proc(match: ^Match_Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 	type_name := ""
 	for arm in match.arms {
 		if arm.pattern.kind == .Wildcard {
@@ -703,7 +1001,7 @@ check_match_total :: proc(match: ^Match_Expr) -> Gate_Error {
 			type_name = arm.pattern.type_name
 		}
 	}
-	set, known := closed_variant_set(type_name)
+	set, known := closed_variant_set(sets, type_name)
 	if !known {
 		return .None
 	}

@@ -23,6 +23,22 @@ Token_Kind :: enum {
 	Return,
 	Fn,
 	Match,
+	// §06/§07 declaration and expression keywords. thing/singleton/signal
+	// are contextual leading keywords in the spec (§06: `let thing = …`
+	// stays legal); on the golden surface they appear only in declaration
+	// position, so they tokenize as reserved openers here. `on` is the
+	// behavior-target preposition, `with` the record-update operator, `if`
+	// the early-return statement opener.
+	Thing,
+	Singleton,
+	Behavior,
+	Signal,
+	Data,
+	Enum,
+	Pipeline,
+	With,
+	If,
+	On,
 	// names and literals
 	Ident,
 	Int_Lit,
@@ -76,6 +92,7 @@ Token :: struct {
 	class:      Ident_Class, // Ident casing class
 	int_value:  i64,         // Int_Lit value
 	fixed_bits: Fixed,       // Fixed_Lit value
+	line:       int,         // 1-based source line of the token's first byte (§15 diagnostic provenance)
 }
 
 stage_lex :: proc(source: string) -> []Token {
@@ -84,8 +101,21 @@ stage_lex :: proc(source: string) -> []Token {
 		brace_is_record = make([dynamic]bool, 0, 8, context.temp_allocator),
 	}
 	prev_kind := Token_Kind.Invalid
+	// line tracks the 1-based source line of the byte at `i`: it advances by
+	// the count of '\n' bytes the cursor has stepped over, so every token is
+	// stamped with the line of its first byte (§15 diagnostic provenance,
+	// artifact-format §9 span). scanned is the cursor position `line` is
+	// current for, so newlines crossed between tokens are counted exactly once.
+	line := 1
+	scanned := 0
 	i := 0
 	for i < len(source) {
+		for scanned < i {
+			if source[scanned] == '\n' {
+				line += 1
+			}
+			scanned += 1
+		}
 		ch := source[i]
 		tok: Token
 		next: int
@@ -102,6 +132,7 @@ stage_lex :: proc(source: string) -> []Token {
 		case:
 			tok, next = scan_punct(source, i)
 		}
+		tok.line = line
 		if tok.kind == .Newline && newline_suppressed(&nesting, source, next) {
 			i = next
 			continue
@@ -115,26 +146,35 @@ stage_lex :: proc(source: string) -> []Token {
 }
 
 // Nesting tracks the bracket context that decides whether a newline is
-// a statement terminator (spec §02). Newlines inside ( ) [ ] and inside
-// record-literal { } are layout; block { } interiors are statement
-// sequences, so theirs are kept. The two brace roles are told apart by
-// the predecessor token: a `{` directly after an identifier is a
-// record-literal constructor (Vec2{…}); any other `{` (after a test
-// name string, a lambda's `)`) opens a block.
-// match_pending arms the next `{` to open a block, not a record literal:
-// a match scrutinee ends in an Ident or `)` (a value, never a bare
-// UPPER_IDENT record head — fun.ll1.md), which the prev==Ident rule would
-// otherwise misread as a record brace and wrongly suppress the arms'
-// newline separators. The first `{` after `match` clears the flag.
+// a statement terminator (spec §02). Newlines inside ( ) and inside
+// record-literal { } are layout (suppressed); newlines inside a list
+// literal [ ] are SEPARATORS, kept — the pong `setup` list separates its
+// `Spawn(…)` elements by newline alone (the golden examples lead, 01 §5).
+// block { } interiors are statement sequences (or newline-separated
+// declaration members), so theirs are kept. The two brace roles are told
+// apart by the predecessor token: a `{` directly after an identifier — or
+// after the `with` operator — is a record-style field list (Vec2{…}, self
+// with {…}); any other `{` (after a test name string, a lambda's `)`)
+// opens a block.
+// block_pending arms the next `{` to open a block, not a record literal,
+// for the constructs whose body brace is preceded by an Ident that the
+// prev==Ident rule would otherwise misread as a record head: a `match`
+// scrutinee (ends in an Ident/`)`), an `if` condition (ends in any
+// value), a declaration body (`thing Paddle {`, `data Board {`,
+// `enum Steer: Axis {`, `pipeline Pong {`), a `behavior … on Thing {`,
+// and a function's return type (`-> Vec2 {`). Each of these arms the flag
+// (on the keyword, `on`, or the `->` arrow); the first `{` thereafter
+// clears it, so nested record literals inside the body still classify as
+// record braces.
 Nesting :: struct {
-	paren_bracket_depth: int,
-	record_brace_depth:  int,
-	brace_is_record:     [dynamic]bool,
-	match_pending:       bool,
+	paren_depth:        int,
+	record_brace_depth: int,
+	brace_is_record:    [dynamic]bool,
+	block_pending:      bool,
 }
 
 newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
-	if n.paren_bracket_depth > 0 || n.record_brace_depth > 0 {
+	if n.paren_depth > 0 || n.record_brace_depth > 0 {
 		return true
 	}
 	// Leading-dot chain continuation (spec §02): a newline whose next
@@ -148,15 +188,18 @@ newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
 
 update_nesting :: proc(n: ^Nesting, kind: Token_Kind, prev: Token_Kind) {
 	#partial switch kind {
-	case .Match:
-		n.match_pending = true
-	case .L_Paren, .L_Bracket:
-		n.paren_bracket_depth += 1
-	case .R_Paren, .R_Bracket:
-		n.paren_bracket_depth = max(0, n.paren_bracket_depth - 1)
+	case .Match, .If, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .On, .Arrow:
+		n.block_pending = true
+	case .L_Paren:
+		n.paren_depth += 1
+	case .R_Paren:
+		n.paren_depth = max(0, n.paren_depth - 1)
 	case .L_Brace:
-		is_record := prev == .Ident && !n.match_pending
-		n.match_pending = false
+		// A `{` after an Ident or the `with` operator is a record-style
+		// field list — unless block_pending armed it as a declaration body
+		// or control-flow block.
+		is_record := (prev == .Ident || prev == .With) && !n.block_pending
+		n.block_pending = false
 		append(&n.brace_is_record, is_record)
 		if is_record {
 			n.record_brace_depth += 1
@@ -289,6 +332,26 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .Fn, text = text}, i
 	case "match":
 		return Token{kind = .Match, text = text}, i
+	case "thing":
+		return Token{kind = .Thing, text = text}, i
+	case "singleton":
+		return Token{kind = .Singleton, text = text}, i
+	case "behavior":
+		return Token{kind = .Behavior, text = text}, i
+	case "signal":
+		return Token{kind = .Signal, text = text}, i
+	case "data":
+		return Token{kind = .Data, text = text}, i
+	case "enum":
+		return Token{kind = .Enum, text = text}, i
+	case "pipeline":
+		return Token{kind = .Pipeline, text = text}, i
+	case "with":
+		return Token{kind = .With, text = text}, i
+	case "if":
+		return Token{kind = .If, text = text}, i
+	case "on":
+		return Token{kind = .On, text = text}, i
 	}
 	return Token{kind = .Ident, text = text, class = classify_ident(text)}, i
 }
@@ -315,6 +378,16 @@ classify_ident :: proc(text: string) -> Ident_Class {
 		return .Snake_Case
 	}
 	return .Mixed
+}
+
+// is_upper_ident reports whether a casing class is an UPPER_IDENT — a name
+// that starts uppercase (lexical-core.ebnf §2: the parser-level split is
+// upper vs lower only; UpperCamel-vs-UPPER_SNAKE is a lint band on top).
+// Type names and enum variants are UPPER_IDENT, so a single-capital or
+// capital-plus-digit variant (Key::W, PlayerId::P1) — which classify as
+// Upper_Snake for lack of a lowercase letter — is still a valid variant.
+is_upper_ident :: proc(class: Ident_Class) -> bool {
+	return class == .Upper_Camel || class == .Upper_Snake
 }
 
 parse_digits :: proc(text: string) -> i64 {
