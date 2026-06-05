@@ -6,7 +6,7 @@
 // unique keyword, so one token of lookahead selects it. Expressions route
 // through the single parse_expression seam owned by the Pratt cascade
 // (expr.odin). This stage produces an AST only — no name resolution and no
-// typing (those are the sibling resolve/typecheck stories).
+// typing (those live in the resolve and typecheck stages).
 package funpack
 
 Assert_Node :: struct {
@@ -61,7 +61,7 @@ Test_Node :: struct {
 // records: a bare name (`Fixed`, `Side`), a generic application
 // (`View[Paddle]`, `Option[Side]`), or a list (`[Goal]`, `[Spawn]`). It is
 // purely structural — no resolution to the checker's semantic Type
-// (type.odin) happens here; that is the sibling resolve story's job. A list
+// (type.odin) happens here; that is the resolve stage's job. A list
 // is modeled as the generic head "[]" with one argument, so every
 // parameterized form shares one node shape.
 Type_Ref :: struct {
