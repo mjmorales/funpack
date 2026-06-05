@@ -26,7 +26,7 @@ Type_Error :: enum {
 	Unknown_Module,   // an import naming a module outside the surface
 	Unknown_Member,   // an import naming a member its module lacks
 	Unresolved_Name,  // a free name with no let binding, no user decl, and no import
-	Name_Collision,   // a user decl whose name already names an import or another user decl (spec §02)
+	Name_Collision,   // one name, two meanings (spec §02): a user decl colliding with an import or another user decl, or two imports binding one name to different declarations
 }
 
 // Scope maps a body's or test block's bound names to their checked types —

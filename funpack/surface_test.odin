@@ -73,7 +73,10 @@ test_pong_imports_populate_bindings :: proc(t: ^testing.T) {
 		kind:   Decl_Kind,
 	}
 	expectations := []Expectation{
-		{"Fixed", "engine.math", .Type_Name},
+		// Fixed binds to the OWNING prelude even when imported through
+		// engine.math — the declared re-export (§26 §3) canonicalizes the
+		// binding, so the meaning is route-independent.
+		{"Fixed", "engine.prelude", .Type_Name},
 		{"Vec2", "engine.math", .Type_Name},
 		{"abs", "engine.math", .Func},
 		{"clamp", "engine.math", .Func},
@@ -177,4 +180,79 @@ test_pipeline_bad_import_is_typecheck_failed :: proc(t: ^testing.T) {
 		"test \"x\" {\n\tassert to_fixed(2) == 2.0\n}\n"
 	_, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+// ── §26 §3 re-exports and the resolver collision floor ─────────────────
+
+@(test)
+test_stdlib_surface_single_owner_per_name :: proc(t: ^testing.T) {
+	// §02 one-name-one-meaning at the table layer: no name is owned by two
+	// partitions — a cross-partition duplicate is legal only as a declared
+	// STDLIB_REEXPORTS row. A future story admitting a name twice fails
+	// here instead of resolving last-write-wins.
+	for module, i in STDLIB_SURFACE {
+		for decl in module.decls {
+			for other in STDLIB_SURFACE[i + 1:] {
+				_, dup := surface_lookup(other, decl.name)
+				testing.expectf(
+					t,
+					!dup,
+					"%s owned by both %s and %s — declare a re-export instead",
+					decl.name,
+					module.path,
+					other.path,
+				)
+			}
+		}
+	}
+	// Every declared re-export resolves: the owner exists and owns the
+	// name, and the re-exporting partition does not ALSO own it (one
+	// owning row per name).
+	for row in STDLIB_REEXPORTS {
+		owner, has_owner := surface_module(row.owner)
+		testing.expectf(t, has_owner, "re-export %s.%s names unknown owner %s", row.module, row.name, row.owner)
+		if has_owner {
+			_, owned := surface_lookup(owner, row.name)
+			testing.expectf(t, owned, "re-export %s.%s: owner %s does not declare it", row.module, row.name, row.owner)
+		}
+		re_module, has_partition := surface_module(row.module)
+		testing.expectf(t, has_partition, "re-export row names unknown partition %s", row.module)
+		if has_partition {
+			_, also_owned := surface_lookup(re_module, row.name)
+			testing.expectf(t, !also_owned, "%s both owns and re-exports %s", row.module, row.name)
+		}
+	}
+}
+
+@(test)
+test_reexported_fixed_binds_identically_on_both_routes :: proc(t: ^testing.T) {
+	// The §26 §3 exception in action: Fixed imported through engine.math
+	// binds to the owning prelude — the identical binding the prelude
+	// pre-bind already inserted — so the re-import is legal and the
+	// meaning is route-independent.
+	ast, parse_err := stage_parse(stage_lex("import engine.math.{Fixed, Vec2}\n"))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+	fixed, bound := bindings.names["Fixed"]
+	testing.expect(t, bound)
+	testing.expect_value(t, fixed.module, "engine.prelude")
+	testing.expect_value(t, fixed.kind, Decl_Kind.Type_Name)
+}
+
+@(test)
+test_bind_name_rejects_conflicting_rebind :: proc(t: ^testing.T) {
+	// The binding-layer floor behind the table test: re-binding the
+	// identical declaration is legal (the prelude pre-bind + a golden
+	// re-export import), but a DIFFERENT declaration under a bound name is
+	// the §02 violation — rejected, never last-write-wins.
+	bindings: Bindings
+	bindings.names = make(map[string]Binding, context.temp_allocator)
+	first := Binding{module = "engine.prelude", kind = .Type_Name}
+	testing.expect_value(t, bind_name(&bindings, "Fixed", first), Type_Error.None)
+	testing.expect_value(t, bind_name(&bindings, "Fixed", first), Type_Error.None)
+	conflicting := Binding{module = "engine.math", kind = .Func}
+	testing.expect_value(t, bind_name(&bindings, "Fixed", conflicting), Type_Error.Name_Collision)
+	kept := bindings.names["Fixed"]
+	testing.expect_value(t, kept.module, "engine.prelude")
 }

@@ -33,7 +33,8 @@ Module_Surface :: struct {
 // surface, the §08 world read surface, the §23 input surface, the §20
 // render surface, the §04 core resources, and the list combinators.
 // One responsibility per module — the owning module is the only
-// exporter of each name (§26). Enums and resource types both occupy the
+// exporter of each name (§26), and a cross-partition duplicate is legal
+// only as a declared STDLIB_REEXPORTS row. Enums and resource types both occupy the
 // Type_Name slot (Decl_Kind has no separate enum kind): they are
 // type-position names. Growing a partition is a deliberate edit to this
 // closed table.
@@ -53,13 +54,12 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
-		// `Fixed` is the prelude's always-in-scope numeric type, but the
-		// golden source imports it through engine.math alongside Vec2 — the
-		// numerics module re-exports it so `engine.math.{Fixed, …}` resolves.
-		// Same name, same Type_Name meaning, whichever module names it.
+		// `Fixed` lives in STDLIB_REEXPORTS, not here: the golden sources
+		// import it through engine.math alongside Vec2 (the documented §26 §3
+		// exception), but the prelude owns it — a re-export is a declared
+		// table row, never a second owning decl.
 		path = "engine.math",
 		decls = {
-			{"Fixed", .Type_Name},
 			{"Vec2", .Type_Name},
 			{"Vec3", .Type_Name},
 			{"Quat", .Type_Name},
@@ -136,6 +136,26 @@ STDLIB_SURFACE := []Module_Surface{
 	},
 }
 
+// Reexport declares one name a partition exposes on behalf of its owning
+// module — the §26 §3 exception, a deliberate table row, never a second
+// owning decl. The resolver binds a re-exported name to its OWNER, so one
+// name has one meaning whichever import route named it; an undeclared
+// duplicate across partitions is rejected by the table-shape test. Growing
+// this table is a spec amendment to §26 §3 first.
+Reexport :: struct {
+	module: string, // the re-exporting partition, as written in imports
+	name:   string,
+	owner:  string, // the owning module the binding records
+}
+
+// STDLIB_REEXPORTS carries the one documented §26 §3 exception: engine.math
+// re-exports the prelude's Fixed so the golden numerics import line
+// (`import engine.math.{Fixed, Vec2, …}`) resolves.
+@(rodata)
+STDLIB_REEXPORTS := []Reexport{
+	{"engine.math", "Fixed", "engine.prelude"},
+}
+
 // Binding records the declaration an imported name resolved to.
 Binding :: struct {
 	module: string,
@@ -166,6 +186,55 @@ surface_lookup :: proc(module: Module_Surface, name: string) -> (decl: Surface_D
 	return Surface_Decl{}, false
 }
 
+// surface_resolve resolves one member against a partition: an owned decl
+// binds to this module; a declared re-export (§26 §3) resolves through its
+// owning module and binds to the OWNER, so the binding is identical
+// whichever import route named it. A name that is neither owned nor a
+// declared re-export is not a member.
+surface_resolve :: proc(module: Module_Surface, member: string) -> (binding: Binding, found: bool) {
+	if decl, declared := surface_lookup(module, member); declared {
+		return Binding{module = module.path, kind = decl.kind}, true
+	}
+	owner_path, reexported := surface_reexport(module.path, member)
+	if !reexported {
+		return Binding{}, false
+	}
+	owner, has_owner := surface_module(owner_path)
+	if !has_owner {
+		return Binding{}, false
+	}
+	decl, declared := surface_lookup(owner, member)
+	if !declared {
+		return Binding{}, false
+	}
+	return Binding{module = owner_path, kind = decl.kind}, true
+}
+
+// surface_reexport finds the declared re-export row for (partition, name),
+// if any. Walked by index like every table here — never a map.
+surface_reexport :: proc(module_path: string, name: string) -> (owner: string, found: bool) {
+	for row in STDLIB_REEXPORTS {
+		if row.module == module_path && row.name == name {
+			return row.owner, true
+		}
+	}
+	return "", false
+}
+
+// bind_name inserts one resolved name, rejecting a name already bound to a
+// DIFFERENT declaration — duplicate admission is deliberate, never
+// last-write-wins (spec §02 one-name-one-meaning at the resolver layer).
+// Re-binding the identical declaration is legal: the prelude pre-binds
+// Fixed, and a golden `engine.math.{Fixed, …}` import re-binds the same
+// owner-recorded meaning.
+bind_name :: proc(bindings: ^Bindings, name: string, binding: Binding) -> Type_Error {
+	if existing, bound := bindings.names[name]; bound && existing != binding {
+		return .Name_Collision
+	}
+	bindings.names[name] = binding
+	return .None
+}
+
 // resolve_imports validates ast.imports against the surface and binds
 // every imported name. The prelude is pre-bound — its names are always
 // in scope without an import (spec §26).
@@ -192,11 +261,11 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node) -> Type_Error {
 			return .Unknown_Module
 		}
 		for member in node.members {
-			decl, declared := surface_lookup(module, member)
+			binding, declared := surface_resolve(module, member)
 			if !declared {
 				return .Unknown_Member
 			}
-			bindings.names[member] = Binding{module = module.path, kind = decl.kind}
+			bind_name(bindings, member, binding) or_return
 		}
 		return .None
 	}
@@ -204,7 +273,7 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node) -> Type_Error {
 		// A whole-module import binds the module's own name; members
 		// are reached through it (spec §04: assets.coin_sfx).
 		handle := node.segments[len(node.segments) - 1]
-		bindings.names[handle] = Binding{module = module.path, kind = .Module}
+		bind_name(bindings, handle, Binding{module = module.path, kind = .Module}) or_return
 		return .None
 	}
 	if len(node.segments) < 2 {
@@ -216,12 +285,11 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node) -> Type_Error {
 		return .Unknown_Module
 	}
 	member := node.segments[len(node.segments) - 1]
-	decl, declared := surface_lookup(module, member)
+	binding, declared := surface_resolve(module, member)
 	if !declared {
 		return .Unknown_Member
 	}
-	bindings.names[member] = Binding{module = module.path, kind = decl.kind}
-	return .None
+	return bind_name(bindings, member, binding)
 }
 
 join_path :: proc(segments: []string) -> string {
