@@ -30,8 +30,13 @@ Module_Surface :: struct {
 
 // STDLIB_SURFACE partitions the importable stdlib names by owning
 // module (spec §26): the prelude's always-in-scope core, the §10 math
-// surface the golden file exercises, and the list combinators. Growing
-// a partition is a deliberate edit to this closed table.
+// surface, the §08 world read surface, the §23 input surface, the §20
+// render surface, the §04 core resources, and the list combinators.
+// One responsibility per module — the owning module is the only
+// exporter of each name (§26). Enums and resource types both occupy the
+// Type_Name slot (Decl_Kind has no separate enum kind): they are
+// type-position names. Growing a partition is a deliberate edit to this
+// closed table.
 @(rodata)
 STDLIB_SURFACE := []Module_Surface{
 	{
@@ -48,8 +53,13 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
+		// `Fixed` is the prelude's always-in-scope numeric type, but the
+		// golden source imports it through engine.math alongside Vec2 — the
+		// numerics module re-exports it so `engine.math.{Fixed, …}` resolves.
+		// Same name, same Type_Name meaning, whichever module names it.
 		path = "engine.math",
 		decls = {
+			{"Fixed", .Type_Name},
 			{"Vec2", .Type_Name},
 			{"Vec3", .Type_Name},
 			{"Quat", .Type_Name},
@@ -58,6 +68,7 @@ STDLIB_SURFACE := []Module_Surface{
 			{"sin", .Func},
 			{"cos", .Func},
 			{"sqrt", .Func},
+			{"abs", .Func},
 			{"clamp", .Func},
 			{"lerp", .Func},
 			{"dot", .Func},
@@ -74,12 +85,53 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
+		// §08: the read/reference surface. View[T] is the read-only
+		// table; Spawn is a closed §04 command-type constructor.
+		path = "engine.world",
+		decls = {
+			{"View", .Type_Name},
+			{"Spawn", .Type_Name},
+		},
+	},
+	{
+		// §23: the input surface. Input is the read-only resource;
+		// PlayerId/Key/Stick are enums; Bindings is the builder type;
+		// keys_axis/stick_y are engine-provided source helpers.
+		path = "engine.input",
+		decls = {
+			{"Input", .Type_Name},
+			{"Key", .Type_Name},
+			{"PlayerId", .Type_Name},
+			{"Bindings", .Type_Name},
+			{"Stick", .Type_Name},
+			{"keys_axis", .Func},
+			{"stick_y", .Func},
+		},
+	},
+	{
+		// §20: the 2D render surface. Draw is the closed §04 draw-command
+		// type; Color is its palette enum.
+		path = "engine.render",
+		decls = {
+			{"Draw", .Type_Name},
+			{"Color", .Type_Name},
+		},
+	},
+	{
+		// §04: the engine resources read by Update behaviors.
+		path = "engine.core",
+		decls = {
+			{"Time", .Type_Name},
+		},
+	},
+	{
 		path = "engine.list",
 		decls = {
 			{"fold", .Func},
 			{"map", .Func},
 			{"filter", .Func},
 			{"find", .Func},
+			{"first", .Func},
 		},
 	},
 }
