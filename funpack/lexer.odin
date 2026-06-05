@@ -22,6 +22,7 @@ Token_Kind :: enum {
 	Let,
 	Return,
 	Fn,
+	Match,
 	// names and literals
 	Ident,
 	Int_Lit,
@@ -40,8 +41,9 @@ Token_Kind :: enum {
 	Colon_Colon, // enum-variant selector, only
 	Colon,       // type ascription / record-field separator
 	Comma,
-	Arrow, // function return type
-	Eq,    // binding, never equality
+	Arrow,    // function return type
+	Eq_Arrow, // match arm separator `=>`
+	Eq,       // binding, never equality
 	Eq_Eq,
 	Not_Eq,
 	Lt,
@@ -119,10 +121,16 @@ stage_lex :: proc(source: string) -> []Token {
 // the predecessor token: a `{` directly after an identifier is a
 // record-literal constructor (Vec2{…}); any other `{` (after a test
 // name string, a lambda's `)`) opens a block.
+// match_pending arms the next `{` to open a block, not a record literal:
+// a match scrutinee ends in an Ident or `)` (a value, never a bare
+// UPPER_IDENT record head — fun.ll1.md), which the prev==Ident rule would
+// otherwise misread as a record brace and wrongly suppress the arms'
+// newline separators. The first `{` after `match` clears the flag.
 Nesting :: struct {
 	paren_bracket_depth: int,
 	record_brace_depth:  int,
 	brace_is_record:     [dynamic]bool,
+	match_pending:       bool,
 }
 
 newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
@@ -140,12 +148,15 @@ newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
 
 update_nesting :: proc(n: ^Nesting, kind: Token_Kind, prev: Token_Kind) {
 	#partial switch kind {
+	case .Match:
+		n.match_pending = true
 	case .L_Paren, .L_Bracket:
 		n.paren_bracket_depth += 1
 	case .R_Paren, .R_Bracket:
 		n.paren_bracket_depth = max(0, n.paren_bracket_depth - 1)
 	case .L_Brace:
-		is_record := prev == .Ident
+		is_record := prev == .Ident && !n.match_pending
+		n.match_pending = false
 		append(&n.brace_is_record, is_record)
 		if is_record {
 			n.record_brace_depth += 1
@@ -174,6 +185,8 @@ scan_punct :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .Colon_Colon, text = two}, start + 2
 	case "->":
 		return Token{kind = .Arrow, text = two}, start + 2
+	case "=>":
+		return Token{kind = .Eq_Arrow, text = two}, start + 2
 	}
 	one := source[start : start+1]
 	one_kind: Token_Kind
@@ -274,6 +287,8 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .Return, text = text}, i
 	case "fn":
 		return Token{kind = .Fn, text = text}, i
+	case "match":
+		return Token{kind = .Match, text = text}, i
 	}
 	return Token{kind = .Ident, text = text, class = classify_ident(text)}, i
 }

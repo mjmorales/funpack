@@ -197,6 +197,32 @@ test_lex_ident_carries_class :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_lex_match_keyword_and_arrow :: proc(t: ^testing.T) {
+	// `match` is a keyword token and `=>` is the arm separator, distinct
+	// from `=` binding and `->` return-type arrow (spec §02 §5).
+	tokens := stage_lex("match seen {\n  Option::None => 0\n}\n")
+	expect_kinds(t, tokens, []Token_Kind{
+		.Match, .Ident, .L_Brace, .Newline,
+		.Ident, .Colon_Colon, .Ident, .Eq_Arrow, .Int_Lit, .Newline,
+		.R_Brace, .Newline,
+	})
+}
+
+@(test)
+test_lex_match_block_keeps_arm_newlines :: proc(t: ^testing.T) {
+	// A bare-name scrutinee ends in an Ident, but the match brace is a
+	// block — its interior newlines (the arm separators) must survive,
+	// not be suppressed like a record literal's.
+	tokens := stage_lex("match side {\n  Side::Left => 1\n  Side::Right => 2\n}\n")
+	expect_kinds(t, tokens, []Token_Kind{
+		.Match, .Ident, .L_Brace, .Newline,
+		.Ident, .Colon_Colon, .Ident, .Eq_Arrow, .Int_Lit, .Newline,
+		.Ident, .Colon_Colon, .Ident, .Eq_Arrow, .Int_Lit, .Newline,
+		.R_Brace, .Newline,
+	})
+}
+
+@(test)
 test_lex_no_comment_production :: proc(t: ^testing.T) {
 	// P6: the lexer has no comment production — `//` is two division
 	// glyphs and the rest of the line lexes as ordinary tokens, never a
