@@ -305,8 +305,8 @@ test_exit_code_contract :: proc(t: ^testing.T) {
 
 @(test)
 test_pipeline_gate_stage_passes_golden_source :: proc(t: ^testing.T) {
-	// The structural-gate seam ships pass-through: a clean source clears
-	// the new stage and reaches typecheck unchanged.
+	// The gate stage is transparent to a clean source: it clears
+	// stage_gates and reaches typecheck unchanged.
 	source := with_golden_imports("test \"gate seam is transparent\" {\n\tassert to_fixed(2) == 2.0\n}\n")
 	report, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.None)
