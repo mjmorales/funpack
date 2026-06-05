@@ -6,3 +6,6 @@ warden/warden
 
 # machine-local symlinks (written by claude-prove install init/local-env)
 .claude/prove-plugin
+
+# live sub-task worktrees (claude-prove worktree create)
+.claude/worktrees/
