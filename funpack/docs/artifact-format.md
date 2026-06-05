@@ -199,6 +199,7 @@ subtree shape:
 | `int` | `value:Int` | 0 | integer literal `0` |
 | `fixed` | `bits:Fixed` | 0 | fixed literal `4.0` (raw Q32.32, §2.3) |
 | `name` | `ident:name` | 0 | a bare name `self`, `BOARD`, `add_goal` |
+| `string` | `value:String` | 0 | string literal `"…"` (length-prefixed, §2.4; interpolation holes retained verbatim) |
 | `field` | `member:name` | 1 = receiver | field access `a.b` |
 | `call` | (none) | 1 + N = callee then N args | `f(a, b)` |
 | `variant` | `type:name` `case:name` `has_payload:Bool` | N = payload args | `Side::Left`, `Option::Some(x)` |
