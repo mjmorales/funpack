@@ -1,0 +1,666 @@
+// The Index Contract `project` record — funpack's ONE exposed interface
+// (spec §29 §2): the process-boundary data contract `warden` consumes. It is
+// a closed, schema-versioned, exact-match structure with ALL fields
+// mandatory and a leading `schema_version` stamp; an under- or over-shaped
+// record is an error, there are no optional fields. The transport is NDJSON —
+// one JSON object per line — emitted whole-stream per build (a complete
+// index, never an incremental delta). The emission is a pure projection of
+// the §14 authored config (`funpack_configs/*.fcfg`) and the compiled source,
+// so it is byte-identical on every machine: there is no clock, no map
+// iteration, no float (spec §29 §1). Any change to which fields are emitted
+// is a contract RESHAPE — bump INDEX_SCHEMA_VERSION, never silently drift.
+//
+// This file owns the `project` record ONLY (spec §29 §2 names two record
+// kinds — `project` and per-declaration `decl`; the `decl` records and
+// warden's consumption are out of scope here). It is a DISTINCT surface from
+// the runtime binary artifact (artifact_format.odin): different consumer
+// (`warden`, not the runtime) and different transport (NDJSON, not the
+// length-prefixed byte format).
+//
+// AUTHORED fields project from the config tree: `entrypoints` (the
+// entrypoints.fcfg pipeline/tick/bindings wiring, §14 §4), `builds` (the
+// builds.fcfg presentation platform targets, §14 §4/§6), `tag_registry` (the
+// tags.fcfg @gtag registry, §14 §4). DERIVED fields project from source:
+// `capabilities` (the §14 §4 derivation — core render/input/state always on,
+// the optional batteries switched on by their backing source), the
+// `pipeline_flattened` depth-first total order (stage_flatten, §07 §3), and
+// the structural `gate_results` (the §29 §1 gate verdicts).
+package funpack
+
+import "core:encoding/json"
+import "core:os"
+import "core:path/filepath"
+import "core:slice"
+import "core:strings"
+
+// INDEX_SCHEMA_VERSION is the leading stamp every Index Contract record
+// carries (spec §29 §2). `warden` exact-matches it and refuses a mismatch
+// with a fix-it rather than best-effort parsing, so it is the single
+// compatibility gate. Any change to the emitted field set is a contract
+// reshape that bumps this; it is independent of the runtime artifact's
+// ARTIFACT_SCHEMA_VERSION (a separate surface with its own version line).
+INDEX_SCHEMA_VERSION :: 1
+
+// Entrypoint_Record is one authored entrypoint's lifted wiring (§14 §4): the
+// entrypoint name and the root pipeline ↔ tick ↔ bindings it binds. tick_hz
+// is the tick rate in hertz (the `60hz` value carried as its integer rate);
+// bindings is the named bindings fn ("" when an entrypoint declares none).
+Entrypoint_Record :: struct {
+	name:     string,
+	pipeline: string,
+	tick_hz:  int,
+	bindings: string,
+}
+
+// Build_Record is one authored emit target (§14 §4/§6): the build name and
+// its presentation platform (`desktop`, `wasm`). builds.fcfg carries the
+// presentation platform only — no realm field — so a build projects to
+// exactly its name and platform.
+Build_Record :: struct {
+	name:     string,
+	platform: string,
+}
+
+// Capability is the closed §14 §4 battery set the `project` record reports as
+// active. Core render/input/state are always on; the optional batteries
+// switch on from their backing source (a non-empty ui/ ⇒ Ui, a non-empty
+// models/ ⇒ Modeling, a `net:` entrypoint ⇒ Netcode, an `@expose` ⇒ Modding,
+// an `audio:` stage ⇒ Audio). The set is closed and compiler-fixed: a new
+// battery is a schema-version bump, never a silently-added string.
+Capability :: enum {
+	Render,   // core — always on
+	Input,    // core — always on
+	State,    // core — always on
+	Ui,       // non-empty ui/ (§21)
+	Modeling, // non-empty models/ (§16)
+	Netcode,  // a `net:` in an entrypoint (§25)
+	Modding,  // an `@expose` declaration (§27)
+	Audio,    // an `audio:` stage (§22)
+}
+
+// Gate_Family is the closed set of structural quality gates whose verdicts
+// the `project` record reports (spec §29 §1: cyclomatic/nesting/fn-size/arity,
+// exhaustiveness, effect-closure, duplication). The set bisects exactly the
+// pure-AST structural gates that live in `funpack` — the node-level budget
+// gates (gates.odin) and the cross-behavior effect-closure edge check
+// (pipeline_flatten.odin). It is closed: a new gate is a schema-version bump.
+Gate_Family :: enum {
+	Cyclomatic,
+	Nesting,
+	Fn_Size,
+	Arity,
+	Exhaustiveness,
+	Duplication,
+	Effect_Closure,
+}
+
+// Gate_Result is one structural gate's verdict line in the `project` record:
+// the gate family and whether the source cleared it. The whole vector is
+// emitted (every family, passing or not) so the record is exact-match — a
+// `warden` reader keys off the family, never a positional index.
+Gate_Result :: struct {
+	gate:   Gate_Family,
+	passed: bool,
+}
+
+// Flat_Step_Record is one step of the emitted depth-first flattened total
+// order (spec §07 §3): the 0-based ordinal, the owning stage name, and the
+// behavior run at this step. It mirrors Flat_Step (pipeline_flatten.odin) as
+// the contract's own field-named shape, so the in-memory flatten projects
+// straight onto the NDJSON without leaking the internal struct's layout.
+Flat_Step_Record :: struct {
+	ordinal:  int,
+	stage:    string,
+	behavior: string,
+}
+
+// Project_Record is the closed, exact-match `project` record of the Index
+// Contract (spec §29 §2). The field set is fixed and ALL fields are
+// mandatory: schema_version (the leading stamp), the AUTHORED entrypoints /
+// builds / tag_registry, and the DERIVED capabilities / pipeline_flattened /
+// gate_results. Field declaration order IS the emitted JSON key order (a pure
+// struct marshal), so schema_version leads. An empty-but-present field (no
+// builds, no tags) is a zero-length list, never an omitted key — absence is
+// an empty list, never a missing field.
+Project_Record :: struct {
+	schema_version:     int,
+	name:               string,
+	version:            string,
+	entrypoints:        []Entrypoint_Record,
+	builds:             []Build_Record,
+	tag_registry:       []string,
+	capabilities:       []Capability,
+	pipeline_flattened: []Flat_Step_Record,
+	gate_results:       []Gate_Result,
+}
+
+// Index_Contract_Error is closed with one arm per way the `project` record's
+// authored config can fail to read. The derived fields cannot fail here —
+// they project from an already-compiled Typed_Ast and an already-flattened
+// pipeline — so every arm names a config-read failure, never a compile error.
+Index_Contract_Error :: enum {
+	None,
+	Missing_Configs_Dir,     // funpack_configs/ is absent — a malformed §14 tree
+	Malformed_Entrypoints,   // entrypoints.fcfg is present but does not parse
+	Malformed_Builds,        // builds.fcfg is present but does not parse
+}
+
+// build_project_record assembles the exact `project` record from the project
+// tree and the compiled program. The authored fields read the §14 config
+// tree (read-only); the derived fields project from the typed AST and the
+// flattened pipeline the prior stages already produced. It never opens a
+// clock, a map iteration, or a float, so the record is a pure function of its
+// inputs (spec §29 §1) and emits byte-identical on every machine. A
+// config-read failure returns before any record is built; the derived inputs
+// are trusted (the caller compiled them).
+build_project_record :: proc(
+	root: string,
+	identity: Project,
+	typed: Typed_Ast,
+	flat: Flattened_Pipeline,
+) -> (record: Project_Record, err: Index_Contract_Error) {
+	configs_dir, _ := filepath.join({root, "funpack_configs"}, context.temp_allocator)
+	if !os.is_dir(configs_dir) {
+		return Project_Record{}, .Missing_Configs_Dir
+	}
+	entrypoints, entry_err := read_entrypoints(configs_dir)
+	if entry_err != .None {
+		return Project_Record{}, entry_err
+	}
+	builds, build_err := read_builds(configs_dir)
+	if build_err != .None {
+		return Project_Record{}, build_err
+	}
+	return Project_Record {
+			schema_version     = INDEX_SCHEMA_VERSION,
+			name               = identity.name,
+			version            = identity.version,
+			entrypoints        = entrypoints,
+			builds             = builds,
+			tag_registry       = read_tag_registry(configs_dir),
+			capabilities       = derive_capabilities(root, typed, entrypoints),
+			pipeline_flattened = flatten_to_records(flat),
+			gate_results       = derive_gate_results(typed, flat),
+		},
+		.None
+}
+
+// emit_project_record encodes a `project` record as one NDJSON line: the
+// compact JSON object followed by a single LF (the one-object-per-line
+// transport, spec §29 §2). The struct marshals in field-declaration order
+// with enum values as their names (use_enum_names), so the schema_version key
+// leads and the gate/capability enums emit as readable strings. No map is
+// marshaled — every field is a scalar or a slice — so the bytes are
+// deterministic and a double emission of the same record is byte-identical.
+emit_project_record :: proc(record: Project_Record, allocator := context.allocator) -> string {
+	bytes, _ := json.marshal(record, {use_enum_names = true}, context.temp_allocator)
+	line := strings.concatenate({string(bytes), "\n"}, allocator)
+	return line
+}
+
+// flatten_to_records projects the in-memory flattened pipeline onto the
+// contract's field-named step shape (spec §07 §3 total order). It is a
+// straight per-step copy in flatten order, so the emitted order is the
+// depth-first total order with no re-sort.
+flatten_to_records :: proc(flat: Flattened_Pipeline) -> []Flat_Step_Record {
+	steps := make([]Flat_Step_Record, len(flat.order), context.temp_allocator)
+	for step, i in flat.order {
+		steps[i] = Flat_Step_Record{ordinal = step.ordinal, stage = step.stage, behavior = step.behavior}
+	}
+	return steps
+}
+
+// derive_gate_results reports every structural gate's verdict (spec §29 §1) in
+// the fixed Gate_Family order. The node-level budget gates (cyclomatic,
+// nesting, fn-size, arity, exhaustiveness, duplication) read the same
+// per-declaration unit set stage_gates folds over; effect-closure reads the
+// flattened pipeline's routing graph. Each family's verdict is `did the
+// source clear THIS gate`, computed independently so the whole vector is
+// reported, not just the first overshoot. The source reaching this stage has
+// already passed the gates (the pipeline rejects on the first failure before
+// emitting), so on a compiled program every family passes; the per-family
+// computation is faithful so a future emit-on-failure path reports the real
+// vector.
+derive_gate_results :: proc(typed: Typed_Ast, flat: Flattened_Pipeline) -> []Gate_Result {
+	units := gate_units(typed.ast)
+	sets := closed_variant_sets(typed.ast)
+	results := make([]Gate_Result, len(Gate_Family), context.temp_allocator)
+	results[Gate_Family.Cyclomatic]     = Gate_Result{gate = .Cyclomatic, passed = !any_unit_fails(units, check_cyclomatic)}
+	results[Gate_Family.Nesting]        = Gate_Result{gate = .Nesting, passed = !any_unit_fails(units, check_nesting)}
+	results[Gate_Family.Fn_Size]        = Gate_Result{gate = .Fn_Size, passed = !any_unit_fails(units, check_fn_size)}
+	results[Gate_Family.Arity]          = Gate_Result{gate = .Arity, passed = !any_unit_fails(units, gate_arity_unit)}
+	results[Gate_Family.Exhaustiveness] = Gate_Result{gate = .Exhaustiveness, passed = !any_match_fails(units, sets)}
+	results[Gate_Family.Duplication]    = Gate_Result{gate = .Duplication, passed = gate_duplication(units) == .None}
+	results[Gate_Family.Effect_Closure] = Gate_Result{gate = .Effect_Closure, passed = !first_unclosed_holds(flat.routes)}
+	return results
+}
+
+// check_fn_size is the fn-size budget as a per-unit predicate, mirroring the
+// in-line check stage_gates runs (a body's flattened statement count must not
+// exceed MAX_FN_STATEMENTS). It is factored here so derive_gate_results scores
+// the fn-size family through the same any_unit_fails fold as the other
+// per-unit gates.
+check_fn_size :: proc(unit: Gate_Unit) -> Gate_Error {
+	if len(statements_count(unit.body)) > MAX_FN_STATEMENTS {
+		return .Fn_Size_Exceeded
+	}
+	return .None
+}
+
+// any_unit_fails reports whether any declaration unit overshoots a per-unit
+// gate — the gate family's verdict is the negation. The check is the same
+// per-unit predicate stage_gates runs (cyclomatic, nesting, fn-size, arity),
+// so a family's project-record verdict and the pipeline's first-error reject
+// agree on the same source.
+any_unit_fails :: proc(units: []Gate_Unit, check: proc(Gate_Unit) -> Gate_Error) -> bool {
+	for unit in units {
+		if check(unit) != .None {
+			return true
+		}
+	}
+	return false
+}
+
+// any_match_fails reports whether any declaration unit holds a non-total match
+// (the exhaustiveness gate), proven against the per-file closed variant sets.
+// It is the exhaustiveness analogue of any_unit_fails, carrying the closed-set
+// table the per-unit match check needs.
+any_match_fails :: proc(units: []Gate_Unit, sets: []Closed_Variant_Set) -> bool {
+	for unit in units {
+		if check_match_exhaustiveness_unit(unit, sets) != .None {
+			return true
+		}
+	}
+	return false
+}
+
+// first_unclosed_holds reports whether the routing graph has any unclosed
+// signal — an emitted signal with no downstream consumer (spec §04 §4 / §07
+// §2). It is the effect-closure family's failure predicate; its negation is
+// the family's passed verdict.
+first_unclosed_holds :: proc(routes: []Signal_Route) -> bool {
+	_, unclosed := first_unclosed(routes)
+	return unclosed
+}
+
+// derive_capabilities computes the active §14 §4 battery set as the contract's
+// closed Capability vector. Core render/input/state are always on; the
+// optional batteries switch on from their backing source: a non-empty ui/ ⇒
+// Ui, a non-empty models/ ⇒ Modeling, a `net:` in any entrypoint ⇒ Netcode, an
+// `@expose` declaration ⇒ Modding, an `audio:` pipeline stage ⇒ Audio. The
+// derivation is structural — it reads directory presence and the source, never
+// a features config (there is none, §14 §4) — and emits in the fixed
+// Capability enum order so the vector is deterministic.
+derive_capabilities :: proc(root: string, typed: Typed_Ast, entrypoints: []Entrypoint_Record) -> []Capability {
+	caps := make([dynamic]Capability, 0, len(Capability), context.temp_allocator)
+	// Core batteries are unconditional (§14 §4: render/input/state always on).
+	append(&caps, Capability.Render, Capability.Input, Capability.State)
+	if dir_is_non_empty(root, "ui") {
+		append(&caps, Capability.Ui)
+	}
+	if dir_is_non_empty(root, "models") {
+		append(&caps, Capability.Modeling)
+	}
+	if any_entrypoint_has_net(entrypoints) {
+		append(&caps, Capability.Netcode)
+	}
+	if source_has_expose(typed.ast) {
+		append(&caps, Capability.Modding)
+	}
+	if source_has_audio_stage(typed.ast) {
+		append(&caps, Capability.Audio)
+	}
+	return caps[:]
+}
+
+// dir_is_non_empty reports whether a capability-backing subsystem directory is
+// present and holds at least one regular file (§14 §4: present-but-empty ⇒ the
+// feature is off; present-and-non-empty ⇒ on). An absent directory is off, so
+// the read is closed: a missing ui/ or models/ never errors, it just leaves
+// the battery off.
+dir_is_non_empty :: proc(root: string, sub: string) -> bool {
+	dir, _ := filepath.join({root, sub}, context.temp_allocator)
+	if !os.is_dir(dir) {
+		return false
+	}
+	walker := os.walker_create(dir)
+	defer os.walker_destroy(&walker)
+	for info in os.walker_walk(&walker) {
+		if info.type == .Regular {
+			return true
+		}
+	}
+	return false
+}
+
+// any_entrypoint_has_net reports whether any entrypoint declares a `net:`
+// wiring (§14 §4 / §25: a `net:` switches on netcode). The entrypoint reader
+// records the tick/bindings wiring but no net field on the gameplay surface;
+// when a future entrypoint carries one, the reader fills it and this predicate
+// fires. The gameplay surface declares none, so netcode is off for pong.
+any_entrypoint_has_net :: proc(entrypoints: []Entrypoint_Record) -> bool {
+	// The entrypoint record carries no net wiring yet (the gameplay surface
+	// declares none); a net field on Entrypoint_Record is the seam that turns
+	// this on, so it reads false until that field is authored and read.
+	return false
+}
+
+// source_has_expose reports whether the source declares an `@expose` directive
+// (§14 §4 / §27: an `@expose` switches on modding). The gameplay surface
+// admits only `@doc`/`@gtag` directives, so no declaration carries an
+// `@expose` and modding is off for pong; the predicate is the §27 seam for
+// when the directive grammar admits it.
+source_has_expose :: proc(ast: Ast) -> bool {
+	// `@expose` is not part of the directive grammar the gameplay surface
+	// parses (only `@doc`/`@gtag` attach to a declaration), so no AST node
+	// records an expose flag and this reads false. It is the modding seam.
+	return false
+}
+
+// source_has_audio_stage reports whether any pipeline declares an `audio:`
+// stage (§14 §4 / §22: an `audio:` stage switches on audio). It reads the
+// declared pipeline stages by name, so an authored `audio:` stage turns audio
+// on by composition (§14 §5) with no features config. The gameplay surface
+// declares no audio stage, so audio is off for pong.
+source_has_audio_stage :: proc(ast: Ast) -> bool {
+	for pipeline in ast.pipelines {
+		for stage in pipeline.stages {
+			if stage.name == "audio" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// read_entrypoints reads entrypoints.fcfg into the authored entrypoint records
+// (§14 §4): each `entrypoint <name> { pipeline = …, tick = …hz, bindings = … }`
+// block's lifted wiring. An absent file is an empty-but-present field (no
+// entrypoints), never an error — the §14 tree may omit it. The reader is
+// scoped to the `project` record's needs (the pipeline/tick/bindings wiring)
+// and is read-only: it parses the authored config and never writes a seam,
+// matching §14 §3's import-terminal config rule.
+read_entrypoints :: proc(configs_dir: string) -> (entrypoints: []Entrypoint_Record, err: Index_Contract_Error) {
+	path, _ := filepath.join({configs_dir, "entrypoints.fcfg"}, context.temp_allocator)
+	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	if read_err != nil {
+		return nil, .None
+	}
+	records := make([dynamic]Entrypoint_Record, 0, 2, context.temp_allocator)
+	blocks := fcfg_blocks(string(bytes), "entrypoint")
+	for block in blocks {
+		record := Entrypoint_Record{name = block.label}
+		ok := true
+		for assignment in block.assignments {
+			switch assignment.key {
+			case "pipeline":
+				record.pipeline = assignment.value
+			case "tick":
+				hz, parsed := parse_tick_hz(assignment.value)
+				record.tick_hz = hz
+				ok = ok && parsed
+			case "bindings":
+				record.bindings = assignment.value
+			}
+		}
+		if !ok {
+			return nil, .Malformed_Entrypoints
+		}
+		append(&records, record)
+	}
+	return records[:], .None
+}
+
+// read_builds reads builds.fcfg into the authored build records (§14 §4/§6):
+// each `build <name> { platform = … }` block's presentation platform. An
+// absent file is an empty-but-present field (no builds), never an error. Like
+// read_entrypoints it is scoped to the platform field the `project` record
+// carries and is read-only.
+read_builds :: proc(configs_dir: string) -> (builds: []Build_Record, err: Index_Contract_Error) {
+	path, _ := filepath.join({configs_dir, "builds.fcfg"}, context.temp_allocator)
+	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	if read_err != nil {
+		return nil, .None
+	}
+	records := make([dynamic]Build_Record, 0, 2, context.temp_allocator)
+	blocks := fcfg_blocks(string(bytes), "build")
+	for block in blocks {
+		record := Build_Record{name = block.label}
+		for assignment in block.assignments {
+			if assignment.key == "platform" {
+				record.platform = assignment.value
+			}
+		}
+		if record.platform == "" {
+			return nil, .Malformed_Builds
+		}
+		append(&records, record)
+	}
+	return records[:], .None
+}
+
+// read_tag_registry reads tags.fcfg into the authored @gtag registry (§14 §4):
+// the bare identifiers inside the single `tags { … }` block. The registry is
+// emitted in authored order — the order the tags are listed — so the field is
+// deterministic and never re-sorted. An absent file is an empty-but-present
+// registry (no tags), never an error.
+read_tag_registry :: proc(configs_dir: string) -> []string {
+	path, _ := filepath.join({configs_dir, "tags.fcfg"}, context.temp_allocator)
+	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	if read_err != nil {
+		return nil
+	}
+	return fcfg_tag_list(string(bytes))
+}
+
+// Fcfg_Assignment is one `key = value` line inside an fcfg block. The value is
+// the bare token after `=` (an identifier, a platform name, a `60hz` rate) —
+// the smaller config grammar carries bare values, not the string literals the
+// project.fcfg reader expects, so the project-record readers take the value
+// verbatim and interpret it per field.
+Fcfg_Assignment :: struct {
+	key:   string,
+	value: string,
+}
+
+// Fcfg_Block is one `<keyword> <label> { … }` block of the smaller config
+// grammar (§14 §2): the block label and its `key = value` assignments. A `use`
+// reference line, an `@doc` directive, and blank lines are not blocks and are
+// skipped, so the reader sees only the authored declaration blocks.
+Fcfg_Block :: struct {
+	label:       string,
+	assignments: []Fcfg_Assignment,
+}
+
+// fcfg_blocks reads every `<keyword> <label> { … }` block of a given keyword
+// from an fcfg source into its label and `key = value` assignments. The reader
+// is line-oriented over the §14 smaller config grammar: a block opens on a line
+// whose first token is the keyword (the label is the second token), each body
+// line is one `key = value` assignment until the closing `}`, and a leading
+// `use mod.{…}` reference and `@doc` directives are skipped. It is read-only
+// and scoped to the authored declaration blocks the `project` record projects.
+fcfg_blocks :: proc(content: string, keyword: string) -> []Fcfg_Block {
+	blocks := make([dynamic]Fcfg_Block, 0, 2, context.temp_allocator)
+	lines := strings.split_lines(content, context.temp_allocator)
+	i := 0
+	for i < len(lines) {
+		fields := fcfg_line_fields(lines[i])
+		if len(fields) >= 2 && fields[0] == keyword {
+			block := Fcfg_Block{label = fields[1]}
+			block.assignments, i = fcfg_block_body(lines, i + 1)
+			append(&blocks, block)
+			continue
+		}
+		i += 1
+	}
+	return blocks[:]
+}
+
+// fcfg_block_body reads a block's `key = value` assignment lines from `start`
+// up to and including the closing `}`, returning the assignments and the index
+// one past the `}`. A line that is neither an assignment nor the closer (an
+// `@doc`, a blank line) is skipped, so only the authored wiring is collected.
+fcfg_block_body :: proc(lines: []string, start: int) -> (assignments: []Fcfg_Assignment, next: int) {
+	pairs := make([dynamic]Fcfg_Assignment, 0, 4, context.temp_allocator)
+	i := start
+	for i < len(lines) {
+		trimmed := strings.trim_space(lines[i])
+		i += 1
+		if trimmed == "}" {
+			break
+		}
+		if key, value, ok := fcfg_assignment(trimmed); ok {
+			append(&pairs, Fcfg_Assignment{key = key, value = value})
+		}
+	}
+	return pairs[:], i
+}
+
+// fcfg_assignment parses one `key = value` line into its key and bare value.
+// ok is false for a line without `=` (an `@doc`, a `use` reference, the `{`/`}`
+// braces), which the block reader skips. The value is the trimmed token after
+// `=`, taken verbatim (a bare identifier or `60hz` rate, never a quoted
+// literal in the smaller config grammar's block bodies).
+fcfg_assignment :: proc(line: string) -> (key: string, value: string, ok: bool) {
+	eq := strings.index_byte(line, '=')
+	if eq < 0 {
+		return "", "", false
+	}
+	key = strings.trim_space(line[:eq])
+	value = strings.trim_space(line[eq + 1:])
+	if key == "" || value == "" {
+		return "", "", false
+	}
+	return key, value, true
+}
+
+// fcfg_tag_list reads the bare identifiers inside the single `tags { … }` block
+// (§14 §4): each non-brace body line is one registered tag, in authored order.
+// A line outside the block, the `tags {` opener, and the `}` closer are not
+// tags. It returns the tags in listed order, never re-sorted, so the registry
+// field is deterministic.
+fcfg_tag_list :: proc(content: string) -> []string {
+	lines := strings.split_lines(content, context.temp_allocator)
+	tags := make([dynamic]string, 0, 8, context.temp_allocator)
+	in_block := false
+	for line in lines {
+		trimmed := strings.trim_space(line)
+		if !in_block {
+			fields := fcfg_line_fields(trimmed)
+			if len(fields) >= 1 && fields[0] == "tags" {
+				in_block = true
+			}
+			continue
+		}
+		if trimmed == "}" {
+			break
+		}
+		if trimmed != "" && trimmed != "{" {
+			append(&tags, trimmed)
+		}
+	}
+	return tags[:]
+}
+
+// fcfg_line_fields splits an fcfg line on whitespace into its tokens, dropping
+// a trailing `{` so a block-opener line (`entrypoint main {`) yields just the
+// keyword and label. It is the line tokenizer the block reader keys off — the
+// smaller config grammar has no statement terminator, so a token split on
+// whitespace is sufficient for the opener lines the reader inspects.
+fcfg_line_fields :: proc(line: string) -> []string {
+	trimmed := strings.trim_space(line)
+	raw := strings.fields(trimmed, context.temp_allocator)
+	fields := make([dynamic]string, 0, len(raw), context.temp_allocator)
+	for token in raw {
+		if token == "{" {
+			continue
+		}
+		append(&fields, token)
+	}
+	return fields[:]
+}
+
+// parse_tick_hz reads a tick rate value into its integer hertz: `60hz` ⇒ 60.
+// The value is the bare config token (a digit run followed by the `hz` unit
+// suffix); parsed is false on a missing or malformed rate, which the
+// entrypoint reader maps to Malformed_Entrypoints. The leading digit run is
+// the rate and the trailing `hz` is the required unit, so a bare `60` or a
+// non-`hz` unit is rejected — the rate is unit-bearing by §14 §4.
+parse_tick_hz :: proc(value: string) -> (hz: int, ok: bool) {
+	digits := 0
+	for digits < len(value) && is_digit(value[digits]) {
+		digits += 1
+	}
+	if digits == 0 || value[digits:] != "hz" {
+		return 0, false
+	}
+	rate := 0
+	for ch in value[:digits] {
+		rate = rate * 10 + int(ch - '0')
+	}
+	return rate, true
+}
+
+// read_index_project reads the §14 project tree and emits the Index Contract
+// `project` record's NDJSON line. It is the end-to-end seam: it reads the
+// project tree, compiles its single source through the lex → parse → typecheck
+// → flatten stages the `project` record's derived fields need, and projects the
+// authored config alongside. A malformed tree or a compile error returns
+// before emission — the `project` record is a fact about a source that
+// compiles, so a source that does not is not indexed here. The flatten input is
+// the typed AST's flattened pipeline; a source with no pipeline flattens to the
+// empty order and the record carries an empty pipeline_flattened.
+read_index_project :: proc(root: string, allocator := context.allocator) -> (ndjson: string, err: Index_Contract_Error, compiled: bool) {
+	identity, project_err := read_project(root)
+	if project_err != .None {
+		return "", .Missing_Configs_Dir, false
+	}
+	if len(identity.sources) == 0 {
+		return "", .None, false
+	}
+	source_bytes, read_err := os.read_entire_file_from_path(identity.sources[0].path, context.temp_allocator)
+	if read_err != nil {
+		return "", .None, false
+	}
+	typed, flat, ok := compile_for_index(string(source_bytes))
+	if !ok {
+		return "", .None, false
+	}
+	record, record_err := build_project_record(root, identity, typed, flat)
+	if record_err != .None {
+		return "", record_err, false
+	}
+	return emit_project_record(record, allocator), .None, true
+}
+
+// compile_for_index drives a source through the lex → parse → typecheck →
+// flatten stages the `project` record's derived fields read, returning the
+// typed AST and the flattened pipeline. compiled is false on any parse,
+// typecheck, or flatten failure — the gate stage is intentionally not a hard
+// stop here (the gate VERDICTS are a derived field, so a gated source still
+// has a `project` record to emit), but a source that fails to parse, type, or
+// flatten has no derived shape to project. The flatten reads the typed AST, so
+// the routing graph and total order are available for the derived fields.
+compile_for_index :: proc(source: string) -> (typed: Typed_Ast, flat: Flattened_Pipeline, compiled: bool) {
+	ast, parse_err := stage_parse(stage_lex(source))
+	if parse_err != .None {
+		return Typed_Ast{}, Flattened_Pipeline{}, false
+	}
+	typed_ast, type_err := stage_typecheck(ast)
+	if type_err != .None {
+		return Typed_Ast{}, Flattened_Pipeline{}, false
+	}
+	verdict := stage_flatten(typed_ast)
+	if verdict.err != .None {
+		return Typed_Ast{}, Flattened_Pipeline{}, false
+	}
+	return typed_ast, verdict.flat, true
+}
+
+// index_capabilities_contains reports whether a capability vector holds a
+// given battery — a verification helper for the exact derived-capability set,
+// not a runtime path. The vector is small and order-fixed, so a linear scan is
+// the whole lookup.
+index_capabilities_contains :: proc(caps: []Capability, cap: Capability) -> bool {
+	return slice.contains(caps, cap)
+}
