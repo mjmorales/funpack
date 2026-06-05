@@ -92,6 +92,7 @@ Token :: struct {
 	class:      Ident_Class, // Ident casing class
 	int_value:  i64,         // Int_Lit value
 	fixed_bits: Fixed,       // Fixed_Lit value
+	line:       int,         // 1-based source line of the token's first byte (§15 diagnostic provenance)
 }
 
 stage_lex :: proc(source: string) -> []Token {
@@ -100,8 +101,21 @@ stage_lex :: proc(source: string) -> []Token {
 		brace_is_record = make([dynamic]bool, 0, 8, context.temp_allocator),
 	}
 	prev_kind := Token_Kind.Invalid
+	// line tracks the 1-based source line of the byte at `i`: it advances by
+	// the count of '\n' bytes the cursor has stepped over, so every token is
+	// stamped with the line of its first byte (§15 diagnostic provenance,
+	// artifact-format §9 span). scanned is the cursor position `line` is
+	// current for, so newlines crossed between tokens are counted exactly once.
+	line := 1
+	scanned := 0
 	i := 0
 	for i < len(source) {
+		for scanned < i {
+			if source[scanned] == '\n' {
+				line += 1
+			}
+			scanned += 1
+		}
 		ch := source[i]
 		tok: Token
 		next: int
@@ -118,6 +132,7 @@ stage_lex :: proc(source: string) -> []Token {
 		case:
 			tok, next = scan_punct(source, i)
 		}
+		tok.line = line
 		if tok.kind == .Newline && newline_suppressed(&nesting, source, next) {
 			i = next
 			continue
