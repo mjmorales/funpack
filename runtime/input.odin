@@ -36,14 +36,13 @@ PlayerId :: enum {
 // where an ActionId is meant.
 ActionId :: distinct u32
 
-// Vec2 is the minimal runtime-owned fixed-point vector the axis snapshot needs
-// (spec §10: Vec2 is two transparent Fixed components, the Num kind). The full
-// sim Vec2 math surface (length, normalize, dot) belongs to the world state
-// layer; the input snapshot needs only the value and its zero, so this carries
-// exactly that — no float ever (spec §23 §4, §09 §6).
-// TODO: the world-state layer lands the full Vec2 in this same package —
-// consolidate onto one definition then (duplicate declaration is a compile
-// error, so the collision cannot land silently).
+// Vec2 is the runtime-owned fixed-point vector: two transparent Fixed
+// components, the §10 Num kind — no float ever (spec §23 §4, §09 §6). This is
+// the ONE consolidated Vec2 definition for the package: the input snapshot reads
+// the value and its zero here, while the world-state layer (state.odin) folds the
+// full math surface (add, dot, length, normalize) over this same struct. A
+// second Vec2 declaration would be a compile error, so the single definition is
+// enforced structurally.
 Vec2 :: struct {
 	x: Fixed,
 	y: Fixed,
