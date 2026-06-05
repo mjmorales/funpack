@@ -158,7 +158,7 @@ test_free_name_with_no_decl_and_no_import_unresolved :: proc(t: ^testing.T) {
 test_user_declared_name_binds_instead_of_unresolved :: proc(t: ^testing.T) {
 	// The flip side of the free-name case: a name a user fn declares binds
 	// through the resolver, so its use is contained as Unsupported_Expr (the
-	// value-typing is the downstream story), never Unresolved_Name. This
+	// value-typing is the typing pass's job), never Unresolved_Name. This
 	// proves the resolver actually widened the bound set.
 	source := "fn helper(n: Int) -> Int {\n\treturn n\n}\n" +
 		"test \"x\" {\n\tassert helper == 1\n}\n"

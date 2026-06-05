@@ -12,13 +12,13 @@
 // resolution error) and resolves field/parameter `Type_Ref`s to the
 // checker's semantic Type where the name is known. This is name-and-schema
 // only: no behavior body is typed and no call site is checked — that is the
-// downstream typing story's job.
+// typing pass's job.
 package funpack
 
 // Record_Schema is the field name→type table of a thing/singleton/data/
 // signal declaration (spec §03 §1, §06 §1). Field order is the source
 // order; a defaulted field carries has_default so a literal may omit it
-// (the typing story's concern, recorded here for it).
+// (the typing pass's concern, recorded here for it).
 Record_Schema :: struct {
 	type_name: string,
 	kind:      User_Kind,
@@ -206,7 +206,7 @@ name_taken :: proc(env: ^Type_Env, name: string, bindings: Bindings) -> bool {
 // resolve_schemas fills the field/parameter/return types of every recorded
 // schema, resolving each declaration's Type_Refs against the complete
 // namespace. It is total over the AST and records nil for a ref it cannot
-// resolve yet — the downstream typing story refines those, never this pass.
+// resolve yet — the typing pass refines those, never this one.
 resolve_schemas :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) {
 	for decl in ast.things {
 		schema := env.records[decl.name]
@@ -257,7 +257,7 @@ resolve_field_schemas :: proc(env: Type_Env, bindings: Bindings, fields: []Field
 
 // resolve_fn_signature builds a fn/step Func_Type from its parameter and
 // return Type_Refs. The parameter types are the behavior's reads (spec §06
-// §3); typing the body against them is the downstream story.
+// §3); typing the body against them is the typing pass's job.
 resolve_fn_signature :: proc(env: Type_Env, bindings: Bindings, params: []Param_Decl, return_type: Type_Ref) -> ^Func_Type {
 	param_types := make([]Type, len(params), context.temp_allocator)
 	for param, i in params {
@@ -275,7 +275,7 @@ resolve_fn_signature :: proc(env: Type_Env, bindings: Bindings, params: []Param_
 // heads. A name that resolves to nothing concrete yet — an imported engine
 // type with no checker ground (View, Input, Spawn), or a generic over one —
 // returns nil: the resolver records the schema slot without forcing a type
-// the downstream typing story owns.
+// the typing pass owns.
 resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Type {
 	// A list type `[T]` is the head "[]" with one element argument.
 	if ref.name == "[]" {
@@ -300,7 +300,7 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 	}
 	// An imported engine type with no checker ground (View[Paddle], Input,
 	// Draw) or any other unresolved ref: the schema slot stays nil for the
-	// downstream typing story.
+	// typing pass.
 	return nil
 }
 
@@ -342,7 +342,7 @@ env_type_name :: proc(env: Type_Env, name: string) -> (type: Type, found: bool) 
 
 // env_term_name looks up a value-position user name (a const, fn, or
 // behavior). The name resolver uses found to decide a name binds; typing
-// the term's use is the downstream story, so this only reports presence and
+// the term's use is the typing pass's job, so this only reports presence and
 // the recorded schema.
 env_term_name :: proc(env: Type_Env, name: string) -> (term: Term_Schema, found: bool) {
 	term, found = env.terms[name]

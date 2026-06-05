@@ -90,7 +90,7 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		}
 		// A user-declared name binds through the resolver environment: it is
 		// a real name in scope, but typing its use as a value (a const's
-		// value, a fn reference) is the downstream typing story — the
+		// value, a fn reference) is the typing pass's job — the
 		// resolver only proves the name resolves, so a bound user name is
 		// contained as Unsupported_Expr here, never Unresolved_Name.
 		if env_declares(ctx.env, e.name) {
@@ -160,7 +160,7 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		if !imported {
 			// A user record literal (Goal{…}, Paddle{…}) binds its type name
 			// through the resolver; typing its fields against the recorded
-			// schema is the downstream story, so it is contained here.
+			// schema is the typing pass's job, so it is contained here.
 			if env_declares(ctx.env, e.type_name) {
 				return nil, .Unsupported_Expr
 			}
@@ -203,7 +203,7 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		if !imported {
 			// A user enum variant (Side::Left, Steer::Move) binds its enum
 			// name through the resolver; typing the variant value is the
-			// downstream story, so it is contained here.
+			// typing pass's job, so it is contained here.
 			if env_declares(ctx.env, e.type_name) {
 				return nil, .Unsupported_Expr
 			}
@@ -252,7 +252,7 @@ call_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 	if !found {
 		// A call to a user-declared fn (advance(…), serve_velocity(…)) binds
 		// the callee through the resolver; typing the call against the
-		// recorded signature is the downstream story, so it is contained.
+		// recorded signature is the typing pass's job, so it is contained.
 		if env_declares(ctx.env, name.name) {
 			return nil, .Unsupported_Expr
 		}
@@ -359,7 +359,7 @@ method_check :: proc(ctx: Check_Ctx, callee: ^Member_Expr, e: ^Call_Expr) -> (ty
 			if !imported {
 				// A method/step call off a user name (score.step(…),
 				// Bindings receivers) binds the receiver through the
-				// resolver; typing the call is the downstream story.
+				// resolver; typing the call is the typing pass's job.
 				if env_declares(ctx.env, recv.name) {
 					return nil, .Unsupported_Expr
 				}
