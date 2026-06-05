@@ -6,7 +6,10 @@
 // parses (Key::W, Stick::Left, ...), and that an unmapped device identifier is
 // dropped (`named == false`) rather than producing a bogus code — the error case
 // that keeps an unbindable input out of the queue. The fixed-point stick
-// conversion is checked headless too, since it is pure kernel arithmetic.
+// conversion compiles in every build (it references no SDL symbol), so its
+// rails are pinned headless below: zero, exact +1 at +32767, and the
+// asymmetric -32768 reading that lands just past -1 for the resolver's
+// downstream clamp to pin.
 package funpack_runtime
 
 import "core:testing"
@@ -70,4 +73,20 @@ test_stick_axis_maps_to_left_right :: proc(t: ^testing.T) {
 
 	_, _, trigger_named := stick_from_axis(.TRIGGERLEFT)
 	testing.expect(t, !trigger_named)
+}
+
+@(test)
+test_stick_sample_to_fixed_rails :: proc(t: ^testing.T) {
+	// Zero is exact; +32767 is exactly 1.0 (full-scale over full-scale).
+	testing.expect_value(t, stick_sample_to_fixed(0), Fixed(0))
+	testing.expect_value(t, stick_sample_to_fixed(32767), to_fixed(1))
+	// The i16 range is asymmetric: -32768/32767 lands just past -1
+	// (-4295098372 raw Q32.32 bits vs -1.0's -4294967296), truncated toward
+	// zero by the kernel's i128 division. The resolver's clamp pins it to
+	// exactly -1 before any snapshot sees it.
+	past_neg_one := stick_sample_to_fixed(-32768)
+	testing.expect_value(t, past_neg_one, Fixed(-4295098372))
+	testing.expect_value(t, fixed_clamp(past_neg_one, fixed_neg(to_fixed(1)), to_fixed(1)), fixed_neg(to_fixed(1)))
+	// Sign preserved through truncation on an interior reading.
+	testing.expect_value(t, stick_sample_to_fixed(-16384) < 0, true)
 }

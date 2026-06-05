@@ -143,15 +143,17 @@ when #config(FUNPACK_LIVE, false) {
 			}
 		}
 	}
+}
 
-	// stick_sample_to_fixed converts SDL's raw i16 axis reading to a fixed-point
-	// value in [-1, 1] on the kernel — divide by the full-scale range with i64
-	// arithmetic lifted through to_fixed, so NO float ever enters (§23 §4). The
-	// resolver deadzones and clamps the result, so this hands the queue the raw
-	// conditioned-only-into-units reading, exactly as a headless producer would.
-	stick_sample_to_fixed :: proc(raw: i16) -> Fixed {
-		return fixed_div(to_fixed(i64(raw)), to_fixed(STICK_AXIS_RANGE))
-	}
+// stick_sample_to_fixed converts a raw i16 axis reading to a fixed-point
+// value in units of the full-scale range — divide with i64 arithmetic lifted
+// through to_fixed, so NO float ever enters (§23 §4). It references no SDL
+// symbol, so it compiles in every build and the headless suite pins its rails:
+// the i16 range is asymmetric, so -32768 lands just past -1 and the resolver's
+// downstream clamp pins it to exactly -1 (the deadzone/clamp is the resolver's,
+// not this conversion's). +32767 is exactly 1.0.
+stick_sample_to_fixed :: proc(raw: i16) -> Fixed {
+	return fixed_div(to_fixed(i64(raw)), to_fixed(STICK_AXIS_RANGE))
 }
 
 // --- SDL → §23 name maps (compiled in every build) -----------------------
