@@ -3,9 +3,10 @@
 // or → and → == != → < <= > >= → + - → * / % → unary (not, -), with the
 // call/member postfix loop binding above unary and atoms at the bottom.
 // `and`/`or`/`not` are word operators carried as Ident tokens, so the
-// table keys them by text. Out of the golden surface — `with`, `match`,
-// `if`, indexing `xs[i]`, and ranges — have no production here and
-// parse as errors.
+// table keys them by text. Out of the golden surface — `with`, `if`,
+// indexing `xs[i]`, and ranges — have no production here and parse as
+// errors; `match` parses structurally (spec §02 §5) and is contained at
+// typecheck as Unsupported_Expr.
 package funpack
 
 Expr :: union {
