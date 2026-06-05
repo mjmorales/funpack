@@ -400,7 +400,10 @@ score as a once-spawned `thing` in `setup`, not a `singleton`).
 ## 9. `[functions]` — pure helpers, module constants, and bindings/setup heads (§02)
 
 One record per module-level `fn`, `let`, the `bindings()` function, and the
-`setup()` function, in source order. The function **body** is the serialized
+`setup()` function, KIND-grouped in the fixed order fn-helpers → `const` →
+`bindings` → `startup`, each group in source-declaration order (the golden
+fixture and the emitter both embody this rule; readers locate records by
+name, never by position). The function **body** is the serialized
 checked AST, carried **in** the record as a run of `node` lines (§2.7) — never a
 span reference into source the runtime can never read. The record opens with the
 signature and a body statement count; the `param` lines and the `node` body run

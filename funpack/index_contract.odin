@@ -575,27 +575,6 @@ fcfg_line_fields :: proc(line: string) -> []string {
 	return fields[:]
 }
 
-// parse_tick_hz reads a tick rate value into its integer hertz: `60hz` ⇒ 60.
-// The value is the bare config token (a digit run followed by the `hz` unit
-// suffix); parsed is false on a missing or malformed rate, which the
-// entrypoint reader maps to Malformed_Entrypoints. The leading digit run is
-// the rate and the trailing `hz` is the required unit, so a bare `60` or a
-// non-`hz` unit is rejected — the rate is unit-bearing by §14 §4.
-parse_tick_hz :: proc(value: string) -> (hz: int, ok: bool) {
-	digits := 0
-	for digits < len(value) && is_digit(value[digits]) {
-		digits += 1
-	}
-	if digits == 0 || value[digits:] != "hz" {
-		return 0, false
-	}
-	rate := 0
-	for ch in value[:digits] {
-		rate = rate * 10 + int(ch - '0')
-	}
-	return rate, true
-}
-
 // read_index_project reads the §14 project tree and emits the Index Contract
 // `project` record's NDJSON line. It is the end-to-end seam: it reads the
 // project tree, compiles its single source through the lex → parse → typecheck
