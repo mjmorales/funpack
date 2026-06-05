@@ -315,6 +315,54 @@ test_pipeline_gate_stage_passes_golden_source :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pipeline_oversized_test_block_fires_fn_size_gate :: proc(t: ^testing.T) {
+	// MAX_FN_STATEMENTS + 1 statements in one test block overshoots the
+	// function-size budget, so stage_gates rejects the source as a
+	// Gate_Failed compile error — never reaching typecheck or evaluation.
+	body := strings.repeat("\tassert 0.0 == 0.0\n", MAX_FN_STATEMENTS + 1, context.temp_allocator)
+	source := strings.concatenate({"test \"oversized\" {\n", body, "}\n"}, context.temp_allocator)
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+	testing.expect_value(t, report.passed, 0)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_at_budget_test_block_clears_fn_size_gate :: proc(t: ^testing.T) {
+	// Exactly MAX_FN_STATEMENTS statements sit at the budget, not over it:
+	// the fn-size gate is transparent and the block evaluates normally.
+	body := strings.repeat("\tassert 0.0 == 0.0\n", MAX_FN_STATEMENTS, context.temp_allocator)
+	source := strings.concatenate({"test \"at budget\" {\n", body, "}\n"}, context.temp_allocator)
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, MAX_FN_STATEMENTS)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_over_arity_lambda_fires_arity_gate :: proc(t: ^testing.T) {
+	// A MAX_PARAM_ARITY + 1 param lambda overshoots the arity budget. The
+	// arity gate runs in stage_gates BEFORE stage_typecheck, so this
+	// rejects as Gate_Failed — distinct from
+	// test_pipeline_fold_wrong_arity_rejected, where a shape-mismatched
+	// but in-budget lambda reaches typecheck and rejects as
+	// Typecheck_Failed. This pins the gate-before-typecheck ordering.
+	_, err := run_golden_asserts(
+		"assert fold([1.0], 0.0, fn(a, b, c, d, e, f) { return a }) == 1.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
+@(test)
+test_pipeline_at_arity_budget_lambda_clears_arity_gate :: proc(t: ^testing.T) {
+	// A MAX_PARAM_ARITY-param lambda sits at the budget: the arity gate is
+	// transparent, so the source passes stage_gates and the rejection (if
+	// any) comes from typecheck's fold-shape check, not the gate.
+	_, err := run_golden_asserts(
+		"assert fold([1.0], 0.0, fn(a, b, c, d, e) { return a }) == 1.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
 test_pipeline_empty_source_is_noop_pass :: proc(t: ^testing.T) {
 	report, err := run_test_pipeline("")
 	testing.expect_value(t, err, Pipeline_Error.None)
