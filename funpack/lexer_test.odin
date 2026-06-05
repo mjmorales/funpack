@@ -105,10 +105,27 @@ test_lex_comparison_arrow_directive_ops :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_lex_newline_suppressed_in_list :: proc(t: ^testing.T) {
+test_lex_newline_kept_in_list :: proc(t: ^testing.T) {
+	// A list literal's newlines are SEPARATORS, not layout (spec §02 §1;
+	// the pong `setup` list separates its elements by newline alone). So a
+	// newline inside `[ ]` survives to the parser, unlike inside `( )` or a
+	// record literal. Here the newline after the `,` is kept.
 	tokens := stage_lex("[1.0,\n  2.0]\n")
 	expect_kinds(t, tokens, []Token_Kind{
-		.L_Bracket, .Fixed_Lit, .Comma, .Fixed_Lit, .R_Bracket, .Newline,
+		.L_Bracket, .Fixed_Lit, .Comma, .Newline, .Fixed_Lit, .R_Bracket, .Newline,
+	})
+}
+
+@(test)
+test_lex_newline_separates_list_elements :: proc(t: ^testing.T) {
+	// The pong `setup` shape: list elements separated by newline with no
+	// comma. The newlines survive so the parser sees element boundaries.
+	tokens := stage_lex("[\n  Spawn(a)\n  Spawn(b)\n]\n")
+	expect_kinds(t, tokens, []Token_Kind{
+		.L_Bracket, .Newline,
+		.Ident, .L_Paren, .Ident, .R_Paren, .Newline,
+		.Ident, .L_Paren, .Ident, .R_Paren, .Newline,
+		.R_Bracket, .Newline,
 	})
 }
 
@@ -220,6 +237,42 @@ test_lex_match_block_keeps_arm_newlines :: proc(t: ^testing.T) {
 		.Ident, .Colon_Colon, .Ident, .Eq_Arrow, .Int_Lit, .Newline,
 		.R_Brace, .Newline,
 	})
+}
+
+@(test)
+test_lex_declaration_keywords :: proc(t: ^testing.T) {
+	// The §06/§07 declaration and expression keywords lex to their own
+	// token kinds, not as bare identifiers.
+	tokens := stage_lex("thing singleton behavior signal data enum pipeline with if on")
+	expect_kinds(t, tokens, []Token_Kind{
+		.Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .With, .If, .On,
+	})
+}
+
+@(test)
+test_lex_existing_keywords_unchanged :: proc(t: ^testing.T) {
+	// The pre-existing keyword set stays intact alongside the new ones.
+	tokens := stage_lex("test assert import let return fn match")
+	expect_kinds(t, tokens, []Token_Kind{
+		.Test, .Assert, .Import, .Let, .Return, .Fn, .Match,
+	})
+}
+
+@(test)
+test_lex_behavior_body_keeps_newlines :: proc(t: ^testing.T) {
+	// `behavior … on Thing {` and `-> Ret {` arm the block_pending flag so
+	// the body braces open blocks (newlines kept), even though the token
+	// before each `{` is an Ident the record rule would otherwise claim.
+	tokens := stage_lex("behavior b on Ball {\n  fn step(self: Ball) -> Ball {\n    return self\n  }\n}\n")
+	// The newline after the behavior-body `{` and after the step-body `{`
+	// must survive; assert by counting the Newline terminators.
+	newlines := 0
+	for tok in tokens {
+		if tok.kind == .Newline {
+			newlines += 1
+		}
+	}
+	testing.expect_value(t, newlines, 5)
 }
 
 @(test)

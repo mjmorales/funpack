@@ -1,17 +1,20 @@
 // The Pratt expression cascade over the golden-file surface (spec §02).
 // One binding-power table orders the whole ladder, low → high:
-// or → and → == != → < <= > >= → + - → * / % → unary (not, -), with the
-// call/member postfix loop binding above unary and atoms at the bottom.
-// `and`/`or`/`not` are word operators carried as Ident tokens, so the
-// table keys them by text. Out of the golden surface — `with`, `if`,
-// indexing `xs[i]`, and ranges — have no production here and parse as
-// errors; `match` parses structurally (spec §02 §5) and is contained at
-// typecheck as Unsupported_Expr.
+// or → and → == != → < <= > >= → + - → * / % → unary (not, -) → with →
+// call/member → atom. `and`/`or`/`not` are word operators carried as Ident
+// tokens, so the table keys them by text; `with` (the record-update
+// operator, spec §02 §5) binds just above unary and just below the
+// call/member postfix loop. `if` parses as the early-return statement form
+// in fn bodies (parser.odin), not as an expression atom here. Indexing
+// `xs[i]` and ranges have no production and parse as errors; `match` parses
+// structurally (spec §02 §5) and is contained at typecheck as
+// Unsupported_Expr.
 package funpack
 
 Expr :: union {
 	^Int_Lit_Expr,
 	^Fixed_Lit_Expr,
+	^String_Lit_Expr,
 	^Name_Expr,
 	^Call_Expr,
 	^Member_Expr,
@@ -21,6 +24,7 @@ Expr :: union {
 	^Lambda_Expr,
 	^Unary_Expr,
 	^Binary_Expr,
+	^With_Expr,
 	^Match_Expr,
 }
 
@@ -30,6 +34,14 @@ Int_Lit_Expr :: struct {
 
 Fixed_Lit_Expr :: struct {
 	bits: Fixed,
+}
+
+// String_Lit_Expr carries a string literal's raw inner text, including any
+// `{expr}` interpolation holes (spec §02 §2). Interpolation is parse-only
+// here — the holes are retained verbatim in `text`, not split into
+// sub-expressions; that split is a typing/lowering concern, not grammar.
+String_Lit_Expr :: struct {
+	text: string,
 }
 
 Name_Expr :: struct {
@@ -51,11 +63,19 @@ Member_Expr :: struct {
 	class:    Ident_Class,
 }
 
+// Variant_Expr is an enum-variant value selected with `::` (spec §02 §3).
+// A bare variant has no payload (Option::None); a tuple-payload variant
+// carries positional argument expressions (Option::Some(v)); a
+// struct-payload variant carries named fields (Draw::Rect{ at: …, size: …
+// }). The closed payload tag distinguishes the three; `payload` holds the
+// tuple args and `fields` the struct fields, mutually exclusive.
 Variant_Expr :: struct {
 	type_name:   string,
 	variant:     string,
-	payload:     []Expr,
-	has_payload: bool, // distinguishes Option::Some() from Option::None
+	payload:     []Expr,         // tuple-payload positional args
+	fields:      []Record_Field, // struct-payload named fields
+	has_payload: bool,           // true for a tuple-payload variant
+	has_fields:  bool,           // true for a struct-payload variant
 }
 
 Record_Field :: struct {
@@ -124,6 +144,17 @@ Match_Arm :: struct {
 Match_Expr :: struct {
 	scrutinee: Expr,
 	arms:      []Match_Arm,
+}
+
+// With_Expr is the record-update operator `value with { field: v, … }`
+// (spec §02 §5): a new value with the named fields replaced (COW). `base`
+// is the value being updated — a full postfix expression, since `with`
+// binds just below the call/member loop — and `fields` are the
+// replacements. The form nests (`a with { … } with { … }`), so a With_Expr
+// can itself be the base of another.
+With_Expr :: struct {
+	base:   Expr,
+	fields: []Record_Field,
 }
 
 // Binding_Power is the one table ordering the ladder; the enum's
@@ -195,7 +226,37 @@ parse_unary :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		node^ = Unary_Expr{op = tok, operand = operand}
 		return node, .None
 	}
-	return parse_postfix(p)
+	return parse_with(p)
+}
+
+// parse_with sits one tier below unary and above the call/member postfix
+// loop (spec §02 §3 precedence table): it parses a postfix expression then
+// folds any trailing `with { … }` updates onto it. `with` is left-binding
+// and nests, so each update wraps the prior result; a fresh `{ field: v }`
+// field list (no type name) is the replacement set.
+parse_with :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	expr = parse_postfix(p) or_return
+	for peek_kind(p) == .With {
+		p.pos += 1
+		// The update brace is a fresh record-style field list, valid even
+		// inside a match scrutinee's no-struct-literal context.
+		saved := p.no_record_brace
+		p.no_record_brace = false
+		fields := parse_with_fields(p) or_return
+		p.no_record_brace = saved
+		node := new(With_Expr, context.temp_allocator)
+		node^ = With_Expr{base = expr, fields = fields}
+		expr = node
+	}
+	return expr, .None
+}
+
+// parse_with_fields parses the `{ field: v, … }` replacement set of a
+// `with` update — the same field-list shape as a record literal, sharing
+// parse_record_fields.
+parse_with_fields :: proc(p: ^Parser) -> (fields: []Record_Field, err: Parse_Error) {
+	expect(p, .L_Brace) or_return
+	return parse_record_fields(p)
 }
 
 parse_postfix :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
@@ -232,6 +293,12 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	case .Fixed_Lit:
 		node := new(Fixed_Lit_Expr, context.temp_allocator)
 		node^ = Fixed_Lit_Expr{bits = tok.fixed_bits}
+		return node, .None
+	case .String_Lit:
+		// A string literal atom retains its raw inner text, interpolation
+		// holes and all (spec §02 §2).
+		node := new(String_Lit_Expr, context.temp_allocator)
+		node^ = String_Lit_Expr{text = tok.text}
 		return node, .None
 	case .L_Paren:
 		// A parenthesized sub-expression re-enters normal parsing: a
@@ -296,14 +363,14 @@ parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
 	if tok.text == "_" {
 		return Pattern{kind = .Wildcard}, .None
 	}
-	// The two remaining forms are variant patterns: an UpperCamel enum
-	// type, `::`, then an UpperCamel variant.
-	if tok.class != .Upper_Camel {
+	// The two remaining forms are variant patterns: an UPPER_IDENT enum
+	// type, `::`, then an UPPER_IDENT variant (lexical-core.ebnf §2).
+	if !is_upper_ident(tok.class) {
 		return pattern, .Wrong_Case
 	}
 	expect(p, .Colon_Colon) or_return
 	variant := expect(p, .Ident) or_return
-	if variant.class != .Upper_Camel {
+	if !is_upper_ident(variant.class) {
 		return pattern, .Wrong_Case
 	}
 	if peek_kind(p) != .L_Paren {
@@ -366,18 +433,24 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 	case .Colon_Colon:
 		p.pos += 1
 		variant := expect(p, .Ident) or_return
-		// Enum variants are UpperCamel (spec §02).
-		if variant.class != .Upper_Camel {
+		// Enum variants are UPPER_IDENT (spec §02; lexical-core.ebnf §2),
+		// so a single-capital variant (Key::W, PlayerId::P1) is valid.
+		if !is_upper_ident(variant.class) {
 			return nil, .Wrong_Case
 		}
-		payload: []Expr
-		has_payload := false
-		if peek_kind(p) == .L_Paren {
-			payload = parse_call_args(p) or_return
-			has_payload = true
-		}
 		node := new(Variant_Expr, context.temp_allocator)
-		node^ = Variant_Expr{type_name = tok.text, variant = variant.text, payload = payload, has_payload = has_payload}
+		node^ = Variant_Expr{type_name = tok.text, variant = variant.text}
+		#partial switch peek_kind(p) {
+		case .L_Paren:
+			// Tuple-payload variant: Option::Some(v), MoveTo(Vec2)-style args.
+			node.payload = parse_call_args(p) or_return
+			node.has_payload = true
+		case .L_Brace:
+			// Struct-payload variant: Draw::Rect{ at: …, size: … } (spec §03 §2).
+			p.pos += 1
+			node.fields = parse_record_fields(p) or_return
+			node.has_fields = true
+		}
 		return node, .None
 	case .L_Brace:
 		return parse_record_tail(p, tok.text)
@@ -388,28 +461,36 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 }
 
 // parse_record_tail parses `{ field: expr, … }` after the constructor
-// name. The lexer already dropped interior newlines (record braces are
-// layout context), so `,` is the only separator seen here.
+// name and wraps it as a Record_Expr.
 parse_record_tail :: proc(p: ^Parser, type_name: string) -> (expr: Expr, err: Parse_Error) {
 	expect(p, .L_Brace) or_return
-	fields := make([dynamic]Record_Field, 0, 4, context.temp_allocator)
+	fields := parse_record_fields(p) or_return
+	node := new(Record_Expr, context.temp_allocator)
+	node^ = Record_Expr{type_name = type_name, fields = fields[:]}
+	return node, .None
+}
+
+// parse_record_fields parses the `field: expr, …` body of a record literal,
+// a struct-payload variant, or a `with` update, with the opening `{`
+// already consumed and the closing `}` consumed here. The lexer dropped
+// interior newlines (record braces are layout context), so `,` is the only
+// separator seen here. Field names are value names — snake_case (spec §02).
+parse_record_fields :: proc(p: ^Parser) -> (fields: []Record_Field, err: Parse_Error) {
+	list := make([dynamic]Record_Field, 0, 4, context.temp_allocator)
 	for peek_kind(p) == .Ident {
 		fname := advance(p) or_return
-		// Record fields are value names — snake_case (spec §02).
 		if fname.class != .Snake_Case {
 			return nil, .Wrong_Case
 		}
 		expect(p, .Colon) or_return
 		value := parse_expression(p) or_return
-		append(&fields, Record_Field{name = fname.text, value = value})
+		append(&list, Record_Field{name = fname.text, value = value})
 		if peek_kind(p) == .Comma {
 			p.pos += 1
 		}
 	}
 	expect(p, .R_Brace) or_return
-	node := new(Record_Expr, context.temp_allocator)
-	node^ = Record_Expr{type_name = type_name, fields = fields[:]}
-	return node, .None
+	return list[:], .None
 }
 
 parse_list_tail :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
@@ -417,11 +498,15 @@ parse_list_tail :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	p.no_record_brace = false
 	defer p.no_record_brace = saved
 	elements := make([dynamic]Expr, 0, 4, context.temp_allocator)
+	// List elements separate by newline or `,` — both legal (spec §02 §1).
+	// Inside `[ ]` the lexer keeps newlines (they are separators, not layout),
+	// so a multi-line list like the pong `setup` program parses element-per-line.
+	skip_list_separators(p)
 	for peek_kind(p) != .R_Bracket {
 		element := parse_expression(p) or_return
 		append(&elements, element)
-		if peek_kind(p) == .Comma {
-			p.pos += 1
+		if peek_kind(p) == .Comma || peek_kind(p) == .Newline {
+			skip_list_separators(p)
 		} else {
 			break
 		}
@@ -430,6 +515,15 @@ parse_list_tail :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	node := new(List_Expr, context.temp_allocator)
 	node^ = List_Expr{elements = elements[:]}
 	return node, .None
+}
+
+// skip_list_separators consumes the Sep run (newlines and commas) between
+// list elements (spec §02 §1: both are legal separators; a trailing one is
+// allowed).
+skip_list_separators :: proc(p: ^Parser) {
+	for peek_kind(p) == .Newline || peek_kind(p) == .Comma {
+		p.pos += 1
+	}
 }
 
 parse_lambda :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {

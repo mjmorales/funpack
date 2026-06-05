@@ -50,6 +50,9 @@ stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
 				} else {
 					result.failed += 1
 				}
+			case Return_Node, If_Node:
+				// Return/If are fn-body statements; a test block never holds
+				// them, so the evaluator skips them.
 			}
 		}
 	}

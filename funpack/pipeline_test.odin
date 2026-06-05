@@ -67,8 +67,26 @@ test_parse_wrong_case_type_position_variant :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_wrong_case_value_position :: proc(t: ^testing.T) {
-	tokens := stage_lex("test \"x\" {\nassert ToFixed(2) == 2.0\n}\n")
+test_parse_uppercamel_callee_is_command_wrap_shape :: proc(t: ^testing.T) {
+	// An UpperCamel name in callee position is the command-wrap call shape
+	// (Spawn(thing), Despawn()) — grammar/fun.ll1.md §5A resolves command
+	// wrap to plain call syntax, so `Ʉ '(' … ')'` is a structurally valid
+	// call, not a parse-level casing error. A bad callee like `ToFixed(2)`
+	// (no such function) is therefore caught at resolution, not at parse —
+	// mirroring the variant-selector case below.
+	source := "test \"x\" {\nassert ToFixed(2) == 2.0\n}\n"
+	_, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_parse_mixed_case_value_position_rejected :: proc(t: ^testing.T) {
+	// A Mixed-case name (fooBar — matches no sanctioned class, spec §02) in
+	// a value position is still a parse-level Wrong_Case, the casing-is-
+	// structural floor that survives the command-wrap loosening.
+	tokens := stage_lex("test \"x\" {\nassert fooBar == 2.0\n}\n")
 	_, err := stage_parse(tokens)
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
