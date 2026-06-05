@@ -3,15 +3,26 @@ package funpack
 import "core:testing"
 
 // check_expr_source lexes and parses a single expression, then types
-// it against an empty scope.
+// it against an empty scope under the golden import bindings.
 check_expr_source :: proc(source: string) -> (type: Type, err: Type_Error) {
 	p := Parser{tokens = stage_lex(source)}
 	expr, parse_err := parse_expression(&p)
 	if parse_err != .None {
 		return nil, .Unsupported_Expr
 	}
-	scope := make(Scope, context.temp_allocator)
-	return expr_check(scope, expr)
+	ctx := Check_Ctx{
+		bindings = golden_import_bindings(),
+		scope    = make(Scope, context.temp_allocator),
+	}
+	return expr_check(ctx, expr)
+}
+
+// golden_import_bindings resolves the golden import header, so
+// expression fixtures bind the same surface numerics.fun does.
+golden_import_bindings :: proc() -> Bindings {
+	ast, _ := stage_parse(stage_lex(GOLDEN_IMPORT_HEADER))
+	bindings, _ := resolve_imports(ast)
+	return bindings
 }
 
 @(test)
@@ -124,4 +135,55 @@ test_surface_value_type_pi :: proc(t: ^testing.T) {
 	type, found := surface_value_type("pi")
 	testing.expect(t, found)
 	testing.expect(t, is_ground(type, .Fixed))
+}
+
+@(test)
+test_expr_pi_types_fixed_via_binding :: proc(t: ^testing.T) {
+	// pi reaches Fixed through the import binding, not a special case.
+	type, err := check_expr_source("pi")
+	testing.expect_value(t, err, Type_Error.None)
+	testing.expect(t, is_ground(type, .Fixed))
+}
+
+@(test)
+test_expr_unbound_surface_name_is_unresolved :: proc(t: ^testing.T) {
+	// tau exists on the surface but the golden header does not import
+	// it; a known spelling without a binding is an unresolved name.
+	_, err := check_expr_source("tau")
+	testing.expect_value(t, err, Type_Error.Unresolved_Name)
+}
+
+@(test)
+test_expr_typo_name_is_unresolved :: proc(t: ^testing.T) {
+	_, err := check_expr_source("lenght")
+	testing.expect_value(t, err, Type_Error.Unresolved_Name)
+}
+
+@(test)
+test_surface_associated_members :: proc(t: ^testing.T) {
+	max_type, max_found := surface_associated("Fixed", "MAX")
+	testing.expect(t, max_found)
+	testing.expect(t, is_ground(max_type, .Fixed))
+
+	ctor, ctor_found := surface_associated("Quat", "axis_angle")
+	testing.expect(t, ctor_found)
+	signature, is_func := ctor.(^Func_Type)
+	testing.expect(t, is_func)
+	testing.expect_value(t, len(signature.params), 2)
+	testing.expect(t, is_ground(signature.result, .Quat))
+
+	_, bogus_found := surface_associated("Quat", "bogus")
+	testing.expect(t, !bogus_found)
+}
+
+@(test)
+test_surface_method_quat_only :: proc(t: ^testing.T) {
+	rotate, rotate_found := surface_method(Ground_Type.Quat, "rotate")
+	testing.expect(t, rotate_found)
+	signature, is_func := rotate.(^Func_Type)
+	testing.expect(t, is_func)
+	testing.expect(t, is_ground(signature.result, .Vec3))
+
+	_, fixed_found := surface_method(Ground_Type.Fixed, "rotate")
+	testing.expect(t, !fixed_found)
 }

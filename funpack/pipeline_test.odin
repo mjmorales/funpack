@@ -3,9 +3,21 @@ package funpack
 import "core:strings"
 import "core:testing"
 
+// GOLDEN_IMPORT_HEADER mirrors numerics.fun's import lines: pipeline
+// fixtures bind their free names the same way the golden file does —
+// there is no builtin fallback to lean on.
+GOLDEN_IMPORT_HEADER :: "import engine.math.{Vec2, Vec3, Quat, clamp, lerp, dot, cross, length, sin, cos, to_fixed, trunc, floor, round, checked_div, pi}\n" +
+	"import engine.list.fold\n"
+
+// with_golden_imports prefixes a fixture source with the golden import
+// header.
+with_golden_imports :: proc(source: string) -> string {
+	return strings.concatenate({GOLDEN_IMPORT_HEADER, source}, context.temp_allocator)
+}
+
 @(test)
 test_pipeline_trivial_assert_passes :: proc(t: ^testing.T) {
-	source := "test \"to_fixed lifts Int into Fixed\" {\n\tassert to_fixed(2) == 2.0\n}\n"
+	source := with_golden_imports("test \"to_fixed lifts Int into Fixed\" {\n\tassert to_fixed(2) == 2.0\n}\n")
 	report, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.None)
 	testing.expect_value(t, report.passed, 1)
@@ -15,7 +27,7 @@ test_pipeline_trivial_assert_passes :: proc(t: ^testing.T) {
 
 @(test)
 test_pipeline_failing_assert_counts_fail :: proc(t: ^testing.T) {
-	source := "test \"three is not two\" {\n\tassert to_fixed(3) == 2.0\n}\n"
+	source := with_golden_imports("test \"three is not two\" {\n\tassert to_fixed(3) == 2.0\n}\n")
 	report, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.None)
 	testing.expect_value(t, report.passed, 0)
@@ -80,9 +92,10 @@ test_pipeline_wrong_case_is_parse_failed :: proc(t: ^testing.T) {
 }
 
 // run_golden_asserts drives a synthetic test block holding the given
-// assert statements through the full pipeline.
+// assert statements through the full pipeline, under the golden import
+// header.
 run_golden_asserts :: proc(asserts: string) -> (report: Test_Report, err: Pipeline_Error) {
-	source := strings.concatenate({"test \"golden\" {\n", asserts, "}\n"}, context.temp_allocator)
+	source := strings.concatenate({GOLDEN_IMPORT_HEADER, "test \"golden\" {\n", asserts, "}\n"}, context.temp_allocator)
 	return run_test_pipeline(source)
 }
 
@@ -169,11 +182,11 @@ test_pipeline_fold_saturation_golden_value :: proc(t: ^testing.T) {
 @(test)
 test_pipeline_let_bound_quaternion_golden_block :: proc(t: ^testing.T) {
 	// The golden quaternion-identity block verbatim, lets included.
-	source := "test \"quaternion identity laws\" {\n" +
+	source := with_golden_imports("test \"quaternion identity laws\" {\n" +
 		"  let v = Vec3{x: 1.0, y: 2.0, z: 3.0}\n" +
 		"  assert Quat.identity.rotate(v) == v\n" +
 		"  assert Quat.identity.mul(Quat.identity) == Quat.identity\n" +
-		"}\n"
+		"}\n")
 	report, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.None)
 	testing.expect_value(t, report.passed, 2)
@@ -183,12 +196,12 @@ test_pipeline_let_bound_quaternion_golden_block :: proc(t: ^testing.T) {
 @(test)
 test_pipeline_let_bound_slerp_golden_block :: proc(t: ^testing.T) {
 	// The golden slerp-endpoints block verbatim, lets included.
-	source := "test \"slerp endpoints are exact\" {\n" +
+	source := with_golden_imports("test \"slerp endpoints are exact\" {\n" +
 		"  let a = Quat.identity\n" +
 		"  let b = Quat.axis_angle(Vec3{x: 0.0, y: 0.0, z: 1.0}, pi)\n" +
 		"  assert a.slerp(b, 0.0) == a\n" +
 		"  assert a.slerp(b, 1.0) == b\n" +
-		"}\n"
+		"}\n")
 	report, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.None)
 	testing.expect_value(t, report.passed, 2)
@@ -199,11 +212,11 @@ test_pipeline_let_bound_slerp_golden_block :: proc(t: ^testing.T) {
 test_pipeline_lambda_frames_isolated :: proc(t: ^testing.T) {
 	// A lambda parameter binds per application and never leaks into the
 	// test scope: x resolves to the let binding after the fold.
-	source := "test \"frames\" {\n" +
+	source := with_golden_imports("test \"frames\" {\n" +
 		"  let x = 10.0\n" +
 		"  assert fold([1.0, 2.0], 0.0, fn(acc, x) { return acc + x }) == 3.0\n" +
 		"  assert x == 10.0\n" +
-		"}\n"
+		"}\n")
 	report, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.None)
 	testing.expect_value(t, report.passed, 2)
@@ -213,6 +226,32 @@ test_pipeline_lambda_frames_isolated :: proc(t: ^testing.T) {
 @(test)
 test_pipeline_unresolved_name_is_type_error :: proc(t: ^testing.T) {
 	_, err := run_test_pipeline("test \"x\" {\nassert nope == 1.0\n}\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_pipeline_pi_resolves_via_import :: proc(t: ^testing.T) {
+	// pi binds through the engine.math import — there is no builtin
+	// fallback behind it.
+	source := "import engine.math.pi\ntest \"pi\" {\n  assert pi == pi\n}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_unimported_pi_rejected :: proc(t: ^testing.T) {
+	_, err := run_test_pipeline("test \"pi\" {\n  assert pi == pi\n}\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_pipeline_unimported_tau_rejected :: proc(t: ^testing.T) {
+	// tau is a real surface name, but this file does not import it —
+	// known spelling grants nothing without a binding.
+	source := "import engine.math.pi\ntest \"tau\" {\n  assert tau == tau\n}\n"
+	_, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
 }
 

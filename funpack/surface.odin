@@ -184,6 +184,45 @@ surface_value_type :: proc(name: string) -> (type: Type, found: bool) {
 	return nil, false
 }
 
+// surface_associated types a Type-name receiver's associated members —
+// constants (Fixed.MAX) yield their value type, constructors
+// (Quat.axis_angle) yield a Func signature. This is the declaration
+// table the checker's receiver resolution consults; receiver names
+// never match against ad-hoc strings outside it.
+surface_associated :: proc(type_name: string, member: string) -> (type: Type, found: bool) {
+	switch type_name {
+	case "Fixed":
+		switch member {
+		case "MAX", "MIN":
+			return Ground_Type.Fixed, true
+		}
+	case "Quat":
+		switch member {
+		case "identity":
+			return Ground_Type.Quat, true
+		case "axis_angle":
+			return func_of({Ground_Type.Vec3, Ground_Type.Fixed}, Ground_Type.Quat), true
+		}
+	}
+	return nil, false
+}
+
+// surface_method types a value receiver's methods, keyed by the
+// receiver's checked type; Quat owns the only method set.
+surface_method :: proc(receiver: Type, member: string) -> (signature: Type, found: bool) {
+	if is_ground(receiver, .Quat) {
+		switch member {
+		case "rotate":
+			return func_of({Ground_Type.Vec3}, Ground_Type.Vec3), true
+		case "mul":
+			return func_of({Ground_Type.Quat}, Ground_Type.Quat), true
+		case "slerp":
+			return func_of({Ground_Type.Quat, Ground_Type.Fixed}, Ground_Type.Quat), true
+		}
+	}
+	return nil, false
+}
+
 // surface_signatures types the importable free functions as overload
 // sets: most names carry one signature; dot/length/normalize carry one
 // per vector width. The generic list combinators (fold, map, filter,
