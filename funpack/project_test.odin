@@ -55,8 +55,8 @@ test_parse_project_fcfg_missing_label_rejected :: proc(t: ^testing.T) {
 @(test)
 test_parse_project_fcfg_missing_version_rejected :: proc(t: ^testing.T) {
 	// A well-formed block missing the required version is the dedicated
-	// Missing_Project_Version diagnostic — not silently accepted as the
-	// prior line-scan stub did.
+	// Missing_Project_Version diagnostic — version is the one required
+	// key, so its absence is never silently accepted.
 	_, err := parse_project_fcfg("project numerics {\n}\n")
 	testing.expect_value(t, err, Project_Error.Missing_Project_Version)
 }
@@ -124,8 +124,8 @@ test_read_project_valid_tree :: proc(t: ^testing.T) {
 @(test)
 test_read_project_malformed_tree_rejected :: proc(t: ^testing.T) {
 	// A tree whose project.fcfg violates the grammar (a stray control-flow
-	// construct) is rejected through read_project — not silently accepted
-	// as the prior line-scan stub did.
+	// construct) is rejected through read_project — a grammar violation is
+	// never silently ignored.
 	root, ok := write_scratch_tree(t, "project numerics {\n  version = \"0.1.0\"\n  while go { }\n}\n")
 	if !ok {
 		return
