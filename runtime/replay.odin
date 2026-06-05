@@ -108,6 +108,74 @@ replay_refold :: proc(
 	return version
 }
 
+// Replay_Capture_Result is the outcome of a CAPTURING re-fold: the same refusal
+// arm replay returns, plus the per-tick + session frame digests folded over every
+// committed re-fold tick (meaningful only when refusal is None). It is what the
+// acceptance harness compares against a live run's capture and what the cross-build
+// golden-log assertion compares against the committed expected session digest. On a
+// refusal the capture is the zero value, since no tick was folded.
+Replay_Capture_Result :: struct {
+	refusal:    Replay_Refusal,
+	capture:    Frame_Capture,
+	diagnostic: string,
+}
+
+// replay_capture re-folds a parsed log through the SAME identity-gated production
+// path replay uses, but captures the deterministic per-tick frame digest (over the
+// committed world state and its §20 draw-list) of every re-fold tick and folds the
+// session digest over them (§20, §28, §07 §4). It is the headless digest
+// entrypoint the acceptance harness and the operator gate both drive: a live run's
+// captured session digest and this re-fold's must be bit-identical, and a committed
+// golden log re-folded here on any build must reproduce the committed expected
+// session digest. The identity gate fires FIRST (a mismatched build is refused with
+// a diagnostic and no tick captured, §09 §5); on a match each committed re-fold tick
+// is digested over its world state and projected draw-list, the same surface a live
+// capture digests. The artifact_bytes MUST be the exact bytes load_program parsed
+// `program` from, since the gate's content hash is over those raw bytes.
+replay_capture :: proc(
+	program: ^Program,
+	artifact_bytes: string,
+	log: Replay_Log,
+	allocator := context.allocator,
+) -> Replay_Capture_Result {
+	loaded_identity := identity_from_program(program^, artifact_bytes)
+	if !replay_identity_matches(log.identity, loaded_identity) {
+		return Replay_Capture_Result {
+			refusal = .Identity_Mismatch,
+			diagnostic = replay_mismatch_diagnostic(log.identity, loaded_identity, allocator),
+		}
+	}
+	return Replay_Capture_Result {
+		refusal = .None,
+		capture = refold_capture(program, log.snapshots, allocator),
+	}
+}
+
+// refold_capture restarts the artifact and re-feeds the recorded snapshots over the
+// existing tick loop — the SAME run_startup + step_tick seam replay_refold uses —
+// while capturing each committed tick's frame digest over the world state and its
+// §20 draw-list, then folds the session digest. The render projection (render.odin)
+// runs per committed tick purely to build the digest surface; it perturbs no
+// committed state (it is an OBSERVE-class projection reading a committed version),
+// so capturing leaves the re-fold's committed world unchanged from replay_refold's.
+@(private = "file")
+refold_capture :: proc(
+	program: ^Program,
+	snapshots: []Input,
+	allocator := context.allocator,
+) -> Frame_Capture {
+	world := new_world(program^, allocator)
+	version := run_startup(program, initial_version(world, allocator), allocator)
+	time := replay_time_resource(program.entrypoint.tick_hz, allocator)
+	per_tick := make([dynamic]Frame_Digest, 0, len(snapshots), allocator)
+	for snapshot in snapshots {
+		version = step_tick(program, version, snapshot, time, allocator)
+		draw := render_version(program, version, snapshot, time, allocator)
+		append(&per_tick, capture_frame(version, draw, allocator))
+	}
+	return finish_capture(per_tick[:], allocator)
+}
+
 // replay_identity_matches reports whether a recorded log's pinned identity equals
 // the loaded artifact's identity in EVERY field §09 §5 gates on: the artifact
 // schema version, the §4 project name and version, the fixed tick rate, and the
