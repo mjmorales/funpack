@@ -39,13 +39,22 @@ run_test_verb :: proc() -> int {
 		report, err := run_test_pipeline(string(source_bytes))
 		if err != .None {
 			fmt.eprintfln("funpack test: %s: %v", source_path, err)
-			return 2
+			return test_exit_code(err, report)
 		}
 		total.passed += report.passed
 		total.failed += report.failed
 	}
 	fmt.printfln("funpack test: %d passed, %d failed", total.passed, total.failed)
-	if total.failed != 0 {
+	return test_exit_code(.None, total)
+}
+
+// test_exit_code is the CLI exit contract: a compile error is 2 — never
+// a counted failure — failed assertions are 1, all-pass is 0.
+test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
+	if err != .None {
+		return 2
+	}
+	if report.failed != 0 {
 		return 1
 	}
 	return 0

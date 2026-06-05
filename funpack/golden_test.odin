@@ -3,6 +3,7 @@ package funpack
 import "core:log"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 // The golden numerics tree lives in the funpack-spec sibling checkout.
@@ -70,6 +71,68 @@ test_golden_numerics_full_pipeline_passes :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.passed, 30)
 	testing.expect_value(t, report.failed, 0)
 	testing.expect_value(t, report.exit_code, 0)
+}
+
+// golden_source reads the golden project's single source file; ok =
+// false (with a SKIP warning) when the sibling checkout is absent.
+golden_source :: proc() -> (source: string, ok: bool) {
+	dir := resolve_golden_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
+		return "", false
+	}
+	project, read_err := read_project(dir)
+	if read_err != .None || len(project.sources) == 0 {
+		return "", false
+	}
+	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0], context.temp_allocator)
+	if file_err != nil {
+		return "", false
+	}
+	return string(source_bytes), true
+}
+
+// golden_variant derives a negative fixture from the golden source by
+// applying one exact replacement. found = false when the anchor text
+// is absent — the golden file moved and the fixture must be
+// re-anchored, loudly, instead of silently testing nothing.
+golden_variant :: proc(source: string, anchor: string, replacement: string) -> (variant: string, found: bool) {
+	if !strings.contains(source, anchor) {
+		return "", false
+	}
+	variant, _ = strings.replace(source, anchor, replacement, 1, context.temp_allocator)
+	return variant, true
+}
+
+@(test)
+test_golden_variant_removed_to_fixed_rejected :: proc(t: ^testing.T) {
+	// The epic's negative obligation, permanently homed: strip the
+	// explicit to_fixed lift from the golden source so a bare Int meets
+	// a Fixed context — the whole file must reject at typecheck (the
+	// funpack test CLI maps this to exit 2 via test_exit_code).
+	source, ok := golden_source()
+	if !ok {
+		return
+	}
+	variant, found := golden_variant(source, "to_fixed(2) + 0.5", "2 + 0.5")
+	testing.expect(t, found)
+	_, err := run_test_pipeline(variant)
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_golden_variant_unimported_name_rejected :: proc(t: ^testing.T) {
+	// Second fixture family through the same harness: swap the imported
+	// pi for the unimported tau in the slerp block — resolution, not
+	// arithmetic, rejects the file.
+	source, ok := golden_source()
+	if !ok {
+		return
+	}
+	variant, found := golden_variant(source, "z: 1.0}, pi)", "z: 1.0}, tau)")
+	testing.expect(t, found)
+	_, err := run_test_pipeline(variant)
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
 }
 
 resolve_golden_dir :: proc() -> string {

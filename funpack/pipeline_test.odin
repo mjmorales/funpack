@@ -292,6 +292,16 @@ test_pipeline_unimported_tau_rejected :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_exit_code_contract :: proc(t: ^testing.T) {
+	// The funpack test CLI's exit contract: compile errors are 2 (never
+	// a counted failure), failed assertions 1, all-pass 0.
+	testing.expect_value(t, test_exit_code(.Typecheck_Failed, Test_Report{}), 2)
+	testing.expect_value(t, test_exit_code(.Parse_Failed, Test_Report{}), 2)
+	testing.expect_value(t, test_exit_code(.None, Test_Report{passed = 1, failed = 1}), 1)
+	testing.expect_value(t, test_exit_code(.None, Test_Report{passed = 30}), 0)
+}
+
+@(test)
 test_pipeline_empty_source_is_noop_pass :: proc(t: ^testing.T) {
 	report, err := run_test_pipeline("")
 	testing.expect_value(t, err, Pipeline_Error.None)
