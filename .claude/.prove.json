@@ -1,5 +1,5 @@
 {
-  "schema_version": "10",
+  "schema_version": "11",
   "dev_mode": false,
   "validators": [
     {
@@ -27,27 +27,27 @@
   "claude_md": {
     "references": [
       {
-        "path": "/Users/manuelmorales/dev/claude-prove/references/creator-conventions.md",
+        "path": "~/.claude-prove/latest/references/creator-conventions.md",
         "label": "Creator Conventions"
       },
       {
-        "path": "/Users/manuelmorales/dev/claude-prove/references/interaction-patterns.md",
+        "path": "~/.claude-prove/latest/references/interaction-patterns.md",
         "label": "Interaction Patterns"
       },
       {
-        "path": "/Users/manuelmorales/dev/claude-prove/references/llm-coding-standards.md",
+        "path": "~/.claude-prove/latest/references/llm-coding-standards.md",
         "label": "LLM Coding Standards"
       },
       {
-        "path": "/Users/manuelmorales/dev/claude-prove/references/prompt-engineering-guide.md",
+        "path": "~/.claude-prove/latest/references/prompt-engineering-guide.md",
         "label": "Prompt Engineering Guide"
       },
       {
-        "path": "/Users/manuelmorales/dev/claude-prove/references/validation-config.md",
+        "path": "~/.claude-prove/latest/references/validation-config.md",
         "label": "Validation Config"
       },
       {
-        "path": "~/.claude-envs/pool/plugins/marketplaces/prove/references/passive-triggers.md",
+        "path": "~/.claude-prove/latest/references/passive-triggers.md",
         "label": "Passive Triggers"
       }
     ]
