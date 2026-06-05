@@ -127,26 +127,3 @@ test_producers_are_immutable :: proc(t: ^testing.T) {
 	testing.expect_value(t, value(base, .P1, ACT_STEER), Fixed(0))
 	testing.expect_value(t, value(derived2, .P1, ACT_STEER), to_fixed(1))
 }
-
-@(test)
-test_keys_of_is_deterministically_ordered :: proc(t: ^testing.T) {
-	// keys_of returns a canonical (player, action) order regardless of map
-	// iteration order — the stable enumeration the recorder digests
-	// (spec §23 §4). Build out of order; expect sorted by player then action.
-	// Each producer clones, so the intermediates are freed explicitly to keep
-	// the leak-checked test allocator clean (a chain owns its intermediates).
-	s0 := empty()
-	defer delete_input(s0)
-	s1 := with_pressed(s0, .P2, ACT_FIRE)
-	defer delete_input(s1)
-	s2 := with_pressed(s1, .P1, ACT_JUMP)
-	defer delete_input(s2)
-	snap := with_value(s2, .P1, ACT_STEER, to_fixed(1))
-	defer delete_input(snap)
-	keys := keys_of(snap)
-	defer delete(keys)
-	testing.expect_value(t, len(keys), 3)
-	testing.expect_value(t, keys[0], Player_Action{.P1, ACT_STEER})
-	testing.expect_value(t, keys[1], Player_Action{.P1, ACT_JUMP})
-	testing.expect_value(t, keys[2], Player_Action{.P2, ACT_FIRE})
-}

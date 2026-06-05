@@ -16,8 +16,6 @@
 // sanctioned coupling (spec §29, §09).
 package funpack_runtime
 
-import "core:slice"
-
 // PlayerId is the §23 §1 per-player axis, always explicit (P1..P4) including
 // in single player. Closed enum — the four hardware-player slots the input
 // layer addresses, never more.
@@ -43,6 +41,9 @@ ActionId :: distinct u32
 // sim Vec2 math surface (length, normalize, dot) belongs to the world state
 // layer; the input snapshot needs only the value and its zero, so this carries
 // exactly that — no float ever (spec §23 §4, §09 §6).
+// TODO: the world-state layer lands the full Vec2 in this same package —
+// consolidate onto one definition then (duplicate declaration is a compile
+// error, so the collision cannot land silently).
 Vec2 :: struct {
 	x: Fixed,
 	y: Fixed,
@@ -209,33 +210,4 @@ delete_input :: proc(input: Input) {
 	snap := input
 	delete(snap.buttons)
 	delete(snap.axes)
-}
-
-// keys_of returns a snapshot's button keys in a stable, deterministic order.
-// Map iteration order in Odin is unspecified; any code that must enumerate the
-// snapshot (a recorder, a digest) sorts first so the byte output is identical
-// run to run (spec §23 §4: the recorded snapshot is the determinism record).
-// Provided here so the recorder keys on one canonical order.
-keys_of :: proc(input: Input, allocator := context.allocator) -> []Player_Action {
-	out := make([dynamic]Player_Action, 0, len(input.buttons) + len(input.axes), allocator)
-	seen := make(map[Player_Action]bool, allocator = context.temp_allocator)
-	for key in input.buttons {
-		if !seen[key] {
-			seen[key] = true
-			append(&out, key)
-		}
-	}
-	for key in input.axes {
-		if !seen[key] {
-			seen[key] = true
-			append(&out, key)
-		}
-	}
-	slice.sort_by(out[:], proc(a, b: Player_Action) -> bool {
-		if a.player != b.player {
-			return a.player < b.player
-		}
-		return a.action < b.action
-	})
-	return out[:]
 }
