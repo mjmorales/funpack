@@ -559,3 +559,57 @@ test_pipeline_empty_source_is_noop_pass :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.failed, 0)
 	testing.expect_value(t, report.exit_code, 0)
 }
+
+// MATCH_SCRUTINEE_HEADER opens a test whose let binds an Option-typed
+// scrutinee (checked_div returns Option[Fixed], spec §10), so the match
+// fixtures below dispatch on a real Option value. Each fixture appends
+// its own `match opt { … }` assert and closes the block.
+MATCH_SCRUTINEE_HEADER :: "test \"match exhaustiveness\" {\n" +
+	"\tlet opt = checked_div(6.0, 2.0)\n"
+
+// run_match_fixture drives a match-bearing test block — the golden import
+// header, the Option scrutinee let, then the given assert lines and the
+// closing brace — through the full pipeline.
+run_match_fixture :: proc(asserts: string) -> (report: Test_Report, err: Pipeline_Error) {
+	source := strings.concatenate(
+		{GOLDEN_IMPORT_HEADER, MATCH_SCRUTINEE_HEADER, asserts, "}\n"},
+		context.temp_allocator,
+	)
+	return run_test_pipeline(source)
+}
+
+@(test)
+test_pipeline_non_exhaustive_match_fires_gate :: proc(t: ^testing.T) {
+	// A match on an Option scrutinee covering only Some — no None, no
+	// wildcard — is non-total, so the pure-AST exhaustiveness gate rejects
+	// it before typecheck (spec §02 §5: a non-total match is a compile
+	// error). The verdict is Gate_Failed, distinct from a parse or
+	// typecheck failure.
+	_, err := run_match_fixture("\tassert match opt { Option::Some(v) => 1.0 } == 1.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
+@(test)
+test_pipeline_exhaustive_match_clears_gate :: proc(t: ^testing.T) {
+	// The control: covering both Option variants (Some and None) clears
+	// the exhaustiveness gate. It still rejects LATER — stage_typecheck
+	// contains Match_Expr as Unsupported_Expr — so the pipeline verdict is
+	// Typecheck_Failed, NOT None. Asserting Typecheck_Failed (never None)
+	// is the proof the gate did NOT fire: a Gate_Failed here would mean the
+	// total match was wrongly rejected as non-exhaustive.
+	_, err := run_match_fixture(
+		"\tassert match opt { Option::Some(v) => 1.0, Option::None => 2.0 } == 1.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_pipeline_wildcard_match_clears_gate :: proc(t: ^testing.T) {
+	// A wildcard `_` arm is full coverage, so a Some + `_` match is total
+	// and clears the gate even though None is never named explicitly. As
+	// with the two-variant control, it then rejects at typecheck
+	// (Match_Expr is Unsupported_Expr) — so Typecheck_Failed, never
+	// Gate_Failed, is the proof the gate treated `_` as exhaustive.
+	_, err := run_match_fixture(
+		"\tassert match opt { Option::Some(v) => 1.0, _ => 2.0 } == 1.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
