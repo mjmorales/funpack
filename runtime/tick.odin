@@ -200,11 +200,14 @@ field_is_int :: proc(decl: ^Thing_Decl, name: string) -> bool {
 // --- The per-tick fold ----------------------------------------------------
 
 // step_tick folds one tick over the flattened pipeline against the prior
-// committed version, returning the next committed version. Behaviors read the
-// PRIOR version (population fixed within the tick) and the supplied input/time
-// resources; their returns fold into working rows (blackboard), the signal
-// mailbox (forward-routed signals), and the spawn/despawn batch (applied at the
-// boundary). The next version commits with every table sorted ascending by Id.
+// committed version, returning the next committed version. A behavior reads the
+// tick's WORKING tables (a mid-tick View/Ref sees earlier stages' SAME-TICK
+// writes — evolving columns, §08 / §07 §4 — while the row set stays the one the
+// tick fixed, since spawns/despawns land at the boundary) and the supplied
+// input/time resources; their returns fold into working rows (blackboard), the
+// signal mailbox (forward-routed signals), and the spawn/despawn batch (applied
+// at the boundary). The next version commits with every table sorted ascending by
+// Id.
 step_tick :: proc(
 	program: ^Program,
 	prior: World_Version,
@@ -217,6 +220,7 @@ step_tick :: proc(
 	interp := Interp {
 		program   = program,
 		version   = &prior_version,
+		tick      = &state, // a mid-tick cross-thing read observes the working tables
 		input     = input,
 		time      = time,
 		allocator = allocator,
@@ -272,9 +276,10 @@ run_behavior_over_instances :: proc(
 // bind_behavior_env binds a behavior step's declared params into a fresh scope:
 // `self` is the instance's blackboard, an Input/Time param the resource, a
 // [Signal] param the inbound signal list accumulated so far this tick, a View[T]
-// param the prior version's rows of T as a list, and a plain Thing param an
-// other-instance read (unused by pong). The binding is by param TYPE so the
-// step body reads its declared reads (§06 §3).
+// param the tick's WORKING rows of T as a list (so a later stage's View sees
+// earlier stages' same-tick writes, §08 / §07 §4), and a plain Thing param an
+// other-instance read (unused by pong). The binding is by param TYPE so the step
+// body reads its declared reads (§06 §3).
 bind_behavior_env :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -292,9 +297,10 @@ bind_behavior_env :: proc(
 // bind_param resolves one param's value from its declared type. `self` (the
 // on-Thing type) is the instance blackboard as a record; Input/Time are the
 // resources; a `[Signal]` type is the inbound accumulated signal list; a
-// `View[T]` is the prior version's T rows as a list of record values; any other
-// thing-typed param reads as an empty record (no other-instance binding pong
-// needs). The match is on the type string the artifact carries (§06 §3).
+// `View[T]` is the tick's WORKING T rows as a list of record values (evolving
+// columns mid-tick, §08 / §07 §4); any other thing-typed param reads as an empty
+// record (no other-instance binding pong needs). The match is on the type string
+// the artifact carries (§06 §3).
 bind_param :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -606,19 +612,57 @@ row_to_record :: proc(interp: ^Interp, row: Row) -> Value {
 	return Record_Value{type_name = "", fields = fields}
 }
 
-// view_rows_as_list reads the PRIOR version's rows of a thing as a List_Value of
-// record values — the binding for a `View[T]` param (paddle_bounce's
-// `paddles: View[Paddle]`). The rows come from the prior committed version
-// (population fixed within the tick) in stable Id order, so first/fold over the
-// view are deterministic.
+// view_rows_as_list reads a thing's rows as a List_Value of record values — the
+// binding for a `View[T]` param (paddle_bounce's `paddles: View[Paddle]`). The
+// rows come from the tick's WORKING table when a fold is in flight, so a later
+// stage's View observes every earlier stage's SAME-TICK blackboard writes
+// (evolving columns, §08 / §07 §4); off a fold it falls back to the committed
+// version. Either way the rows are in stable Id order (the working set is
+// materialized Id-ordered at tick start and only columns evolve mid-tick;
+// spawns/despawns land at the boundary, so population stays fixed), so first/fold
+// over the view are deterministic.
 view_rows_as_list :: proc(interp: ^Interp, thing: string) -> Value {
-	view := view_of_type(interp.version, thing)
+	view := interp_view_of_type(interp, thing)
 	elements := make([]Value, view_count(view), interp.allocator)
 	for i in 0 ..< view_count(view) {
 		row, _ := view_at(view, i)
 		elements[i] = row_to_record(interp, row)
 	}
 	return List_Value{elements = elements}
+}
+
+// interp_view_of_type opens a View over a thing's rows for a mid-tick read: the
+// tick's WORKING rows when a fold is in flight (so a later stage sees earlier
+// stages' SAME-TICK writes — evolving columns, §08 / §07 §4), else the committed
+// version (off a fold). The working rows stay ascending by Id through the tick
+// (built sorted at tick start, updated in place, never reordered until commit),
+// so the View iterates and resolves in the same stable Id order a committed View
+// does — population fixity preserved because spawns/despawns land at the boundary.
+interp_view_of_type :: proc(interp: ^Interp, thing: string) -> View {
+	if interp.tick != nil {
+		if table := find_tick_table(interp.tick.tables, thing); table != nil {
+			return View{thing = thing, rows = table.rows[:]}
+		}
+	}
+	return view_of_type(interp.version, thing)
+}
+
+// interp_resolve_ref resolves a Ref against the tick's WORKING rows when a fold
+// is in flight — a mid-tick `recv.ref_field.column` join reads the referent's
+// SAME-TICK writes (evolving columns, §08 / §07 §4) over its tick-start value;
+// off a fold it resolves against the committed version. The working rows are
+// Id-ascending, so the binary search find_row_by_id rests on holds.
+interp_resolve_ref :: proc(interp: ^Interp, ref: Ref) -> (row: Row, some: bool) {
+	if interp.tick != nil {
+		if table := find_tick_table(interp.tick.tables, ref.thing); table != nil {
+			idx, found := find_row_by_id(table.rows[:], ref.id)
+			if !found {
+				return {}, false
+			}
+			return table.rows[idx], true
+		}
+	}
+	return resolve_ref(interp.version, ref)
 }
 
 // input_marker returns the value a behavior's `input` param binds to. The Input

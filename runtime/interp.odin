@@ -90,14 +90,27 @@ Env :: struct {
 }
 
 // Interp is the read-only context every evaluation threads: the loaded program
-// (its functions and consts), the pre-tick committed version a View ranges over,
-// the input snapshot a `value`/`pressed` query reads, the time resource a `dt`
-// read resolves, and the evaluation allocator the value tree is built in. It is
-// the immutable world a behavior observes; the behavior's writes are its return,
-// folded by the tick transaction, never a field of this context.
+// (its functions and consts), the committed version a View falls back to, the
+// in-flight working tables a mid-tick cross-thing read observes, the input
+// snapshot a `value`/`pressed` query reads, the time resource a `dt` read
+// resolves, and the evaluation allocator the value tree is built in. It is the
+// world a behavior observes; the behavior's writes are its return, folded by the
+// tick transaction, never a field of this context.
+//
+// Mid-tick read consistency (§08: "within a tick the population is fixed while
+// blackboard writes fold forward, so a mid-tick query sees a stable set of rows
+// with evolving columns"; §07 §4: "a stage sees every earlier stage's writes").
+// A View[T] binding and a Ref resolution observe the WORKING tables `tick`
+// points at — the in-flight rows the stage fold mutates in place — so a later
+// stage reads the SAME-TICK writes of an earlier stage (evolving columns). The
+// working row SET was materialized at tick start and only columns evolve
+// (spawns/despawns land at the boundary), so population fixity holds. When `tick`
+// is nil (a pure read-layer evaluation with no fold in flight) the read falls
+// back to `version`, the committed snapshot.
 Interp :: struct {
 	program:   ^Program,
-	version:   ^World_Version, // the pre-tick world Views read (population fixed within a tick)
+	version:   ^World_Version, // the committed version a read falls back to when no tick is in flight
+	tick:      ^Tick_State, // the in-flight working tables a mid-tick cross-thing read observes; nil off a fold
 	input:     Input, // the §23 action snapshot a behavior queries
 	time:      Record_Value, // the Time resource: { dt: Fixed }
 	allocator: Runtime_Allocator,
@@ -269,8 +282,10 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 		return nil, false
 	case Ref:
 		// A Ref column read followed by a field is the resolve-then-read join: a
-		// dangling Ref has no field, so the read takes the absent arm.
-		row, some := resolve_ref(interp.version, r)
+		// dangling Ref has no field, so the read takes the absent arm. Resolved
+		// through the tick's working rows when a fold is in flight, so the join
+		// reads the referent's SAME-TICK writes (evolving columns, §08 / §07 §4).
+		row, some := interp_resolve_ref(interp, r)
 		if !some {
 			return nil, false
 		}
