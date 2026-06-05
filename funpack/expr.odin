@@ -7,8 +7,8 @@
 // call/member postfix loop. `if` parses as the early-return statement form
 // in fn bodies (parser.odin), not as an expression atom here. Indexing
 // `xs[i]` and ranges have no production and parse as errors; `match` parses
-// structurally (spec §02 §5) and is contained at typecheck as
-// Unsupported_Expr.
+// structurally (spec §02 §5), is typed by typecheck.odin's match_check, and
+// is proven exhaustive by the gate stage (gates.odin).
 package funpack
 
 Expr :: union {
@@ -139,8 +139,11 @@ Match_Arm :: struct {
 }
 
 // Match_Expr is the structural match node (spec §02 §5): a scrutinee and
-// its newline-separated arms. It parses to AST only — stage_typecheck
-// contains it as Unsupported_Expr, with no evaluation path.
+// its newline-separated arms. stage_typecheck types it through match_check
+// (typecheck.odin) — the scrutinee is typed, each arm's binders bind against
+// its variant payloads, and the arm bodies unify to the match's type — and
+// the gate stage proves it exhaustive against its closed variant set
+// (gates.odin).
 Match_Expr :: struct {
 	scrutinee: Expr,
 	arms:      []Match_Arm,
