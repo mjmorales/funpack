@@ -48,6 +48,70 @@ test_golden_imports_populate_bindings :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pong_imports_populate_bindings :: proc(t: ^testing.T) {
+	// The pong golden source's six engine.* import forms, verbatim
+	// (engine.prelude is pre-bound, so the file omits it). Every member
+	// must bind to its owning module with the expected Decl_Kind — the
+	// boundary this story owns: imports resolve to bindings, no call site
+	// is typed yet.
+	source := "import engine.math.{Fixed, Vec2, abs, clamp}\n" +
+		"import engine.world.{View, Spawn}\n" +
+		"import engine.input.{Input, Key, PlayerId, Bindings, keys_axis, stick_y, Stick}\n" +
+		"import engine.render.{Draw, Color}\n" +
+		"import engine.core.Time\n" +
+		"import engine.list.{fold, first}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	// Each row is one imported member, the module it must resolve to, and
+	// the Decl_Kind the surface table declares for it.
+	Expectation :: struct {
+		name:   string,
+		module: string,
+		kind:   Decl_Kind,
+	}
+	expectations := []Expectation{
+		{"Fixed", "engine.math", .Type_Name},
+		{"Vec2", "engine.math", .Type_Name},
+		{"abs", "engine.math", .Func},
+		{"clamp", "engine.math", .Func},
+		{"View", "engine.world", .Type_Name},
+		{"Spawn", "engine.world", .Type_Name},
+		{"Input", "engine.input", .Type_Name},
+		{"Key", "engine.input", .Type_Name},
+		{"PlayerId", "engine.input", .Type_Name},
+		{"Bindings", "engine.input", .Type_Name},
+		{"Stick", "engine.input", .Type_Name},
+		{"keys_axis", "engine.input", .Func},
+		{"stick_y", "engine.input", .Func},
+		{"Draw", "engine.render", .Type_Name},
+		{"Color", "engine.render", .Type_Name},
+		{"Time", "engine.core", .Type_Name},
+		{"fold", "engine.list", .Func},
+		{"first", "engine.list", .Func},
+	}
+	for want in expectations {
+		binding, bound := bindings.names[want.name]
+		testing.expectf(t, bound, "%s did not bind", want.name)
+		testing.expect_value(t, binding.module, want.module)
+		testing.expect_value(t, binding.kind, want.kind)
+	}
+}
+
+@(test)
+test_pong_unknown_world_member_rejected :: proc(t: ^testing.T) {
+	// The closed-table proof: a name absent from the new engine.world
+	// partition still rejects with Unknown_Member. Admitting View/Spawn
+	// did not open the module to arbitrary names.
+	ast, parse_err := stage_parse(stage_lex("import engine.world.{View, Despawn}\n"))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.Unknown_Member)
+}
+
+@(test)
 test_prelude_is_always_in_scope :: proc(t: ^testing.T) {
 	// The prelude needs no import (spec §26): Fixed and Option are
 	// bound on an importless source.
