@@ -12,11 +12,30 @@ package funpack
 
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
+import "core:strings"
+
+// RESERVED_ROOT is the single §15 reserved namespace root: the built-in
+// stdlib package occupies `engine`, and the set is closed and
+// compiler-fixed. A user source path whose derived module would fall
+// under `engine` (or be `engine` itself) shadows that root, which §15.7
+// makes a compile error — reserved roots are unshadowable.
+RESERVED_ROOT :: "engine"
+
+// Source pairs a collected `.fun` file's on-disk path with its
+// path-derived module name (§15): a file's module IS its location under
+// the source root, directory segments dotted and filename as the leaf,
+// with no `module` keyword to declare or drift. The two travel together
+// so identity comes from config and the filesystem, never a hardcode.
+Source :: struct {
+	path:   string,
+	module: string,
+}
 
 Project :: struct {
 	name:    string,
 	version: string,
-	sources: []string,
+	sources: []Source,
 }
 
 Project_Error :: enum {
@@ -27,6 +46,12 @@ Project_Error :: enum {
 	Missing_Project_Version,
 	Missing_Src_Dir,
 	No_Sources,
+	// Reserved_Engine_Root is the §15.7 reserved-root collision: a user
+	// source path under `src/engine/…` (or a bare `src/engine.fun`)
+	// derives a module under the reserved `engine` stdlib namespace,
+	// which is unshadowable. A dedicated arm, never folded into
+	// No_Sources or Malformed — the error names a specific §15 rule.
+	Reserved_Engine_Root,
 }
 
 read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
@@ -274,15 +299,81 @@ cfg_scan_punct :: proc(ch: u8) -> Cfg_Token {
 	}
 }
 
-collect_sources :: proc(root: string) -> ([]string, Project_Error) {
+// collect_sources walks every `.fun` under `src/` (recursively — a
+// module's directory IS its namespace, §15, so nested files are
+// first-class) and pairs each path with its §15 path-derived module name.
+// Paths are sorted for a deterministic source order regardless of the
+// filesystem's walk order. A path whose module falls under the reserved
+// `engine` root rejects with the dedicated Reserved_Engine_Root arm
+// before any source is returned — a reserved collision fails the whole
+// tree, not just the offending file.
+collect_sources :: proc(root: string) -> ([]Source, Project_Error) {
 	src_dir, _ := filepath.join({root, "src"}, context.temp_allocator)
 	if !os.is_dir(src_dir) {
 		return nil, .Missing_Src_Dir
 	}
-	pattern, _ := filepath.join({src_dir, "*.fun"}, context.temp_allocator)
-	sources, glob_err := filepath.glob(pattern, context.temp_allocator)
-	if glob_err != nil || len(sources) == 0 {
+	paths := collect_fun_paths(src_dir)
+	if len(paths) == 0 {
 		return nil, .No_Sources
 	}
+	slice.sort(paths)
+	// The walker resolves the source root through realpath, so the
+	// collected fullpaths are realpath-rooted; relativize against the
+	// same realpath form (filepath.abs uses realpath) so the prefix
+	// matches and the derived module is not corrupted by a symlinked
+	// temp root (the macOS /var → /private/var case).
+	abs_src_dir, abs_err := filepath.abs(src_dir, context.temp_allocator)
+	if abs_err != nil {
+		abs_src_dir = src_dir
+	}
+	sources := make([]Source, len(paths), context.temp_allocator)
+	for path, i in paths {
+		module := derive_module_name(abs_src_dir, path)
+		if module_under_reserved_root(module) {
+			return nil, .Reserved_Engine_Root
+		}
+		sources[i] = Source{path = path, module = module}
+	}
 	return sources, .None
+}
+
+// collect_fun_paths walks `src_dir` breadth-first and returns every
+// regular `.fun` file's path (cloned into the temp allocator so they
+// outlive the walker, whose own path strings are freed on destroy).
+collect_fun_paths :: proc(src_dir: string) -> []string {
+	paths := make([dynamic]string, 0, 8, context.temp_allocator)
+	walker := os.walker_create(src_dir)
+	defer os.walker_destroy(&walker)
+	for info in os.walker_walk(&walker) {
+		if info.type != .Regular || !strings.has_suffix(info.name, ".fun") {
+			continue
+		}
+		append(&paths, strings.clone(info.fullpath, context.temp_allocator))
+	}
+	return paths[:]
+}
+
+// derive_module_name computes a source's §15 module name as a pure
+// function of its path: relativize against the source root (dropping the
+// `src/` prefix), strip the `.fun` extension, and dot the interior
+// directory segments — `src/numerics.fun` → `numerics`,
+// `src/combat/melee.fun` → `combat.melee`. No `module` keyword, no
+// hardcode: the filesystem location IS the name.
+derive_module_name :: proc(src_root: string, source_path: string) -> string {
+	rel, rel_err := filepath.rel(src_root, source_path, context.temp_allocator)
+	if rel_err != .None {
+		rel = source_path
+	}
+	stem := strings.trim_suffix(rel, ".fun")
+	segments := strings.split(stem, filepath.SEPARATOR_STRING, context.temp_allocator)
+	return strings.join(segments, ".", context.temp_allocator)
+}
+
+// module_under_reserved_root reports whether a derived module name
+// shadows the closed reserved `engine` root (§15.7): the bare root itself
+// (`src/engine.fun`) or any module beneath it (`src/engine/foo.fun` →
+// `engine.foo`). The leading segment is compared exactly, so a benign
+// `engineering` module does not collide.
+module_under_reserved_root :: proc(module: string) -> bool {
+	return module == RESERVED_ROOT || strings.has_prefix(module, RESERVED_ROOT + ".")
 }
