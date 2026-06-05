@@ -7,7 +7,7 @@
 // Fixed literals reach the runtime ONLY through decode_fixed → the kernel's
 // Fixed (artifact_lex.odin §2.3): the setup batch's Fixed/Vec2 fields are
 // decoded bit-exact here, never through a float. Function/behavior body `fixed`
-// nodes keep their raw token and are decoded at evaluation time (the next story)
+// nodes keep their raw token and are decoded at evaluation time by the interpreter
 // — also through the kernel, also never float.
 package funpack_runtime
 
@@ -593,7 +593,7 @@ load_endpoints :: proc(
 // field_count` record plus its `set FIELD =ENCODED` sub-records, decoded to
 // concrete values (§13). Fixed and Vec2 fields are decoded bit-exact through the
 // kernel here — NO float in the load path. A field omitted in source is not
-// carried; the runtime applies the thing's default when it spawns (next story).
+// carried; the runtime applies the thing's default when setup spawns it.
 load_setup :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -625,7 +625,7 @@ load_setup :: proc(
 // Spawn_Field. The encoded value's shape is self-describing: a `vec2` prefix is a
 // Vec2, a `::` is an enum variant, otherwise a numeric token (decoded as Fixed
 // — the raw bits round-trip identically whether the source type was Int or Fixed,
-// and the thing's Field_Decl carries the type for the next story). NO float.
+// and the thing's Field_Decl carries the type for the interpreter). NO float.
 load_spawn_field :: proc(
 	sub: string,
 	allocator := context.allocator,
@@ -660,8 +660,8 @@ load_spawn_field :: proc(
 		field.kind = .Variant
 		field.variant = strings.clone(encoded, allocator)
 	case is_signed_decimal(encoded):
-		// A numeric scalar: keep both an Int and a Fixed reading so the next
-		// story can apply whichever the field's declared type calls for, both
+		// A numeric scalar: keep both an Int and a Fixed reading so the
+		// interpreter can apply whichever the field's declared type calls for, both
 		// from the same raw bits (a Fixed is `value*2^32`, an Int is plain).
 		n, n_ok := decode_int(encoded)
 		fx, fx_ok := decode_fixed(encoded)

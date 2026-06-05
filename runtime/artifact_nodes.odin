@@ -42,7 +42,7 @@ Node_Kind :: enum {
 }
 
 // Node is one interpreted body node: its kind, its decoded scalar fields kept as
-// raw tokens (positionally typed per §2.7 — the interpreter, story 4, decodes a
+// raw tokens (positionally typed per §2.7 — the interpreter decodes a
 // `fixed`'s token through the kernel when it evaluates), and its children in
 // evaluation/source order. The tree is owned by the loader's allocator.
 Node :: struct {

@@ -118,7 +118,7 @@ test_load_data_and_signals :: proc(t: ^testing.T) {
 // The thing descriptors carry the singleton flag, the gtag set, and the
 // blackboard schema with per-field defaults. Pong models the score as an
 // ordinary thing (singleton false), so the singleton path is generic but
-// unexercised — Scoreboard's Int fields carry a `=0` default (team Lore).
+// unexercised — Scoreboard's Int fields carry a `=0` default in the golden source.
 @(test)
 test_load_things :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
@@ -192,8 +192,8 @@ test_load_functions :: proc(t: ^testing.T) {
 
 // The flattened pipeline is the ONE total order (§11): 11 contiguous steps from
 // 0, starting at the startup behavior and ending at the terminal render stage.
-// This is the order a tick's fold visits — the assertion the downstream tick
-// story depends on.
+// This is the order a tick's fold visits — the assertion the tick fold
+// depends on.
 @(test)
 test_load_pipeline_total_order :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
@@ -292,7 +292,7 @@ test_behavior_per_stage_bindings :: proc(t: ^testing.T) {
 
 // The signal routing map: Goal is produced by `score` (scoring) and consumed by
 // `tally` and `serve` downstream in the flattened order — the canonical forward
-// synchronous in-pipeline-order route (§12, team Lore). Every consumer's ordinal
+// synchronous in-pipeline-order route (§12). Every consumer's ordinal
 // is strictly greater than the producer's (effect closure).
 @(test)
 test_load_signal_routing :: proc(t: ^testing.T) {
@@ -327,7 +327,7 @@ test_load_signal_routing :: proc(t: ^testing.T) {
 // The §13 setup [Spawn] batch: 4 commands (2 paddles + ball + scoreboard) in
 // source list order. Scoreboard's defaulted fields are carried explicitly in the
 // fixture (`set left =0`), so the batch has them; an omitted field would not
-// appear (the runtime applies the default next story).
+// appear (the runtime applies the default at spawn).
 @(test)
 test_load_setup_batch :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
@@ -431,8 +431,8 @@ test_load_entrypoint :: proc(t: ^testing.T) {
 }
 
 // The empty runtime substrate: new_world builds one Thing_Table per declared
-// thing, keyed by Id, with NO rows — population happens when setup runs (the next
-// story). This story produces the substrate, never a populated world.
+// thing, keyed by Id, with NO rows — population happens when setup runs in the
+// tick transaction. This layer produces the substrate, never a populated world.
 @(test)
 test_new_world_is_empty_substrate :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)

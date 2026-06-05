@@ -6,11 +6,11 @@
 // decoded bit-exact through the kernel), the binding table (§14), and the
 // entrypoint wiring (§15).
 //
-// `World` is the empty runtime substrate the downstream stories execute over:
-// thing tables keyed by stable Id and the singleton row slots. This story
+// `World` is the empty runtime substrate the sim executes over:
+// thing tables keyed by stable Id and the singleton row slots. This file
 // BUILDS the empty tables; it does NOT run setup or any tick — the spawn batch
 // is loaded into `Program.setup`, but applying it (and folding the pipeline)
-// belongs to the tick-transaction story (team Lore seam order).
+// belongs to the tick transaction.
 package funpack_runtime
 
 // --- Type descriptors (§5–§8) --------------------------------------------
@@ -153,7 +153,7 @@ Spawn_Field :: struct {
 
 // Spawn_Command is one entry of the §13 [Spawn] batch: a thing type plus its
 // supplied fields. A field omitted in source (a default) is NOT carried — the
-// runtime applies the thing's Field_Decl default when it spawns (next story).
+// runtime applies the thing's Field_Decl default when setup spawns it.
 Spawn_Command :: struct {
 	thing:  string,
 	fields: []Spawn_Field,
@@ -207,15 +207,15 @@ Program :: struct {
 // --- The empty runtime substrate (§07 §4) --------------------------------
 
 // Thing_Id is a stable per-thing-type row identity. The runtime keys thing
-// tables by Id so iteration and Ref resolution are deterministic (team Lore: the
-// state layer iterates a View[T] in stable-Id order). Ids are dense and
-// monotonic within a table; this story creates the empty table — no row is
-// populated until setup runs (the tick-transaction story).
+// tables by Id so iteration and Ref resolution are deterministic (the state
+// layer iterates a View[T] in stable-Id order, §08). Ids are dense and
+// monotonic within a table; this file creates the empty table — no row is
+// populated until setup runs in the tick transaction.
 Thing_Id :: distinct u32
 
 // Thing_Table is the empty per-thing-type row store keyed by Id. It carries the
 // type descriptor it was built from (its schema) and the next Id to mint. Rows
-// are added when setup spawns them (next story), so `next_id` starts at 0 and
+// are added when setup spawns them, so `next_id` starts at 0 and
 // the table is empty here — this is the substrate, not a populated world.
 Thing_Table :: struct {
 	thing:     string, // the Thing_Decl.name this table holds rows of
@@ -227,7 +227,7 @@ Thing_Table :: struct {
 // in the program's thing-declaration order. A singleton is an ordinary thing
 // table the spawn step will fill with exactly one row (pong models the score as
 // a once-spawned ordinary thing, so the singleton path is generic but unexercised
-// by pong — team Lore). This story builds the empty tables; it runs neither
+// by pong). This file builds the empty tables; it runs neither
 // setup nor any tick.
 World :: struct {
 	tables: []Thing_Table,
@@ -246,8 +246,8 @@ world_find_table :: proc(world: ^World, thing: string) -> ^Thing_Table {
 
 // new_world builds the empty thing/singleton tables from a loaded program — one
 // table per declared thing, keyed by Id, with no rows. This is the §07 §4
-// substrate the setup batch and the per-tick fold will execute over in the next
-// story; it is intentionally empty here.
+// substrate the setup batch and the per-tick fold will execute over; it is
+// intentionally empty here.
 new_world :: proc(program: Program, allocator := context.allocator) -> World {
 	tables := make([]Thing_Table, len(program.things), allocator)
 	for thing, i in program.things {
