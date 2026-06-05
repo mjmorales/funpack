@@ -296,7 +296,7 @@ fold_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 	if len(lambda.params) != 2 {
 		return nil, .Type_Mismatch
 	}
-	body_ctx := Check_Ctx{bindings = ctx.bindings, scope = make(Scope, context.temp_allocator)}
+	body_ctx := Check_Ctx{bindings = ctx.bindings, env = ctx.env, scope = make(Scope, context.temp_allocator)}
 	body_ctx.scope[lambda.params[0]] = init      // acc : A
 	body_ctx.scope[lambda.params[1]] = list.elem // x   : T
 	body := expr_check(body_ctx, lambda.body) or_return

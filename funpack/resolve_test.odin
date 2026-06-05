@@ -166,6 +166,19 @@ test_user_declared_name_binds_instead_of_unresolved :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Type_Error.Unsupported_Expr)
 }
 
+@(test)
+test_user_name_in_fold_lambda_body_is_contained :: proc(t: ^testing.T) {
+	// The fold lambda body checks under a child context; a user-declared
+	// name referenced there must flow through the same env containment as
+	// any other site — Unsupported_Expr (the typing pass's job), never a
+	// mis-reported Unresolved_Name from a context that dropped the env.
+	source := "import engine.list.fold\n" +
+		"fn helper(n: Int) -> Int {\n\treturn n\n}\n" +
+		"test \"x\" {\n\tassert fold([1, 2], 0, fn(acc, x) { return helper }) == 0\n}\n"
+	_, err := stage_typecheck_source(source)
+	testing.expect_value(t, err, Type_Error.Unsupported_Expr)
+}
+
 // stage_typecheck_source runs lex → parse → typecheck on a full source,
 // returning the typecheck verdict — the resolver fixtures' window onto the
 // extended name-resolution path the test blocks exercise.
