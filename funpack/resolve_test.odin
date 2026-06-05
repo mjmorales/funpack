@@ -155,28 +155,31 @@ test_free_name_with_no_decl_and_no_import_unresolved :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_user_declared_name_binds_instead_of_unresolved :: proc(t: ^testing.T) {
-	// The flip side of the free-name case: a name a user fn declares binds
-	// through the resolver, so its use is contained as Unsupported_Expr (the
-	// value-typing is the typing pass's job), never Unresolved_Name. This
-	// proves the resolver actually widened the bound set.
+test_user_declared_name_binds_as_function_value :: proc(t: ^testing.T) {
+	// A name a user fn declares binds through the resolver and now types as a
+	// function value (its recorded signature), never Unresolved_Name. Comparing
+	// that function value to an Int is a Type_Mismatch — proof the resolver
+	// widened the bound set AND the typing pass grounds a bare fn name as its
+	// signature (the form fold's accumulator argument takes).
 	source := "fn helper(n: Int) -> Int {\n\treturn n\n}\n" +
 		"test \"x\" {\n\tassert helper == 1\n}\n"
 	_, err := stage_typecheck_source(source)
-	testing.expect_value(t, err, Type_Error.Unsupported_Expr)
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
 }
 
 @(test)
-test_user_name_in_fold_lambda_body_is_contained :: proc(t: ^testing.T) {
-	// The fold lambda body checks under a child context; a user-declared
-	// name referenced there must flow through the same env containment as
-	// any other site — Unsupported_Expr (the typing pass's job), never a
-	// mis-reported Unresolved_Name from a context that dropped the env.
+test_user_name_in_fold_lambda_body_types_as_function :: proc(t: ^testing.T) {
+	// The fold lambda body checks under a child context that inherits the
+	// enclosing scope and the env; a user-declared name referenced there
+	// types as its function-value signature, never a mis-reported
+	// Unresolved_Name from a context that dropped the env. The body returns a
+	// function while the accumulator is Int, so the fold rejects as
+	// Type_Mismatch.
 	source := "import engine.list.fold\n" +
 		"fn helper(n: Int) -> Int {\n\treturn n\n}\n" +
 		"test \"x\" {\n\tassert fold([1, 2], 0, fn(acc, x) { return helper }) == 0\n}\n"
 	_, err := stage_typecheck_source(source)
-	testing.expect_value(t, err, Type_Error.Unsupported_Expr)
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
 }
 
 // stage_typecheck_source runs lex → parse → typecheck on a full source,
