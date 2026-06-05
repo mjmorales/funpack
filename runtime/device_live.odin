@@ -47,23 +47,36 @@ STICK_AXIS_RANGE :: 32767
 
 when #config(FUNPACK_LIVE, false) {
 
-	// Live_Device is the open SDL device handle set the live producer polls: the
-	// game controllers opened at startup. The keyboard needs no handle — SDL
-	// delivers key events through the event queue once a window holds focus. The
-	// window is created so the OS routes keyboard focus to this process; it is
-	// hidden because the renderer is a separate concern, not this layer's.
+	// Live_Device is the open SDL resource set the live producer holds for the
+	// session: the visible window the OS routes keyboard focus to, the renderer
+	// task 2.1 presents the frame through, and the game controllers opened at
+	// startup. The keyboard needs no handle — SDL delivers key events through the
+	// event queue once the window holds focus. The renderer is created here so its
+	// lifetime is bound to the open/close pair (PRD Resolved Question 2); this
+	// layer creates and destroys it but never draws or presents — that is task 2.1.
 	Live_Device :: struct {
 		window:      ^sdl.Window,
+		renderer:    ^sdl.Renderer,
 		controllers: [dynamic]^sdl.GameController,
 	}
 
 	// live_device_open initializes SDL's events + game controller subsystems,
-	// creates a hidden focus window so the OS delivers keyboard events, and opens
-	// every connected game controller. `ok` is false when SDL init fails, so a
-	// caller on a machine without a display or input stack fails closed rather
-	// than polling a half-initialized SDL. This is impure (touches the real
-	// device stack) and runs once before the tick loop, never per tick.
-	live_device_open :: proc(allocator := context.allocator) -> (device: Live_Device, ok: bool) {
+	// creates a visible width×height window so the OS delivers keyboard events and
+	// the session is on screen, creates the renderer the present boundary draws
+	// through, and opens every connected game controller. `ok` is false when SDL
+	// init, the window, or the renderer fails — each failure unwinds the resources
+	// already opened (reverse order) before returning, so a caller on a machine
+	// without a display or GPU fails closed rather than polling a half-initialized
+	// SDL. This is impure (touches the real device stack) and runs once before the
+	// tick loop, never per tick.
+	live_device_open :: proc(
+		width: i32,
+		height: i32,
+		allocator := context.allocator,
+	) -> (
+		device: Live_Device,
+		ok: bool,
+	) {
 		if sdl.Init(sdl.INIT_VIDEO | sdl.INIT_GAMECONTROLLER) != 0 {
 			return {}, false
 		}
@@ -71,10 +84,24 @@ when #config(FUNPACK_LIVE, false) {
 			"funpack",
 			sdl.WINDOWPOS_CENTERED,
 			sdl.WINDOWPOS_CENTERED,
-			1,
-			1,
-			sdl.WINDOW_HIDDEN,
+			width,
+			height,
+			sdl.WINDOW_SHOWN,
 		)
+		if window == nil {
+			sdl.Quit()
+			return {}, false
+		}
+		renderer := sdl.CreateRenderer(
+			window,
+			-1,
+			sdl.RENDERER_ACCELERATED | sdl.RENDERER_PRESENTVSYNC,
+		)
+		if renderer == nil {
+			sdl.DestroyWindow(window)
+			sdl.Quit()
+			return {}, false
+		}
 		controllers := make([dynamic]^sdl.GameController, allocator)
 		for index in 0 ..< sdl.NumJoysticks() {
 			if !sdl.IsGameController(index) {
@@ -85,19 +112,22 @@ when #config(FUNPACK_LIVE, false) {
 				append(&controllers, handle)
 			}
 		}
-		return Live_Device{window = window, controllers = controllers}, true
+		return Live_Device{window = window, renderer = renderer, controllers = controllers}, true
 	}
 
 	// live_device_close releases every SDL resource the live producer opened —
-	// the controllers, the focus window, then SDL itself — in reverse open order.
-	// Called once after the tick loop; the dynamic controller buffer is freed
-	// alongside.
+	// the controllers, then the renderer, then the window, then SDL itself — in
+	// reverse open order. Called once after the tick loop; the dynamic controller
+	// buffer is freed alongside.
 	live_device_close :: proc(device: Live_Device) {
 		dev := device
 		for handle in dev.controllers {
 			sdl.GameControllerClose(handle)
 		}
 		delete(dev.controllers)
+		if dev.renderer != nil {
+			sdl.DestroyRenderer(dev.renderer)
+		}
 		if dev.window != nil {
 			sdl.DestroyWindow(dev.window)
 		}
