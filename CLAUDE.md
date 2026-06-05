@@ -1,8 +1,8 @@
 <!-- prove:managed:start -->
 # funpack
 
-<!-- prove:plugin-version:3.11.0 -->
-**Prove plugin v3.11.0** — if `claude-prove --version` does not match v3.11.0, run `/prove:update` to sync.
+<!-- prove:plugin-version:3.13.0 -->
+**Prove plugin v3.13.0** — if `claude-prove --version` does not match v3.13.0, run `/prove:update` to sync.
 
 
 ## Validation
