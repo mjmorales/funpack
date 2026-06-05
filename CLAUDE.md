@@ -14,6 +14,14 @@ Run before committing:
 - **test**: `task test`
 - **llm**: `skill claude-skills:comment-audit`
 
+## Discovery Protocol
+
+Before broad Glob/Grep searches, check the file index first:
+
+- `claude-prove cafi context` — full index with routing hints
+- `claude-prove cafi lookup <keyword>` — search by keyword
+
+Only fall back to Glob/Grep when the index doesn't cover what you need.
 ## References
 
 ### claude-prove CLI Reference

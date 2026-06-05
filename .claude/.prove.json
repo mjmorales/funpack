@@ -1,6 +1,17 @@
 {
   "schema_version": "11",
   "dev_mode": false,
+  "artifacts": {
+    "html_open": "open {file}"
+  },
+  "scopes": {
+    "funpack": "funpack/",
+    "runtime": "runtime/",
+    "warden": "warden/",
+    "teams": "teams/",
+    "contributors": "contributors/",
+    "config": ".claude/"
+  },
   "validators": [
     {
       "name": "build",
@@ -24,6 +35,18 @@
     }
   ],
   "reporters": [],
+  "triggers": [
+    {
+      "on": "accepted",
+      "workflow": "decompose",
+      "description": "fire the next-layer decompose"
+    },
+    {
+      "on": "blocked",
+      "workflow": "re-plan",
+      "description": "surface re-decomposition on a discovered dependency"
+    }
+  ],
   "claude_md": {
     "references": [
       {
@@ -51,5 +74,41 @@
         "label": "Passive Triggers"
       }
     ]
+  },
+  "tools": {
+    "cafi": {
+      "enabled": true,
+      "config": {
+        "excludes": [
+          ".claude/worktrees/"
+        ]
+      }
+    },
+    "acb": {
+      "enabled": false,
+      "config": {
+        "base_branch": "main"
+      }
+    },
+    "pcd": {
+      "enabled": true
+    },
+    "run_state": {
+      "enabled": true
+    },
+    "scrum": {
+      "enabled": true
+    }
+  },
+  "brief": {
+    "single_pass_token_threshold": 8000,
+    "max_synthesis_retries": 2,
+    "prose_judge_on": true
+  },
+  "memory": {
+    "stale_threshold_days": 90
+  },
+  "decomposition": {
+    "auto_accept_through": "none"
   }
 }
