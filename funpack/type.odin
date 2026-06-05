@@ -16,6 +16,30 @@ Type :: union {
 	^Option_Type,
 	^List_Type,
 	^Func_Type,
+	^User_Type,
+}
+
+// User_Type is the nominal handle for a name the source declares
+// (spec §06): a thing/singleton/data record, an enum, or a signal. The
+// resolver records each user declaration's field/variant schema in the
+// Type_Env (resolve.odin); a User_Type carries only the declared name and
+// which §06 kind it names, so a field typed `side: Side` resolves to a
+// concrete handle without the resolver yet typing any value of it. Two
+// user types are compatible only when their names match — nominal, never
+// structural (spec §02: one name, one meaning).
+User_Type :: struct {
+	name: string,
+	kind: User_Kind,
+}
+
+// User_Kind is the closed set of §06/§03 declaration forms a User_Type can
+// name. The resolver keys each declared name to exactly one kind, so a
+// later stage reads the right schema table off the handle.
+User_Kind :: enum {
+	Thing,  // `thing`/`singleton Name { … }`
+	Data,   // `data Name { … }`
+	Enum,   // `enum Name { … }`, incl. the `Name: Kind` role form
+	Signal, // `signal Name { … }`
 }
 
 Ground_Type :: enum {
@@ -72,6 +96,14 @@ clone_types :: proc(set: []Type) -> []Type {
 	return cloned
 }
 
+// user_type_of builds a nominal handle for a declared name (resolve.odin).
+user_type_of :: proc(name: string, kind: User_Kind) -> Type {
+	node := new(User_Type, context.temp_allocator)
+	node.name = name
+	node.kind = kind
+	return node
+}
+
 is_ground :: proc(t: Type, g: Ground_Type) -> bool {
 	v, ok := t.(Ground_Type)
 	return ok && v == g
@@ -119,6 +151,12 @@ types_compatible :: proc(a, b: Type) -> bool {
 			}
 		}
 		return types_compatible(av.result, bv.result)
+	case ^User_Type:
+		// A user type is nominal: the same declared name is the same type;
+		// the §06 kind always agrees once the name does (one name, one
+		// meaning — the resolver rejects a name reused across kinds).
+		bv, ok := b.(^User_Type)
+		return ok && av.name == bv.name
 	}
 	return false
 }

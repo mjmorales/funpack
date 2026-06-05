@@ -28,6 +28,7 @@ Ast :: struct {
 Typed_Ast :: struct {
 	ast:      Ast,
 	bindings: Bindings, // imported-name resolutions (surface.odin)
+	env:      Type_Env, // resolved user-declaration environment (resolve.odin)
 }
 
 Eval_Result :: struct {

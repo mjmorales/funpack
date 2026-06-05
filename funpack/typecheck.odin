@@ -21,25 +21,29 @@ Type_Error :: enum {
 	Unsupported_Expr, // a parsed form outside the evaluable domain
 	Unknown_Module,   // an import naming a module outside the surface
 	Unknown_Member,   // an import naming a member its module lacks
-	Unresolved_Name,  // a free name with no let binding and no import
+	Unresolved_Name,  // a free name with no let binding, no user decl, and no import
+	Name_Collision,   // a user decl whose name already names an import or another user decl (spec §02)
 }
 
 // Scope maps a test block's let-bound names to their checked types.
 // Lookups only — nothing iterates the map.
 Scope :: map[string]Type
 
-// Check_Ctx threads the file-level import resolutions and the test
-// block's let scope through expression checking; both maps are
-// lookup-only below stage_typecheck.
+// Check_Ctx threads the file-level import resolutions, the resolved
+// user-declaration environment (resolve.odin), and the test block's let
+// scope through expression checking; every map is lookup-only below
+// stage_typecheck.
 Check_Ctx :: struct {
 	bindings: Bindings,
+	env:      Type_Env,
 	scope:    Scope,
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 	bindings := resolve_imports(ast) or_return
+	env := resolve_env(ast, bindings) or_return
 	for test in ast.tests {
-		ctx := Check_Ctx{bindings = bindings, scope = make(Scope, context.temp_allocator)}
+		ctx := Check_Ctx{bindings = bindings, env = env, scope = make(Scope, context.temp_allocator)}
 		for stmt in test.body {
 			switch node in stmt {
 			case Let_Node:
@@ -53,7 +57,7 @@ stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 			}
 		}
 	}
-	return Typed_Ast{ast = ast, bindings = bindings}, .None
+	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
 }
 
 check_assert :: proc(ctx: Check_Ctx, node: Assert_Node) -> Type_Error {
@@ -82,6 +86,14 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 			}
 			// A type, module, or bare function name is not a value in
 			// the evaluable domain.
+			return nil, .Unsupported_Expr
+		}
+		// A user-declared name binds through the resolver environment: it is
+		// a real name in scope, but typing its use as a value (a const's
+		// value, a fn reference) is the downstream typing story — the
+		// resolver only proves the name resolves, so a bound user name is
+		// contained as Unsupported_Expr here, never Unresolved_Name.
+		if env_declares(ctx.env, e.name) {
 			return nil, .Unsupported_Expr
 		}
 		return nil, .Unresolved_Name
@@ -123,6 +135,12 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		}
 		binding, imported := ctx.bindings.names[recv.name]
 		if !imported {
+			// A member access off a user-declared name (a user type's
+			// associated member, a fn's …) binds the receiver but is typed
+			// downstream; an undeclared receiver is unresolved.
+			if env_declares(ctx.env, recv.name) {
+				return nil, .Unsupported_Expr
+			}
 			return nil, .Unresolved_Name
 		}
 		if binding.kind != .Type_Name {
@@ -140,6 +158,12 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 	case ^Record_Expr:
 		binding, imported := ctx.bindings.names[e.type_name]
 		if !imported {
+			// A user record literal (Goal{…}, Paddle{…}) binds its type name
+			// through the resolver; typing its fields against the recorded
+			// schema is the downstream story, so it is contained here.
+			if env_declares(ctx.env, e.type_name) {
+				return nil, .Unsupported_Expr
+			}
 			return nil, .Unresolved_Name
 		}
 		if binding.kind != .Type_Name {
@@ -177,6 +201,12 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 	case ^Variant_Expr:
 		binding, imported := ctx.bindings.names[e.type_name]
 		if !imported {
+			// A user enum variant (Side::Left, Steer::Move) binds its enum
+			// name through the resolver; typing the variant value is the
+			// downstream story, so it is contained here.
+			if env_declares(ctx.env, e.type_name) {
+				return nil, .Unsupported_Expr
+			}
 			return nil, .Unresolved_Name
 		}
 		if binding.kind != .Type_Name || e.type_name != "Option" {
@@ -220,6 +250,12 @@ call_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 	}
 	binding, found := ctx.bindings.names[name.name]
 	if !found {
+		// A call to a user-declared fn (advance(…), serve_velocity(…)) binds
+		// the callee through the resolver; typing the call against the
+		// recorded signature is the downstream story, so it is contained.
+		if env_declares(ctx.env, name.name) {
+			return nil, .Unsupported_Expr
+		}
 		return nil, .Unresolved_Name
 	}
 	if binding.kind != .Func {
@@ -321,6 +357,12 @@ method_check :: proc(ctx: Check_Ctx, callee: ^Member_Expr, e: ^Call_Expr) -> (ty
 		if _, let_bound := ctx.scope[recv.name]; !let_bound {
 			binding, imported := ctx.bindings.names[recv.name]
 			if !imported {
+				// A method/step call off a user name (score.step(…),
+				// Bindings receivers) binds the receiver through the
+				// resolver; typing the call is the downstream story.
+				if env_declares(ctx.env, recv.name) {
+					return nil, .Unsupported_Expr
+				}
 				return nil, .Unresolved_Name
 			}
 			if binding.kind == .Type_Name {
