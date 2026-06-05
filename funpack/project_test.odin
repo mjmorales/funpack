@@ -212,6 +212,42 @@ test_read_project_reserved_engine_root_rejected :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_read_project_duplicate_module_rejected :: proc(t: ^testing.T) {
+	// A dotted filename and a nested path that derive the same §15 module —
+	// src/a.b.fun and src/a/b.fun both derive `a.b` — collide. §15.6 makes
+	// two sources producing the same module name a compile error, surfaced
+	// through the dedicated Duplicate_Module arm, never a catch-all.
+	root, ok := write_scratch_tree_multi(t, "project numerics {\n  version = \"0.1.0\"\n}\n", {"a.b.fun", "a/b.fun"})
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, err := read_project(root)
+	testing.expect_value(t, err, Project_Error.Duplicate_Module)
+}
+
+@(test)
+test_read_project_distinct_modules_accepted :: proc(t: ^testing.T) {
+	// Two sources whose derived modules differ (`a` and `b.a` — same leaf
+	// filename, different namespace) pass the §15.6 collision check: the
+	// check keys on the full dotted module name, not the filename leaf.
+	root, ok := write_scratch_tree_multi(t, "project numerics {\n  version = \"0.1.0\"\n}\n", {"a.fun", "b/a.fun"})
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	project, err := read_project(root)
+	testing.expect_value(t, err, Project_Error.None)
+	testing.expect_value(t, len(project.sources), 2)
+	if len(project.sources) == 2 {
+		testing.expect_value(t, project.sources[0].module, "a")
+		testing.expect_value(t, project.sources[1].module, "b.a")
+	}
+}
+
+@(test)
 test_read_project_reserved_engine_bare_root_rejected :: proc(t: ^testing.T) {
 	// The bare reserved root collides too: src/engine.fun derives module
 	// `engine`, shadowing the stdlib package root — also Reserved_Engine_Root.
@@ -366,24 +402,38 @@ write_scratch_tree :: proc(t: ^testing.T, fcfg: string) -> (root: string, ok: bo
 // can pin the module name a given path derives — a flat `x.fun`, a nested
 // `combat/melee.fun`, or a reserved-root `engine/math.fun`.
 write_scratch_tree_at :: proc(t: ^testing.T, fcfg: string, src_rel: string) -> (root: string, ok: bool) {
+	return write_scratch_tree_multi(t, fcfg, {src_rel})
+}
+
+// write_scratch_tree_multi is write_scratch_tree_at generalized to one
+// source per src_rels entry, so a test can materialize multi-module trees —
+// including two paths that derive the same module name (the §15.6
+// duplicate-module fixture).
+write_scratch_tree_multi :: proc(t: ^testing.T, fcfg: string, src_rels: []string) -> (root: string, ok: bool) {
 	root = scratch_join({scratch_base(), fmt.tprintf("funpack-scratch-%d", scratch_seq())})
 	// The seq counter resets each process but leftover trees from a
 	// crashed prior run persist on disk; clear any stale tree first so a
 	// reused root name can never poison the fixture or skip on .Exist.
 	remove_scratch_tree(root)
 	configs := scratch_join({root, "funpack_configs"})
-	src_path := scratch_join({root, "src", src_rel})
-	src_parent := filepath.dir(src_path)
-	if os.make_directory_all(configs) != nil || os.make_directory_all(src_parent) != nil {
+	if os.make_directory_all(configs) != nil {
 		log.warnf("SKIP scratch tree: cannot create dirs under %s", root)
 		return "", false
 	}
 	fcfg_path := scratch_join({configs, "project.fcfg"})
-	if os.write_entire_file(fcfg_path, fcfg) != nil ||
-	   os.write_entire_file(src_path, "@doc(\"scratch\")\n") != nil {
+	if os.write_entire_file(fcfg_path, fcfg) != nil {
 		remove_scratch_tree(root)
 		log.warnf("SKIP scratch tree: cannot write files under %s", root)
 		return "", false
+	}
+	for src_rel in src_rels {
+		src_path := scratch_join({root, "src", src_rel})
+		if os.make_directory_all(filepath.dir(src_path)) != nil ||
+		   os.write_entire_file(src_path, "@doc(\"scratch\")\n") != nil {
+			remove_scratch_tree(root)
+			log.warnf("SKIP scratch tree: cannot write files under %s", root)
+			return "", false
+		}
 	}
 	return root, true
 }

@@ -58,6 +58,13 @@ Project_Error :: enum {
 	// which is unshadowable. A dedicated arm, never folded into
 	// No_Sources or Malformed — the error names a specific §15 rule.
 	Reserved_Engine_Root,
+	// Duplicate_Module is the §15.6 module-identity collision: two distinct
+	// source paths deriving the same module name — e.g. a dotted filename
+	// `src/a.b.fun` against a nested `src/a/b.fun`, both deriving `a.b`.
+	// §15.6 makes two sources producing the same module name a compile
+	// error (an import site could resolve to either), and the collision
+	// fails the whole tree. A dedicated arm, never a catch-all.
+	Duplicate_Module,
 }
 
 read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
@@ -542,7 +549,10 @@ cfg_scan_punct :: proc(ch: u8) -> Cfg_Token {
 // filesystem's walk order. A path whose module falls under the reserved
 // `engine` root rejects with the dedicated Reserved_Engine_Root arm
 // before any source is returned — a reserved collision fails the whole
-// tree, not just the offending file.
+// tree, not just the offending file. Two paths deriving the same module
+// name reject with Duplicate_Module (§15.6) — module identity is
+// single-owner, so the second deriver in sorted-path order trips the
+// check deterministically.
 collect_sources :: proc(root: string) -> ([]Source, Project_Error) {
 	src_dir, _ := filepath.join({root, "src"}, context.temp_allocator)
 	if !os.is_dir(src_dir) {
@@ -562,12 +572,17 @@ collect_sources :: proc(root: string) -> ([]Source, Project_Error) {
 	if abs_err != nil {
 		abs_src_dir = src_dir
 	}
+	seen := make(map[string]bool, context.temp_allocator)
 	sources := make([]Source, len(paths), context.temp_allocator)
 	for path, i in paths {
 		module := derive_module_name(abs_src_dir, path)
 		if module_under_reserved_root(module) {
 			return nil, .Reserved_Engine_Root
 		}
+		if module in seen {
+			return nil, .Duplicate_Module
+		}
+		seen[module] = true
 		sources[i] = Source{path = path, module = module}
 	}
 	return sources, .None
