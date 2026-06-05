@@ -9,7 +9,6 @@ package funpack
 
 import "core:log"
 import "core:os"
-import "core:path/filepath"
 import "core:testing"
 
 PONG_DEFAULT_DIR :: "../funpack-spec/examples/pong"
@@ -143,15 +142,7 @@ pong_source :: proc() -> (source: string, ok: bool) {
 }
 
 resolve_pong_dir :: proc() -> string {
-	dir, has_env := os.lookup_env("FUNPACK_PONG_DIR", context.temp_allocator)
-	if !has_env || dir == "" {
-		dir = PONG_DEFAULT_DIR
-	}
-	if filepath.is_abs(dir) {
-		return dir
-	}
-	resolved, _ := filepath.join({#directory, "..", dir}, context.temp_allocator)
-	return resolved
+	return resolve_spec_dir("FUNPACK_PONG_DIR", PONG_DEFAULT_DIR)
 }
 
 // find_enum / find_thing / find_pipeline / find_behavior are linear lookups

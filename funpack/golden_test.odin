@@ -140,19 +140,58 @@ test_golden_variant_unimported_name_rejected :: proc(t: ^testing.T) {
 }
 
 resolve_golden_dir :: proc() -> string {
-	dir, has_env := os.lookup_env("FUNPACK_NUMERICS_DIR", context.temp_allocator)
+	return resolve_spec_dir("FUNPACK_NUMERICS_DIR", GOLDEN_DEFAULT_DIR)
+}
+
+// resolve_spec_dir resolves a funpack-spec golden tree: the env override
+// when set, else the sibling-checkout default made absolute against the
+// MAIN checkout root. #directory compiled inside an orchestrator task
+// worktree (.claude/worktrees/<slug>-task-<id>/funpack) would resolve the
+// sibling default to .claude/worktrees/funpack-spec, which never exists —
+// golden coverage would silently SKIP out of every worktree validation
+// run — so the resolver strips the worktree infix and anchors at the real
+// checkout.
+resolve_spec_dir :: proc(env_name: string, default_rel: string) -> string {
+	dir, has_env := os.lookup_env(env_name, context.temp_allocator)
 	if !has_env || dir == "" {
-		dir = GOLDEN_DEFAULT_DIR
+		dir = default_rel
 	}
 	if filepath.is_abs(dir) {
 		return dir
 	}
 	// #directory is this package dir; the repo root is one level up.
-	resolved, _ := filepath.join({#directory, "..", dir}, context.temp_allocator)
+	root, _ := filepath.join({#directory, ".."}, context.temp_allocator)
+	resolved, _ := filepath.join({main_checkout_root(root), dir}, context.temp_allocator)
 	return resolved
+}
+
+// main_checkout_root maps an orchestrator task-worktree root onto the main
+// checkout root: a root under .claude/worktrees/ anchors at the directory
+// holding .claude (the real repo, whose siblings exist); any other root is
+// already the main checkout.
+main_checkout_root :: proc(root: string) -> string {
+	marker := filepath.SEPARATOR_STRING + ".claude" + filepath.SEPARATOR_STRING + "worktrees" + filepath.SEPARATOR_STRING
+	idx := strings.index(root, marker)
+	if idx < 0 {
+		return root
+	}
+	return root[:idx]
 }
 
 @(test)
 test_resolve_golden_dir_is_absolute :: proc(t: ^testing.T) {
 	testing.expect(t, filepath.is_abs(resolve_golden_dir()))
+}
+
+@(test)
+test_main_checkout_root_strips_worktree_infix :: proc(t: ^testing.T) {
+	// A root inside an orchestrator task worktree anchors at the main
+	// checkout, so the ../funpack-spec sibling default resolves to the real
+	// sibling instead of .claude/worktrees/funpack-spec.
+	worktree := scratch_join({"/repos/funpack", ".claude", "worktrees", "slug-task-3"})
+	testing.expect_value(t, main_checkout_root(worktree), "/repos/funpack")
+	// A non-worktree root is already the main checkout — unchanged.
+	testing.expect_value(t, main_checkout_root("/repos/funpack"), "/repos/funpack")
+	// A .claude dir without the worktrees segment is not the infix.
+	testing.expect_value(t, main_checkout_root("/repos/funpack/.claude/settings"), "/repos/funpack/.claude/settings")
 }
