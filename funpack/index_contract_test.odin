@@ -112,8 +112,6 @@ test_index_contract_pong_project_record_exact_fields :: proc(t: ^testing.T) {
 	body := strings.trim_suffix(line, "\n")
 	expected_keys := []string {
 		"schema_version",
-		"name",
-		"version",
 		"entrypoints",
 		"builds",
 		"tag_registry",
@@ -153,8 +151,6 @@ test_index_contract_pong_authored_and_derived_values :: proc(t: ^testing.T) {
 		return
 	}
 	testing.expect_value(t, record.schema_version, INDEX_SCHEMA_VERSION)
-	testing.expect_value(t, record.name, "pong")
-	testing.expect_value(t, record.version, "0.1.0")
 
 	testing.expect_value(t, len(record.entrypoints), 1)
 	if len(record.entrypoints) == 1 {
@@ -242,8 +238,6 @@ minimal_project_record :: proc() -> Project_Record {
 	gates[0] = Gate_Result{gate = .Cyclomatic, passed = true}
 	return Project_Record {
 		schema_version = INDEX_SCHEMA_VERSION,
-		name = "demo",
-		version = "0.1.0",
 		entrypoints = entrypoints,
 		builds = builds,
 		tag_registry = tags,
@@ -290,7 +284,7 @@ pong_project_record :: proc() -> (record: Project_Record, ok: bool) {
 	if !compiled {
 		return Project_Record{}, false
 	}
-	built, record_err := build_project_record(dir, identity, typed, flat)
+	built, record_err := build_project_record(dir, typed, flat)
 	if record_err != .None {
 		return Project_Record{}, false
 	}

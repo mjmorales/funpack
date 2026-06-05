@@ -124,8 +124,6 @@ Flat_Step_Record :: struct {
 // an empty list, never a missing field.
 Project_Record :: struct {
 	schema_version:     int,
-	name:               string,
-	version:            string,
 	entrypoints:        []Entrypoint_Record,
 	builds:             []Build_Record,
 	tag_registry:       []string,
@@ -155,7 +153,6 @@ Index_Contract_Error :: enum {
 // are trusted (the caller compiled them).
 build_project_record :: proc(
 	root: string,
-	identity: Project,
 	typed: Typed_Ast,
 	flat: Flattened_Pipeline,
 ) -> (record: Project_Record, err: Index_Contract_Error) {
@@ -173,8 +170,6 @@ build_project_record :: proc(
 	}
 	return Project_Record {
 			schema_version     = INDEX_SCHEMA_VERSION,
-			name               = identity.name,
-			version            = identity.version,
 			entrypoints        = entrypoints,
 			builds             = builds,
 			tag_registry       = read_tag_registry(configs_dir),
@@ -626,7 +621,7 @@ read_index_project :: proc(root: string, allocator := context.allocator) -> (ndj
 	if !ok {
 		return "", .None, false
 	}
-	record, record_err := build_project_record(root, identity, typed, flat)
+	record, record_err := build_project_record(root, typed, flat)
 	if record_err != .None {
 		return "", record_err, false
 	}
