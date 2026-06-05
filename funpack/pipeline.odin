@@ -1,7 +1,8 @@
-// The funpack test stage pipeline: lex → parse → typecheck → evaluate →
-// report. Each stage is owned by its own file (lexer.odin, parser.odin,
-// typecheck.odin, evaluate.odin); this file owns the pipeline-level
-// types and the driver that threads a source string through the seams.
+// The funpack test stage pipeline: lex → parse → gates → typecheck →
+// evaluate → report. Each stage is owned by its own file (lexer.odin,
+// parser.odin, gates.odin, typecheck.odin, evaluate.odin); this file owns
+// the pipeline-level types and the driver that threads a source string
+// through the seams.
 package funpack
 
 Ast :: struct {
@@ -28,10 +29,12 @@ Test_Report :: struct {
 
 // Pipeline_Error distinguishes a source that failed to compile from a
 // source whose assertions failed — a compile error is never counted as
-// a failed test.
+// a failed test. Gate_Failed is its own arm so a structural-budget
+// violation is a distinct compile error from a parse or typecheck failure.
 Pipeline_Error :: enum {
 	None,
 	Parse_Failed,
+	Gate_Failed,
 	Typecheck_Failed,
 }
 
@@ -40,6 +43,10 @@ run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline
 	ast, parse_err := stage_parse(tokens)
 	if parse_err != .None {
 		return Test_Report{}, .Parse_Failed
+	}
+	gate_err := stage_gates(ast)
+	if gate_err != .None {
+		return Test_Report{}, .Gate_Failed
 	}
 	typed, type_err := stage_typecheck(ast)
 	if type_err != .None {
