@@ -175,3 +175,49 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node) -> Type_Error {
 join_path :: proc(segments: []string) -> string {
 	return strings.join(segments, ".", context.temp_allocator)
 }
+
+surface_value_type :: proc(name: string) -> (type: Type, found: bool) {
+	switch name {
+	case "pi", "tau":
+		return Ground_Type.Fixed, true
+	}
+	return nil, false
+}
+
+// surface_signatures types the importable free functions as overload
+// sets: most names carry one signature; dot/length/normalize carry one
+// per vector width. The generic list combinators (fold, map, filter,
+// find) return found = false — their parameters depend on the call
+// site, which is combinator inference's judgment, not a table's.
+surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
+	switch name {
+	case "sin", "cos", "sqrt":
+		return clone_types({func_of({Ground_Type.Fixed}, Ground_Type.Fixed)}), true
+	case "clamp", "lerp":
+		return clone_types({func_of({Ground_Type.Fixed, Ground_Type.Fixed, Ground_Type.Fixed}, Ground_Type.Fixed)}), true
+	case "to_fixed":
+		return clone_types({func_of({Ground_Type.Int}, Ground_Type.Fixed)}), true
+	case "trunc", "floor", "round":
+		return clone_types({func_of({Ground_Type.Fixed}, Ground_Type.Int)}), true
+	case "checked_div":
+		return clone_types({func_of({Ground_Type.Fixed, Ground_Type.Fixed}, option_of(Ground_Type.Fixed))}), true
+	case "cross":
+		return clone_types({func_of({Ground_Type.Vec3, Ground_Type.Vec3}, Ground_Type.Vec3)}), true
+	case "dot":
+		return clone_types({
+			func_of({Ground_Type.Vec2, Ground_Type.Vec2}, Ground_Type.Fixed),
+			func_of({Ground_Type.Vec3, Ground_Type.Vec3}, Ground_Type.Fixed),
+		}), true
+	case "length":
+		return clone_types({
+			func_of({Ground_Type.Vec2}, Ground_Type.Fixed),
+			func_of({Ground_Type.Vec3}, Ground_Type.Fixed),
+		}), true
+	case "normalize":
+		return clone_types({
+			func_of({Ground_Type.Vec2}, Ground_Type.Vec2),
+			func_of({Ground_Type.Vec3}, Ground_Type.Vec3),
+		}), true
+	}
+	return nil, false
+}
