@@ -23,8 +23,12 @@ test_golden_numerics_full_file_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, read_err, Project_Error.None)
 	testing.expect_value(t, project.name, "numerics")
 	testing.expect(t, len(project.sources) > 0)
+	// The golden tree's single source is src/numerics.fun, so its
+	// path-derived module is `numerics` — the namespace this file owns,
+	// against which its engine.* imports resolve (§15).
+	testing.expect_value(t, project.sources[0].module, "numerics")
 
-	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0], context.temp_allocator)
+	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0].path, context.temp_allocator)
 	testing.expect(t, file_err == nil)
 
 	ast, parse_err := stage_parse(stage_lex(string(source_bytes)))
@@ -63,7 +67,7 @@ test_golden_numerics_full_pipeline_passes :: proc(t: ^testing.T) {
 	testing.expect_value(t, read_err, Project_Error.None)
 	testing.expect(t, len(project.sources) > 0)
 
-	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0], context.temp_allocator)
+	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0].path, context.temp_allocator)
 	testing.expect(t, file_err == nil)
 
 	report, err := run_test_pipeline(string(source_bytes))
@@ -85,7 +89,7 @@ golden_source :: proc() -> (source: string, ok: bool) {
 	if read_err != .None || len(project.sources) == 0 {
 		return "", false
 	}
-	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0], context.temp_allocator)
+	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0].path, context.temp_allocator)
 	if file_err != nil {
 		return "", false
 	}

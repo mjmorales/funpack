@@ -26,6 +26,16 @@ golden_import_bindings :: proc() -> Bindings {
 }
 
 @(test)
+test_match_expr_contained_as_unsupported :: proc(t: ^testing.T) {
+	// A Match_Expr parses structurally but is outside the evaluable
+	// domain: stage_typecheck contains it as Unsupported_Expr — the same
+	// containment the other right-cased-but-unevaluable forms get, with
+	// no evaluation path added.
+	_, err := check_expr_source("match seen {\n  Option::None => 0\n  _ => 1\n}\n")
+	testing.expect_value(t, err, Type_Error.Unsupported_Expr)
+}
+
+@(test)
 test_option_payload_types_are_distinct :: proc(t: ^testing.T) {
 	// Option[Fixed] and Option[Int] are different types; Option's
 	// unknown (the None element) unifies with either.

@@ -93,6 +93,77 @@ test_parse_let_wrong_case_name :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_match_well_formed :: proc(t: ^testing.T) {
+	// A well-formed match over the minimal pattern set — variant with
+	// binders, bare variant, wildcard — parses to Parse_Error.None
+	// (spec §02 §5).
+	source := "match seen {\n" +
+		"  Option::Some(p) => p\n" +
+		"  Option::None => 0\n" +
+		"  _ => 1\n" +
+		"}\n"
+	p := Parser{tokens = stage_lex(source)}
+	expr, err := parse_match_from_keyword(&p)
+	testing.expect_value(t, err, Parse_Error.None)
+	m, is_match := expr.(^Match_Expr)
+	testing.expect(t, is_match)
+	if !is_match {
+		return
+	}
+	testing.expect_value(t, len(m.arms), 3)
+	testing.expect_value(t, m.arms[0].pattern.kind, Pattern_Kind.Variant_Binds)
+	testing.expect_value(t, m.arms[0].pattern.type_name, "Option")
+	testing.expect_value(t, m.arms[0].pattern.variant, "Some")
+	testing.expect_value(t, len(m.arms[0].pattern.binders), 1)
+	testing.expect_value(t, m.arms[0].pattern.binders[0], "p")
+	testing.expect_value(t, m.arms[1].pattern.kind, Pattern_Kind.Bare_Variant)
+	testing.expect_value(t, m.arms[2].pattern.kind, Pattern_Kind.Wildcard)
+	// The scrutinee is the bare value name, not a record literal off it.
+	scrutinee, is_name := m.scrutinee.(^Name_Expr)
+	testing.expect(t, is_name)
+	if is_name {
+		testing.expect_value(t, scrutinee.name, "seen")
+	}
+}
+
+@(test)
+test_parse_match_comma_separated_arms :: proc(t: ^testing.T) {
+	// `,` is a legal arm separator (Sep), so the inline one-line form
+	// parses too (spec §02 §5).
+	expr, err := parse_expr_text("match self { Screen::Hud => 1, _ => 2 }")
+	testing.expect_value(t, err, Parse_Error.None)
+	m, is_match := expr.(^Match_Expr)
+	testing.expect(t, is_match)
+	if is_match {
+		testing.expect_value(t, len(m.arms), 2)
+	}
+}
+
+@(test)
+test_parse_match_missing_arrow_rejected :: proc(t: ^testing.T) {
+	// A malformed arm — the `=>` separator omitted — rejects at parse.
+	expr, err := parse_expr_text("match seen {\n  Option::None 0\n}\n")
+	testing.expect(t, err != .None)
+	testing.expect(t, expr == nil)
+}
+
+@(test)
+test_parse_match_bad_pattern_case_rejected :: proc(t: ^testing.T) {
+	// A bad pattern — a snake_case head where the variant pattern demands
+	// an UpperCamel enum type — rejects as Wrong_Case (spec §02).
+	_, err := parse_expr_text("match seen {\n  option::None => 0\n}\n")
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
+}
+
+// parse_match_from_keyword consumes the leading `match` token then
+// delegates to parse_match — mirroring how parse_atom dispatches the
+// keyword, for a test that drives parse_match directly.
+parse_match_from_keyword :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	expect(p, .Match) or_return
+	return parse_match(p)
+}
+
+@(test)
 test_parse_golden_prefix :: proc(t: ^testing.T) {
 	// The golden file's opening shape: module doc, the three import
 	// forms, a documented test block.

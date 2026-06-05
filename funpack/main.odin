@@ -30,15 +30,15 @@ run_test_verb :: proc() -> int {
 		return 2
 	}
 	total := Test_Report{}
-	for source_path in project.sources {
-		source_bytes, read_err := os.read_entire_file_from_path(source_path, context.temp_allocator)
+	for source in project.sources {
+		source_bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
 		if read_err != nil {
-			fmt.eprintfln("funpack test: cannot read %s", source_path)
+			fmt.eprintfln("funpack test: cannot read %s", source.path)
 			return 2
 		}
 		report, err := run_test_pipeline(string(source_bytes))
 		if err != .None {
-			fmt.eprintfln("funpack test: %s: %v", source_path, err)
+			fmt.eprintfln("funpack test: %s: %v", source.path, err)
 			return test_exit_code(err, report)
 		}
 		total.passed += report.passed
