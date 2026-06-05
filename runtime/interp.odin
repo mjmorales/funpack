@@ -17,6 +17,7 @@
 package funpack_runtime
 
 import "core:mem"
+import "core:strconv"
 import "core:strings"
 
 // --- The runtime value model ---------------------------------------------
@@ -59,6 +60,16 @@ Lambda_Value :: struct {
 	captured: ^Env,
 }
 
+// String_Value is an evaluated, fully-interpolated String literal: the concrete
+// bytes a `[Draw]` Text command carries (§20). A funpack String appears only in a
+// render text node, so this arm exists for the render projection alone — the
+// interpolation holes (`{self.left}`) are resolved against the behavior's bound
+// `self` at evaluation time, so the value is the final rendered text, not a
+// template. The bytes live in the evaluation arena.
+String_Value :: struct {
+	text: string,
+}
+
 // Value is the closed set of runtime values the interpreter computes. The
 // scalar arms mirror the blackboard's Field_Value (Int/Fixed/variant-as-string
 // is NOT used — an enum value is a Variant_Value so a match can read its case);
@@ -74,6 +85,7 @@ Value :: union {
 	List_Value, // a [T] list
 	Variant_Value, // a tagged enum value
 	Lambda_Value, // a lambda closure
+	String_Value, // an interpolated String literal (render [Draw] text only, §20)
 }
 
 // --- The evaluation environment ------------------------------------------
@@ -113,7 +125,33 @@ Interp :: struct {
 	tick:      ^Tick_State, // the in-flight working tables a mid-tick cross-thing read observes; nil off a fold
 	input:     Input, // the §23 action snapshot a behavior queries
 	time:      Record_Value, // the Time resource: { dt: Fixed }
+	registry:  Action_Registry, // the §23 action registry, minted ONCE per program (interp_call.odin reads it)
 	allocator: Runtime_Allocator,
+}
+
+// new_interp builds the read-only context a tick fold (or a render pass) threads,
+// minting the §23 action registry ONCE here so `input.value` never rebuilds it
+// per behavior-instance per tick — the registry is a pure function of the program,
+// so one program-scoped copy serves every input query the run evaluates. The
+// caller supplies the committed version a read falls back to, the in-flight tick
+// state (nil off a fold), and the Input/Time resources the behaviors observe.
+new_interp :: proc(
+	program: ^Program,
+	version: ^World_Version,
+	tick: ^Tick_State,
+	input: Input,
+	time: Record_Value,
+	allocator := context.allocator,
+) -> Interp {
+	return Interp {
+		program = program,
+		version = version,
+		tick = tick,
+		input = input,
+		time = time,
+		registry = build_action_registry(program^, allocator),
+		allocator = allocator,
+	}
 }
 
 // Runtime_Allocator is the evaluation arena alias — every value the interpreter
@@ -205,12 +243,15 @@ eval :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool
 		f, f_ok := decode_fixed(node.fields[0])
 		return f, f_ok
 	case .String:
-		// A String literal appears only in a render [Draw] text node; the executed
-		// control/collision/scoring stages carry none. The decoded bytes ride a
-		// one-field record keyed by the raw token so no String arm widens the Value
-		// union — the render projection is not produced by this fold.
+		// A String literal appears only in a render [Draw] text node (§20); the
+		// executed control/collision/scoring stages carry none. The decoded template
+		// has its `{recv.field}` interpolation holes resolved against the bound `self`
+		// here, so the value is the FINAL rendered text the draw-list asserts.
 		s, s_ok := decode_string(node.fields[0])
-		return string_value(interp, s), s_ok
+		if !s_ok {
+			return nil, false
+		}
+		return string_value(interp, s, env), true
 	case .Name:
 		return eval_name(interp, node.fields[0], env)
 	case .Field:
@@ -294,7 +335,7 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return nil, false
 		}
 		return field_value_to_value(fv), true
-	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value:
+	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value:
 		return nil, false
 	}
 	return nil, false
@@ -365,7 +406,7 @@ eval_with :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		type_name = "Vec2"
 		merged["x"] = b.x
 		merged["y"] = b.y
-	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value:
+	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value:
 		return nil, false
 	}
 	for i in 1 ..< len(node.children) {
@@ -423,7 +464,7 @@ eval_unary :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 		return int_neg(v), true
 	case Vec2:
 		return Vec2{fixed_neg(v.x), fixed_neg(v.y)}, true
-	case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value:
+	case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value:
 		return nil, false
 	}
 	return nil, false
@@ -595,17 +636,90 @@ compare_ordered :: proc(op: string, a, b: i64) -> bool {
 
 // --- Internal value helpers -----------------------------------------------
 
-// string_value carries a decoded String literal as a runtime value. A funpack
-// String has no dedicated Value arm — pong uses one only in a render `[Draw]`
-// text, which this fold does not produce — so the decoded bytes ride a record
-// typed "String" whose single field keys the literal under its own bytes. The
-// render projection reads the bytes back; the executed control/collision/scoring
-// stages never evaluate a String node, so this path is build-complete but
-// unexercised by the executed fold.
-string_value :: proc(interp: ^Interp, s: string) -> Value {
-	fields := make(map[string]Value, interp.allocator)
-	fields[s] = bool(true)
-	return Record_Value{type_name = "String", fields = fields}
+// string_value interpolates a decoded String literal template into the final
+// rendered text (§20). The template carries `{recv.field}` holes (pong's score
+// readout is `{self.left}   {self.right}`); each hole is resolved against the
+// bound `env` — the receiver name looked up, the field read, the value formatted
+// — and the literal text between holes is copied verbatim. A hole that does not
+// resolve renders empty, so a render behavior never faults on a missing column.
+// A funpack String appears ONLY in a render text node, so this is the render
+// projection's string completion, evaluated against the behavior's `self`.
+string_value :: proc(interp: ^Interp, template: string, env: ^Env) -> Value {
+	b := strings.builder_make(interp.allocator)
+	rest := template
+	for {
+		open := strings.index_byte(rest, '{')
+		if open < 0 {
+			strings.write_string(&b, rest)
+			break
+		}
+		strings.write_string(&b, rest[:open])
+		close := strings.index_byte(rest[open:], '}')
+		if close < 0 {
+			// An unterminated hole is copied verbatim — the template is malformed but
+			// the projection stays total.
+			strings.write_string(&b, rest[open:])
+			break
+		}
+		hole := rest[open + 1:open + close]
+		strings.write_string(&b, interpolate_hole(interp, hole, env))
+		rest = rest[open + close + 1:]
+	}
+	return String_Value{text = strings.to_string(b)}
+}
+
+// interpolate_hole resolves one `recv.field` template hole against the bound
+// environment, returning the formatted text of the field value. The hole splits
+// on the first `.` into a receiver name (a behavior param like `self`) and a
+// field name; the receiver is looked up in scope and the field read off its
+// record/blackboard. An unresolved receiver, field, or non-`recv.field` shape
+// renders empty (the projection stays total, never faulting on a bad template).
+interpolate_hole :: proc(interp: ^Interp, hole: string, env: ^Env) -> string {
+	dot := strings.index_byte(hole, '.')
+	if dot < 0 {
+		return ""
+	}
+	recv_name := strings.trim_space(hole[:dot])
+	field_name := strings.trim_space(hole[dot + 1:])
+	recv, recv_ok := eval_name(interp, recv_name, env)
+	if !recv_ok {
+		return ""
+	}
+	record, is_record := recv.(Record_Value)
+	if !is_record {
+		return ""
+	}
+	field_val, present := record.fields[field_name]
+	if !present {
+		return ""
+	}
+	return format_value(interp, field_val)
+}
+
+// format_value renders a scalar blackboard value to its display text for a §20
+// Text command. An Int renders its decimal digits; a Fixed renders its truncated
+// integer part (pong's score columns are Ints, so the integer rendering is what
+// the score readout asserts); an enum value renders its case name. A structural
+// value (record/list) has no display form here and renders empty.
+format_value :: proc(interp: ^Interp, v: Value) -> string {
+	switch x in v {
+	case i64:
+		return aprint_int(x, interp.allocator)
+	case Fixed:
+		return aprint_int(fixed_trunc(x), interp.allocator)
+	case Variant_Value:
+		return strings.clone(x.case_name, interp.allocator)
+	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value:
+		return ""
+	}
+	return ""
+}
+
+// aprint_int renders a signed integer to its decimal text in the supplied arena —
+// the digits a §20 Text hole substitutes for an Int/Fixed column.
+aprint_int :: proc(n: i64, allocator := context.allocator) -> string {
+	buf: [32]byte
+	return strings.clone(strconv.write_int(buf[:], n, 10), allocator)
 }
 
 // as_bool coerces a value to a Bool for a guard or logical op; a non-Bool is
@@ -625,7 +739,7 @@ as_fixed :: proc(v: Value) -> (f: Fixed, ok: bool) {
 		return n, true
 	case i64:
 		return to_fixed(n), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value:
 		return Fixed(0), false
 	}
 	return Fixed(0), false
@@ -693,7 +807,10 @@ value_to_field_value :: proc(
 		return x, true
 	case Variant_Value:
 		return variant_to_token(x, allocator), true
-	case bool, Record_Value, List_Value, Lambda_Value:
+	case bool, Record_Value, List_Value, Lambda_Value, String_Value:
+		// A String is render-only (§20 Text) and never a blackboard column — render
+		// never writes a blackboard, so a String reaching the commit path is a
+		// no-column value, the same as any other structural value.
 		return nil, false
 	}
 	return nil, false
