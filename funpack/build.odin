@@ -147,9 +147,10 @@ build_product_path :: proc(root: string, leaf: string, allocator := context.allo
 // Build_Write_Error is closed with one arm per filesystem failure writing the
 // products. Mkdir_Failed is a failure creating the `.funpack/` directory;
 // Write_Artifact_Failed / Write_Index_Failed are failures writing the respective
-// product. The write is all-or-nothing in intent — the caller has both products
-// in hand before any write — but a host IO failure mid-write surfaces here so the
-// CLI exits non-zero rather than reporting a partial success.
+// product. The write is all-or-nothing: a failure writing the second product
+// removes the first before returning, so an exit-2 build never leaves a
+// partial product set from THIS invocation on disk (§29 §3 — a failed build
+// writes neither product).
 Build_Write_Error :: enum {
 	None,
 	Mkdir_Failed,
@@ -172,6 +173,10 @@ write_build_products :: proc(product: Build_Product, root: string) -> Build_Writ
 		return .Write_Artifact_Failed
 	}
 	if write_err := os.write_entire_file(product.index_path, transmute([]u8)product.index); write_err != nil {
+		// All-or-nothing: the artifact is already on disk, so a failed index
+		// write removes it before reporting — an exit-2 build leaves no
+		// partial product set behind.
+		os.remove(product.artifact_path)
 		return .Write_Index_Failed
 	}
 	return .None
