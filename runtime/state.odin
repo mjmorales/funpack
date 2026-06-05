@@ -385,3 +385,47 @@ vec2_normalize :: proc(v: Vec2) -> (unit: Vec2, ok: bool) {
 	}
 	return Vec2{fixed_div(v.x, length), fixed_div(v.y, length)}, true
 }
+
+// --- Bit-identity comparison of two committed versions --------------------
+
+// world_versions_equal reports whether two committed versions are BIT-IDENTICAL:
+// same tick, same table set, same rows in the same stable Id order, same
+// blackboard columns down to the fixed-point bits. It is the determinism
+// comparison surface — a fold run twice over the same inputs, and a replay
+// re-fold against the original run, must each compare equal here. A pure
+// read-only function of two World_Versions, so it lives with the read layer.
+world_versions_equal :: proc(a, b: World_Version) -> bool {
+	if a.tick != b.tick || len(a.tables) != len(b.tables) {
+		return false
+	}
+	for table_a, i in a.tables {
+		table_b := b.tables[i]
+		if table_a.thing != table_b.thing || len(table_a.rows) != len(table_b.rows) {
+			return false
+		}
+		for row_a, j in table_a.rows {
+			row_b := table_b.rows[j]
+			if row_a.id != row_b.id || !blackboards_equal(row_a.fields, row_b.fields) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// blackboards_equal compares two row blackboards column-for-column: same field
+// set, same Field_Value per field (the union compares structurally, so a Fixed
+// column compares by its raw bits). A column present in one but not the other is
+// a mismatch.
+blackboards_equal :: proc(a, b: map[string]Field_Value) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value_a in a {
+		value_b, present := b[key]
+		if !present || value_a != value_b {
+			return false
+		}
+	}
+	return true
+}
