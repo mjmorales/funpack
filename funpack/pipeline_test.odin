@@ -315,6 +315,84 @@ test_pipeline_gate_stage_passes_golden_source :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_gate_duplication_alpha_equivalent_blocks_fire :: proc(t: ^testing.T) {
+	// Two test blocks whose bodies are structurally identical modulo
+	// bound-name alpha-renaming: block one binds `v`/`acc`, block two
+	// binds `w`/`total`, but every node shape, free name, literal, and
+	// operator matches. The duplication gate alpha-normalizes the bound
+	// names before hashing, so the two collide on one dup_class — a
+	// compile error mapped to Gate_Failed.
+	source := with_golden_imports(
+		"test \"first\" {\n" +
+		"  let v = to_fixed(2)\n" +
+		"  assert fold([1.0, 2.0], v, fn(acc, x) { return acc + x }) == 5.0\n" +
+		"}\n" +
+		"test \"second\" {\n" +
+		"  let w = to_fixed(2)\n" +
+		"  assert fold([1.0, 2.0], w, fn(total, x) { return total + x }) == 5.0\n" +
+		"}\n")
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
+@(test)
+test_gate_duplication_rename_only_still_collides :: proc(t: ^testing.T) {
+	// The near-miss control: a rename-only variant is genuinely a
+	// duplicate. Renaming the let binding (`a` → `b`) and every reference
+	// to it is the entire difference between the two blocks — exactly the
+	// dodge the alpha-normalization closes, so the gate still fires.
+	source := with_golden_imports(
+		"test \"alpha\" {\n" +
+		"  let a = to_fixed(2)\n" +
+		"  assert a + 0.5 == 2.5\n" +
+		"}\n" +
+		"test \"beta\" {\n" +
+		"  let b = to_fixed(2)\n" +
+		"  assert b + 0.5 == 2.5\n" +
+		"}\n")
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
+@(test)
+test_gate_duplication_distinct_blocks_clear :: proc(t: ^testing.T) {
+	// The structurally distinct control: two blocks that share a similar
+	// surface but differ in node shape — different free names, different
+	// literals, an extra assert — must NOT collide. The gate clears and
+	// the pipeline runs both blocks to a normal pass, pinning the
+	// non-collision boundary opposite the alpha-equivalent fixture.
+	source := with_golden_imports(
+		"test \"trunc\" {\n" +
+		"  assert trunc(1.5) == 1\n" +
+		"}\n" +
+		"test \"floor\" {\n" +
+		"  assert floor(-1.5) == -2\n" +
+		"  assert round(1.5) == 2\n" +
+		"}\n")
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 3)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_gate_duplication_golden_source_clears :: proc(t: ^testing.T) {
+	// The §29-faithful unit choice verified against the REAL golden file:
+	// its repeated `assert a.slerp(b, …) == …` shapes live inside ONE
+	// block, and no two of its twelve blocks are structurally identical —
+	// so the whole-block unit clears where a per-assert unit would
+	// false-positive. The full golden pipeline (passes elsewhere) is the
+	// authority; here we pin specifically that the gate stage is clean.
+	source, ok := golden_source()
+	if !ok {
+		return
+	}
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	testing.expect_value(t, stage_gates(ast), Gate_Error.None)
+}
+
+@(test)
 test_pipeline_empty_source_is_noop_pass :: proc(t: ^testing.T) {
 	report, err := run_test_pipeline("")
 	testing.expect_value(t, err, Pipeline_Error.None)
