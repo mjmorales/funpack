@@ -625,7 +625,7 @@ accumulate_axis :: proc(
 
 // apply_deadzone zeroes an analog sample whose magnitude is within the engine
 // deadzone, then leaves the rest unchanged (the final clamp happens in
-// fold_axis after stacking). A keys_axis ±1 never passes through here — it is
+// resolve_tick's second pass, after stacking). A keys_axis ±1 never passes through here — it is
 // digital, not a drifting analog reading — so the deadzone applies only to a raw
 // stick sample, exactly §23 §4's "engine-deadzoned" analog rail.
 @(private = "file")
