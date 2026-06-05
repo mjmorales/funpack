@@ -11,7 +11,7 @@
 // resource. Input is that resource, passed read-only into a behavior step —
 // no Key/MouseButton/Pad type ever reaches sim code. This story owns the
 // snapshot + query + producers ONLY. Reading devices, resolving bindings, and
-// recording the replay log are LATER stories that feed this same vocabulary.
+// recording the replay log are separate layers that feed this same vocabulary.
 // runtime/** must never import funpack/** — the artifact file is the only
 // sanctioned coupling (spec §29, §09).
 package funpack_runtime
@@ -30,17 +30,17 @@ PlayerId :: enum {
 
 // ActionId is the runtime-owned action identity the snapshot keys on. The
 // artifact names an action by its enum variant (Steer::Move) and records the
-// enum's role kind (Axis/Button) (artifact-format §5, §14); a later loader
-// story maps each (enum, variant) definition onto one stable ActionId. Keying
+// enum's role kind (Axis/Button) (artifact-format §5, §14); the artifact
+// loader maps each (enum, variant) definition onto one stable ActionId. Keying
 // generically by identity here — NOT by hard-coding pong's Steer/Move enums —
-// is what lets this story land ahead of, and independent of, the artifact
-// loader (sibling task 2.2). A distinct u32 so a raw index can never be passed
+// is what keeps the snapshot independent of the artifact loader. A distinct
+// u32 so a raw index can never be passed
 // where an ActionId is meant.
 ActionId :: distinct u32
 
 // Vec2 is the minimal runtime-owned fixed-point vector the axis snapshot needs
 // (spec §10: Vec2 is two transparent Fixed components, the Num kind). The full
-// sim Vec2 math surface (length, normalize, dot) is the execution epic's state
+// sim Vec2 math surface (length, normalize, dot) belongs to the world state
 // layer; the input snapshot needs only the value and its zero, so this carries
 // exactly that — no float ever (spec §23 §4, §09 §6).
 Vec2 :: struct {
@@ -52,7 +52,7 @@ VEC2_ZERO :: Vec2{Fixed(0), Fixed(0)}
 
 // Button_State is the digital edge/level record §23 §2 exposes through
 // pressed/released/held. The three bits are coalesced over the window since
-// the previous tick by the bindings story (spec §23 §4); this story stores and
+// the previous tick by bindings resolution (spec §23 §4); this layer stores and
 // reads them as given. A never-touched action reads the all-false zero value,
 // so the map's absence-default is exactly "action not seen this tick".
 Button_State :: struct {
@@ -215,7 +215,7 @@ delete_input :: proc(input: Input) {
 // Map iteration order in Odin is unspecified; any code that must enumerate the
 // snapshot (a recorder, a digest) sorts first so the byte output is identical
 // run to run (spec §23 §4: the recorded snapshot is the determinism record).
-// Provided here so later recording stories key on one canonical order.
+// Provided here so the recorder keys on one canonical order.
 keys_of :: proc(input: Input, allocator := context.allocator) -> []Player_Action {
 	out := make([dynamic]Player_Action, 0, len(input.buttons) + len(input.axes), allocator)
 	seen := make(map[Player_Action]bool, allocator = context.temp_allocator)

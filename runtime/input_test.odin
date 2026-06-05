@@ -8,7 +8,7 @@ package funpack_runtime
 
 import "core:testing"
 
-// Stand-in action identities. The artifact loader (sibling story) will mint
+// Stand-in action identities. The artifact loader will mint
 // real ActionIds from enum variants (Steer::Move, Move::Up); the snapshot core
 // is generic over identity, so the tests pick arbitrary stable ids — proving
 // the core never depends on pong's enums.
@@ -131,7 +131,7 @@ test_producers_are_immutable :: proc(t: ^testing.T) {
 @(test)
 test_keys_of_is_deterministically_ordered :: proc(t: ^testing.T) {
 	// keys_of returns a canonical (player, action) order regardless of map
-	// iteration order — the stable enumeration a later recorder digests
+	// iteration order — the stable enumeration the recorder digests
 	// (spec §23 §4). Build out of order; expect sorted by player then action.
 	// Each producer clones, so the intermediates are freed explicitly to keep
 	// the leak-checked test allocator clean (a chain owns its intermediates).
