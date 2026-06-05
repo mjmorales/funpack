@@ -18,7 +18,8 @@ MAX_NESTING_DEPTH :: 3
 MAX_FN_STATEMENTS :: 40
 MAX_PARAM_ARITY :: 5
 
-// MAX_DUPLICATE_UNITS is the §01 P5 / §04 duplication threshold as a fixed
+// MAX_DUPLICATE_UNITS is the §01 P5 duplication threshold (§01 §4 policy
+// table) as a fixed
 // compiler constant: at most this many declaration units may share a
 // dup_class (the §29 normalized-AST hash). Two structurally identical
 // units modulo bound-name alpha-renaming is one too many, so the ceiling
