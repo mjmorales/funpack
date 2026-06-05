@@ -1,8 +1,8 @@
 <!-- prove:managed:start -->
 # funpack
 
-<!-- prove:plugin-version:3.10.2 -->
-**Prove plugin v3.10.2** — if `claude-prove --version` does not match v3.10.2, run `/prove:update` to sync.
+<!-- prove:plugin-version:3.11.0 -->
+**Prove plugin v3.11.0** — if `claude-prove --version` does not match v3.11.0, run `/prove:update` to sync.
 
 
 ## Validation
@@ -22,6 +22,22 @@ Before broad Glob/Grep searches, check the file index first:
 - `claude-prove cafi lookup <keyword>` — search by keyword
 
 Only fall back to Glob/Grep when the index doesn't cover what you need.
+## Team Agents
+
+Role-bound team agents registered in `.claude/agents/`:
+
+- **funpack**: `team-funpack-tech_lead`, `team-funpack-engineer`, `team-funpack-implementer`
+- **runtime**: `team-runtime-tech_lead`, `team-runtime-engineer`, `team-runtime-implementer`
+- **warden**: `team-warden-tech_lead`, `team-warden-engineer`, `team-warden-implementer`
+
+Dispatch and memory protocol:
+
+- For subagent work that falls inside a team's scope, dispatch that team's role agent — never a general-purpose agent. Resolve scope from each team's bundle `teams/<slug>.md`; use a general-purpose agent only when no team's bundle scope covers the task.
+- Every dispatched team agent must honor its memory protocol: read its team bundle `teams/<slug>.md` (scope, roster, recent Lore) before acting, and record what it learns:
+  - seat notes with `claude-prove scrum annotation add --target-kind team`
+  - team Lore with `claude-prove scrum lore record` (tech_lead seat; non-lead seats route journal-worthy findings to a seat annotation instead)
+  - durable decisions with `claude-prove scrum decision record`
+
 ## References
 
 ### claude-prove CLI Reference
