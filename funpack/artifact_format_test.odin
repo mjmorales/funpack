@@ -7,7 +7,7 @@ import "core:testing"
 
 // GOLDEN_ARTIFACT_PATH is the committed pong artifact fixture (relative to
 // this package dir). It is the byte-exact seam the runtime team builds
-// against and the (later) production emitter must reproduce byte-for-byte.
+// against and the production emitter must reproduce byte-for-byte.
 GOLDEN_ARTIFACT_PATH :: "testdata/pong.artifact"
 
 golden_artifact_path :: proc() -> string {
@@ -28,7 +28,7 @@ read_golden_artifact :: proc() -> (content: string, ok: bool) {
 // value with no clock/path/float, docs/artifact-format.md §2), so encoding
 // every primitive kind twice and comparing the bytes proves the
 // emit-twice-is-byte-identical contract under `odin test` without needing
-// the production emitter (a later story).
+// the production emitter.
 @(test)
 test_encoders_are_byte_identical_across_calls :: proc(t: ^testing.T) {
 	// 152.0 in Q32.32 — the P2 paddle column the golden fixture carries.
@@ -89,7 +89,7 @@ test_golden_artifact_parses_against_format :: proc(t: ^testing.T) {
 // exactly. These counts track the live pong source byte-for-byte: the
 // format evolves in lockstep with the source, so a count change is a
 // deliberate edit, never loosened to a range. They are the structural
-// fingerprint the runtime and the (later) emitter both target.
+// fingerprint the runtime and the emitter both target.
 @(test)
 test_golden_artifact_section_counts :: proc(t: ^testing.T) {
 	content, ok := read_golden_artifact()

@@ -4,7 +4,7 @@
 // docs/artifact-format.md and whose pong instance is committed at
 // testdata/pong.artifact. The runtime (Odin, runtime/**) parses those
 // bytes from the doc alone with ZERO funpack imports; this file owns only
-// the funpack-side encoders the (later) production emitter reuses, so the
+// the funpack-side encoders the production emitter reuses, so the
 // encoding rules are executable and the byte-identical-twice obligation is
 // provable here under `odin test`.
 //
