@@ -132,13 +132,21 @@ Signal_Route :: struct {
 
 // Spawn_Field is one supplied field of a setup Spawn, decoded to its concrete
 // value: a Fixed through the kernel (bit-exact), an Int, an enum variant name,
-// or a Vec2. The setup program carries NO expressions (§13) — every field is a
-// primitive-encoded value already, so no initializer is interpreted here.
+// a Vec2, OR a composite §6 token (a `Body(…)` record / a `[Layer::…]` list, the
+// engine-record forms yard's setup first reaches). The setup program carries NO
+// expressions (§13) — every field is a primitive-encoded value already, so no
+// initializer is interpreted here. A composite Record/List keeps its raw §6
+// `encoded` token because its nested field types resolve against the (not-yet-fully-
+// built) Program; spawn_field_to_value decodes it lazily through the SAME
+// decode_default_value machinery the §6 field-default path uses, once the Program
+// is available.
 Spawn_Value_Kind :: enum {
 	Int,
 	Fixed,
 	Variant, // a name-field enum variant like `Side::Left`
 	Vec2, // a nested `vec2 x_bits y_bits` record
+	Record, // a composite §6 record token like `Body(kind=…,…)` — decoded lazily
+	List, // a §6 list token like `[Layer::Wall,Layer::Crate]` — decoded lazily
 }
 
 Spawn_Field :: struct {
@@ -149,6 +157,7 @@ Spawn_Field :: struct {
 	variant: string, // Variant raw token (e.g. "Side::Left")
 	vec2_x:  Fixed, // Vec2 x component
 	vec2_y:  Fixed, // Vec2 y component
+	encoded: string, // Record/List raw §6 token, decoded lazily by field type
 }
 
 // Spawn_Command is one entry of the §13 [Spawn] batch: a thing type plus its

@@ -44,13 +44,23 @@ Tick_Table :: struct {
 	next_id:   Thing_Id, // the deterministic spawn counter
 }
 
-// Signal_Mailbox accumulates the signals emitted SO FAR this tick, keyed by
-// signal type. A consumer stage reads its inbound list from here when it runs;
-// because the fold is forward in pipeline order, a list a consumer reads holds
-// exactly the signals every earlier producer emitted this tick (synchronous
-// forward delivery, no concurrency). It is reset each tick.
+// Signal_Mailbox accumulates the signals emitted SO FAR this tick. It carries TWO
+// routing surfaces, by the signal's delivery shape (§12 forward synchronous):
+//   - by_type: BROADCAST user signals (pong's Goal, yard's Delivered). Every
+//     consumer of the type reads the same accumulated list — a fan-out signal.
+//   - by_instance: PER-INSTANCE engine signals (§11 §4 Contact/Trigger), keyed by
+//     type then by the TARGET row's Id. The engine routes each to the specific
+//     participating instance, and a consumer `on T` reading `[Trigger]` sees ONLY
+//     its own instance's entries (§11 §4: "no self.id to fetch, no list to
+//     filter"). A broadcast read of a per-instance signal would deliver one
+//     overlapping crate's Trigger to EVERY crate — three deliveries from one
+//     overlap — so the split is load-bearing for yard's single-crate delivery.
+// Because the fold is forward in pipeline order, a list a consumer reads holds
+// exactly the signals every earlier producer emitted this tick. It is reset each
+// tick.
 Signal_Mailbox :: struct {
-	by_type: map[string][]Value, // signal type name → emitted signal records this tick
+	by_type:     map[string][]Value, // BROADCAST signal type → emitted records this tick
+	by_instance: map[string]map[Id][]Value, // PER-INSTANCE signal type → target Id → records
 }
 
 // Tick_State is all the mutable working state one tick threads: the per-thing
@@ -223,7 +233,7 @@ run_startup_seeded :: proc(
 	tables := new_tick_tables(base, allocator)
 	state := Tick_State {
 		tables           = tables,
-		mailbox          = Signal_Mailbox{by_type = make(map[string][]Value, allocator)},
+		mailbox          = new_signal_mailbox(allocator),
 		spawns           = make([dynamic]Pending_Spawn, allocator),
 		despawns         = make([dynamic]Ref, allocator),
 		persist_commands = make([dynamic]Record_Value, allocator),
@@ -245,7 +255,9 @@ run_startup_seeded :: proc(
 		return run_startup(program, base, allocator), seed
 	}
 	if tuple, is_tuple := result.(Tuple_Value); is_tuple {
-		fold_tuple_emit(&interp, &state, tuple)
+		// setup has no on-Thing self row; its return type (`(Rng, [Spawn])`) names the
+		// halves so the split is type-driven, with no behavior context.
+		fold_tuple_emit(&interp, &state, nil, Row{}, setup_fn.return_type, tuple)
 	}
 	// Engine singletons mint BEFORE setup's seeded [Spawn] batch applies (§06 §2,
 	// §13): the engine pass is the sole, authoritative minter of a singleton row and
@@ -284,7 +296,7 @@ build_spawn_blackboard :: proc(
 	decl := program_thing(program, command.thing)
 
 	for field in command.fields {
-		fields[field.name] = spawn_field_to_value(program, decl, field.name, field)
+		fields[field.name] = spawn_field_to_value(program, decl, field.name, field, allocator)
 	}
 	// Fill omitted fields from the thing's declared defaults (§06, §13: an omitted
 	// field is not carried in setup; the runtime applies the default).
@@ -306,13 +318,18 @@ build_spawn_blackboard :: proc(
 // spawn_field_to_value lowers one decoded Spawn_Field to its blackboard column,
 // reading the field's declared type so a numeric value lands as Int when the
 // field is an Int column and as Fixed when it is a Fixed column (the loader keeps
-// both views of the same raw bits). A Vec2/Variant field carries its decoded
-// shape directly.
+// both views of the same raw bits). A Vec2/Variant field carries its decoded shape
+// directly; a composite Record/List field decodes its kept raw §6 token LAZILY
+// through decode_default_value against the field's declared type — the SAME machinery
+// the §6 field-default path uses, so a setup `set body =Body(…)` and a field default
+// `body: Body = Body(…)` lift to the IDENTICAL column shape (the cross-product
+// contract the solver's gather reads). `allocator` owns the decoded structural column.
 spawn_field_to_value :: proc(
 	program: ^Program,
 	decl: ^Thing_Decl,
 	name: string,
 	field: Spawn_Field,
+	allocator := context.allocator,
 ) -> Field_Value {
 	switch field.kind {
 	case .Vec2:
@@ -327,8 +344,37 @@ spawn_field_to_value :: proc(
 			return field.int_val
 		}
 		return field.fixed
+	case .Record, .List:
+		// A composite §6 token decoded against the field's declared type from the thing
+		// decl. A decode miss (a malformed token the loader would have refused) leaves
+		// the column unset by returning nil — never a half-built record.
+		if v, ok := decode_default_value(
+			program,
+			thing_field_type(decl, name),
+			field.encoded,
+			allocator,
+		); ok {
+			return v
+		}
+		return nil
 	}
 	return field.fixed
+}
+
+// thing_field_type returns a thing's named field's declared type, or "" when the
+// decl or field is unknown — the lookup spawn_field_to_value reads to decode a
+// composite setup field against its declared type (a `body` field's `Body`, a `mask`
+// field's `[Layer]`). The twin of data_field_type, over a Thing_Decl.
+thing_field_type :: proc(decl: ^Thing_Decl, name: string) -> string {
+	if decl == nil {
+		return ""
+	}
+	for fd in decl.fields {
+		if fd.name == name {
+			return fd.type
+		}
+	}
+	return ""
 }
 
 // decode_default decodes a Field_Decl's `=ENCODED` default into a column value,
@@ -381,26 +427,46 @@ decode_default_value :: proc(
 	case "Bool":
 		return decode_bool(encoded)
 	}
-	if strings.has_prefix(type_name, "[") {
-		// A `[T]` list default — the emitter admits only the empty-list `[]` literal.
-		if encoded == "[]" {
-			return List_Value{elements = make([]Value, 0, allocator)}, true
-		}
-		return nil, false
+	// A `[T]` list value — the §6/§13 `[enc,…]` bracketed run (empty `[]` or a
+	// comma-joined run of space-free element tokens, each decoded against the inner
+	// element type `T`). The empty literal is the §6 default snake reaches; the
+	// non-empty run is the §13 setup form yard reaches first (a `mask: [Layer] =
+	// [Layer::Wall,Layer::Crate]`). The list is detected on EITHER the declared `[T]`
+	// type OR the ENCODED leading `[` (§13: a reader discriminates on the leading byte
+	// of ENCODED) — the latter is load-bearing for yard's Body, an ENGINE type with no
+	// §3 Data_Decl, whose `mask` field type is unknown to data_field_type. Each element
+	// lifts through field_value_to_value so a `[Layer]` column carries Variant_Values —
+	// the shape the solver's mask read (value_to_layer_token) and the universal-Eq
+	// surface expect.
+	if strings.has_prefix(type_name, "[") || strings.has_prefix(encoded, "[") {
+		return decode_list_default(program, type_name, encoded, allocator)
 	}
 	if strings.contains(encoded, "(") {
 		// A composite record default `Type(f=enc,…)` — the §6 single-token inline
-		// constructor (snake's `head: Cell = Cell(x=10,y=10)`). This is tested
-		// BEFORE the enum-token arm because a composite body may itself carry a
-		// nested enum token (yard's `Body(layer=CollisionLayer::Solid,…)`): the `::`
+		// constructor (snake's `head: Cell = Cell(x=10,y=10)`, yard's `Body(kind=…,…)`).
+		// This is tested BEFORE the enum-token arm because a composite body may itself
+		// carry a nested enum token (yard's `Body(layer=Layer::Wall,…)`): the `::`
 		// belongs to a nested field, not to a top-level `Enum::Case` default, and a
 		// `Type::Case` enum token is always paren-free (§2.6), so `(` is the sound
-		// discriminator for the composite form.
+		// discriminator for the composite form. A STRUCT-PAYLOAD variant
+		// (`Shape2::Box(size=…)`) never reaches a top-level COLUMN (Field_Value carries
+		// no Variant_Value arm — a struct variant lives only NESTED, as a record field
+		// `Value`); it is decoded by decode_default_to_value off the record-field path.
 		return decode_record_default(program, type_name, encoded, allocator)
 	}
 	if strings.contains(encoded, "::") {
 		// An enum-variant default (`Enum::Case`) carries verbatim as a token column.
 		return strings.clone(encoded, allocator), true
+	}
+	if encoded == "true" || encoded == "false" {
+		// A bare boolean token whose declared type is not the literal `Bool` (a nested
+		// field decoded against an unknown data decl — yard's `Body.sensor`, an ENGINE
+		// record with no §3 Data_Decl). §13 discriminates on the ENCODED form, so a bare
+		// `true`/`false` decodes to a Bool column regardless of declared type; without
+		// this, `sensor=true` would fall to the bare-token arm and lift to a bogus
+		// `Variant_Value{case_name="true"}` the solver's bool read rejects (the Pad would
+		// never sense, no Trigger would route).
+		return decode_bool(encoded)
 	}
 	if is_signed_decimal(encoded) {
 		// A numeric default whose declared type is not the literal `Int`/`Fixed` (a
@@ -419,9 +485,10 @@ decode_default_value :: proc(
 // commas (so a nested `Vec2(x=0,y=0)` inside the body is not split mid-record),
 // each `name=enc` pair decoded against that field's declared type from the data
 // decl, so a `Cell(x=10,y=10)` decodes `x`/`y` as Int columns and a value lifts
-// to the SAME Record_Value a runtime `Cell{…}` literal evaluates to. The fields
-// are lifted to interpreter Values so the record column round-trips through
-// field_value_to_value unchanged.
+// to the SAME Record_Value a runtime `Cell{…}` literal evaluates to. Each field
+// decodes through decode_default_to_value (the Value-returning path), so a nested
+// STRUCT-PAYLOAD variant field — yard's `Body(shape=Shape2::Box(size=…),…)` — lands
+// as a Variant_Value the solver's parse_body_shape reads, not a flat Record_Value.
 decode_record_default :: proc(
 	program: ^Program,
 	type_name: string,
@@ -454,11 +521,11 @@ decode_record_default :: proc(
 			name := pair[:eq]
 			field_enc := pair[eq + 1:]
 			field_type := vec2_fields ? "Fixed" : data_field_type(decl, name)
-			fv, fv_ok := decode_default_value(program, field_type, field_enc, allocator)
+			fv, fv_ok := decode_default_to_value(program, field_type, field_enc, allocator)
 			if !fv_ok {
 				return nil, false
 			}
-			fields[strings.clone(name, allocator)] = field_value_to_value(fv)
+			fields[strings.clone(name, allocator)] = fv
 		}
 	}
 	if vec2_fields {
@@ -472,20 +539,147 @@ decode_record_default :: proc(
 	return Record_Value{type_name = strings.clone(ctor, allocator), fields = fields}, true
 }
 
+// decode_default_to_value decodes a `=ENCODED` token into a record-field / list-
+// element Value (NOT a top-level Field_Value column). It is the value-path twin of
+// decode_default_value, adding the one arm a column cannot carry: a STRUCT-PAYLOAD
+// variant `Enum::Case(field=enc,…)` (yard's `Shape2::Box(size=…)`), which lives only
+// NESTED inside a record (Field_Value has no Variant_Value arm — a top-level enum
+// column is a string token). The discriminator is the ctor name (everything before
+// the first `(`): a `::` in it means a struct-payload variant, decoded here; every
+// other form defers to decode_default_value and lifts through field_value_to_value
+// (which maps an enum-token string to a bare Variant_Value). So `Body(…)` records,
+// `[Layer::…]` lists, scalars, and `Vec2(…)` collapses all route through the column
+// path unchanged, and only the struct-variant case takes this proc's own arm.
+decode_default_to_value :: proc(
+	program: ^Program,
+	type_name: string,
+	encoded: string,
+	allocator := context.allocator,
+) -> (
+	value: Value,
+	ok: bool,
+) {
+	if open := strings.index_byte(encoded, '('); open > 0 {
+		ctor := encoded[:open]
+		if strings.contains(ctor, "::") && strings.has_suffix(encoded, ")") {
+			return decode_struct_variant_value(program, encoded, allocator)
+		}
+	}
+	fv, fv_ok := decode_default_value(program, type_name, encoded, allocator)
+	if !fv_ok {
+		return nil, false
+	}
+	return field_value_to_value(fv), true
+}
+
+// decode_struct_variant_value decodes a struct-payload variant token
+// `Enum::Case(field=enc,…)` into a Variant_Value whose boxed payload is a
+// Record_Value of the parenthesized fields — the inverse of the emitter's
+// struct-variant token and the SAME shape eval produces for a `Shape2::Box{size}`
+// literal (interp.odin eval_variant), which parse_body_shape reads off the committed
+// `shape` column. The ctor name splits at `::` into the enum type and case; the body
+// decodes field-by-field through decode_default_to_value (each payload field's type is
+// unknown at this layer, so a `size=Vec2(…)` collapses via the record arm and a
+// `radius=<bits>` decodes as Fixed via the numeric arm — the §11 §2 Shape2 payloads
+// yard reaches). The payload Record_Value carries an empty type_name, matching the
+// boxed-payload shape the solver's variant_payload_* readers expect.
+decode_struct_variant_value :: proc(
+	program: ^Program,
+	encoded: string,
+	allocator := context.allocator,
+) -> (
+	value: Value,
+	ok: bool,
+) {
+	open := strings.index_byte(encoded, '(')
+	if open < 0 || !strings.has_suffix(encoded, ")") {
+		return nil, false
+	}
+	ctor := encoded[:open] // "Shape2::Box"
+	sep := strings.index(ctor, "::")
+	if sep < 0 {
+		return nil, false
+	}
+	enum_type := strings.clone(ctor[:sep], allocator)
+	case_name := strings.clone(ctor[sep + 2:], allocator)
+	body := encoded[open + 1:len(encoded) - 1] // "size=Vec2(x=…,y=…)" / "radius=…"
+
+	payload_fields := make(map[string]Value, allocator)
+	if len(body) > 0 {
+		for pair in split_top_level(body, ',', allocator) {
+			eq := strings.index_byte(pair, '=')
+			if eq < 0 {
+				return nil, false
+			}
+			name := pair[:eq]
+			pv, pv_ok := decode_default_to_value(program, "", pair[eq + 1:], allocator)
+			if !pv_ok {
+				return nil, false
+			}
+			payload_fields[strings.clone(name, allocator)] = pv
+		}
+	}
+	boxed := new(Value, allocator)
+	boxed^ = Record_Value{type_name = "", fields = payload_fields}
+	return Variant_Value{enum_type = enum_type, case_name = case_name, payload = boxed}, true
+}
+
+// decode_list_default decodes a `[T]` list value `[enc,enc,…]` into a List_Value
+// column — the inverse of the emitter's `[`-bracketed comma run (§6/§13). The inner
+// element type `T` is the declared `[T]` type with the brackets stripped, so each
+// element decodes by the SAME decode_default_value the record-field path uses (a
+// `[Layer]` decodes each `Layer::X` element as an enum token lifting to a Variant_
+// Value, a `[Cell]` would decode each `Cell(…)` element to a Record_Value). The
+// elements split at TOP-LEVEL commas only (a nested `Cell(x=0,y=0)` element is not
+// split mid-record), and each lifts through field_value_to_value so the list column
+// carries Values — the shape the solver's mask read and the §03 universal-Eq surface
+// expect. An empty `[]` yields a length-0 list, never a nil column.
+decode_list_default :: proc(
+	program: ^Program,
+	type_name: string,
+	encoded: string,
+	allocator := context.allocator,
+) -> (
+	value: Field_Value,
+	ok: bool,
+) {
+	if !strings.has_prefix(encoded, "[") || !strings.has_suffix(encoded, "]") {
+		return nil, false
+	}
+	// The element type is the `[T]` declared type with its brackets stripped.
+	elem_type := strings.trim_suffix(strings.trim_prefix(type_name, "["), "]")
+	body := encoded[1:len(encoded) - 1] // the interior, "Layer::Wall,Layer::Crate"
+	if len(body) == 0 {
+		return List_Value{elements = make([]Value, 0, allocator)}, true
+	}
+	pieces := split_top_level(body, ',', allocator)
+	elements := make([]Value, len(pieces), allocator)
+	for piece, i in pieces {
+		ev, ev_ok := decode_default_to_value(program, elem_type, piece, allocator)
+		if !ev_ok {
+			return nil, false
+		}
+		elements[i] = ev
+	}
+	return List_Value{elements = elements}, true
+}
+
 // split_top_level splits a record-body string at TOP-LEVEL `sep` bytes only —
-// commas inside a nested `Type(…)` constructor are skipped by tracking paren depth
-// — so `x=10,y=10` splits into two pairs while `inner=Vec2(x=0,y=0),z=1` splits
-// into two, not three. The pieces are sub-slices of `s` (no per-piece allocation);
-// the result slice lives in the supplied allocator.
+// commas inside a nested `Type(…)` constructor OR a `[…]` list are skipped by
+// tracking BOTH paren and bracket depth — so `x=10,y=10` splits into two pairs,
+// `inner=Vec2(x=0,y=0),z=1` into two not three, and yard's
+// `…,mask=[Layer::Wall,Layer::Crate],…` keeps the mask's interior comma joined (the
+// list is one field, not two). The pieces are sub-slices of `s` (no per-piece
+// allocation); the result slice lives in the supplied allocator.
 split_top_level :: proc(s: string, sep: byte, allocator := context.allocator) -> []string {
 	pieces := make([dynamic]string, allocator)
 	depth := 0
 	start := 0
 	for i in 0 ..< len(s) {
 		switch s[i] {
-		case '(':
+		case '(', '[':
 			depth += 1
-		case ')':
+		case ')', ']':
 			depth -= 1
 		case:
 			if s[i] == sep && depth == 0 {
@@ -700,7 +894,7 @@ bind_param :: proc(
 		// (§04 §1). The value bound here is state.rng at this point in the fold.
 		return state.rng
 	case is_signal_list_type(type):
-		return inbound_signal_list(interp, state, signal_type_of(type))
+		return inbound_signal_list(interp, state, signal_type_of(type), self_row)
 	case is_view_type(type):
 		return view_rows_as_list(interp, view_thing_of(type))
 	case param.name == "self":
@@ -718,13 +912,13 @@ bind_param :: proc(
 // Spawn/Despawn command list queues the tick-boundary batch; a bare-thing emit is
 // a blackboard write folded into the instance's working row.
 //
-// A `(Rng, [Spawn])` tuple emit (snake's replenish) is split here: the Rng half
-// writes the ADVANCED Rng back into the threaded tick Rng (so the next behavior /
-// tick observes the advance — §04 §1, never silently dropped), and the [Spawn]
-// half queues the spawn batch through the existing command path. The returned value
-// being a Tuple_Value is the tuple emit's signature, so the split is driven off the
-// runtime shape; each half is located by its arm (the Rng arm vs the command list),
-// which is unambiguous since the two halves are distinct value arms.
+// A TUPLE emit (snake's replenish `(Rng, [Spawn])`, yard's deliver
+// `([Despawn], [Delivered])`) is split into its components by the DECLARED tuple
+// emit type, not by runtime value arm: deliver's two halves are both `List_Value`
+// at runtime, so a value-arm split cannot tell the `[Despawn]` self-remove from the
+// `[Delivered]` signal route — only the declared component type disambiguates them.
+// Each component dispatches through dispatch_emit_component, the SAME per-shape fold
+// the single-emit path takes.
 fold_behavior_result :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -733,35 +927,64 @@ fold_behavior_result :: proc(
 	self_row: Row,
 	result: Value,
 ) {
+	emit := primary_emit(behavior)
 	if tuple, is_tuple := result.(Tuple_Value); is_tuple {
-		fold_tuple_emit(interp, state, tuple)
+		fold_tuple_emit(interp, state, behavior, self_row, emit, tuple)
 		return
 	}
-	emit := primary_emit(behavior)
+	dispatch_emit_component(interp, state, behavior, self_row, emit, result)
+}
+
+// dispatch_emit_component folds ONE emit value (a whole single emit, or one
+// component of a tuple emit) into the tick state by its DECLARED emit type. It is
+// the per-shape fold both the single-emit path and each tuple component route
+// through, so a `[Despawn]`/`[Delivered]`/`[Spawn]` half of a tuple lands in
+// exactly the batch its standalone counterpart would. The Rng arm is value-driven
+// (the declared `Rng` component carries no `[ ]`): a returned Rng writes the
+// advance back into the threaded tick Rng (§04 §1, never silently dropped). A
+// component with no behavior context (the startup setup tuple, behavior == nil)
+// skips the blackboard write — startup emits only `Rng`/`[Spawn]`, never a
+// self-row write.
+dispatch_emit_component :: proc(
+	interp: ^Interp,
+	state: ^Tick_State,
+	behavior: ^Behavior_Decl,
+	self_row: Row,
+	emit: string,
+	value: Value,
+) {
 	switch {
+	case emit == "Rng":
+		// The Rng half of a `(Rng, [Spawn])` tuple — write the advance back into the
+		// threaded tick state so the next behavior's `rng: Rng` bind (and the next tick)
+		// reads exactly this.
+		if rng, is_rng := value.(Rng); is_rng {
+			state.rng = rng
+		}
 	case is_signal_list_type(emit):
-		route_signals(state, signal_type_of(emit), result)
+		route_signals(state, signal_type_of(emit), value)
 	case emit == "[Draw]":
 		// The render projection is not committed to the world — a Draw list is a
 		// pure read-side projection of committed state, not a state write.
 	case emit == "[Despawn]":
 		// A `[Despawn]` emit despawns the SELF row when the returned list is non-empty
-		// (snake's despawn_eaten emits `[Despawn()]` to remove the eaten Food). The
-		// command targets self_row — the no-arg `Despawn()` carries no Ref, so the tick
-		// fold (which knows the bound self row) supplies the target. An empty list is
-		// the no-despawn path (no command queued).
-		fold_despawn_emit(state, behavior.on_thing, self_row, result)
+		// (snake's despawn_eaten, yard's deliver). The command targets self_row — the
+		// no-arg `Despawn()` carries no Ref, so the tick fold (which knows the bound self
+		// row) supplies the target. An empty list is the no-despawn path.
+		if behavior != nil {
+			fold_despawn_emit(state, behavior.on_thing, self_row, value)
+		}
 	case is_persist_command_list_type(emit):
 		// A §24 persist command emit (yard's save_key/restore_key/apply_settings) —
 		// collect it into the tick's persist batch. The IO runs at the tick boundary
 		// (the persist driver), never as a committed-state write, so the determinism
 		// record never sees it (team Lore #9). The outcome signal arrives NEXT tick.
-		queue_persist_commands(interp, state, result)
+		queue_persist_commands(interp, state, value)
 	case is_command_list_type(emit):
-		queue_commands(interp, state, result)
-	case:
+		queue_commands(interp, state, value)
+	case behavior != nil:
 		// A blackboard write: fold the returned record into the working row.
-		write_blackboard(interp, state, behavior.on_thing, self_row.id, result)
+		write_blackboard(interp, state, behavior.on_thing, self_row.id, value)
 	}
 }
 
@@ -779,38 +1002,94 @@ fold_despawn_emit :: proc(state: ^Tick_State, on_thing: string, self_row: Row, r
 	queue_despawn(state, Ref{thing = on_thing, id = self_row.id})
 }
 
-// fold_tuple_emit splits a `(Rng, [Spawn])` behavior return into its halves: the
-// Rng element is written back into the threaded tick Rng so the advance carries
-// FORWARD to the next behavior/tick (§04 §1 — the draw's next_rng IS what the next
-// draw observes, in fold-forward order), and the `[Spawn]` element queues the
-// spawn batch through queue_commands (the same tick-boundary path a bare command
-// emit uses). The Rng half is located by its arm rather than its position, so the
-// split is total over any `(Rng, [Spawn])` / `([Spawn], Rng)` ordering — there is
-// no path that consumes a draw without writing its advanced Rng back.
-fold_tuple_emit :: proc(interp: ^Interp, state: ^Tick_State, tuple: Tuple_Value) {
+// fold_tuple_emit splits a tuple behavior/setup return into its components by the
+// DECLARED tuple emit type, zipping each component type with its returned element
+// and folding each through dispatch_emit_component. The type-driven split is the
+// load-bearing distinction: yard's deliver returns `([Despawn], [Delivered])` —
+// two `List_Value` halves a runtime value-arm split cannot tell apart, so the
+// `[Despawn]` would never self-remove and the `[Delivered]` would never route. The
+// declared type names each half (`[Despawn]` → despawn batch, `[Delivered]` →
+// signal mailbox, `Rng` → threaded Rng, `[Spawn]` → spawn batch), so each lands in
+// exactly its standalone counterpart's path. When the declared type does not split
+// into a tuple (an empty `emit_type`, the startup fallback), it falls back to the
+// value-arm split so snake's `(Rng, [Spawn])` setup tuple still threads its Rng and
+// queues its spawns.
+fold_tuple_emit :: proc(
+	interp: ^Interp,
+	state: ^Tick_State,
+	behavior: ^Behavior_Decl,
+	self_row: Row,
+	emit_type: string,
+	tuple: Tuple_Value,
+) {
+	component_types := split_tuple_type(emit_type, state.allocator)
+	if len(component_types) == len(tuple.elements) {
+		for elem, i in tuple.elements {
+			dispatch_emit_component(interp, state, behavior, self_row, component_types[i], elem)
+		}
+		return
+	}
+	// No declared component types (or an arity mismatch) — fall back to the value-arm
+	// split. snake's setup `(Rng, [Spawn])` is unambiguous by value (Rng vs the [Spawn]
+	// list), so the Rng threads and the spawns queue without a declared type.
 	for elem in tuple.elements {
 		switch v in elem {
 		case Rng:
-			// Write the advanced Rng back into the threaded tick state — the next
-			// behavior's `rng: Rng` bind (and the next tick) reads exactly this.
 			state.rng = v
 		case List_Value:
-			// The [Spawn] half — queue the spawn batch for the tick boundary.
 			queue_commands(interp, state, elem)
 		case i64, Fixed, bool, Vec2, Ref, Record_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value:
-			// A tuple half that is neither the Rng nor the command list is outside the
-			// `(Rng, [Spawn])` shape this fold splits — ignored, no state write.
+		// A half that is neither the Rng nor a command list is outside the value-arm
+		// `(Rng, [Spawn])` shape — ignored, no state write.
 		}
 	}
 }
 
+// split_tuple_type splits a `(A,B,…)` tuple type string into its top-level
+// component type names (`([Despawn],[Delivered])` → `["[Despawn]", "[Delivered]"]`,
+// `(Rng,[Spawn])` → `["Rng", "[Spawn]"]`). A non-tuple type (no leading `(`) yields
+// an empty slice, the signal the caller reads to fall back to the value-arm split.
+// The split is at TOP-LEVEL commas only — a nested `[T]` or `(…)` component keeps
+// its interior commas joined (reusing split_top_level's paren/bracket depth track),
+// so a `(View[A,B],…)` component is one piece, not two. Each piece is space-trimmed,
+// so a `(Rng, [Spawn])` written with a comma-space (the spaced form a spec/test
+// declaration may carry) yields `"[Spawn]"`, not `" [Spawn]"` — the trimmed token
+// the dispatch predicates match against.
+split_tuple_type :: proc(type: string, allocator := context.allocator) -> []string {
+	if len(type) < 2 || type[0] != '(' || type[len(type) - 1] != ')' {
+		return nil
+	}
+	pieces := split_top_level(type[1:len(type) - 1], ',', allocator)
+	for piece, i in pieces {
+		pieces[i] = strings.trim_space(piece)
+	}
+	return pieces
+}
+
 // --- Signal routing (§12 forward synchronous) -----------------------------
 
+// new_signal_mailbox builds an empty per-tick mailbox with both routing surfaces
+// allocated (the broadcast by_type map and the per-instance by_instance map).
+new_signal_mailbox :: proc(allocator := context.allocator) -> Signal_Mailbox {
+	return Signal_Mailbox {
+		by_type = make(map[string][]Value, allocator),
+		by_instance = make(map[string]map[Id][]Value, allocator),
+	}
+}
+
+// is_per_instance_signal reports whether a signal type is an engine PER-INSTANCE
+// signal (§11 §4 Contact/Trigger) — routed by the engine to the specific
+// participating instance and read by a consumer as ONLY its own. The two engine
+// physics signals are the closed set; every user-declared signal is broadcast.
+is_per_instance_signal :: proc(signal_type: string) -> bool {
+	return signal_type == SOLVER_TRIGGER_SIGNAL || signal_type == "Contact"
+}
+
 // route_signals appends a behavior's emitted signal list to the mailbox's
-// per-type accumulator — the forward delivery that makes a signal a later
-// consumer reads hold every earlier producer's emissions this tick. The result
-// is a List_Value of signal records; a non-list emit (the empty no-goal path
-// returns an empty list) appends nothing.
+// per-type BROADCAST accumulator — the forward delivery that makes a signal a
+// later consumer reads hold every earlier producer's emissions this tick. The
+// result is a List_Value of signal records; a non-list emit (the empty no-goal
+// path returns an empty list) appends nothing.
 route_signals :: proc(state: ^Tick_State, signal_type: string, result: Value) {
 	list, is_list := result.(List_Value)
 	if !is_list || len(list.elements) == 0 {
@@ -823,16 +1102,46 @@ route_signals :: proc(state: ^Tick_State, signal_type: string, result: Value) {
 	state.mailbox.by_type[signal_type] = combined
 }
 
+// route_instance_signal appends one engine PER-INSTANCE signal (§11 §4) to the
+// mailbox keyed by type then by the TARGET row's Id, so the consumer instance
+// reads ONLY its own. The solver calls this once per overlapping body of a sensor
+// pair, with that body's Id — the engine doing the routing the spec says it does
+// ("routed by the engine to each participating instance"), so the consumer needs
+// no self.id filter.
+route_instance_signal :: proc(state: ^Tick_State, signal_type: string, target: Id, signal: Value) {
+	per_type, has := state.mailbox.by_instance[signal_type]
+	if !has {
+		per_type = make(map[Id][]Value, state.allocator)
+	}
+	existing := per_type[target]
+	combined := make([]Value, len(existing) + 1, state.allocator)
+	copy(combined, existing)
+	combined[len(existing)] = signal
+	per_type[target] = combined
+	state.mailbox.by_instance[signal_type] = per_type
+}
+
 // inbound_signal_list reads the signals accumulated for a type so far this tick
-// as a List_Value param — what a consumer's `[Signal]` param sees. Because the
-// fold is forward in pipeline order, this holds exactly the earlier producers'
-// emissions (synchronous forward routing, §12).
+// as a List_Value param — what a consumer's `[Signal]` param sees. A BROADCAST
+// signal reads the whole by_type accumulator (every producer's emissions, §12); a
+// PER-INSTANCE engine signal reads only the entries routed to THIS instance's Id
+// (§11 §4 — its own contacts/triggers, already in its frame). Because the fold is
+// forward in pipeline order, either read holds exactly the earlier producers'
+// emissions.
 inbound_signal_list :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
 	signal_type: string,
+	self_row: Row,
 ) -> Value {
-	existing := state.mailbox.by_type[signal_type]
+	existing: []Value
+	if is_per_instance_signal(signal_type) {
+		if per_type, has := state.mailbox.by_instance[signal_type]; has {
+			existing = per_type[self_row.id]
+		}
+	} else {
+		existing = state.mailbox.by_type[signal_type]
+	}
 	elements := make([]Value, len(existing), interp.allocator)
 	copy(elements, existing)
 	return List_Value{elements = elements}
@@ -983,7 +1292,7 @@ remove_row_by_id :: proc(table: ^Tick_Table, id: Id) {
 new_tick_state :: proc(prior: World_Version, allocator := context.allocator) -> Tick_State {
 	return Tick_State {
 		tables = new_tick_tables(prior, allocator),
-		mailbox = Signal_Mailbox{by_type = make(map[string][]Value, allocator)},
+		mailbox = new_signal_mailbox(allocator),
 		spawns = make([dynamic]Pending_Spawn, allocator),
 		despawns = make([dynamic]Ref, allocator),
 		persist_commands = make([dynamic]Record_Value, allocator),

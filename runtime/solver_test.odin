@@ -111,10 +111,10 @@ test_solver_sensor_overlap_routes_trigger_unresolved :: proc(t: ^testing.T) {
 
 	state := solve_one_step_state(a, crate, pad)
 
-	// One Trigger landed in the mailbox — routed to the one overlapping (non-sensor)
-	// body of the sensor pair (§11 §4: a Trigger per overlapping body).
-	triggers := state.mailbox.by_type[SOLVER_TRIGGER_SIGNAL]
-	testing.expect_value(t, len(triggers), 1)
+	// One Trigger landed in the per-instance mailbox — routed to the one overlapping
+	// (non-sensor) body of the sensor pair (§11 §4: a Trigger per overlapping body,
+	// keyed to that body's own Id).
+	testing.expect_value(t, total_routed_triggers(state), 1)
 
 	// The sensor (Pad) is NEVER resolved — its position is exactly where it started
 	// (a sensor detects overlaps, it is never pushed).
@@ -149,9 +149,17 @@ test_solver_sensor_routes_one_trigger_per_overlapping_body :: proc(t: ^testing.T
 	interp := new_interp(&program, &prior, &state, empty(), solver_time(a), a)
 	run_solve(&interp, &state)
 
-	// One Trigger per overlapping crate — two crates, two Triggers.
-	triggers := state.mailbox.by_type[SOLVER_TRIGGER_SIGNAL]
-	testing.expect_value(t, len(triggers), 2)
+	// One Trigger per overlapping crate — two crates, two Triggers, each keyed to its
+	// own crate Id (per-instance routing, not a single broadcast).
+	testing.expect_value(t, total_routed_triggers(state), 2)
+	// Each crate received exactly its own one Trigger — the per-instance routing the
+	// broadcast would collapse into both crates reading both Triggers.
+	crate_table := find_tick_table(state.tables, "Crate")
+	if !testing.expect(t, crate_table != nil && len(crate_table.rows) == 2) {
+		return
+	}
+	testing.expect_value(t, triggers_for(state, crate_table.rows[0].id), 1)
+	testing.expect_value(t, triggers_for(state, crate_table.rows[1].id), 1)
 }
 
 // --- Contract surface: layer/mask AND mismatch yields no contact ---------
@@ -174,8 +182,7 @@ test_solver_mask_mismatch_yields_no_contact :: proc(t: ^testing.T) {
 	state := solve_one_step_state_named(a, "Player", player, "Pad", pad)
 
 	// No Trigger landed — the mask mismatch means no contact at all (§11 §5).
-	triggers := state.mailbox.by_type[SOLVER_TRIGGER_SIGNAL]
-	testing.expect_value(t, len(triggers), 0)
+	testing.expect_value(t, total_routed_triggers(state), 0)
 
 	// The player did not integrate a contact response either: its position is
 	// unchanged (it carried no impulse and no velocity, and no contact pushed it).
@@ -199,8 +206,37 @@ test_solver_non_overlapping_matched_pair_no_trigger :: proc(t: ^testing.T) {
 
 	state := solve_one_step_state(a, crate, pad)
 
-	triggers := state.mailbox.by_type[SOLVER_TRIGGER_SIGNAL]
-	testing.expect_value(t, len(triggers), 0)
+	testing.expect_value(t, total_routed_triggers(state), 0)
+}
+
+// total_routed_triggers counts every engine Trigger routed across the per-instance
+// mailbox this step — the sum over every target Id's list. The solver routes a
+// Trigger keyed to each overlapping body's own Id (§11 §4 per-instance), so the
+// total is the contract count the broadcast `by_type` read used to report.
+@(private = "file")
+total_routed_triggers :: proc(state: Tick_State) -> int {
+	per_type, has := state.mailbox.by_instance[SOLVER_TRIGGER_SIGNAL]
+	if !has {
+		return 0
+	}
+	total := 0
+	for _, list in per_type {
+		total += len(list)
+	}
+	return total
+}
+
+// triggers_for counts the Triggers routed to ONE target Id — the per-instance read
+// a `deliver on Crate` of that Id sees (§11 §4: its own Triggers, no list to
+// filter). Proves the routing keyed each Trigger to the right body, not a broadcast
+// every body reads.
+@(private = "file")
+triggers_for :: proc(state: Tick_State, target: Id) -> int {
+	per_type, has := state.mailbox.by_instance[SOLVER_TRIGGER_SIGNAL]
+	if !has {
+		return 0
+	}
+	return len(per_type[target])
 }
 
 // ==========================================================================

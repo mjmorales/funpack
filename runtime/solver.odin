@@ -424,34 +424,35 @@ friction_cancel :: proc(component, friction: Fixed) -> Fixed {
 
 // route_trigger_pair routes an engine `Trigger{}` (§11 §4) to each overlapping
 // body of a sensor pair. A sensor is never resolved — the overlap is purely
-// detected and reported. The Trigger rides the SAME Signal_Mailbox the user-
-// signal route_signals uses (so a `deliver on Crate` reading `[Trigger]` consumes
-// it same-tick), and it is routed PER overlapping body: each non-sensor
-// participant of the overlap gets one Trigger appended. When BOTH bodies are
-// sensors (a degenerate sensor-vs-sensor overlap), neither is resolved and each
-// is still reported, matching the per-participant rule.
+// detected and reported. The Trigger is routed PER PARTICIPATING INSTANCE: each
+// non-sensor body of the overlap gets one Trigger keyed to ITS OWN row Id, so a
+// `deliver on Crate` reading `[Trigger]` consumes only its own (§11 §4: "routed
+// by the engine to each participating instance … no self.id to fetch, no list to
+// filter"). A broadcast route would deliver the overlapping crate's Trigger to
+// EVERY crate — three deliveries from one overlap. When BOTH bodies are sensors (a
+// degenerate sensor-vs-sensor overlap), neither is resolved and each is still
+// reported, matching the per-participant rule.
 route_trigger_pair :: proc(state: ^Tick_State, a, b: Solver_Body) {
 	// Each NON-sensor body overlapping a sensor receives a Trigger (§11 §4: a
 	// sensor pair yields one Trigger to each overlapping body). A sensor body
 	// itself is the detector, not a recipient.
 	if !a.sensor {
-		route_one_trigger(state)
+		route_one_trigger(state, a)
 	}
 	if !b.sensor {
-		route_one_trigger(state)
+		route_one_trigger(state, b)
 	}
 }
 
-// route_one_trigger appends a single engine `Trigger{}` record to the mailbox via
-// the existing route_signals path — the same forward-synchronous routing a user
-// signal takes (tick.odin). The Trigger is a unit record (no fields), so a
-// consumer's `[Trigger]` param sees one entry per overlapping body it was routed
-// to this step.
-route_one_trigger :: proc(state: ^Tick_State) {
+// route_one_trigger appends a single engine `Trigger{}` record to the mailbox
+// keyed to the recipient BODY'S OWN row Id (§11 §4 per-instance routing). The
+// Trigger is a unit record (no fields); the body's row Id is resolved from its
+// gathered (table, row) back-pointer, so the consumer instance reads exactly the
+// Triggers routed to it this step and no others.
+route_one_trigger :: proc(state: ^Tick_State, body: Solver_Body) {
 	trigger := Record_Value{type_name = SOLVER_TRIGGER_SIGNAL, fields = make(map[string]Value, state.allocator)}
-	elements := make([]Value, 1, state.allocator)
-	elements[0] = trigger
-	route_signals(state, SOLVER_TRIGGER_SIGNAL, List_Value{elements = elements})
+	target := state.tables[body.table_idx].rows[body.row_idx].id
+	route_instance_signal(state, SOLVER_TRIGGER_SIGNAL, target, trigger)
 }
 
 // write_body_back commits a solved body's pos/vel and its CONSUMED impulse back

@@ -629,10 +629,20 @@ load_setup :: proc(
 }
 
 // load_spawn_field decodes one `set FIELD =ENCODED` sub-record into a typed
-// Spawn_Field. The encoded value's shape is self-describing: a `vec2` prefix is a
-// Vec2, a `::` is an enum variant, otherwise a numeric token (decoded as Fixed
-// — the raw bits round-trip identically whether the source type was Int or Fixed,
-// and the thing's Field_Decl carries the type for the interpreter). NO float.
+// Spawn_Field. The encoded value's shape is self-describing — the reader
+// discriminates on the LEADING byte of ENCODED (§13): `vec2` opens the Vec2 spread,
+// `[` a list, `(`-after-a-name a composite record, `::` a bare enum, a digit a
+// scalar (decoded as Fixed — the raw bits round-trip identically whether the source
+// type was Int or Fixed, and the thing's Field_Decl carries the type for the
+// interpreter). NO float.
+//
+// The COMPOSITE forms (a `Body(…)` record, a `[Layer::…]` list — the engine-record
+// columns yard's setup first reaches) are tested BEFORE the bare-enum `::` arm: a
+// composite token carries nested `::` tokens (e.g. `Body(layer=Layer::Wall,…)`), so
+// the `::` arm would mis-route it; a `(`-after-a-name and a leading `[` are the sound
+// discriminators (a bare `Enum::Case` is paren- and bracket-free, §2.6). A composite
+// keeps its raw token for lazy decode — its nested field types resolve against the
+// Program, which spawn_field_to_value has but the loader does not yet.
 load_spawn_field :: proc(
 	sub: string,
 	allocator := context.allocator,
@@ -662,6 +672,16 @@ load_spawn_field :: proc(
 		field.kind = .Vec2
 		field.vec2_x = x
 		field.vec2_y = y
+	case strings.has_prefix(encoded, "["):
+		// A §6 list token `[enc,…]` (yard's `mask: [Layer]`) — kept raw for lazy decode
+		// against the field's `[T]` element type once the Program is built.
+		field.kind = .List
+		field.encoded = strings.clone(encoded, allocator)
+	case is_composite_record_token(encoded):
+		// A §6 composite record token `Type(field=enc,…)` (yard's `body: Body`) — kept
+		// raw for lazy decode against the data decl's field types.
+		field.kind = .Record
+		field.encoded = strings.clone(encoded, allocator)
 	case strings.contains(encoded, "::"):
 		// An enum variant as a name field (§2.6), e.g. `Side::Left`.
 		field.kind = .Variant
@@ -685,6 +705,19 @@ load_spawn_field :: proc(
 		field.variant = strings.clone(encoded, allocator)
 	}
 	return field, .None
+}
+
+// is_composite_record_token reports whether a §6 ENCODED token is the composite
+// inline-constructor form `Type(field=enc,…)` — a `(` after a leading name and a
+// trailing `)`. It is the §13 `(`-after-a-name discriminator that separates a
+// composite record (`Body(kind=…,…)`) from a bare enum token (`Layer::Wall`, which is
+// paren-free): a `(` at position 0 would be a malformed token (no constructor name),
+// so the open paren must follow at least one name byte. The nested `::` inside the
+// body never trips this — the test is the OUTER paren, decided before the bare-enum
+// `::` arm.
+is_composite_record_token :: proc(token: string) -> bool {
+	open := strings.index_byte(token, '(')
+	return open > 0 && strings.has_suffix(token, ")")
 }
 
 // is_signed_decimal reports whether a token is a plain signed decimal integer —
