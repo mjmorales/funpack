@@ -7,8 +7,9 @@ package funpack
 
 Value :: union {
 	Fixed,
-	i64,  // Int — counts and indices
-	bool, // Bool — the result of ==
+	i64,    // Int — counts and indices
+	bool,   // Bool — the result of ==
+	string, // String — a string literal's text; a §19 asset handle's `name` field
 	Option_Value,
 	Vec2_Value,
 	Vec3_Value,
@@ -116,6 +117,12 @@ value_equal :: proc(a, b: Value) -> bool {
 		return ok && av == bv
 	case bool:
 		bv, ok := b.(bool)
+		return ok && av == bv
+	case string:
+		// String equality is byte-exact (spec §10 demands matching tags). The §19
+		// asset handle's `name` field compares this way, so a typed handle constant
+		// equals the string-constructor handle iff they name the same asset.
+		bv, ok := b.(string)
 		return ok && av == bv
 	case Option_Value:
 		bv, ok := b.(Option_Value)

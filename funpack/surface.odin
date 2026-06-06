@@ -225,6 +225,34 @@ STDLIB_SURFACE := []Module_Surface{
 			{"Settings", .Type_Name},
 		},
 	},
+	{
+		// §26 the shared asset sink the §19 bake's generated seam imports and the
+		// §16 Modeling / §21 UI pipelines import too. The four typed handle types
+		// (MeshHandle/TextureHandle/SoundHandle/AtlasHandle) are the §26 line-78
+		// type-position names a `let NAME: KINDHandle = KINDHandle{name: "NAME"}`
+		// seam constant binds, and the six string/cell constructors (mesh/texture/
+		// sound/atlas/cell/frame) name an asset by string against the closed
+		// registry. mesh/texture/sound/atlas carry a fixed (String) -> KINDHandle
+		// signature (surface_signatures); cell/frame are call-site-inferred atlas
+		// accessors (surface_signatures returns found = false for them, like the
+		// list combinators), so admission here is the Func table row, their typing
+		// rule the call site's. This is a TYPING partition riding the existing
+		// import grammar — a new closed table + the handle record schemas
+		// (surface_engine_record), NOT new grammar.
+		path = "engine.assets",
+		decls = {
+			{"MeshHandle", .Type_Name},
+			{"TextureHandle", .Type_Name},
+			{"SoundHandle", .Type_Name},
+			{"AtlasHandle", .Type_Name},
+			{"mesh", .Func},
+			{"texture", .Func},
+			{"sound", .Func},
+			{"atlas", .Func},
+			{"cell", .Func},
+			{"frame", .Func},
+		},
+	},
 }
 
 // Reexport declares one name a partition exposes on behalf of its owning
@@ -507,6 +535,20 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 	case "stick":
 		// §23 source helper: a gamepad stick into a 2D axis source.
 		return clone_types({func_of({engine_type_of(.Stick)}, nil)}), true
+	case "mesh":
+		// §19/§26 the manifest-checked string constructor: a String asset name into
+		// the typed handle. The closed-registry gate (asset_registry.odin) validates
+		// the name AND that the constructor's kind matches the registered asset's at
+		// build; the signature here types the call as (String) -> the handle the kind
+		// names, so the typed constant (assets.NAME) and the string form (kind("NAME"))
+		// type the same.
+		return clone_types({func_of({engine_type_of(.String)}, engine_type_of(.MeshHandle))}), true
+	case "texture":
+		return clone_types({func_of({engine_type_of(.String)}, engine_type_of(.TextureHandle))}), true
+	case "sound":
+		return clone_types({func_of({engine_type_of(.String)}, engine_type_of(.SoundHandle))}), true
+	case "atlas":
+		return clone_types({func_of({engine_type_of(.String)}, engine_type_of(.AtlasHandle))}), true
 	}
 	return nil, false
 }
@@ -816,6 +858,29 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 		return engine_type_of(.ApplySettings), clone_fields({
 				{name = "settings", type = engine_type_of(.Settings)},
 			}), true
+	case "MeshHandle":
+		// §19/§26 the typed asset handles. Each is a single-field record over a
+		// String `name` — the registered asset name the seam constant keys on (`let
+		// coin: MeshHandle = MeshHandle{name: "coin"}`) — so a handle literal
+		// record-checks against this schema and the typed constant carries the same
+		// `name` the string constructor (mesh/texture/sound/atlas) names. The result
+		// is the handle's engine type, so the constant and the constructor compare
+		// equal (the §19 golden's assets.coin_sfx == sound("coin_sfx")).
+		return engine_type_of(.MeshHandle), clone_fields({
+				{name = "name", type = engine_type_of(.String)},
+			}), true
+	case "TextureHandle":
+		return engine_type_of(.TextureHandle), clone_fields({
+				{name = "name", type = engine_type_of(.String)},
+			}), true
+	case "SoundHandle":
+		return engine_type_of(.SoundHandle), clone_fields({
+				{name = "name", type = engine_type_of(.String)},
+			}), true
+	case "AtlasHandle":
+		return engine_type_of(.AtlasHandle), clone_fields({
+				{name = "name", type = engine_type_of(.String)},
+			}), true
 	}
 	return nil, nil, false
 }
@@ -855,6 +920,14 @@ engine_kind_name :: proc(kind: Engine_Kind) -> string {
 		return "Settings"
 	case .AccessOpts:
 		return "AccessOpts"
+	case .MeshHandle:
+		return "MeshHandle"
+	case .TextureHandle:
+		return "TextureHandle"
+	case .SoundHandle:
+		return "SoundHandle"
+	case .AtlasHandle:
+		return "AtlasHandle"
 	}
 	return ""
 }

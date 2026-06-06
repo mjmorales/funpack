@@ -440,6 +440,18 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Path), true
 	case "NavError":
 		return engine_type_of(.NavError), true
+	// §19/§26 the typed asset handles name an engine type in a seam constant's
+	// `let NAME: KINDHandle` declaration and a behavior's `atlas: AtlasHandle`
+	// field; they ground here like Spawn/Draw. Their construction schema (the
+	// single String `name` field) is surface_engine_record.
+	case "MeshHandle":
+		return engine_type_of(.MeshHandle), true
+	case "TextureHandle":
+		return engine_type_of(.TextureHandle), true
+	case "SoundHandle":
+		return engine_type_of(.SoundHandle), true
+	case "AtlasHandle":
+		return engine_type_of(.AtlasHandle), true
 	}
 	return nil, false
 }
