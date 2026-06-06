@@ -778,6 +778,14 @@ field_is_int :: proc(decl: ^Thing_Decl, name: string) -> bool {
 // from `rng^`, every drawing behavior advances it in fold-forward order, and the
 // advanced state is written back into `rng^` at the boundary so the NEXT tick reads
 // it. A nil `rng` (pong, hunt — no RNG) folds exactly as before, threading nothing.
+//
+// PERSIST-DROP INVARIANT (§24): this is the PLAIN driver — a pipeline that emits
+// Save/Restore/ApplySettings accumulates them in state.persist_commands via the
+// shared fold, and this proc DROPS them at commit: no store write, no outcome
+// signal, no restore swap. A §24-emitting program must run through the opt-in
+// step_tick_persist driver (save_io.odin); routing it here makes every persist
+// key a silent no-op. The deliberate plain-path consumer is replay.odin's
+// capture, whose record carries inputs only.
 step_tick :: proc(
 	program: ^Program,
 	prior: World_Version,
