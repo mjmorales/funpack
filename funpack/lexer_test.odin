@@ -270,10 +270,21 @@ test_lex_match_block_keeps_arm_newlines :: proc(t: ^testing.T) {
 test_lex_declaration_keywords :: proc(t: ^testing.T) {
 	// The §06/§07 declaration and expression keywords lex to their own
 	// token kinds, not as bare identifiers.
-	tokens := stage_lex("thing singleton behavior signal data enum pipeline with if on")
+	tokens := stage_lex("thing singleton behavior signal data enum pipeline with if")
 	expect_kinds(t, tokens, []Token_Kind{
-		.Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .With, .If, .On,
+		.Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .With, .If,
 	})
+}
+
+@(test)
+test_lex_on_is_contextual_keyword :: proc(t: ^testing.T) {
+	// `on` is the behavior-header separator (`behavior … on Thing`) yet a valid
+	// §02 snake_case value name elsewhere, so it lexes as an Ident, not a
+	// reserved keyword — a `thing Switch { on: Bool }` field, an `s.on` read, and
+	// a `let on` all bind. The parser recognizes the header separator by text.
+	tokens := stage_lex("on")
+	expect_kinds(t, tokens, []Token_Kind{.Ident})
+	testing.expect_value(t, tokens[0].class, Ident_Class.Snake_Case)
 }
 
 @(test)

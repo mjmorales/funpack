@@ -81,7 +81,7 @@ Type_Env :: struct {
 // imports, so a forward reference (a `data` field typed by a `thing`
 // declared later) still resolves — the whole type namespace is collected
 // before any ref is resolved.
-resolve_env :: proc(ast: Ast, bindings: Bindings) -> (env: Type_Env, err: Type_Error) {
+resolve_env :: proc(ast: Ast, bindings: Bindings, index: Module_Index = {}) -> (env: Type_Env, err: Type_Error) {
 	env.records = make(map[string]Record_Schema, context.temp_allocator)
 	env.enums = make(map[string]Enum_Schema, context.temp_allocator)
 	env.terms = make(map[string]Term_Schema, context.temp_allocator)
@@ -94,9 +94,10 @@ resolve_env :: proc(ast: Ast, bindings: Bindings) -> (env: Type_Env, err: Type_E
 	collect_term_names(&env, ast, bindings) or_return
 
 	// Pass 2 — resolve each declaration's field/parameter/return Type_Refs
-	// against the now-complete type namespace and the imports, filling the
-	// recorded schemas.
-	resolve_schemas(&env, ast, bindings)
+	// against the now-complete type namespace, the imports, and the
+	// project-wide module index (a cross-module type name imported from a
+	// sibling module), filling the recorded schemas.
+	resolve_schemas(&env, ast, bindings, index)
 	return env, .None
 }
 
@@ -234,35 +235,35 @@ name_taken :: proc(env: ^Type_Env, name: string, bindings: Bindings) -> bool {
 // schema, resolving each declaration's Type_Refs against the complete
 // namespace. It is total over the AST and records nil for a ref it cannot
 // resolve yet — the typing pass refines those, never this one.
-resolve_schemas :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) {
+resolve_schemas :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings, index: Module_Index = {}) {
 	for decl in ast.things {
 		schema := env.records[decl.name]
-		schema.fields = resolve_field_schemas(env^, bindings, decl.fields)
+		schema.fields = resolve_field_schemas(env^, bindings, decl.fields, index)
 		env.records[decl.name] = schema
 	}
 	for decl in ast.datas {
 		schema := env.records[decl.name]
-		schema.fields = resolve_field_schemas(env^, bindings, decl.fields)
+		schema.fields = resolve_field_schemas(env^, bindings, decl.fields, index)
 		env.records[decl.name] = schema
 	}
 	for decl in ast.signals {
 		schema := env.records[decl.name]
-		schema.fields = resolve_field_schemas(env^, bindings, decl.fields)
+		schema.fields = resolve_field_schemas(env^, bindings, decl.fields, index)
 		env.records[decl.name] = schema
 	}
 	for decl in ast.lets {
 		term := env.terms[decl.name]
-		term.type = resolve_type_ref(env^, bindings, decl.type)
+		term.type = resolve_type_ref(env^, bindings, decl.type, index)
 		env.terms[decl.name] = term
 	}
 	for decl in ast.fns {
 		term := env.terms[decl.name]
-		term.signature = resolve_fn_signature(env^, bindings, decl.params, decl.return_type)
+		term.signature = resolve_fn_signature(env^, bindings, decl.params, decl.return_type, index)
 		env.terms[decl.name] = term
 	}
 	for decl in ast.behaviors {
 		term := env.terms[decl.name]
-		term.signature = resolve_fn_signature(env^, bindings, decl.step.params, decl.step.return_type)
+		term.signature = resolve_fn_signature(env^, bindings, decl.step.params, decl.step.return_type, index)
 		env.terms[decl.name] = term
 	}
 }
@@ -270,12 +271,12 @@ resolve_schemas :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) {
 // resolve_field_schemas resolves one record's field list into the recorded
 // schema: each field keeps its name, has_default flag, and best-effort
 // resolved type.
-resolve_field_schemas :: proc(env: Type_Env, bindings: Bindings, fields: []Field_Decl) -> []Field_Schema {
+resolve_field_schemas :: proc(env: Type_Env, bindings: Bindings, fields: []Field_Decl, index: Module_Index = {}) -> []Field_Schema {
 	out := make([]Field_Schema, len(fields), context.temp_allocator)
 	for field, i in fields {
 		out[i] = Field_Schema {
 			name        = field.name,
-			type        = resolve_type_ref(env, bindings, field.type),
+			type        = resolve_type_ref(env, bindings, field.type, index),
 			has_default = field.has_default,
 		}
 	}
@@ -285,14 +286,14 @@ resolve_field_schemas :: proc(env: Type_Env, bindings: Bindings, fields: []Field
 // resolve_fn_signature builds a fn/step Func_Type from its parameter and
 // return Type_Refs. The parameter types are the behavior's reads (spec §06
 // §3); typing the body against them is the typing pass's job.
-resolve_fn_signature :: proc(env: Type_Env, bindings: Bindings, params: []Param_Decl, return_type: Type_Ref) -> ^Func_Type {
+resolve_fn_signature :: proc(env: Type_Env, bindings: Bindings, params: []Param_Decl, return_type: Type_Ref, index: Module_Index = {}) -> ^Func_Type {
 	param_types := make([]Type, len(params), context.temp_allocator)
 	for param, i in params {
-		param_types[i] = resolve_type_ref(env, bindings, param.type)
+		param_types[i] = resolve_type_ref(env, bindings, param.type, index)
 	}
 	node := new(Func_Type, context.temp_allocator)
 	node.params = param_types
-	node.result = resolve_type_ref(env, bindings, return_type)
+	node.result = resolve_type_ref(env, bindings, return_type, index)
 	return node
 }
 
@@ -303,11 +304,11 @@ resolve_fn_signature :: proc(env: Type_Env, bindings: Bindings, params: []Param_
 // type with no checker ground (View, Input, Spawn), or a generic over one —
 // returns nil: the resolver records the schema slot without forcing a type
 // the typing pass owns.
-resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Type {
+resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref, index: Module_Index = {}) -> Type {
 	// A list type `[T]` is the head "[]" with one element argument.
 	if ref.name == "[]" {
 		if len(ref.args) == 1 {
-			return list_of(resolve_type_ref(env, bindings, ref.args[0]))
+			return list_of(resolve_type_ref(env, bindings, ref.args[0], index))
 		}
 		return nil
 	}
@@ -317,17 +318,17 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 	if ref.name == "()" {
 		elements := make([]Type, len(ref.args), context.temp_allocator)
 		for arg, i in ref.args {
-			elements[i] = resolve_type_ref(env, bindings, arg)
+			elements[i] = resolve_type_ref(env, bindings, arg, index)
 		}
 		return tuple_of(elements)
 	}
 	if ref.name == "Option" && len(ref.args) == 1 {
-		return option_of(resolve_type_ref(env, bindings, ref.args[0]))
+		return option_of(resolve_type_ref(env, bindings, ref.args[0], index))
 	}
 	// View[T] is the §08 read table over an element type; the element
 	// resolves like any other ref (a user thing for View[Paddle]).
 	if ref.name == "View" && len(ref.args) == 1 {
-		return engine_type_of(.View, resolve_type_ref(env, bindings, ref.args[0]))
+		return engine_type_of(.View, resolve_type_ref(env, bindings, ref.args[0], index))
 	}
 	if len(ref.args) == 0 {
 		if ground, is_ground := ground_type_name(ref.name); is_ground {
@@ -341,6 +342,16 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 		}
 		if engine, is_engine := engine_type_name(ref.name); is_engine {
 			return engine
+		}
+		// A name imported from a sibling user module (a `gate: Ref[Switch]`
+		// where Switch came from arena_world, a `hero: Ref[Player]` in a seam):
+		// resolve it to the same nominal User_Type the owning module would,
+		// recovering its §06 kind from the module index. This runs after the
+		// local env so a local declaration of the same name wins (a §02
+		// collision would have already rejected a local decl shadowing the
+		// import).
+		if cross, is_cross := index_user_type(index, bindings, ref.name); is_cross {
+			return cross
 		}
 	}
 	// A ref naming nothing the checker grounds — an engine type with no

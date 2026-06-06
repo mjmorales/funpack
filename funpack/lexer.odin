@@ -38,7 +38,8 @@ Token_Kind :: enum {
 	Pipeline,
 	With,
 	If,
-	On,
+	// `on` is a contextual keyword (the behavior-header separator), not a token
+	// kind: it lexes as an Ident and parse_behavior recognizes it by text.
 	// names and literals
 	Ident,
 	Int_Lit,
@@ -202,7 +203,10 @@ newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
 
 update_nesting :: proc(n: ^Nesting, kind: Token_Kind, prev: Token_Kind) {
 	#partial switch kind {
-	case .Match, .If, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .On, .Arrow:
+	case .Match, .If, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .Arrow:
+		// `behavior … on Ball {` keeps its body brace a block via the .Behavior
+		// arming above — `on` lexes as an Ident now and need not re-arm here, as
+		// nothing consumes block_pending before the body `{`.
 		n.block_pending = true
 	case .L_Paren:
 		// A paren frame suppresses newlines (call args / grouping / tuple are
@@ -377,9 +381,13 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .With, text = text}, i
 	case "if":
 		return Token{kind = .If, text = text}, i
-	case "on":
-		return Token{kind = .On, text = text}, i
 	}
+	// `on` is a CONTEXTUAL keyword, not a reserved one: it is the behavior-header
+	// separator (`behavior gate_logic on Door`) yet a perfectly valid §02
+	// snake_case value name elsewhere — a field (`thing Switch { on: Bool }`), a
+	// member read (`s.on`), a let. Lexing it as an Ident keeps the value-name
+	// namespace whole; parse_behavior recognizes the separator by text, the same
+	// by-text recognition `step` and the .fcfg keywords (`project`/`use`) use.
 	return Token{kind = .Ident, text = text, class = classify_ident(text)}, i
 }
 
