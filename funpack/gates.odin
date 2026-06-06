@@ -261,6 +261,13 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 				return err
 			}
 		}
+	case ^Tuple_Expr:
+		// A tuple hosts its element expressions, any of which can nest a lambda.
+		for element in e.elements {
+			if err := arity_walk_expr(element); err != .None {
+				return err
+			}
+		}
 	}
 	return .None
 }
@@ -351,6 +358,11 @@ count_short_circuit :: proc(expr: Expr) -> int {
 		count += count_short_circuit(e.scrutinee)
 		for arm in e.arms {
 			count += count_short_circuit(arm.body)
+		}
+	case ^Tuple_Expr:
+		// A short-circuit buried in any tuple element still counts.
+		for element in e.elements {
+			count += count_short_circuit(element)
 		}
 	}
 	return count
@@ -513,6 +525,17 @@ nesting_depth :: proc(expr: Expr) -> int {
 		inner := nesting_depth(e.scrutinee)
 		for arm in e.arms {
 			inner = max(inner, 1 + nesting_depth(arm.body))
+		}
+		return inner
+	case ^Tuple_Expr:
+		// A tuple `(value, next_rng)` is a transparent aggregate like a record
+		// or list — pure positional value construction, not control nesting —
+		// so it passes its deepest element's depth through without adding a
+		// level. A tuple wrapping over-nested elements still fires the gate via
+		// those elements.
+		inner := 0
+		for element in e.elements {
+			inner = max(inner, nesting_depth(element))
 		}
 		return inner
 	}
@@ -716,6 +739,16 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 			canon_arm(b, arm, alpha)
 		}
 		strings.write_byte(b, ')')
+	case ^Tuple_Expr:
+		// The `tuple` kind tag keeps a tuple distinct from a list and from any
+		// other aggregate, so two tuples collide on a dup_class only when their
+		// element subtrees are structurally identical (modulo alpha-renaming).
+		strings.write_string(b, "(tuple")
+		for element in e.elements {
+			strings.write_byte(b, ' ')
+			canon_expr(b, element, alpha)
+		}
+		strings.write_byte(b, ')')
 	case nil:
 		strings.write_string(b, "(nil)")
 	}
@@ -742,31 +775,68 @@ canon_name :: proc(b: ^strings.Builder, name: string, alpha: ^[dynamic]string) {
 
 // canon_arm canonicalizes one match arm: the pattern shape, then the
 // body against a frame extended with the arm's payload binders (which
-// scope only to that arm's body).
+// scope only to that arm's body). A tuple pattern's binders come from its
+// sub-patterns, collected in left-to-right position order so a rename
+// canonicalizes away the same way a flat variant binder does.
 canon_arm :: proc(b: ^strings.Builder, arm: Match_Arm, alpha: ^[dynamic]string) {
 	strings.write_string(b, " (arm ")
-	switch arm.pattern.kind {
-	case .Wildcard:
-		strings.write_string(b, "wild")
-	case .Bare_Variant:
-		strings.write_string(b, "bare ")
-		strings.write_string(b, arm.pattern.type_name)
-		strings.write_byte(b, ' ')
-		strings.write_string(b, arm.pattern.variant)
-	case .Variant_Binds:
-		strings.write_string(b, "binds ")
-		strings.write_string(b, arm.pattern.type_name)
-		strings.write_byte(b, ' ')
-		strings.write_string(b, arm.pattern.variant)
-	}
+	canon_pattern(b, arm.pattern)
 	base := len(alpha)
-	for binder in arm.pattern.binders {
-		append(alpha, binder)
-	}
+	push_pattern_binders(alpha, arm.pattern)
 	strings.write_byte(b, ' ')
 	canon_expr(b, arm.body, alpha)
 	resize(alpha, base)
 	strings.write_byte(b, ')')
+}
+
+// canon_pattern writes a pattern's canonical shape tag — the structural form
+// a dup_class keys off, with binder names omitted (a binder rename is not a
+// structural change; canon_arm alpha-renames them in the body instead). A
+// tuple recurses into its sub-patterns so two tuple patterns of different
+// shape never collide.
+canon_pattern :: proc(b: ^strings.Builder, pattern: Pattern) {
+	switch pattern.kind {
+	case .Wildcard:
+		strings.write_string(b, "wild")
+	case .Bare_Variant:
+		strings.write_string(b, "bare ")
+		strings.write_string(b, pattern.type_name)
+		strings.write_byte(b, ' ')
+		strings.write_string(b, pattern.variant)
+	case .Variant_Binds:
+		strings.write_string(b, "binds ")
+		strings.write_string(b, pattern.type_name)
+		strings.write_byte(b, ' ')
+		strings.write_string(b, pattern.variant)
+	case .Bare_Binder:
+		// A bare binder is a structural slot; its name is alpha-renamed, so the
+		// shape tag carries no name.
+		strings.write_string(b, "bind")
+	case .Tuple:
+		strings.write_string(b, "tup")
+		for sub in pattern.elements {
+			strings.write_byte(b, ' ')
+			canon_pattern(b, sub)
+		}
+	}
+}
+
+// push_pattern_binders appends a pattern's binders onto the alpha frame in
+// left-to-right position order: a variant pattern's payload binders, a bare
+// binder's single name, or a tuple pattern's sub-pattern binders recursively.
+push_pattern_binders :: proc(alpha: ^[dynamic]string, pattern: Pattern) {
+	switch pattern.kind {
+	case .Wildcard, .Bare_Variant:
+		// No binders.
+	case .Variant_Binds, .Bare_Binder:
+		for binder in pattern.binders {
+			append(alpha, binder)
+		}
+	case .Tuple:
+		for sub in pattern.elements {
+			push_pattern_binders(alpha, sub)
+		}
+	}
 }
 
 // op_tag maps an operator token to its canonical glyph tag. Glyph
@@ -978,6 +1048,14 @@ match_walk_expr :: proc(expr: Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 			}
 		}
 		return check_match_total(e, sets)
+	case ^Tuple_Expr:
+		// A match buried in any tuple element is still checked for exhaustiveness.
+		for element in e.elements {
+			if err := match_walk_expr(element, sets); err != .None {
+				return err
+			}
+		}
+		return .None
 	}
 	return .None
 }

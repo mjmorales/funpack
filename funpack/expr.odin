@@ -26,6 +26,7 @@ Expr :: union {
 	^Binary_Expr,
 	^With_Expr,
 	^Match_Expr,
+	^Tuple_Expr,
 }
 
 Int_Lit_Expr :: struct {
@@ -92,6 +93,18 @@ List_Expr :: struct {
 	elements: []Expr,
 }
 
+// Tuple_Expr is a fixed-arity positional aggregate `(a, b, …)` (spec §02;
+// §04 §1 — every draw returns the pair `(value, next_rng)`, written as a
+// tuple expression). It is distinguished from a parenthesized grouping `(e)`
+// by the presence of a comma: a single parenthesized expression stays a
+// grouping (it unwraps to its inner expr at parse_atom), so a Tuple_Expr
+// always holds two or more elements. The artifact-format `tuple` node KIND
+// that serializes it (§2.7) lands with the golden-integration seam; this
+// grammar seam ships the parse node and its structural-gate scoring only.
+Tuple_Expr :: struct {
+	elements: []Expr,
+}
+
 // Lambda_Expr carries the single-return body form the golden surface
 // uses: fn(params) { return expr }.
 Lambda_Expr :: struct {
@@ -112,22 +125,30 @@ Binary_Expr :: struct {
 
 // Pattern_Kind is the closed, minimal pattern taxonomy this parser
 // admits (spec §02 §5; grammar/fun.ebnf §13): the exhaustiveness gate
-// over Option/enum variants needs only these three. Struct-field-pun and
-// tuple patterns are deliberately out of this minimal scope.
+// over Option/enum variants needs these four. Struct-field-pun patterns
+// are deliberately out of this minimal scope; the tuple pattern is the
+// snake/hunt `match pick(free, rng) { (Option::Some(cell), next) => … }`
+// shape — a parenthesized sequence of sub-patterns, each a child Pattern.
 Pattern_Kind :: enum {
 	Wildcard,      // `_`
 	Bare_Variant,  // `Dir::Up`
 	Variant_Binds, // `Option::Some(v)` — payload positions bind value names
+	Tuple,         // `(Option::Some(cell), next)` — positional sub-patterns
+	Bare_Binder,   // `next` — a snake_case name binding the whole position
 }
 
 // Pattern is a match-arm pattern. type_name/variant are set for the two
 // variant forms; binders holds the payload binder names for the
-// Variant_Binds form (empty otherwise).
+// Variant_Binds form (empty otherwise); elements holds the positional
+// sub-patterns for the Tuple form (empty otherwise). A tuple sub-pattern is
+// itself a Pattern — snake's only depth is one variant-with-binder plus one
+// bare binder per position, but the shape recurses by construction.
 Pattern :: struct {
 	kind:      Pattern_Kind,
-	type_name: string,   // variant forms: the enum type (`Option`, `Dir`)
-	variant:   string,   // variant forms: the variant (`Some`, `Up`)
-	binders:   []string, // Variant_Binds: payload binder names
+	type_name: string,    // variant forms: the enum type (`Option`, `Dir`)
+	variant:   string,    // variant forms: the variant (`Some`, `Up`)
+	binders:   []string,  // Variant_Binds: payload binder names
+	elements:  []Pattern, // Tuple: positional sub-patterns
 }
 
 // Match_Arm is one `pattern => body` arm; the body is a single
@@ -304,14 +325,11 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		node^ = String_Lit_Expr{text = tok.text}
 		return node, .None
 	case .L_Paren:
-		// A parenthesized sub-expression re-enters normal parsing: a
-		// record literal inside it is valid even within a match scrutinee.
-		saved := p.no_record_brace
-		p.no_record_brace = false
-		inner := parse_expression(p) or_return
-		expect(p, .R_Paren) or_return
-		p.no_record_brace = saved
-		return inner, .None
+		// A parenthesized form is either a grouping `(e)` or a tuple
+		// `(a, b, …)` — the comma after the first element discriminates the
+		// two (spec §02; §04 §1). A record literal inside is valid even within
+		// a match scrutinee, so the no-record-brace context is lifted here.
+		return parse_paren_atom(p)
 	case .L_Bracket:
 		return parse_list_tail(p)
 	case .Fn:
@@ -322,6 +340,40 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		return parse_name_atom(p, tok)
 	}
 	return nil, .Unexpected_Token
+}
+
+// parse_paren_atom parses a parenthesized atom after the `(` is consumed: a
+// grouping `(e)` that unwraps to its inner expression, or a tuple `(a, b, …)`
+// (spec §02; §04 §1 — `(value, next_rng)`). The first element parses, then a
+// comma decides: a comma opens the comma-list and the result is a Tuple_Expr;
+// no comma means a plain grouping and the inner expression passes through. A
+// trailing comma after the last element is accepted, mirroring lists. The
+// no-record-brace context is lifted inside the parentheses (a record literal
+// is valid there even within a match scrutinee).
+parse_paren_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	saved := p.no_record_brace
+	p.no_record_brace = false
+	defer p.no_record_brace = saved
+	first := parse_expression(p) or_return
+	if peek_kind(p) != .Comma {
+		// A single parenthesized expression is a grouping, not a tuple.
+		expect(p, .R_Paren) or_return
+		return first, .None
+	}
+	elements := make([dynamic]Expr, 0, 4, context.temp_allocator)
+	append(&elements, first)
+	for peek_kind(p) == .Comma {
+		p.pos += 1
+		if peek_kind(p) == .R_Paren {
+			break // a trailing comma after the last element
+		}
+		element := parse_expression(p) or_return
+		append(&elements, element)
+	}
+	expect(p, .R_Paren) or_return
+	node := new(Tuple_Expr, context.temp_allocator)
+	node^ = Tuple_Expr{elements = elements[:]}
+	return node, .None
 }
 
 // parse_match parses `match scrutinee { pattern => expr … }` (spec §02
@@ -358,10 +410,14 @@ parse_match :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 }
 
 // parse_pattern parses the minimal pattern set (spec §02 §5; grammar
-// §13): wildcard `_`, a variant `Type::Variant`, or a variant with
-// payload binders `Type::Variant(a, b)`. A `_` lexes as a snake_case
-// Ident, so the wildcard is recognized by text.
+// §13): wildcard `_`, a variant `Type::Variant`, a variant with payload
+// binders `Type::Variant(a, b)`, or a tuple `(p, q, …)` of positional
+// sub-patterns. A `(` head opens the tuple form; otherwise a `_` (lexed as a
+// snake_case Ident) is the wildcard and an UPPER_IDENT head a variant.
 parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
+	if peek_kind(p) == .L_Paren {
+		return parse_tuple_pattern(p)
+	}
 	tok := expect(p, .Ident) or_return
 	if tok.text == "_" {
 		return Pattern{kind = .Wildcard}, .None
@@ -408,6 +464,52 @@ parse_pattern_binders :: proc(p: ^Parser) -> (binders: []string, err: Parse_Erro
 	}
 	expect(p, .R_Paren) or_return
 	return list[:], .None
+}
+
+// parse_tuple_pattern parses a tuple pattern `(p, q, …)` — a parenthesized
+// sequence of positional sub-patterns (spec §02 §5). Each position is either
+// a bare snake_case binder (`next` — binds the whole position) or a full
+// sub-pattern (a variant `Option::Some(cell)`, a wildcard `_`, or a nested
+// tuple). A bare binder is distinguished from a variant by its leading
+// snake_case Ident: a variant head is UPPER_IDENT and a `_` is the wildcard,
+// so any other snake_case name at a position head is a bare binder.
+parse_tuple_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
+	expect(p, .L_Paren) or_return
+	elements := make([dynamic]Pattern, 0, 4, context.temp_allocator)
+	for peek_kind(p) != .R_Paren {
+		sub := parse_tuple_sub_pattern(p) or_return
+		append(&elements, sub)
+		if peek_kind(p) == .Comma {
+			p.pos += 1
+		} else {
+			break
+		}
+	}
+	expect(p, .R_Paren) or_return
+	return Pattern{kind = .Tuple, elements = elements[:]}, .None
+}
+
+// parse_tuple_sub_pattern parses one position of a tuple pattern: a bare
+// snake_case binder, or a full sub-pattern. A leading snake_case Ident that
+// is not the wildcard `_` is a bare binder (it binds the whole position); the
+// binder name is carried in the single-element `binders` slice. Everything
+// else (`_`, a variant, a nested tuple) defers to parse_pattern.
+parse_tuple_sub_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
+	if peek_kind(p) == .Ident && is_snake_binder(p.tokens[p.pos]) {
+		name := advance(p) or_return
+		binders := make([]string, 1, context.temp_allocator)
+		binders[0] = name.text
+		return Pattern{kind = .Bare_Binder, binders = binders}, .None
+	}
+	return parse_pattern(p)
+}
+
+// is_snake_binder reports whether a token is a bare binder name — a
+// snake_case Ident other than the wildcard `_`. The wildcard lexes as a
+// snake_case Ident too, so it is excluded by text here and handled as the
+// Wildcard pattern by parse_pattern.
+is_snake_binder :: proc(tok: Token) -> bool {
+	return tok.kind == .Ident && tok.class == .Snake_Case && tok.text != "_"
 }
 
 // skip_arm_separators consumes the Sep run (newlines and commas) between

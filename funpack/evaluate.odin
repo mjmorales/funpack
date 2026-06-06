@@ -448,6 +448,24 @@ match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: 
 		child := new_env(env)
 		child.bindings[pattern.binders[0]] = option.payload^
 		return child, true
+	case .Bare_Binder:
+		// A bare binder matches any value and binds it to its single name —
+		// the trivially-correct case the parser admits as a tuple-pattern
+		// position. The whole tuple-pattern evaluation path (decomposing a
+		// tuple value across positional sub-patterns) is a downstream
+		// semantics seam; the matcher binds the position name here.
+		if len(pattern.binders) != 1 {
+			return env, false
+		}
+		child := new_env(env)
+		child.bindings[pattern.binders[0]] = scrutinee
+		return child, true
+	case .Tuple:
+		// Tuple-value decomposition is a downstream semantics seam (no
+		// Tuple_Value exists yet); the frontend admits the pattern, evaluation
+		// of it lands with the value/typing seam. No tuple scrutinee reaches
+		// here in this grammar seam, so it is a non-match.
+		return env, false
 	}
 	return env, false
 }

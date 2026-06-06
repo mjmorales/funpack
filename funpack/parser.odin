@@ -59,14 +59,16 @@ Test_Node :: struct {
 
 // Type_Ref is the parse-only syntactic type the declaration grammar
 // records: a bare name (`Fixed`, `Side`), a generic application
-// (`View[Paddle]`, `Option[Side]`), or a list (`[Goal]`, `[Spawn]`). It is
+// (`View[Paddle]`, `Option[Side]`), a list (`[Goal]`, `[Spawn]`), or a tuple
+// (`(Rng, [Spawn])` — the §04 §1 `(value, next_rng)` return pair). It is
 // purely structural — no resolution to the checker's semantic Type
-// (type.odin) happens here; that is the resolve stage's job. A list
-// is modeled as the generic head "[]" with one argument, so every
-// parameterized form shares one node shape.
+// (type.odin) happens here; that is the resolve stage's job. A list is
+// modeled as the head "[]" with one argument and a tuple as the head "()"
+// with its positional element types as args, so every parameterized form
+// shares one node shape.
 Type_Ref :: struct {
-	name: string,     // the head name; "[]" for a list type `[T]`
-	args: []Type_Ref, // generic / list element arguments; empty for a bare name
+	name: string,     // the head name; "[]" for a list `[T]`, "()" for a tuple `(T, …)`
+	args: []Type_Ref, // generic / list / tuple element arguments; empty for a bare name
 }
 
 // Field_Decl is one `name: Type` (or `name: Type = default`) entry in a
@@ -798,10 +800,11 @@ parse_behavior_list :: proc(p: ^Parser) -> (names: []string, err: Parse_Error) {
 }
 
 // parse_type_ref parses a syntactic type (spec §02 §3): a bare name
-// (`Fixed`), a generic application (`View[Paddle]`, `Option[Side]`), or a
-// list (`[Goal]`). A list is recorded as the head "[]" with one argument,
-// so every parameterized form shares one node shape. This is parse-only —
-// no resolution to a checker Type.
+// (`Fixed`), a generic application (`View[Paddle]`, `Option[Side]`), a list
+// (`[Goal]`), or a tuple (`(Rng, [Spawn])` — the §04 §1 return pair). A list
+// is recorded as the head "[]" with one argument and a tuple as the head "()"
+// with its positional element types as args, so every parameterized form
+// shares one node shape. This is parse-only — no resolution to a checker Type.
 parse_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 	if peek_kind(p) == .L_Bracket {
 		// List type `[T]` — the head is "[]" with the element as its arg.
@@ -811,6 +814,9 @@ parse_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 		args := make([]Type_Ref, 1, context.temp_allocator)
 		args[0] = elem
 		return Type_Ref{name = "[]", args = args}, .None
+	}
+	if peek_kind(p) == .L_Paren {
+		return parse_tuple_type_ref(p)
 	}
 	name := expect(p, .Ident) or_return
 	// Type names are UPPER_IDENT (spec §02; lexical-core.ebnf §2); the
@@ -837,6 +843,27 @@ parse_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 		type.args = args[:]
 	}
 	return type, .None
+}
+
+// parse_tuple_type_ref parses a tuple type `(T, U, …)` after the `(` is the
+// peeked head (spec §02 §3; §04 §1 — the `(value, next_rng)` return pair). It
+// is recorded as the head "()" with its positional element Type_Refs as args,
+// mirroring the list head "[]", so a tuple stays one node shape. A tuple type
+// has two or more positional element types — the snake/hunt return pairs.
+parse_tuple_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
+	expect(p, .L_Paren) or_return
+	args := make([dynamic]Type_Ref, 0, 4, context.temp_allocator)
+	for peek_kind(p) != .R_Paren {
+		arg := parse_type_ref(p) or_return
+		append(&args, arg)
+		if peek_kind(p) == .Comma {
+			p.pos += 1
+		} else {
+			break
+		}
+	}
+	expect(p, .R_Paren) or_return
+	return Type_Ref{name = "()", args = args[:]}, .None
 }
 
 // expect_type_name consumes an UpperCamel type name — the declared name of

@@ -359,3 +359,89 @@ test_expr_chained_with_updates :: proc(t: ^testing.T) {
 		testing.expect_value(t, outer.fields[0].name, "y")
 	}
 }
+
+@(test)
+test_expr_tuple_literal :: proc(t: ^testing.T) {
+	// The snake return value `(rng, [Spawn(...)])` (spec §02; §04 §1): a
+	// parenthesized comma-list parses to a Tuple_Expr with one element per
+	// position, in source order.
+	expr, err := parse_expr_text("(next, [Spawn(food)])")
+	testing.expect_value(t, err, Parse_Error.None)
+	tup, is_tuple := expr.(^Tuple_Expr)
+	testing.expect(t, is_tuple)
+	if is_tuple {
+		testing.expect_value(t, len(tup.elements), 2)
+		first, first_is_name := tup.elements[0].(^Name_Expr)
+		testing.expect(t, first_is_name)
+		if first_is_name {
+			testing.expect_value(t, first.name, "next")
+		}
+		_, second_is_list := tup.elements[1].(^List_Expr)
+		testing.expect(t, second_is_list)
+	}
+}
+
+@(test)
+test_expr_single_paren_is_grouping_not_tuple :: proc(t: ^testing.T) {
+	// A single parenthesized expression with no comma stays a grouping — it
+	// unwraps to its inner expression, NOT a 1-tuple (the comma is the
+	// discriminator, spec §02).
+	expr, err := parse_expr_text("(rng)")
+	testing.expect_value(t, err, Parse_Error.None)
+	_, is_tuple := expr.(^Tuple_Expr)
+	testing.expect(t, !is_tuple)
+	name, is_name := expr.(^Name_Expr)
+	testing.expect(t, is_name)
+	if is_name {
+		testing.expect_value(t, name.name, "rng")
+	}
+}
+
+@(test)
+test_expr_tuple_trailing_comma :: proc(t: ^testing.T) {
+	// A trailing comma after the last tuple element is accepted, mirroring
+	// lists — `(a, b,)` is the same two-element tuple as `(a, b)`.
+	expr, err := parse_expr_text("(a, b,)")
+	testing.expect_value(t, err, Parse_Error.None)
+	tup, is_tuple := expr.(^Tuple_Expr)
+	testing.expect(t, is_tuple)
+	if is_tuple {
+		testing.expect_value(t, len(tup.elements), 2)
+	}
+}
+
+@(test)
+test_expr_tuple_pattern_with_nested_variant :: proc(t: ^testing.T) {
+	// The snake `match pick(free, rng) { (Option::Some(cell), next) => … }`
+	// shape (spec §02 §5): a tuple pattern whose first position is a
+	// variant-with-binder sub-pattern and whose second is a bare binder.
+	source := "match picked {\n" +
+		"  (Option::Some(cell), next) => cell\n" +
+		"  (Option::None, next) => next\n" +
+		"}\n"
+	expr, err := parse_expr_text(source)
+	testing.expect_value(t, err, Parse_Error.None)
+	m, is_match := expr.(^Match_Expr)
+	testing.expect(t, is_match)
+	if !is_match {
+		return
+	}
+	testing.expect_value(t, len(m.arms), 2)
+	// First arm's pattern is a 2-element tuple: a Variant_Binds then a Bare_Binder.
+	first := m.arms[0].pattern
+	testing.expect_value(t, first.kind, Pattern_Kind.Tuple)
+	testing.expect_value(t, len(first.elements), 2)
+	testing.expect_value(t, first.elements[0].kind, Pattern_Kind.Variant_Binds)
+	testing.expect_value(t, first.elements[0].type_name, "Option")
+	testing.expect_value(t, first.elements[0].variant, "Some")
+	testing.expect_value(t, len(first.elements[0].binders), 1)
+	testing.expect_value(t, first.elements[0].binders[0], "cell")
+	testing.expect_value(t, first.elements[1].kind, Pattern_Kind.Bare_Binder)
+	testing.expect_value(t, len(first.elements[1].binders), 1)
+	testing.expect_value(t, first.elements[1].binders[0], "next")
+	// Second arm's first position is a bare variant (no payload binders).
+	second := m.arms[1].pattern
+	testing.expect_value(t, second.kind, Pattern_Kind.Tuple)
+	testing.expect_value(t, second.elements[0].kind, Pattern_Kind.Bare_Variant)
+	testing.expect_value(t, second.elements[0].variant, "None")
+}

@@ -591,6 +591,67 @@ test_gate_duplication_distinct_blocks_clear :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.failed, 0)
 }
 
+// test_block_body lexes + parses a single test block and returns its
+// statement body — the dup_class unit — so a gate-walk test can drive
+// canon/dup_class over a body containing a tuple expression directly.
+test_block_body :: proc(asserts: string) -> ([]Statement, Parse_Error) {
+	source := strings.concatenate({"test \"gate\" {\n", asserts, "}\n"}, context.temp_allocator)
+	ast, err := stage_parse(stage_lex(source))
+	if err != .None {
+		return nil, err
+	}
+	return ast.tests[0].body, .None
+}
+
+@(test)
+test_gate_tuple_expr_overshoots_nesting :: proc(t: ^testing.T) {
+	// A tuple is a transparent aggregate — it passes its deepest element's
+	// depth through (gates.odin nesting_depth tuple arm). A tuple whose first
+	// element is four nested calls is therefore depth 4, one over the budget
+	// of 3, so the nesting gate fires THROUGH the tuple — pinning that a tuple
+	// expression is structurally walked, not silently skipped.
+	chain := "assert (to_fixed(to_fixed(to_fixed(to_fixed(2)))), b) == c\n"
+	parse_err := parse_only(chain)
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.Nesting_Exceeded)
+}
+
+@(test)
+test_gate_tuple_expr_transparent_clears_at_budget :: proc(t: ^testing.T) {
+	// The boundary control: the same shape with three nested calls is depth 3
+	// — exactly the budget — and the tuple adds no level of its own, so it
+	// clears. A regression that scored the tuple as a nesting level would push
+	// this to 4 and fire the gate.
+	chain := "assert (to_fixed(to_fixed(to_fixed(2))), b) == c\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+@(test)
+test_gate_canon_distinguishes_structurally_different_tuples :: proc(t: ^testing.T) {
+	// The dup-class canon (gates.odin canon_expr tuple arm) tags a tuple with
+	// its `tuple` kind and its element subtrees, so two structurally different
+	// tuples hash to different dup_class keys — a tuple is scored, not elided.
+	left, left_err := test_block_body("assert pair((a, b)) == 0\n")
+	right, right_err := test_block_body("assert pair((a, b, c)) == 0\n")
+	testing.expect_value(t, left_err, Parse_Error.None)
+	testing.expect_value(t, right_err, Parse_Error.None)
+	// A 2-tuple and a 3-tuple are distinct shapes — distinct dup_class keys.
+	testing.expect(t, dup_class(left) != dup_class(right))
+}
+
+@(test)
+test_gate_canon_collides_alpha_equivalent_tuples :: proc(t: ^testing.T) {
+	// The collision control: two tuples identical modulo bound-name renaming
+	// canonicalize to the same form (bound names resolve to frame slots), so
+	// they share one dup_class key — pinning that canon_expr walks the tuple's
+	// elements rather than emitting an opaque constant tag.
+	left, left_err := test_block_body("let x = 0\nassert pair((x, x)) == 0\n")
+	right, right_err := test_block_body("let y = 0\nassert pair((y, y)) == 0\n")
+	testing.expect_value(t, left_err, Parse_Error.None)
+	testing.expect_value(t, right_err, Parse_Error.None)
+	testing.expect(t, dup_class(left) == dup_class(right))
+}
+
 @(test)
 test_gate_duplication_golden_source_clears :: proc(t: ^testing.T) {
 	// The §29-faithful unit choice verified against the REAL golden file:

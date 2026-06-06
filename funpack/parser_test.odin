@@ -426,3 +426,42 @@ test_parse_list_newline_separated_elements :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+@(test)
+test_parse_fn_tuple_return_type :: proc(t: ^testing.T) {
+	// The snake `setup`/`step` return signature (spec §02 §3; §04 §1 — every
+	// draw returns `(value, next_rng)`): a tuple type in return position. It is
+	// recorded as the head "()" with its positional element Type_Refs as args,
+	// mirroring the list head "[]".
+	source := "fn setup(rng: Rng) -> (Rng, [Spawn]) {\n" +
+		"  return (rng, [])\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	f := ast.fns[0]
+	testing.expect_value(t, f.return_type.name, "()")
+	testing.expect_value(t, len(f.return_type.args), 2)
+	// First element is the bare `Rng`, second is the list `[Spawn]` (head "[]").
+	testing.expect_value(t, f.return_type.args[0].name, "Rng")
+	testing.expect_value(t, f.return_type.args[1].name, "[]")
+	testing.expect_value(t, f.return_type.args[1].args[0].name, "Spawn")
+}
+
+@(test)
+test_parse_nested_tuple_return_type :: proc(t: ^testing.T) {
+	// A tuple element may itself be a tuple — the head recurses by
+	// construction, so `(Rng, (A, B))` records a tuple whose second arg is
+	// again the head "()".
+	source := "fn step(rng: Rng) -> (Rng, (Food, Snake)) {\n" +
+		"  return rng\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	f := ast.fns[0]
+	testing.expect_value(t, f.return_type.name, "()")
+	testing.expect_value(t, len(f.return_type.args), 2)
+	testing.expect_value(t, f.return_type.args[1].name, "()")
+	testing.expect_value(t, len(f.return_type.args[1].args), 2)
+	testing.expect_value(t, f.return_type.args[1].args[0].name, "Food")
+	testing.expect_value(t, f.return_type.args[1].args[1].name, "Snake")
+}

@@ -102,6 +102,27 @@ emit_expr :: proc(b: ^strings.Builder, expr: Expr) {
 		emit_with(b, e)
 	case ^Match_Expr:
 		emit_match(b, e)
+	case ^Tuple_Expr:
+		emit_tuple(b, e)
+	}
+}
+
+// emit_tuple serializes a tuple literal `(a, b, …)` as a count-driven `tuple`
+// node — a `tuple len` head with its `len` element subtrees in source order,
+// the same total, lookahead-free shape as `list` (emit_list). The
+// artifact-format §2.7 ratification of the `tuple` node KIND (it is a closed
+// set, so a new kind is a schema-version bump) lands with the golden-
+// integration seam that first emits a tuple-returning behavior end-to-end;
+// this grammar seam emits the structurally-sound node so the body walk stays
+// total and the build's complete Expr switch is exhaustive.
+emit_tuple :: proc(b: ^strings.Builder, e: ^Tuple_Expr) {
+	strings.write_string(b, "node tuple ")
+	strings.write_int(b, len(e.elements))
+	strings.write_byte(b, ' ')
+	strings.write_int(b, len(e.elements))
+	emit_line(b, "")
+	for element in e.elements {
+		emit_expr(b, element)
 	}
 }
 
@@ -278,7 +299,32 @@ emit_arm :: proc(b: ^strings.Builder, pattern: Pattern) {
 			strings.write_string(b, binder)
 		}
 		emit_line(b, "")
+	case .Bare_Binder:
+		// A bare binder position carries its single binding name. The
+		// artifact-format §2.7 ratification of the bare_binder/tuple arm KINDs
+		// lands with the golden-integration seam (a closed-set schema bump);
+		// this grammar seam emits the structurally-honest form so the body
+		// walk stays total and the complete Pattern_Kind switch is exhaustive.
+		strings.write_string(b, "bare_binder ")
+		strings.write_string(b, tuple_binder_name(pattern))
+		emit_line(b, " 0")
+	case .Tuple:
+		strings.write_string(b, "tuple ")
+		strings.write_int(b, len(pattern.elements))
+		emit_line(b, "")
+		for sub in pattern.elements {
+			emit_arm(b, sub)
+		}
 	}
+}
+
+// tuple_binder_name returns a bare-binder pattern's single binding name (it
+// lives in the one-element binders slice), or "-" when the slice is empty.
+tuple_binder_name :: proc(pattern: Pattern) -> string {
+	if len(pattern.binders) == 1 {
+		return pattern.binders[0]
+	}
+	return "-"
 }
 
 // emit_node_head writes a node line's `node KIND … child_count` prefix for a
@@ -342,15 +388,30 @@ binary_op_name :: proc(op: Token) -> string {
 
 // type_ref_string renders a syntactic Type_Ref to its source spelling
 // (docs/artifact-format.md §2.6, §6, §9): a bare name (`Fixed`), a list `[T]`,
-// or a generic application `Ctor[Arg, …]` (`View[Paddle]`, `Option[Side]`). The
-// artifact carries the type as written, so a list head "[]" renders to the
-// bracketed form and a generic renders to its `Ctor[args]` form.
+// a tuple `(T, U)`, or a generic application `Ctor[Arg, …]` (`View[Paddle]`,
+// `Option[Side]`). The artifact carries the type as written, so a list head
+// "[]" renders to the bracketed form, a tuple head "()" to the parenthesized
+// comma-list, and a generic to its `Ctor[args]` form.
 type_ref_string :: proc(ref: Type_Ref) -> string {
 	if ref.name == "[]" {
 		if len(ref.args) == 1 {
 			return strings.concatenate({"[", type_ref_string(ref.args[0]), "]"}, context.temp_allocator)
 		}
 		return "[]"
+	}
+	if ref.name == "()" {
+		// A tuple type spells as `(T, U, …)` — its positional element types
+		// comma-joined, the source spelling the §04 §1 return pair is written in.
+		b := strings.builder_make(context.temp_allocator)
+		strings.write_byte(&b, '(')
+		for arg, i in ref.args {
+			if i > 0 {
+				strings.write_string(&b, ", ")
+			}
+			strings.write_string(&b, type_ref_string(arg))
+		}
+		strings.write_byte(&b, ')')
+		return strings.to_string(b)
 	}
 	if len(ref.args) == 0 {
 		return ref.name
