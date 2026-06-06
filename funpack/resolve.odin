@@ -119,6 +119,11 @@ collect_type_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type
 		}
 	}
 	for decl in ast.signals {
+		// The reservation runs BEFORE the collision claim so a reserved name
+		// surfaces as the precise Reserved_Signal_Name diagnostic even when the
+		// engine.physics import would also have raised the generic Name_Collision
+		// — the same precision-first ordering the layer-registry gate uses.
+		check_reserved_signal_name(decl.name) or_return
 		claim_type_name(env, decl.name, bindings) or_return
 		env.records[decl.name] = Record_Schema {
 			type_name = decl.name,
@@ -160,6 +165,28 @@ collect_term_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type
 			name   = decl.name,
 			kind   = .Behavior,
 			target = decl.target,
+		}
+	}
+	return .None
+}
+
+// ENGINE_ROUTED_SIGNALS is the closed set of signal names the runtime routes
+// PER-INSTANCE rather than broadcast (spec §11 §4): its routing discriminates
+// on these literal names, so a user signal declared as Trigger or Contact
+// would silently read the empty per-instance list instead of the broadcast
+// accumulator — even in a source that never imports engine.physics, where no
+// Name_Collision fires. Reserving the names at declaration closes that one
+// unenforced name dependency at compile time.
+ENGINE_ROUTED_SIGNALS :: [2]string{"Trigger", "Contact"}
+
+// check_reserved_signal_name rejects a user `signal` declaration whose name is
+// engine-routed — the declaration-site gate the §11 §4 reservation rests on,
+// enforced like the unregistered-layer registry rule.
+check_reserved_signal_name :: proc(name: string) -> Type_Error {
+	reserved := ENGINE_ROUTED_SIGNALS
+	for routed in reserved {
+		if name == routed {
+			return .Reserved_Signal_Name
 		}
 	}
 	return .None

@@ -314,6 +314,55 @@ test_layer_unregistered_without_collisionlayer_enum :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Type_Error.Unregistered_Layer)
 }
 
+// -- (C.2) the §11 §4 engine-routed signal-name reservation -------------------
+
+@(test)
+test_user_signal_named_trigger_rejected :: proc(t: ^testing.T) {
+	// AC (Trigger is engine-reserved): a user `signal Trigger {}` is rejected at
+	// declaration even though the source never imports engine.physics — the gap
+	// the reservation closes: without the import no Name_Collision fires, yet the
+	// runtime's per-instance routing keys on the literal name, so the user signal
+	// would silently never broadcast.
+	source := "signal Trigger {}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.Reserved_Signal_Name)
+}
+
+@(test)
+test_user_signal_named_contact_rejected :: proc(t: ^testing.T) {
+	// AC (Contact reserved too): the reservation covers the whole engine-routed
+	// set, not just Trigger.
+	source := "signal Contact {}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.Reserved_Signal_Name)
+}
+
+@(test)
+test_reserved_signal_diagnostic_wins_over_collision :: proc(t: ^testing.T) {
+	// AC (precise diagnostic first): with engine.physics.Trigger imported, a user
+	// `signal Trigger {}` surfaces as Reserved_Signal_Name — the reservation runs
+	// before the collision claim, so the precise §11 §4 diagnostic wins over the
+	// generic Name_Collision (the layer-gate precision-first ordering).
+	err := typecheck_phys("signal Trigger {}\n")
+	testing.expect_value(t, err, Type_Error.Reserved_Signal_Name)
+}
+
+@(test)
+test_ordinary_user_signal_passes_reservation :: proc(t: ^testing.T) {
+	// AC (reservation is exact-match): an ordinary user signal — including one
+	// merely PREFIXED with a routed name — declares clean; only the two literal
+	// engine-routed names are reserved.
+	source := "signal TriggerHappy {}\nsignal Scored {}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.None)
+}
+
 // -- (D) the bare-battery `physics: solve` stage -----------------------------
 
 @(test)

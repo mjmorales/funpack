@@ -28,6 +28,7 @@ Type_Error :: enum {
 	Unresolved_Name,  // a free name with no let binding, no user decl, and no import
 	Name_Collision,   // one name, two meanings (spec §02): a user decl colliding with an import or another user decl, or two imports binding one name to different declarations
 	Unregistered_Layer, // a Body's layer/mask names a value outside any CollisionLayer-kinded enum's variant set (spec §11 §5)
+	Reserved_Signal_Name, // a user signal declared under an engine-routed name (Trigger/Contact, spec §11 §4) — the runtime routes those names per-instance, so the user signal would silently never broadcast
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
