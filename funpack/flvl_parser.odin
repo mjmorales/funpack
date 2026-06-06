@@ -35,14 +35,39 @@ Flvl_Coord :: struct {
 	components: []Flvl_Anchor_Expr,
 }
 
+// Flvl_Item_Kind is the closed set of body-item forms a level, prefab, or
+// for-loop body holds (grammar/flvl.ebnf LevelItem/PrefabItem): a placement, a
+// for-loop, or a nested prefab declaration. It is the discriminant of an
+// Flvl_Item, which records the source ORDER of the body's items across the three
+// kinds.
+Flvl_Item_Kind :: enum {
+	Place,
+	For,
+	Prefab,
+}
+
+// Flvl_Item records one body item's kind and its index into the matching
+// per-kind slice (places/fors/prefabs), in SOURCE ORDER. The parser keeps the
+// per-kind slices (each production's natural home) AND this interleaved order
+// record, because §17.4 spawn order is DECLARATION order across all item kinds
+// (a `for` loop between two `place`s expands between them) — an order the
+// per-kind slices alone cannot reconstruct. The bake walks `items` to expand in
+// declaration order; a parse-shape consumer that only needs counts reads the
+// slices.
+Flvl_Item :: struct {
+	kind:  Flvl_Item_Kind,
+	index: int, // index into places/fors/prefabs for `kind`
+}
+
 // Flvl_Level is one `level <Name> 2d|3d { … }` block (grammar/flvl.ebnf
 // LevelBlock). It is the parse root for a single level: its name and dimension
 // header, the two bounds corners, the schema module the `things` line names,
-// and the top-level prefab declarations, placements, and for-loops in source
-// order. things_module is the LOWER_IDENT schema module whose thing types this
-// level places; it is "" when the (optional in the AST, required by the bake)
-// `things` line is absent so the parser does not conflate a missing line with a
-// grammar error here.
+// and the top-level prefab declarations, placements, and for-loops. The per-kind
+// slices group items by production; `items` records their interleaved source
+// order (the declaration order §17.4's spawn list requires). things_module is
+// the LOWER_IDENT schema module whose thing types this level places; it is ""
+// when the (optional in the AST, required by the bake) `things` line is absent so
+// the parser does not conflate a missing line with a grammar error here.
 Flvl_Level :: struct {
 	name:           string,
 	dim:            Flvl_Dim,
@@ -53,6 +78,7 @@ Flvl_Level :: struct {
 	prefabs:        []Flvl_Prefab,
 	places:         []Flvl_Place,
 	fors:           []Flvl_For,
+	items:          []Flvl_Item, // body items in source order (declaration-order spawn list)
 }
 
 // Flvl_Place is one `place <Type> [<name>] { params }? at <where> [facing
@@ -86,14 +112,17 @@ Flvl_Param :: struct {
 }
 
 // Flvl_Prefab is one `prefab <Name> { … }` declaration (grammar/flvl.ebnf
-// Prefab): a named bundle of placements, nested for-loops, and nested prefabs,
-// in source order. Prefabs nest to arbitrary depth — a prefab body holds child
-// prefabs — so nested holds the inner prefab declarations recursively.
+// Prefab): a named bundle of placements, nested for-loops, and nested prefabs.
+// Prefabs nest to arbitrary depth — a prefab body holds child prefabs — so nested
+// holds the inner prefab declarations recursively. The per-kind slices group the
+// body by production; `items` records their interleaved source order (the
+// declaration order a stamp expands members in).
 Flvl_Prefab :: struct {
 	name:    string,
 	places:  []Flvl_Place,
 	fors:    []Flvl_For,
 	nested:  []Flvl_Prefab,
+	items:   []Flvl_Item, // body items in source order
 }
 
 // Flvl_For is one `for <i> in <lo>..<hi> { … }` repetition (grammar/flvl.ebnf
@@ -101,7 +130,8 @@ Flvl_Prefab :: struct {
 // written, and the body's placements, nested for-loops, and nested prefabs. The
 // bounds are Number atoms (Int/Fixed), parsed as anchor-expression atoms; the
 // loop var is in scope inside body offsets (`center.offset(x: -48 + i * 24)`),
-// resolved at bake.
+// resolved at bake. `items` records the body's interleaved source order, walked
+// per iteration so a loop body expands in declaration order.
 Flvl_For :: struct {
 	var:    string,
 	lo:     Flvl_Anchor_Expr,
@@ -109,6 +139,7 @@ Flvl_For :: struct {
 	places: []Flvl_Place,
 	fors:   []Flvl_For,
 	nested: []Flvl_Prefab,
+	items:  []Flvl_Item, // body items in source order
 }
 
 // Flvl_Anchor_Expr is the position/offset/value expression node
@@ -238,6 +269,7 @@ parse_flvl_level :: proc(p: ^Flvl_Parser) -> (level: Flvl_Level, err: Flvl_Parse
 	prefabs := make([dynamic]Flvl_Prefab, 0, 4, context.temp_allocator)
 	places := make([dynamic]Flvl_Place, 0, 8, context.temp_allocator)
 	fors := make([dynamic]Flvl_For, 0, 4, context.temp_allocator)
+	items := make([dynamic]Flvl_Item, 0, 16, context.temp_allocator)
 	flvl_skip_separators(p)
 	for flvl_peek_kind(p) != .R_Brace {
 		#partial switch flvl_peek_kind(p) {
@@ -250,12 +282,15 @@ parse_flvl_level :: proc(p: ^Flvl_Parser) -> (level: Flvl_Level, err: Flvl_Parse
 			level.things_module = parse_flvl_things(p) or_return
 		case .Prefab:
 			pf := parse_flvl_prefab(p) or_return
+			append(&items, Flvl_Item{kind = .Prefab, index = len(prefabs)})
 			append(&prefabs, pf)
 		case .Place:
 			pl := parse_flvl_place(p) or_return
+			append(&items, Flvl_Item{kind = .Place, index = len(places)})
 			append(&places, pl)
 		case .For:
 			fr := parse_flvl_for(p) or_return
+			append(&items, Flvl_Item{kind = .For, index = len(fors)})
 			append(&fors, fr)
 		case .Invalid:
 			return Flvl_Level{}, .Unexpected_End
@@ -268,6 +303,7 @@ parse_flvl_level :: proc(p: ^Flvl_Parser) -> (level: Flvl_Level, err: Flvl_Parse
 	level.prefabs = prefabs[:]
 	level.places = places[:]
 	level.fors = fors[:]
+	level.items = items[:]
 	return level, .None
 }
 
@@ -396,11 +432,12 @@ parse_flvl_prefab :: proc(p: ^Flvl_Parser) -> (prefab: Flvl_Prefab, err: Flvl_Pa
 	name := flvl_expect_upper(p) or_return
 	prefab.name = name
 	flvl_expect(p, .L_Brace) or_return
-	places, fors, nested := parse_flvl_item_body(p) or_return
+	places, fors, nested, items := parse_flvl_item_body(p) or_return
 	flvl_expect(p, .R_Brace) or_return
 	prefab.places = places
 	prefab.fors = fors
 	prefab.nested = nested
+	prefab.items = items
 	return prefab, .None
 }
 
@@ -416,11 +453,12 @@ parse_flvl_for :: proc(p: ^Flvl_Parser) -> (loop: Flvl_For, err: Flvl_Parse_Erro
 	flvl_expect(p, .Dot_Dot) or_return
 	loop.hi = parse_flvl_unary(p) or_return
 	flvl_expect(p, .L_Brace) or_return
-	places, fors, nested := parse_flvl_item_body(p) or_return
+	places, fors, nested, items := parse_flvl_item_body(p) or_return
 	flvl_expect(p, .R_Brace) or_return
 	loop.places = places
 	loop.fors = fors
 	loop.nested = nested
+	loop.items = items
 	return loop, .None
 }
 
@@ -428,31 +466,36 @@ parse_flvl_for :: proc(p: ^Flvl_Parser) -> (loop: Flvl_For, err: Flvl_Parse_Erro
 // `for`, or nested `prefab` per item (grammar/flvl.ebnf PrefabItem) — up to the
 // closing `}` (consumed by the caller). Items separate by newline or comma. One
 // body parser drives a prefab body and a for-loop body, since both admit the
-// same item set.
-parse_flvl_item_body :: proc(p: ^Flvl_Parser) -> (places: []Flvl_Place, fors: []Flvl_For, nested: []Flvl_Prefab, err: Flvl_Parse_Error) {
+// same item set. It returns the per-kind slices AND the interleaved source-order
+// `items` record, the declaration order a stamp/iteration expands in.
+parse_flvl_item_body :: proc(p: ^Flvl_Parser) -> (places: []Flvl_Place, fors: []Flvl_For, nested: []Flvl_Prefab, items: []Flvl_Item, err: Flvl_Parse_Error) {
 	place_list := make([dynamic]Flvl_Place, 0, 4, context.temp_allocator)
 	for_list := make([dynamic]Flvl_For, 0, 2, context.temp_allocator)
 	prefab_list := make([dynamic]Flvl_Prefab, 0, 2, context.temp_allocator)
+	item_list := make([dynamic]Flvl_Item, 0, 8, context.temp_allocator)
 	flvl_skip_separators(p)
 	for flvl_peek_kind(p) != .R_Brace {
 		#partial switch flvl_peek_kind(p) {
 		case .Place:
 			pl := parse_flvl_place(p) or_return
+			append(&item_list, Flvl_Item{kind = .Place, index = len(place_list)})
 			append(&place_list, pl)
 		case .For:
 			fr := parse_flvl_for(p) or_return
+			append(&item_list, Flvl_Item{kind = .For, index = len(for_list)})
 			append(&for_list, fr)
 		case .Prefab:
 			pf := parse_flvl_prefab(p) or_return
+			append(&item_list, Flvl_Item{kind = .Prefab, index = len(prefab_list)})
 			append(&prefab_list, pf)
 		case .Invalid:
-			return nil, nil, nil, .Unexpected_End
+			return nil, nil, nil, nil, .Unexpected_End
 		case:
-			return nil, nil, nil, .Unexpected_Token
+			return nil, nil, nil, nil, .Unexpected_Token
 		}
 		flvl_skip_separators(p)
 	}
-	return place_list[:], for_list[:], prefab_list[:], .None
+	return place_list[:], for_list[:], prefab_list[:], item_list[:], .None
 }
 
 // ── Anchor expressions ─────────────────────────────────────────────────────
