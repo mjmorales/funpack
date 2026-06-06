@@ -30,8 +30,10 @@ Draw_Color :: enum {
 	Blue,
 }
 
-// Draw_Rect is the §20 filled rectangle: a fixed-point top-left `at` and `size`
-// in world units, painted in one color. Pong's paddles and ball are rects.
+// Draw_Rect is the §20 filled rectangle: a fixed-point `at` and `size` in world
+// units, painted in one color. `at` is the CENTER of the extent (§20 §1 anchor);
+// a corner-origin backend derives the corner at the present boundary. Pong's
+// paddles and ball are rects.
 Draw_Rect :: struct {
 	at:    Vec2,
 	size:  Vec2,

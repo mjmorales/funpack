@@ -68,18 +68,19 @@ test_keys_axis_w_resolves_negative :: proc(t: ^testing.T) {
 	}
 
 	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
 	queue := new_device_queue(context.temp_allocator)
 
 	// W down → P1 Steer::Move reads −1 (W is the negative key of keys_axis(W, S)).
 	enqueue_key_down(&queue, "Key::W")
-	snap_w, held_w := resolve_tick(table, &queue, prev, context.temp_allocator)
+	snap_w, held_w, levels_w := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
 	defer delete_input(snap_w)
 	testing.expect_value(t, value(snap_w, .P1, steer), fixed_neg(to_fixed(1)))
 
 	// S down (W released) → P1 Steer::Move reads +1.
 	enqueue_key_up(&queue, "Key::W")
 	enqueue_key_down(&queue, "Key::S")
-	snap_s, _ := resolve_tick(table, &queue, held_w, context.temp_allocator)
+	snap_s, _, _ := resolve_tick(table, &queue, held_w, levels_w, context.temp_allocator)
 	defer delete_input(snap_s)
 	testing.expect_value(t, value(snap_s, .P1, steer), to_fixed(1))
 }
@@ -101,13 +102,14 @@ test_pong_steer_move_in_unit_range :: proc(t: ^testing.T) {
 	}
 
 	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
 	queue := new_device_queue(context.temp_allocator)
 
 	// P2 uses keys_axis(Up, Down) + stick_y(Stick::Left). Up down + a large stick
 	// sample would push past −2; the resolver clamps the stacked sum to −1.
 	enqueue_key_down(&queue, "Key::Up")
 	enqueue_stick_sample(&queue, "Stick::Left", .Y, fixed_neg(to_fixed(5)))
-	snap, _ := resolve_tick(table, &queue, prev, context.temp_allocator)
+	snap, _, _ := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
 	defer delete_input(snap)
 
 	v := value(snap, .P2, steer)
@@ -135,13 +137,14 @@ test_stacked_keyboard_and_stick_both_contribute :: proc(t: ^testing.T) {
 	}
 
 	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
 	queue := new_device_queue(context.temp_allocator)
 
 	// Stick only, half magnitude (above the 0.1 deadzone) → the stick binding alone
 	// drives the axis; no key is pressed.
 	half := fixed_from_decimal(0, "5")
 	enqueue_stick_sample(&queue, "Stick::Left", .Y, half)
-	snap, _ := resolve_tick(table, &queue, prev, context.temp_allocator)
+	snap, _, _ := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
 	defer delete_input(snap)
 	testing.expect_value(t, value(snap, .P1, steer), half)
 }
@@ -163,18 +166,19 @@ test_deadzone_clamps_tiny_and_out_of_range :: proc(t: ^testing.T) {
 	}
 
 	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
 	queue := new_device_queue(context.temp_allocator)
 
 	// A tiny sample (0.05, below the 0.1 deadzone) → exactly 0.
 	tiny := fixed_from_decimal(0, "05")
 	enqueue_stick_sample(&queue, "Stick::Left", .Y, tiny)
-	snap_tiny, held_tiny := resolve_tick(table, &queue, prev, context.temp_allocator)
+	snap_tiny, held_tiny, levels_tiny := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
 	defer delete_input(snap_tiny)
 	testing.expect_value(t, value(snap_tiny, .P1, steer), Fixed(0))
 
 	// An out-of-range sample (+3) → clamped to +1.
 	enqueue_stick_sample(&queue, "Stick::Left", .Y, to_fixed(3))
-	snap_hi, _ := resolve_tick(table, &queue, held_tiny, context.temp_allocator)
+	snap_hi, _, _ := resolve_tick(table, &queue, held_tiny, levels_tiny, context.temp_allocator)
 	defer delete_input(snap_hi)
 	testing.expect_value(t, value(snap_hi, .P1, steer), to_fixed(1))
 }
@@ -194,13 +198,14 @@ test_button_tap_within_window_registers_pressed :: proc(t: ^testing.T) {
 	}
 
 	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
 	queue := new_device_queue(context.temp_allocator)
 
 	// Down then up inside one window: pressed latches (the tap registered), held is
 	// false (up at the tick instant).
 	enqueue_key_down(&queue, "Key::Space")
 	enqueue_key_up(&queue, "Key::Space")
-	snap, _ := resolve_tick(table, &queue, prev, context.temp_allocator)
+	snap, _, _ := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
 	defer delete_input(snap)
 	testing.expect(t, pressed(snap, .P1, fire.id))
 	testing.expect(t, !held(snap, .P1, fire.id))
@@ -220,11 +225,12 @@ test_button_release_edge_after_hold :: proc(t: ^testing.T) {
 	}
 
 	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
 	queue := new_device_queue(context.temp_allocator)
 
 	// Tick 1: press and hold. pressed + held, not released.
 	enqueue_key_down(&queue, "Key::Space")
-	snap1, held1 := resolve_tick(table, &queue, prev, context.temp_allocator)
+	snap1, held1, levels1 := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
 	defer delete_input(snap1)
 	testing.expect(t, pressed(snap1, .P1, fire.id))
 	testing.expect(t, held(snap1, .P1, fire.id))
@@ -232,11 +238,126 @@ test_button_release_edge_after_hold :: proc(t: ^testing.T) {
 
 	// Tick 2: release. released edge (was held, now up), not pressed, not held.
 	enqueue_key_up(&queue, "Key::Space")
-	snap2, _ := resolve_tick(table, &queue, held1, context.temp_allocator)
+	snap2, _, _ := resolve_tick(table, &queue, held1, levels1, context.temp_allocator)
 	defer delete_input(snap2)
 	testing.expect(t, released(snap2, .P1, fire.id))
 	testing.expect(t, !pressed(snap2, .P1, fire.id))
 	testing.expect(t, !held(snap2, .P1, fire.id))
+}
+
+// test_held_key_persists_across_eventless_window proves §23 §4 LEVEL semantics for
+// a button held across an EVENT-LESS window: a real device emits one KEYDOWN edge,
+// then nothing while the key stays down. Window N injects the down; window N+1
+// injects NOTHING. The action must still read `held` in window N+1 (the level
+// persists), `pressed` only in window N (the edge is gone), and `released` in
+// neither (no up edge yet). Threading the Device_Levels carrier is what survives
+// the event-less window — without it the level would die after window N.
+@(test)
+test_held_key_persists_across_eventless_window :: proc(t: ^testing.T) {
+	program := button_program(context.temp_allocator)
+	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
+
+	fire, found := table.registry.by_name["Trigger::Fire"]
+	if !testing.expect(t, found) {
+		return
+	}
+
+	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
+	queue := new_device_queue(context.temp_allocator)
+
+	// Window N: key down — pressed + held, not released.
+	enqueue_key_down(&queue, "Key::Space")
+	snap_n, held_n, levels_n := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
+	defer delete_input(snap_n)
+	testing.expect(t, pressed(snap_n, .P1, fire.id))
+	testing.expect(t, held(snap_n, .P1, fire.id))
+	testing.expect(t, !released(snap_n, .P1, fire.id))
+
+	// Window N+1: NO events — the level persists, so still held, no new pressed edge,
+	// and not released (no up edge happened).
+	snap_n1, _, _ := resolve_tick(table, &queue, held_n, levels_n, context.temp_allocator)
+	defer delete_input(snap_n1)
+	testing.expect(t, held(snap_n1, .P1, fire.id))
+	testing.expect(t, !pressed(snap_n1, .P1, fire.id))
+	testing.expect(t, !released(snap_n1, .P1, fire.id))
+}
+
+// test_held_keys_axis_value_persists_at_rail proves the axis twin of the level
+// persistence: a keys_axis key held across an EVENT-LESS window keeps its rail
+// value, where without the carrier the digital axis contribution would drop to 0
+// the moment the down edge left the window. Window N injects W down → P1
+// Steer::Move reads −1; window N+1 injects nothing → it still reads −1; window N+2
+// injects W up → it returns to 0. This is the live-device failure mode the carrier
+// exists for: a held W emits one edge, and without the persisted level the axis
+// dies after one tick.
+@(test)
+test_held_keys_axis_value_persists_at_rail :: proc(t: ^testing.T) {
+	program, ok := load_golden(t)
+	if !ok {
+		return
+	}
+	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
+	steer, sok := steer_move_id(t, table.registry)
+	if !sok {
+		return
+	}
+
+	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
+	queue := new_device_queue(context.temp_allocator)
+
+	// Window N: W down → P1 Steer::Move reads −1 (W is the negative keys_axis key).
+	enqueue_key_down(&queue, "Key::W")
+	snap_n, held_n, levels_n := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
+	defer delete_input(snap_n)
+	testing.expect_value(t, value(snap_n, .P1, steer), fixed_neg(to_fixed(1)))
+
+	// Window N+1: NO events — the held W keeps the axis at the −1 rail.
+	snap_n1, held_n1, levels_n1 := resolve_tick(table, &queue, held_n, levels_n, context.temp_allocator)
+	defer delete_input(snap_n1)
+	testing.expect_value(t, value(snap_n1, .P1, steer), fixed_neg(to_fixed(1)))
+
+	// Window N+2: W up → the level drops, so the axis returns to 0.
+	enqueue_key_up(&queue, "Key::W")
+	snap_n2, _, _ := resolve_tick(table, &queue, held_n1, levels_n1, context.temp_allocator)
+	defer delete_input(snap_n2)
+	testing.expect_value(t, value(snap_n2, .P1, steer), Fixed(0))
+}
+
+// test_stick_sample_persists_across_eventless_window proves §23 §4 LEVEL semantics
+// for an ANALOG stick: a stick held at a rail emits one CONTROLLERAXISMOTION sample,
+// then nothing while it stays there. Window N injects the sample → the axis reads
+// it; window N+1 injects nothing → the axis still reads the last sample (the stick
+// did not re-center). Without the persisted sample the axis would snap to 0 the
+// moment the sample left the window — the analog counterpart of the held-key bug.
+@(test)
+test_stick_sample_persists_across_eventless_window :: proc(t: ^testing.T) {
+	program, ok := load_golden(t)
+	if !ok {
+		return
+	}
+	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
+	steer, sok := steer_move_id(t, table.registry)
+	if !sok {
+		return
+	}
+
+	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
+	queue := new_device_queue(context.temp_allocator)
+
+	// Window N: a half-magnitude stick sample (above the deadzone) → P1 reads it.
+	half := fixed_from_decimal(0, "5")
+	enqueue_stick_sample(&queue, "Stick::Left", .Y, half)
+	snap_n, held_n, levels_n := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
+	defer delete_input(snap_n)
+	testing.expect_value(t, value(snap_n, .P1, steer), half)
+
+	// Window N+1: NO events — the held stick keeps reading its last sample.
+	snap_n1, _, _ := resolve_tick(table, &queue, held_n, levels_n, context.temp_allocator)
+	defer delete_input(snap_n1)
+	testing.expect_value(t, value(snap_n1, .P1, steer), half)
 }
 
 // test_action_registry_skips_non_input_enums proves the minting boundary: only
