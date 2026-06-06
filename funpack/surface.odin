@@ -452,18 +452,24 @@ surface_engine_member :: proc(receiver: ^Engine_Type, member: string) -> (type: 
 }
 
 // surface_engine_method types a method call off an engine-typed value
-// (spec §23): Input.value reads a player's bound axis as a fixed scalar;
-// Bindings.axis registers one axis mapping and returns the builder for
-// chaining. The axis-role parameter (Input.value's second arg, Bindings.axis's
-// second arg) and the axis-source parameter (Bindings.axis's third arg) have
-// no checker ground, so they type as the nil unknown that unifies with the
-// user axis enum and the keys_axis/stick_y result.
+// (spec §23): the five §23 §2 Input queries — pressed/released/held read a
+// player's bound button action as the edge/level Bools, value/axis read a
+// bound axis action as a fixed scalar / a Vec2 — and Bindings.axis registers
+// one axis mapping and returns the builder for chaining. The action-role
+// parameter (each query's second arg, Bindings.axis's second arg) and the
+// axis-source parameter (Bindings.axis's third arg) have no checker ground,
+// so they type as the nil unknown that unifies with the user Button/Axis enum
+// and the keys_axis/stick_y result.
 surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signature: Type, found: bool) {
 	#partial switch receiver.kind {
 	case .Input:
 		switch member {
+		case "pressed", "released", "held":
+			return func_of({engine_type_of(.PlayerId), nil}, Ground_Type.Bool), true
 		case "value":
 			return func_of({engine_type_of(.PlayerId), nil}, Ground_Type.Fixed), true
+		case "axis":
+			return func_of({engine_type_of(.PlayerId), nil}, Ground_Type.Vec2), true
 		}
 	case .Bindings:
 		switch member {

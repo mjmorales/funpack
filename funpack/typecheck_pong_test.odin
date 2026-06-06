@@ -137,6 +137,78 @@ typecheck_pong_unit :: proc(body: string) -> Type_Error {
 	return err
 }
 
+// INPUT_QUERY_HEADER is the self-contained surface for the §23 §2 query
+// fixtures: a Button-kinded and an Axis-kinded action enum over a thing whose
+// behavior takes the Input resource — the snake/hunt shape, independent of the
+// pong golden checkout.
+INPUT_QUERY_HEADER :: "import engine.math.{Fixed, Vec2}\n" +
+	"import engine.input.{Input, PlayerId}\n" +
+	"thing Walker { pos: Vec2 }\n" +
+	"enum Act: Button { Jump }\n" +
+	"enum Steer: Axis { Move }\n"
+
+typecheck_input_query_unit :: proc(body: string) -> Type_Error {
+	source := strings.concatenate({INPUT_QUERY_HEADER, body}, context.temp_allocator)
+	ast, parse_err := stage_parse(stage_lex(source))
+	if parse_err != .None {
+		return .Unsupported_Expr
+	}
+	_, err := stage_typecheck(ast)
+	return err
+}
+
+@(test)
+test_input_query_surface_typechecks :: proc(t: ^testing.T) {
+	// AC (§23 §2): all five queries type off the Input resource — the three
+	// button queries land Bool (consumed as if-conditions), axis lands Vec2
+	// (consumed as the Vec2 field write), value lands Fixed (consumed as a
+	// Vec2 component). The action args are the user Button/Axis enums the nil
+	// unknown unifies with.
+	err := typecheck_input_query_unit(
+		"behavior probe on Walker {\n" +
+		"  fn step(self: Walker, input: Input) -> Walker {\n" +
+		"    if input.pressed(PlayerId::P1, Act::Jump) { return self }\n" +
+		"    if input.released(PlayerId::P1, Act::Jump) { return self }\n" +
+		"    if input.held(PlayerId::P1, Act::Jump) { return self }\n" +
+		"    return self with { pos: input.axis(PlayerId::P1, Steer::Move) }\n" +
+		"  }\n" +
+		"}\n" +
+		"behavior scale on Walker {\n" +
+		"  fn step(self: Walker, input: Input) -> Walker {\n" +
+		"    return self with { pos: Vec2{x: input.value(PlayerId::P1, Steer::Move), y: 0.0} }\n" +
+		"  }\n" +
+		"}\n")
+	testing.expect_value(t, err, Type_Error.None)
+}
+
+@(test)
+test_input_query_arity_mismatch_rejected :: proc(t: ^testing.T) {
+	// AC: a query call missing its action argument rejects — the signatures
+	// are two-parameter (PlayerId, action), not variadic.
+	err := typecheck_input_query_unit(
+		"behavior probe on Walker {\n" +
+		"  fn step(self: Walker, input: Input) -> Walker {\n" +
+		"    if input.pressed(PlayerId::P1) { return self }\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n")
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_input_query_result_misuse_rejected :: proc(t: ^testing.T) {
+	// AC: the button queries land Bool, not a numeric — writing a pressed
+	// result into the Vec2 field rejects, so the Bool ground is real, not a
+	// wildcard.
+	err := typecheck_input_query_unit(
+		"behavior probe on Walker {\n" +
+		"  fn step(self: Walker, input: Input) -> Walker {\n" +
+		"    return self with { pos: input.pressed(PlayerId::P1, Act::Jump) }\n" +
+		"  }\n" +
+		"}\n")
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
+}
+
 @(test)
 test_pong_unit_positive_control_typechecks :: proc(t: ^testing.T) {
 	// The control for the negative fixtures below: a behavior on Paddle that
