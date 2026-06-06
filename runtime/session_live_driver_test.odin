@@ -57,9 +57,10 @@ test_score_digit_rects_empty_is_no_rects :: proc(t: ^testing.T) {
 }
 
 // test_score_digit_rects_single_digit_starts_at_origin pins the layout anchor: the
-// first digit's glyph begins at SCORE_ORIGIN and every cell is SCORE_CELL-sized, so
-// the readout is positioned by the named constants, not magic offsets. '1' lights 8
-// cells (0b010, 0b110, 0b010, 0b010, 0b111), the same count digit_rects pins.
+// first digit's glyph is laid out from SCORE_ORIGIN and every cell is SCORE_CELL-
+// sized, so the readout is positioned by the named constants, not magic offsets.
+// '1' lights 8 cells (0b010, 0b110, 0b010, 0b010, 0b111), the same count digit_rects
+// pins; the first cell's at is its CENTER (§20 anchor).
 @(test)
 test_score_digit_rects_single_digit_starts_at_origin :: proc(t: ^testing.T) {
 	rects := score_digit_rects("1", context.temp_allocator)
@@ -67,24 +68,29 @@ test_score_digit_rects_single_digit_starts_at_origin :: proc(t: ^testing.T) {
 	first := rects[0]
 	testing.expect_value(t, first.color, Draw_Color.White)
 	testing.expect_value(t, first.size, SCORE_CELL)
-	// '1' row 0 mask 0b010 lights column 1: at = SCORE_ORIGIN + (1*cell.x, 0).
-	testing.expect_value(t, first.at.x, fixed_add(SCORE_ORIGIN.x, SCORE_CELL.x))
-	testing.expect_value(t, first.at.y, SCORE_ORIGIN.y)
+	// '1' row 0 mask 0b010 lights column 1: center = SCORE_ORIGIN +
+	// (1*cell.x + cell.x/2, cell.y/2).
+	half_x := fixed_div(SCORE_CELL.x, to_fixed(2))
+	half_y := fixed_div(SCORE_CELL.y, to_fixed(2))
+	testing.expect_value(t, first.at.x, fixed_add(fixed_add(SCORE_ORIGIN.x, SCORE_CELL.x), half_x))
+	testing.expect_value(t, first.at.y, fixed_add(SCORE_ORIGIN.y, half_y))
 }
 
 // test_score_digit_rects_advances_per_character pins the cursor step: a space
 // between two digits advances the cursor SCORE_GLYPH_ADVANCE per character but draws
 // no rect for the gap, so "0 0" emits only the two digits' glyphs and the second
-// digit sits two advances right of the first.
+// digit is laid out two advances right of the first.
 @(test)
 test_score_digit_rects_advances_per_character :: proc(t: ^testing.T) {
 	// '0' is a 12-cell hollow box; "0 0" is two '0' glyphs with a blank gap.
 	rects := score_digit_rects("0 0", context.temp_allocator)
 	testing.expect_value(t, len(rects), 24)
-	// The second '0' starts two SCORE_GLYPH_ADVANCE steps right of SCORE_ORIGIN (one
-	// for the first digit, one for the space). Its first lit cell (row 0, col 0) sits
-	// at that advanced origin.
-	second_origin_x := fixed_add(SCORE_ORIGIN.x, fixed_add(SCORE_GLYPH_ADVANCE, SCORE_GLYPH_ADVANCE))
-	testing.expect_value(t, rects[12].at.x, second_origin_x)
-	testing.expect_value(t, rects[12].at.y, SCORE_ORIGIN.y)
+	// The second '0' is laid out two SCORE_GLYPH_ADVANCE steps right of SCORE_ORIGIN
+	// (one for the first digit, one for the space). Its first lit cell (row 0, col 0)
+	// CENTER (§20 anchor) sits at that advanced corner plus half a cell on each axis.
+	second_corner_x := fixed_add(SCORE_ORIGIN.x, fixed_add(SCORE_GLYPH_ADVANCE, SCORE_GLYPH_ADVANCE))
+	half_x := fixed_div(SCORE_CELL.x, to_fixed(2))
+	half_y := fixed_div(SCORE_CELL.y, to_fixed(2))
+	testing.expect_value(t, rects[12].at.x, fixed_add(second_corner_x, half_x))
+	testing.expect_value(t, rects[12].at.y, fixed_add(SCORE_ORIGIN.y, half_y))
 }
