@@ -60,12 +60,15 @@ test_multi_module_resolves_arena_imports :: proc(t: ^testing.T) {
 	//
 	// SCOPE NOTE: this seam resolves USER-module imports. arena_game's engine.*
 	// imports (engine.nav.{Nav, Path}, engine.prelude.{…, or_else}) name surface
-	// the NEXT seam admits (lore #11 seam 2: engine.world.Ref + engine.nav), and
-	// arena_game's BODY uses if-expressions and tuple match patterns the parser
-	// does not yet admit (deliberate grammar boundaries, expr.odin). So the proof
-	// reads arena_game's REAL user-module import declarations (parse_arena_game_user_imports)
+	// the NEXT seam admits (lore #11 seam 2: engine.world.Ref + engine.nav). The
+	// if-expression and tuple-match-pattern body grammar arena_game's bodies use
+	// (lines 38, 62-65) IS now admitted by the parser (the if-expr/tuple-match
+	// grammar seam, expr.odin), so the full file PARSES — the proof asserts that
+	// directly below. Typecheck of the full file still depends on the engine.nav /
+	// engine.world.Ref surface another seam admits, so the proof reads
+	// arena_game's REAL user-module import declarations (parse_arena_game_user_imports)
 	// and resolves exactly those against the index — the user-module arms this
-	// seam owns — isolated from the engine.* arms and body grammar another seam owns.
+	// seam owns — isolated from the engine.* surface another seam owns.
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP multi-module arena: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling", dir)
@@ -133,6 +136,21 @@ test_multi_module_resolves_arena_imports :: proc(t: ^testing.T) {
 	testing.expect(t, has_arena)
 	testing.expect_value(t, arena_binding.module, "arena")
 	testing.expect_value(t, arena_binding.kind, Decl_Kind.Type_Name)
+
+	// The if-expr/tuple-match grammar seam landed: arena_game's FULL source now
+	// PARSES (its bodies use the value-producing if-expression at arena_game.fun
+	// line 38 and the tuple match patterns at lines 62-65 — forms the parser used
+	// to deliberately exclude). The body grammar is admitted, so stage_parse over
+	// the whole file is .None — strictly further than the import-prefix-only proof
+	// this test ran before the seam. Full typecheck still awaits the engine.nav /
+	// engine.world.Ref surface another seam admits.
+	game_ast, game_parse := stage_parse(stage_lex(string(game_bytes)))
+	testing.expect_value(t, game_parse, Parse_Error.None)
+	// The parsed file carries arena_game's behaviors and fns whose bodies hold the
+	// newly-admitted forms — chase's tuple-match step and nearest_player's
+	// if-expr fold — so the parse proof is over real grammar, not an empty file.
+	testing.expect(t, len(game_ast.behaviors) > 0)
+	testing.expect(t, len(game_ast.fns) > 0)
 }
 
 // parse_arena_game_user_imports parses arena_game.fun's leading import block and

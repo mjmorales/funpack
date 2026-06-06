@@ -4,8 +4,13 @@
 // call/member → atom. `and`/`or`/`not` are word operators carried as Ident
 // tokens, so the table keys them by text; `with` (the record-update
 // operator, spec §02 §5) binds just above unary and just below the
-// call/member postfix loop. `if` parses as the early-return statement form
-// in fn bodies (parser.odin), not as an expression atom here. Indexing
+// call/member postfix loop. `if` is BOTH the early-return statement form in
+// fn bodies (parser.odin parse_if_stmt) AND a value expression atom here
+// (parse_if_expr): the value form `if cond { expr } else { expr }` requires
+// both arms — a missing `else` is the precise parse error .Missing_Else, never
+// a fallback — and the typechecker unifies the two arm types (the "if/match
+// pullout" of grammar/fun.ll1.md: `if` at statement head dispatches to the
+// statement construct, as an Atom elsewhere it is the expression). Indexing
 // `xs[i]` and ranges have no production and parse as errors; `match` parses
 // structurally (spec §02 §5), is typed by typecheck.odin's match_check, and
 // is proven exhaustive by the gate stage (gates.odin).
@@ -27,6 +32,7 @@ Expr :: union {
 	^With_Expr,
 	^Match_Expr,
 	^Tuple_Expr,
+	^If_Expr,
 }
 
 Int_Lit_Expr :: struct {
@@ -173,6 +179,22 @@ Match_Arm :: struct {
 Match_Expr :: struct {
 	scrutinee: Expr,
 	arms:      []Match_Arm,
+}
+
+// If_Expr is the value-producing conditional `if cond { then } else { else }`
+// (spec §02 §5; grammar/fun.ebnf §15 IfExpr). Distinct from the parser.odin
+// If_Node early-return STATEMENT — this is an EXPRESSION atom usable anywhere a
+// value is (a `let` RHS, a `return` value, a match-arm body, a call argument).
+// Both arms are REQUIRED in expression position: the parser rejects a missing
+// `else` with .Missing_Else, and the typechecker unifies the two arm types
+// (a disagreement is .Type_Mismatch). Each arm is a single value expression —
+// the minimal value-block `{ expr }` shape, mirroring the lambda body and the
+// match-arm body — and the else arm may itself be another If_Expr, so an
+// else-if chain `if a { … } else if b { … } else { … }` nests by construction.
+If_Expr :: struct {
+	cond:        Expr,
+	then_branch: Expr,
+	else_branch: Expr,
 }
 
 // With_Expr is the record-update operator `value with { field: v, … }`
@@ -341,6 +363,8 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		return parse_lambda(p)
 	case .Match:
 		return parse_match(p)
+	case .If:
+		return parse_if_expr(p)
 	case .Ident:
 		return parse_name_atom(p, tok)
 	}
@@ -412,6 +436,54 @@ parse_match :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	node := new(Match_Expr, context.temp_allocator)
 	node^ = Match_Expr{scrutinee = scrutinee, arms = arms[:]}
 	return node, .None
+}
+
+// parse_if_expr parses the value-producing conditional `if cond { then } else
+// { else }` (spec §02 §5; grammar/fun.ebnf §15 IfExpr), with the leading `if`
+// already consumed by parse_atom. The condition parses in the no-struct-literal
+// context — a trailing `{` opens the consequent block, not a record literal off
+// the condition — mirroring the match-scrutinee and if-statement rules. Each
+// arm is a single value expression wrapped in a `{ … }` value-block; the `else`
+// arm is REQUIRED in expression position (a missing `else` is .Missing_Else,
+// never a silent fallback). The else arm is either a block or a chained `if`
+// (`else if …`), so an else-if ladder nests through parse_atom by construction.
+parse_if_expr :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	saved := p.no_record_brace
+	p.no_record_brace = true
+	cond := parse_expression(p) or_return
+	p.no_record_brace = saved
+	then_branch := parse_if_branch(p) or_return
+	// The `else` arm is mandatory for the value form — the consequent's type
+	// has no counterpart to unify against without it (spec §02 §5).
+	if peek_kind(p) != .Else {
+		return nil, .Missing_Else
+	}
+	p.pos += 1
+	// `else if …` chains as a nested If_Expr; a plain `else { … }` is a value
+	// block. Both reach parse_atom (the if-expr arm), so the chain nests with
+	// no special case here.
+	else_branch: Expr
+	if peek_kind(p) == .If {
+		else_branch = parse_expression(p) or_return
+	} else {
+		else_branch = parse_if_branch(p) or_return
+	}
+	node := new(If_Expr, context.temp_allocator)
+	node^ = If_Expr{cond = cond, then_branch = then_branch, else_branch = else_branch}
+	return node, .None
+}
+
+// parse_if_branch parses one `{ expr }` value-block arm of an if-expression —
+// a single value expression between braces, the same minimal value-block shape
+// the lambda body and match-arm body use (spec §02 §5). Interior newlines are
+// skipped so a multi-line arm `{\n expr \n}` parses, mirroring the lambda body.
+parse_if_branch :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	expect(p, .L_Brace) or_return
+	skip_newlines(p)
+	value := parse_expression(p) or_return
+	skip_newlines(p)
+	expect(p, .R_Brace) or_return
+	return value, .None
 }
 
 // parse_pattern parses the pattern set (spec §02 §5; grammar §13): wildcard

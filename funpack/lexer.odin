@@ -28,7 +28,11 @@ Token_Kind :: enum {
 	// stays legal); on the golden surface they appear only in declaration
 	// position, so they tokenize as reserved openers here. `on` is the
 	// behavior-target preposition, `with` the record-update operator, `if`
-	// the early-return statement opener.
+	// the conditional opener (both the early-return statement and the value
+	// expression, spec §02 §5), `else` the required value-expression alternate
+	// arm (`if cond { … } else { … }`); `else` is a reserved keyword (it never
+	// names a value on the golden surface, so reserving it preserves §02
+	// one-name-one-meaning).
 	Thing,
 	Singleton,
 	Behavior,
@@ -38,6 +42,7 @@ Token_Kind :: enum {
 	Pipeline,
 	With,
 	If,
+	Else,
 	// `on` is a contextual keyword (the behavior-header separator), not a token
 	// kind: it lexes as an Ident and parse_behavior recognizes it by text.
 	// names and literals
@@ -203,10 +208,11 @@ newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
 
 update_nesting :: proc(n: ^Nesting, kind: Token_Kind, prev: Token_Kind) {
 	#partial switch kind {
-	case .Match, .If, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .Arrow:
+	case .Match, .If, .Else, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .Arrow:
 		// `behavior … on Ball {` keeps its body brace a block via the .Behavior
 		// arming above — `on` lexes as an Ident now and need not re-arm here, as
-		// nothing consumes block_pending before the body `{`.
+		// nothing consumes block_pending before the body `{`. `.Else` arms the
+		// alternate arm's `{` as a block the same way `.If` arms the consequent's.
 		n.block_pending = true
 	case .L_Paren:
 		// A paren frame suppresses newlines (call args / grouping / tuple are
@@ -381,6 +387,8 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .With, text = text}, i
 	case "if":
 		return Token{kind = .If, text = text}, i
+	case "else":
+		return Token{kind = .Else, text = text}, i
 	}
 	// `on` is a CONTEXTUAL keyword, not a reserved one: it is the behavior-header
 	// separator (`behavior gate_logic on Door`) yet a perfectly valid §02

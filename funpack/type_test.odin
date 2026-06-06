@@ -98,6 +98,66 @@ test_tuple_compatibility_is_structural :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_if_expr_types_unified_arm_type :: proc(t: ^testing.T) {
+	// AC: a value-producing if-expression types its condition as Bool and unifies
+	// the two arms — a Fixed condition comparison with two Fixed arms types the
+	// whole if-expression as Fixed, exactly like a two-armed match (spec §02 §5).
+	type, err := check_expr_source("if 6.0 < 2.0 { 0.0 } else { 1.0 }")
+	testing.expect_value(t, err, Type_Error.None)
+	testing.expect(t, is_ground(type, .Fixed))
+}
+
+@(test)
+test_if_expr_disagreeing_arms_rejected :: proc(t: ^testing.T) {
+	// AC: the two arms must agree — a Fixed then-arm and an Int else-arm is a
+	// Type_Mismatch, no implicit promotion across arms (the same rule the match
+	// arm unification enforces).
+	_, err := check_expr_source("if 6.0 < 2.0 { 0.0 } else { 1 }")
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_if_expr_non_bool_condition_rejected :: proc(t: ^testing.T) {
+	// AC: a non-Bool condition is a Type_Mismatch — the guard must be Bool-typed
+	// (spec §02 §5). Here the condition is a bare Fixed literal, not a predicate.
+	_, err := check_expr_source("if 1.0 { 0.0 } else { 1.0 }")
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_tuple_pattern_arity_mismatch_rejected :: proc(t: ^testing.T) {
+	// AC: a tuple match pattern whose positional arity disagrees with its
+	// Tuple-typed scrutinee is the precise error .Tuple_Pattern_Arity (spec §02
+	// §5) — a 2-binder pattern over a 3-tuple can never bind coherently, so it is
+	// a compile error rather than a silent nil-bound position.
+	scrutinee := tuple_of({Ground_Type.Int, Ground_Type.Fixed, engine_type_of(.Rng)})
+	two_position := Pattern {
+		kind = .Tuple,
+		elements = {
+			Pattern{kind = .Bare_Binder, binders = {"a"}},
+			Pattern{kind = .Bare_Binder, binders = {"b"}},
+		},
+	}
+	testing.expect_value(t, check_pattern_arity(two_position, scrutinee), Type_Error.Tuple_Pattern_Arity)
+}
+
+@(test)
+test_tuple_pattern_arity_match_accepted :: proc(t: ^testing.T) {
+	// AC: a tuple pattern whose arity AGREES with the scrutinee tuple type passes
+	// the arity check — the `(Option::Some(wp), rest)` 2-position shape over a
+	// 2-tuple is .None, and a nested tuple is checked at every level.
+	scrutinee := tuple_of({option_of(Ground_Type.Fixed), engine_type_of(.Rng)})
+	matching := Pattern {
+		kind = .Tuple,
+		elements = {
+			Pattern{kind = .Variant_Binds, type_name = "Option", variant = "Some", binders = {"wp"}},
+			Pattern{kind = .Bare_Binder, binders = {"rest"}},
+		},
+	}
+	testing.expect_value(t, check_pattern_arity(matching, scrutinee), Type_Error.None)
+}
+
+@(test)
 test_pattern_binders_destructure_tuple_scrutinee :: proc(t: ^testing.T) {
 	// AC: pattern_binders destructures a tuple scrutinee against a tuple pattern —
 	// the `(Option::Some(cell), next)` arm binds `cell` to the option's element

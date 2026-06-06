@@ -268,6 +268,18 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 				return err
 			}
 		}
+	case ^If_Expr:
+		// An if-expression hosts its condition and both arm expressions, any of
+		// which can nest a lambda.
+		if err := arity_walk_expr(e.cond); err != .None {
+			return err
+		}
+		if err := arity_walk_expr(e.then_branch); err != .None {
+			return err
+		}
+		if err := arity_walk_expr(e.else_branch); err != .None {
+			return err
+		}
 	}
 	return .None
 }
@@ -364,6 +376,14 @@ count_short_circuit :: proc(expr: Expr) -> int {
 		for element in e.elements {
 			count += count_short_circuit(element)
 		}
+	case ^If_Expr:
+		// An if-EXPRESSION is itself a decision point (one branch), counted the
+		// same one the early-return `if` statement is in body_decisions, plus any
+		// short-circuits in its condition and the two arm expressions.
+		count += 1
+		count += count_short_circuit(e.cond)
+		count += count_short_circuit(e.then_branch)
+		count += count_short_circuit(e.else_branch)
 	}
 	return count
 }
@@ -561,6 +581,14 @@ nesting_depth :: proc(expr: Expr) -> int {
 		for element in e.elements {
 			inner = max(inner, nesting_depth(element))
 		}
+		return inner
+	case ^If_Expr:
+		// An if-expression is control nesting like a match: the condition is the
+		// discriminant computed before the branch opens, so it sits at the if's
+		// own level (it passes through), while each arm body deepens by one.
+		inner := nesting_depth(e.cond)
+		inner = max(inner, 1 + nesting_depth(e.then_branch))
+		inner = max(inner, 1 + nesting_depth(e.else_branch))
 		return inner
 	}
 	// An atom (literal or bare name) is a leaf — depth zero.
@@ -805,6 +833,18 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 			strings.write_byte(b, ' ')
 			canon_expr(b, element, alpha)
 		}
+		strings.write_byte(b, ')')
+	case ^If_Expr:
+		// The `if` kind tag plus its three ordered children (condition, then
+		// arm, else arm) canonicalizes the conditional, so two if-expressions
+		// collide on a dup_class only when condition AND both arms are
+		// structurally identical (modulo alpha-renaming).
+		strings.write_string(b, "(if ")
+		canon_expr(b, e.cond, alpha)
+		strings.write_byte(b, ' ')
+		canon_expr(b, e.then_branch, alpha)
+		strings.write_byte(b, ' ')
+		canon_expr(b, e.else_branch, alpha)
 		strings.write_byte(b, ')')
 	case nil:
 		strings.write_string(b, "(nil)")
@@ -1126,6 +1166,17 @@ match_walk_expr :: proc(expr: Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 			}
 		}
 		return .None
+	case ^If_Expr:
+		// A match buried in an if-expression's condition or either arm is still
+		// checked for exhaustiveness (the arena's `Option::Some(b) => if … {
+		// Option::Some(p.pos) } else { Option::Some(b) }` arm body is an if-expr).
+		if err := match_walk_expr(e.cond, sets); err != .None {
+			return err
+		}
+		if err := match_walk_expr(e.then_branch, sets); err != .None {
+			return err
+		}
+		return match_walk_expr(e.else_branch, sets)
 	}
 	return .None
 }

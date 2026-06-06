@@ -136,10 +136,31 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		return eval_with(ctx, env, e)
 	case ^Match_Expr:
 		return eval_match(ctx, env, e)
+	case ^If_Expr:
+		return eval_if(ctx, env, e)
 	case ^Lambda_Expr:
 		return Lambda_Value{node = e, env = env}, true
 	}
 	return nil, false
+}
+
+// eval_if evaluates a value-producing if-expression (spec §02 §5): the
+// condition evaluates to a Bool, then exactly one arm evaluates and yields the
+// if-expression's value — the consequent when true, the alternate when false.
+// Both arms are present (the parser requires `else`) and unify (the
+// typechecker), so a false guard always has an alternate to take. A non-Bool
+// condition is a fail-closed ok = false — a typecheck-rejected shape that never
+// reaches a passing program.
+eval_if :: proc(ctx: Eval_Ctx, env: ^Env, e: ^If_Expr) -> (value: Value, ok: bool) {
+	cond := eval_expr(ctx, env, e.cond) or_return
+	guard, is_bool := cond.(bool)
+	if !is_bool {
+		return nil, false
+	}
+	if guard {
+		return eval_expr(ctx, env, e.then_branch)
+	}
+	return eval_expr(ctx, env, e.else_branch)
 }
 
 eval_list :: proc(ctx: Eval_Ctx, env: ^Env, e: ^List_Expr) -> (value: Value, ok: bool) {

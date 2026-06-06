@@ -104,7 +104,24 @@ emit_expr :: proc(b: ^strings.Builder, expr: Expr) {
 		emit_match(b, e)
 	case ^Tuple_Expr:
 		emit_tuple(b, e)
+	case ^If_Expr:
+		emit_if(b, e)
 	}
+}
+
+// emit_if serializes a value-producing if-expression as a fixed-arity `if_expr`
+// node — an `if_expr` head over its 3 ordered children (condition, then arm,
+// else arm), the same total, lookahead-free shape every other expression node
+// uses. Like emit_tuple, the artifact-format §2.7 ratification of the `if_expr`
+// node KIND (a closed set, so a new kind is a schema-version bump) lands with
+// the golden-integration seam that first emits an if-expression body
+// end-to-end; this grammar seam emits the structurally-sound node so the body
+// walk stays total and the build's complete Expr switch is exhaustive.
+emit_if :: proc(b: ^strings.Builder, e: ^If_Expr) {
+	emit_line(b, "node if_expr 3")
+	emit_expr(b, e.cond)
+	emit_expr(b, e.then_branch)
+	emit_expr(b, e.else_branch)
 }
 
 // emit_tuple serializes a tuple literal `(a, b, …)` as a count-driven `tuple`

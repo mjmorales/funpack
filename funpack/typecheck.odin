@@ -29,6 +29,7 @@ Type_Error :: enum {
 	Name_Collision,   // one name, two meanings (spec §02): a user decl colliding with an import or another user decl, or two imports binding one name to different declarations
 	Unregistered_Layer, // a Body's layer/mask names a value outside any CollisionLayer-kinded enum's variant set (spec §11 §5)
 	Reserved_Signal_Name, // a user signal declared under an engine-routed name (Trigger/Contact, spec §11 §4) — the runtime routes those names per-instance, so the user signal would silently never broadcast
+	Tuple_Pattern_Arity,  // a tuple match pattern whose positional arity disagrees with its Tuple-typed scrutinee (spec §02 §5) — a 2-binder pattern over a 3-tuple can never bind coherently
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -182,6 +183,10 @@ layer_walk_expr :: proc(expr: Expr, registry: []string) -> Type_Error {
 		for element in e.elements {
 			layer_walk_expr(element, registry) or_return
 		}
+	case ^If_Expr:
+		layer_walk_expr(e.cond, registry) or_return
+		layer_walk_expr(e.then_branch, registry) or_return
+		layer_walk_expr(e.else_branch, registry) or_return
 	}
 	return .None
 }
@@ -365,8 +370,35 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		return match_check(ctx, e)
 	case ^Tuple_Expr:
 		return tuple_check(ctx, e)
+	case ^If_Expr:
+		return if_check(ctx, e)
 	}
 	return nil, .Unsupported_Expr
+}
+
+// if_check types a value-producing if-expression (spec §02 §5): the condition
+// must be Bool, and the two arm types must unify — the unified type is the
+// if-expression's type, exactly like a two-armed match. Both arms are required
+// by the parser (.Missing_Else), so this pass always sees a then AND an else; a
+// disagreement between them is .Type_Mismatch (no implicit promotion). The else
+// arm may itself be an If_Expr (an else-if chain), which types recursively
+// through this same arm.
+if_check :: proc(ctx: Check_Ctx, e: ^If_Expr) -> (type: Type, err: Type_Error) {
+	cond := expr_check(ctx, e.cond) or_return
+	if !is_ground(cond, .Bool) {
+		return nil, .Type_Mismatch
+	}
+	then_type := expr_check(ctx, e.then_branch) or_return
+	else_type := expr_check(ctx, e.else_branch) or_return
+	if !types_compatible(then_type, else_type) {
+		return nil, .Type_Mismatch
+	}
+	// A nil arm (the unknown) lets the other arm carry the type, mirroring the
+	// match unification — types_compatible already accepted the pair.
+	if then_type == nil {
+		return else_type, .None
+	}
+	return then_type, .None
 }
 
 // tuple_check types a tuple expression `(a, b, …)` into a Tuple_Type over its
@@ -746,6 +778,7 @@ match_check :: proc(ctx: Check_Ctx, e: ^Match_Expr) -> (type: Type, err: Type_Er
 	scrutinee := expr_check(ctx, e.scrutinee) or_return
 	result: Type
 	for arm in e.arms {
+		check_pattern_arity(arm.pattern, scrutinee) or_return
 		binders, types := pattern_binders(arm.pattern, scrutinee)
 		saved := overlay_scope(&ctx.scope, binders, types)
 		body, body_err := expr_check(ctx, arm.body)
@@ -761,6 +794,35 @@ match_check :: proc(ctx: Check_Ctx, e: ^Match_Expr) -> (type: Type, err: Type_Er
 		}
 	}
 	return result, .None
+}
+
+// check_pattern_arity rejects a tuple match pattern whose positional arity
+// disagrees with its Tuple-typed scrutinee (spec §02 §5): a `(a, b)` pattern
+// over a 3-tuple, or a `(a, b, c)` pattern over a 2-tuple, can never bind
+// coherently, so it is .Tuple_Pattern_Arity rather than a silent nil-bound
+// position. The check recurses into each sub-pattern against the matching
+// tuple element, so a nested tuple `((x, y), z)` is arity-checked at every
+// level. A tuple pattern over a non-tuple (or nil/unknown) scrutinee is left to
+// the resolver/gate — this pass owns only the arity rule when both sides are
+// tuples; a non-tuple pattern (variant, wildcard, bare binder) has no arity to
+// disagree on and passes through.
+check_pattern_arity :: proc(pattern: Pattern, scrutinee: Type) -> Type_Error {
+	if pattern.kind != .Tuple {
+		return .None
+	}
+	tuple, is_tuple := scrutinee.(^Tuple_Type)
+	if !is_tuple {
+		// The scrutinee's tuple shape is unknown here — arity is the gate's /
+		// resolver's concern, not a precise mismatch this pass can claim.
+		return .None
+	}
+	if len(pattern.elements) != len(tuple.elements) {
+		return .Tuple_Pattern_Arity
+	}
+	for sub, i in pattern.elements {
+		check_pattern_arity(sub, tuple.elements[i]) or_return
+	}
+	return .None
 }
 
 // pattern_binders computes an arm pattern's binder names and their types against
@@ -782,10 +844,13 @@ pattern_binders :: proc(pattern: Pattern, scrutinee: Type) -> (names: []string, 
 
 // collect_pattern_binders appends one pattern's binders and their types onto the
 // shared accumulators, recursing into a tuple pattern's positions against the
-// matching tuple scrutinee element. An unknown scrutinee shape (a nil position,
-// or a tuple pattern whose arity disagrees) binds the names to nil — the typing
-// pass leaves an unresolvable binder as the nil unknown rather than rejecting,
-// since exhaustiveness/shape is the gate's and resolver's concern.
+// matching tuple scrutinee element. A tuple pattern over a Tuple scrutinee is
+// already arity-checked by check_pattern_arity (run per arm in match_check), so
+// a disagreeing arity never reaches here; an unknown scrutinee shape (a nil
+// position, or a tuple pattern over a non-tuple scrutinee) binds the names to
+// nil — the typing pass leaves an unresolvable binder as the nil unknown rather
+// than rejecting, since exhaustiveness/shape is the gate's and resolver's
+// concern.
 collect_pattern_binders :: proc(
 	pattern: Pattern,
 	scrutinee: Type,

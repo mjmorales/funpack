@@ -445,3 +445,84 @@ test_expr_tuple_pattern_with_nested_variant :: proc(t: ^testing.T) {
 	testing.expect_value(t, second.elements[0].kind, Pattern_Kind.Bare_Variant)
 	testing.expect_value(t, second.elements[0].variant, "None")
 }
+
+@(test)
+test_expr_if_value_form_parses :: proc(t: ^testing.T) {
+	// The arena `if length(p.pos - from) < length(b - from) { Option::Some(p.pos) }
+	// else { Option::Some(b) }` shape (spec §02 §5): a value-producing
+	// if-expression in atom position parses to an If_Expr with a condition and
+	// both arm expressions.
+	source := "if a < b { Option::Some(a) } else { Option::Some(b) }"
+	expr, err := parse_expr_text(source)
+	testing.expect_value(t, err, Parse_Error.None)
+	if_expr, is_if := expr.(^If_Expr)
+	testing.expect(t, is_if)
+	if !is_if {
+		return
+	}
+	// The condition is the relational comparison.
+	cond, cond_is_bin := if_expr.cond.(^Binary_Expr)
+	testing.expect(t, cond_is_bin)
+	if cond_is_bin {
+		testing.expect_value(t, cond.op.kind, Token_Kind.Lt)
+	}
+	// Both arms are Option::Some(...) variant expressions.
+	then_v, then_is_variant := if_expr.then_branch.(^Variant_Expr)
+	testing.expect(t, then_is_variant)
+	if then_is_variant {
+		testing.expect_value(t, then_v.variant, "Some")
+	}
+	else_v, else_is_variant := if_expr.else_branch.(^Variant_Expr)
+	testing.expect(t, else_is_variant)
+	if else_is_variant {
+		testing.expect_value(t, else_v.variant, "Some")
+	}
+}
+
+@(test)
+test_expr_if_value_form_in_let_rhs_parses :: proc(t: ^testing.T) {
+	// An if-expression is a value usable as a `let` RHS — the same atom that
+	// rides a match-arm body or a call argument (the "if/match pullout",
+	// grammar/fun.ll1.md). The condition uses no-record-brace context, so the
+	// consequent `{` opens the value block, not a record off the condition.
+	source := "let x = if flag { 1 } else { 2 }\n"
+	p := Parser{tokens = stage_lex(source)}
+	let_node, err := parse_let(&p)
+	testing.expect_value(t, err, Parse_Error.None)
+	_, is_if := let_node.value.(^If_Expr)
+	testing.expect(t, is_if)
+}
+
+@(test)
+test_expr_if_missing_else_is_precise_error :: proc(t: ^testing.T) {
+	// A value-producing if-expression with no `else` arm is the precise parse
+	// error .Missing_Else — never a silent fallback (spec §02 §5: both arms are
+	// required in value position). Here `if` parses as an atom (a `return` value),
+	// so the expression form's else-requirement fires.
+	source := "return if cond { 1 }\n"
+	p := Parser{tokens = stage_lex(source)}
+	_, err := parse_return(&p)
+	testing.expect_value(t, err, Parse_Error.Missing_Else)
+}
+
+@(test)
+test_expr_else_if_chain_nests :: proc(t: ^testing.T) {
+	// `else if …` chains as a nested If_Expr in the else branch — an else-if
+	// ladder nests through the atom by construction (grammar/fun.ebnf §15:
+	// `else (Block | IfExpr)`).
+	source := "if a { 1 } else if b { 2 } else { 3 }"
+	expr, err := parse_expr_text(source)
+	testing.expect_value(t, err, Parse_Error.None)
+	outer, is_if := expr.(^If_Expr)
+	testing.expect(t, is_if)
+	if !is_if {
+		return
+	}
+	inner, else_is_if := outer.else_branch.(^If_Expr)
+	testing.expect(t, else_is_if)
+	if else_is_if {
+		// The inner if's else arm is the final literal `3`.
+		_, inner_else_is_int := inner.else_branch.(^Int_Lit_Expr)
+		testing.expect(t, inner_else_is_int)
+	}
+}

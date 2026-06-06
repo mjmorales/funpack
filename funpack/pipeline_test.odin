@@ -198,6 +198,110 @@ test_pipeline_checked_div_golden_values :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pipeline_if_expr_arm_value_golden :: proc(t: ^testing.T) {
+	// arena_game's literal usage end to end: a value-producing if-expression in a
+	// match-arm body (arena_game.fun line 38, the `nearest_player` nearest-wins
+	// fold — `Option::Some(b) => if p < b { Option::Some(p) } else {
+	// Option::Some(b) }`). The fold starts None, takes the first element, then
+	// keeps the smaller of (current, best) via the if-expr. Both arms are
+	// Option[Fixed], so the if-expression unifies to Option[Fixed] and evaluates
+	// the chosen branch. Result: Some(3.0), the nearest of 9.0 and 3.0.
+	report, err := run_golden_asserts(
+		"assert fold([9.0, 3.0], Option::None, fn(acc, p) {\n" +
+		"  return match acc {\n" +
+		"    Option::None    => Option::Some(p)\n" +
+		"    Option::Some(b) => if p < b { Option::Some(p) } else { Option::Some(b) }\n" +
+		"  }\n" +
+		"}) == Option::Some(3.0)\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_if_expr_missing_else_is_parse_failed :: proc(t: ^testing.T) {
+	// NEGATIVE: a value-producing if-expression with no `else` arm is a parse
+	// failure (.Missing_Else surfaced as Pipeline_Error.Parse_Failed) — both arms
+	// are required in value position, never a silent fallback (spec §02 §5). Here
+	// `if` parses as an atom (an assert value), so the expression-form
+	// else-requirement fires rather than the statement-form early-return.
+	_, err := run_golden_asserts("assert (if 1.0 < 2.0 { 10.0 }) == 10.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Parse_Failed)
+}
+
+@(test)
+test_pipeline_if_expr_missing_else_precise_parse_error :: proc(t: ^testing.T) {
+	// The same missing-else, asserted as the precise Parse_Error.Missing_Else at
+	// the parse stage — the diagnostic an agent repairs against, distinct from a
+	// generic Unexpected_Token.
+	source := "test \"x\" {\n  assert (if 1.0 < 2.0 { 10.0 }) == 10.0\n}\n"
+	_, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.Missing_Else)
+}
+
+@(test)
+test_pipeline_tuple_pattern_arity_mismatch_is_typecheck_failed :: proc(t: ^testing.T) {
+	// NEGATIVE: a tuple match pattern whose positional arity disagrees with its
+	// Tuple-typed scrutinee is a typecheck failure (.Tuple_Pattern_Arity surfaced
+	// as Pipeline_Error.Typecheck_Failed) — a 3-position pattern over the 2-tuple
+	// `(checked_div(…), 5.0)` can never bind coherently, so it is a precise
+	// compile error rather than a silent nil-bound position (spec §02 §5).
+	_, err := run_golden_asserts(
+		"assert (match (checked_div(6.0, 2.0), 5.0) {\n" +
+		"  (Option::Some(wp), rest, extra) => wp\n" +
+		"  (Option::None,     _,    _)     => 0.0\n" +
+		"}) == 3.0\n")
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
+test_pipeline_if_expr_takes_each_branch :: proc(t: ^testing.T) {
+	// A bare if-expression takes the consequent on a true guard and the alternate
+	// on a false guard — the two-way evaluation arena's nearest-wins relies on,
+	// pinned directly with both branch outcomes.
+	report, err := run_golden_asserts(
+		"assert (if 1.0 < 2.0 { 10.0 } else { 20.0 }) == 10.0\n" +
+		"assert (if 2.0 < 1.0 { 10.0 } else { 20.0 }) == 20.0\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_tuple_match_pattern_golden :: proc(t: ^testing.T) {
+	// arena_game's literal usage end to end: a positional tuple match pattern
+	// over a Tuple-typed scrutinee (arena_game.fun lines 62-65, the
+	// `route.advance(...)` destructure — `(Option::Some(wp), rest) => …` /
+	// `(Option::None, _) => …`). The scrutinee is the tuple `(checked_div(6.0,
+	// 2.0), 5.0)` whose first position is Option[Fixed] Some(3.0); the
+	// `(Option::Some(wp), rest)` arm binds `wp` to 3.0 and `rest` to 5.0, and the
+	// arm body reads `wp`. Result: 3.0.
+	report, err := run_golden_asserts(
+		"assert (match (checked_div(6.0, 2.0), 5.0) {\n" +
+		"  (Option::Some(wp), rest) => wp\n" +
+		"  (Option::None,     _)    => 0.0\n" +
+		"}) == 3.0\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_pipeline_tuple_match_takes_none_arm :: proc(t: ^testing.T) {
+	// The same tuple-match shape takes its `(Option::None, _)` arm when the first
+	// position is None — `checked_div(1.0, 0.0)` divides by zero to None, so the
+	// destructure falls to the second arm and the `rest` position is wildcarded.
+	report, err := run_golden_asserts(
+		"assert (match (checked_div(1.0, 0.0), 5.0) {\n" +
+		"  (Option::Some(wp), rest) => wp\n" +
+		"  (Option::None,     _)    => 0.0\n" +
+		"}) == 0.0\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
 test_pipeline_fold_saturation_golden_value :: proc(t: ^testing.T) {
 	// The golden fold pin distinguishes direction: left-to-right gives
 	// (MAX + 1.0) saturating to MAX, then - 1.0; a right fold would sum
