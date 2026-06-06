@@ -33,6 +33,23 @@ test_key_scancode_maps_to_pong_codes :: proc(t: ^testing.T) {
 	check(t, .SPACE, "Key::Space")
 }
 
+// test_key_scancode_maps_to_yard_menu_codes proves the menu half of the §23 map
+// resolves the exact codes yard binds — F5/F9/M/Enter for Save/Restore/
+// ToggleMotion/Apply. Enter is the deliberate name seam: SDL's scancode is
+// RETURN, the §23 token is Key::Enter (the name yard's bindings table carries).
+@(test)
+test_key_scancode_maps_to_yard_menu_codes :: proc(t: ^testing.T) {
+	check :: proc(t: ^testing.T, scancode: sdl.Scancode, want: string) {
+		code, named := key_code_from_scancode(scancode)
+		testing.expect(t, named)
+		testing.expect_value(t, code, want)
+	}
+	check(t, .F5, "Key::F5")
+	check(t, .F9, "Key::F9")
+	check(t, .M, "Key::M")
+	check(t, .RETURN, "Key::Enter")
+}
+
 // test_unmapped_scancode_is_dropped proves the keyboard error case: a scancode
 // with no §23 Key variant (a function key) reports named == false, so the live
 // poll enqueues nothing for it — an unbindable key never reaches the queue.

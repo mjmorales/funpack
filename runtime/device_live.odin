@@ -197,8 +197,10 @@ stick_sample_to_fixed :: proc(raw: i16) -> Fixed {
 // key_code_from_scancode maps an SDL physical scancode onto the §23 "Key::<Name>"
 // token the bindings table matches by equality. `named` is false for a scancode
 // with no §23 Key variant, so an unbindable key is dropped before it reaches the
-// queue. The covered set is the §23 Key vocabulary pong and the input tests
-// exercise (movement keys, space); a scancode outside it is simply not a §23 key.
+// queue. The covered set is the §23 Key vocabulary the golden examples bind —
+// pong/snake/hunt's movement keys + space, and yard's menu keys (F5/F9/M/Enter
+// for Save/Restore/ToggleMotion/Apply); a scancode outside it is simply not a
+// §23 key.
 key_code_from_scancode :: proc(scancode: sdl.Scancode) -> (code: string, named: bool) {
 	#partial switch scancode {
 	case .W:
@@ -219,6 +221,14 @@ key_code_from_scancode :: proc(scancode: sdl.Scancode) -> (code: string, named: 
 		return "Key::Right", true
 	case .SPACE:
 		return "Key::Space", true
+	case .M:
+		return "Key::M", true
+	case .RETURN:
+		return "Key::Enter", true
+	case .F5:
+		return "Key::F5", true
+	case .F9:
+		return "Key::F9", true
 	}
 	return "", false
 }
