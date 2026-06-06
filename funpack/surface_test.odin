@@ -472,6 +472,77 @@ test_yard_physics_save_imports_populate_bindings :: proc(t: ^testing.T) {
 	}
 }
 
+// ── §08 engine.world.Ref + engine.nav surface admission ────────────────
+
+@(test)
+test_surface_admits_world_ref :: proc(t: ^testing.T) {
+	// AC: `import engine.world.{Ref}` resolves to .None and Ref binds to the
+	// engine.world partition as a Type_Name — the §08 typed reference joins
+	// View/Spawn/Despawn without opening the module to arbitrary names.
+	source := "import engine.world.{View, Ref, Spawn, Despawn}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	ref, has_ref := bindings.names["Ref"]
+	testing.expect(t, has_ref)
+	testing.expect_value(t, ref.module, "engine.world")
+	testing.expect_value(t, ref.kind, Decl_Kind.Type_Name)
+}
+
+@(test)
+test_surface_admits_engine_nav :: proc(t: ^testing.T) {
+	// AC: `import engine.nav.{Nav, Path, NavError}` resolves to .None — the new
+	// §08 navigation partition the chase AI imports. Each member binds to the
+	// engine.nav partition as a Type_Name.
+	source := "import engine.nav.{Nav, Path, NavError}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		{"Nav", "engine.nav", .Type_Name},
+		{"Path", "engine.nav", .Type_Name},
+		{"NavError", "engine.nav", .Type_Name},
+	}
+	expect_bindings(t, bindings, expectations)
+}
+
+@(test)
+test_surface_engine_nav_unknown_member_rejected :: proc(t: ^testing.T) {
+	// The closed-table proof for the new partition: a name absent from
+	// engine.nav rejects with Unknown_Member. Admitting Nav/Path/NavError did
+	// not open the module to arbitrary names — `Route` is owned by no module.
+	ast, parse_err := stage_parse(stage_lex("import engine.nav.{Nav, Route}\n"))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.Unknown_Member)
+}
+
+@(test)
+test_typecheck_nav_path_advance :: proc(t: ^testing.T) {
+	// AC: a small fixture exercising the nav surface methods over a Nav/Path
+	// pair typechecks to .None — `nav.path(from, to)` queries a Result[Path]
+	// route, and `route.advance(from, arrive)` walks one waypoint returning the
+	// (Option[Vec2], Path) pair, destructured into the next waypoint and the
+	// remaining route. Both methods resolve through their engine-kind receivers
+	// and type clean; deep Result-unwrap typing is a downstream story.
+	source := "import engine.math.{Vec2, Fixed}\n" +
+		"import engine.nav.{Nav, Path, NavError}\n" +
+		"fn step(nav: Nav, route: Path, from: Vec2, to: Vec2) -> Path {\n" +
+		"  let queried = nav.path(from, to)\n" +
+		"  return match route.advance(from, 0.5) {\n" +
+		"    (next, remaining) => remaining\n" +
+		"  }\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.None)
+}
+
 @(test)
 test_bind_name_rejects_conflicting_rebind :: proc(t: ^testing.T) {
 	// The binding-layer floor behind the table test: re-binding the
