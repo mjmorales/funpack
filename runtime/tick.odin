@@ -577,6 +577,20 @@ step_tick :: proc(
 		if step.stage == "startup" || step.stage == "render" {
 			continue
 		}
+		// The §11 §3 `physics:` stage is ENGINE-CLOSED: instead of a user
+		// Behavior_Decl, it runs the native `solve` battery over every body in stable
+		// order (solver.odin). A collision writes BOTH bodies, which a behavior may
+		// never do, so resolution is the engine's — `solve` integrates intent (written
+		// by the control stage before this), detects/resolves contacts, routes Triggers
+		// for sensor overlaps, and consumes each body's impulse. The detector is the
+		// stage kind (`physics`), not a behavior lookup, since no Behavior_Decl is bound
+		// to an engine-closed stage (artifact_load.odin load_pipeline keeps the
+		// behavior name unresolved). Stage position is the ordering: intent before,
+		// reactions after.
+		if is_physics_solve_step(step) {
+			run_solve(&interp, &state)
+			continue
+		}
 		behavior := program_behavior(program, step.behavior)
 		if behavior == nil {
 			continue
@@ -1088,6 +1102,17 @@ interp_resolve_ref :: proc(interp: ^Interp, ref: Ref) -> (row: Row, some: bool) 
 input_marker :: proc(interp: ^Interp) -> Value {
 	fields := make(map[string]Value, interp.allocator)
 	return Record_Value{type_name = "Input", fields = fields}
+}
+
+// is_physics_solve_step reports whether a pipeline step is the §11 §3 engine-
+// closed `physics:` stage running the native `solve` battery — a real pipeline
+// position with NO user Behavior_Decl. The detector is the (stage, behavior) pair
+// the artifact carries: the `physics:` stage's single member is the `solve`
+// battery (yard's `physics: solve`), so the step's stage is "physics" and its
+// behavior name is "solve". This is the one stage the fold dispatches to the
+// native solver instead of running a user behavior body.
+is_physics_solve_step :: proc(step: Pipeline_Step) -> bool {
+	return step.stage == "physics" && step.behavior == "solve"
 }
 
 // --- Type-string predicates (§06 §3 param/emit type forms) ----------------
