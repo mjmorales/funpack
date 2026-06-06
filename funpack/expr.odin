@@ -552,9 +552,16 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 			node.has_payload = true
 		case .L_Brace:
 			// Struct-payload variant: Draw::Rect{ at: …, size: … } (spec §03 §2).
-			p.pos += 1
-			node.fields = parse_record_fields(p) or_return
-			node.has_fields = true
+			// In a no-struct-literal context (a match scrutinee or an `if`-guard
+			// condition, spec §02 §5), a trailing `{` opens the enclosing block,
+			// not a struct payload — so a bare variant compared in a condition
+			// (`current != Dir::Down { return … }`) leaves the brace for the
+			// guard, mirroring the bare-name rule above.
+			if !p.no_record_brace {
+				p.pos += 1
+				node.fields = parse_record_fields(p) or_return
+				node.has_fields = true
+			}
 		}
 		return node, .None
 	case .L_Brace:

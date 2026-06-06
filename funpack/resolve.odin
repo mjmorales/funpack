@@ -284,6 +284,16 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 		}
 		return nil
 	}
+	// A tuple type `(T, U, …)` is the head "()" with its positional element
+	// types as args (spec §04 §1: the `(value, next_rng)` return pair). Each
+	// position resolves like any other ref; the tuple node carries them in order.
+	if ref.name == "()" {
+		elements := make([]Type, len(ref.args), context.temp_allocator)
+		for arg, i in ref.args {
+			elements[i] = resolve_type_ref(env, bindings, arg)
+		}
+		return tuple_of(elements)
+	}
 	if ref.name == "Option" && len(ref.args) == 1 {
 		return option_of(resolve_type_ref(env, bindings, ref.args[0]))
 	}

@@ -15,6 +15,7 @@ Type :: union {
 	Ground_Type,
 	^Option_Type,
 	^List_Type,
+	^Tuple_Type,
 	^Func_Type,
 	^User_Type,
 	^Engine_Type,
@@ -93,6 +94,16 @@ List_Type :: struct {
 	elem: Type, // nil for the empty list until unified
 }
 
+// Tuple_Type is a fixed-arity positional aggregate type (spec §04 §1: every
+// draw returns the pair `(value, next_rng)`). It carries its positional element
+// types in order; compatibility is structural over the positions, like List and
+// Option, with a nil position unifying against anything. The snake/hunt return
+// pairs are tuples of two — the RNG-threaded `(Rng, [Spawn])` and the
+// pick-result `(Option[Cell], Rng)` — but the node carries any arity.
+Tuple_Type :: struct {
+	elements: []Type, // positional element types, in source order
+}
+
 // Func_Type with nil params is the opaque lambda placeholder — the
 // seam where combinator inference plugs in real parameter types.
 Func_Type :: struct {
@@ -109,6 +120,15 @@ option_of :: proc(elem: Type) -> Type {
 list_of :: proc(elem: Type) -> Type {
 	node := new(List_Type, context.temp_allocator)
 	node.elem = elem
+	return node
+}
+
+// tuple_of builds a tuple type over positional element types, cloning the set so
+// a call-site compound literal never escapes its stack frame (mirroring
+// func_of's param clone).
+tuple_of :: proc(elements: []Type) -> Type {
+	node := new(Tuple_Type, context.temp_allocator)
+	node.elements = clone_types(elements)
 	return node
 }
 
@@ -189,6 +209,21 @@ types_compatible :: proc(a, b: Type) -> bool {
 	case ^List_Type:
 		bv, ok := b.(^List_Type)
 		return ok && types_compatible(av.elem, bv.elem)
+	case ^Tuple_Type:
+		// A tuple is structural over its positions: same arity, and each
+		// position unifies — a nil position unifies with anything, mirroring
+		// List/Option. So (Option[Cell], Rng) matches (Option[Cell], Rng) and a
+		// declared (Rng, [Spawn]) return matches a body tuple of the same shape.
+		bv, ok := b.(^Tuple_Type)
+		if !ok || len(av.elements) != len(bv.elements) {
+			return false
+		}
+		for elem, i in av.elements {
+			if !types_compatible(elem, bv.elements[i]) {
+				return false
+			}
+		}
+		return true
 	case ^Func_Type:
 		bv, ok := b.(^Func_Type)
 		if !ok {

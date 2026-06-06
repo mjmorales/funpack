@@ -447,6 +447,30 @@ test_gate_nesting_member_chain_stays_flat :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_gate_combinator_inline_predicate_is_one_level :: proc(t: ^testing.T) {
+	// A combinator with an inline predicate (`filter(src, fn(c){ … })`) is ONE
+	// composition level, not two: the call's argument level and the lambda's
+	// closure level collapse into one (gates.odin arg_nesting_depth). So snake's
+	// `filter(all_cells(), fn(c){ not contains(cells(snake), c) })` — combinator(1)
+	// + contains call(1) + cells call(1) = depth 3 — clears the budget exactly,
+	// matching the spec golden (snake.fun is a sanctioned example). Without the
+	// collapse the lambda would double-count to depth 4 and false-fire the gate.
+	chain := "assert filter(all_cells(), fn(c) { return not contains(cells(snake), c) }) == empty\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+@(test)
+test_gate_combinator_predicate_body_still_deepens :: proc(t: ^testing.T) {
+	// The collapse is only the lambda's OWN level: genuine nesting inside the
+	// predicate body still counts. A predicate whose body nests three calls —
+	// combinator(1) + a(1) + b(1) + c(1) = depth 4 — overshoots the budget, so the
+	// gate fires THROUGH the inline predicate. The combinator idiom is flattened,
+	// not the computation buried in it.
+	chain := "assert filter(xs, fn(c) { return a(b(c(c))) }) == empty\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.Nesting_Exceeded)
+}
+
+@(test)
 test_gate_bare_variant_is_a_flat_atom :: proc(t: ^testing.T) {
 	// A bare enum variant is a 0-arg constructor — a value atom, not a
 	// compositional container (spec §03 §2). So a list of records each

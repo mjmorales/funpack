@@ -169,14 +169,17 @@ check_render :: proc(signature: ^Func_Type) -> Contract_Error {
 // occupant reads engine resources only — no unspawned-thing read, neither a
 // blackboard `self` nor a cross-thing View — and returns a [Spawn] list. A
 // thing/View read is Startup_Reads_Thing; a return that is not a [Spawn] list
-// is Startup_No_Spawn.
+// is Startup_No_Spawn. An RNG-threaded startup returns the §04 §1 pair
+// `(Rng, [Spawn])` — a tuple whose command position is the [Spawn] write and
+// whose other position is the threaded Rng resource — so the return is unwrapped
+// to its command-list position before the [Spawn] check (snake's `setup`).
 check_startup :: proc(signature: ^Func_Type) -> Contract_Error {
 	for param in signature.params {
 		if is_thing(param) || is_view(param) {
 			return .Startup_Reads_Thing
 		}
 	}
-	if !is_command_list(signature.result, .Spawn) {
+	if !is_command_list(write_of_return(signature.result), .Spawn) {
 		return .Startup_No_Spawn
 	}
 	return .None
@@ -187,9 +190,13 @@ check_startup :: proc(signature: ^Func_Type) -> Contract_Error {
 // or an emitted command list — else it is dead code. The read side (any of
 // blackboard/resources/signals/View) is unconstrained for Update, so only the
 // write obligation is checked here. A return that writes the behavior's own
-// thing blackboard, or any signal/command list, satisfies the contract.
+// thing blackboard, or any signal/command list, satisfies the contract. An
+// RNG-threaded update returns the §04 §1 pair `(Rng, [command])` — a tuple whose
+// command position is the write and whose other position is the threaded Rng —
+// so the return is unwrapped to its write position before the obligation check
+// (snake's `replenish`, an eat-stage behavior returning `(Rng, [Spawn])`).
 check_update :: proc(target: string, signature: ^Func_Type) -> Contract_Error {
-	result := signature.result
+	result := write_of_return(signature.result)
 	if writes_own_blackboard(result, target) {
 		return .None
 	}
@@ -197,6 +204,27 @@ check_update :: proc(target: string, signature: ^Func_Type) -> Contract_Error {
 		return .None
 	}
 	return .Update_Dead
+}
+
+// write_of_return unwraps a behavior's return type to its WRITE position (spec
+// §04 §1): a plain return is its own write; an RNG-threaded return is the pair
+// `(Rng, [command])`, whose write is the command/signal-list element while the
+// other position threads the Rng resource back. It scans a tuple for the single
+// command/signal-list position and returns it; a tuple with no such position (or
+// a non-tuple return) passes the return through unchanged, so the contract check
+// rejects a tuple that carries no write. Only the canonical two-element
+// `(Rng, [command])` shape arises on the surface, but the scan generalizes.
+write_of_return :: proc(result: Type) -> Type {
+	tuple, is_tuple := result.(^Tuple_Type)
+	if !is_tuple {
+		return result
+	}
+	for element in tuple.elements {
+		if is_signal_list(element) || is_any_command_list(element) {
+			return element
+		}
+	}
+	return result
 }
 
 // writes_own_blackboard reports whether a return type writes the behavior's
@@ -250,9 +278,10 @@ is_command_list :: proc(t: Type, kind: Engine_Kind) -> bool {
 }
 
 // is_any_command_list reports an engine-command list of any closed §04
-// command kind ([Spawn] or [Draw]) — the "is this an emit?" test the Render
-// and Update contracts share. The closed set mirrors surface_command and
-// surface_struct_variant's emitting kinds.
+// command kind ([Spawn], [Despawn], or [Draw]) — the "is this an emit?" test the
+// Render and Update contracts share. The closed set mirrors surface_command and
+// surface_struct_variant's emitting kinds; [Despawn] is the self-scoped despawn
+// an Update behavior emits (snake's `despawn_eaten` returns [Despawn]).
 is_any_command_list :: proc(t: Type) -> bool {
-	return is_command_list(t, .Spawn) || is_command_list(t, .Draw)
+	return is_command_list(t, .Spawn) || is_command_list(t, .Despawn) || is_command_list(t, .Draw)
 }

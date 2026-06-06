@@ -465,3 +465,53 @@ test_parse_nested_tuple_return_type :: proc(t: ^testing.T) {
 	testing.expect_value(t, f.return_type.args[1].args[0].name, "Food")
 	testing.expect_value(t, f.return_type.args[1].args[1].name, "Snake")
 }
+
+@(test)
+test_parse_variant_in_if_condition_leaves_guard_brace :: proc(t: ^testing.T) {
+	// The snake `dir_from_input` shape (spec §02 §5): an `if` condition ending in
+	// a bare variant comparison (`current != Dir::Down`) must leave the trailing
+	// `{` for the guard block, not consume it as a struct-payload variant
+	// `Dir::Down{…}`. In the no-struct-literal context an `if`-guard condition
+	// shares with a match scrutinee, a `{` after a variant opens the block.
+	source := "fn turn(current: Dir) -> Dir {\n" +
+		"  if current != Dir::Down { return Dir::Up }\n" +
+		"  return current\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	f := ast.fns[0]
+	guard, is_if := f.body[0].(If_Node)
+	testing.expect(t, is_if)
+	if is_if {
+		// The condition is the `!=` comparison; its rhs is a BARE variant (no
+		// struct payload) — the brace went to the guard block, which holds the
+		// return.
+		cond, is_binary := guard.cond.(^Binary_Expr)
+		testing.expect(t, is_binary)
+		if is_binary {
+			rhs, is_variant := cond.rhs.(^Variant_Expr)
+			testing.expect(t, is_variant)
+			if is_variant {
+				testing.expect_value(t, rhs.variant, "Down")
+				testing.expect(t, !rhs.has_fields)
+			}
+		}
+		testing.expect_value(t, len(guard.body), 1)
+		_, body_is_return := guard.body[0].(Return_Node)
+		testing.expect(t, body_is_return)
+	}
+}
+
+@(test)
+test_parse_variant_in_match_scrutinee_leaves_block_brace :: proc(t: ^testing.T) {
+	// The match-scrutinee analogue: a scrutinee ending in a bare variant compare
+	// (`x == Dir::Up`) leaves the `{` for the match block, not a struct payload.
+	source := "fn pick(x: Dir) -> Bool {\n" +
+		"  return match x == Dir::Up {\n" +
+		"    Bool::True => true\n" +
+		"    Bool::False => false\n" +
+		"  }\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+}

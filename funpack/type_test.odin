@@ -63,6 +63,71 @@ test_option_heads_do_not_cross :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_tuple_type_node_in_union :: proc(t: ^testing.T) {
+	// AC: the Type union carries a tuple node — tuple_of builds it, and a value
+	// of that type variant-matches as ^Tuple_Type carrying its positional
+	// elements in order. This is the §04 §1 `(value, next_rng)` return pair's
+	// checker type.
+	pair := tuple_of({option_of(Ground_Type.Fixed), engine_type_of(.Rng)})
+	tuple, is_tuple := pair.(^Tuple_Type)
+	testing.expect(t, is_tuple)
+	if is_tuple {
+		testing.expect_value(t, len(tuple.elements), 2)
+		testing.expect(t, types_compatible(tuple.elements[0], option_of(Ground_Type.Fixed)))
+		testing.expect(t, is_engine(tuple.elements[1], .Rng))
+	}
+}
+
+@(test)
+test_tuple_compatibility_is_structural :: proc(t: ^testing.T) {
+	// AC: types_compatible's tuple arm is structural over positions — same arity
+	// and each position unifies, with a nil position unifying like List/Option.
+	// So (Option[Fixed], Rng) matches itself, a position swap does not, an arity
+	// mismatch does not, and a nil position unifies against a concrete one.
+	rng_pair := tuple_of({option_of(Ground_Type.Fixed), engine_type_of(.Rng)})
+	same := tuple_of({option_of(Ground_Type.Fixed), engine_type_of(.Rng)})
+	swapped := tuple_of({engine_type_of(.Rng), option_of(Ground_Type.Fixed)})
+	shorter := tuple_of({engine_type_of(.Rng)})
+	nil_first := tuple_of({nil, engine_type_of(.Rng)})
+	testing.expect(t, types_compatible(rng_pair, same))
+	testing.expect(t, !types_compatible(rng_pair, swapped))
+	testing.expect(t, !types_compatible(rng_pair, shorter))
+	testing.expect(t, types_compatible(rng_pair, nil_first))
+	// A tuple head never crosses with a list or an option of the same elements.
+	testing.expect(t, !types_compatible(rng_pair, list_of(engine_type_of(.Rng))))
+}
+
+@(test)
+test_pattern_binders_destructure_tuple_scrutinee :: proc(t: ^testing.T) {
+	// AC: pattern_binders destructures a tuple scrutinee against a tuple pattern —
+	// the `(Option::Some(cell), next)` arm binds `cell` to the option's element
+	// (a Cell) and `next` to the second tuple position (an Rng), in left-to-right
+	// position order.
+	cell := user_type_of("Cell", .Data)
+	scrutinee := tuple_of({option_of(cell), engine_type_of(.Rng)})
+	pattern := Pattern {
+		kind = .Tuple,
+		elements = {
+			Pattern{kind = .Variant_Binds, type_name = "Option", variant = "Some", binders = {"cell"}},
+			Pattern{kind = .Bare_Binder, binders = {"next"}},
+		},
+	}
+	names, types := pattern_binders(pattern, scrutinee)
+	testing.expect_value(t, len(names), 2)
+	testing.expect_value(t, len(types), 2)
+	if len(names) == 2 {
+		testing.expect_value(t, names[0], "cell")
+		testing.expect_value(t, names[1], "next")
+		bound_cell, is_cell := types[0].(^User_Type)
+		testing.expect(t, is_cell)
+		if is_cell {
+			testing.expect_value(t, bound_cell.name, "Cell")
+		}
+		testing.expect(t, is_engine(types[1], .Rng))
+	}
+}
+
+@(test)
 test_bool_literals_type_as_bool :: proc(t: ^testing.T) {
 	// §02 §2: `true`/`false` are Bool literals riding as Ident tokens, so a
 	// Bool-returning expression compares against them (snake's `== true`,

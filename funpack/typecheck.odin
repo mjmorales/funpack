@@ -157,10 +157,19 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 	case ^Name_Expr:
 		return name_check(ctx, e)
 	case ^Unary_Expr:
+		operand := expr_check(ctx, e.operand) or_return
+		// `not` is a word operator carried as an Ident token (expr.odin): it
+		// negates a Bool into a Bool — the `not contains(occ, c)` predicate body
+		// snake's filter passes. Numeric negation `-x` keeps its numeric type.
+		if e.op.kind == .Ident && e.op.text == "not" {
+			if !is_ground(operand, .Bool) {
+				return nil, .Type_Mismatch
+			}
+			return Ground_Type.Bool, .None
+		}
 		if e.op.kind != .Minus {
 			return nil, .Unsupported_Expr
 		}
-		operand := expr_check(ctx, e.operand) or_return
 		if !is_numeric_ground(operand) {
 			return nil, .Type_Mismatch
 		}
@@ -185,8 +194,23 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		return with_check(ctx, e)
 	case ^Match_Expr:
 		return match_check(ctx, e)
+	case ^Tuple_Expr:
+		return tuple_check(ctx, e)
 	}
 	return nil, .Unsupported_Expr
+}
+
+// tuple_check types a tuple expression `(a, b, …)` into a Tuple_Type over its
+// positional element types (spec §04 §1: the `(value, next_rng)` return pair).
+// Each element types independently — positions need not agree — so the
+// RNG-threaded `(next, [Spawn(…)])` body checks against a declared
+// `(Rng, [Spawn])` return position by position.
+tuple_check :: proc(ctx: Check_Ctx, e: ^Tuple_Expr) -> (type: Type, err: Type_Error) {
+	elements := make([]Type, len(e.elements), context.temp_allocator)
+	for element, i in e.elements {
+		elements[i] = expr_check(ctx, element) or_return
+	}
+	return tuple_of(elements), .None
 }
 
 // name_check types a bare name use: a scope binding (param/let/binder) first,
@@ -349,7 +373,9 @@ field_member :: proc(ctx: Check_Ctx, receiver: Type, member: string) -> (type: T
 			return field, .None
 		}
 		return nil, .Type_Mismatch
-	case ^Option_Type, ^List_Type, ^Func_Type:
+	case ^Option_Type, ^List_Type, ^Tuple_Type, ^Func_Type:
+		// None of these expose a named member — a tuple is destructured by a
+		// match pattern (spec §02 §5), never read by `.field`.
 		return nil, .Type_Mismatch
 	}
 	return nil, .Unsupported_Expr
@@ -511,24 +537,66 @@ match_check :: proc(ctx: Check_Ctx, e: ^Match_Expr) -> (type: Type, err: Type_Er
 	return result, .None
 }
 
-// pattern_binders computes an arm pattern's payload binder names and their
-// types against the scrutinee. A Variant_Binds over Option binds the single
-// payload to the option's element; a bare or wildcard pattern binds nothing.
-// A user-enum variant carries no payload on the pong surface, so its binders
-// (none) contribute nothing.
+// pattern_binders computes an arm pattern's binder names and their types against
+// the scrutinee, recursing through a tuple pattern. A Variant_Binds over Option
+// binds the single payload to the option's element; a Bare_Binder binds its name
+// to the whole scrutinee position's type; a Tuple pattern over a Tuple scrutinee
+// zips position by position, recursing each sub-pattern against its element type
+// and concatenating the binders in left-to-right order (so the
+// `(Option::Some(cell), next)` arm binds `cell` to the option's element and
+// `next` to the second tuple element). A bare-variant or wildcard pattern binds
+// nothing; a user-enum variant carries no payload on this surface, so it
+// contributes none either.
 pattern_binders :: proc(pattern: Pattern, scrutinee: Type) -> (names: []string, types: []Type) {
-	if pattern.kind != .Variant_Binds || len(pattern.binders) == 0 {
-		return nil, nil
+	out_names := make([dynamic]string, 0, 4, context.temp_allocator)
+	out_types := make([dynamic]Type, 0, 4, context.temp_allocator)
+	collect_pattern_binders(pattern, scrutinee, &out_names, &out_types)
+	return out_names[:], out_types[:]
+}
+
+// collect_pattern_binders appends one pattern's binders and their types onto the
+// shared accumulators, recursing into a tuple pattern's positions against the
+// matching tuple scrutinee element. An unknown scrutinee shape (a nil position,
+// or a tuple pattern whose arity disagrees) binds the names to nil — the typing
+// pass leaves an unresolvable binder as the nil unknown rather than rejecting,
+// since exhaustiveness/shape is the gate's and resolver's concern.
+collect_pattern_binders :: proc(
+	pattern: Pattern,
+	scrutinee: Type,
+	names: ^[dynamic]string,
+	types: ^[dynamic]Type,
+) {
+	switch pattern.kind {
+	case .Wildcard, .Bare_Variant:
+		// No binders.
+	case .Bare_Binder:
+		// A bare binder binds the whole position to the scrutinee's type.
+		for binder in pattern.binders {
+			append(names, binder)
+			append(types, scrutinee)
+		}
+	case .Variant_Binds:
+		// A variant-with-binders over an Option binds the single payload to the
+		// option's element type.
+		binder_type: Type
+		if option, is_option := scrutinee.(^Option_Type); is_option && len(pattern.binders) == 1 {
+			binder_type = option.elem
+		}
+		for binder in pattern.binders {
+			append(names, binder)
+			append(types, binder_type)
+		}
+	case .Tuple:
+		// A tuple pattern zips against a tuple scrutinee position by position.
+		tuple, is_tuple := scrutinee.(^Tuple_Type)
+		for sub, i in pattern.elements {
+			element: Type
+			if is_tuple && i < len(tuple.elements) {
+				element = tuple.elements[i]
+			}
+			collect_pattern_binders(sub, element, names, types)
+		}
 	}
-	binder_type: Type
-	if option, is_option := scrutinee.(^Option_Type); is_option && len(pattern.binders) == 1 {
-		binder_type = option.elem
-	}
-	bound := make([]Type, len(pattern.binders), context.temp_allocator)
-	for i in 0 ..< len(pattern.binders) {
-		bound[i] = binder_type
-	}
-	return pattern.binders, bound
 }
 
 // call_check types a call. A method/step receiver routes to method_check; a
@@ -572,17 +640,268 @@ call_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 	if binding.kind != .Func {
 		return nil, .Type_Mismatch
 	}
-	if name.name == "fold" {
-		return fold_check(ctx, e)
-	}
-	if name.name == "first" {
-		return first_check(ctx, e)
+	if comb_type, handled, comb_err := combinator_call_check(ctx, name.name, e); handled {
+		return comb_type, comb_err
 	}
 	overloads, has_signature := surface_signatures(name.name)
 	if !has_signature {
 		return nil, .Unsupported_Expr
 	}
 	return overloads_check(ctx, e, overloads)
+}
+
+// combinator_call_check routes the call-site-inferred stdlib combinators — the
+// names surface_signatures returns found = false for, since their parameters
+// depend on the call site, not a fixed table (surface.odin). handled is false
+// for a name that is not a combinator, so the caller falls through to the fixed
+// overload table. Each rule reads its source's element type (a List[T] or a
+// §08 View[T], via source_element) and types the lambda/predicate argument
+// against the inferred element row (combinator_check), the same inference
+// fold/first use.
+combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (type: Type, handled: bool, err: Type_Error) {
+	switch name {
+	case "fold":
+		t, fe := fold_check(ctx, e)
+		return t, true, fe
+	case "first":
+		t, fe := first_check(ctx, e)
+		return t, true, fe
+	case "map":
+		t, me := map_check(ctx, e)
+		return t, true, me
+	case "filter":
+		t, fe := filter_check(ctx, e)
+		return t, true, fe
+	case "concat":
+		t, ce := concat_check(ctx, e)
+		return t, true, ce
+	case "contains":
+		t, ce := contains_check(ctx, e)
+		return t, true, ce
+	case "prepend":
+		t, pe := prepend_check(ctx, e)
+		return t, true, pe
+	case "init":
+		t, ie := init_check(ctx, e)
+		return t, true, ie
+	case "is_empty":
+		t, ie := is_empty_check(ctx, e)
+		return t, true, ie
+	case "pick":
+		t, pe := pick_check(ctx, e)
+		return t, true, pe
+	case "grid_cells":
+		t, ge := grid_cells_check(ctx, e)
+		return t, true, ge
+	}
+	return nil, false, .None
+}
+
+// map_check types map(source, fn) (spec §08): the source is a List[T] or a
+// View[T], the function is (T) -> R inferred from the element type, and the
+// result is a list of the function's result type — `map(foods, fn(f){ … })`
+// over a View[Food] yields a list of whatever the lambda returns. The lambda's
+// result type is inferred by typing its body against the element-typed param.
+map_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	elem, ok := source_element(source)
+	if !ok {
+		return nil, .Type_Mismatch
+	}
+	result := combinator_result(ctx, e.args[1], {elem}) or_return
+	return list_of(result), .None
+}
+
+// filter_check types filter(source, pred) (spec §08): the source is a List[T] or
+// a View[T], the predicate is (T) -> Bool inferred from the element type, and the
+// result is a list of the element type (a View filtered yields a list, per the
+// read-side surface) — `filter(foods, fn(f){ f.cell == self.head })` over a
+// View[Food] yields [Food], and `filter(all_cells(), pred)` over [Cell] yields
+// [Cell].
+filter_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	elem, ok := source_element(source)
+	if !ok {
+		return nil, .Type_Mismatch
+	}
+	combinator_check(ctx, e.args[1], {elem}, Ground_Type.Bool) or_return
+	return list_of(elem), .None
+}
+
+// concat_check types concat(a, b) (spec §08): both arguments are lists, their
+// element types unify, and the result is a list of that element — `concat(
+// cells(snake), map(foods, …))` joins two [Cell] into one. A nil element on
+// either side unifies, so a concat with an empty list keeps the other's element.
+concat_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	left := expr_check(ctx, e.args[0]) or_return
+	right := expr_check(ctx, e.args[1]) or_return
+	left_list, left_ok := left.(^List_Type)
+	right_list, right_ok := right.(^List_Type)
+	if !left_ok || !right_ok {
+		return nil, .Type_Mismatch
+	}
+	if !types_compatible(left_list.elem, right_list.elem) {
+		return nil, .Type_Mismatch
+	}
+	elem := left_list.elem
+	if elem == nil {
+		elem = right_list.elem
+	}
+	return list_of(elem), .None
+}
+
+// contains_check types contains(list, elem) (spec §08): a List[T] and a value of
+// the element type, yielding Bool — `contains(self.body, self.head)` tests a
+// [Cell] against a Cell. The element value's type must unify with the list's.
+contains_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	list_type := expr_check(ctx, e.args[0]) or_return
+	value := expr_check(ctx, e.args[1]) or_return
+	list, is_list := list_type.(^List_Type)
+	if !is_list {
+		return nil, .Type_Mismatch
+	}
+	if !types_compatible(list.elem, value) {
+		return nil, .Type_Mismatch
+	}
+	return Ground_Type.Bool, .None
+}
+
+// prepend_check types prepend(elem, list) (spec §08): a value and a List[T] whose
+// element unifies with it, yielding a [T] with the value pushed to the front —
+// `prepend(snake.head, snake.body)` puts a Cell at the head of a [Cell]. The
+// result element type is the unified element (the value's type when the list is
+// the nil-element empty list).
+prepend_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	value := expr_check(ctx, e.args[0]) or_return
+	list_type := expr_check(ctx, e.args[1]) or_return
+	list, is_list := list_type.(^List_Type)
+	if !is_list {
+		return nil, .Type_Mismatch
+	}
+	if !types_compatible(list.elem, value) {
+		return nil, .Type_Mismatch
+	}
+	elem := list.elem
+	if elem == nil {
+		elem = value
+	}
+	return list_of(elem), .None
+}
+
+// init_check types init(list) (spec §08): a List[T] yielding the same [T] with
+// its last element dropped — `init(extended)` drops the snake's tail cell. The
+// element type is unchanged.
+init_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	list_type := expr_check(ctx, e.args[0]) or_return
+	list, is_list := list_type.(^List_Type)
+	if !is_list {
+		return nil, .Type_Mismatch
+	}
+	return list_of(list.elem), .None
+}
+
+// is_empty_check types is_empty(source) (spec §08): a List[T] or a View[T]
+// yielding Bool — `is_empty(eaten)` tests the inbound [Eaten] signal list. The
+// source's element type is irrelevant to the result, only that it is a read
+// source.
+is_empty_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	if _, ok := source_element(source); !ok {
+		return nil, .Type_Mismatch
+	}
+	return Ground_Type.Bool, .None
+}
+
+// pick_check types pick(list, rng) (spec §04 §1, engine.rand): a List[T] and the
+// threaded Rng handle, yielding the draw pair (Option[T], Rng) — the first
+// result is an option of the list's element (None when the list is empty), the
+// second the advanced RNG stream. The match in `replenish`/`setup` destructures
+// this tuple. The second argument must be the Rng handle.
+pick_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	list_type := expr_check(ctx, e.args[0]) or_return
+	rng := expr_check(ctx, e.args[1]) or_return
+	list, is_list := list_type.(^List_Type)
+	if !is_list {
+		return nil, .Type_Mismatch
+	}
+	if !is_engine(rng, .Rng) {
+		return nil, .Type_Mismatch
+	}
+	return tuple_of({option_of(list.elem), engine_type_of(.Rng)}), .None
+}
+
+// grid_cells_check types grid_cells(w, h, builder) (spec, engine.grid): two Int
+// grid dimensions and a builder fn(x, y) -> Cell, yielding a list of whatever
+// the builder returns ([Cell] for `grid_cells(GRID.size.x, GRID.size.y, fn(x, y){
+// Cell{x: x, y: y} })`). The element type is call-site-inferred from the
+// builder's result — the Cell is the user's, not the engine's — so admission is
+// the Func table row and the typing is here, like the list combinators. The
+// builder's two params infer as Int (the grid coordinates).
+grid_cells_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 3 {
+		return nil, .Type_Mismatch
+	}
+	width := expr_check(ctx, e.args[0]) or_return
+	height := expr_check(ctx, e.args[1]) or_return
+	if !is_ground(width, .Int) || !is_ground(height, .Int) {
+		return nil, .Type_Mismatch
+	}
+	cell := combinator_result(ctx, e.args[2], {Ground_Type.Int, Ground_Type.Int}) or_return
+	return list_of(cell), .None
+}
+
+// combinator_result types a combinator's function argument against an inferred
+// parameter row whose RESULT type is unknown and must be read off the function,
+// not checked against an expected one (map's mapper, grid_cells's builder). A
+// literal lambda infers its parameters from the row, types its body in a child
+// scope holding exactly them, and yields the body's type as the result; a bare
+// fn value (or other function-typed expression) yields its recorded result. This
+// is the result-inferring sibling of combinator_check, which checks against a
+// known expected result (a predicate's Bool, fold's accumulator).
+combinator_result :: proc(ctx: Check_Ctx, arg: Expr, params: []Type) -> (result: Type, err: Type_Error) {
+	ctx := ctx
+	if lambda, is_lambda := arg.(^Lambda_Expr); is_lambda {
+		if len(lambda.params) != len(params) {
+			return nil, .Type_Mismatch
+		}
+		saved := overlay_scope(&ctx.scope, lambda.params, params)
+		body, body_err := expr_check(ctx, lambda.body)
+		restore_scope(&ctx.scope, lambda.params, saved)
+		if body_err != .None {
+			return nil, body_err
+		}
+		return body, .None
+	}
+	got := expr_check(ctx, arg) or_return
+	func, is_func := got.(^Func_Type)
+	if !is_func {
+		return nil, .Type_Mismatch
+	}
+	return func.result, .None
 }
 
 // fold is (List[T], A, (A, T) -> A) -> A: T unifies from the list's element

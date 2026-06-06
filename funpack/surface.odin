@@ -422,6 +422,14 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 	case "stick_y":
 		// §23 source helper: a gamepad stick into a vertical axis source.
 		return clone_types({func_of({engine_type_of(.Stick)}, nil)}), true
+	case "wasd":
+		// §23 source helper: the 2D WASD keyboard axis source — no argument. Its
+		// result is the same nil axis-source unknown keys_axis/stick_y yield,
+		// consumed only by Bindings.axis (whose source param is the nil unknown).
+		return clone_types({func_of({}, nil)}), true
+	case "stick":
+		// §23 source helper: a gamepad stick into a 2D axis source.
+		return clone_types({func_of({engine_type_of(.Stick)}, nil)}), true
 	}
 	return nil, false
 }

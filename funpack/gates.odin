@@ -463,13 +463,13 @@ nesting_depth :: proc(expr: Expr) -> int {
 		if method, is_method := e.callee.(^Member_Expr); is_method {
 			inner := nesting_depth(method.receiver)
 			for arg in e.args {
-				inner = max(inner, 1 + nesting_depth(arg))
+				inner = max(inner, 1 + arg_nesting_depth(arg))
 			}
 			return inner
 		}
 		inner := nesting_depth(e.callee)
 		for arg in e.args {
-			inner = max(inner, nesting_depth(arg))
+			inner = max(inner, arg_nesting_depth(arg))
 		}
 		return 1 + inner
 	case ^Record_Expr:
@@ -541,6 +541,23 @@ nesting_depth :: proc(expr: Expr) -> int {
 	}
 	// An atom (literal or bare name) is a leaf — depth zero.
 	return 0
+}
+
+// arg_nesting_depth scores a call argument's nesting, collapsing an inline
+// lambda argument's own closure level into the call's argument level: a
+// combinator with an inline predicate (`filter(src, fn(c){ … })`,
+// `first(view, fn(p){ … })`) is ONE composition level, not two. The call arm
+// already adds one level for entering its argument scope, so a lambda argument
+// contributes its BODY's depth, not `1 + body` — the predicate body's own
+// nesting (a call inside it) still deepens, but the predicate itself is part of
+// the combinator's single step. Every non-lambda argument scores normally, so a
+// nested call argument (`f(g(x))`) deepens as before. Mirrors the flat builder
+// chain (a method-call spine does not add a level per link).
+arg_nesting_depth :: proc(arg: Expr) -> int {
+	if lambda, is_lambda := arg.(^Lambda_Expr); is_lambda {
+		return nesting_depth(lambda.body)
+	}
+	return nesting_depth(arg)
 }
 
 // gate_duplication enforces §29's dup_class rule: each declaration body — a
