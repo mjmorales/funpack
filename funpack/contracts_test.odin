@@ -313,13 +313,17 @@ test_contract_update_tuple_no_command_is_dead :: proc(t: ^testing.T) {
 
 @(test)
 test_is_any_command_list_admits_despawn :: proc(t: ^testing.T) {
-	// AC (is_any_command_list over Despawn): the closed engine-command set is
-	// {Spawn, Despawn, Draw}, so is_any_command_list returns true for each and
-	// false for a signal list and a bare scalar. This pins the unit predicate the
-	// Render/Update contracts share, independent of any source fixture.
+	// AC (is_any_command_list over the closed engine-command set): the set has
+	// grown to {Spawn, Despawn, Draw, Save, Restore, ApplySettings, Sound}, so
+	// is_any_command_list returns true for each fire-and-forget command list and
+	// false for a signal list and a bare scalar. Sound is the §22 §1 one-shot an
+	// Update behavior emits like Spawn/Draw (pickups' `(Coin, [Sound])`). This pins
+	// the unit predicate the Render/Update contracts share, independent of any
+	// source fixture.
 	testing.expect(t, is_any_command_list(list_of(engine_type_of(.Spawn))))
 	testing.expect(t, is_any_command_list(list_of(engine_type_of(.Despawn))))
 	testing.expect(t, is_any_command_list(list_of(engine_type_of(.Draw))))
+	testing.expect(t, is_any_command_list(list_of(engine_type_of(.Sound))))
 	testing.expect(t, !is_any_command_list(list_of(user_type_of("Goal", .Signal))))
 	testing.expect(t, !is_any_command_list(Ground_Type.Int))
 }

@@ -870,6 +870,98 @@ test_anim_audio_static_and_method_builders_resolve :: proc(t: ^testing.T) {
 	testing.expect(t, returns_engine(bus, .Audio))
 }
 
+// ── §20 engine.render Flip + Draw::Sprite surface admission ────────────
+
+@(test)
+test_surface_admits_engine_render_flip :: proc(t: ^testing.T) {
+	// AC: `import engine.render.{Draw, Color, Flip}` resolves to .None — Flip is the
+	// §20 sprite-mirroring enum (None | X | Y | XY) joining the engine.render
+	// partition without opening it to arbitrary names. Each member binds to
+	// engine.render as a Type_Name.
+	source := "import engine.render.{Draw, Color, Flip}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		{"Draw", "engine.render", .Type_Name},
+		{"Color", "engine.render", .Type_Name},
+		{"Flip", "engine.render", .Type_Name},
+	}
+	expect_bindings(t, bindings, expectations)
+}
+
+@(test)
+test_surface_engine_render_unknown_member_rejected :: proc(t: ^testing.T) {
+	// The closed-table proof for engine.render: a name absent from the partition
+	// rejects with Unknown_Member. Admitting Flip did not open the module to
+	// arbitrary names — `Mirror` is owned by no module (Flip is the only
+	// mirroring spelling, §20).
+	ast, parse_err := stage_parse(stage_lex("import engine.render.{Draw, Mirror}\n"))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.Unknown_Member)
+}
+
+@(test)
+test_draw_sprite_typecheck_fixture :: proc(t: ^testing.T) {
+	// PROOF (the admit side): a Draw::Sprite struct-payload construction typechecks
+	// clean over the §20 field schema — `atlas` an AtlasHandle (built from an
+	// AtlasHandle{name:…} literal), `cell` a String, `at`/`size` Vec2, `tint` a
+	// Color palette value, `flip` a Flip mirroring value, `layer` an Int z-key. This
+	// is the CI-executing, sibling-independent twin of the whole-example pickups
+	// golden, mirroring the Draw3 fixture pattern.
+	source := "import engine.math.Vec2\n" +
+		"import engine.render.{Draw, Color, Flip}\n" +
+		"import engine.assets.AtlasHandle\n" +
+		"fn draw_coin(atlas: AtlasHandle) -> Draw {\n" +
+		"  return Draw::Sprite{ atlas: atlas, cell: atlas.cell(0, 0), at: Vec2{x: 1.0, y: 2.0}, size: Vec2{x: 8.0, y: 8.0}, tint: Color::White, flip: Flip::None, layer: 5 }\n" +
+		"}\n" +
+		"fn draw_coin_literal() -> Draw {\n" +
+		"  return Draw::Sprite{ atlas: AtlasHandle{name: \"pickups\"}, cell: \"coin\", at: Vec2{x: 0.0, y: 0.0}, size: Vec2{x: 8.0, y: 8.0}, tint: Color::White, flip: Flip::X, layer: 0 }\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.None)
+}
+
+@(test)
+test_draw_sprite_unknown_field_is_compile_error :: proc(t: ^testing.T) {
+	// PROOF (the reject side): an unknown field on Draw::Sprite is a compile error.
+	// Draw::Sprite has no `opacity` field — the closed §20 schema rejects it with
+	// Type_Mismatch (the typecheck-fail verdict the pipeline maps to a compile error,
+	// exit 2). Mirrors test_draw3_unknown_field_is_compile_error.
+	source := "import engine.math.Vec2\n" +
+		"import engine.render.{Draw, Color, Flip}\n" +
+		"import engine.assets.AtlasHandle\n" +
+		"fn bad(atlas: AtlasHandle) -> Draw {\n" +
+		"  return Draw::Sprite{ atlas: atlas, cell: \"coin\", at: Vec2{x: 0.0, y: 0.0}, size: Vec2{x: 8.0, y: 8.0}, tint: Color::White, flip: Flip::None, layer: 0, opacity: 0.5 }\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect(t, err != .None)
+}
+
+@(test)
+test_flip_unknown_variant_is_compile_error :: proc(t: ^testing.T) {
+	// PROOF (the reject side): an unknown Flip variant is a compile error. The closed
+	// §20 mirroring set is {None, X, Y, XY} — `Diagonal` is owned by no variant, so
+	// surface_enum_variant rejects it and the field typecheck fails.
+	source := "import engine.math.Vec2\n" +
+		"import engine.render.{Draw, Color, Flip}\n" +
+		"import engine.assets.AtlasHandle\n" +
+		"fn bad(atlas: AtlasHandle) -> Draw {\n" +
+		"  return Draw::Sprite{ atlas: atlas, cell: \"coin\", at: Vec2{x: 0.0, y: 0.0}, size: Vec2{x: 8.0, y: 8.0}, tint: Color::White, flip: Flip::Diagonal, layer: 0 }\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect(t, err != .None)
+}
+
 @(test)
 test_bind_name_rejects_conflicting_rebind :: proc(t: ^testing.T) {
 	// The binding-layer floor behind the table test: re-binding the
