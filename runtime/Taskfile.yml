@@ -10,7 +10,7 @@ tasks:
   # vendor:sdl2 — to a gitignored `funpack-live` binary, then runs it with the
   # passed args. The default build/lint/test verbs stay define-free: the headless
   # floor is the default gate, so the live SDL window path never enters CI by
-  # default. Run a session once task 2.1 lands:
+  # default. Run a session:
   #   task -d runtime live -- testdata/pong.artifact
   live:
     desc: Build the FUNPACK_LIVE runtime (links vendor:sdl2) and run it
