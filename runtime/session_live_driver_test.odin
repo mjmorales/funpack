@@ -6,7 +6,7 @@
 // transforms with no SDL and no clock, so this headless suite pins their exact
 // rails the same way session_live_test.odin pins the projection helpers. The loop,
 // pacing, present, and exit are operator-gated (a window must open) and proven by
-// the existing replay_acceptance_test's live-vs-replay digest identity.
+// replay_acceptance_test's live-vs-replay digest identity.
 package funpack_runtime
 
 import "core:testing"
