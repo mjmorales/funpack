@@ -324,6 +324,13 @@ is_command_list :: proc(t: Type, kind: Engine_Kind) -> bool {
 // the disk; yard's save_key/restore_key/apply_settings return these, so an Update
 // behavior emitting one is a real write, not dead code). [Despawn] is the
 // self-scoped despawn an Update behavior emits (snake's `despawn_eaten`).
+// [Sound] is the §22 §1 one-shot fire-and-forget command an Update behavior
+// returns like Spawn/Draw (edge-triggered); pickups' `on_pickup` emits
+// `(Coin, [Sound])`, so the audio one-shot is a real write, not dead code. The
+// level-triggered keyed [Audio] projection is NOT here — it is the deferred
+// `audio:` terminal slot's return, not an interior-stage emit (slot_of_stage
+// routes `audio:` to the deferred .Audio slot), so it never reaches this
+// Update/Render emit test.
 is_any_command_list :: proc(t: Type) -> bool {
 	return(
 		is_command_list(t, .Spawn) ||
@@ -332,6 +339,7 @@ is_any_command_list :: proc(t: Type) -> bool {
 		is_command_list(t, .Draw3) ||
 		is_command_list(t, .Save) ||
 		is_command_list(t, .Restore) ||
-		is_command_list(t, .ApplySettings) \
+		is_command_list(t, .ApplySettings) ||
+		is_command_list(t, .Sound) \
 	)
 }

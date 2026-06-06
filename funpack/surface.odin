@@ -143,11 +143,14 @@ STDLIB_SURFACE := []Module_Surface{
 	},
 	{
 		// §20: the 2D render surface. Draw is the closed §04 draw-command
-		// type; Color is its palette enum.
+		// type; Color is its palette enum; Flip is the §20 sprite-mirroring enum
+		// (None | X | Y | XY) a Draw::Sprite's `flip` field names — one set of
+		// atlas cells reused for both facings.
 		path = "engine.render",
 		decls = {
 			{"Draw", .Type_Name},
 			{"Color", .Type_Name},
+			{"Flip", .Type_Name},
 		},
 	},
 	{
@@ -246,12 +249,14 @@ STDLIB_SURFACE := []Module_Surface{
 		// seam constant binds, and the six string/cell constructors (mesh/texture/
 		// sound/atlas/cell/frame) name an asset by string against the closed
 		// registry. mesh/texture/sound/atlas carry a fixed (String) -> KINDHandle
-		// signature (surface_signatures); cell/frame are call-site-inferred atlas
-		// accessors (surface_signatures returns found = false for them, like the
-		// list combinators), so admission here is the Func table row, their typing
-		// rule the call site's. This is a TYPING partition riding the existing
-		// import grammar — a new closed table + the handle record schemas
-		// (surface_engine_record), NOT new grammar.
+		// signature (surface_signatures); cell/frame are self-first AtlasHandle
+		// accessors (cell(self, col, row) / frame(self, clip, t) -> String) typed at
+		// the call site as engine methods off the AtlasHandle receiver
+		// (surface_engine_method), so admission here is the Func table row that lets
+		// the bare import resolve, their typing rule the engine-method signature.
+		// This is a TYPING partition riding the existing import grammar — a new
+		// closed table + the handle record schemas (surface_engine_record), NOT new
+		// grammar.
 		path = "engine.assets",
 		decls = {
 			{"MeshHandle", .Type_Name},
@@ -794,6 +799,14 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 		case "White", "Black", "Red", "Green", "Blue", "Gray":
 			return engine_type_of(.Color), true
 		}
+	case "Flip":
+		// §20 the sprite-mirroring enum a Draw::Sprite's `flip` field names: None
+		// draws the cells as authored, X/Y/XY mirror horizontally/vertically/both —
+		// reusing one set of atlas cells for both facings (pickups' Flip::None).
+		switch variant {
+		case "None", "X", "Y", "XY":
+			return engine_type_of(.Flip), true
+		}
 	case "Slot":
 		// §16 §7 the part-attach slots krognid.gen.fun binds meshes to. The
 		// left-side slots plus their right-mirror twins — PartSet.mirror(L, R)
@@ -1117,6 +1130,21 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 		case "at":
 			return func_of({Ground_Type.Vec3}, engine_type_of(.Audio)), true
 		}
+	case .AtlasHandle:
+		// §26 the two §26 line-78 atlas accessors, self-first functions reached as
+		// methods off an AtlasHandle (pickups' `assets.pickups.frame("spin",
+		// self.spin_t)`). cell(col, row) names a grid cell by column/row; frame(clip,
+		// t) names the cell of a named animation clip at clock t. The `self`
+		// AtlasHandle is the receiver, so the tail params are typed here; each yields
+		// the String cell name a Draw::Sprite's `cell` field carries. Admitted as
+		// .Func import rows (surface.odin) so a bare import resolves; the call-site
+		// typing rule is this fixed engine-method signature.
+		switch member {
+		case "cell":
+			return func_of({Ground_Type.Int, Ground_Type.Int}, engine_type_of(.String)), true
+		case "frame":
+			return func_of({engine_type_of(.String), Ground_Type.Fixed}, engine_type_of(.String)), true
+		}
 	}
 	return nil, false
 }
@@ -1170,6 +1198,22 @@ surface_struct_variant :: proc(type_name: string, variant: string) -> (result: T
 					{name = "at", type = Ground_Type.Vec2},
 					{name = "zoom", type = Ground_Type.Fixed},
 					{name = "rotation", type = Ground_Type.Fixed},
+				}), true
+		case "Sprite":
+			// §20 the textured-quad command: a named cell of an atlas, tinted,
+			// flipped, and z-sorted by layer (pickups' draw_coin emits one). `atlas`
+			// is the §26 AtlasHandle the cell lives in; `cell` the String cell name
+			// (the cell/frame accessors yield it); `at`/`size` the top-left quad
+			// placement; `tint` the palette multiply; `flip` the mirroring; `layer`
+			// the Int z-sort key.
+			return engine_type_of(.Draw), clone_fields({
+					{name = "atlas", type = engine_type_of(.AtlasHandle)},
+					{name = "cell", type = engine_type_of(.String)},
+					{name = "at", type = Ground_Type.Vec2},
+					{name = "size", type = Ground_Type.Vec2},
+					{name = "tint", type = engine_type_of(.Color)},
+					{name = "flip", type = engine_type_of(.Flip)},
+					{name = "layer", type = Ground_Type.Int},
 				}), true
 		}
 	case "Shape2":

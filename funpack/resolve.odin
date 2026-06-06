@@ -441,6 +441,11 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Stick), true
 	case "Color":
 		return engine_type_of(.Color), true
+	// §20 the sprite-mirroring enum: a bare `flip: Flip` field or `-> Flip` return
+	// names it in field/param/return position; its variants (None/X/Y/XY) are
+	// reached through surface_enum_variant, not as bare type-refs.
+	case "Flip":
+		return engine_type_of(.Flip), true
 	// §11 physics: a `body: Body` field, a `shape: Shape2` field, a `kind:
 	// BodyKind` field, and a `pads: [Trigger]` inbound signal all name an
 	// engine type here. Box/Circle and Static/Dynamic/Kinematic are reached
