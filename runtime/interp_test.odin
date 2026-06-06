@@ -143,7 +143,137 @@ test_eval_serve_velocity :: proc(t: ^testing.T) {
 	testing.expect_value(t, right_vel.y, to_fixed(40))
 }
 
+// input.axis(P1, Drive::Move) resolves the 2D analog read off the snapshot
+// through the eval_method_call `axis` arm (§23 §2). A snapshot carrying a known
+// 2D axis returns that exact Vec2; an unwritten axis returns VEC2_ZERO (the
+// snapshot default — input never faults). Mirrors the input.value contract, the
+// 1D sibling on the same dispatch. Proven on a HAND-BUILT minimal program +
+// snapshot, not the emitted artifact: the registry is minted from a one-Axis-enum
+// program, and the call node forest is built by hand.
+@(test)
+test_eval_input_axis_reads_snapshot :: proc(t: ^testing.T) {
+	program := axis_program()
+	version := initial_version(new_world(program, context.temp_allocator), context.temp_allocator)
+
+	// A snapshot with Drive::Move written for P1 to a known 2D vector. The action
+	// id is 0 — the first (only) variant of the only Axis enum, per the registry's
+	// declaration-order mint.
+	move := Vec2{fixed_div(to_fixed(1), to_fixed(2)), fixed_neg(fixed_div(to_fixed(1), to_fixed(4)))}
+	snap := with_axis(empty(), .P1, ActionId(0), move)
+	defer delete_input(snap)
+
+	dt_fields := make(map[string]Value, context.temp_allocator)
+	dt_fields["dt"] = dt_60hz()
+	time := Record_Value{type_name = "Time", fields = dt_fields}
+	interp := new_interp(&program, &version, nil, snap, time, context.temp_allocator)
+
+	// Registry actually minted Drive::Move as an Axis action.
+	_, has_move := interp.registry.by_name["Drive::Move"]
+	testing.expect(t, has_move)
+
+	got, ok := eval_axis_call(&interp, "P1", "Drive", "Move")
+	testing.expect(t, ok)
+	vec := got.(Vec2)
+	testing.expect_value(t, vec.x, move.x)
+	testing.expect_value(t, vec.y, move.y)
+}
+
+// An axis the snapshot never wrote reads VEC2_ZERO: P2 has no Drive::Move written,
+// so the §23 §2 default reading is the zero vector — the no-fault contract the 1D
+// value() path also honors.
+@(test)
+test_eval_input_axis_unwritten_reads_zero :: proc(t: ^testing.T) {
+	program := axis_program()
+	version := initial_version(new_world(program, context.temp_allocator), context.temp_allocator)
+
+	// Only P1 is written; P2 is left unwritten so its read falls to the default.
+	snap := with_axis(empty(), .P1, ActionId(0), Vec2{to_fixed(1), to_fixed(1)})
+	defer delete_input(snap)
+
+	dt_fields := make(map[string]Value, context.temp_allocator)
+	dt_fields["dt"] = dt_60hz()
+	time := Record_Value{type_name = "Time", fields = dt_fields}
+	interp := new_interp(&program, &version, nil, snap, time, context.temp_allocator)
+
+	got, ok := eval_axis_call(&interp, "P2", "Drive", "Move")
+	testing.expect(t, ok)
+	vec := got.(Vec2)
+	testing.expect_value(t, vec.x, VEC2_ZERO.x)
+	testing.expect_value(t, vec.y, VEC2_ZERO.y)
+}
+
 // --- test call helpers ----------------------------------------------------
+
+// axis_program is a minimal program carrying one Axis enum (Drive::Move) so the
+// registry mints exactly one Axis action with ActionId 0 — the hand-built
+// stand-in for the artifact's action surface, mirroring the registry's
+// declaration-order mint without loading a full artifact.
+@(private = "file")
+axis_program :: proc() -> Program {
+	enums := make([]Enum_Decl, 1, context.temp_allocator)
+	variants := make([]Enum_Variant, 1, context.temp_allocator)
+	variants[0] = Enum_Variant{name = "Move", payload = "unit"}
+	enums[0] = Enum_Decl{name = "Drive", kind = .Axis, variants = variants}
+	return Program{enums = enums}
+}
+
+// eval_axis_call builds and evaluates an `input.axis(PlayerId::player, Enum::case)`
+// method-call node forest by hand — a `.Call` over a `.Field` callee (`input.axis`,
+// receiver bound through the env) plus two `.Variant` args — driving the dispatch
+// the executed pipeline reaches without lowering an artifact.
+@(private = "file")
+eval_axis_call :: proc(
+	interp: ^Interp,
+	player, action_enum, action_case: string,
+) -> (
+	result: Value,
+	ok: bool,
+) {
+	// The receiver `input`, the `input.axis` field callee, and the two Variant args
+	// are built into a `.Call` forest. Every node's field/children slice is heap-
+	// allocated (temp arena) so the forest survives this proc's return — Odin
+	// refuses a compound slice literal escaping a stack frame.
+	recv := Node{kind = .Name, fields = node_fields("input")}
+	field := Node{kind = .Field, fields = node_fields("axis"), children = node_children(recv)}
+	player_arg := variant_node("PlayerId", player)
+	action_arg := variant_node(action_enum, action_case)
+	call := Node {
+		kind     = .Call,
+		children = node_children(field, player_arg, action_arg),
+	}
+
+	env := Env {
+		names = make(map[string]Value, context.temp_allocator),
+	}
+	env.names["input"] = input_marker(interp)
+	return eval(interp, &call, &env)
+}
+
+// variant_node builds a unit-payload `.Variant` body node — `variant ENUM CASE
+// false` — the shape eval_variant decodes into a Variant_Value. Used to hand-build
+// the PlayerId and action args a resource query reads.
+@(private = "file")
+variant_node :: proc(enum_type, case_name: string) -> Node {
+	return Node{kind = .Variant, fields = node_fields(enum_type, case_name, "false")}
+}
+
+// node_fields heap-allocates a node's scalar-token slice from the temp arena, so a
+// hand-built node can escape its constructing stack frame.
+@(private = "file")
+node_fields :: proc(tokens: ..string) -> []string {
+	out := make([]string, len(tokens), context.temp_allocator)
+	copy(out, tokens)
+	return out
+}
+
+// node_children heap-allocates a node's child slice from the temp arena, mirroring
+// node_fields for the children axis.
+@(private = "file")
+node_children :: proc(nodes: ..Node) -> []Node {
+	out := make([]Node, len(nodes), context.temp_allocator)
+	copy(out, nodes)
+	return out
+}
 
 // call_three applies a three-arg §9 helper directly by building a call over name
 // nodes that resolve from a seeded scope — the test driver for a body whose args

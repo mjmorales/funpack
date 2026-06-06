@@ -111,10 +111,10 @@ eval_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 
 // eval_method_call evaluates `recv.method(args)` — the resource-query form. The
 // receiver is the `field` callee's child; the method name is its field token.
-// Input.value(player, action) is the resource query the executed
-// control/collision/scoring stages reach (the render [Draw] projection is not
-// produced here), so the receiver is the Input snapshot and the method resolves
-// an action reading; an unknown receiver/method is ok=false.
+// The Input resource queries the executed control/collision/scoring stages reach
+// are the 1D `value` and the 2D `axis` analog reads (the render [Draw] projection
+// is not produced here), so the receiver is the Input snapshot and the method
+// resolves an action reading; an unknown receiver/method is ok=false.
 eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	field_node := &node.children[0]
 	method := field_node.fields[0]
@@ -122,13 +122,15 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	if !recv_ok {
 		return nil, false
 	}
-	// Pong's only method receiver in the executed (non-render) pipeline is the
-	// Input snapshot; the receiver value carries no Input arm, so resolve the
-	// query against interp.input directly, keyed by the evaluated args.
+	// The method receivers in the executed (non-render) pipeline are all the Input
+	// snapshot; the receiver value carries no Input arm, so resolve the query
+	// against interp.input directly, keyed by the evaluated args.
 	_ = recv
 	switch method {
 	case "value":
 		return eval_input_value(interp, node, env)
+	case "axis":
+		return eval_input_axis(interp, node, env)
 	}
 	return nil, false
 }
@@ -164,6 +166,41 @@ eval_input_value :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Va
 		return Fixed(0), true
 	}
 	return value(interp.input, player, def.id), true
+}
+
+// eval_input_axis evaluates `input.axis(self.player, Drive::Move)`: resolve the
+// PlayerId arg and the action variant arg, map the action to its stable ActionId
+// through the program's action registry, and read the snapshot's 2D analog axis
+// (§23 §2), a Vec2 whose components are each in [-1, 1]. An unresolved player or
+// action reads VEC2_ZERO (the snapshot default), mirroring eval_input_value's
+// zero default — a behavior never faults on input. hunt's drive body multiplies
+// this Vec2 by P_SPEED*time.dt, so the 2D read is the player-move path.
+eval_input_axis :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Value, ok: bool) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	player_val, player_ok := eval(interp, &node.children[1], env)
+	action_val, action_ok := eval(interp, &node.children[2], env)
+	if !player_ok || !action_ok {
+		return nil, false
+	}
+	player_variant, is_player := player_val.(Variant_Value)
+	action_variant, is_action := action_val.(Variant_Value)
+	if !is_player || !is_action {
+		return nil, false
+	}
+	player, player_resolved := player_from_string(player_variant.case_name)
+	if !player_resolved {
+		return VEC2_ZERO, true
+	}
+	// The registry is minted once per program (new_interp), so this read is an
+	// index lookup, not a per-instance rebuild.
+	action_name := variant_to_token(action_variant, interp.allocator)
+	def, action_found := interp.registry.by_name[action_name]
+	if !action_found {
+		return VEC2_ZERO, true
+	}
+	return axis(interp.input, player, def.id), true
 }
 
 // eval_named_call dispatches a `name(args)` call: an engine builtin first (the
