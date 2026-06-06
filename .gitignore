@@ -4,6 +4,7 @@
 # build outputs
 warden/warden
 funpack/funpack
+runtime/funpack-live
 
 # §14 derived build products — gitignored, rebuilt on demand
 .funpack/
