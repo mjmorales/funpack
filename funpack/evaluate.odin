@@ -117,9 +117,14 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		if constant, declared := eval_module_const(ctx, e.name); declared {
 			return constant, true
 		}
-		// The sanctioned lowercase constants are the builtin fallback.
+		// The sanctioned lowercase constants are the builtin fallback (spec §02:
+		// pi/tau are the only snake_case constant exceptions; §10: the nearest-Fixed
+		// angle constants). advance_gait wraps its phase into [0, tau) with `% tau`.
 		if e.name == "pi" {
 			return PI_FIXED, true
+		}
+		if e.name == "tau" {
+			return TAU_FIXED, true
 		}
 		return nil, false
 	case ^Unary_Expr:
@@ -788,14 +793,19 @@ eval_member :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Member_Expr) -> (value: Value,
 
 // eval_field_access reads a member off a value: a user record's field
 // (Goal.side, self.pos), a Vec2/Vec3 component (v.x), or the §04 Time resource's
-// dt — the per-tick delta in fixed seconds the hunt search countdown folds.
+// dt/t — `dt` is the per-tick delta in fixed seconds the hunt search countdown
+// folds, `t` the accumulated logical time since startup the renderer's idle bob
+// samples.
 eval_field_access :: proc(receiver: Value, member: string) -> (value: Value, ok: bool) {
 	#partial switch r in receiver {
 	case Record_Value:
 		return record_field_value(r.fields, member)
 	case Time_Value:
-		if member == "dt" {
+		switch member {
+		case "dt":
 			return r.dt, true
+		case "t":
+			return r.t, true
 		}
 	case Vec2_Value:
 		switch member {
