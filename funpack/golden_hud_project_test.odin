@@ -37,6 +37,7 @@ package funpack
 import "core:log"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 // HUD_DEMO_PROJECT_ASSERT_COUNT is the count of funpack-evaluable inline asserts
@@ -238,13 +239,14 @@ test_golden_hud_demo_declaration_inventory :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(ast.pipelines), 1)
 	testing.expect_value(t, len(ast.tests), 10)
 
-	// DELIBERATELY UNPINNED: ast.module_doc — hud_demo.fun carries a file-leading
-	// @doc, but a blank line between it and the first import makes the parser
-	// misfile it (parse_directive peeks .Import after consuming ONE newline), so
-	// module_doc reads empty today. The yard inventory pins its module_doc; this
-	// one cannot until the parser bug is fixed — tracked as scrum task
-	// parser-drops-file-leading-doc--mq2vbemp; restore the
-	// `testing.expect(t, ast.module_doc != "")` pin with that fix.
+	// hud_demo.fun carries a file-leading @doc separated from the first import by a
+	// blank line; the parser skips that blank line before the module-doc import
+	// check, so the doc lands as the module doc rather than being dropped.
+	testing.expect(t, ast.module_doc != "")
+	testing.expect(
+		t,
+		strings.has_prefix(ast.module_doc, "A tiny arcade demo with three screens"),
+	)
 
 	// The App thing carries its seven §11 fields (screen/score/clock/paused/
 	// game_over/player_name/volume) and is a plain thing, not a singleton.

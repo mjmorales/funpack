@@ -298,6 +298,19 @@ test_krognid_project_reads_and_joins_seam :: proc(t: ^testing.T) {
 	}
 	index := build_module_index_typed(modules, asts)
 
+	// stroll.fun carries a file-leading @doc separated from the first import by a
+	// blank line; the parser skips that blank line before the module-doc import
+	// check, so the doc lands as `stroll`'s module doc rather than being dropped.
+	for module, i in modules {
+		if module == "stroll" {
+			testing.expect(t, asts[i].module_doc != "", "stroll module doc lands")
+			testing.expect(
+				t,
+				strings.has_prefix(asts[i].module_doc, "Walk a rigged Krognid around a field"),
+			)
+		}
+	}
+
 	seam_bytes, seam_read := os.read_entire_file_from_path(seam_source.path, context.temp_allocator)
 	testing.expect(t, seam_read == nil, "the committed seam is readable")
 	if seam_read != nil {

@@ -10,6 +10,40 @@ test_parse_module_doc :: proc(t: ^testing.T) {
 	testing.expect_value(t, ast.module_doc, "the module doc")
 }
 
+// A blank line between the file-leading @doc and the first import must not drop
+// the module doc: the import check skips any run of newlines after the doc's
+// terminator.
+@(test)
+test_parse_module_doc_blank_line_before_import :: proc(t: ^testing.T) {
+	tokens := stage_lex("@doc(\"the module doc\")\n\nimport engine.list.fold\n")
+	ast, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, ast.module_doc, "the module doc")
+}
+
+// Several blank lines between the @doc and the first import attribute the same
+// way — the skip is over a run of newlines, not a single one.
+@(test)
+test_parse_module_doc_many_blank_lines_before_import :: proc(t: ^testing.T) {
+	tokens := stage_lex("@doc(\"the module doc\")\n\n\n\nimport engine.list.fold\n")
+	ast, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, ast.module_doc, "the module doc")
+}
+
+// A file-leading @doc followed (across a blank line) by a declaration keyword
+// rather than an import is that declaration's doc, NOT the module doc — the
+// blank-line skip must not misfile the doc when no import follows.
+@(test)
+test_parse_first_doc_before_decl_not_module_doc :: proc(t: ^testing.T) {
+	tokens := stage_lex("@doc(\"the data doc\")\n\ndata Pt { x: Int }\n")
+	ast, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, ast.module_doc, "")
+	testing.expect_value(t, len(ast.datas), 1)
+	testing.expect_value(t, ast.datas[0].doc, "the data doc")
+}
+
 @(test)
 test_parse_per_test_doc_attaches :: proc(t: ^testing.T) {
 	tokens := stage_lex("@doc(\"module\")\nimport assets\n@doc(\"the test doc\")\ntest \"x\" {\n}\n")

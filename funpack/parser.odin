@@ -366,9 +366,12 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 // directive (spec §05). The file-leading @doc documents the module
 // (spec §15, fun.ll1.md §5B): the first @doc is the module doc only when it
 // is followed by an `import` — imports carry no directives, so a @doc before
-// one cannot be the import's. A first @doc followed instead by @gtag or a
-// declaration keyword is that declaration's doc. @gtag labels accumulate; a
-// declaration consumes the whole accumulated directive set.
+// one cannot be the import's. Blank lines between the file-leading @doc and the
+// first import are insignificant, so skip any run of newlines before testing
+// for the import (the main loop skips them anyway, so advancing here is safe).
+// A first @doc followed instead by @gtag or a declaration keyword is that
+// declaration's doc. @gtag labels accumulate; a declaration consumes the whole
+// accumulated directive set.
 parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, seen_decl: bool) -> Parse_Error {
 	expect(p, .At) or_return
 	name := expect(p, .Ident) or_return
@@ -378,6 +381,7 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		str := expect(p, .String_Lit) or_return
 		expect(p, .R_Paren) or_return
 		terminate_statement(p) or_return
+		skip_newlines(p)
 		if !seen_decl && module_doc^ == "" && peek_kind(p) == .Import {
 			module_doc^ = str.text
 		} else {
