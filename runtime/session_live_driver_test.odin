@@ -48,6 +48,33 @@ test_replay_out_path_preserves_nested_dir :: proc(t: ^testing.T) {
 	testing.expect_value(t, out, "a/b/c/game.replay")
 }
 
+// test_save_root_path_swaps_extension pins the §24 save-root derivation: the
+// artifact's extension swaps for `.saves` in the SAME directory — yard's slots
+// land beside the artifact and replay log they belong to, and two artifacts in
+// one directory never share a slot namespace.
+@(test)
+test_save_root_path_swaps_extension :: proc(t: ^testing.T) {
+	root := save_root_path("testdata/yard.artifact", context.temp_allocator)
+	testing.expect_value(t, root, "testdata/yard.saves")
+}
+
+// test_save_root_path_no_extension_appends pins the degenerate case: an artifact
+// path with no extension gets `.saves` appended, the same total-over-any-path
+// rule replay_out_path follows.
+@(test)
+test_save_root_path_no_extension_appends :: proc(t: ^testing.T) {
+	root := save_root_path("build/yard", context.temp_allocator)
+	testing.expect_value(t, root, "build/yard.saves")
+}
+
+// test_save_root_path_preserves_nested_dir pins that the directory survives the
+// swap on a deeper path — the save root sits next to the artifact, not at the cwd.
+@(test)
+test_save_root_path_preserves_nested_dir :: proc(t: ^testing.T) {
+	root := save_root_path("a/b/c/game.fpk", context.temp_allocator)
+	testing.expect_value(t, root, "a/b/c/game.saves")
+}
+
 // test_text_rects_empty_is_no_rects pins the empty-string case: a Draw_Text with
 // no characters draws nothing, so the present pass paints no spurious glyph.
 @(test)

@@ -58,7 +58,7 @@ SESSION_LIVE_SDL_ALIVE :: sdl.Event
 SESSION_LIVE_OS_ALIVE :: os.Error
 SESSION_LIVE_FMT_ALIVE :: fmt.Info
 
-// --- replay out-path derivation (pure, compiled in every build) -----------
+// --- replay out-path / save-root derivation (pure, compiled in every build) ---
 
 // replay_out_path derives where a live session writes its .replay log: the
 // explicit `override` when the operator passed one (os.args[2]), otherwise
@@ -74,6 +74,19 @@ replay_out_path :: proc(artifact_path: string, override: string, allocator := co
 	ext := filepath.ext(artifact_path)
 	stem := artifact_path[:len(artifact_path) - len(ext)]
 	return strings.concatenate({stem, ".replay"}, allocator)
+}
+
+// save_root_path derives where a live session roots its §24 on-disk save-slot
+// store: `<artifact-stem>.saves` sitting next to the artifact — the same
+// stem-swap discipline replay_out_path applies, so a game's save slots land
+// beside the artifact and replay log they belong to and two artifacts in one
+// directory never share a slot namespace. An artifact path with no extension
+// gets `.saves` appended. Pure string transform (no SDL, no IO), compiled in
+// every build and pinned headless.
+save_root_path :: proc(artifact_path: string, allocator := context.allocator) -> string {
+	ext := filepath.ext(artifact_path)
+	stem := artifact_path[:len(artifact_path) - len(ext)]
+	return strings.concatenate({stem, ".saves"}, allocator)
 }
 
 // --- world → pixel projection --------------------------------------------
@@ -429,15 +442,24 @@ when #config(FUNPACK_LIVE, false) {
 	// optional replay out path), loads the artifact retaining its raw bytes for the
 	// content-hashed replay identity, then drives the proven live seam —
 	// run_startup, then per frame { drain SDL events once into the injected queue
-	// and the exit flag → resolve_tick → step_tick → render_version → present →
-	// record_tick → thread prev_held → pace to the next tick deadline }. On exit it
-	// flushes the replay (finish_replay + write_replay_file) BEFORE closing the live
+	// and the exit flag → resolve_tick → step_tick_persist → render_version →
+	// present → record_tick → thread prev_held + the persist carrier → pace to the
+	// next tick deadline }. The tick driver is step_tick_persist (NOT plain
+	// step_tick, which silently drops §24 persist commands), so a Save/Restore/
+	// ApplySettings a behavior emits executes against the on-disk store rooted
+	// beside the artifact — live yard quicksaves on F5 and quickloads on F9. The
+	// determinism record is unchanged: persist commands never ride the replay log
+	// (the F5/F9 PRESSES ride the recorded input stream, so a re-fold re-runs the
+	// same commands against a fresh store — save_io.odin's slot-as-refold
+	// invariant). A command-less game (pong, snake, hunt) folds
+	// bit-identically: both drivers share run_pipeline_fold. On exit it flushes
+	// the replay (finish_replay + write_replay_file) BEFORE closing the live
 	// device. Returns a process exit code (0 on a clean session, non-zero on a usage
 	// or load failure). tick_hz comes SOLELY from program.entrypoint.tick_hz and the
 	// window/board geometry SOLELY from its declared logical extent (§15
 	// logical:WxH via live_window_for / board_extent) — never a flag — and no float
 	// ever reaches sim state: pixel conversion happens only at the present boundary
-	// and never feeds back into resolve_tick/step_tick.
+	// and never feeds back into resolve_tick/step_tick_persist.
 	run_live_session :: proc(args: []string) -> int {
 		if len(args) < 2 {
 			fmt.eprintln("usage: funpack-live <artifact-path> [replay-out-path]")
@@ -461,6 +483,19 @@ when #config(FUNPACK_LIVE, false) {
 		}
 
 		out_path := replay_out_path(artifact_path, override, context.allocator)
+
+		// The §24 persist boundary: quicksave/quickload writes through the real
+		// on-disk store rooted beside the artifact (`<stem>.saves/`). The driver
+		// ensures the root exists once here — new_on_disk_store never creates it. A
+		// failed create is NOT fatal: the session runs, and each Save against the
+		// missing root fails closed to Result::Err, the §24 error arm the menu fold
+		// records ("save failed"), never a crash and never a silent drop.
+		save_root := save_root_path(artifact_path, context.allocator)
+		if !os.exists(save_root) {
+			_ = os.make_directory(save_root)
+		}
+		store := new_on_disk_store(save_root)
+		carrier := new_persist_carrier(&store)
 
 		// The window and the world→pixel board come from the artifact's declared
 		// §15 logical extent — the present geometry is per-artifact, never a
@@ -540,7 +575,10 @@ when #config(FUNPACK_LIVE, false) {
 			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels)
 			// Thread the persistent Rng through a seeded run so each tick observes the
 			// prior tick's draws (§04 §1); a seedless run threads nothing (rng stays nil).
-			version = step_tick(&program, version, snapshot, time, context.allocator, seeded ? &rng : nil)
+			// The persist carrier threads alongside it: this tick delivers a PRIOR
+			// tick's Save/Restore outcomes into the mailbox and hands its own emitted
+			// commands to the store for next-tick delivery (§24 §1 one-tick deferral).
+			version, carrier = step_tick_persist(&program, version, snapshot, time, carrier, context.allocator, seeded ? &rng : nil)
 			draw := render_version(&program, version, snapshot, time)
 			present_frame(device.renderer, draw, board, window)
 			record_tick(&writer, snapshot)
