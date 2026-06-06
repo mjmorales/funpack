@@ -553,9 +553,9 @@ node record Draw::Text 3 3
 node recfield at 1
 node record Vec2 2 2
 node recfield x 1
-node fixed 171798691840 0
+node fixed 343597383680 0
 node recfield y 1
-node fixed 300647710720 0
+node fixed 343597383680 0
 node recfield text 1
 node string L9:GAME OVER 0
 node recfield color 1

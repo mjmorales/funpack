@@ -7,6 +7,11 @@
 // present side. The window loop, the SDL renderer, and the CLI entry that consume
 // these live in the when-gated session driver and device layer, never in this file.
 //
+// The projection extent comes from the ARTIFACT: the §15 entrypoint's declared
+// `logical:WxH` draw space (§20 §3) sizes both the window (the largest integer
+// scale of the logical extent that fits LIVE_TARGET_PX) and the world→pixel
+// board denominator — no per-game board constant lives here.
+//
 // NO FLOAT (§10, §10.5): world→pixel is exact-integer over i128 — the Q32.32
 // scale on the world coordinate and the same scale on the board extent cancel in
 // the ratio, so `pixel = world_bits * window_px / board_bits` is a pure integer
@@ -15,10 +20,10 @@
 // never feeds back into resolve_tick / step_tick (the determinism core sees no
 // pixel).
 //
-// vendor:sdl2/ttf is DELIBERATELY NOT USED: the pong score is drawn
-// with a block-digit glyph table emitting filled §20-style rects, so the live
-// presentation carries no font dependency and the digit geometry is itself
-// pure and headless-testable.
+// vendor:sdl2/ttf is DELIBERATELY NOT USED: §20 Draw_Text is drawn with a
+// block-glyph table (digits + uppercase letters over a 3x5 cell grid) emitting
+// filled §20-style rects, so the live presentation carries no font dependency
+// and the glyph geometry is itself pure and headless-testable.
 //
 // The SDL session driver itself (the window loop, pacing, present, exit) lives in
 // the `when #config(FUNPACK_LIVE, false)` block at the foot of this file; only it
@@ -79,6 +84,35 @@ replay_out_path :: proc(artifact_path: string, override: string, allocator := co
 Window_Px :: struct {
 	w: i32,
 	h: i32,
+}
+
+// LIVE_TARGET_PX is the longest-side pixel target the live window aims for: the
+// window opens at the LARGEST integer multiple of the logical extent that fits
+// this target on both axes (so every world unit lands on a whole-pixel cell with
+// no rounding — pong's 160x120 scales 4x to 640x480, snake's 160x160 to
+// 640x640). A logical extent already past the target opens at 1x rather than
+// shrinking below integer scale.
+LIVE_TARGET_PX :: 640
+
+// live_window_for derives the live window extent from the artifact's declared
+// §15 logical draw space: the largest integer scale k >= 1 with both
+// logical_w*k and logical_h*k inside LIVE_TARGET_PX. Integer scaling keeps the
+// world→pixel projection exact (§10.5) and uniform on both axes, so the whole
+// declared space is visible — the per-artifact replacement for a fixed window
+// constant. The loader guarantees positive dimensions (§15).
+live_window_for :: proc(logical_w: int, logical_h: int) -> Window_Px {
+	scale := min(LIVE_TARGET_PX / logical_w, LIVE_TARGET_PX / logical_h)
+	if scale < 1 {
+		scale = 1
+	}
+	return Window_Px{w = i32(logical_w * scale), h = i32(logical_h * scale)}
+}
+
+// board_extent lifts the artifact's declared integer logical extent (§15
+// logical:WxH) into the Q32.32 world-unit Vec2 the world→pixel projection
+// divides by — the per-artifact replacement for a hardcoded board constant.
+board_extent :: proc(logical_w: int, logical_h: int) -> Vec2 {
+	return Vec2{to_fixed(i64(logical_w)), to_fixed(i64(logical_h))}
 }
 
 // Pixel is an integer pixel coordinate on the window grid (top-left origin). It is
@@ -149,20 +183,20 @@ draw_color_to_rgba :: proc(color: Draw_Color) -> Rgba8 {
 	return Rgba8{255, 255, 255, 255}
 }
 
-// --- block-digit glyph table ----------------------------------------------
+// --- block-glyph table ------------------------------------------------------
 
-// DIGIT_GLYPH_COLS / DIGIT_GLYPH_ROWS are the block-digit grid: each '0'..'9'
-// glyph is a 3-wide × 5-tall cell bitmap, so a digit_rects call emits at most 15
-// filled rects (one per lit cell). The 3x5 layout is the smallest grid that draws
-// every decimal digit legibly with straight block segments and no diagonals.
-DIGIT_GLYPH_COLS :: 3
-DIGIT_GLYPH_ROWS :: 5
+// GLYPH_COLS / GLYPH_ROWS are the block-glyph grid: each glyph is a 3-wide ×
+// 5-tall cell bitmap, so a glyph_rects call emits at most 15 filled rects (one
+// per lit cell). The 3x5 layout is the smallest grid that draws every decimal
+// digit and uppercase letter legibly with straight block segments.
+GLYPH_COLS :: 3
+GLYPH_ROWS :: 5
 
 // DIGIT_GLYPHS is the block-digit bitmap table: index by (digit, row) to a 3-bit
 // row mask whose set bits (high bit = leftmost column) are the lit cells. Read top
 // row to bottom row. A bit set means "emit a filled rect for this cell"; the glyphs
 // are the canonical seven-segment-style block shapes over a 3x5 grid.
-DIGIT_GLYPHS :: [10][DIGIT_GLYPH_ROWS]u8 {
+DIGIT_GLYPHS :: [10][GLYPH_ROWS]u8 {
 	{0b111, 0b101, 0b101, 0b101, 0b111}, // 0
 	{0b010, 0b110, 0b010, 0b010, 0b111}, // 1
 	{0b111, 0b001, 0b111, 0b100, 0b111}, // 2
@@ -175,32 +209,90 @@ DIGIT_GLYPHS :: [10][DIGIT_GLYPH_ROWS]u8 {
 	{0b111, 0b101, 0b111, 0b001, 0b111}, // 9
 }
 
-// digit_rects emits the filled §20 rects that draw one character as a block-digit
-// glyph, `origin` the glyph's top-left corner reference for layout. Per §20's
-// normative anchor, each emitted Draw_Rect.at is the CELL CENTER — origin +
-// ((col + 1/2)*cell.x, (row + 1/2)*cell.y) — so the glyph cell renders unshifted
-// under the center anchor the present pass derives a corner from (at − size/2). For
-// '0'..'9' it walks the 3x5 DIGIT_GLYPHS bitmap, emitting a `cell`-sized White rect
-// per set bit; ' ' (and any non-digit) emits nothing — the score readout's
-// inter-column gaps are blank cells, so a space advancing the cursor draws no rect.
-// The half-cell offset is taken in fixed-point off the kernel (fixed_div by 2), so
-// the geometry stays float-free and composes directly into the draw-list the
-// present pass paints; tested headless against exact glyphs.
-digit_rects :: proc(ch: rune, origin: Vec2, cell: Vec2, allocator := context.allocator) -> []Draw_Rect {
-	if ch < '0' || ch > '9' {
+// LETTER_GLYPHS is the uppercase A..Z bitmap table over the same 3x5 grid and
+// row-mask encoding as DIGIT_GLYPHS. Letter 'O' (rounded corners) deliberately
+// differs from digit '0' (square box) so a score never reads as prose. M/N are
+// the 3-wide compromise every 3x5 face makes — distinct from each other and
+// from H by their filled rows.
+LETTER_GLYPHS :: [26][GLYPH_ROWS]u8 {
+	{0b010, 0b101, 0b111, 0b101, 0b101}, // A
+	{0b110, 0b101, 0b110, 0b101, 0b110}, // B
+	{0b011, 0b100, 0b100, 0b100, 0b011}, // C
+	{0b110, 0b101, 0b101, 0b101, 0b110}, // D
+	{0b111, 0b100, 0b110, 0b100, 0b111}, // E
+	{0b111, 0b100, 0b110, 0b100, 0b100}, // F
+	{0b011, 0b100, 0b101, 0b101, 0b011}, // G
+	{0b101, 0b101, 0b111, 0b101, 0b101}, // H
+	{0b111, 0b010, 0b010, 0b010, 0b111}, // I
+	{0b001, 0b001, 0b001, 0b101, 0b010}, // J
+	{0b101, 0b101, 0b110, 0b101, 0b101}, // K
+	{0b100, 0b100, 0b100, 0b100, 0b111}, // L
+	{0b101, 0b111, 0b111, 0b101, 0b101}, // M
+	{0b110, 0b101, 0b101, 0b101, 0b101}, // N
+	{0b010, 0b101, 0b101, 0b101, 0b010}, // O
+	{0b110, 0b101, 0b110, 0b100, 0b100}, // P
+	{0b010, 0b101, 0b101, 0b010, 0b001}, // Q
+	{0b110, 0b101, 0b110, 0b101, 0b101}, // R
+	{0b011, 0b100, 0b010, 0b001, 0b110}, // S
+	{0b111, 0b010, 0b010, 0b010, 0b010}, // T
+	{0b101, 0b101, 0b101, 0b101, 0b111}, // U
+	{0b101, 0b101, 0b101, 0b101, 0b010}, // V
+	{0b101, 0b101, 0b111, 0b111, 0b101}, // W
+	{0b101, 0b101, 0b010, 0b101, 0b101}, // X
+	{0b101, 0b101, 0b010, 0b010, 0b010}, // Y
+	{0b111, 0b001, 0b010, 0b100, 0b111}, // Z
+}
+
+// TOFU_GLYPH is the full 15-cell block an UNMAPPED character renders as: a
+// missing glyph must be LOUD on screen (the visible tofu convention), never a
+// silent blank — a blank render is exactly how missing text hides invisibly.
+TOFU_GLYPH :: [GLYPH_ROWS]u8{0b111, 0b111, 0b111, 0b111, 0b111}
+
+// glyph_lookup maps one character onto its 3x5 row bitmap and whether it draws
+// at all: digits and uppercase letters from their tables, lowercase folded to
+// uppercase, ' ' as the one draws-nothing character (a layout gap advances the
+// cursor without painting), and every other character as the loud TOFU block.
+glyph_lookup :: proc(ch: rune) -> (glyph: [GLYPH_ROWS]u8, draws: bool) {
+	// The tables are compile-time constants; bind to locals so a runtime index
+	// reads them (a constant cannot be indexed by a variable).
+	digits := DIGIT_GLYPHS
+	letters := LETTER_GLYPHS
+	switch {
+	case ch == ' ':
+		return {}, false
+	case ch >= '0' && ch <= '9':
+		return digits[ch - '0'], true
+	case ch >= 'A' && ch <= 'Z':
+		return letters[ch - 'A'], true
+	case ch >= 'a' && ch <= 'z':
+		return letters[ch - 'a'], true
+	}
+	return TOFU_GLYPH, true
+}
+
+// glyph_rects emits the filled §20 rects that draw one character as a block
+// glyph in `color`, `origin` the glyph's top-left corner reference for layout.
+// Per §20's normative anchor, each emitted Draw_Rect.at is the CELL CENTER —
+// origin + ((col + 1/2)*cell.x, (row + 1/2)*cell.y) — so the glyph cell renders
+// unshifted under the center anchor the present pass derives a corner from
+// (at − size/2). It walks the character's 3x5 bitmap (glyph_lookup), emitting a
+// `cell`-sized rect per set bit; ' ' emits nothing — a layout gap advances the
+// cursor without drawing. The half-cell offset is taken in fixed-point off the
+// kernel (fixed_div by 2), so the geometry stays float-free and composes
+// directly into the rects the present pass paints; tested headless against
+// exact glyphs.
+glyph_rects :: proc(ch: rune, origin: Vec2, cell: Vec2, color: Draw_Color, allocator := context.allocator) -> []Draw_Rect {
+	glyph, draws := glyph_lookup(ch)
+	if !draws {
 		return nil
 	}
-	// DIGIT_GLYPHS is a compile-time constant; bind it to a local so a runtime
-	// digit index reads it (a constant cannot be indexed by a variable).
-	glyphs := DIGIT_GLYPHS
-	glyph := glyphs[ch - '0']
 	half := Vec2{fixed_div(cell.x, to_fixed(2)), fixed_div(cell.y, to_fixed(2))}
 	rects := make([dynamic]Draw_Rect, allocator)
-	for row in 0 ..< DIGIT_GLYPH_ROWS {
+	for row in 0 ..< GLYPH_ROWS {
 		mask := glyph[row]
-		for col in 0 ..< DIGIT_GLYPH_COLS {
+		for col in 0 ..< GLYPH_COLS {
 			// High bit is the leftmost column: shift the column's bit down to LSB.
-			bit := (mask >> u8(DIGIT_GLYPH_COLS - 1 - col)) & 1
+			bit := (mask >> u8(GLYPH_COLS - 1 - col)) & 1
 			if bit == 0 {
 				continue
 			}
@@ -209,46 +301,63 @@ digit_rects :: proc(ch: rune, origin: Vec2, cell: Vec2, allocator := context.all
 				fixed_add(fixed_add(origin.x, fixed_mul(cell.x, to_fixed(i64(col)))), half.x),
 				fixed_add(fixed_add(origin.y, fixed_mul(cell.y, to_fixed(i64(row)))), half.y),
 			}
-			append(&rects, Draw_Rect{at = at, size = cell, color = .White})
+			append(&rects, Draw_Rect{at = at, size = cell, color = color})
 		}
 	}
 	return rects[:]
 }
 
-// --- score-readout layout (pure, compiled in every build) -----------------
+// --- text layout (pure, compiled in every build) ---------------------------
 
-// SCORE_CELL is the world-unit size of one block-digit grid cell in the live
-// score readout: 2x2 world units, so a 3x5 glyph is 6x10 world units (24x40 px at
-// the 4x window scale) — large enough to read against the 160x120 board. The cell
-// is the unit digit_rects scales each lit cell by; SCORE_GLYPH_ADVANCE steps the
-// cursor one glyph-width-plus-gap to the right between digits.
-SCORE_CELL :: Vec2{Fixed(2 << 32), Fixed(2 << 32)}
+// TEXT_CELL is the world-unit size of one block-glyph grid cell in the live
+// text lowering: 2x2 world units, so a 3x5 glyph is 6x10 world units (24x40 px
+// at a 4x window scale) — large enough to read against a 160-unit board. One
+// fixed engine metric for every Draw_Text; a game sizes text by its logical
+// space, not a font API.
+TEXT_CELL :: Vec2{Fixed(2 << 32), Fixed(2 << 32)}
 
-// SCORE_GLYPH_ADVANCE is the horizontal cursor step between two score digits: the
-// glyph's 3 cells wide plus one blank cell of gap, in world units (4 * cell.x), so
-// adjacent digits never touch.
-SCORE_GLYPH_ADVANCE :: Fixed((DIGIT_GLYPH_COLS + 1) * 2) << 32
+// TEXT_GLYPH_ADVANCE is the horizontal cursor step between two characters: the
+// glyph's 3 cells wide plus one blank cell of gap, in world units (4 * cell.x),
+// so adjacent glyphs never touch.
+TEXT_GLYPH_ADVANCE :: Fixed((GLYPH_COLS + 1) * 2) << 32
 
-// SCORE_ORIGIN is the top-left world position the score readout starts at — near
-// the top of the 160x120 board, inset from the left edge. Both the live present
-// and a headless layout test read it, so the position is one named constant.
-SCORE_ORIGIN :: Vec2{Fixed(8 << 32), Fixed(8 << 32)}
+// text_rects lowers one §20 Draw_Text onto its filled block-glyph rects: `at`
+// is the CENTER of the rendered glyph run — the §20 anchor rule extended to
+// text, so `Draw::Text{at: board-center}` reads centered without the author
+// knowing the engine's glyph metrics. The run's extent is derived from the
+// fixed engine metrics (chars * TEXT_GLYPH_ADVANCE minus the trailing gap, 5
+// cells tall), the top-left origin is at − extent/2, then the cursor walks one
+// glyph_rects call per character in `color`. Pure all-fixed-point geometry off
+// the kernel (no SDL, no float), so it compiles in every build and the live
+// present pass paints its result the same way it paints the artifact's own
+// Draw_Rects.
+text_rects :: proc(text: string, at: Vec2, cell: Vec2, color: Draw_Color, allocator := context.allocator) -> []Draw_Rect {
+	advance := fixed_mul(cell.x, to_fixed(GLYPH_COLS + 1))
+	gap := cell.x
+	count := 0
+	for _ in text {
+		count += 1
+	}
+	if count == 0 {
+		return nil
+	}
+	// Run extent: count advances minus the trailing inter-glyph gap, 5 rows tall.
+	run_w := fixed_sub(fixed_mul(advance, to_fixed(i64(count))), gap)
+	run_h := fixed_mul(cell.y, to_fixed(GLYPH_ROWS))
+	origin := Vec2 {
+		fixed_sub(at.x, fixed_div(run_w, to_fixed(2))),
+		fixed_sub(at.y, fixed_div(run_h, to_fixed(2))),
+	}
 
-// score_digit_rects emits the §20 rects that draw a score string (the digits of
-// "{left}   {right}") at SCORE_ORIGIN, advancing the cursor SCORE_GLYPH_ADVANCE per
-// character through digit_rects. It is pure all-fixed-point geometry off the kernel
-// (no SDL, no float), so it compiles in every build and the live present pass paints
-// its result the same way it paints the artifact's own Draw_Rects.
-score_digit_rects :: proc(score_text: string, allocator := context.allocator) -> []Draw_Rect {
 	rects := make([dynamic]Draw_Rect, allocator)
-	cursor := SCORE_ORIGIN
-	for ch in score_text {
-		glyph := digit_rects(ch, cursor, SCORE_CELL, allocator)
+	cursor := origin
+	for ch in text {
+		glyph := glyph_rects(ch, cursor, cell, color, allocator)
 		for rect in glyph {
 			append(&rects, rect)
 		}
 		delete(glyph, allocator)
-		cursor.x = fixed_add(cursor.x, SCORE_GLYPH_ADVANCE)
+		cursor.x = fixed_add(cursor.x, advance)
 	}
 	return rects[:]
 }
@@ -256,18 +365,6 @@ score_digit_rects :: proc(score_text: string, allocator := context.allocator) ->
 // --- the live session driver (when-gated: the ONLY SDL-calling code here) ---
 
 when #config(FUNPACK_LIVE, false) {
-
-	// LIVE_WINDOW is the fixed window extent the live session opens: 640x480, an
-	// exact 4x integer scale of pong's 160x120 board, so world_to_pixel lands every
-	// world unit on a 4-pixel cell with no rounding. The driver opens the live device
-	// at this extent and projects the draw-list against it every frame.
-	LIVE_WINDOW :: Window_Px{640, 480}
-
-	// PONG_BOARD_LIVE is the §28 pong board extent in raw Q32.32 bits (160x120 world
-	// units) the present pass projects against — the same geometry the headless pixel
-	// rails are pinned to. world_to_pixel cancels the Q32.32 scale in the
-	// world/board ratio, so the projection is exact-integer with no float.
-	PONG_BOARD_LIVE :: Vec2{Fixed(687194767360), Fixed(515396075520)}
 
 	// run_live_session is the live session entry main() dispatches to under
 	// FUNPACK_LIVE. It parses the CLI (os.args[1] = artifact path, os.args[2] =
@@ -278,9 +375,11 @@ when #config(FUNPACK_LIVE, false) {
 	// record_tick → thread prev_held → pace to the next tick deadline }. On exit it
 	// flushes the replay (finish_replay + write_replay_file) BEFORE closing the live
 	// device. Returns a process exit code (0 on a clean session, non-zero on a usage
-	// or load failure). tick_hz comes SOLELY from program.entrypoint.tick_hz — never
-	// a flag — and no float ever reaches sim state: pixel conversion happens only at
-	// the present boundary and never feeds back into resolve_tick/step_tick.
+	// or load failure). tick_hz comes SOLELY from program.entrypoint.tick_hz and the
+	// window/board geometry SOLELY from its declared logical extent (§15
+	// logical:WxH via live_window_for / board_extent) — never a flag — and no float
+	// ever reaches sim state: pixel conversion happens only at the present boundary
+	// and never feeds back into resolve_tick/step_tick.
 	run_live_session :: proc(args: []string) -> int {
 		if len(args) < 2 {
 			fmt.eprintln("usage: funpack-live <artifact-path> [replay-out-path]")
@@ -305,7 +404,13 @@ when #config(FUNPACK_LIVE, false) {
 
 		out_path := replay_out_path(artifact_path, override, context.allocator)
 
-		device, dev_ok := live_device_open(LIVE_WINDOW.w, LIVE_WINDOW.h)
+		// The window and the world→pixel board come from the artifact's declared
+		// §15 logical extent — the present geometry is per-artifact, never a
+		// hardcoded board constant (§20 §3).
+		window := live_window_for(program.entrypoint.logical_w, program.entrypoint.logical_h)
+		board := board_extent(program.entrypoint.logical_w, program.entrypoint.logical_h)
+
+		device, dev_ok := live_device_open(window.w, window.h)
 		if !dev_ok {
 			fmt.eprintln("error: SDL device open failed (no display/GPU?)")
 			return 1
@@ -377,7 +482,7 @@ when #config(FUNPACK_LIVE, false) {
 			// prior tick's draws (§04 §1); a seedless run threads nothing (rng stays nil).
 			version = step_tick(&program, version, snapshot, time, context.allocator, seeded ? &rng : nil)
 			draw := render_version(&program, version, snapshot, time)
-			present_frame(device.renderer, draw)
+			present_frame(device.renderer, draw, board, window)
 			record_tick(&writer, snapshot)
 
 			delete(prev_held)
@@ -469,23 +574,23 @@ when #config(FUNPACK_LIVE, false) {
 	// present_frame paints one committed tick's §20 draw-list onto the window: clear
 	// to black, then per Draw_Rect project at/size through world_to_pixel (the same
 	// exact-integer projection the headless rails pin) + draw_color_to_rgba and
-	// RenderFillRect, then per Draw_Text emit the block-digit score glyphs through
-	// score_digit_rects, then RenderPresent. Pixel conversion happens ONLY here at
-	// the present boundary; nothing it computes ever re-enters the sim fold (§10.5).
-	present_frame :: proc(renderer: ^sdl.Renderer, draw: Draw_List) {
+	// RenderFillRect, then per Draw_Text emit its center-anchored block-glyph run
+	// through text_rects in the command's own color, then RenderPresent. The board
+	// and window come from the artifact's declared logical extent. Pixel conversion
+	// happens ONLY here at the present boundary; nothing it computes ever re-enters
+	// the sim fold (§10.5).
+	present_frame :: proc(renderer: ^sdl.Renderer, draw: Draw_List, board: Vec2, window: Window_Px) {
 		sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255)
 		sdl.RenderClear(renderer)
 
 		for cmd in draw.cmds {
 			switch c in cmd {
 			case Draw_Rect:
-				fill_world_rect(renderer, c.at, c.size, c.color)
+				fill_world_rect(renderer, c.at, c.size, c.color, board, window)
 			case Draw_Text:
-				// The score text lowers to block-digit rects at the fixed score layout;
-				// the interpolated columns ("{left}   {right}") render as White glyphs.
-				glyphs := score_digit_rects(c.text, context.temp_allocator)
+				glyphs := text_rects(c.text, c.at, TEXT_CELL, c.color, context.temp_allocator)
 				for rect in glyphs {
-					fill_world_rect(renderer, rect.at, rect.size, rect.color)
+					fill_world_rect(renderer, rect.at, rect.size, rect.color, board, window)
 				}
 			}
 		}
@@ -493,20 +598,21 @@ when #config(FUNPACK_LIVE, false) {
 	}
 
 	// fill_world_rect projects one §20 center-anchored world rect into integer
-	// window pixels. §20's anchor is normative: `at` is the CENTER of the extent, so
-	// a corner-origin backend derives the top-left corner at the present boundary —
-	// at − size/2 — before projecting. The half is taken in fixed-point through the
-	// kernel (fixed_div by 2, truncating toward zero); pong's sizes are even world
-	// units at the exact 4x window scale, so the half lands on a whole world unit and
-	// the projected pixel stays exact. The top-left and the size go through the SAME
-	// world_to_pixel ratio, so the pixel extent matches the position projection. The
-	// whole conversion is render-boundary-only integer arithmetic; no result feeds
-	// back into the sim.
-	fill_world_rect :: proc(renderer: ^sdl.Renderer, at: Vec2, size: Vec2, color: Draw_Color) {
+	// window pixels against the artifact's board/window geometry. §20's anchor is
+	// normative: `at` is the CENTER of the extent, so a corner-origin backend
+	// derives the top-left corner at the present boundary — at − size/2 — before
+	// projecting. The half is taken in fixed-point through the kernel (fixed_div by
+	// 2, truncating toward zero); pong's sizes are even world units at the exact 4x
+	// window scale, so the half lands on a whole world unit and the projected pixel
+	// stays exact. The top-left and the size go through the SAME world_to_pixel
+	// ratio, so the pixel extent matches the position projection. The whole
+	// conversion is render-boundary-only integer arithmetic; no result feeds back
+	// into the sim.
+	fill_world_rect :: proc(renderer: ^sdl.Renderer, at: Vec2, size: Vec2, color: Draw_Color, board: Vec2, window: Window_Px) {
 		half := Vec2{fixed_div(size.x, to_fixed(2)), fixed_div(size.y, to_fixed(2))}
 		corner := Vec2{fixed_sub(at.x, half.x), fixed_sub(at.y, half.y)}
-		top_left := world_to_pixel(corner, PONG_BOARD_LIVE, LIVE_WINDOW)
-		extent := world_to_pixel(size, PONG_BOARD_LIVE, LIVE_WINDOW)
+		top_left := world_to_pixel(corner, board, window)
+		extent := world_to_pixel(size, board, window)
 		rgba := draw_color_to_rgba(color)
 		sdl.SetRenderDrawColor(renderer, rgba.r, rgba.g, rgba.b, rgba.a)
 		rect := sdl.Rect {
