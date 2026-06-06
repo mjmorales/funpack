@@ -742,7 +742,14 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 	if name.class != .Snake_Case {
 		return node, .Wrong_Case
 	}
-	expect(p, .On) or_return
+	// `on` is a contextual keyword: it lexes as an Ident, so the header
+	// separator is recognized by text here (the same by-text recognition the
+	// reserved `step` entry point uses below). A behavior header missing the
+	// `on` separator is an Unexpected_Token.
+	on_tok := expect(p, .Ident) or_return
+	if on_tok.text != "on" {
+		return node, .Unexpected_Token
+	}
 	target := expect_type_name(p) or_return
 	expect(p, .L_Brace) or_return
 	skip_newlines(p)

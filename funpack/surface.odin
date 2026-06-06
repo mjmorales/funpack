@@ -326,39 +326,59 @@ bind_name :: proc(bindings: ^Bindings, name: string, binding: Binding) -> Type_E
 	return .None
 }
 
-// resolve_imports validates ast.imports against the surface and binds
-// every imported name. The prelude is pre-bound — its names are always
-// in scope without an import (spec §26).
+// resolve_imports validates ast.imports against the stdlib surface ALONE and
+// binds every imported name. The prelude is pre-bound — its names are always
+// in scope without an import (spec §26). This is the single-source entry: a
+// user-module import (a sibling .fun module) has no surface to resolve against
+// here, so it is .Unknown_Module. resolve_imports_indexed is the multi-module
+// entry that also resolves against a project-wide Module_Index.
 resolve_imports :: proc(ast: Ast) -> (bindings: Bindings, err: Type_Error) {
+	return resolve_imports_indexed(ast, Module_Index{})
+}
+
+// resolve_imports_indexed validates ast.imports against the stdlib surface AND a
+// project-wide Module_Index of sibling user modules, binding every imported name.
+// The prelude is pre-bound (spec §26); each import then resolves through the
+// stdlib arm first and the user-module arm second, so a name that is both a
+// stdlib partition and a user module resolves as stdlib (the closed surface
+// wins — a user module cannot shadow engine.*, §15.7). An empty index reduces
+// this to the single-source resolve_imports: every user-module import is
+// .Unknown_Module.
+resolve_imports_indexed :: proc(ast: Ast, index: Module_Index) -> (bindings: Bindings, err: Type_Error) {
 	bindings.names = make(map[string]Binding, context.temp_allocator)
 	prelude, _ := surface_module("engine.prelude")
 	for decl in prelude.decls {
 		bindings.names[decl.name] = Binding{module = prelude.path, kind = decl.kind}
 	}
 	for node in ast.imports {
-		resolve_import(&bindings, node) or_return
+		resolve_import(&bindings, node, index) or_return
 	}
 	return bindings, .None
 }
 
-// resolve_import discriminates the three parsed forms: a member group
-// (segments name the module), a whole-module import (all segments are
-// the module path), and a dotted single member (the final segment is a
-// member of the module the leading segments name).
-resolve_import :: proc(bindings: ^Bindings, node: Import_Node) -> Type_Error {
+// resolve_import discriminates the three parsed forms — a member group
+// (segments name the module), a whole-module import (all segments are the
+// module path), and a dotted single member (the final segment is a member of
+// the module the leading segments name) — and within each form tries the stdlib
+// surface first and the project-wide user-module index second. A path that is
+// neither a stdlib partition nor a user module in the index is .Unknown_Module.
+resolve_import :: proc(bindings: ^Bindings, node: Import_Node, index: Module_Index) -> Type_Error {
 	if node.members != nil {
-		module, found := surface_module(join_path(node.segments))
-		if !found {
-			return .Unknown_Module
-		}
-		for member in node.members {
-			binding, declared := surface_resolve(module, member)
-			if !declared {
-				return .Unknown_Member
+		path := join_path(node.segments)
+		if module, found := surface_module(path); found {
+			for member in node.members {
+				binding, declared := surface_resolve(module, member)
+				if !declared {
+					return .Unknown_Member
+				}
+				bind_name(bindings, member, binding) or_return
 			}
-			bind_name(bindings, member, binding) or_return
+			return .None
 		}
-		return .None
+		if entry, found := module_index_lookup(index, path); found {
+			return resolve_user_import(bindings, entry, node.members)
+		}
+		return .Unknown_Module
 	}
 	if module, found := surface_module(join_path(node.segments)); found {
 		// A whole-module import binds the module's own name; members
@@ -371,16 +391,19 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node) -> Type_Error {
 		return .Unknown_Module
 	}
 	prefix := node.segments[:len(node.segments) - 1]
-	module, found := surface_module(join_path(prefix))
-	if !found {
-		return .Unknown_Module
-	}
+	prefix_path := join_path(prefix)
 	member := node.segments[len(node.segments) - 1]
-	binding, declared := surface_resolve(module, member)
-	if !declared {
-		return .Unknown_Member
+	if module, found := surface_module(prefix_path); found {
+		binding, declared := surface_resolve(module, member)
+		if !declared {
+			return .Unknown_Member
+		}
+		return bind_name(bindings, member, binding)
 	}
-	return bind_name(bindings, member, binding)
+	if entry, found := module_index_lookup(index, prefix_path); found {
+		return resolve_user_import(bindings, entry, {member})
+	}
+	return .Unknown_Module
 }
 
 join_path :: proc(segments: []string) -> string {
