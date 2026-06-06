@@ -543,6 +543,333 @@ test_typecheck_nav_path_advance :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Type_Error.None)
 }
 
+// ── §16 anim / §20 render3 / §22 audio surface admission ───────────────
+
+@(test)
+test_surface_admits_engine_anim :: proc(t: ^testing.T) {
+	// AC: `import engine.anim.{…}` resolves to .None — the new §16 §7 rig/animation
+	// partition the gen rig seam and the pose generators import. The seven type
+	// names bind as Type_Name; rot_x/up as Func. Skeleton/PartSet/Slot/Side are the
+	// gen-seam imports; Pose/Bone + rot_x/up the pose-generator imports.
+	source := "import engine.anim.{Skeleton, PartSet, Slot, Side, Pose, Bone, Transform, rot_x, up}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		{"Skeleton", "engine.anim", .Type_Name},
+		{"PartSet", "engine.anim", .Type_Name},
+		{"Slot", "engine.anim", .Type_Name},
+		{"Side", "engine.anim", .Type_Name},
+		{"Pose", "engine.anim", .Type_Name},
+		{"Bone", "engine.anim", .Type_Name},
+		{"Transform", "engine.anim", .Type_Name},
+		{"rot_x", "engine.anim", .Func},
+		{"up", "engine.anim", .Func},
+	}
+	expect_bindings(t, bindings, expectations)
+}
+
+@(test)
+test_surface_engine_anim_unknown_member_rejected :: proc(t: ^testing.T) {
+	// The closed-table proof for engine.anim: a name absent from the partition
+	// rejects with Unknown_Member. Admitting the rig names did not open the module
+	// to arbitrary names — `Joint` is owned by no module.
+	ast, parse_err := stage_parse(stage_lex("import engine.anim.{Pose, Joint}\n"))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.Unknown_Member)
+}
+
+@(test)
+test_surface_admits_engine_render3 :: proc(t: ^testing.T) {
+	// AC: `import engine.render3.{Draw3, Color}` resolves to .None — Draw3 binds to
+	// the engine.render3 partition (a NEW engine type, NOT the §20 2D Draw), and
+	// Color resolves through the §26 §3 re-export to its OWNING engine.render, so the
+	// palette meaning is route-independent. Material binds to render3 too.
+	source := "import engine.render3.{Draw3, Material, Color}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		{"Draw3", "engine.render3", .Type_Name},
+		{"Material", "engine.render3", .Type_Name},
+		// Color canonicalizes to its owning engine.render even through render3.
+		{"Color", "engine.render", .Type_Name},
+	}
+	expect_bindings(t, bindings, expectations)
+}
+
+@(test)
+test_surface_engine_render3_unknown_member_rejected :: proc(t: ^testing.T) {
+	// The closed-table proof for engine.render3: a name neither owned nor
+	// re-exported rejects with Unknown_Member. `Shader` is owned by no module
+	// (engine PBR has no user-authored shaders, §20 §1).
+	ast, parse_err := stage_parse(stage_lex("import engine.render3.{Draw3, Shader}\n"))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.Unknown_Member)
+}
+
+@(test)
+test_surface_admits_engine_audio :: proc(t: ^testing.T) {
+	// AC: `import engine.audio.{Audio, Bus}` resolves to .None — the §22 §2
+	// sustained-audio partition this task owns. Audio and Bus bind as Type_Name.
+	// (Sibling 5.2 adds the §22 §1 one-shot Sound into this same partition.)
+	source := "import engine.audio.{Audio, Bus}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		{"Audio", "engine.audio", .Type_Name},
+		{"Bus", "engine.audio", .Type_Name},
+	}
+	expect_bindings(t, bindings, expectations)
+}
+
+@(test)
+test_surface_engine_audio_unknown_member_rejected :: proc(t: ^testing.T) {
+	// The closed-table proof for engine.audio: a name absent from the partition
+	// rejects with Unknown_Member. `Reverb` is owned by no module (there is no
+	// DSP-effect-chain authoring surface, §22 §4).
+	ast, parse_err := stage_parse(stage_lex("import engine.audio.{Audio, Reverb}\n"))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.Unknown_Member)
+}
+
+@(test)
+test_surface_admits_input_stick_x :: proc(t: ^testing.T) {
+	// AC: stick_x joins engine.input as the horizontal axis-source twin of stick_y
+	// (krognid binds the left stick's x to Strafe). It binds to engine.input as a
+	// Func, and its signature is (Stick) -> the nil axis-source unknown.
+	source := "import engine.input.{stick_x, stick_y, Stick}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	stick_x_binding, has_stick_x := bindings.names["stick_x"]
+	testing.expect(t, has_stick_x)
+	testing.expect_value(t, stick_x_binding.module, "engine.input")
+	testing.expect_value(t, stick_x_binding.kind, Decl_Kind.Func)
+
+	overloads, found := surface_signatures("stick_x")
+	testing.expect(t, found)
+	testing.expect_value(t, len(overloads), 1)
+}
+
+@(test)
+test_anim_render3_audio_typecheck_fixture :: proc(t: ^testing.T) {
+	// PROOF (the task's hand-built fixture): every new anim/render3/audio name,
+	// plus stick_x and the Drive: Axis role, typechecks clean over the existing
+	// expression grammar. Mirrors stroll.fun's usage but stays inside this task's
+	// scope — the skeleton/parts are produced locally (user-module resolution is a
+	// separate seam) and the Time read uses dt (Time.t is a render/time concern).
+	source := KROGNID_SURFACE_FIXTURE
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.None)
+}
+
+// KROGNID_SURFACE_FIXTURE is the self-contained .fun source the typecheck PROOF
+// runs: it imports every new surface name and exercises each construct — the
+// static builders (Skeleton.humanoid(), Pose.empty(), Pose.blend, PartSet.empty(),
+// Audio.track), the value-method chains (.set/.bind/.mirror/.pitch/.gain/.bus/.get),
+// the struct-payload Draw3 variants (Camera/Light/Plane/Rigged/Mesh), the enum
+// variants (Slot/Side/Bone/Color::Gray/Bus::Sfx), stick_x, and the Drive: Axis
+// role read via input.value(self.player, Drive::Strafe).
+KROGNID_SURFACE_FIXTURE :: "import engine.math.{Fixed, Vec2, Vec3, sin, abs, length, clamp}\n" +
+	"import engine.anim.{Skeleton, PartSet, Slot, Side, Pose, Bone, Transform, rot_x, up}\n" +
+	"import engine.render3.{Draw3, Material, Color}\n" +
+	"import engine.input.{Input, Key, PlayerId, Bindings, keys_axis, stick_x, stick_y, Stick}\n" +
+	"import engine.core.Time\n" +
+	"import engine.audio.{Audio, Bus}\n" +
+	"import engine.assets.{MeshHandle, sound}\n" +
+	"enum Drive: Axis { Strafe, Forward }\n" +
+	"thing Krognid { player: PlayerId  pos: Vec3  intent: Vec2 = Vec2{x: 0.0, y: 0.0}  phase: Fixed = 0.0  speed: Fixed = 0.0 }\n" +
+	"thing Field {}\n" +
+	"fn walk_weight(speed: Fixed) -> Fixed { return clamp(speed * 2.0, 0.0, 1.0) }\n" +
+	"fn pose_idle(t: Fixed) -> Pose { return Pose.empty().set(Bone::Torso, up(sin(t * 2.0) * 0.2)) }\n" +
+	"fn pose_walk(phase: Fixed, speed: Fixed) -> Pose {\n" +
+	"  let s = sin(phase) * 0.5\n" +
+	"  return Pose.empty()\n" +
+	"    .set(Bone::LUpperLeg, rot_x(s))\n" +
+	"    .set(Bone::RUpperLeg, rot_x(-s))\n" +
+	"    .set(Bone::LUpperArm, rot_x(-s * 0.6))\n" +
+	"    .set(Bone::RUpperArm, rot_x(s * 0.6))\n" +
+	"    .set(Bone::Torso, up(abs(sin(phase * 2.0)) * 0.3))\n" +
+	"}\n" +
+	"fn krognid_skeleton() -> Skeleton { return Skeleton.humanoid() }\n" +
+	"fn krognid_parts() -> PartSet {\n" +
+	"  return PartSet.empty()\n" +
+	"    .bind(Slot::Torso, sound_mesh())\n" +
+	"    .bind(Slot::Head, sound_mesh())\n" +
+	"    .bind(Slot::LUpperArm, sound_mesh())\n" +
+	"    .mirror(Side::L, Side::R)\n" +
+	"}\n" +
+	"fn sound_mesh() -> MeshHandle { return MeshHandle{name: \"krognid_torso\"} }\n" +
+	"behavior read_drive on Krognid {\n" +
+	"  fn step(self: Krognid, input: Input) -> Krognid {\n" +
+	"    return self with { intent: Vec2{x: input.value(self.player, Drive::Strafe), y: input.value(self.player, Drive::Forward)} }\n" +
+	"  }\n" +
+	"}\n" +
+	"behavior draw_scene on Field {\n" +
+	"  fn step(self: Field) -> [Draw3] {\n" +
+	"    return [\n" +
+	"      Draw3::Camera{ eye: Vec3{x: 25.0, y: 40.0, z: -30.0}, at: Vec3{x: 25.0, y: 0.0, z: 25.0}, fov: 60.0 },\n" +
+	"      Draw3::Light{ dir: Vec3{x: -0.3, y: -1.0, z: -0.2}, color: Color::White },\n" +
+	"      Draw3::Plane{ at: Vec3{x: 25.0, y: 0.0, z: 25.0}, size: Vec2{x: 50.0, y: 50.0}, color: Color::Gray },\n" +
+	"    ]\n" +
+	"  }\n" +
+	"}\n" +
+	"behavior draw_krognid on Krognid {\n" +
+	"  fn step(self: Krognid, time: Time) -> [Draw3] {\n" +
+	"    let pose = Pose.blend(pose_idle(time.dt), pose_walk(self.phase, self.speed), walk_weight(self.speed))\n" +
+	"    return [Draw3::Rigged{ skeleton: krognid_skeleton(), parts: krognid_parts(), pose: pose, at: self.pos }]\n" +
+	"  }\n" +
+	"}\n" +
+	"behavior locomotion on Krognid {\n" +
+	"  fn step(self: Krognid) -> [Audio] {\n" +
+	"    if self.speed == 0.0 { return [] }\n" +
+	"    return [Audio.track(\"stride\", sound(\"krognid_step\")).pitch(0.6 + self.speed * 0.2).gain(clamp(self.speed, 0.0, 1.0)).bus(Bus::Sfx)]\n" +
+	"  }\n" +
+	"}\n" +
+	"fn bindings() -> Bindings {\n" +
+	"  return Bindings.empty()\n" +
+	"    .axis(PlayerId::P1, Drive::Strafe, keys_axis(Key::A, Key::D))\n" +
+	"    .axis(PlayerId::P1, Drive::Forward, keys_axis(Key::S, Key::W))\n" +
+	"    .axis(PlayerId::P1, Drive::Strafe, stick_x(Stick::Left))\n" +
+	"    .axis(PlayerId::P1, Drive::Forward, stick_y(Stick::Left))\n" +
+	"}\n" +
+	"test \"pose_walk holds the legs at rest on the zero crossing\" {\n" +
+	"  assert pose_walk(0.0, 1.0).get(Bone::LUpperLeg) == rot_x(0.0)\n" +
+	"}\n"
+
+@(test)
+test_anim_unknown_pose_member_is_compile_error :: proc(t: ^testing.T) {
+	// PROOF (the reject side): an unknown anim member is a compile error, not a
+	// counted failure. Pose has no `Nope` value method — the closed surface rejects
+	// it with Unsupported_Expr, the typecheck-fail verdict the pipeline maps to a
+	// compile error (exit 2).
+	source := "import engine.anim.{Pose, Bone, Transform}\n" +
+		"fn bad(p: Pose) -> Transform { return p.nope(Bone::Torso) }\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect(t, err != .None)
+}
+
+@(test)
+test_audio_unknown_method_is_compile_error :: proc(t: ^testing.T) {
+	// PROOF (the reject side): an unknown sustained-audio builder is a compile
+	// error. Audio has no `.badmethod` — the closed chain rejects it.
+	source := "import engine.audio.{Audio, Bus}\n" +
+		"import engine.assets.sound\n" +
+		"fn bad() -> Audio { return Audio.track(\"k\", sound(\"krognid_step\")).badmethod(0.5) }\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect(t, err != .None)
+}
+
+@(test)
+test_draw3_unknown_field_is_compile_error :: proc(t: ^testing.T) {
+	// PROOF (the reject side): an unknown field on a Draw3 struct-payload variant
+	// is a compile error. Draw3::Camera has no `tilt` field — the closed schema
+	// rejects it with Type_Mismatch.
+	source := "import engine.math.{Fixed, Vec3}\n" +
+		"import engine.render3.Draw3\n" +
+		"fn bad() -> Draw3 { return Draw3::Camera{ eye: Vec3{x: 0.0, y: 0.0, z: 0.0}, tilt: 1.0 } }\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect(t, err != .None)
+}
+
+@(test)
+test_color_gray_variant_is_a_value :: proc(t: ^testing.T) {
+	// AC: Color::Gray joins the closed palette (stroll.fun's ground-plane shade) and
+	// types as the Color engine value; an unknown palette entry rejects. The palette
+	// is the one §20 §1 closed set shared by 2D render and 3D render3.
+	gray, has_gray := surface_enum_variant("Color", "Gray")
+	testing.expect(t, has_gray)
+	testing.expect(t, is_engine(gray, .Color))
+
+	_, has_unknown := surface_enum_variant("Color", "Chartreuse")
+	testing.expect(t, !has_unknown)
+}
+
+@(test)
+test_anim_enum_variants_type_to_handles :: proc(t: ^testing.T) {
+	// AC: the anim enum variants (Slot/Side/Bone) and Bus::Sfx type to their engine
+	// handles, and an unknown variant of each rejects — the closed enum surface.
+	slot, has_slot := surface_enum_variant("Slot", "LUpperLeg")
+	testing.expect(t, has_slot)
+	testing.expect(t, is_engine(slot, .Slot))
+
+	side, has_side := surface_enum_variant("Side", "L")
+	testing.expect(t, has_side)
+	testing.expect(t, is_engine(side, .Side))
+
+	bone, has_bone := surface_enum_variant("Bone", "Torso")
+	testing.expect(t, has_bone)
+	testing.expect(t, is_engine(bone, .Bone))
+
+	bus, has_bus := surface_enum_variant("Bus", "Sfx")
+	testing.expect(t, has_bus)
+	testing.expect(t, is_engine(bus, .Bus))
+
+	_, has_unknown_slot := surface_enum_variant("Slot", "Wing")
+	testing.expect(t, !has_unknown_slot)
+	_, has_unknown_bus := surface_enum_variant("Bus", "Subwoofer")
+	testing.expect(t, !has_unknown_bus)
+}
+
+@(test)
+test_anim_audio_static_and_method_builders_resolve :: proc(t: ^testing.T) {
+	// AC: the anim/audio static builders and value methods resolve to engine-value
+	// signatures — Skeleton.humanoid()/PartSet.empty()/Pose.empty()/Pose.blend and
+	// Audio.track as statics, PartSet.bind/Pose.set/Audio.bus as value methods. Deep
+	// arg typing is exercised by the fixture; this pins the table rows.
+	humanoid, has_humanoid := surface_static_method("Skeleton", "humanoid")
+	testing.expect(t, has_humanoid)
+	testing.expect(t, returns_engine(humanoid, .Skeleton))
+
+	part_empty, has_part_empty := surface_static_method("PartSet", "empty")
+	testing.expect(t, has_part_empty)
+	testing.expect(t, returns_engine(part_empty, .PartSet))
+
+	blend, has_blend := surface_static_method("Pose", "blend")
+	testing.expect(t, has_blend)
+	testing.expect(t, returns_engine(blend, .Pose))
+
+	track, has_track := surface_static_method("Audio", "track")
+	testing.expect(t, has_track)
+	testing.expect(t, returns_engine(track, .Audio))
+
+	part_recv := engine_type_of(.PartSet).(^Engine_Type)
+	bind, has_bind := surface_engine_method(part_recv, "bind")
+	testing.expect(t, has_bind)
+	testing.expect(t, returns_engine(bind, .PartSet))
+
+	pose_recv := engine_type_of(.Pose).(^Engine_Type)
+	get, has_get := surface_engine_method(pose_recv, "get")
+	testing.expect(t, has_get)
+	testing.expect(t, returns_engine(get, .Transform))
+
+	audio_recv := engine_type_of(.Audio).(^Engine_Type)
+	bus, has_bus := surface_engine_method(audio_recv, "bus")
+	testing.expect(t, has_bus)
+	testing.expect(t, returns_engine(bus, .Audio))
+}
+
 @(test)
 test_bind_name_rejects_conflicting_rebind :: proc(t: ^testing.T) {
 	// The binding-layer floor behind the table test: re-binding the

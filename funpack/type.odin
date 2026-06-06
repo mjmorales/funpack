@@ -85,6 +85,33 @@ Engine_Kind :: enum {
 	TextureHandle,   // §26 a baked-texture handle (texture("…"))
 	SoundHandle,     // §26 a baked-sound handle (sound("…"))
 	AtlasHandle,     // §26 a sprite-atlas handle (atlas("…"); cell/frame accessors)
+	// §16 §7 the rig/animation surface (engine.anim): the engine-provided
+	// skeleton, the part→slot mesh bindings, the sparse bone→Transform pose, and
+	// the bone/slot/side enums a pose generator and the generated rig seam name.
+	// A behavior reads none of these by field — they are opaque engine values
+	// composed through their builders (Pose.blend, PartSet.bind) and consumed by
+	// Draw3::Rigged. The pose generators are pure fixed-point, so every replay is
+	// bit-identical.
+	Skeleton,        // §16 §7 the bone topology (Skeleton.humanoid()/empty())
+	PartSet,         // §16 §7 the part→slot mesh bindings (PartSet.empty().bind(…))
+	Slot,            // §16 §7 a part-attach slot enum (Slot::Torso, Slot::Head, …)
+	Side,            // §16 §7 the mirror-side enum (Side::L | Side::R)
+	Pose,            // §16 §7 the sparse bone→Transform pose (Pose.empty().set(…))
+	Bone,            // §16 §7 a skeleton bone enum (Bone::LUpperLeg, Bone::Torso, …)
+	Transform,       // §16 §7 a per-bone transform value (rot_x(s), up(d))
+	// §20 §1 the 3D render command (engine.render3): the Draw3 draw-list a render3
+	// behavior emits, distinct from the §20 2D Draw command — render3 owns Draw3,
+	// it never reuses the .Draw kind. Material is the PBR surface a Draw3::Mesh
+	// names (Color is owned by engine.render and re-exported to render3, §26 §3).
+	Draw3,           // §20 §1 the 3D draw command (Camera/Light/Plane/Rigged/Mesh)
+	Material,        // §20 §1 the PBR material a Draw3::Mesh carries
+	// §22 §2 the sustained-audio scene value (engine.audio): the keyed Audio track
+	// an `audio:` behavior projects, built with Audio.track(key, clip) and the
+	// .pitch/.gain/.bus builders, plus the Bus group enum the one-shot Sound
+	// regime (5.2) shares. Audio is the level-triggered twin of the edge-triggered
+	// one-shot Sound command.
+	Audio,           // §22 §2 the keyed sustained-audio track (Audio.track(…).bus(…))
+	Bus,             // §22 §4 the audio bus group enum (Bus::Sfx, shared with Sound)
 }
 
 // User_Type is the nominal handle for a name the source declares

@@ -114,8 +114,11 @@ STDLIB_SURFACE := []Module_Surface{
 	{
 		// §23: the input surface. Input is the read-only resource;
 		// PlayerId/Key/Stick are enums; Bindings is the builder type;
-		// keys_axis/stick_y/wasd/stick are engine-provided axis-source helpers
-		// (wasd is the 2D WASD axis source, stick a gamepad-stick axis source).
+		// keys_axis/stick_x/stick_y/wasd/stick are engine-provided axis-source
+		// helpers (wasd is the 2D WASD axis source, stick a gamepad-stick axis
+		// source). stick_x and stick_y are the horizontal/vertical twins: a
+		// gamepad stick into a single-axis source (krognid binds the left stick's
+		// x to Strafe and its y to Forward).
 		path = "engine.input",
 		decls = {
 			{"Input", .Type_Name},
@@ -124,6 +127,7 @@ STDLIB_SURFACE := []Module_Surface{
 			{"Bindings", .Type_Name},
 			{"Stick", .Type_Name},
 			{"keys_axis", .Func},
+			{"stick_x", .Func},
 			{"stick_y", .Func},
 			{"wasd", .Func},
 			{"stick", .Func},
@@ -253,6 +257,60 @@ STDLIB_SURFACE := []Module_Surface{
 			{"frame", .Func},
 		},
 	},
+	{
+		// §16 §7 the rig/animation surface the §16 generated rig seam and the §20
+		// render3 pose generators import. The seven type names (Skeleton/PartSet/
+		// Slot/Side/Pose/Bone/Transform) are §26 line-76's anim row; rot_x/up are
+		// the free Transform builders a pose generator drives a bone with. Slot/
+		// Side/Bone are enums (variants reached through surface_enum_variant); the
+		// static builders (Skeleton.humanoid()/empty(), PartSet.empty(), Pose.empty()/
+		// blend()/layer()) and the value methods (PartSet.bind/mirror, Pose.set/get)
+		// type through surface_static_method / surface_engine_method, not the import
+		// table. A TYPING partition riding the existing import grammar.
+		path = "engine.anim",
+		decls = {
+			{"Skeleton", .Type_Name},
+			{"PartSet", .Type_Name},
+			{"Slot", .Type_Name},
+			{"Side", .Type_Name},
+			{"Pose", .Type_Name},
+			{"Bone", .Type_Name},
+			{"Transform", .Type_Name},
+			{"rot_x", .Func},
+			{"up", .Func},
+		},
+	},
+	{
+		// §20 §1 the 3D render surface. Draw3 is the closed §20 3D draw-command type
+		// (Camera/Light/Plane/Rigged/Mesh struct-payload variants), a NEW engine type
+		// distinct from the §20 2D Draw — render3 owns it, it never reuses Draw.
+		// Material is the PBR surface a Draw3::Mesh names. Color is owned by
+		// engine.render and re-exported here (STDLIB_REEXPORTS, §26 §3): one palette,
+		// route-independent meaning, never a second owning row — so stroll.fun's
+		// `import engine.render3.{Draw3, Color}` resolves Color to its owner.
+		path = "engine.render3",
+		decls = {
+			{"Draw3", .Type_Name},
+			{"Material", .Type_Name},
+		},
+	},
+	{
+		// §22 the audio surface, shared between the two regimes. THIS task admits the
+		// §22 §2 SUSTAINED regime — Audio is the keyed `audio:` scene value built with
+		// Audio.track(key, clip) and the .pitch/.gain/.bus builders. Bus is the §22 §4
+		// bus group enum BOTH regimes route to (Bus::Sfx here; Bus::Ui/Music for the
+		// one-shot Sound regime). Sibling task 5.2 admits the §22 §1 one-shot `Sound`
+		// type into THIS same partition — Bus is shared, Sound is 5.2's to add; an
+		// integration merge reconciles the partition. Audio.track / .pitch / .gain /
+		// .bus type through surface_static_method / surface_engine_method, not here.
+		path = "engine.audio",
+		decls = {
+			{"Audio", .Type_Name},
+			// Bus is shared with the §22 §1 one-shot Sound regime (sibling task 5.2);
+			// Sound is 5.2's to add into this partition.
+			{"Bus", .Type_Name},
+		},
+	},
 }
 
 // Reexport declares one name a partition exposes on behalf of its owning
@@ -267,12 +325,16 @@ Reexport :: struct {
 	owner:  string, // the owning module the binding records
 }
 
-// STDLIB_REEXPORTS carries the one documented §26 §3 exception: engine.math
-// re-exports the prelude's Fixed so the golden numerics import line
-// (`import engine.math.{Fixed, Vec2, …}`) resolves.
+// STDLIB_REEXPORTS carries the §26 §3 exceptions: engine.math re-exports the
+// prelude's Fixed so the golden numerics import line (`import engine.math.{Fixed,
+// Vec2, …}`) resolves, and engine.render3 re-exports engine.render's Color so
+// stroll.fun's `import engine.render3.{Draw3, Color}` resolves Color to its
+// single owner. Color is one closed palette (§20 §1) shared across the 2D and 3D
+// render surfaces — a re-export, never a second owning row.
 @(rodata)
 STDLIB_REEXPORTS := []Reexport{
 	{"engine.math", "Fixed", "engine.prelude"},
+	{"engine.render3", "Color", "engine.render"},
 }
 
 // Binding records the declaration an imported name resolved to.
@@ -524,9 +586,23 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 		// source has no checker ground — it is only consumed by Bindings.axis,
 		// whose source param is the same nil unknown — so the result is nil.
 		return clone_types({func_of({engine_type_of(.Key), engine_type_of(.Key)}, nil)}), true
+	case "stick_x":
+		// §23 source helper: a gamepad stick into a horizontal axis source — the
+		// twin of stick_y. krognid binds the left stick's x to its Strafe axis.
+		// Like every axis-source helper, the result is the nil unknown Bindings.axis
+		// consumes (its source param is the same nil unknown).
+		return clone_types({func_of({engine_type_of(.Stick)}, nil)}), true
 	case "stick_y":
 		// §23 source helper: a gamepad stick into a vertical axis source.
 		return clone_types({func_of({engine_type_of(.Stick)}, nil)}), true
+	case "rot_x":
+		// §16 §7 the per-bone rotation builder: a fixed-point angle (radians) into a
+		// Transform a pose generator sets on a bone (pose_walk's leg/arm swing).
+		return clone_types({func_of({Ground_Type.Fixed}, engine_type_of(.Transform))}), true
+	case "up":
+		// §16 §7 the per-bone vertical-offset builder: a fixed-point displacement
+		// into a Transform (pose_idle's torso breathing bob).
+		return clone_types({func_of({Ground_Type.Fixed}, engine_type_of(.Transform))}), true
 	case "wasd":
 		// §23 source helper: the 2D WASD keyboard axis source — no argument. Its
 		// result is the same nil axis-source unknown keys_axis/stick_y yield,
@@ -580,9 +656,47 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 			return engine_type_of(.Stick), true
 		}
 	case "Color":
+		// §20 §1 the one closed palette shared across engine.render (2D) and
+		// engine.render3 (3D, via re-export). Gray is the ground-plane shade
+		// stroll.fun's Draw3::Plane uses; the rest are the pong/hunt/yard palette.
 		switch variant {
-		case "White", "Black", "Red", "Green", "Blue":
+		case "White", "Black", "Red", "Green", "Blue", "Gray":
 			return engine_type_of(.Color), true
+		}
+	case "Slot":
+		// §16 §7 the part-attach slots krognid.gen.fun binds meshes to. The
+		// left-side slots plus their right-mirror twins — PartSet.mirror(L, R)
+		// derives the R set, but a binding may target either side explicitly, so
+		// the full closed set is admitted (matching the .fpm rig's slot space).
+		switch variant {
+		case "Torso", "Head",
+		     "LUpperArm", "LLowerArm", "RUpperArm", "RLowerArm",
+		     "LUpperLeg", "LLowerLeg", "RUpperLeg", "RLowerLeg":
+			return engine_type_of(.Slot), true
+		}
+	case "Side":
+		// §16 §7 the mirror sides PartSet.mirror(Side::L, Side::R) names.
+		switch variant {
+		case "L", "R":
+			return engine_type_of(.Side), true
+		}
+	case "Bone":
+		// §16 §7 the skeleton bones a pose generator drives (Pose.set(Bone::…, t)).
+		// The humanoid bone set: torso/head plus the four-limb upper/lower bones,
+		// both sides (a pose drives both legs and both arms in counter-swing).
+		switch variant {
+		case "Torso", "Head",
+		     "LUpperArm", "LLowerArm", "RUpperArm", "RLowerArm",
+		     "LUpperLeg", "LLowerLeg", "RUpperLeg", "RLowerLeg":
+			return engine_type_of(.Bone), true
+		}
+	case "Bus":
+		// §22 §4 the audio bus groups (Master/Music/Sfx/Ui/Voice) BOTH regimes
+		// route to. Shared with the §22 §1 one-shot Sound regime (sibling 5.2):
+		// Audio.bus(Bus::Sfx) here, Sound.bus(Bus::Ui) there.
+		switch variant {
+		case "Master", "Music", "Sfx", "Ui", "Voice":
+			return engine_type_of(.Bus), true
 		}
 	case "BodyKind":
 		// §11 §2: the body kind enum. Static never moves, Dynamic is fully
@@ -641,6 +755,53 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 			// route (the chase-AI fixture's `Nav.of(route)`), the nav twin of
 			// View.of — yields the Nav handle Nav.path then queries.
 			return func_of({engine_type_of(.Path)}, engine_type_of(.Nav)), true
+		}
+	case "Skeleton":
+		// §16 §7 the named-topology skeleton builders: Skeleton.humanoid() is the
+		// standard humanoid the krognid rig seam returns; empty() seeds an inline
+		// rig tree. Each yields the opaque Skeleton engine value (no argument).
+		switch member {
+		case "humanoid", "empty":
+			return func_of({}, engine_type_of(.Skeleton)), true
+		}
+	case "PartSet":
+		// §16 §7 PartSet.empty() seeds the part→slot bindings the rig seam chains
+		// .bind(Slot, MeshHandle) / .mirror(Side, Side) onto. No argument; yields
+		// the PartSet the value methods (surface_engine_method) thread forward.
+		switch member {
+		case "empty":
+			return func_of({}, engine_type_of(.PartSet)), true
+		}
+	case "Pose":
+		// §16 §7 the pose builders/combinators applied as Type-name statics:
+		// empty() seeds a sparse pose a generator .set()s bones on; blend(a, b, w)
+		// per-bone lerps two poses (the speed-weighted idle/walk blend); layer(base,
+		// overlay) lets the overlay win per bone. set/get are VALUE methods (they
+		// receive a Pose value), typed in surface_engine_method.
+		switch member {
+		case "empty":
+			return func_of({}, engine_type_of(.Pose)), true
+		case "blend":
+			return func_of(
+				{engine_type_of(.Pose), engine_type_of(.Pose), Ground_Type.Fixed},
+				engine_type_of(.Pose),
+			), true
+		case "layer":
+			return func_of(
+				{engine_type_of(.Pose), engine_type_of(.Pose)},
+				engine_type_of(.Pose),
+			), true
+		}
+	case "Audio":
+		// §22 §2 the sustained-audio track builder: Audio.track(key, clip) seeds the
+		// keyed scene value the .pitch/.gain/.bus builders (surface_engine_method)
+		// chain onto. The key is the stable String diff-key, the clip a SoundHandle.
+		switch member {
+		case "track":
+			return func_of(
+				{engine_type_of(.String), engine_type_of(.SoundHandle)},
+				engine_type_of(.Audio),
+			), true
 		}
 	}
 	return nil, false
@@ -727,6 +888,47 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 				tuple_of({option_of(Ground_Type.Vec2), engine_type_of(.Path)}),
 			), true
 		}
+	case .PartSet:
+		// §16 §7 the part-binding chain the rig seam threads off PartSet.empty():
+		// bind(Slot, MeshHandle) attaches a baked mesh to a slot, mirror(Side, Side)
+		// derives one side's bindings from the other. Both return the PartSet, so the
+		// chain composes (krognid_parts binds six slots then mirrors L→R).
+		switch member {
+		case "bind":
+			return func_of(
+				{engine_type_of(.Slot), engine_type_of(.MeshHandle)},
+				engine_type_of(.PartSet),
+			), true
+		case "mirror":
+			return func_of(
+				{engine_type_of(.Side), engine_type_of(.Side)},
+				engine_type_of(.PartSet),
+			), true
+		}
+	case .Pose:
+		// §16 §7 the pose value methods: set(Bone, Transform) drives one bone
+		// (returning the Pose, so a generator chains .set across bones), get(Bone)
+		// reads a bone's Transform (the pose_walk test asserts get(LUpperLeg)).
+		switch member {
+		case "set":
+			return func_of(
+				{engine_type_of(.Bone), engine_type_of(.Transform)},
+				engine_type_of(.Pose),
+			), true
+		case "get":
+			return func_of({engine_type_of(.Bone)}, engine_type_of(.Transform)), true
+		}
+	case .Audio:
+		// §22 §2 the sustained-track builder chain off Audio.track(key, clip):
+		// pitch(Fixed)/gain(Fixed) set the speed-modulated voice params, bus(Bus)
+		// routes it to a mixing group. Each returns the Audio value, so the chain
+		// composes (locomotion: .track(…).pitch(…).gain(…).bus(Bus::Sfx)).
+		switch member {
+		case "pitch", "gain":
+			return func_of({Ground_Type.Fixed}, engine_type_of(.Audio)), true
+		case "bus":
+			return func_of({engine_type_of(.Bus)}, engine_type_of(.Audio)), true
+		}
 	}
 	return nil, false
 }
@@ -791,6 +993,52 @@ surface_struct_variant :: proc(type_name: string, variant: string) -> (result: T
 		case "Circle":
 			return engine_type_of(.Shape2), clone_fields({
 					{name = "radius", type = Ground_Type.Fixed},
+				}), true
+		}
+	case "Draw3":
+		// §20 §1 the closed 3D draw-command enum (a NEW engine type, distinct from
+		// the §20 2D Draw — render3 owns Draw3, never reuses .Draw). Every variant
+		// yields the Draw3 command a render3 behavior emits in its [Draw3] list.
+		switch variant {
+		case "Camera":
+			// the 3D camera: world eye point, look-at target, field of view (Fixed
+			// degrees). The 3D twin of Draw::Camera; the listener defaults to it.
+			return engine_type_of(.Draw3), clone_fields({
+					{name = "eye", type = Ground_Type.Vec3},
+					{name = "at", type = Ground_Type.Vec3},
+					{name = "fov", type = Ground_Type.Fixed},
+				}), true
+		case "Light":
+			// a directional light: world-space direction and palette color.
+			return engine_type_of(.Draw3), clone_fields({
+					{name = "dir", type = Ground_Type.Vec3},
+					{name = "color", type = engine_type_of(.Color)},
+				}), true
+		case "Plane":
+			// a flat ground plane: world center, XZ extent (Vec2), palette color.
+			return engine_type_of(.Draw3), clone_fields({
+					{name = "at", type = Ground_Type.Vec3},
+					{name = "size", type = Ground_Type.Vec2},
+					{name = "color", type = engine_type_of(.Color)},
+				}), true
+		case "Rigged":
+			// a posed rigged mesh: the bone skeleton, the part→slot mesh bindings,
+			// the composed pose, and the world position — the §16 §7 render seam
+			// (krognid's draw_krognid emits Draw3::Rigged of the blended pose).
+			return engine_type_of(.Draw3), clone_fields({
+					{name = "skeleton", type = engine_type_of(.Skeleton)},
+					{name = "parts", type = engine_type_of(.PartSet)},
+					{name = "pose", type = engine_type_of(.Pose)},
+					{name = "at", type = Ground_Type.Vec3},
+				}), true
+		case "Mesh":
+			// a static mesh: the baked-mesh handle, world position, PBR material —
+			// depth-tested against the active Draw3::Camera. Material gives the
+			// admitted §20 §1 Material type its one consumer.
+			return engine_type_of(.Draw3), clone_fields({
+					{name = "handle", type = engine_type_of(.MeshHandle)},
+					{name = "at", type = Ground_Type.Vec3},
+					{name = "material", type = engine_type_of(.Material)},
 				}), true
 		}
 	}
