@@ -15,6 +15,8 @@
 // those forms resolve; the numeric kernel forms ignore it.
 package funpack
 
+import "core:strings"
+
 // Env is a chained binding frame. Lookups walk toward the root; only
 // the owning scope ever inserts, and nothing iterates the map — map
 // order can never reach evaluation results (the determinism tripwire).
@@ -34,11 +36,35 @@ Env :: struct {
 // it — and is threaded alongside the per-call binding frame so a user fn call or
 // a name.step invocation reaches the body to execute. In the single-source path
 // bindings is empty and modules is nil, so the cross-module arm never fires.
+//
+// module is this ctx's own §15 module name — the namespace half of a const's
+// cycle key (`module.const`). It is empty in the single-source path (no project
+// module name) and set to the owning module when the cross-module arm builds a
+// fresh ctx, so a const that reaches back to its origin keys the same entry.
+// visiting is the const-resolution cycle guard, threaded by pointer so the ONE
+// set is shared across every by-value Eval_Ctx copy (including the cross-module
+// owner_ctx): a const whose initializer transitively reaches itself registers
+// its key on entry and trips the guard on revisit, failing closed (ok = false)
+// instead of recursing to a stack overflow (spec §10 totality).
 Eval_Ctx :: struct {
 	ast:      Ast,
 	env:      Type_Env,
 	bindings: Bindings,
 	modules:  []Module_Eval,
+	module:   string,
+	visiting: ^Const_Visit,
+}
+
+// Const_Visit is the const-resolution visited set: the module-qualified names
+// (`module.const`) currently mid-evaluation on the active initializer chain. A
+// const enters its key before evaluating its RHS and removes it after, so the
+// set holds exactly the chain in progress; reaching a key already present is a
+// const-initializer cycle. It is a map only for O(1) membership — never iterated
+// (the determinism tripwire), so map order never reaches an evaluation result.
+// Shared by pointer across every Eval_Ctx so the intra-module and cross-module
+// const paths consult ONE set.
+Const_Visit :: struct {
+	active: map[string]bool,
 }
 
 // Module_Eval is one sibling user module's evaluation surface: its §15 module
@@ -73,7 +99,7 @@ env_lookup :: proc(env: ^Env, name: string) -> (value: Value, ok: bool) {
 }
 
 stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
-	return stage_evaluate_indexed(typed, nil)
+	return stage_evaluate_indexed(typed, nil, "")
 }
 
 // stage_evaluate_indexed evaluates one module's tests against a project-wide eval
@@ -82,9 +108,22 @@ stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
 // single-source stage_evaluate — the cross-module arm in eval_member never fires —
 // so every existing single-module test path is unchanged. The consumer's own
 // bindings thread in (eval_member recovers a handle's owning module from them).
-stage_evaluate_indexed :: proc(typed: Typed_Ast, modules: []Module_Eval) -> Eval_Result {
+// module is this module's §15 name, the namespace half of an intra-module const's
+// cycle key (empty in the single-source path). A fresh Const_Visit is allocated
+// per stage run and shared by pointer through the ctx, so a const cycle reachable
+// from any test trips the guard rather than overflowing the stack.
+stage_evaluate_indexed :: proc(typed: Typed_Ast, modules: []Module_Eval, module: string) -> Eval_Result {
 	result := Eval_Result{}
-	ctx := Eval_Ctx{ast = typed.ast, env = typed.env, bindings = typed.bindings, modules = modules}
+	visit := new(Const_Visit, context.temp_allocator)
+	visit.active = make(map[string]bool, context.temp_allocator)
+	ctx := Eval_Ctx {
+		ast      = typed.ast,
+		env      = typed.env,
+		bindings = typed.bindings,
+		modules  = modules,
+		module   = module,
+		visiting = visit,
+	}
 	for test in typed.ast.tests {
 		env := new_env(nil)
 		for stmt in test.body {
@@ -244,17 +283,51 @@ apply_lambda :: proc(ctx: Eval_Ctx, lambda: Lambda_Value, args: []Value) -> (val
 // (resolve.odin records it as a Const term). The RHS reads no local binding,
 // so it evaluates against a fresh root frame; a name that is not a declared
 // const returns declared = false for the caller to fall through.
+//
+// A const-initializer cycle (`let a = b` / `let b = a`, or a self-reference)
+// is caught fail-closed: the const's module-qualified key registers in the
+// shared visited set before its RHS evaluates and clears after, so reaching a
+// key already on the active chain returns declared = false WITHOUT recursing —
+// the assert reading the cyclic const then fails (a counted failure), instead
+// of the unbounded recursion that would overflow the stack. declared stays true
+// only for a const that genuinely resolves to a value; the revisit is reported
+// as undeclared so the caller's fall-through arms (builtins) still run and the
+// reader fails on a missing binding, the same fail-closed shape a const whose
+// RHS does not evaluate already takes (spec §10 totality, the closed-error
+// discipline: no panic, no partial value).
 eval_module_const :: proc(ctx: Eval_Ctx, name: string) -> (value: Value, declared: bool) {
 	if term, found := env_term_name(ctx.env, name); !found || term.kind != .Const {
 		return nil, false
 	}
 	for decl in ctx.ast.lets {
 		if decl.name == name {
+			key := const_cycle_key(ctx.module, name)
+			if ctx.visiting != nil && ctx.visiting.active[key] {
+				// Already mid-evaluation on the active chain — a cycle. Fail
+				// closed: the reader sees an undeclared const and fails its
+				// assert, never the recursion that would overflow the stack.
+				return nil, false
+			}
+			if ctx.visiting != nil {
+				ctx.visiting.active[key] = true
+			}
 			v, ok := eval_expr(ctx, new_env(nil), decl.value)
+			if ctx.visiting != nil {
+				delete_key(&ctx.visiting.active, key)
+			}
 			return v, ok
 		}
 	}
 	return nil, false
+}
+
+// const_cycle_key is the visited-set key for a const: its §15 module name dotted
+// with the const name (`module.const`), so the SAME const has the SAME key whether
+// it is reached by bare name in its own module or cross-module through a handle, and
+// two modules' like-named consts never collide. An empty module (the single-source
+// path) keys as `.const`, still unique within that one module.
+const_cycle_key :: proc(module: string, name: string) -> string {
+	return strings.concatenate({module, ".", name}, context.temp_allocator)
 }
 
 // eval_user_fn evaluates a top-level user fn or a behavior's `step` body
@@ -876,11 +949,18 @@ eval_module_qualified_const :: proc(ctx: Eval_Ctx, handle: string, member: strin
 	if !found {
 		return nil, false
 	}
+	// The owner ctx evaluates the let in its OWNING module — so its module name
+	// is the owner's, the namespace half of the const's cycle key — and SHARES
+	// the visited set (threaded by pointer) so a cross-module cycle (two
+	// mutually-importing modules whose consts reference each other) trips the
+	// same guard the intra-module path uses.
 	owner_ctx := Eval_Ctx {
 		ast      = owner.ast,
 		env      = owner.env,
 		bindings = owner.bindings,
 		modules  = owner.modules,
+		module   = binding.module,
+		visiting = ctx.visiting,
 	}
 	return eval_module_const(owner_ctx, member)
 }
