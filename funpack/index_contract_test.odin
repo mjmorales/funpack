@@ -128,12 +128,24 @@ test_index_contract_pong_project_record_exact_fields :: proc(t: ^testing.T) {
 	// capabilities, pipeline_flattened, gate_results, behind a leading
 	// schema_version — with no missing and no extra top-level field
 	// (exact-match per spec §29 §2). The expected key set is the closed list
-	// the contract fixes; the emitted object's keys must equal it.
-	line, ok := pong_index_line()
+	// the contract fixes; the emitted object's keys must equal it. The stream is
+	// now multi-record (project line then decl lines, v2 §29 §2), so the project
+	// record is LINE 1 — assert it leads the whole-stream NDJSON.
+	stream, ok := pong_index_line()
 	if !ok {
 		return
 	}
-	body := strings.trim_suffix(line, "\n")
+	lines := ndjson_lines(stream)
+	testing.expect(t, len(lines) >= 1)
+	if len(lines) == 0 {
+		return
+	}
+	body := lines[0]
+	// The project record is the FIRST line of the stream (one decl line follows
+	// per declaration), and it is itself a `project`-shaped record — it carries
+	// pipeline_flattened/gate_results, which a `decl` record never does.
+	testing.expect(t, strings.contains(body, "\"pipeline_flattened\":"))
+	testing.expect(t, strings.contains(body, "\"gate_results\":"))
 	expected_keys := []string {
 		"schema_version",
 		"entrypoints",
@@ -302,6 +314,109 @@ test_index_contract_pong_double_emission_identical :: proc(t: ^testing.T) {
 	log.infof("index contract double index emission is byte-identical NDJSON — project deterministic")
 }
 
+// ── Whole-stream decl records over the live checkouts ──────────────────
+// The §29 §2 multi-record stream end to end through read_index_project: the
+// `project` record on line 1, then one `decl` record line per declaration in the
+// fixed gate_units-style order. These pin the live pong + snake decl set against
+// the golden source — representative decls' qualified_name/kind/span/emits/
+// consumes/calls/dup_class/mut_data plus the all-decls stub=false/todo=false/
+// debug=[] invariant — so the contract reshape that added the decl record kind is
+// proven against the real tree, not a hand-shaped stub. SKIP-warn loudly (never
+// silently pass) when the sibling checkout is absent.
+
+@(test)
+test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
+	// The pong whole-stream NDJSON: line 1 is the `project` record, then one
+	// `decl` line per declaration in fixed order. The decl-line count equals the
+	// derived record count (33 pong decls), every decl line carries the v2
+	// schema_version stamp and the always-empty stub/todo/debug §05 directive
+	// fields, and the representative decls pin their derived projection.
+	stream, ok := pong_index_line()
+	if !ok {
+		return
+	}
+	lines := ndjson_lines(stream)
+	// One project line then one decl line per declaration (pong: 33 decls).
+	testing.expect_value(t, len(lines), 1 + 33)
+	if len(lines) != 34 {
+		return
+	}
+	// Line 1 is the `project` record (pipeline_flattened/gate_results are
+	// project-only fields a decl record never carries); the decl lines follow.
+	testing.expect(t, strings.contains(lines[0], "\"pipeline_flattened\":"))
+	for i in 1 ..< len(lines) {
+		decl := lines[i]
+		// Every decl line carries the bumped v2 stamp and the always-empty §05
+		// directive fields, mandatory-present (never omitted) on the current tree.
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":2,"))
+		testing.expect(t, strings.contains(decl, "\"stub\":false"))
+		testing.expect(t, strings.contains(decl, "\"todo\":false"))
+		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
+		// No decl line is a `project` record — the decl key set is disjoint.
+		testing.expect(t, !strings.contains(decl, "\"pipeline_flattened\":"))
+	}
+	// Representative pong decls: Board (data, span 16), score (emits Goal, no
+	// mut_data — returns [Goal]), tally (consumes Goal, mut_data Scoreboard),
+	// overlaps (calls abs), paddle_move (calls value + clamp). The decl LINES are
+	// asserted via substring so the stream's emitted bytes carry the projection.
+	testing.expect(t, stream_has_decl(lines, "\"qualified_name\":\"Board\"", "\"kind\":\"Data\""))
+	testing.expect(t, stream_has_decl(lines, "\"qualified_name\":\"score\"", "\"emits\":[\"Goal\"]"))
+	testing.expect(t, stream_has_decl(lines, "\"qualified_name\":\"tally\"", "\"mut_data\":[\"Scoreboard\"]"))
+	testing.expect(t, stream_has_decl(lines, "\"qualified_name\":\"overlaps\"", "\"calls\":[\"abs\"]"))
+	testing.expect(t, stream_has_decl(lines, "\"qualified_name\":\"paddle_move\"", "\"clamp\""))
+	log.infof("index contract pong whole-stream decl records verified (%d decl lines)", len(lines) - 1)
+}
+
+@(test)
+test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
+	// The snake whole-stream NDJSON: line 1 is the `project` record, then one
+	// `decl` line per declaration (snake: 36 decls). Every decl line carries the
+	// v2 stamp and the always-empty §05 directive fields; the first data decl
+	// (Cell) and its kind are pinned against the golden source.
+	dir := resolve_snake_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP index contract snake decl records: %s not found — set FUNPACK_SNAKE_DIR or check out funpack-spec as a sibling", dir)
+		return
+	}
+	stream, err, compiled := read_index_project(dir, context.temp_allocator)
+	testing.expect_value(t, err, Index_Contract_Error.None)
+	testing.expect(t, compiled)
+	if err != .None || !compiled {
+		return
+	}
+	lines := ndjson_lines(stream)
+	// One project line then one decl line per declaration (snake: 36 decls).
+	testing.expect_value(t, len(lines), 1 + 36)
+	if len(lines) != 37 {
+		return
+	}
+	testing.expect(t, strings.contains(lines[0], "\"pipeline_flattened\":"))
+	for i in 1 ..< len(lines) {
+		decl := lines[i]
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":2,"))
+		testing.expect(t, strings.contains(decl, "\"stub\":false"))
+		testing.expect(t, strings.contains(decl, "\"todo\":false"))
+		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
+		testing.expect(t, !strings.contains(decl, "\"pipeline_flattened\":"))
+	}
+	// The first snake data decl (Cell) at its keyword line, pinned in the stream.
+	testing.expect(t, stream_has_decl(lines, "\"qualified_name\":\"Cell\"", "\"kind\":\"Data\""))
+	log.infof("index contract snake whole-stream decl records verified (%d decl lines)", len(lines) - 1)
+}
+
+// stream_has_decl reports whether some decl line of the stream contains BOTH
+// needles — the per-decl assertion the whole-stream tests use: it isolates the
+// one line carrying a decl's qualified_name and checks a derived field on that
+// same line, so a field on a DIFFERENT decl's line never satisfies the check.
+stream_has_decl :: proc(lines: []string, name_needle: string, field_needle: string) -> bool {
+	for line in lines {
+		if strings.contains(line, name_needle) && strings.contains(line, field_needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Decl record: NDJSON shape, determinism, exact-match key set ─────────
 // The §29 §2 per-declaration `decl` record. These exercise the hand-built
 // record in-memory (no derivation, no checkout) the way the minimal_project
@@ -457,10 +572,11 @@ minimal_project_record :: proc() -> Project_Record {
 	}
 }
 
-// pong_index_line emits the pong project record's NDJSON line via the
-// end-to-end read_index_project seam; ok is false (with a SKIP warning) when
-// the sibling pong checkout is absent or the source does not compile,
-// matching the golden_pong skip semantics.
+// pong_index_line emits the pong WHOLE Index Contract NDJSON stream (the
+// `project` record line then one `decl` line per declaration) via the end-to-end
+// read_index_project seam; ok is false (with a SKIP warning) when the sibling
+// pong checkout is absent or the source does not compile, matching the
+// golden_pong skip semantics. The whole-stream caller splits with ndjson_lines.
 pong_index_line :: proc() -> (line: string, ok: bool) {
 	dir := resolve_pong_dir()
 	if !os.is_dir(dir) {
@@ -499,6 +615,18 @@ pong_project_record :: proc() -> (record: Project_Record, ok: bool) {
 		return Project_Record{}, false
 	}
 	return built, true
+}
+
+// ndjson_lines splits a whole NDJSON stream into its per-record JSON object
+// lines, dropping the trailing empty element the final LF produces. Each line is
+// one record's object (no trailing LF), so a stream test reads line[0] as the
+// `project` record and line[1..] as the `decl` records in emission order.
+ndjson_lines :: proc(stream: string) -> []string {
+	trimmed := strings.trim_suffix(stream, "\n")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.split(trimmed, "\n", context.temp_allocator)
 }
 
 // top_level_key_count counts the `"key":` occurrences at brace depth 1 of a

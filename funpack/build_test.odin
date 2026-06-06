@@ -164,6 +164,112 @@ test_build_malformed_tree_exits_two :: proc(t: ^testing.T) {
 	testing.expect_value(t, build_err, Build_Error.Malformed_Tree)
 }
 
+// test_build_writes_index_ndjson is the whole-stream acceptance: building the
+// live pong tree writes a .funpack/index.ndjson carrying BOTH §29 §2 record
+// kinds — the `project` record on line 1 and one `decl` record line per
+// declaration after it. It drives the same stage_build → write_build_products
+// path the CLI verb runs, reads the written product back from disk, and asserts
+// the multi-record stream landed (not just the single project record). SKIPs
+// loudly when the sibling pong checkout is absent.
+@(test)
+test_build_writes_index_ndjson :: proc(t: ^testing.T) {
+	root, ok := copy_pong_tree_to_temp()
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	product, build_err := stage_build(root, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.None)
+	if build_err != .None {
+		return
+	}
+	write_err := write_build_products(product, root)
+	testing.expect_value(t, write_err, Build_Write_Error.None)
+
+	// Read the written NDJSON back from disk: it must be the whole stream.
+	written, read_err := os.read_entire_file_from_path(product.index_path, context.temp_allocator)
+	testing.expect(t, read_err == nil)
+	if read_err != nil {
+		return
+	}
+	stream := string(written)
+	// The `project` record leads (its v2 schema_version stamp prefixes line 1),
+	// and the stream carries a `decl` record kind after it (a project-only field
+	// vs a decl-only field both appear) — the multi-record stream, not a lone
+	// project record.
+	testing.expect(t, strings.has_prefix(stream, "{\"schema_version\":2,"))
+	testing.expect(t, strings.contains(stream, "\"pipeline_flattened\":")) // project record
+	testing.expect(t, strings.contains(stream, "\"qualified_name\":")) // a decl record
+	testing.expect(t, strings.contains(stream, "\"dup_class\":")) // a decl-only field
+	// More than one record: a multi-line stream (the project line + decl lines).
+	testing.expect(t, strings.count(stream, "\n") > 1)
+	log.infof("build verb: pong index.ndjson carries the whole project+decl multi-record stream")
+}
+
+// test_build_index_byte_identical_twice proves the LARGER (multi-record) index
+// stream is still byte-identical across two builds (spec §09/§29): building the
+// same pong tree twice yields byte-identical index.ndjson, end to end through the
+// build seam. The stream concatenates the project record then the decl records in
+// fixed order with no map/clock/float, so the bytes carry no datum that varies
+// between builds. The no-checkout twin (test_build_double_build_identical_no_checkout)
+// covers host-independent determinism on the minimal tree.
+@(test)
+test_build_index_byte_identical_twice :: proc(t: ^testing.T) {
+	root, ok := copy_pong_tree_to_temp()
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	first, first_err := stage_build(root, context.temp_allocator)
+	testing.expect_value(t, first_err, Build_Error.None)
+	second, second_err := stage_build(root, context.temp_allocator)
+	testing.expect_value(t, second_err, Build_Error.None)
+	if first_err != .None || second_err != .None {
+		return
+	}
+	// The whole multi-record stream is byte-identical between the two builds.
+	testing.expect(t, first.index == second.index)
+	// It is genuinely the larger stream, not a lone project record (a decl record
+	// kind is present), so the determinism obligation covers the decl lines too.
+	testing.expect(t, strings.contains(first.index, "\"qualified_name\":"))
+	testing.expect(t, strings.count(first.index, "\n") > 1)
+	if first.index == second.index {
+		log.infof(
+			"build identical: double build of pong is byte-identical multi-record index NDJSON (%d bytes, %d records)",
+			len(first.index),
+			strings.count(first.index, "\n"),
+		)
+	}
+}
+
+// test_build_no_partial_product covers the §29 §3 no-partial-product floor with
+// the larger stream in play: a compile error on an otherwise-valid §14 tree fails
+// the checked pipeline, so stage_build returns before the write side and NEITHER
+// product lands — no artifact, no (multi-record) index.ndjson. The build emits
+// both products or none; a failure leaves no partial product set behind.
+@(test)
+test_build_no_partial_product :: proc(t: ^testing.T) {
+	root, ok := write_broken_pong_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, build_err := stage_build(root, context.temp_allocator)
+	// The broken source is rejected by the checked pipeline, so the build refuses
+	// with Compile_Failed and emits nothing — the exit-2 path.
+	testing.expect_value(t, build_err, Build_Error.Compile_Failed)
+
+	// No partial product: neither the artifact nor the index.ndjson is on disk.
+	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
+	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
+	testing.expect(t, !os.exists(artifact_path))
+	testing.expect(t, !os.exists(index_path))
+	log.infof("build no partial product: a compile error writes neither product (the whole-stream build is all-or-nothing)")
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 // copy_pong_tree_to_temp copies the live pong project tree into a fresh temp
