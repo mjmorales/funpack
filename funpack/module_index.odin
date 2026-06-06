@@ -25,15 +25,18 @@ package funpack
 
 import "core:os"
 
-// Module_Export_Kind is the closed two-position view the index records for
+// Module_Export_Kind is the closed three-position view the index records for
 // each exported name: a type-position name (a data/enum/thing/singleton/signal
-// declaration) or a term-position name (a top-level fn). It maps 1:1 onto the
-// Decl_Kind a resolved Binding carries — a type export binds as .Type_Name, a
-// term export as .Func — so a user-module import populates Bindings identically
-// to a stdlib import.
+// declaration), a term-position fn name (a top-level fn), or a term-position
+// const name (a module-level `let`). It maps 1:1 onto the Decl_Kind a resolved
+// Binding carries — a type export binds as .Type_Name, a fn export as .Func, a
+// const export as .Value — so a user-module import (a member group, a dotted
+// member, or a whole-module handle's `module.NAME` access) populates Bindings
+// identically to a stdlib import.
 Module_Export_Kind :: enum {
-	Type, // a data/enum/thing/singleton/signal declaration — a type-position name
-	Term, // a top-level fn declaration — a term-position name
+	Type,  // a data/enum/thing/singleton/signal declaration — a type-position name
+	Term,  // a top-level fn declaration — a term-position name
+	Const, // a module-level `let NAME: T = expr` — a term-position value name
 }
 
 // Module_Export pairs one exported name with its position. The position is read
@@ -42,16 +45,20 @@ Module_Export_Kind :: enum {
 // a fn reference resolves to a term-position binding. user_kind carries the §06
 // declaration form of a .Type export (Thing/Data/Enum/Signal) so a cross-module
 // type reference resolves to a nominal User_Type with the right kind; it is
-// meaningless (.Thing as a placeholder) for a .Term export. signature carries the
-// resolved fn signature of a .Term fn export so a CONSUMER can type a cross-module
-// CALL (`arena_spawns() -> [Spawn]` in arena_game's setup): the name-only index
-// (build_module_index_from_asts) leaves it nil — only build_module_index_typed,
-// which resolves each module's own env, fills it.
+// meaningless (.Thing as a placeholder) for a .Term/.Const export. signature
+// carries the resolved fn signature of a .Term fn export so a CONSUMER can type a
+// cross-module CALL (`arena_spawns() -> [Spawn]` in arena_game's setup). let_type
+// carries the resolved DECLARED type of a .Const let export so a CONSUMER can type
+// a module-qualified const reference (`assets.coin_sfx` types as SoundHandle).
+// Both the signature and let_type are filled only by build_module_index_typed,
+// which resolves each module's own env; the name-only index
+// (build_module_index_from_asts) leaves them nil.
 Module_Export :: struct {
 	name:      string,
 	kind:      Module_Export_Kind,
-	user_kind: User_Kind,   // the §06 form of a .Type export; unused for a .Term
+	user_kind: User_Kind,   // the §06 form of a .Type export; unused for a .Term/.Const
 	signature: ^Func_Type,  // the resolved signature of a .Term fn export; nil otherwise
+	let_type:  Type,        // the resolved declared type of a .Const let export; nil otherwise
 }
 
 // Module_Record_Schema pairs one exported RECORD type's name with its resolved
@@ -163,13 +170,15 @@ build_module_index_typed :: proc(modules: []string, asts: []Ast) -> Module_Index
 // fill_export_types resolves one module's own imports + env against the
 // project-wide NAME index and lifts the resolved types a CONSUMER needs into the
 // index: each .Term fn export's signature is copied onto its export (the
-// cross-module CALL surface), and each exported RECORD type's resolved field
-// schema is collected (the cross-module FIELD surface — a member read, a literal,
-// a `with` on a sibling-module record). It is the typed half of
-// build_module_index_typed; the name pass already ran, so a cross-module type a
-// signature or field references is visible. A module whose imports or env do not
-// resolve leaves its export signatures nil and its record-schema set empty — that
-// module's own typecheck reports the real error.
+// cross-module CALL surface), each .Const let export's declared type is copied
+// onto its export (the cross-module CONST surface — `assets.coin_sfx` types as
+// SoundHandle), and each exported RECORD type's resolved field schema is collected
+// (the cross-module FIELD surface — a member read, a literal, a `with` on a
+// sibling-module record). It is the typed half of build_module_index_typed; the
+// name pass already ran, so a cross-module type a signature/const/field references
+// is visible. A module whose imports or env do not resolve leaves its export
+// signatures and let types nil and its record-schema set empty — that module's own
+// typecheck reports the real error.
 fill_export_types :: proc(exports: ^[]Module_Export, ast: Ast, name_index: Module_Index) -> []Module_Record_Schema {
 	bindings, bind_err := resolve_imports_indexed(ast, name_index)
 	if bind_err != .None {
@@ -180,11 +189,18 @@ fill_export_types :: proc(exports: ^[]Module_Export, ast: Ast, name_index: Modul
 		return nil
 	}
 	for &export in exports {
-		if export.kind != .Term {
-			continue
-		}
-		if term, found := env_term_name(env, export.name); found {
-			export.signature = term.signature
+		#partial switch export.kind {
+		case .Term:
+			if term, found := env_term_name(env, export.name); found {
+				export.signature = term.signature
+			}
+		case .Const:
+			// A let's resolve_env Term_Schema carries its declared type — the
+			// cross-module reference grounds to the same Type the owning module's
+			// own name_check returns for the bare name.
+			if term, found := env_term_name(env, export.name); found {
+				export.let_type = term.type
+			}
 		}
 	}
 	schemas := make([dynamic]Module_Record_Schema, 0, 8, context.temp_allocator)
@@ -225,6 +241,58 @@ module_call_signature :: proc(index: Module_Index, bindings: Bindings, name: str
 	return export.signature, true
 }
 
+// module_const_type resolves the declared type of a module-qualified const
+// reference — the cross-module CONST surface a consumer reads to type
+// `assets.coin_sfx` (a whole-module `import assets` handle, then a `.coin_sfx`
+// member). It is the term-position analogue of module_record_schema for the
+// whole-module access route: the receiver name (`assets`) must bind to a sibling
+// module as a .Module handle, that module must be in the index, and the named
+// member must be a .Const export carrying a resolved let type. found = false
+// leaves the member check to its other arms (a non-module receiver, a member that
+// is not a const), so a record/enum/fn member of a module handle is untouched. The
+// CONSUMER passes its own bindings so the handle's OWNING module is recovered from
+// the .Module binding (spec §02 — the binding carries the source of the name's
+// meaning), exactly as module_call_signature/module_record_schema do.
+module_const_type :: proc(index: Module_Index, bindings: Bindings, handle: string, member: string) -> (type: Type, found: bool) {
+	binding, bound := bindings.names[handle]
+	if !bound || binding.kind != .Module {
+		return nil, false
+	}
+	entry, has_entry := module_index_lookup(index, binding.module)
+	if !has_entry {
+		return nil, false
+	}
+	export, exported := module_export_lookup(entry, member)
+	if !exported || export.kind != .Const {
+		return nil, false
+	}
+	return export.let_type, true
+}
+
+// module_member_kind reports the export kind of a member reached through a
+// whole-module `.Module` handle (`assets.NAME`), distinguishing an UNKNOWN member
+// of a known user module (found = false, exported = false) from a known member
+// that simply is not a const (found = true, exported = true, kind set). The
+// member_check uses it to raise the precise .Unknown_Member diagnostic for a
+// mistyped member of a user-module handle rather than the generic .Unsupported_Expr
+// — the same closed-surface rejection module_export_lookup enforces for a member
+// group. handle_known reports whether the receiver bound to a user module at all.
+module_member_kind :: proc(index: Module_Index, bindings: Bindings, handle: string, member: string) -> (kind: Module_Export_Kind, exported: bool, handle_known: bool) {
+	binding, bound := bindings.names[handle]
+	if !bound || binding.kind != .Module {
+		return {}, false, false
+	}
+	entry, has_entry := module_index_lookup(index, binding.module)
+	if !has_entry {
+		return {}, false, false
+	}
+	export, found := module_export_lookup(entry, member)
+	if !found {
+		return {}, false, true
+	}
+	return export.kind, true, true
+}
+
 // module_record_schema resolves the field schema of a RECORD type an import bound
 // to a sibling user module — the cross-module FIELD surface a consumer reads to
 // type `s.on` on an imported Switch, a `Switch{…}` literal, or a `self with {…}`
@@ -254,14 +322,16 @@ module_record_schema :: proc(index: Module_Index, bindings: Bindings, name: stri
 
 // collect_module_exports lifts a parsed module's top-level declarations into its
 // ordered export list: every type-position declaration (data/enum/thing/
-// singleton/signal) as a .Type export, then every top-level fn as a .Term export.
-// A module's whole top-level surface is exported (spec §15: a module has no
-// visibility modifier — a declaration's presence at module scope IS its export),
-// so the index mirrors resolve_env's own type/term partition. Behaviors and lets
-// are NOT exported: a behavior is reached through its own module's pipeline, and
-// a module-level let is a private constant — neither is an importable name across
-// modules. The order is source order within each kind, type exports first, so
-// the list walks deterministically.
+// singleton/signal) as a .Type export, then every top-level fn as a .Term export,
+// then every module-level `let` as a .Const export. A module's whole top-level
+// surface is exported (spec §15: a module has no visibility modifier — a
+// declaration's presence at module scope IS its export), so the index mirrors
+// resolve_env's own type/term partition. A module-level let IS exported because a
+// let-emitting seam (the §19 assets seam's typed handle constants) must be
+// referenced cross-module (`import assets` then `assets.coin_sfx`); behaviors stay
+// unexported — a behavior is reached through its own module's pipeline, not an
+// importable name. The order is source order within each kind, type exports first
+// then fn terms then const terms, so the list walks deterministically.
 collect_module_exports :: proc(ast: Ast) -> []Module_Export {
 	exports := make([dynamic]Module_Export, 0, 8, context.temp_allocator)
 	for decl in ast.things {
@@ -280,6 +350,9 @@ collect_module_exports :: proc(ast: Ast) -> []Module_Export {
 	}
 	for decl in ast.fns {
 		append(&exports, Module_Export{name = decl.name, kind = .Term})
+	}
+	for decl in ast.lets {
+		append(&exports, Module_Export{name = decl.name, kind = .Const})
 	}
 	return exports[:]
 }
@@ -313,10 +386,18 @@ module_export_lookup :: proc(entry: Module_Entry, name: string) -> (export: Modu
 // records: the binding's module is the OWNING user module, so a cross-module
 // reference carries the source of its meaning (spec §02 one-name-one-meaning),
 // and the Decl_Kind mirrors the export's position — a type export binds as
-// .Type_Name, a term export as .Func — so a user-module import populates
-// Bindings identically to a stdlib import.
+// .Type_Name, a fn term as .Func, a const term as .Value — so a user-module
+// import populates Bindings identically to a stdlib import.
 module_export_binding :: proc(module: string, export: Module_Export) -> Binding {
-	kind := Decl_Kind.Type_Name if export.kind == .Type else Decl_Kind.Func
+	kind: Decl_Kind
+	switch export.kind {
+	case .Type:
+		kind = .Type_Name
+	case .Term:
+		kind = .Func
+	case .Const:
+		kind = .Value
+	}
 	return Binding{module = module, kind = kind}
 }
 

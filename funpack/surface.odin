@@ -538,12 +538,24 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node, index: Module_Ind
 		}
 		return .Unknown_Module
 	}
-	if module, found := surface_module(join_path(node.segments)); found {
+	whole_path := join_path(node.segments)
+	if module, found := surface_module(whole_path); found {
 		// A whole-module import binds the module's own name; members
 		// are reached through it (spec §04: assets.coin_sfx).
 		handle := node.segments[len(node.segments) - 1]
 		bind_name(bindings, handle, Binding{module = module.path, kind = .Module}) or_return
 		return .None
+	}
+	// A whole-module import of a SIBLING USER module (the §19 assets seam:
+	// `import assets`, then `assets.coin_sfx` reaches its exported handle const).
+	// The handle binds to the user module so a member access resolves the member
+	// against the module's exports — the user-module analogue of the stdlib
+	// whole-module arm above. Tried before the dotted single-member arm so a
+	// bare `import assets` (one segment) is a whole-module handle, not a missing
+	// dotted member.
+	if entry, found := module_index_lookup(index, whole_path); found {
+		handle := node.segments[len(node.segments) - 1]
+		return bind_name(bindings, handle, Binding{module = entry.module, kind = .Module})
 	}
 	if len(node.segments) < 2 {
 		return .Unknown_Module

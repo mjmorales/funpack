@@ -171,6 +171,101 @@ test_golden_assets_typed_constant_equals_checked_string :: proc(t: ^testing.T) {
 	}
 }
 
+// ── (b-real) the equality rides the REAL cross-module const route ─────────
+
+// test_golden_assets_cross_module_const_route_live proves the multi-module
+// let-export seam end to end against the LIVE assets seam: a focused consumer
+// whole-module imports the real gen/assets.gen.fun (`import assets`), references its
+// exported handle const as `assets.coin_sfx`, and the equality
+// `assets.coin_sfx == sound("coin_sfx")` evaluates true — the SAME reference
+// src/pickups.fun reaches, now resolvable cross-module. It rides the production
+// path: run_project_pipeline reads the real seam bytes off disk, builds the typed
+// index (the const surface) AND the eval surface (the const's value in its owning
+// module), and evaluates the consumer's assert against them. The let const is
+// referenced CROSS-MODULE (not by bare name), so it exercises exactly the
+// multi-module let-export seam this story lands — the const exports, types as
+// SoundHandle, and grounds to the seam's emitted handle value. SKIPs loudly when
+// the sibling checkout is absent so a missing checkout never silently passes.
+//
+// NOTE the documented scope boundary (lore #13) still holds: full src/pickups.fun
+// end-to-end typecheck remains gated cross-epic on the engine.render
+// Sprite/Flip surface (`import engine.render.{Draw, Color, Flip}` — Flip) and the
+// engine.audio surface (`import engine.audio.{Sound, Bus}`), both .Unknown_Member
+// against the current STDLIB_SURFACE. So the cross-module const route is proven on
+// this focused consumer importing the REAL seam, the route pickups.fun rides; the
+// const route itself is unblocked — only those two unrelated stdlib partitions gate
+// the full pickups.fun typecheck.
+@(test)
+test_golden_assets_cross_module_const_route_live :: proc(t: ^testing.T) {
+	// Resolve-or-SKIP off the same reader the seam-typecheck golden uses, so a
+	// missing checkout warns loudly rather than silently passing.
+	if _, ok := assets_gen_fun_source(); !ok {
+		return
+	}
+	seam_path := resolve_assets_gen_path()
+
+	// A focused consumer that whole-module imports the REAL seam and rides the
+	// cross-module const route through the equality the §19 golden pins. Written to
+	// a scratch file so run_project_pipeline reads it off disk alongside the live seam.
+	consumer := "@doc(\"focused cross-module const-route consumer\")\n" +
+		"import engine.assets.{SoundHandle, MeshHandle, AtlasHandle, sound, mesh, atlas}\n" +
+		"import assets\n" +
+		"test \"the seam's handle const equals the checked-string handle, reached cross-module\" {\n" +
+		"  assert assets.coin_sfx == sound(\"coin_sfx\")\n" +
+		"  assert assets.coin == mesh(\"coin\")\n" +
+		"  assert assets.pickups == atlas(\"pickups\")\n" +
+		"}\n"
+	consumer_path := write_cross_module_consumer(t, consumer)
+	if consumer_path == "" {
+		return
+	}
+	defer os.remove(consumer_path)
+
+	// The two sources of the focused project: the LIVE seam (module `assets`, the
+	// §15 name gen/assets.gen.fun derives) and the focused consumer. run_project_pipeline
+	// reads both, builds the typed index + eval surface, and evaluates cross-module.
+	sources := []Source{
+		{path = seam_path, module = "assets"},
+		{path = consumer_path, module = "pickups_focus"},
+	}
+	report := run_project_pipeline(sources)
+
+	// The project compiles clean — the index built, both modules typed (the seam
+	// against engine.assets, the consumer's `assets.coin_sfx` against the seam's const
+	// surface), and neither hit a compile error.
+	testing.expect_value(t, report.index_err, Project_Pipeline_Error.None)
+	testing.expect_value(t, report.module_err, Pipeline_Error.None)
+	if report.module_err != .None {
+		log.errorf("golden assets cross-module route: %s did not compile (%v)", report.failed_path, report.module_err)
+		return
+	}
+
+	// All three cross-module equalities pass: the seam's emitted handle value
+	// (assets.coin_sfx) equals the string-constructor handle of the same name,
+	// reached through the whole-module import — the route src/pickups.fun rides.
+	testing.expect_value(t, report.passed, 3)
+	testing.expect_value(t, report.failed, 0)
+	if report.passed == 3 && report.failed == 0 {
+		log.infof(
+			"golden assets: assets.coin_sfx == sound(\"coin_sfx\") (and coin/pickups) ride the REAL cross-module const route through run_project_pipeline against the live seam",
+		)
+	}
+}
+
+// write_cross_module_consumer writes the focused consumer .fun to a unique scratch
+// path so run_project_pipeline can read it off disk alongside the live seam; it
+// returns "" (failing the test) when the write fails. The path is removed by the
+// caller's defer.
+write_cross_module_consumer :: proc(t: ^testing.T, source: string) -> string {
+	base := scratch_base()
+	path, _ := filepath.join({base, "funpack_assets_cross_module_consumer.fun"}, context.temp_allocator)
+	if write_err := os.write_entire_file(path, transmute([]u8)source); write_err != nil {
+		testing.expect(t, false, "could not write the cross-module consumer scratch source")
+		return ""
+	}
+	return path
+}
+
 // test_golden_assets_string_constructor_distinguishes_names pins the negative half
 // of the equality: a handle constructor naming a DIFFERENT asset does not compare
 // equal — sound("coin_sfx") != sound("other"). The handle value carries its `name`

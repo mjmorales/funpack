@@ -25,12 +25,35 @@ Env :: struct {
 
 // Eval_Ctx carries the resolved module through evaluation: ast supplies the
 // user fn/behavior bodies and the module-level `let` constants, env the
-// declared record/enum schemas (resolve.odin). It is read-only — evaluation
-// never mutates it — and is threaded alongside the per-call binding frame so
-// a user fn call or a name.step invocation reaches the body to execute.
+// declared record/enum schemas (resolve.odin). bindings is the module's own
+// imported-name resolutions (surface.odin) — read only to recover the OWNING
+// module of a whole-module handle (`assets`) when a test evaluates a cross-module
+// const (`assets.coin_sfx`). modules is the project-wide eval surface: one entry
+// per sibling user module, so a module-qualified const evaluates its initializer
+// in its OWNING module's environment. It is read-only — evaluation never mutates
+// it — and is threaded alongside the per-call binding frame so a user fn call or
+// a name.step invocation reaches the body to execute. In the single-source path
+// bindings is empty and modules is nil, so the cross-module arm never fires.
 Eval_Ctx :: struct {
-	ast: Ast,
-	env: Type_Env,
+	ast:      Ast,
+	env:      Type_Env,
+	bindings: Bindings,
+	modules:  []Module_Eval,
+}
+
+// Module_Eval is one sibling user module's evaluation surface: its §15 module
+// name plus the resolved (ast, env, bindings) triple a cross-module const
+// reference evaluates against. A module-qualified const (`assets.coin_sfx`) builds
+// a fresh Eval_Ctx over the OWNING module's triple and evaluates the let
+// initializer there — the value the seam emits, in the environment that declares
+// it. Walked by index (module_eval_lookup), never iterated — the determinism
+// tripwire mirrored from Module_Index.
+Module_Eval :: struct {
+	module:   string,
+	ast:      Ast,
+	env:      Type_Env,
+	bindings: Bindings,
+	modules:  []Module_Eval, // shared back-reference so a const RHS can itself reach a sibling
 }
 
 new_env :: proc(parent: ^Env) -> ^Env {
@@ -50,8 +73,18 @@ env_lookup :: proc(env: ^Env, name: string) -> (value: Value, ok: bool) {
 }
 
 stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
+	return stage_evaluate_indexed(typed, nil)
+}
+
+// stage_evaluate_indexed evaluates one module's tests against a project-wide eval
+// surface, so a test reaching a cross-module const (`assets.coin_sfx`) evaluates
+// the const in its owning module's environment. modules = nil reduces it to the
+// single-source stage_evaluate — the cross-module arm in eval_member never fires —
+// so every existing single-module test path is unchanged. The consumer's own
+// bindings thread in (eval_member recovers a handle's owning module from them).
+stage_evaluate_indexed :: proc(typed: Typed_Ast, modules: []Module_Eval) -> Eval_Result {
 	result := Eval_Result{}
-	ctx := Eval_Ctx{ast = typed.ast, env = typed.env}
+	ctx := Eval_Ctx{ast = typed.ast, env = typed.env, bindings = typed.bindings, modules = modules}
 	for test in typed.ast.tests {
 		env := new_env(nil)
 		for stmt in test.body {
@@ -794,6 +827,12 @@ eval_vec3_binary :: proc(op: Token_Kind, l: Vec3_Value, rhs: Value) -> (value: V
 eval_member :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Member_Expr) -> (value: Value, ok: bool) {
 	if recv, is_name := e.receiver.(^Name_Expr); is_name {
 		if _, bound := env_lookup(env, recv.name); !bound {
+			// A whole-module handle (`assets`) is not a local binding and not a
+			// type-name constant — a `handle.member` reaches a sibling module's
+			// exported const, evaluated in its owning module's environment.
+			if const_value, is_const := eval_module_qualified_const(ctx, recv.name, e.member); is_const {
+				return const_value, true
+			}
 			switch recv.name {
 			case "Fixed":
 				switch e.member {
@@ -811,6 +850,46 @@ eval_member :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Member_Expr) -> (value: Value,
 	}
 	receiver := eval_expr(ctx, env, e.receiver) or_return
 	return eval_field_access(receiver, e.member)
+}
+
+// eval_module_qualified_const evaluates a cross-module const reference
+// `handle.member` (`assets.coin_sfx`): the handle name must bind to a sibling user
+// module as a .Module handle, that module's eval surface must be in scope, and the
+// member must be a module-level let in it. The let's initializer evaluates against
+// a FRESH Eval_Ctx over the OWNING module's (ast, env, bindings) — so the value is
+// exactly what that module's own test would compute for the bare const name (the
+// §19 seam's SoundHandle{name: "coin_sfx"}), and a const RHS that itself reaches a
+// further sibling resolves through the shared module surface. is_const = false when
+// the handle is not a module binding or the member is not its let, so the caller
+// falls through to its other member arms.
+eval_module_qualified_const :: proc(ctx: Eval_Ctx, handle: string, member: string) -> (value: Value, is_const: bool) {
+	binding, bound := ctx.bindings.names[handle]
+	if !bound || binding.kind != .Module {
+		return nil, false
+	}
+	owner, found := module_eval_lookup(ctx.modules, binding.module)
+	if !found {
+		return nil, false
+	}
+	owner_ctx := Eval_Ctx {
+		ast      = owner.ast,
+		env      = owner.env,
+		bindings = owner.bindings,
+		modules  = owner.modules,
+	}
+	return eval_module_const(owner_ctx, member)
+}
+
+// module_eval_lookup finds a module's eval surface by name, walked by index like
+// every table here — never a map (the determinism tripwire). A name no sibling
+// module owns is the caller's miss.
+module_eval_lookup :: proc(modules: []Module_Eval, module: string) -> (entry: Module_Eval, found: bool) {
+	for candidate in modules {
+		if candidate.module == module {
+			return candidate, true
+		}
+	}
+	return Module_Eval{}, false
 }
 
 // eval_field_access reads a member off a value: a user record's field

@@ -570,6 +570,16 @@ arithmetic_check :: proc(lhs, rhs: Type) -> (type: Type, err: Type_Error) {
 // associated constant (Fixed.MAX, Quat.identity).
 member_check :: proc(ctx: Check_Ctx, e: ^Member_Expr) -> (type: Type, err: Type_Error) {
 	if recv, is_name := e.receiver.(^Name_Expr); is_name {
+		// A whole-module handle receiver (`import assets`, then `assets.coin_sfx`)
+		// selects an exported member of the sibling user module — a module-qualified
+		// const grounds to its declared let type before any value path. A let const
+		// member resolves through the index; any other exported member (a type, a fn)
+		// or an UNKNOWN member of the handle's module rejects precisely here, the
+		// user-module analogue of a member-group import's .Unknown_Member, so the
+		// receiver is never re-typed as a value (a .Module handle is not a value).
+		if member_type, handled, member_err := module_member_check(ctx, recv.name, e.member); handled {
+			return member_type, member_err
+		}
 		// A Type-name receiver imported through the surface selects an
 		// associated constant before any value path.
 		if _, in_scope := ctx.scope[recv.name]; !in_scope {
@@ -584,6 +594,40 @@ member_check :: proc(ctx: Check_Ctx, e: ^Member_Expr) -> (type: Type, err: Type_
 	// type.
 	receiver := expr_check(ctx, e.receiver) or_return
 	return field_member(ctx, receiver, e.member)
+}
+
+// module_member_check types `handle.member` where `handle` is a whole-module
+// `.Module` binding of a sibling user module (the §19 `import assets` seam). It is
+// the term-position cross-module access arm: a .Const member grounds to its
+// declared let type (`assets.coin_sfx` → SoundHandle); a member the module exports
+// but is not a const (a type, a fn) is .Unsupported_Expr (a module-qualified type
+// or fn name is not a value here); a member the module does NOT export is the
+// precise .Unknown_Member reject, closing the handle's member surface exactly as a
+// member-group import closes its member list. handled = false when the receiver is
+// not a user-module handle (a local binding, a stdlib type-name, a value receiver),
+// leaving member_check's other arms untouched.
+module_member_check :: proc(ctx: Check_Ctx, handle: string, member: string) -> (type: Type, handled: bool, err: Type_Error) {
+	// A local binding of the handle name shadows the module handle (it is a value
+	// receiver, not a module-qualified access) — never re-route those here.
+	if _, in_scope := ctx.scope[handle]; in_scope {
+		return nil, false, .None
+	}
+	kind, exported, handle_known := module_member_kind(ctx.index, ctx.bindings, handle, member)
+	if !handle_known {
+		return nil, false, .None
+	}
+	if !exported {
+		return nil, true, .Unknown_Member
+	}
+	if kind != .Const {
+		// An exported type or fn reached through `handle.NAME` is not a value.
+		return nil, true, .Unsupported_Expr
+	}
+	const_type, found := module_const_type(ctx.index, ctx.bindings, handle, member)
+	if !found {
+		return nil, true, .Unknown_Member
+	}
+	return const_type, true, .None
 }
 
 // associated_member types a Type-name receiver's associated constant (a
