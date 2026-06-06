@@ -54,13 +54,21 @@ Gate_Unit :: struct {
 // order — tests, then top-level fns, then behavior steps. The order is
 // stable so a multi-violation source always reports the same first offender.
 // A behavior step's unit name is the behavior's own name, not the reserved
-// `step`, so the diagnostic anchors on the behavior the author wrote.
+// `step`, so the diagnostic anchors on the behavior the author wrote. An
+// `extern fn` (§26) has NO body — its implementation is the engine's, not the
+// source's — so it is not a code unit the structural gates score: skipping it
+// keeps the §17 seam's two body-less accessors (`extern fn arena_spawns`,
+// `extern fn arena`) from colliding on the duplication gate (two empty bodies
+// hash identically), which would be a false positive since neither carries code.
 gate_units :: proc(ast: Ast) -> []Gate_Unit {
 	units := make([dynamic]Gate_Unit, 0, len(ast.tests) + len(ast.fns) + len(ast.behaviors), context.temp_allocator)
 	for test in ast.tests {
 		append(&units, Gate_Unit{name = test.name, body = test.body})
 	}
 	for fn in ast.fns {
+		if fn.is_extern {
+			continue
+		}
 		append(&units, Gate_Unit{name = fn.name, body = fn.body})
 	}
 	for behavior in ast.behaviors {
