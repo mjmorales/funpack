@@ -481,15 +481,17 @@ when #config(FUNPACK_LIVE, false) {
 		table := build_bindings_table(program, IDENTITY_OVERLAY)
 		queue := new_device_queue()
 
-		// SEED PICK (§25 §60): a program with an interpretable setup body (a Startup
-		// function) is SEEDED — its tick-0 population is drawn from an RNG (snake's first
-		// food cell). The seed is a RUN-TIME determinism input the artifact does not
-		// carry, so the live session picks it ONCE here from the wall clock and RECORDS
-		// it in the header — that turns the only live nondeterminism (the seed pick) into
-		// a recorded determinism input, so a re-fold re-feeds the exact seed and
-		// reproduces the run. A seedless program (pong, hunt) pins the bare build
-		// identity (has_seed = false) and runs the pre-evaluated [Spawn] batch unchanged.
-		seeded := program_startup(&program) != nil
+		// SEED PICK (§25 §60): a program whose setup BINDS AN RNG PARAM is SEEDED — its
+		// tick-0 population is drawn from an RNG (snake's first food cell). The seed is
+		// a RUN-TIME determinism input the artifact does not carry, so the live session
+		// picks it ONCE here from the wall clock and RECORDS it in the header — that
+		// turns the only live nondeterminism (the seed pick) into a recorded determinism
+		// input, so a re-fold re-feeds the exact seed and reproduces the run. A seedless
+		// program (pong, hunt, yard) pins the bare build identity (has_seed = false) and
+		// runs the pre-evaluated [Spawn] batch unchanged. A Startup function alone is
+		// NOT seeded: a seedless `setup() -> [Spawn]` body is already folded into
+		// program.setup, so the check keys on the Rng param, never mere presence.
+		seeded := program_is_seeded(&program)
 		seed := i64(sdl.GetPerformanceCounter())
 
 		identity :=

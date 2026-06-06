@@ -347,3 +347,54 @@ test_seeded_draw_empty_pool_threads_but_spawns_nothing :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, run_rng.state, hand.state)
 }
+
+// --- seeded-detection: the Rng param, never mere Startup presence ----------
+
+// program_is_seeded keys on setup's Rng param, NOT on a Startup function existing:
+// snake's `setup(rng: Rng) -> (Rng, [Spawn])` is seeded; yard's and pong's seedless
+// `setup() -> [Spawn]` (their batches compile-time folded into program.setup) are
+// not. A Startup function alone tripping the live seed pick (§25 §60) is the
+// regression that committed an empty live yard world — only the engine singletons
+// spawned, every wall/pad/player/crate dropped.
+@(test)
+test_program_is_seeded_keys_on_rng_param :: proc(t: ^testing.T) {
+	snake, snake_err := load_program(GOLDEN_SNAKE_ARTIFACT, context.temp_allocator)
+	testing.expect(t, snake_err == .None)
+	testing.expect(t, program_is_seeded(&snake))
+
+	yard, yard_err := load_program(YARD_ARTIFACT, context.temp_allocator)
+	testing.expect(t, yard_err == .None)
+	testing.expect(t, !program_is_seeded(&yard))
+
+	pong, pong_err := load_program(GOLDEN_ARTIFACT, context.temp_allocator)
+	testing.expect(t, pong_err == .None)
+	testing.expect(t, !program_is_seeded(&pong))
+}
+
+// A SEEDLESS setup body routed down the seeded path must not lose the world: yard's
+// `setup() -> [Spawn]` returns a bare list, not the `(Rng, [Spawn])` tuple, so
+// run_startup_seeded falls back to the pre-evaluated program.setup batch with the
+// seed unadvanced — never silently dropping the spawns. The fallback's committed
+// image is BIT-IDENTICAL to the bare run_startup population (4 Walls, the Pad, the
+// Player, 3 Crates), so a misrouted seedless program still opens on a full world.
+@(test)
+test_run_startup_seeded_non_tuple_body_falls_back_to_batch :: proc(t: ^testing.T) {
+	program, err := load_program(YARD_ARTIFACT, context.temp_allocator)
+	testing.expect(t, err == .None)
+
+	world := new_world(program, context.temp_allocator)
+	base := initial_version(world, context.temp_allocator)
+	version, rng := run_startup_seeded(&program, base, rand_seed(42), context.temp_allocator)
+
+	testing.expect_value(t, view_count(view_of_type(&version, "Wall")), 4)
+	testing.expect_value(t, view_count(view_of_type(&version, "Pad")), 1)
+	testing.expect_value(t, view_count(view_of_type(&version, "Player")), 1)
+	testing.expect_value(t, view_count(view_of_type(&version, "Crate")), 3)
+	// The fallback leaves the seed unadvanced — no draw happened.
+	testing.expect_value(t, rng.state, rand_seed(42).state)
+
+	// And the fallback IS the bare batch: the seeded-path image equals run_startup's.
+	bare_world := new_world(program, context.temp_allocator)
+	bare := run_startup(&program, initial_version(bare_world, context.temp_allocator), context.temp_allocator)
+	testing.expect(t, world_versions_equal(version, bare))
+}

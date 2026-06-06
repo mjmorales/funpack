@@ -254,11 +254,18 @@ run_startup_seeded :: proc(
 		// A setup body that does not return is malformed — fall back to the batch.
 		return run_startup(program, base, allocator), seed
 	}
-	if tuple, is_tuple := result.(Tuple_Value); is_tuple {
-		// setup has no on-Thing self row; its return type (`(Rng, [Spawn])`) names the
-		// halves so the split is type-driven, with no behavior context.
-		fold_tuple_emit(&interp, &state, nil, Row{}, setup_fn.return_type, tuple)
+	tuple, is_tuple := result.(Tuple_Value)
+	if !is_tuple {
+		// A body that returns anything but the `(Rng, [Spawn])` tuple is outside the
+		// seeded contract — a seedless `setup() -> [Spawn]` (yard, pong) whose batch
+		// the compiler already pre-evaluated into program.setup. Fall back to that
+		// batch with the seed unadvanced rather than dropping the spawns and
+		// committing an empty world.
+		return run_startup(program, base, allocator), seed
 	}
+	// setup has no on-Thing self row; its return type (`(Rng, [Spawn])`) names the
+	// halves so the split is type-driven, with no behavior context.
+	fold_tuple_emit(&interp, &state, nil, Row{}, setup_fn.return_type, tuple)
 	// Engine singletons mint BEFORE setup's seeded [Spawn] batch applies (§06 §2,
 	// §13): the engine pass is the sole, authoritative minter of a singleton row and
 	// a singleton exists before tick 0, so it runs first; setup's queued [Spawn]
@@ -280,6 +287,25 @@ program_startup :: proc(program: ^Program) -> ^Function_Decl {
 		}
 	}
 	return nil
+}
+
+// program_is_seeded reports whether the program's setup draws from a run seed:
+// true only when the §06 setup function binds an `Rng` param (snake's
+// `setup(rng: Rng) -> (Rng, [Spawn])`). A Startup function ALONE does not make a
+// run seeded — a seedless `setup() -> [Spawn]` (yard, pong) is compile-time
+// folded into program.setup and takes the bare run_startup batch — so the live
+// seed pick (§25 §60) applies only to a program that actually consumes a seed.
+program_is_seeded :: proc(program: ^Program) -> bool {
+	setup_fn := program_startup(program)
+	if setup_fn == nil {
+		return false
+	}
+	for param in setup_fn.params {
+		if param.type == "Rng" {
+			return true
+		}
+	}
+	return false
 }
 
 // build_spawn_blackboard evaluates one Spawn_Command into a complete row
