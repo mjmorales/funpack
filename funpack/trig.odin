@@ -12,6 +12,13 @@ package funpack
 // definition rather than by computation.
 PI_FIXED :: Fixed(13493037705)
 
+// TAU_FIXED is the nearest Q32.32 to τ (= 2π): round(τ · 2³²) =
+// round(26986075409.05…) — the spec §10 "pi/tau (nearest-Fixed)" angle
+// constant, pinned by definition. It is one ULP below 2·PI_FIXED (each
+// rounds independently to its own nearest-Fixed), so it is a constant in its
+// own right, never 2·PI_FIXED computed at runtime.
+TAU_FIXED :: Fixed(26986075409)
+
 // fixed_sin: x − x³/6 + x⁵/120, every term over the saturating kernel.
 fixed_sin :: proc(angle: Fixed) -> Fixed {
 	x2 := fixed_mul(angle, angle)

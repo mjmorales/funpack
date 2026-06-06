@@ -951,14 +951,17 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 }
 
 // surface_engine_member types a member read off an engine-typed value
-// (spec §04): the §04 Time resource exposes dt, the frame delta in fixed
-// seconds. The receiver's engine kind selects the member set; a member
-// outside it is not a field.
+// (spec §04): the §04 Time resource exposes dt and t — `dt` is the per-tick
+// frame delta in fixed seconds, `t` is the accumulated logical time since
+// startup (engine.core.Time is `data Time { dt: Fixed, t: Fixed }`). Both are
+// Fixed; the renderer reads `time.t` to drive an idle bob, a gait behavior reads
+// `time.dt` to step the cycle. The receiver's engine kind selects the member
+// set; a member outside it is not a field.
 surface_engine_member :: proc(receiver: ^Engine_Type, member: string) -> (type: Type, found: bool) {
 	#partial switch receiver.kind {
 	case .Time:
 		switch member {
-		case "dt":
+		case "dt", "t":
 			return Ground_Type.Fixed, true
 		}
 	}
@@ -988,6 +991,15 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 			return func_of({engine_type_of(.PlayerId), nil}, Ground_Type.Vec2), true
 		case "with_pressed":
 			return func_of({engine_type_of(.PlayerId), nil}, engine_type_of(.Input)), true
+		case "with_value":
+			// §23 §5 the 1D analog producer: seeds a Fixed value on an axis action of
+			// a test Input snapshot (Input.empty().with_value(P1, Drive::Strafe, 0.0)),
+			// the scalar twin of with_axis. The action-role arg is the nil unknown (the
+			// user Axis enum); the value is the Fixed sample.
+			return func_of(
+				{engine_type_of(.PlayerId), nil, Ground_Type.Fixed},
+				engine_type_of(.Input),
+			), true
 		case "with_axis":
 			// The test producer that seeds an axis action's Vec2 on an Input
 			// snapshot (yard's drive test: with_axis(P1, Drive::Move, Vec2{1,0})),

@@ -92,11 +92,15 @@ Input_Press :: struct {
 	action: string, // the action variant (e.g. "Down")
 }
 
-// Time_Value is the test-position Time resource: the fixed frame delta Time.at(dt)
-// seeds (§04). Its one member read is `time.dt`, the per-tick delta in fixed
-// seconds the hunt search countdown folds.
+// Time_Value is the test-position Time resource: the fixed frame delta and the
+// accumulated logical time the Time.at(dt) double seeds (§04; engine.core.Time is
+// `data Time { dt: Fixed, t: Fixed }`). `dt` is the per-tick delta in fixed
+// seconds the hunt search countdown folds; `t` is logical time since startup,
+// zero for a Time.at(dt) double (Time.at seeds t at zero, per the stdlib). Both
+// member reads (`time.dt`, `time.t`) resolve to these fields.
 Time_Value :: struct {
 	dt: Fixed,
+	t:  Fixed,
 }
 
 // Enum_Value is an enum variant value — a user enum (Side::Left, AppMsg::Hud(m))

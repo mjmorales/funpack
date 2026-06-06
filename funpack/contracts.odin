@@ -173,13 +173,18 @@ check_contract :: proc(slot: Pipeline_Slot, target: string, signature: ^Func_Typ
 
 // check_render enforces the Render contract (spec §06 §6): a render behavior
 // reads blackboard/resources/View but takes NO inbound signal and NO Rng
-// resource, and returns ONLY a [Draw] list — it cannot emit a signal, command,
-// or write a blackboard. Render is the deterministic projection stage (§06
-// render-slot): a frame's pixels are a pure function of the world, so threading
-// the RNG into it would make rendering nondeterministic, which the slot
-// forbids. An inbound signal param, an Rng param, a return that is not a [Draw]
-// list, and a return that is an emit (a signal or non-Draw command list) are
-// each a distinct behavior-level reject.
+// resource, and returns ONLY a draw list — it cannot emit a signal, command,
+// or write a blackboard. The draw list is a [Draw] (2D, engine.render) OR a
+// [Draw3] (3D, engine.render3): §20 states a render behavior is a pure
+// `fn(self) -> [Draw]` (or `[Draw3]`), and the §06 §6 Render row's return form
+// is "[Draw] / [Draw3]" — render3 owns Draw3 as a distinct closed 3D draw
+// command (krognid's draw_scene/draw_krognid emit [Draw3]). Render is the
+// deterministic projection stage (§06 render-slot): a frame's pixels are a pure
+// function of the world, so threading the RNG into it would make rendering
+// nondeterministic, which the slot forbids. An inbound signal param, an Rng
+// param, a return that is neither a [Draw] nor [Draw3] list, and a return that is
+// an emit (a signal or a non-draw command list) are each a distinct
+// behavior-level reject.
 check_render :: proc(signature: ^Func_Type) -> Contract_Error {
 	for param in signature.params {
 		if is_signal_list(param) {
@@ -189,7 +194,7 @@ check_render :: proc(signature: ^Func_Type) -> Contract_Error {
 			return .Render_Takes_Rng
 		}
 	}
-	if is_command_list(signature.result, .Draw) {
+	if is_command_list(signature.result, .Draw) || is_command_list(signature.result, .Draw3) {
 		return .None
 	}
 	if is_signal_list(signature.result) || is_any_command_list(signature.result) {
@@ -313,17 +318,18 @@ is_command_list :: proc(t: Type, kind: Engine_Kind) -> bool {
 // is_any_command_list reports an engine-command list of any closed §04/§24
 // command kind — the "is this an emit?" test the Render and Update contracts
 // share. The closed set mirrors surface_command and the §24 save surface's
-// emitting kinds: [Spawn]/[Despawn]/[Draw] (§04) plus [Save]/[Restore]/
-// [ApplySettings] (§24 §1/§2 — the command a persist behavior emits to ask the
-// engine to write the disk; yard's save_key/restore_key/apply_settings return
-// these, so an Update behavior emitting one is a real write, not dead code).
-// [Despawn] is the self-scoped despawn an Update behavior emits (snake's
-// `despawn_eaten`).
+// emitting kinds: [Spawn]/[Despawn]/[Draw]/[Draw3] (§04/§20 — Draw3 is the 3D
+// render command a render3 behavior emits) plus [Save]/[Restore]/[ApplySettings]
+// (§24 §1/§2 — the command a persist behavior emits to ask the engine to write
+// the disk; yard's save_key/restore_key/apply_settings return these, so an Update
+// behavior emitting one is a real write, not dead code). [Despawn] is the
+// self-scoped despawn an Update behavior emits (snake's `despawn_eaten`).
 is_any_command_list :: proc(t: Type) -> bool {
 	return(
 		is_command_list(t, .Spawn) ||
 		is_command_list(t, .Despawn) ||
 		is_command_list(t, .Draw) ||
+		is_command_list(t, .Draw3) ||
 		is_command_list(t, .Save) ||
 		is_command_list(t, .Restore) ||
 		is_command_list(t, .ApplySettings) \
