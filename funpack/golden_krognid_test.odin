@@ -39,7 +39,7 @@ KROGNID_MODULE :: "krognid"
 // em-dash is the exemplar's literal UTF-8 em-dash, kept so the byte comparison
 // exercises multibyte content.
 KROGNID_FILE_DOC :: "Generated rig seam for Krognid, baked from models/krognid.fpm: the bone skeleton and the part-to-slot mesh bindings the gameplay imports as the krognid module. Edit the .fpm script and re-bake, not this file."
-KROGNID_SKELETON_DOC :: "Bone topology for Krognid: a standard humanoid skeleton. Generated from krognid.fpm — edit the script, not this file. Digest: 16 bones, 6 parts (11 after mirror), pivots verified, rest-bbox 24x20x68."
+KROGNID_SKELETON_DOC :: "Bone topology for Krognid: a standard humanoid skeleton. Generated from krognid.fpm — edit the script, not this file. Digest: 16 bones, 6 parts (10 after mirror), pivots verified, rest-bbox 24x20x68."
 KROGNID_PARTS_DOC :: "Part meshes bound to bone slots. Left limbs are mirrored to the right at attach time. Generated from krognid.fpm."
 
 // krognid_fresh_bake parses the live krognid.fpm source, gates it, and projects the
