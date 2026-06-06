@@ -52,6 +52,13 @@ STDLIB_SURFACE := []Module_Surface{
 			{"Option", .Type_Name},
 			{"Result", .Type_Name},
 			{"Ordering", .Type_Name},
+				// to_fixed is the spec-03 prelude conversion (to_fixed(Int) -> Fixed):
+				// 03-data-model.md lists it among the Prelude functions, and hud_demo.fun
+				// imports it from engine.prelude (audio.md line 45). It is the OWNING
+				// decl here; engine.math re-exports it (STDLIB_REEXPORTS) so the
+				// numerics/snake `import engine.math.{... to_fixed}` route still resolves
+				// to this owner. One name, one owner, two routes -- the Fixed precedent.
+				{"to_fixed", .Func},
 			// or_else is the §26 Option fallback combinator (`or_else(Option[T],
 			// T) -> T`): the arena hunter's nearest_player folds players into an
 			// Option[Vec2] and `or_else(best, from)` falls back to its own position
@@ -83,7 +90,9 @@ STDLIB_SURFACE := []Module_Surface{
 			{"cross", .Func},
 			{"normalize", .Func},
 			{"length", .Func},
-			{"to_fixed", .Func},
+			// to_fixed is OWNED by engine.prelude (spec-03 Prelude functions);
+			// engine.math re-exports it via STDLIB_REEXPORTS, not as a second owning
+			// decl, so numerics/snake's engine.math route binds to the prelude owner.
 			{"trunc", .Func},
 			{"floor", .Func},
 			{"round", .Func},
@@ -394,6 +403,11 @@ Reexport :: struct {
 @(rodata)
 STDLIB_REEXPORTS := []Reexport{
 	{"engine.math", "Fixed", "engine.prelude"},
+	// engine.math re-exports the prelude's to_fixed (spec-03 lists it among the
+	// Prelude functions): numerics/snake import it through engine.math alongside
+	// Vec2, while hud_demo imports it from engine.prelude direct. One owner
+	// (prelude), two import routes -- the Fixed precedent applied to a function.
+	{"engine.math", "to_fixed", "engine.prelude"},
 	{"engine.render3", "Color", "engine.render"},
 	// §21/§26: engine.ui re-exports engine.world's View — the §08 read table IS the
 	// §21 retained-mode view tree (one type, one meaning), so the hud seam's

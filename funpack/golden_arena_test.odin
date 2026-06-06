@@ -237,15 +237,18 @@ test_golden_arena_project_typechecks :: proc(t: ^testing.T) {
 
 // test_golden_arena_inline_tests_pass pins the arena project's inline asserts that
 // lie in the FUNPACK EVALUATOR's domain. SCOPE (the yard golden's contract): the
-// arena asserts that touch ENGINE-VALUE execution — View.of/.resolve/.ref,
-// Nav.of/.path/.advance, and cross-module record construction the evaluator does
-// not materialize — are the RUNTIME's to execute, not the funpack evaluator's, so
-// they are NOT counted here (mirroring how the yard golden pins compile-clearance +
-// emission, not full inline-assertion evaluation). What IS pinned: the project
-// compiles clean end-to-end, and the funpack-evaluable arena asserts (the pure
-// numeric step_to snap and the Option::None gate-shut case) evaluate to their
-// golden values. A regression that drops a funpack-evaluable assert, or that lets a
-// compile error through, fails here. SKIPs loudly when the sibling is absent.
+// arena asserts that touch ENGINE-VALUE execution — View.of/.resolve/.ref and
+// Nav.of/.path/.advance — are the RUNTIME's to execute, not the funpack
+// evaluator's, so they are NOT counted here (mirroring how the yard golden pins
+// compile-clearance + emission, not full inline-assertion evaluation). What IS
+// pinned: the project compiles clean end-to-end, and the funpack-evaluable arena
+// asserts evaluate to their golden values — the pure-numeric step_to snap, the
+// Option::None gate-shut case, AND the two gate_open(Some(Switch{…})) cases whose
+// CROSS-MODULE record construction the evaluator now materializes (the hud
+// integration's cross-module-record eval arm lifted these from runtime-owned to
+// funpack-evaluable, so the boundary moved and this pin moves with it). A
+// regression that drops a funpack-evaluable assert, or that lets a compile error
+// through, fails here. SKIPs loudly when the sibling is absent.
 @(test)
 test_golden_arena_inline_tests_pass :: proc(t: ^testing.T) {
 	dir := resolve_arena_dir()
@@ -272,15 +275,18 @@ test_golden_arena_inline_tests_pass :: proc(t: ^testing.T) {
 		return
 	}
 
-	// The funpack-evaluable arena asserts pass. arena_game carries two asserts the
-	// funpack evaluator owns end-to-end — the pure-numeric `step_to` snap and the
-	// `gate_open(Option::None) == false` shut case — both passing; the remaining
-	// asserts exercise engine-value execution (View/Nav, cross-module record
-	// construction) the runtime owns, so they are not the funpack evaluator's to
+	// The funpack-evaluable arena asserts pass. arena_game carries FOUR asserts the
+	// funpack evaluator owns end-to-end — the pure-numeric `step_to` snap, the
+	// `gate_open(Option::None) == false` shut case, and the two
+	// `gate_open(Option::Some(Switch{…}))` cases (true while on, false while off)
+	// whose CROSS-MODULE Switch record construction the evaluator now materializes
+	// via the hud integration's eval_module_record arm — all four passing; the
+	// remaining asserts exercise engine-value execution (View.of/.resolve,
+	// Nav.of/.advance) the runtime owns, so they are not the funpack evaluator's to
 	// pass (the yard split). The count is pinned EXACTLY: a regression that drops a
 	// funpack-evaluable assert, or that mis-evaluates one, moves this number — never
 	// loosen it to a range.
-	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.passed, 4)
 	log.infof(
 		"golden arena: project compiles end-to-end; the %d funpack-evaluable inline asserts pass (engine-value asserts are the runtime's, per the yard split)",
 		report.passed,

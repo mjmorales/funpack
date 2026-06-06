@@ -124,7 +124,9 @@ test_snake_imports_populate_bindings :: proc(t: ^testing.T) {
 
 	expectations := []Surface_Expectation {
 		{"Vec2", "engine.math", .Type_Name},
-		{"to_fixed", "engine.math", .Func},
+		// to_fixed canonicalizes to the owning prelude even through engine.math —
+		// the spec-03 Prelude function re-exported by engine.math (the Fixed pattern).
+		{"to_fixed", "engine.prelude", .Func},
 		{"View", "engine.world", .Type_Name},
 		{"Spawn", "engine.world", .Type_Name},
 		{"Despawn", "engine.world", .Type_Name},
