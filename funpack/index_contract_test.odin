@@ -101,9 +101,11 @@ test_index_contract_emits_valid_ndjson_with_schema_version :: proc(t: ^testing.T
 	testing.expect_value(t, strings.count(body, "\n"), 0)
 	testing.expect(t, strings.has_prefix(body, "{"))
 	testing.expect(t, strings.has_suffix(body, "}"))
-	// schema_version is the leading key (it is the first struct field).
+	// schema_version is the leading key (it is the first struct field) and
+	// carries the current INDEX_SCHEMA_VERSION stamp (now 2 — the §29 §2 decl
+	// record kind reshape bumped it from 1).
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":1"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":2"))
 }
 
 @(test)
@@ -226,7 +228,8 @@ test_index_contract_snake_project_record :: proc(t: ^testing.T) {
 	// checked pipeline: a valid one-object-per-line NDJSON behind the leading
 	// INDEX_SCHEMA_VERSION (the index NDJSON shape is unchanged by the snake
 	// surface — the artifact-format schema bump for tuple/bare_binder arms is a
-	// separate compatibility gate, so INDEX_SCHEMA_VERSION holds), the single 8hz
+	// separate compatibility gate; the snake `project` record carries whatever
+	// INDEX_SCHEMA_VERSION is current, asserted symbolically), the single 8hz
 	// Snake entrypoint, the snake-shaped capability set (render/input/state), and
 	// the twelve-step depth-first flattened pipeline (setup → turn → advance →
 	// detect_eat → grow → despawn_eaten → replenish → detect_death → apply_death →
@@ -297,6 +300,129 @@ test_index_contract_pong_double_emission_identical :: proc(t: ^testing.T) {
 	// Passing-run confirmation: a double index emission is byte-identical
 	// NDJSON, surfaced in the runner's default-visible info output.
 	log.infof("index contract double index emission is byte-identical NDJSON — project deterministic")
+}
+
+// ── Decl record: NDJSON shape, determinism, exact-match key set ─────────
+// The §29 §2 per-declaration `decl` record. These exercise the hand-built
+// record in-memory (no derivation, no checkout) the way the minimal_project
+// tests do — the story ships the SHAPE, so the tests pin the shape: leading
+// schema_version stamp, one-object-per-line NDJSON with a trailing LF,
+// byte-identical double emission, and the closed exact-match key set INCLUDING
+// the always-empty stub/todo/debug §05 directive fields (mandatory-present, not
+// omitted).
+
+@(test)
+test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
+	// A hand-built decl record marshals to exactly one JSON object on one line,
+	// terminated by a single LF, carrying the leading schema_version stamp at
+	// the current INDEX_SCHEMA_VERSION (now 2) — the one-object-per-line NDJSON
+	// transport, identical to the project record's.
+	record := minimal_decl_record()
+	line := emit_decl_record(record, context.temp_allocator)
+	testing.expect(t, strings.has_suffix(line, "\n"))
+	body := strings.trim_suffix(line, "\n")
+	// Exactly one object: no interior newline, opens `{` and closes `}`.
+	testing.expect_value(t, strings.count(body, "\n"), 0)
+	testing.expect(t, strings.has_prefix(body, "{"))
+	testing.expect(t, strings.has_suffix(body, "}"))
+	// schema_version is the leading key (the first struct field) carrying the
+	// current v2 stamp.
+	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":2"))
+	// The kind enum emits as its readable name (use_enum_names), never an
+	// ordinal — a Behavior decl reports "Behavior".
+	testing.expect(t, strings.contains(body, "\"kind\":\"Behavior\""))
+	log.infof("index contract decl record NDJSON shape verified (schema v%d)", INDEX_SCHEMA_VERSION)
+}
+
+@(test)
+test_index_decl_record_byte_identical_twice :: proc(t: ^testing.T) {
+	// Deterministic whole-stream emission: emitting the same decl record twice
+	// yields byte-identical NDJSON. No map, no clock, no float feeds the marshal
+	// — every field is a scalar or a slice (including the u64 dup_class hash) —
+	// so the bytes cannot drift between emissions.
+	record := minimal_decl_record()
+	first := emit_decl_record(record, context.temp_allocator)
+	second := emit_decl_record(record, context.temp_allocator)
+	testing.expect_value(t, first, second)
+}
+
+@(test)
+test_index_decl_record_exact_key_set :: proc(t: ^testing.T) {
+	// The emitted decl record carries ALL §29 §2 fields exactly — no missing
+	// and no extra (exact-match per spec §29 §2). The expected key set is the
+	// closed inline list the contract fixes, in field-declaration = emitted key
+	// order; the emitted object's top-level keys must equal it. The always-empty
+	// stub/todo/debug §05 directive fields are present too — mandatory, never
+	// omitted, even when false/[].
+	record := minimal_decl_record()
+	line := emit_decl_record(record, context.temp_allocator)
+	body := strings.trim_suffix(line, "\n")
+	expected_keys := []string {
+		"schema_version",
+		"qualified_name",
+		"kind",
+		"file",
+		"span",
+		"doc",
+		"gtags",
+		"stub",
+		"todo",
+		"debug",
+		"emits",
+		"consumes",
+		"calls",
+		"dup_class",
+		"mut_data",
+	}
+	for key in expected_keys {
+		needle := strings.concatenate({"\"", key, "\":"}, context.temp_allocator)
+		testing.expectf(t, strings.contains(body, needle), "decl record missing field %s", key)
+	}
+	// The always-empty directive fields are present with their empty values
+	// (mandatory-present per exact-match, never omitted on the current tree).
+	testing.expect(t, strings.contains(body, "\"stub\":false"))
+	testing.expect(t, strings.contains(body, "\"todo\":false"))
+	testing.expect(t, strings.contains(body, "\"debug\":[]"))
+	// No extra top-level field: the object's top-level key count equals the
+	// expected set's size (nested-key-safe via top_level_key_count).
+	testing.expect_value(t, top_level_key_count(body), len(expected_keys))
+	log.infof("index contract decl record NDJSON exact-match verified (%d fields)", len(expected_keys))
+}
+
+// minimal_decl_record builds a hand-shaped decl record for the §29 §2 decl
+// shape tests: a populated record exercising every field's emission. The
+// stub/todo/debug §05 directive fields are the always-empty current-tree values
+// (false/false/[]) — mandatory-present, the story does NOT derive them. Each
+// slice field is temp-allocated so the record outlives the constructor's frame.
+minimal_decl_record :: proc() -> Decl_Record {
+	gtags := make([]string, 1, context.temp_allocator)
+	gtags[0] = "game"
+	emits := make([]string, 1, context.temp_allocator)
+	emits[0] = "Hit"
+	consumes := make([]string, 1, context.temp_allocator)
+	consumes[0] = "Tick"
+	calls := make([]string, 1, context.temp_allocator)
+	calls[0] = "advance"
+	mut_data := make([]string, 1, context.temp_allocator)
+	mut_data[0] = "Ball"
+	return Decl_Record {
+		schema_version = INDEX_SCHEMA_VERSION,
+		qualified_name = "pong.update_ball",
+		kind           = .Behavior,
+		file           = "",
+		span           = 42,
+		doc            = "advances the ball",
+		gtags          = gtags,
+		stub           = false,
+		todo           = false,
+		debug          = make([]string, 0, context.temp_allocator),
+		emits          = emits,
+		consumes       = consumes,
+		calls          = calls,
+		dup_class      = 0xcbf29ce484222325,
+		mut_data       = mut_data,
+	}
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
