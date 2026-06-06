@@ -253,17 +253,22 @@ Synthetic_Data :: struct {
 }
 
 // synthetic_data_decls returns the engine-type data decls the source's defaults
-// require the artifact to carry (docs/artifact-format.md §8). The one current
-// case: a Settings default (`Settings.defaults()`) needs the §8 Settings
-// projection in [data] so the runtime decode resolves its nested `volume`/
-// `fullscreen` field types. The decl is emitted iff some thing/data/signal field
-// declares the engine type, so a source that never uses Settings emits no extra
-// data record (pong/snake/hunt are unchanged). The scan is over the ordered
-// declaration slices, so the result is determinism-stable.
+// require the artifact to carry (docs/artifact-format.md §8). The current case: a
+// Settings default (`Settings.defaults()`) needs the §8 Settings projection in
+// [data] so the runtime decode resolves its nested field types — AND its nested
+// AccessOpts sub-record's projection, because the Settings default carries an
+// `access=AccessOpts(reduce_motion=false)` token whose `reduce_motion` field type
+// the runtime resolves against AccessOpts' own §8 decl (a nested composite default
+// decodes each field against its declared type, so the nested ctor MUST have a data
+// decl or its Bool would lift to a bare string token, not a Bool). Both are emitted
+// iff some thing/data/signal field declares Settings, so a source that never uses
+// Settings emits no extra data record (pong/snake/hunt are unchanged). AccessOpts
+// follows Settings in a fixed order, so the section stays byte-deterministic.
 synthetic_data_decls :: proc(ast: Ast) -> []Synthetic_Data {
-	out := make([dynamic]Synthetic_Data, 0, 1, context.temp_allocator)
+	out := make([dynamic]Synthetic_Data, 0, 2, context.temp_allocator)
 	if uses_engine_type(ast, "Settings") {
 		append(&out, Synthetic_Data{name = "Settings", fields = SETTINGS_DATA_FIELDS})
+		append(&out, Synthetic_Data{name = "AccessOpts", fields = ACCESS_OPTS_DATA_FIELDS})
 	}
 	return out[:]
 }
@@ -445,24 +450,44 @@ engine_builder_default :: proc(call: ^Call_Expr) -> (token: string, found: bool)
 }
 
 // SETTINGS_DEFAULT_TOKEN is the evaluated `Settings.defaults()` factory default
-// in the artifact's representable two-field Settings projection (volume: Int,
-// fullscreen: Bool) — the byte-exact token the runtime's composite-default decode
-// reads (runtime/decode_default_test.odin). Volume 128 is the mid-scale default
-// gain; fullscreen defaults off. It is a single space-free §6 composite token.
-SETTINGS_DEFAULT_TOKEN :: "Settings(volume=128,fullscreen=false)"
+// in the artifact's representable Settings projection — the byte-exact token the
+// runtime's composite-default decode reads (runtime/decode_default_test.odin).
+// Volume 128 is the mid-scale default gain; fullscreen defaults off; `access` is
+// the nested AccessOpts sub-record carrying `reduce_motion: false`. The `access`
+// column is LOAD-BEARING, not cosmetic: yard reads `settings.access.reduce_motion`
+// (toggle_motion), so the singleton spawned from this default MUST carry an access
+// sub-record or the nested read hits an absent column the moment the runtime spawns
+// Menu from the real yard.artifact. It is a single space-free §6 composite token;
+// the nested `AccessOpts(reduce_motion=false)` is itself a space-free token, so the
+// composite form nests (docs/artifact-format.md §6).
+SETTINGS_DEFAULT_TOKEN :: "Settings(volume=128,fullscreen=false,access=AccessOpts(reduce_motion=false))"
 
 // SETTINGS_DATA_FIELDS is the runtime-representable §8 Settings projection the
 // emitter synthesizes into [data] so the runtime can decode a Settings composite
-// default's nested field types by declared type (volume → i64, fullscreen → bool).
-// The funpack SURFACE Settings (§24 §2: volume/binds/graphics/access) is the
-// typecheck shape yard's source reads through; the ARTIFACT Settings is this
-// two-field projection — the closed cross-product contract waves 1-2 fixed in the
-// runtime decode. The fields are required (no §6 default of their own); a Settings
-// default supplies both inline, so the runtime never applies a field-level default.
+// default's nested field types by declared type (volume → i64, fullscreen → bool,
+// access → an AccessOpts record). The funpack SURFACE Settings (§24 §2: volume/
+// binds/graphics/access) is the typecheck shape yard's source reads through; the
+// ARTIFACT Settings is this projection — volume/fullscreen plus the `access`
+// sub-record yard actually reads back (settings.access.reduce_motion). The fields
+// are required (no §6 default of their own); a Settings default supplies all inline,
+// so the runtime never applies a field-level default off this decl.
 @(rodata)
 SETTINGS_DATA_FIELDS := []Synthetic_Field{
 	{name = "volume", type_name = "Int"},
 	{name = "fullscreen", type_name = "Bool"},
+	{name = "access", type_name = "AccessOpts"},
+}
+
+// ACCESS_OPTS_DATA_FIELDS is the §8 projection of the §24 §2 AccessOpts sub-record
+// the Settings default nests. It carries the one field yard reads and toggles —
+// `reduce_motion: Bool` — so the runtime resolves the nested
+// `AccessOpts(reduce_motion=false)` token's field type to Bool (a missing AccessOpts
+// data decl would lift `false` to a bare string token, not a Bool, breaking yard's
+// `not settings.access.reduce_motion`). The other §24 AccessOpts fields are out of
+// scope (the registry gate's "just enough", mirroring the surface schema).
+@(rodata)
+ACCESS_OPTS_DATA_FIELDS := []Synthetic_Field{
+	{name = "reduce_motion", type_name = "Bool"},
 }
 
 // Synthetic_Field is one field of an emitter-synthesized engine-type data decl —
@@ -771,14 +796,17 @@ emit_endpoint :: proc(b: ^strings.Builder, role: string, endpoint: Signal_Endpoi
 // ───────────────────────────────────────────────────────────────────────────
 
 // emit_setup writes the Startup spawn batch (docs/artifact-format.md §13): one
-// `spawn THING field_count` per `Spawn(Thing{…})` in the setup() body's source
-// list order, each followed by one `set FIELD =ENCODED` per supplied field. The
-// setup program carries no expressions — every field is a primitive-encoded
-// value (an enum variant, a Fixed's raw bits, an Int, a Vec2), so the runtime
-// spawns the initial population without interpreting an initializer. A field a
-// Spawn omits is not emitted; the runtime applies the type's default (§6).
+// `spawn THING field_count` per spawn in the setup() body's source list order, each
+// followed by one `set FIELD =ENCODED` per supplied field. The batch is fully
+// CONSTANT-FOLDED at compile time (setup_eval.odin resolve_setup_spawns) — yard's
+// setup() spawns through user helper fns (`crate_at(…)`, `wall_body(size)`) and
+// constructs engine Body records with §11 §2 defaults left implicit, so the emitter
+// inlines those calls and applies the omitted defaults BEFORE encoding. A scalar/
+// enum/Vec2 field keeps its §13 form; a composite engine record (a Body) and a list
+// take the §6 single-token nested form (encode_setup_field_value). The runtime then
+// spawns the initial population without interpreting an initializer.
 emit_setup :: proc(b: ^strings.Builder, ast: Ast) {
-	spawns := setup_spawns(ast)
+	spawns := resolve_setup_spawns(ast)
 	emit_header(b, "setup", len(spawns))
 	for spawn in spawns {
 		strings.write_string(b, "spawn ")
@@ -787,36 +815,9 @@ emit_setup :: proc(b: ^strings.Builder, ast: Ast) {
 		strings.write_int(b, len(spawn.fields))
 		emit_line(b, "")
 		for field in spawn.fields {
-			emit_line(b, "set ", field.name, " =", encode_setup_value(field.value))
+			emit_line(b, "set ", field.name, " =", encode_setup_field_value(field.value))
 		}
 	}
-}
-
-// setup_spawns reads the spawn batch out of the setup() fn body: its single
-// `return [Spawn(rec) …]` statement, whose list elements are each a `Spawn(rec)`
-// call carrying one record literal. The returned records are the things to
-// spawn, in source list order. A source with no setup() fn (or an unexpected
-// body shape) yields an empty batch — the gate stage already proved the
-// gameplay surface's setup well-formed, so the gameplay path always finds the
-// list.
-setup_spawns :: proc(ast: Ast) -> []^Record_Expr {
-	for fn in ast.fns {
-		if fn.name != "setup" {
-			continue
-		}
-		list, ok := single_return_list(fn.body)
-		if !ok {
-			return nil
-		}
-		records := make([dynamic]^Record_Expr, 0, len(list.elements), context.temp_allocator)
-		for element in list.elements {
-			if record, found := spawn_record(element); found {
-				append(&records, record)
-			}
-		}
-		return records[:]
-	}
-	return nil
 }
 
 // single_return_list returns the list a body's single `return [list]` statement
@@ -832,43 +833,6 @@ single_return_list :: proc(body: []Statement) -> (list: ^List_Expr, ok: bool) {
 	}
 	list, ok = ret.value.(^List_Expr)
 	return
-}
-
-// spawn_record reads the record literal out of a `Spawn(Thing{…})` call: the
-// call's single argument is the thing record (docs/artifact-format.md §13). A
-// non-Spawn element contributes nothing.
-spawn_record :: proc(element: Expr) -> (record: ^Record_Expr, ok: bool) {
-	call, is_call := element.(^Call_Expr)
-	if !is_call || len(call.args) != 1 {
-		return nil, false
-	}
-	name, is_name := call.callee.(^Name_Expr)
-	if !is_name || name.name != "Spawn" {
-		return nil, false
-	}
-	return call.args[0].(^Record_Expr)
-}
-
-// encode_setup_value renders one setup field's value in the [setup] encoding
-// (docs/artifact-format.md §13): an enum variant as `Type::Case`, a Fixed as its
-// raw bits, an Int in decimal, a Vec2 record as `vec2 x_bits y_bits`. The setup
-// program is fully evaluated to primitives, so a field's value is always one of
-// these concrete forms.
-encode_setup_value :: proc(expr: Expr) -> string {
-	#partial switch e in expr {
-	case ^Variant_Expr:
-		return strings.concatenate({e.type_name, "::", e.variant}, context.temp_allocator)
-	case ^Record_Expr:
-		if e.type_name == "Vec2" {
-			x := vec2_component_bits(e, "x")
-			y := vec2_component_bits(e, "y")
-			return strings.concatenate(
-				{"vec2 ", encode_fixed(x, context.temp_allocator), " ", encode_fixed(y, context.temp_allocator)},
-				context.temp_allocator,
-			)
-		}
-	}
-	return encode_literal(expr)
 }
 
 // vec2_component_bits reads a named Fixed component out of a Vec2 record literal

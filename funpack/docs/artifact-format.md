@@ -704,12 +704,32 @@ set FIELD =ENCODED
 ```
 
 - `spawn THING` names the thing type being spawned, in the **source list order**
-  of the `setup()` body (Paddle P1, Paddle P2, Ball, Scoreboard).
+  of the `setup()` body (Paddle P1, Paddle P2, Ball, Scoreboard; yard's 4 Walls, 1
+  Pad, 1 Player, 3 Crates).
 - `set FIELD =ENCODED` carries each supplied field's value in this format's
   encoding: an enum variant as `Side::Left` (a name field, §2.6), a `Fixed` as its
   raw bits (§2.3), an `Int` in decimal (§2.2), a `Vec2` as a nested
   `vec2 x_bits y_bits` record. A field omitted in the source (relying on a
   default, §6) is **not** emitted here — the runtime applies the type's default.
+- **A composite engine record** (a §11 §2 `Body`) takes the **§6 single-token inline
+  form** `Type(field=enc,…)`: a parenthesized, comma-joined `field=ENCODED` list with
+  **no interior spaces**, each nested value itself a space-free token (a nested `Vec2`
+  collapses to `Vec2(x=,y=)`, NOT the `vec2 x y` spread, since a token carries no
+  interior space). **A list** field (a `mask: [Layer]`) takes the `[enc,…]` form — a
+  bracketed comma-joined run of space-free element tokens. yard's setup is the first
+  surface to reach these: its `setup()` spawns through user helper fns
+  (`crate_at(…)`, `wall_body(size)`) and constructs `Body` records, so the emitter
+  **constant-folds** the batch at compile time (inlines the calls, resolves the
+  nested records) and **applies the §11 §2 Body defaults the source omits** —
+  `mass=1.0` (`4294967296`), `restitution=0.0` (`0`), `friction=0.5` (`2147483648`),
+  `sensor=false`, `impulse=zero` (`Vec2(x=0,y=0)`) — so the emitted Body token carries
+  the complete resolved column set, never a half-built record the runtime would have
+  to default. This is the **same single-token composite spelling §6 already defines**
+  for a field default, reused in the `set` slot (a `set` line carries `ENCODED` at one
+  position, so a composite there is one token exactly as a §6 default is); it is
+  **not** a new node kind. A reader discriminates the forms by the leading byte of
+  `ENCODED`: `vec2` opens the §13 Vec2 spread, `[` a list, `(`-after-a-name a
+  composite record, `::` a bare enum token, a digit a scalar.
 
 This is the §07 §4 fixed-population batch: population is fixed within a tick, and a
 thing spawned this tick is first queryable next tick.

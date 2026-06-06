@@ -33,12 +33,20 @@ import "core:testing"
 @(private = "file")
 yard_singleton_program :: proc(allocator := context.allocator) -> Program {
 	// The Settings data decl Menu's `settings: Settings = Settings(…)` default
-	// resolves its nested field types against (volume: Int, fullscreen: Bool).
-	settings_fields := make([]Field_Decl, 2, allocator)
+	// resolves its nested field types against (volume: Int, fullscreen: Bool, access:
+	// AccessOpts), plus the nested AccessOpts sub-record decl (reduce_motion: Bool) the
+	// `access` field's composite token decodes against — the projection the funpack
+	// emitter synthesizes, so the singleton spawned here carries the access column yard
+	// reads back (settings.access.reduce_motion).
+	settings_fields := make([]Field_Decl, 3, allocator)
 	settings_fields[0] = Field_Decl{name = "volume", type = "Int"}
 	settings_fields[1] = Field_Decl{name = "fullscreen", type = "Bool"}
-	data := make([]Data_Decl, 1, allocator)
+	settings_fields[2] = Field_Decl{name = "access", type = "AccessOpts"}
+	access_fields := make([]Field_Decl, 1, allocator)
+	access_fields[0] = Field_Decl{name = "reduce_motion", type = "Bool"}
+	data := make([]Data_Decl, 2, allocator)
 	data[0] = Data_Decl{name = "Settings", fields = settings_fields}
+	data[1] = Data_Decl{name = "AccessOpts", fields = access_fields}
 
 	// Scoreboard { delivered: Int = 0 } — the bare-scalar singleton.
 	scoreboard_fields := make([]Field_Decl, 1, allocator)
@@ -91,7 +99,7 @@ yard_singleton_program :: proc(allocator := context.allocator) -> Program {
 		name            = "settings",
 		type            = "Settings",
 		has_default     = true,
-		default_encoded = "Settings(volume=128,fullscreen=false)",
+		default_encoded = "Settings(volume=128,fullscreen=false,access=AccessOpts(reduce_motion=false))",
 	}
 	menu_fields[1] = Field_Decl {
 		name            = "dirty",
@@ -212,6 +220,19 @@ test_singleton_composite_default_decodes :: proc(t: ^testing.T) {
 	fullscreen, fs_ok := rec.fields["fullscreen"].(bool)
 	testing.expect(t, fs_ok)
 	testing.expect_value(t, fullscreen, false)
+
+	// The nested `access` sub-record: the singleton's Settings column carries an
+	// AccessOpts record with `reduce_motion: false` decoded to a Bool — the column
+	// yard's toggle_motion reads (settings.access.reduce_motion). Without it the nested
+	// read off the spawned Menu hits an absent column.
+	access, access_ok := rec.fields["access"].(Record_Value)
+	if !testing.expect(t, access_ok) {
+		return
+	}
+	testing.expect_value(t, access.type_name, "AccessOpts")
+	reduce_motion, rm_ok := access.fields["reduce_motion"].(bool)
+	testing.expect(t, rm_ok)
+	testing.expect_value(t, reduce_motion, false)
 }
 
 // The singleton spawn is DETERMINISTIC: two independent runs of the pass over the

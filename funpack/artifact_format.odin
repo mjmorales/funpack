@@ -61,9 +61,11 @@ import "core:strings"
 // kind; (4) the §6 ENGINE-TYPE field defaults — Option[String] singleton defaults
 // (`status: Option[String] = Option::None`), and engine-type composite defaults
 // (a Settings static-builder default `Settings.defaults()` lowered to its evaluated
-// `Settings(volume=128,fullscreen=false)` record inline, against a synthesized §8
-// Settings data projection). A marker row, a new flattened-step occupant kind, an
-// enum KIND value, and widened §6/§8 default forms are layout changes: 4 → 5 (§1).
+// `Settings(volume=128,fullscreen=false,access=AccessOpts(reduce_motion=false))`
+// record inline, against a synthesized §8 Settings + AccessOpts data projection —
+// the nested `access` sub-record yard reads back). A marker row, a new flattened-step
+// occupant kind, an enum KIND value, and widened §6/§8 default forms are layout
+// changes: 4 → 5 (§1).
 ARTIFACT_SCHEMA_VERSION :: 5
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:

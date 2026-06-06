@@ -39,11 +39,15 @@ dd_program :: proc(allocator := context.allocator) -> Program {
 }
 
 // dd_physics_program adds the §6 engine-type data decls the v5 yard surface
-// introduces — `Body { vel: Vec2, layer: CollisionLayer, contact: Option }` and
-// `Settings { volume: Int, fullscreen: Bool }` — so decode_record_default can
-// resolve each composite default's nested field types from the data decl. The
-// slices live on the supplied allocator so they outlive this proc's return; a
-// freed decl would make data_field_type read garbage and mis-type a nested field.
+// introduces — `Body { vel: Vec2, layer: CollisionLayer, contact: Option }`, the
+// `Settings { volume: Int, fullscreen: Bool, access: AccessOpts }` projection, and
+// the nested `AccessOpts { reduce_motion: Bool }` sub-record — so
+// decode_record_default can resolve each composite default's nested field types from
+// the data decl. The Settings projection mirrors the funpack emitter's
+// SETTINGS_DATA_FIELDS (incl. the `access` sub-record yard reads back) so the runtime
+// decodes the exact token the emitter writes — the cross-product contract. The slices
+// live on the supplied allocator so they outlive this proc's return; a freed decl
+// would make data_field_type read garbage and mis-type a nested field.
 @(private = "file")
 dd_physics_program :: proc(allocator := context.allocator) -> Program {
 	body_fields := make([]Field_Decl, 3, allocator)
@@ -51,13 +55,18 @@ dd_physics_program :: proc(allocator := context.allocator) -> Program {
 	body_fields[1] = Field_Decl{name = "layer", type = "CollisionLayer"}
 	body_fields[2] = Field_Decl{name = "contact", type = "Option"}
 
-	settings_fields := make([]Field_Decl, 2, allocator)
+	settings_fields := make([]Field_Decl, 3, allocator)
 	settings_fields[0] = Field_Decl{name = "volume", type = "Int"}
 	settings_fields[1] = Field_Decl{name = "fullscreen", type = "Bool"}
+	settings_fields[2] = Field_Decl{name = "access", type = "AccessOpts"}
 
-	data := make([]Data_Decl, 2, allocator)
+	access_fields := make([]Field_Decl, 1, allocator)
+	access_fields[0] = Field_Decl{name = "reduce_motion", type = "Bool"}
+
+	data := make([]Data_Decl, 3, allocator)
 	data[0] = Data_Decl{name = "Body", fields = body_fields}
 	data[1] = Data_Decl{name = "Settings", fields = settings_fields}
+	data[2] = Data_Decl{name = "AccessOpts", fields = access_fields}
 	program := Program{}
 	program.data = data
 	return program
@@ -263,10 +272,14 @@ test_decode_default_body_record :: proc(t: ^testing.T) {
 
 @(test)
 test_decode_default_settings_record :: proc(t: ^testing.T) {
-	// `settings: Settings = Settings(volume=128,fullscreen=false)` — the
-	// Settings.defaults()-shaped record default. Its fields decode by Settings'
-	// declared types: `volume` is Int (an i64 column), `fullscreen` is Bool, so a
-	// default-decoded Settings equals a runtime `Settings{…}` literal in the fold.
+	// `settings: Settings = Settings(volume=128,fullscreen=false,access=AccessOpts(
+	// reduce_motion=false))` — the Settings.defaults()-shaped record default, byte-for-
+	// byte the funpack emitter's SETTINGS_DEFAULT_TOKEN. Its fields decode by Settings'
+	// declared types: `volume` is Int (an i64 column), `fullscreen` is Bool, and `access`
+	// is a NESTED AccessOpts record whose `reduce_motion` decodes to Bool against
+	// AccessOpts' own decl — the composite form nesting one level deeper, the cross-
+	// product contract that lets yard read settings.access.reduce_motion off the spawned
+	// Menu singleton.
 	context.allocator = context.temp_allocator
 	program := dd_physics_program()
 
@@ -274,7 +287,7 @@ test_decode_default_settings_record :: proc(t: ^testing.T) {
 		name            = "settings",
 		type            = "Settings",
 		has_default     = true,
-		default_encoded = "Settings(volume=128,fullscreen=false)",
+		default_encoded = "Settings(volume=128,fullscreen=false,access=AccessOpts(reduce_motion=false))",
 	}
 	v, ok := decode_default(&program, fd, context.temp_allocator)
 	if !testing.expect(t, ok) {
@@ -293,6 +306,19 @@ test_decode_default_settings_record :: proc(t: ^testing.T) {
 	fullscreen, fs_ok := rec.fields["fullscreen"].(bool)
 	testing.expect(t, fs_ok)
 	testing.expect_value(t, fullscreen, false)
+
+	// The nested `access` sub-record decodes one level deeper: an AccessOpts record
+	// whose `reduce_motion` resolves to Bool against the AccessOpts decl. A missing
+	// AccessOpts decl would lift `false` to a bare string column, not a Bool — the
+	// drift this nested decl closes.
+	access, access_ok := rec.fields["access"].(Record_Value)
+	if !testing.expect(t, access_ok) {
+		return
+	}
+	testing.expect_value(t, access.type_name, "AccessOpts")
+	reduce_motion, rm_ok := access.fields["reduce_motion"].(bool)
+	testing.expect(t, rm_ok)
+	testing.expect_value(t, reduce_motion, false)
 }
 
 @(test)

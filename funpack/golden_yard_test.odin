@@ -250,15 +250,24 @@ test_emit_yard_v5_engine_type_defaults :: proc(t: ^testing.T) {
 		return
 	}
 
-	// The synthesized §8 Settings data projection (volume: Int, fullscreen: Bool)
-	// the runtime decodes a Settings composite default's nested field types against.
-	testing.expect(t, artifact_has_line(artifact, "data Settings 2 false"))
+	// The synthesized §8 Settings data projection (volume: Int, fullscreen: Bool,
+	// access: AccessOpts) the runtime decodes a Settings composite default's nested
+	// field types against — plus the nested AccessOpts sub-record's own §8 decl, so
+	// `reduce_motion` resolves to a Bool (a missing AccessOpts decl would lift it to a
+	// bare string token). `access` is LOAD-BEARING: yard reads settings.access.
+	// reduce_motion, so the spawned Menu singleton must carry the access column.
+	testing.expect(t, artifact_has_line(artifact, "data Settings 3 false"))
 	testing.expect(t, artifact_has_line(artifact, "field volume Int -"))
 	testing.expect(t, artifact_has_line(artifact, "field fullscreen Bool -"))
+	testing.expect(t, artifact_has_line(artifact, "field access AccessOpts -"))
+	testing.expect(t, artifact_has_line(artifact, "data AccessOpts 1 false"))
+	testing.expect(t, artifact_has_line(artifact, "field reduce_motion Bool -"))
 
 	// Menu's engine-type composite default: Settings.defaults() lowered to the
-	// evaluated factory record inline (the one-token §6 composite slot).
-	testing.expect(t, artifact_has_line(artifact, "field settings Settings =Settings(volume=128,fullscreen=false)"))
+	// evaluated factory record inline (the one-token §6 composite slot), carrying the
+	// nested access sub-record so the spawned singleton's settings.access.reduce_motion
+	// read resolves.
+	testing.expect(t, artifact_has_line(artifact, "field settings Settings =Settings(volume=128,fullscreen=false,access=AccessOpts(reduce_motion=false))"))
 
 	// Menu's Option[String] singleton default: the enum-variant Option::None token
 	// (the field's [String] element shapes only its TYPE column, not the default).
@@ -291,6 +300,75 @@ test_emit_yard_v5_physics_stage_and_collision_layer :: proc(t: ^testing.T) {
 	// The physics battery step in [pipeline_flattened]: the (physics, solve) pair
 	// the runtime dispatches to the native solver, not a behavior lookup (§11 §3).
 	testing.expect(t, artifact_contains(artifact, "stage:physics behavior:solve"))
+}
+
+// test_emit_yard_v5_setup_batch_compile_time_evaluates pins the §13 Startup [Spawn]
+// batch: yard's setup() spawns through user helper fns (crate_at, wall_body,
+// player_body) and inline Body records with §11 §2 defaults left implicit, so the
+// emitter must CONSTANT-FOLD the batch — inline the calls, resolve the nested
+// records, and apply the omitted Body defaults — into a closed 9-row population (4
+// Walls, 1 Pad, 1 Player, 3 Crates). Before this fold the batch was malformed (the
+// 3 crate_at spawns were dropped and every `set body =` emitted an empty value), so
+// the artifact could not spawn its world. The composite Body fields take the §6
+// single-token nested form `Body(field=enc,…)`; the spot-checks pin the load-bearing
+// columns the runtime solver reads (the Pad sensor, a crate's friction 0.9, the
+// player's mask omitting Pad), so a regression in the fold or the default-fill is
+// caught at exact-token granularity (never ranges — the hunt golden's discipline).
+@(test)
+test_emit_yard_v5_setup_batch_compile_time_evaluates :: proc(t: ^testing.T) {
+	inputs, ok := yard_emit_inputs(t)
+	if !ok {
+		return
+	}
+	artifact, emit_err := stage_emit(inputs.source, inputs.module, inputs.project, inputs.entrypoint_fcfg, context.temp_allocator)
+	testing.expect_value(t, emit_err, Emit_Error.None)
+	if emit_err != .None {
+		return
+	}
+
+	// The batch is exactly nine spawns, in source list order (4 Walls, 1 Pad, 1
+	// Player, 3 Crates). The 3 crate_at(…) calls are now inlined, not dropped.
+	testing.expect(t, artifact_has_line(artifact, "[setup 9]"))
+	testing.expect_value(t, count_setup_spawns(artifact, "Wall"), 4)
+	testing.expect_value(t, count_setup_spawns(artifact, "Pad"), 1)
+	testing.expect_value(t, count_setup_spawns(artifact, "Player"), 1)
+	testing.expect_value(t, count_setup_spawns(artifact, "Crate"), 3)
+
+	// Each Body field carries its COMPLETE resolved column set — the §11 §2 defaults
+	// the source omits are filled (mass=1.0=4294967296, restitution=0, friction=0.5=
+	// 2147483648, sensor=false, impulse=Vec2(x=0,y=0)). A Wall body is the bare
+	// Static-box default shape: a §11 default fold with no source override but sensor.
+	testing.expect(t, artifact_has_line(artifact, "set body =Body(kind=BodyKind::Static,shape=Shape2::Box(size=Vec2(x=687194767360,y=17179869184)),layer=Layer::Wall,mask=[Layer::Player,Layer::Crate],mass=4294967296,restitution=0,friction=2147483648,sensor=false,impulse=Vec2(x=0,y=0))"))
+
+	// The Pad's inline Body carries the SENSOR override (sensor=true), kept over the
+	// §11 default false — the load-bearing flag that makes the pad a trigger, not a
+	// resolved collider (§11 §4).
+	testing.expect(t, artifact_has_line(artifact, "set body =Body(kind=BodyKind::Static,shape=Shape2::Box(size=Vec2(x=103079215104,y=103079215104)),sensor=true,layer=Layer::Pad,mask=[Layer::Crate],mass=4294967296,restitution=0,friction=2147483648,impulse=Vec2(x=0,y=0))"))
+
+	// A crate's Body: the friction 0.9 (3865470566) and mass 2.0 (8589934592) source
+	// overrides kept over the §11 defaults, and the full four-layer mask (the crate
+	// collides with everything including the Pad sensor). crate_at → crate_body() is
+	// inlined to this resolved Body.
+	testing.expect(t, artifact_has_line(artifact, "set body =Body(kind=BodyKind::Dynamic,shape=Shape2::Box(size=Vec2(x=51539607552,y=51539607552)),mass=8589934592,friction=3865470566,layer=Layer::Crate,mask=[Layer::Wall,Layer::Player,Layer::Crate,Layer::Pad],restitution=0,sensor=false,impulse=Vec2(x=0,y=0))"))
+
+	// The player's Body: a Dynamic circle whose mask OMITS Pad (the player walks over
+	// the pad sensor freely, §11 §5) — player_body() inlined with friction 0.9 kept
+	// and mass/restitution/sensor/impulse defaulted.
+	testing.expect(t, artifact_has_line(artifact, "set body =Body(kind=BodyKind::Dynamic,shape=Shape2::Circle(radius=21474836480),friction=3865470566,layer=Layer::Player,mask=[Layer::Wall,Layer::Crate],mass=4294967296,restitution=0,sensor=false,impulse=Vec2(x=0,y=0))"))
+}
+
+// count_setup_spawns counts the `spawn THING …` records in the [setup] section for a
+// given thing type — the per-type population the §13 batch carries, read without
+// pinning the field counts that follow each spawn.
+count_setup_spawns :: proc(artifact: string, thing: string) -> int {
+	n := 0
+	prefix := strings.concatenate({"spawn ", thing, " "}, context.temp_allocator)
+	for candidate in strings.split(artifact, "\n", context.temp_allocator) {
+		if strings.has_prefix(candidate, prefix) {
+			n += 1
+		}
+	}
+	return n
 }
 
 // artifact_has_line reports whether the artifact carries `line` as a whole
