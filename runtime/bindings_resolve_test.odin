@@ -288,8 +288,9 @@ test_held_key_persists_across_eventless_window :: proc(t: ^testing.T) {
 // value, where without the carrier the digital axis contribution would drop to 0
 // the moment the down edge left the window. Window N injects W down → P1
 // Steer::Move reads −1; window N+1 injects nothing → it still reads −1; window N+2
-// injects W up → it returns to 0. This is the recorded-replay bug verbatim: a held
-// W did nothing because the level died after one tick.
+// injects W up → it returns to 0. This is the live-device failure mode the carrier
+// exists for: a held W emits one edge, and without the persisted level the axis
+// dies after one tick.
 @(test)
 test_held_keys_axis_value_persists_at_rail :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
