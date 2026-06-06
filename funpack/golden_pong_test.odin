@@ -30,7 +30,7 @@ test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
 	// overlaps, goal_side, serve_velocity, add_goal, bindings, setup); ten
 	// behaviors (paddle_move, ball_move, wall_bounce, paddle_bounce, score,
 	// tally, serve, draw_paddle, draw_ball, draw_score); one pipeline
-	// (Pong); four inline tests.
+	// (Pong); five inline tests.
 	testing.expect_value(t, len(ast.imports), 6)
 	testing.expect_value(t, len(ast.enums), 2)
 	testing.expect_value(t, len(ast.datas), 1)
@@ -40,7 +40,7 @@ test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(ast.fns), 9)
 	testing.expect_value(t, len(ast.behaviors), 10)
 	testing.expect_value(t, len(ast.pipelines), 1)
-	testing.expect_value(t, len(ast.tests), 4)
+	testing.expect_value(t, len(ast.tests), 5)
 
 	// Spot-check the load-bearing details the count alone does not pin: the
 	// enum-as-role kind, the singleton-vs-thing flag, the behavior step
@@ -102,12 +102,14 @@ test_golden_pong_full_file_typechecks :: proc(t: ^testing.T) {
 test_golden_pong_full_pipeline_passes :: proc(t: ^testing.T) {
 	// The §06/§07 gameplay golden's defining outcome: the full pong source
 	// compiles clean through every stage — parse → gates → typecheck →
-	// contracts → flatten → effect-closure — and its four inline test blocks
-	// evaluate to their golden values. The four are advance (a user fn call
-	// over Vec2 arithmetic), score.step (the §04 name.step behavior invocation
-	// emitting a Goal signal record), tally.step (a fold over the add_goal user
-	// fn with a `with`-update on a user thing), and draw_ball.step (a render
-	// behavior emitting a Draw::Rect command) — so passing all four exercises
+	// contracts → flatten → effect-closure — and its five inline test blocks
+	// evaluate to their golden values (eight asserts: the overlaps rail test
+	// carries four). The five are advance (a user fn call over Vec2
+	// arithmetic), score.step (the §04 name.step behavior invocation emitting
+	// a Goal signal record), tally.step (a fold over the add_goal user fn with
+	// a `with`-update on a user thing), draw_ball.step (a render behavior
+	// emitting a Draw::Rect command), and overlaps (a Bool user fn pinned at
+	// its §20 drawn-geometry contact rail) — so passing all five exercises
 	// every §06 evaluable form. The fixture reads the live golden source (or
 	// FUNPACK_PONG_DIR) and SKIPs loudly when absent.
 	source, ok := pong_source()
@@ -116,7 +118,7 @@ test_golden_pong_full_pipeline_passes :: proc(t: ^testing.T) {
 	}
 	report, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.None)
-	testing.expect_value(t, report.passed, 4)
+	testing.expect_value(t, report.passed, 8)
 	testing.expect_value(t, report.failed, 0)
 	testing.expect_value(t, report.exit_code, 0)
 }
