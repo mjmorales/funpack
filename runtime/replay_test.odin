@@ -244,8 +244,9 @@ rps_mote_spawn :: proc(cell_expr: Node) -> Node {
 	return Node{kind = .Call, children = rps_children(rps_name("Spawn"), mote)}
 }
 
-// rps_spawner_spawn builds `Spawn(Spawner{})` — the no-field singleton spawn setup
-// mints so the per-tick behavior has a row to fold over.
+// rps_spawner_spawn builds `Spawn(Spawner{})` — the no-field Spawner spawn setup mints
+// so the per-tick behavior has a row to fold over (an ordinary single-instance thing,
+// not a singleton).
 @(private = "file")
 rps_spawner_spawn :: proc() -> Node {
 	spawner := Node{kind = .Record, fields = rps_fields("Spawner", "0")}
@@ -292,16 +293,18 @@ rps_let_free :: proc(n: int) -> Node {
 	return Node{kind = .Let, fields = rps_fields("free"), children = rps_children(rps_cell_list(n))}
 }
 
-// rps_seeded_program assembles the whole synthetic seeded program: a Spawner
-// singleton, a Mote thing with a `cell: Int` column, the `seed_draw` per-tick
-// behavior, the `setup(rng)->(Rng,[Spawn])` startup body, and a one-step pipeline —
-// the snake-shaped seeded fold the seeded re-fold tests record and replay. Every
-// drawn cell (setup's first Mote and each tick's Mote) is selected by the threaded
-// Rng, so the committed state — and its frame digest — depends on the tick-0 seed.
+// rps_seeded_program assembles the whole synthetic seeded program: a setup-spawned
+// Spawner (an ordinary single-instance thing, NOT a singleton — a singleton is
+// engine-spawned before tick 0 and is never setup-spawned, §08/§13, runtime Lore),
+// a Mote thing with a `cell: Int` column, the `seed_draw` per-tick behavior, the
+// `setup(rng)->(Rng,[Spawn])` startup body, and a one-step pipeline — the
+// snake-shaped seeded fold the seeded re-fold tests record and replay. Every drawn
+// cell (setup's first Mote and each tick's Mote) is selected by the threaded Rng, so
+// the committed state — and its frame digest — depends on the tick-0 seed.
 @(private = "file")
 rps_seeded_program :: proc(pool: int) -> Program {
 	things := make([]Thing_Decl, 2, context.temp_allocator)
-	things[0] = Thing_Decl{name = "Spawner", singleton = true}
+	things[0] = Thing_Decl{name = "Spawner", singleton = false}
 	mote_fields := make([]Field_Decl, 1, context.temp_allocator)
 	mote_fields[0] = Field_Decl{name = "cell", type = "Int", has_default = true, default_encoded = "0"}
 	things[1] = Thing_Decl{name = "Mote", fields = mote_fields}

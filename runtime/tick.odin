@@ -89,13 +89,18 @@ Pending_Spawn :: struct {
 
 // --- Startup: the pre-tick-0 spawn batch (§06 setup, §13) -----------------
 
-// run_startup applies setup's [Spawn] batch to the empty initial version,
-// producing the populated version tick 0 reads (§06 setup runs before tick 0).
-// Each Spawn_Command mints a row in its thing's table, filling supplied fields
-// from the decoded setup values and every omitted field from the thing's
-// Field_Decl default — so the committed base carries a complete blackboard per
-// row. The committed tables are sorted ascending by Id (the spawn counter mints
-// densely, so they already are; the sort makes the invariant explicit).
+// run_startup populates the empty initial version tick 0 reads (§06 setup runs
+// before tick 0) in two passes, in this fixed order:
+//   1. the engine mints each singleton's guaranteed-single row from its
+//      defaulted-field schema (§06 §2) — the sole, authoritative minter of a
+//      singleton row, run BEFORE setup because a singleton exists before tick 0
+//      and is never setup-spawned;
+//   2. setup's [Spawn] batch mints the ordinary initial population, each
+//      Spawn_Command filling supplied fields from the decoded setup values and
+//      every omitted field from the thing's Field_Decl default.
+// So the committed base carries a complete blackboard per row. The committed
+// tables are sorted ascending by Id (the spawn counters mint densely, so they
+// already are; the sort makes the invariant explicit).
 run_startup :: proc(
 	program: ^Program,
 	base: World_Version,
@@ -103,6 +108,10 @@ run_startup :: proc(
 ) -> World_Version {
 	tables := new_tick_tables(base, allocator)
 
+	// Pass 1: the engine mints each singleton's single row before setup runs.
+	spawn_engine_singletons(program, tables, allocator)
+
+	// Pass 2: setup's [Spawn] batch mints the ordinary initial population.
 	for command in program.setup {
 		table := find_tick_table(tables, command.thing)
 		if table == nil {
@@ -114,38 +123,25 @@ run_startup :: proc(
 		append(&table.rows, Row{id = id, fields = fields})
 	}
 
-	// The engine mints each singleton's guaranteed-single row AFTER the setup batch
-	// (§06 §2): a singleton is spawned by the engine from its defaulted-field
-	// schema, accessed by type, never iterated. yard's setup carries no Spawn for a
-	// singleton ("the Scoreboard singleton is spawned by the engine, not here"), so
-	// the engine fills it; the skip-if-populated guard makes the pass idempotent
-	// with a setup that DOES spawn a singleton (the synthetic seeded fixture), so a
-	// singleton is row-count-1 either way and never double-minted.
-	spawn_engine_singletons(program, tables, allocator)
-
 	return commit_tick_tables(base, tables, allocator)
 }
 
 // spawn_engine_singletons mints ONE row per `Thing_Decl.singleton == true` thing
 // from its Field_Decl defaults (§06 §2: a singleton is engine-spawned, accessed by
-// type, never iterated). It walks program.things in declaration order — the same
+// type, never iterated). It is the SOLE, authoritative minter of a singleton row —
+// run before the setup batch, since a singleton exists before tick 0 and is never
+// setup-spawned (§13). It walks program.things in declaration order — the same
 // stable order new_world builds the tables in — so the spawn sequence is a pure
 // function of the schema, identical every run (no RNG, no input). Each singleton's
 // row fills every field from its decoded Field_Decl default via decode_default (the
 // SAME composite Body/Settings/Option decode the setup-batch path uses), so a
 // singleton row carries a complete blackboard exactly as a setup spawn does. The
-// row lands at the table's next minted Id (Id 0 in an otherwise-empty singleton
-// table); the commit's sort keeps it ascending.
+// row lands at the table's next minted Id (Id 0 in the otherwise-empty singleton
+// table this pass runs against); the commit's sort keeps it ascending.
 //
-// SKIP-IF-POPULATED: a singleton whose table already carries a row is left
-// untouched — the row-count-1 constraint forbids a second row, and a setup that
-// already spawned the singleton (the synthetic seeded fixture's `Spawn(Spawner{})`)
-// has filled it. This makes the engine pass idempotent: it fills a singleton setup
-// did NOT spawn (yard's engine-spawned singletons) and is a no-op for one setup DID
-// (the legacy path), so a singleton is always exactly one row. A field with no
-// default is left absent — the loader's §6 gate already proved a singleton's fields
-// all carry defaults, so this never drops a required column for a well-formed
-// artifact.
+// A field with no default is left absent — the loader's §6 gate already proved a
+// singleton's fields all carry defaults, so this never drops a required column for a
+// well-formed artifact.
 spawn_engine_singletons :: proc(
 	program: ^Program,
 	tables: []Tick_Table,
@@ -156,7 +152,7 @@ spawn_engine_singletons :: proc(
 			continue
 		}
 		table := find_tick_table(tables, thing.name)
-		if table == nil || len(table.rows) > 0 {
+		if table == nil {
 			continue
 		}
 		fields := build_singleton_blackboard(program, thing, allocator)
@@ -249,13 +245,13 @@ run_startup_seeded :: proc(
 	if tuple, is_tuple := result.(Tuple_Value); is_tuple {
 		fold_tuple_emit(&interp, &state, tuple)
 	}
-	apply_spawn_batch(&state)
-	// Engine singletons mint AFTER setup's seeded [Spawn] batch applies (§06 §2):
-	// the skip-if-populated guard makes the pass fill a singleton the setup body did
-	// NOT spawn while leaving one it DID (the synthetic fixture's `Spawn(Spawner{})`)
-	// untouched — so a singleton is row-count-1 on the seeded path too. The spawn is
-	// a pure function of the schema defaults, unaffected by the seed.
+	// Engine singletons mint BEFORE setup's seeded [Spawn] batch applies (§06 §2,
+	// §13): the engine pass is the sole, authoritative minter of a singleton row and
+	// a singleton exists before tick 0, so it runs first; setup's queued [Spawn]
+	// batch then mints the ordinary seeded population on top. The spawn is a pure
+	// function of the schema defaults, unaffected by the seed.
 	spawn_engine_singletons(program, state.tables, allocator)
+	apply_spawn_batch(&state)
 	return commit_tick_tables(base, state.tables, allocator), state.rng
 }
 

@@ -14,9 +14,10 @@
 //
 // The artifact does not exist yet (it lands in wave 4), so the program is built by
 // hand — the same hand-built-node-forest strategy the kernel/interp surface tests
-// use. The program is `setup(rng) -> (Rng,[Spawn])` spawning a Spawner singleton +
-// one seeded Mote, and a `seed_draw on Spawner` behavior `(self, rng) -> (Rng,[Spawn])`
-// that draws a cell and spawns a Mote each tick.
+// use. The program is `setup(rng) -> (Rng,[Spawn])` spawning one Spawner (an ordinary
+// setup-spawned single-instance thing, not a singleton) + one seeded Mote, and a
+// `seed_draw on Spawner` behavior `(self, rng) -> (Rng,[Spawn])` that draws a cell and
+// spawns a Mote each tick.
 package funpack_runtime
 
 import "core:strconv"
@@ -79,8 +80,9 @@ sr_mote_spawn :: proc(cell_expr: Node) -> Node {
 	return Node{kind = .Call, children = sr_children(spawn_callee, mote)}
 }
 
-// sr_spawner_spawn builds `Spawn(Spawner{})` — the no-field singleton spawn setup
-// mints so the per-tick behavior has a row to fold over.
+// sr_spawner_spawn builds `Spawn(Spawner{})` — the no-field Spawner spawn setup mints
+// so the per-tick behavior has a row to fold over (an ordinary single-instance thing,
+// not a singleton).
 @(private = "file")
 sr_spawner_spawn :: proc() -> Node {
 	spawner := Node{kind = .Record, fields = sr_fields("Spawner", "0")}
@@ -138,15 +140,21 @@ sr_let_free :: proc(n: int) -> Node {
 	return Node{kind = .Let, fields = sr_fields("free"), children = sr_children(sr_cell_list(n))}
 }
 
-// seeded_draw_program assembles the whole synthetic program: a Spawner singleton, a
-// Mote thing with a `cell: Int` column, the `seed_draw` per-tick behavior, the setup
-// startup body, and a one-step pipeline. Built entirely from hand node forests so the
-// fold runs the real interpreter without an artifact.
+// seeded_draw_program assembles the whole synthetic program: a setup-spawned Spawner
+// (an ordinary single-instance thing, NOT a singleton), a Mote thing with a `cell: Int`
+// column, the `seed_draw` per-tick behavior, the setup startup body, and a one-step
+// pipeline. Built entirely from hand node forests so the fold runs the real interpreter
+// without an artifact.
 @(private = "file")
 seeded_draw_program :: proc(pool: int) -> Program {
-	// --- things: Spawner (singleton, no columns) + Mote (cell: Int) ---
+	// --- things: Spawner (setup-spawned single instance, no columns) + Mote (cell: Int) ---
+	// Spawner is NOT a singleton: a singleton is engine-spawned before tick 0 and is
+	// NEVER setup-spawned (§08/§13, runtime Lore), but setup's body here spawns it via
+	// `Spawn(Spawner{})`, so it is an ordinary single-instance thing (the pong Scoreboard
+	// precedent). seed_draw folds over it through run_behavior_over_instances/View
+	// iteration, which never consults the singleton flag — the behavior runs regardless.
 	things := make([]Thing_Decl, 2, context.temp_allocator)
-	things[0] = Thing_Decl{name = "Spawner", singleton = true}
+	things[0] = Thing_Decl{name = "Spawner", singleton = false}
 	mote_fields := make([]Field_Decl, 1, context.temp_allocator)
 	mote_fields[0] = Field_Decl{name = "cell", type = "Int", has_default = true, default_encoded = "0"}
 	things[1] = Thing_Decl{name = "Mote", fields = mote_fields}
