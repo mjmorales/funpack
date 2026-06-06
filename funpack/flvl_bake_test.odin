@@ -309,13 +309,13 @@ behavior chase on Player { fn step(p: Player) -> Player { return p } }
 	seam_bad_src := `import arena_game.{Player}`
 	seam_bad, sb_parse := stage_parse(stage_lex(seam_bad_src))
 	testing.expect_value(t, sb_parse, Parse_Error.None)
-	testing.expect_value(t, check_seam_layering(seam_bad, module_asts), Bake_Error.Seam_Imports_Behavior)
+	testing.expect_value(t, check_flvl_seam_layering(seam_bad, module_asts), Bake_Error.Seam_Imports_Behavior)
 
 	// A seam importing the schema module only is clean.
 	seam_ok_src := `import arena_world.{Switch}`
 	seam_ok, so_parse := stage_parse(stage_lex(seam_ok_src))
 	testing.expect_value(t, so_parse, Parse_Error.None)
-	testing.expect_value(t, check_seam_layering(seam_ok, module_asts), Bake_Error.None)
+	testing.expect_value(t, check_flvl_seam_layering(seam_ok, module_asts), Bake_Error.None)
 }
 
 @(test)

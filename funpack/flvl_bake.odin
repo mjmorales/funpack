@@ -926,7 +926,7 @@ module_is_behavior :: proc(ast: Ast) -> bool {
 	return len(ast.behaviors) > 0 || len(ast.pipelines) > 0
 }
 
-// check_seam_layering enforces the §17.2 module layering on a generated seam: a
+// check_flvl_seam_layering enforces the §17.2 module layering on a generated level seam (the bake-local arm; the project-read arm is project.odin's check_seam_layering): a
 // `.gen.fun` seam imports SCHEMA MODULES ONLY, never a behavior module
 // (spec §17.2 — "a .gen.fun importing a behavior module is a compile error",
 // keeping the import graph acyclic by construction). It walks the seam's USER
@@ -936,7 +936,7 @@ module_is_behavior :: proc(ast: Ast) -> bool {
 // (the project's module set) so the behavior predicate reads the real
 // declarations; a user import naming an unknown module is left to the resolver's
 // own Unknown_Module gate (this check only judges the layering of KNOWN modules).
-check_seam_layering :: proc(seam: Ast, module_asts: map[string]Ast) -> Bake_Error {
+check_flvl_seam_layering :: proc(seam: Ast, module_asts: map[string]Ast) -> Bake_Error {
 	for imp in seam.imports {
 		module := imp.segments[0]
 		// A stdlib import (the reserved `engine` root) is never a behavior module.
