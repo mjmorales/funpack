@@ -49,15 +49,27 @@ eval_match :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 }
 
 // arm_matches tests one arm's pattern against the scrutinee, binding the arm's
-// payload binders into `scope` on a match. The closed pattern kinds (§2.7 arm
-// `pat` field): `bare_variant Enum Case` matches a variant by case name with no
-// binder; `variant_binds Enum Case BINDER_COUNT binders…` matches the case and
-// binds its payload (Option::Some(side) binds `side`, a `_` binder discards);
-// `wildcard - -` matches anything; a literal binder is out of pong's surface.
+// payload/positional binders into `scope` on a match. The closed pattern kinds
+// (§2.7 arm `pat` field): `bare_variant Enum Case` matches a variant by case name
+// with no binder; `variant_binds Enum Case BINDER_COUNT binders…` matches the case
+// and binds its payload (Option::Some(side) binds `side`, a `_` binder discards);
+// `wildcard - -` matches anything; `bare_binder - - 1 name` binds the WHOLE
+// scrutinee to `name` (snake's `next` tuple position); `tuple - - 0` destructures a
+// tuple scrutinee position-by-position, recursing into each positional sub-pattern
+// (a nested arm child). The recursion makes the nested `(Option::Some(cell), next)`
+// shape — a variant pattern inside a tuple pattern — match by the same per-position
+// arm test (§04 §1, snake's `match pick(free, rng)`).
 arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 	pat := arm.fields[0]
 	switch pat {
 	case "wildcard":
+		return true
+	case "bare_binder":
+		// A bare binder binds the whole position to its single binder name (a `_` is
+		// the wildcard, handled above). fields: pat, type, case, binder_count, name.
+		if len(arm.fields) >= 5 && arm.fields[4] != "_" {
+			scope.names[arm.fields[4]] = scrutinee
+		}
 		return true
 	case "bare_variant":
 		v, is_variant := scrutinee.(Variant_Value)
@@ -87,8 +99,38 @@ arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 			}
 		}
 		return true
+	case "tuple":
+		return tuple_arm_matches(scrutinee, arm, scope)
 	}
 	return false
+}
+
+// tuple_arm_matches destructures a tuple scrutinee against a tuple pattern arm: the
+// arm's CHILDREN are its positional sub-pattern arms (one per tuple position), and
+// each child is tested against the scrutinee's element at the same position by a
+// recursive arm_matches. An arm matches only when its arity equals the scrutinee's
+// and EVERY position matches; binders from every position accumulate into the one
+// shared scope, so `(Option::Some(cell), next)` binds both `cell` (from the nested
+// variant arm) and `next` (from the bare-binder arm) for the body. A non-tuple
+// scrutinee, an arity mismatch, or any position miss is a non-match — the tick's
+// (Rng, [Spawn]) split and snake's pick-result match both route through here.
+tuple_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
+	tuple, is_tuple := scrutinee.(Tuple_Value)
+	if !is_tuple {
+		return false
+	}
+	if len(tuple.elements) != len(arm.children) {
+		return false
+	}
+	for &sub_arm, i in arm.children {
+		if sub_arm.kind != .Arm {
+			return false
+		}
+		if !arm_matches(tuple.elements[i], &sub_arm, scope) {
+			return false
+		}
+	}
+	return true
 }
 
 // --- call -----------------------------------------------------------------
@@ -104,7 +146,7 @@ eval_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		return eval_method_call(interp, node, env)
 	case .Name:
 		return eval_named_call(interp, callee.fields[0], node, env)
-	case .Int, .Fixed, .String, .Variant, .Record, .Recfield, .With, .List, .Call, .Lambda, .Unary, .Binary, .Match, .Arm, .Let, .If_Return, .Return:
+	case .Int, .Fixed, .String, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Call, .Lambda, .Unary, .Binary, .Match, .Arm, .Let, .If_Return, .Return:
 		return nil, false
 	}
 	return nil, false
@@ -243,6 +285,10 @@ eval_named_call :: proc(
 		return builtin_is_empty(interp, node, env)
 	case "grid_cells":
 		return builtin_grid_cells(interp, node, env)
+	case "pick":
+		return builtin_pick(interp, node, env)
+	case "Spawn":
+		return builtin_spawn(interp, node, env)
 	}
 	// A user §9 helper: bind its args to its params and fold its body.
 	if fn := program_function(interp.program, name); fn != nil {
@@ -297,7 +343,7 @@ builtin_abs :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return (v < 0 ? fixed_neg(v) : v), true
 	case i64:
 		return (v < 0 ? int_neg(v) : v), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
 		return nil, false
 	}
 	return nil, false
@@ -664,6 +710,72 @@ builtin_grid_cells :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: V
 		}
 	}
 	return List_Value{elements = out}, true
+}
+
+// builtin_pick is the §26 seeded draw `pick(list, rng) -> (Option[T], Rng)`
+// (snake's `pick(free, rng)`): it selects a uniform element of `list` and returns
+// the THREADED pair — the drawn element boxed as `Option::Some(elem)` (or
+// `Option::None` for an empty list) and the ADVANCED Rng. The draw is never a
+// silent advance (§04 §1): the Rng is consumed and its successor returned even on
+// the empty (None) arm, so the caller threads `next` forward exactly as the kernel
+// contract requires. The result is a `Tuple_Value{Option, Rng}` a tuple-pattern
+// match destructures into `(Option::Some(cell), next)` / `(Option::None, next)`.
+//
+// None-arm boxing: None is a unit `Option::None` (nil payload) via none_value;
+// Some boxes the picked element via some_value (an arena-allocated payload). The
+// reduction is rand_bounded (Lemire multiply-shift) over the interpreter's element
+// slice, so the picked position is bit-identical to the kernel's parametric
+// rand_pick — the interpreter binds T to Value here rather than calling the
+// parametric kernel proc, keeping the boxing decision on the interpreter side.
+builtin_pick :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	rng_val, rng_ok := eval(interp, &node.children[2], env)
+	if !list_ok || !rng_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	rng, is_rng := rng_val.(Rng)
+	if !is_rng {
+		return nil, false
+	}
+	if len(elements) == 0 {
+		// Empty draw: the None arm, yet the Rng still advances (no silent no-op).
+		_, advanced := rand_next(rng)
+		return pick_tuple(interp, none_value(), advanced), true
+	}
+	index, advanced := rand_bounded(rng, len(elements))
+	return pick_tuple(interp, some_value(interp, elements[index]), advanced), true
+}
+
+// pick_tuple builds pick's `(Option, Rng)` return: the boxed Option in position 0,
+// the advanced Rng in position 1 — the exact positional shape snake's tuple-pattern
+// match `(Option::Some(cell), next)` destructures (§04 §1). The two-element slice
+// is arena-allocated so the tuple outlives this call.
+pick_tuple :: proc(interp: ^Interp, option: Value, advanced: Rng) -> Value {
+	elements := make([]Value, 2, interp.allocator)
+	elements[0] = option
+	elements[1] = advanced
+	return Tuple_Value{elements = elements}
+}
+
+// builtin_spawn is the §02 §2 command-wrap `Spawn(thing_record)` — the tuple-payload
+// constructor a startup/behavior `[Spawn]` list carries (snake's `Spawn(Food{cell:
+// cell})`, `Spawn(snake)`). It evaluates its single argument (a thing record) and
+// returns that record VALUE directly: a Spawn command IS its wrapped blackboard, so
+// queue_commands reads the record's type_name as the thing to mint and its fields as
+// the new row. The wrap is a transparent carrier — it adds no value of its own, it
+// just marks the record as a spawn payload at the source level.
+builtin_spawn :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	return eval(interp, &node.children[1], env)
 }
 
 // --- builtin support ------------------------------------------------------

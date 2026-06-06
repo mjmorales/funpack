@@ -54,15 +54,28 @@ Signal_Mailbox :: struct {
 
 // Tick_State is all the mutable working state one tick threads: the per-thing
 // working tables (blackboard writes fold here), the signal mailbox (forward
-// routing), the pending spawn/despawn batch (applied at the boundary), and the
-// arena the tick's intermediate values live in. It is built fresh each tick from
-// the prior committed version and discarded after the commit.
+// routing), the pending spawn/despawn batch (applied at the boundary), the THREADED
+// per-tick Rng resource, and the arena the tick's intermediate values live in. It
+// is built fresh each tick from the prior committed version and discarded after the
+// commit.
+//
+// The Rng is threaded the same way the world version is: it enters at tick start
+// (the prior tick's advanced state — or the tick-0 seed retained from setup),
+// every behavior that draws ADVANCES it in fold-forward order (so the draw order is
+// the deterministic flattened-pipeline + stable-Id order this file already
+// enforces), and the advanced state is read back out at the tick boundary into the
+// run's persistent Rng so the NEXT tick observes it (§04 §1 — never silently
+// advanced, threaded forward). `rng_active` distinguishes a tick that threads an
+// Rng (an RNG-using program) from one that does not (pong), so a non-RNG fold
+// never perturbs an Rng it has no business touching.
 Tick_State :: struct {
-	tables:    []Tick_Table,
-	mailbox:   Signal_Mailbox,
-	spawns:    [dynamic]Pending_Spawn,
-	despawns:  [dynamic]Ref,
-	allocator: Runtime_Allocator,
+	tables:     []Tick_Table,
+	mailbox:    Signal_Mailbox,
+	spawns:     [dynamic]Pending_Spawn,
+	despawns:   [dynamic]Ref,
+	rng:        Rng, // the per-tick PRNG state a draw advances, threaded fold-forward
+	rng_active: bool, // true when this fold threads an Rng (false for a non-RNG program)
+	allocator:  Runtime_Allocator,
 }
 
 // Pending_Spawn is one queued Spawn command awaiting the tick-boundary batch: the
@@ -102,6 +115,82 @@ run_startup :: proc(
 	}
 
 	return commit_tick_tables(base, tables, allocator)
+}
+
+// run_startup_seeded runs an RNG-THREADED setup: it evaluates setup's BODY (the
+// `setup(rng: Rng) -> (Rng, [Spawn])` startup function) with the tick-0 seed Rng
+// bound, splits the returned `(Rng, [Spawn])` tuple, applies the [Spawn] half as
+// the initial population, and RETAINS the advanced Rng as tick-0's starting state
+// (§04 §1, §06 setup, §13). This is the seeded-population path snake takes: the
+// first food cell is drawn from the seed, so a fixed seed reproduces the same
+// initial world and the SAME tick-0 Rng — the determinism warranty starts at
+// setup, not at tick 0. The returned Rng is what the first tick threads.
+//
+// A program with no setup BODY (pong — setup is the pre-evaluated [Spawn] batch in
+// program.setup) is handled by the bare run_startup; this seeded path is only taken
+// when the run carries an RNG seed and an interpretable setup body. When the body
+// is missing or yields no tuple, it falls back to applying program.setup with the
+// seed unadvanced, so a malformed/absent setup body never faults the run.
+run_startup_seeded :: proc(
+	program: ^Program,
+	base: World_Version,
+	seed: Rng,
+	allocator := context.allocator,
+) -> (
+	populated: World_Version,
+	advanced: Rng,
+) {
+	setup_fn := program_startup(program)
+	if setup_fn == nil || len(setup_fn.body) == 0 {
+		// No interpretable setup body — apply the pre-evaluated batch, seed unchanged.
+		return run_startup(program, base, allocator), seed
+	}
+
+	// Evaluate the setup body against the populated-so-far tick tables, threading the
+	// seed Rng. Setup binds only `rng: Rng` (its sole param), draws from it, and
+	// returns `(Rng, [Spawn])`. The tuple split queues the spawns and advances the Rng.
+	tables := new_tick_tables(base, allocator)
+	state := Tick_State {
+		tables     = tables,
+		mailbox    = Signal_Mailbox{by_type = make(map[string][]Value, allocator)},
+		spawns     = make([dynamic]Pending_Spawn, allocator),
+		despawns   = make([dynamic]Ref, allocator),
+		rng        = seed,
+		rng_active = true,
+		allocator  = allocator,
+	}
+	base_version := base
+	interp := new_interp(program, &base_version, &state, empty(), Record_Value{}, allocator)
+
+	env := Env{names = make(map[string]Value, allocator)}
+	for param in setup_fn.params {
+		if param.type == "Rng" {
+			env.names[param.name] = state.rng
+		}
+	}
+	result, result_ok := eval_behavior_body(&interp, setup_fn.body, &env)
+	if !result_ok {
+		// A setup body that does not return is malformed — fall back to the batch.
+		return run_startup(program, base, allocator), seed
+	}
+	if tuple, is_tuple := result.(Tuple_Value); is_tuple {
+		fold_tuple_emit(&interp, &state, tuple)
+	}
+	apply_spawn_batch(&state)
+	return commit_tick_tables(base, state.tables, allocator), state.rng
+}
+
+// program_startup finds the §06 setup function (the one Startup-kind §9 function),
+// or nil — the body run_startup_seeded evaluates to draw the seeded initial
+// population. A program with no startup body (pong) returns nil and the caller
+// falls back to the pre-evaluated program.setup batch.
+program_startup :: proc(program: ^Program) -> ^Function_Decl {
+	for &fn in program.functions {
+		if fn.kind == .Startup {
+			return &fn
+		}
+	}
+	return nil
 }
 
 // build_spawn_blackboard evaluates one Spawn_Command into a complete row
@@ -208,14 +297,25 @@ field_is_int :: proc(decl: ^Thing_Decl, name: string) -> bool {
 // signal mailbox (forward-routed signals), and the spawn/despawn batch (applied
 // at the boundary). The next version commits with every table sorted ascending by
 // Id.
+//
+// Rng threading (§04 §1): `rng` is the run's PERSISTENT Rng, carried in/out by
+// pointer. When non-nil this fold is RNG-active — the tick seeds its working Rng
+// from `rng^`, every drawing behavior advances it in fold-forward order, and the
+// advanced state is written back into `rng^` at the boundary so the NEXT tick reads
+// it. A nil `rng` (pong, hunt — no RNG) folds exactly as before, threading nothing.
 step_tick :: proc(
 	program: ^Program,
 	prior: World_Version,
 	input: Input,
 	time: Record_Value,
 	allocator := context.allocator,
+	rng: ^Rng = nil,
 ) -> World_Version {
 	state := new_tick_state(prior, allocator)
+	if rng != nil {
+		state.rng = rng^
+		state.rng_active = true
+	}
 	prior_version := prior
 	interp := new_interp(program, &prior_version, &state, input, time, allocator)
 
@@ -233,6 +333,11 @@ step_tick :: proc(
 	}
 
 	apply_spawn_batch(&state)
+	// Read the advanced Rng back into the run's persistent state so the next tick
+	// observes every draw this tick made — threaded forward, never silently dropped.
+	if rng != nil {
+		rng^ = state.rng
+	}
 	return commit_tick_state(prior, &state, allocator)
 }
 
@@ -306,6 +411,13 @@ bind_param :: proc(
 		return input_marker(interp)
 	case type == "Time":
 		return interp.time
+	case type == "Rng":
+		// The threaded per-tick Rng: a drawing behavior binds `rng: Rng` to the
+		// CURRENT fold-forward state, draws from it (pick advances it), and returns
+		// the advanced Rng in its (Rng, [Spawn]) tuple — which fold_behavior_result
+		// writes back into state.rng so the next behavior/tick reads the advance
+		// (§04 §1). The value bound here is state.rng at this point in the fold.
+		return state.rng
 	case is_signal_list_type(type):
 		return inbound_signal_list(interp, state, signal_type_of(type))
 	case is_view_type(type):
@@ -324,6 +436,14 @@ bind_param :: proc(
 // `[Draw]` emit is the render projection, which this fold does not commit; a
 // Spawn/Despawn command list queues the tick-boundary batch; a bare-thing emit is
 // a blackboard write folded into the instance's working row.
+//
+// A `(Rng, [Spawn])` tuple emit (snake's replenish) is split here: the Rng half
+// writes the ADVANCED Rng back into the threaded tick Rng (so the next behavior /
+// tick observes the advance — §04 §1, never silently dropped), and the [Spawn]
+// half queues the spawn batch through the existing command path. The returned value
+// being a Tuple_Value is the tuple emit's signature, so the split is driven off the
+// runtime shape; each half is located by its arm (the Rng arm vs the command list),
+// which is unambiguous since the two halves are distinct value arms.
 fold_behavior_result :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -332,6 +452,10 @@ fold_behavior_result :: proc(
 	self_row: Row,
 	result: Value,
 ) {
+	if tuple, is_tuple := result.(Tuple_Value); is_tuple {
+		fold_tuple_emit(interp, state, tuple)
+		return
+	}
 	emit := primary_emit(behavior)
 	switch {
 	case is_signal_list_type(emit):
@@ -344,6 +468,31 @@ fold_behavior_result :: proc(
 	case:
 		// A blackboard write: fold the returned record into the working row.
 		write_blackboard(interp, state, behavior.on_thing, self_row.id, result)
+	}
+}
+
+// fold_tuple_emit splits a `(Rng, [Spawn])` behavior return into its halves: the
+// Rng element is written back into the threaded tick Rng so the advance carries
+// FORWARD to the next behavior/tick (§04 §1 — the draw's next_rng IS what the next
+// draw observes, in fold-forward order), and the `[Spawn]` element queues the
+// spawn batch through queue_commands (the same tick-boundary path a bare command
+// emit uses). The Rng half is located by its arm rather than its position, so the
+// split is total over any `(Rng, [Spawn])` / `([Spawn], Rng)` ordering — there is
+// no path that consumes a draw without writing its advanced Rng back.
+fold_tuple_emit :: proc(interp: ^Interp, state: ^Tick_State, tuple: Tuple_Value) {
+	for elem in tuple.elements {
+		switch v in elem {
+		case Rng:
+			// Write the advanced Rng back into the threaded tick state — the next
+			// behavior's `rng: Rng` bind (and the next tick) reads exactly this.
+			state.rng = v
+		case List_Value:
+			// The [Spawn] half — queue the spawn batch for the tick boundary.
+			queue_commands(interp, state, elem)
+		case i64, Fixed, bool, Vec2, Ref, Record_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value:
+			// A tuple half that is neither the Rng nor the command list is outside the
+			// `(Rng, [Spawn])` shape this fold splits — ignored, no state write.
+		}
 	}
 }
 

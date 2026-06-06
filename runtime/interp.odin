@@ -73,6 +73,18 @@ String_Value :: struct {
 	text: string,
 }
 
+// Tuple_Value is an evaluated fixed-arity positional aggregate `(a, b, …)` — the
+// shape a seeded draw and an RNG-threaded behavior return: `pick(free, rng)`
+// yields `(Option, Rng)` and a replenish/setup step returns `(Rng, [Spawn])`
+// (spec §04 §1 — every draw returns the pair `(value, next_rng)`). It is NOT a
+// blackboard column (a tuple never lands in a Row); it lives only in flight, as a
+// match scrutinee a tuple pattern destructures or a behavior return the tick
+// splits into its Rng + emit halves. Elements are in positional source order; the
+// slice is owned by the evaluation arena.
+Tuple_Value :: struct {
+	elements: []Value,
+}
+
 // Value is the closed set of runtime values the interpreter computes. The
 // scalar arms mirror the blackboard's Field_Value (Int/Fixed/variant-as-string
 // is NOT used — an enum value is a Variant_Value so a match can read its case);
@@ -89,6 +101,8 @@ Value :: union {
 	Variant_Value, // a tagged enum value
 	Lambda_Value, // a lambda closure
 	String_Value, // an interpolated String literal (render [Draw] text only, §20)
+	Tuple_Value, // a positional aggregate `(a, b)` — a draw's (value, next_rng), §04 §1
+	Rng, // a first-class threaded PRNG resource (§26): pick consumes it, a draw returns the advanced one
 }
 
 // --- The evaluation environment ------------------------------------------
@@ -216,7 +230,7 @@ eval_body :: proc(interp: ^Interp, body: []Node, env: ^Env) -> (value: Value, ok
 			}
 		case .Return:
 			return eval(interp, &stmt.children[0], env)
-		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Lambda, .Unary, .Binary, .Match, .Arm:
+		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .Arm:
 			// A non-statement node at statement position is a malformed body.
 			return nil, false
 		}
@@ -267,6 +281,8 @@ eval :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool
 		return eval_with(interp, node, env)
 	case .List:
 		return eval_list(interp, node, env)
+	case .Tuple:
+		return eval_tuple(interp, node, env)
 	case .Unary:
 		return eval_unary(interp, node, env)
 	case .Binary:
@@ -338,7 +354,9 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return nil, false
 		}
 		return field_value_to_value(fv), true
-	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value:
+	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+		// A tuple is positional (read by a tuple pattern, never by name) and an Rng
+		// has no field — neither is a `recv.field` receiver.
 		return nil, false
 	}
 	return nil, false
@@ -409,7 +427,8 @@ eval_with :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		type_name = "Vec2"
 		merged["x"] = b.x
 		merged["y"] = b.y
-	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value:
+	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+		// A `with` is a record/Vec2 functional update; a tuple/Rng is not a record.
 		return nil, false
 	}
 	for i in 1 ..< len(node.children) {
@@ -443,6 +462,24 @@ eval_list :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 	return List_Value{elements = elements}, true
 }
 
+// eval_tuple builds a `(a, b, …)` tuple literal: `tuple ELEM_COUNT` with one child
+// per positional element, evaluated left-to-right so the elements keep their
+// deterministic source order (§04 §1 — `(value, next_rng)` is value-then-rng). A
+// tuple is the in-flight aggregate a draw returns and a tuple pattern destructures;
+// it never lowers to a blackboard column, so it exists only between a draw and the
+// match (or the behavior return) that consumes it.
+eval_tuple :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	elements := make([]Value, len(node.children), interp.allocator)
+	for &child, i in node.children {
+		ev, ev_ok := eval(interp, &child, env)
+		if !ev_ok {
+			return nil, false
+		}
+		elements[i] = ev
+	}
+	return Tuple_Value{elements = elements}, true
+}
+
 // eval_lambda closes a lambda over its current environment: `lambda PARAM_COUNT
 // PARAM…` with the body as child[0]. fields[0] is the param count, fields[1:] the
 // binder names in order — one for pong's `pad => …`, two for snake's grid_cells
@@ -469,7 +506,7 @@ eval_unary :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 		return int_neg(v), true
 	case Vec2:
 		return Vec2{fixed_neg(v.x), fixed_neg(v.y)}, true
-	case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value:
+	case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
 		return nil, false
 	}
 	return nil, false
@@ -679,9 +716,22 @@ values_equal :: proc(a, b: Value) -> bool {
 			}
 		}
 		return true
-	case Lambda_Value, String_Value:
-		// A closure has no value identity, and a String is render-only; neither is a
-		// comparand the §03 Eq surface admits.
+	case Tuple_Value:
+		// A tuple compares positionally — same arity, then each position structurally
+		// in order (the same length-then-elementwise rule as a list).
+		bv, ok := b.(Tuple_Value)
+		if !ok || len(av.elements) != len(bv.elements) {
+			return false
+		}
+		for elem, i in av.elements {
+			if !values_equal(elem, bv.elements[i]) {
+				return false
+			}
+		}
+		return true
+	case Lambda_Value, String_Value, Rng:
+		// A closure has no value identity, a String is render-only, and an Rng is a
+		// threaded resource — none is a comparand the §03 Eq surface admits.
 		return false
 	}
 	return false
@@ -783,7 +833,9 @@ format_value :: proc(interp: ^Interp, v: Value) -> string {
 		return aprint_int(fixed_trunc(x), interp.allocator)
 	case Variant_Value:
 		return strings.clone(x.case_name, interp.allocator)
-	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+		// A tuple/Rng never reaches a §20 Text hole (render carries no draw); no
+		// display form, render empty.
 		return ""
 	}
 	return ""
@@ -813,7 +865,7 @@ as_fixed :: proc(v: Value) -> (f: Fixed, ok: bool) {
 		return n, true
 	case i64:
 		return to_fixed(n), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
 		return Fixed(0), false
 	}
 	return Fixed(0), false
@@ -881,10 +933,11 @@ value_to_field_value :: proc(
 		return x, true
 	case Variant_Value:
 		return variant_to_token(x, allocator), true
-	case bool, Record_Value, List_Value, Lambda_Value, String_Value:
-		// A String is render-only (§20 Text) and never a blackboard column — render
-		// never writes a blackboard, so a String reaching the commit path is a
-		// no-column value, the same as any other structural value.
+	case bool, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+		// A String is render-only (§20 Text); a Tuple is split by the tick into its
+		// halves before commit and never lands whole on a row; an Rng is THREADED
+		// (carried in Tick_State, written forward), never persisted as a column. None
+		// is a blackboard column — the commit path treats them as no-column values.
 		return nil, false
 	}
 	return nil, false

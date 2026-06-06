@@ -31,6 +31,7 @@ Node_Kind :: enum {
 	Recfield,
 	With,
 	List,
+	Tuple,
 	Lambda,
 	Unary,
 	Binary,
@@ -77,6 +78,12 @@ node_kind_from_tag :: proc(tag: string) -> (kind: Node_Kind, ok: bool) {
 		return .With, true
 	case "list":
 		return .List, true
+	case "tuple":
+		// A `tuple` node is count-driven like `list`: `node tuple <len>` with <len>
+		// element subtrees (spec §02; §04 §1 — a draw's (value, next_rng) pair). The
+		// trailing token IS the child count, so node_child_count reads it the generic
+		// way; no special handling beyond this tag mapping.
+		return .Tuple, true
 	case "lambda":
 		return .Lambda, true
 	case "unary":
