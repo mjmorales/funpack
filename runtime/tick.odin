@@ -310,14 +310,19 @@ decode_default_value :: proc(
 		}
 		return nil, false
 	}
+	if strings.contains(encoded, "(") {
+		// A composite record default `Type(f=enc,…)` — the §6 single-token inline
+		// constructor (snake's `head: Cell = Cell(x=10,y=10)`). This is tested
+		// BEFORE the enum-token arm because a composite body may itself carry a
+		// nested enum token (yard's `Body(layer=CollisionLayer::Solid,…)`): the `::`
+		// belongs to a nested field, not to a top-level `Enum::Case` default, and a
+		// `Type::Case` enum token is always paren-free (§2.6), so `(` is the sound
+		// discriminator for the composite form.
+		return decode_record_default(program, type_name, encoded, allocator)
+	}
 	if strings.contains(encoded, "::") {
 		// An enum-variant default (`Enum::Case`) carries verbatim as a token column.
 		return strings.clone(encoded, allocator), true
-	}
-	if strings.contains(encoded, "(") {
-		// A composite record default `Type(f=enc,…)` — the §6 single-token inline
-		// constructor (snake's `head: Cell = Cell(x=10,y=10)`).
-		return decode_record_default(program, type_name, encoded, allocator)
 	}
 	if is_signed_decimal(encoded) {
 		// A numeric default whose declared type is not the literal `Int`/`Fixed` (a

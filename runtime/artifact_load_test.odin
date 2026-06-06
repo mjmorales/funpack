@@ -563,6 +563,137 @@ test_body_string_node_retains_interpolation :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(value, "{self.right}"))
 }
 
+// --- v5 schema additive decode arms (the yard physics surface) -------------
+// The sibling funpack epic defines v5 (singleton-spawn marker, the physics:/solve
+// engine battery, the CollisionLayer enum kind, and §6 Body/Settings/Option
+// composite defaults) and owns the VERSION-CEILING bump (stamp 4→5) plus the
+// regenerated golden testdata. This story lands the ADDITIVE DECODE ARMS, proving
+// them on a HAND-WRITTEN section string under the CURRENT v4 stamp (runtime Lore
+// #8): v5 is a value-encoding + engine-stage addition over existing record shapes,
+// so the additive grammar parses under v4 — the loader reconciles against a real
+// emitted yard.artifact once v5 and its golden exist.
+
+// V5_ARTIFACT is a hand-written artifact exercising every v5 additive arm under
+// the v4 stamp: a CollisionLayer enum (§5), a `Body` data decl whose `body` field
+// carries a §6 composite default nesting a Vec2 record + a CollisionLayer token +
+// an Option::None token, a SINGLETON thing (the singleton-spawn marker), and a
+// `physics:`/`solve` pipeline step that is engine-closed (no [behaviors] record).
+// It is the artifact-before-artifact fixture: hand-built, not compiler-emitted.
+V5_ARTIFACT :: "funpack-artifact 4\n" +
+	"[meta 2]\n" +
+	"project yard\n" +
+	"version L5:0.1.0\n" +
+	"[enums 1]\n" +
+	"enum CollisionLayer CollisionLayer 2\n" +
+	"variant Solid unit\n" +
+	"variant Ghost unit\n" +
+	"[data 1]\n" +
+	"data Body 3 true\n" +
+	"field vel Vec2 -\n" +
+	"field layer CollisionLayer -\n" +
+	"field contact Option -\n" +
+	"[things 1]\n" +
+	"thing Walls true 0 1\n" +
+	"field body Body =Body(vel=Vec2(x=0,y=0),layer=CollisionLayer::Solid,contact=Option::None)\n" +
+	"[pipeline_flattened 1]\n" +
+	"step 0 stage:physics behavior:solve\n" +
+	"[entrypoint 1]\n" +
+	"entrypoint main pipeline:Yard tick_hz:60 logical:160x120 bindings:bindings\n"
+
+// The accept path: a hand-written v5-grammar artifact loads to a Program without
+// error, and every v5 additive arm decodes — the singleton marker carries, the
+// physics:/solve engine step is in the pipeline, the CollisionLayer enum kind
+// resolves, and the §6 Body composite default is present on its field.
+@(test)
+test_load_v5_additive_arms :: proc(t: ^testing.T) {
+	program, err := load_program(V5_ARTIFACT, context.temp_allocator)
+	if !testing.expectf(t, err == .None, "v5-grammar artifact must load, got %v", err) {
+		return
+	}
+
+	// (c) The CollisionLayer enum kind resolves (enum_kind_from_tag is total over it).
+	testing.expect_value(t, len(program.enums), 1)
+	layer_enum := program.enums[0]
+	testing.expect_value(t, layer_enum.name, "CollisionLayer")
+	testing.expect_value(t, layer_enum.kind, Enum_Kind.Collision_Layer)
+
+	// (a) The singleton-spawn marker: `thing Walls SINGLETON …` carries singleton
+	// onto the descriptor, and new_world mirrors it onto the table so the spawn
+	// step knows the row is engine-spawned pre-tick-0.
+	testing.expect_value(t, len(program.things), 1)
+	walls := program.things[0]
+	testing.expect_value(t, walls.name, "Walls")
+	testing.expect_value(t, walls.singleton, true)
+	world := new_world(program, context.temp_allocator)
+	testing.expect_value(t, len(world.tables), 1)
+	testing.expect_value(t, world.tables[0].singleton, true)
+
+	// (b) The physics:/solve engine step is a real pipeline position with NO
+	// [behaviors] record — the loader keeps the order, never resolving a user
+	// behavior for the engine-closed stage.
+	testing.expect_value(t, len(program.pipeline), 1)
+	step := program.pipeline[0]
+	testing.expect_value(t, step.stage, "physics")
+	testing.expect_value(t, step.behavior, "solve")
+	testing.expect(t, find_behavior(program, "solve") == nil) // engine-closed: no user record
+
+	// (d) The §6 Body composite default on Walls.body decodes to a Record_Value
+	// column nesting a Vec2 + a CollisionLayer token + Option::None — each nested
+	// field decoded by the Body data decl's declared field types.
+	testing.expect_value(t, len(program.data), 1)
+	testing.expect_value(t, program.data[0].name, "Body")
+	testing.expect_value(t, len(walls.fields), 1)
+	body_field := walls.fields[0]
+	testing.expect_value(t, body_field.name, "body")
+	testing.expect_value(t, body_field.type, "Body")
+	testing.expect(t, body_field.has_default)
+	decoded, ok := decode_default(&program, body_field, context.temp_allocator)
+	if !testing.expect(t, ok) {
+		return
+	}
+	rec, is_rec := decoded.(Record_Value)
+	if !testing.expect(t, is_rec) {
+		return
+	}
+	testing.expect_value(t, rec.type_name, "Body")
+	vel, vel_ok := rec.fields["vel"].(Vec2)
+	testing.expect(t, vel_ok)
+	testing.expect_value(t, vel.x, to_fixed(0))
+	layer, layer_ok := rec.fields["layer"].(Variant_Value)
+	testing.expect(t, layer_ok)
+	testing.expect_value(t, layer.case_name, "Solid")
+	contact, contact_ok := rec.fields["contact"].(Variant_Value)
+	testing.expect(t, contact_ok)
+	testing.expect_value(t, contact.case_name, "None")
+}
+
+// The refusal path is fail-closed: a malformed section (a declared count that
+// disagrees with the lead-line count) and an UNKNOWN section name are both refused
+// before producing a partial Program — the load is total or it fails closed (§1).
+@(test)
+test_load_v5_malformed_refused :: proc(t: ^testing.T) {
+	// An unknown section name is a schema mismatch — build_program refuses it.
+	unknown_section := "funpack-artifact 4\n[meta 2]\nproject yard\nversion L5:0.1.0\n[gravity 0]\n"
+	_, unknown_err := load_program(unknown_section, context.temp_allocator)
+	testing.expect_value(t, unknown_err, Artifact_Error.Malformed_Header)
+
+	// A declared count that over-shapes the section is a parse-layer refusal.
+	bad_count := "funpack-artifact 4\n[enums 2]\nenum CollisionLayer CollisionLayer 1\nvariant Solid unit\n"
+	_, count_err := load_program(bad_count, context.temp_allocator)
+	testing.expect_value(t, count_err, Artifact_Error.Section_Count_Mismatch)
+}
+
+// The CollisionLayer role-kind tag maps to its closed Enum_Kind, pinned directly
+// at the decoder so the v5 enum kind has a precise leaf failure signal (the §03 §4
+// kind is type-constitutive — a CollisionLayer enum is the §10 collision tag set).
+@(test)
+test_enum_kind_collision_layer :: proc(t: ^testing.T) {
+	testing.expect_value(t, enum_kind_from_tag("CollisionLayer"), Enum_Kind.Collision_Layer)
+	// The closed set is otherwise unchanged: an unknown tag and `-` are None.
+	testing.expect_value(t, enum_kind_from_tag("Axis"), Enum_Kind.Axis)
+	testing.expect_value(t, enum_kind_from_tag("-"), Enum_Kind.None)
+}
+
 // find_node_of_kind walks a body forest pre-order for the first node of a kind —
 // a test helper to reach into a reconstructed subtree.
 find_node_of_kind :: proc(statements: []Node, kind: Node_Kind) -> ^Node {

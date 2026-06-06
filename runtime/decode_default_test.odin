@@ -38,6 +38,31 @@ dd_program :: proc(allocator := context.allocator) -> Program {
 	return program
 }
 
+// dd_physics_program adds the §6 engine-type data decls the v5 yard surface
+// introduces — `Body { vel: Vec2, layer: CollisionLayer, contact: Option }` and
+// `Settings { volume: Int, fullscreen: Bool }` — so decode_record_default can
+// resolve each composite default's nested field types from the data decl. The
+// slices live on the supplied allocator so they outlive this proc's return; a
+// freed decl would make data_field_type read garbage and mis-type a nested field.
+@(private = "file")
+dd_physics_program :: proc(allocator := context.allocator) -> Program {
+	body_fields := make([]Field_Decl, 3, allocator)
+	body_fields[0] = Field_Decl{name = "vel", type = "Vec2"}
+	body_fields[1] = Field_Decl{name = "layer", type = "CollisionLayer"}
+	body_fields[2] = Field_Decl{name = "contact", type = "Option"}
+
+	settings_fields := make([]Field_Decl, 2, allocator)
+	settings_fields[0] = Field_Decl{name = "volume", type = "Int"}
+	settings_fields[1] = Field_Decl{name = "fullscreen", type = "Bool"}
+
+	data := make([]Data_Decl, 2, allocator)
+	data[0] = Data_Decl{name = "Body", fields = body_fields}
+	data[1] = Data_Decl{name = "Settings", fields = settings_fields}
+	program := Program{}
+	program.data = data
+	return program
+}
+
 @(test)
 test_decode_default_bool :: proc(t: ^testing.T) {
 	// `grow: Bool = false` decodes to a bool column; `= true` to its complement. The
@@ -172,4 +197,137 @@ test_decode_default_nested_vec2_collapses :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, vec.x, to_fixed(0))
 	testing.expect_value(t, vec.y, to_fixed(0))
+}
+
+// --- v5 engine-type composite defaults (§6, the yard physics surface) -------
+// The v5 schema adds §6 composite defaults for the engine record types Body,
+// Settings, and Option. Each is the SAME `Type(field=enc,…)` / `Enum::Case` token
+// the decoder already shapes — these fixtures pin the engine-type forms the yard
+// surface first reaches, proving the additive decode arms on hand-written tokens
+// before any compiler-emitted yard.artifact exists (runtime Lore #8). No new
+// decoder code: the arms exercise decode_record_default and the enum-token path.
+
+@(test)
+test_decode_default_body_record :: proc(t: ^testing.T) {
+	// `body: Body = Body(vel=Vec2(x=0,y=0),layer=CollisionLayer::Solid,contact=Option::None)`
+	// — the engine physics body default. It nests a Vec2 record (collapsing to a
+	// Vec2 column), a CollisionLayer enum token, and an Option::None enum token,
+	// each decoded by Body's declared field types. The top-level commas split at
+	// paren depth 0, so the inner `Vec2(x=0,y=0)` is not split mid-record.
+	context.allocator = context.temp_allocator
+	program := dd_physics_program()
+
+	zero := i64(to_fixed(0))
+	encoded := fmt.tprintf(
+		"Body(vel=Vec2(x=%d,y=%d),layer=CollisionLayer::Solid,contact=Option::None)",
+		zero,
+		zero,
+	)
+	fd := Field_Decl{name = "body", type = "Body", has_default = true, default_encoded = encoded}
+	v, ok := decode_default(&program, fd, context.temp_allocator)
+	if !testing.expect(t, ok) {
+		return
+	}
+	rec, is_rec := v.(Record_Value)
+	if !testing.expect(t, is_rec) {
+		return
+	}
+	testing.expect_value(t, rec.type_name, "Body")
+
+	// `vel` collapses to a Vec2 COLUMN (Vec2 is the built-in vector — its default
+	// is a Vec2 value, not a by-name Record_Value), bit-exact through the kernel.
+	vel, vel_ok := rec.fields["vel"].(Vec2)
+	if !testing.expect(t, vel_ok) {
+		return
+	}
+	testing.expect_value(t, vel.x, to_fixed(0))
+	testing.expect_value(t, vel.y, to_fixed(0))
+
+	// `layer` is a CollisionLayer enum token, carried verbatim as a Variant_Value.
+	layer, layer_ok := rec.fields["layer"].(Variant_Value)
+	if !testing.expect(t, layer_ok) {
+		return
+	}
+	testing.expect_value(t, layer.enum_type, "CollisionLayer")
+	testing.expect_value(t, layer.case_name, "Solid")
+
+	// `contact` is Option::None — a unit enum token (nil payload).
+	contact, contact_ok := rec.fields["contact"].(Variant_Value)
+	if !testing.expect(t, contact_ok) {
+		return
+	}
+	testing.expect_value(t, contact.enum_type, "Option")
+	testing.expect_value(t, contact.case_name, "None")
+	testing.expect(t, contact.payload == nil)
+}
+
+@(test)
+test_decode_default_settings_record :: proc(t: ^testing.T) {
+	// `settings: Settings = Settings(volume=128,fullscreen=false)` — the
+	// Settings.defaults()-shaped record default. Its fields decode by Settings'
+	// declared types: `volume` is Int (an i64 column), `fullscreen` is Bool, so a
+	// default-decoded Settings equals a runtime `Settings{…}` literal in the fold.
+	context.allocator = context.temp_allocator
+	program := dd_physics_program()
+
+	fd := Field_Decl {
+		name            = "settings",
+		type            = "Settings",
+		has_default     = true,
+		default_encoded = "Settings(volume=128,fullscreen=false)",
+	}
+	v, ok := decode_default(&program, fd, context.temp_allocator)
+	if !testing.expect(t, ok) {
+		return
+	}
+	rec, is_rec := v.(Record_Value)
+	if !testing.expect(t, is_rec) {
+		return
+	}
+	testing.expect_value(t, rec.type_name, "Settings")
+
+	volume, volume_ok := rec.fields["volume"].(i64)
+	testing.expect(t, volume_ok)
+	testing.expect_value(t, volume, i64(128))
+
+	fullscreen, fs_ok := rec.fields["fullscreen"].(bool)
+	testing.expect(t, fs_ok)
+	testing.expect_value(t, fullscreen, false)
+}
+
+@(test)
+test_decode_default_option_none :: proc(t: ^testing.T) {
+	// `target: Option = Option::None` — the Option engine type's default. An
+	// Option::None default is an enum-variant token (it has a `::` and no `(`), so
+	// it decodes to a verbatim string column that lifts to a unit Option::None
+	// Variant_Value — the SAME shape none_value boxes a no-result first() into.
+	context.allocator = context.temp_allocator
+	program := dd_physics_program()
+
+	fd := Field_Decl {
+		name            = "target",
+		type            = "Option",
+		has_default     = true,
+		default_encoded = "Option::None",
+	}
+	v, ok := decode_default(&program, fd, context.temp_allocator)
+	if !testing.expect(t, ok) {
+		return
+	}
+	// The column is the verbatim enum token (the enum-token arm, §2.6).
+	token, is_token := v.(string)
+	if !testing.expect(t, is_token) {
+		return
+	}
+	testing.expect_value(t, token, "Option::None")
+
+	// It lifts to a unit Option::None variant — interchangeable with none_value.
+	lifted := field_value_to_value(v)
+	variant, is_variant := lifted.(Variant_Value)
+	if !testing.expect(t, is_variant) {
+		return
+	}
+	testing.expect_value(t, variant.enum_type, "Option")
+	testing.expect_value(t, variant.case_name, "None")
+	testing.expect(t, variant.payload == nil)
 }

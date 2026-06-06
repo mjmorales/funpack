@@ -489,6 +489,13 @@ load_emits :: proc(
 // load_pipeline reads the one total order: each `step ORDINAL stage:STAGE
 // behavior:NAME` line (§11). The ordinals are contiguous and gap-free; a gap is
 // a refusal (the derived flattened tree never drifts).
+//
+// A step's `behavior:NAME` is kept as a string and NEVER cross-checked against
+// the [behaviors] table here: an engine-closed stage (the §10 `physics:` stage's
+// `solve` battery) is a real pipeline position with NO user Behavior_Decl, so
+// the load stays total over a name the behavior table does not carry. The
+// pipeline-to-behavior binding is a separate per-stage assertion (the loader
+// records the order; it does not resolve a user behavior for an engine stage).
 load_pipeline :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
