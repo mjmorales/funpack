@@ -10,12 +10,12 @@
 // iteration, no float (spec §29 §1). Any change to which fields are emitted
 // is a contract RESHAPE — bump INDEX_SCHEMA_VERSION, never silently drift.
 //
-// This file owns the `project` record ONLY (spec §29 §2 names two record
-// kinds — `project` and per-declaration `decl`; the `decl` records and
-// warden's consumption are out of scope here). It is a DISTINCT surface from
-// the runtime binary artifact (artifact_format.odin): different consumer
-// (`warden`, not the runtime) and different transport (NDJSON, not the
-// length-prefixed byte format).
+// This file owns BOTH §29 §2 record kinds — the per-declaration `decl` record
+// and the whole-project `project` record (warden's decode/consumption side is
+// out of scope here). It is a DISTINCT surface from the runtime binary
+// artifact (artifact_format.odin): different consumer (`warden`, not the
+// runtime) and different transport (NDJSON, not the length-prefixed byte
+// format).
 //
 // AUTHORED fields project from the config tree: `entrypoints` (the
 // entrypoints.fcfg pipeline/tick/bindings wiring, §14 §4), `builds` (the
@@ -39,7 +39,104 @@ import "core:strings"
 // compatibility gate. Any change to the emitted field set is a contract
 // reshape that bumps this; it is independent of the runtime artifact's
 // ARTIFACT_SCHEMA_VERSION (a separate surface with its own version line).
-INDEX_SCHEMA_VERSION :: 1
+//
+// Version 2 adds the §29 §2 per-declaration `decl` record kind alongside the
+// `project` record — a deliberate schema reshape under closed-enum discipline
+// (a new record kind in the closed contract bumps the version, never silent
+// drift). The stamp leads BOTH record kinds, so a v2 stream carries v2 in
+// every line.
+INDEX_SCHEMA_VERSION :: 2
+
+// Index_Decl_Kind is the closed §29 §2 set of source DECLARATION FORMS the
+// per-declaration `decl` record reports — the kind taxonomy of what a
+// declaration IS in the source. It is a DISTINCT taxonomy from surface.odin's
+// Decl_Kind, which is the IMPORT-RESOLUTION binding kind (Module/Type_Name/
+// Func/Value — how a resolved name binds against the stdlib surface). The two
+// must not be conflated: one enumerates source declaration forms, the other
+// enumerates import-binding positions. The form set maps 1:1 onto the parser's
+// declaration collections — Data/Enum/Thing/Signal/Fn/Behavior/Pipeline/Let/
+// Test are the Ast.* collections, and Extern_Fn is the `is_extern` Fn (a
+// body-less §02/§26 native-boundary fn, a distinct kind from a bodied Fn). The
+// set is closed: a new declaration form is a schema-version bump, never a
+// silently-added string.
+Index_Decl_Kind :: enum {
+	Data,      // a `data` record declaration (§03)
+	Enum,      // an `enum` declaration (§03)
+	Thing,     // a `thing` declaration (§06)
+	Signal,    // a `signal` declaration (§04)
+	Fn,        // a bodied free function (§02)
+	Extern_Fn, // a body-less `extern fn` native-boundary fn (§02/§26)
+	Behavior,  // a `behavior` declaration (§06)
+	Pipeline,  // a `pipeline` declaration (§07)
+	Let,       // a module-level `let` value binding (§02)
+	Test,      // a `test` declaration (§29 §1)
+}
+
+// Decl_Record is the closed, exact-match per-declaration `decl` record of the
+// Index Contract (spec §29 §2). Like the `project` record the field set is
+// fixed and ALL fields are mandatory — there are no optional fields, an absent
+// value is the empty list / false / "" never an omitted key. Field declaration
+// order IS the emitted JSON key order (a pure struct marshal), so the
+// schema_version stamp leads. The §29 §2 inline field list, in order:
+//   - qualified_name — the module-qualified declaration name (§15)
+//   - kind           — the source declaration form (closed Index_Decl_Kind)
+//   - file           — the source file path; "" in the single-source frontend
+//                      (the frontend compiles one source, so the path is not
+//                      yet threaded — lore #11)
+//   - span           — the 1-based source line of the declaration keyword, the
+//                      artifact-format §9 line-span convention the lexer and
+//                      Fn_Node/Let_Decl_Node already stamp
+//   - doc            — the attached `@doc` text (§05); "" when undocumented
+//   - gtags          — the attached `@gtag` registry tags (§05), authored order
+//   - stub           — a `@stub` directive flag (§05); the gameplay surface
+//                      does NOT yet parse it (the parser admits only @doc/@gtag,
+//                      see source_has_expose), so it is always false on the
+//                      current tree — mandatory-present, never omitted
+//   - todo           — a `@todo` directive flag (§05); always false for the
+//                      same reason as stub
+//   - debug          — the `@debug` probe names (§05); always [] for the same
+//                      reason — mandatory-present empty list, never omitted
+//   - emits          — the signal names this declaration emits (§04)
+//   - consumes       — the signal names this declaration consumes (§04)
+//   - calls          — the function names this declaration calls
+//   - dup_class      — the normalized-AST duplication-class hash (§29 §1, the
+//                      gates.odin dup_class hash domain)
+//   - mut_data       — the data-type names this declaration mutates (§08)
+// This story ships the SHAPE only — the type plus its NDJSON emitter and the
+// hand-built-record tests. No derivation from the AST and no disk emission yet;
+// those fill this fixed shape in a later story. It is the contract-reshape seam
+// every downstream `decl` story fills and what warden authors its decode path
+// against.
+Decl_Record :: struct {
+	schema_version: int,
+	qualified_name: string,
+	kind:           Index_Decl_Kind,
+	file:           string,
+	span:           int,
+	doc:            string,
+	gtags:          []string,
+	stub:           bool,
+	todo:           bool,
+	debug:          []string,
+	emits:          []string,
+	consumes:       []string,
+	calls:          []string,
+	dup_class:      u64,
+	mut_data:       []string,
+}
+
+// emit_decl_record encodes a `decl` record as one NDJSON line: the compact
+// JSON object followed by a single LF, mirroring emit_project_record's
+// one-object-per-line transport (spec §29 §2). The struct marshals in
+// field-declaration order with enum values as their names (use_enum_names), so
+// the schema_version key leads and the kind enum emits as a readable string. No
+// map is marshaled — every field is a scalar or a slice — so the bytes are
+// deterministic and a double emission of the same record is byte-identical.
+emit_decl_record :: proc(record: Decl_Record, allocator := context.allocator) -> string {
+	bytes, _ := json.marshal(record, {use_enum_names = true}, context.temp_allocator)
+	line := strings.concatenate({string(bytes), "\n"}, allocator)
+	return line
+}
 
 // Entrypoint_Record is one authored entrypoint's lifted wiring (§14 §4): the
 // entrypoint name and the root pipeline ↔ tick ↔ bindings it binds. tick_hz
