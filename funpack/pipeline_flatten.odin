@@ -180,6 +180,19 @@ expand_pipeline :: proc(
 // §12) and only signals that appear as a producer or consumer get an entry. A
 // step whose member has no recorded signature contributes nothing — the
 // contract node check already rejected an unresolved slot occupant.
+//
+// The return is unwrapped through write_of_return (contracts.odin) BEFORE the
+// signal lookup, so the producer scan sees the same write position the node
+// check validated: a bare [signal] return routes directly, and a signal
+// emitted inside an RNG-threaded tuple `(Rng, [signal])` routes from its tuple
+// tail rather than being silently dropped (a tuple return whose signal went
+// unscanned would evade effect closure entirely). snake's detect_eat/
+// detect_death return bare [signal] lists and its replenish returns a
+// (Rng, [Spawn]) command tuple (engine-consumed, no route), so the surface
+// itself emits no tuple-wrapped signal — but the unwrap keeps the edge check
+// honest if one ever does, matching the node check's write extraction. The
+// param (consumer) side stays bare: an inbound signal is a [signal] param, and
+// a tuple param has no surface form.
 build_routes :: proc(typed: Typed_Ast, order: []Flat_Step) -> []Signal_Route {
 	table := make(map[string]Route_Builder, context.temp_allocator)
 	for step in order {
@@ -192,7 +205,7 @@ build_routes :: proc(typed: Typed_Ast, order: []Flat_Step) -> []Signal_Route {
 				route_record_consumer(&table, name, step)
 			}
 		}
-		if name, is_signal := signal_list_name(term.signature.result); is_signal {
+		if name, is_signal := signal_list_name(write_of_return(term.signature.result)); is_signal {
 			route_record_producer(&table, name, step)
 		}
 	}

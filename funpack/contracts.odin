@@ -41,6 +41,7 @@ Contract_Error :: enum {
 	None,
 	Render_Emits,        // a render behavior returns a signal/command list (only [Draw] is allowed)
 	Render_Takes_Signal, // a render behavior takes an inbound [Signal] param (render has no inbound edge)
+	Render_Takes_Rng,    // a render behavior takes an Rng resource param (render is a deterministic projection, §06 render-slot)
 	Render_No_Draw,      // a render behavior returns something other than a [Draw] list
 	Startup_Reads_Thing, // a startup occupant reads an unspawned thing (blackboard or View) — only engine resources are in scope
 	Startup_No_Spawn,    // a startup occupant returns something other than a [Spawn] list
@@ -145,15 +146,21 @@ check_contract :: proc(slot: Pipeline_Slot, target: string, signature: ^Func_Typ
 }
 
 // check_render enforces the Render contract (spec §06 §6): a render behavior
-// reads blackboard/resources/View but takes NO inbound signal, and returns
-// ONLY a [Draw] list — it cannot emit a signal, command, or write a
-// blackboard. An inbound signal param, a return that is not a [Draw] list,
-// and a return that is an emit (a signal or non-Draw command list) are each
-// a distinct behavior-level reject.
+// reads blackboard/resources/View but takes NO inbound signal and NO Rng
+// resource, and returns ONLY a [Draw] list — it cannot emit a signal, command,
+// or write a blackboard. Render is the deterministic projection stage (§06
+// render-slot): a frame's pixels are a pure function of the world, so threading
+// the RNG into it would make rendering nondeterministic, which the slot
+// forbids. An inbound signal param, an Rng param, a return that is not a [Draw]
+// list, and a return that is an emit (a signal or non-Draw command list) are
+// each a distinct behavior-level reject.
 check_render :: proc(signature: ^Func_Type) -> Contract_Error {
 	for param in signature.params {
 		if is_signal_list(param) {
 			return .Render_Takes_Signal
+		}
+		if is_engine(param, .Rng) {
+			return .Render_Takes_Rng
 		}
 	}
 	if is_command_list(signature.result, .Draw) {

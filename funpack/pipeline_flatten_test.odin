@@ -3,9 +3,14 @@
 // downstream), the negative fixture proves the edge check fires when the Goal
 // consumers are removed, and the nested fixture exercises the depth-first walk
 // generically (a sub-pipeline stage expands in place at its position). The
-// positive flatten reads the live pong golden; the negative and nested fixtures
-// are small self-contained sources, so a missing golden checkout never silences
-// the proofs.
+// snake/hunt edge-check fixtures (FLATTEN_SIM_HEADER) pin that a [Despawn]
+// command return and an RNG-threaded (Rng, [Spawn]) startup tuple are
+// engine-consumed and record no signal route, that hunt's signal-free pipeline
+// closes vacuously with zero routes, and that a signal hidden inside a tuple
+// tail still routes (and fails closure when orphaned) rather than being silently
+// dropped. The positive flatten reads the live pong golden; the negative,
+// nested, and snake/hunt fixtures are small self-contained sources, so a missing
+// golden checkout never silences the proofs.
 package funpack
 
 import "core:strings"
@@ -404,6 +409,153 @@ test_flatten_signal_only_consumed_is_closed_vacuously :: proc(t: ^testing.T) {
 		"  scoring: [tally]\n" +
 		"}\n")
 	testing.expect_value(t, verdict.err, Flatten_Error.None)
+}
+
+// FLATTEN_SIM_HEADER declares a snake/hunt-shaped surface for the new
+// edge-check fixtures: the §04 Spawn/Despawn commands, the engine.rand Rng
+// handle, a Snake thing the behaviors write, and a Food thing a Spawn/Despawn
+// scopes. A fixture appends its behaviors and the pipeline that places them. It
+// is self-contained so a missing golden checkout never silences these proofs.
+FLATTEN_SIM_HEADER :: "import engine.math.{Fixed, Vec2}\n" +
+	"import engine.world.{View, Spawn, Despawn}\n" +
+	"import engine.render.{Draw, Color}\n" +
+	"import engine.rand.{Rng}\n" +
+	"data Cell { x: Int, y: Int }\n" +
+	"thing Snake { head: Cell = Cell{x: 0, y: 0} }\n" +
+	"thing Food { cell: Cell }\n" +
+	"signal Eaten { cell: Cell }\n"
+
+flatten_sim :: proc(body: string) -> Flatten_Verdict {
+	source := strings.concatenate({FLATTEN_SIM_HEADER, body}, context.temp_allocator)
+	return flatten_of(source)
+}
+
+@(test)
+test_despawn_return_records_no_route :: proc(t: ^testing.T) {
+	// AC (Despawn is engine-consumed, never routed): a [Despawn]-returning
+	// behavior emits an engine command, not a signal, so build_routes records no
+	// signal route for it — [Despawn] never enters the signal routing graph. The
+	// behavior consumes an inbound [Eaten] (a real consumer route) but its
+	// [Despawn] write contributes no producer entry, so no route is keyed on a
+	// command. detect_eat upstream emits the Eaten the despawn consumes, so the
+	// pipeline closes.
+	verdict := flatten_sim(
+		"behavior detect_eat on Snake {\n" +
+		"  fn step(self: Snake) -> [Eaten] {\n" +
+		"    return [Eaten{cell: self.head}]\n" +
+		"  }\n" +
+		"}\n" +
+		"behavior despawn_eaten on Food {\n" +
+		"  fn step(self: Food, eaten: [Eaten]) -> [Despawn] {\n" +
+		"    return [Despawn()]\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  eat: [detect_eat, despawn_eaten]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Flatten_Error.None)
+	// Eaten routes (detect_eat → despawn_eaten); Despawn is a command, so no
+	// route is keyed on it — only the one Eaten route exists.
+	testing.expect_value(t, len(verdict.flat.routes), 1)
+	testing.expect_value(t, verdict.flat.routes[0].signal, "Eaten")
+	_, despawn_routed := find_route(verdict.flat, "Despawn")
+	testing.expect(t, !despawn_routed)
+}
+
+@(test)
+test_hunt_vacuous_closure_zero_routes :: proc(t: ^testing.T) {
+	// AC (hunt's vacuous closure): hunt emits no signals — pure folds plus Draw
+	// plus a startup Spawn — so its flattened pipeline carries zero signal routes
+	// and closure is vacuous (nothing to close). setup emits the §04 §1 (Rng,
+	// [Spawn]) startup tuple (engine-consumed, no route), seek writes its own
+	// blackboard, and draw_hunter emits [Draw] (engine-consumed). The order
+	// flattens fully and closes with an empty routing map.
+	verdict := flatten_sim(
+		"behavior setup on Snake {\n" +
+		"  fn step(rng: Rng) -> (Rng, [Spawn]) {\n" +
+		"    return (rng, [Spawn( Food{cell: Cell{x: 0, y: 0}} )])\n" +
+		"  }\n" +
+		"}\n" +
+		"behavior seek on Snake {\n" +
+		"  fn step(self: Snake) -> Snake {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n" +
+		"behavior draw_hunter on Snake {\n" +
+		"  fn step(self: Snake) -> [Draw] {\n" +
+		"    return [Draw::Rect{at: Vec2{x: 0.0, y: 0.0}, size: Vec2{x: 4.0, y: 4.0}, color: Color::White}]\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  startup: [setup]\n" +
+		"  seek: [seek]\n" +
+		"  render: [draw_hunter]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Flatten_Error.None)
+	testing.expect_value(t, len(verdict.flat.routes), 0)
+	testing.expect_value(t, len(verdict.flat.order), 3)
+}
+
+@(test)
+test_startup_tuple_spawn_records_no_route :: proc(t: ^testing.T) {
+	// The startup-tuple edge-check companion: setup's (Rng, [Spawn]) tuple write
+	// is unwrapped by write_of_return to its [Spawn] command — an engine command,
+	// not a signal — so the producer scan records no route. A startup that
+	// threads the RNG and spawns never enters the routing graph.
+	verdict := flatten_sim(
+		"behavior setup on Snake {\n" +
+		"  fn step(rng: Rng) -> (Rng, [Spawn]) {\n" +
+		"    return (rng, [Spawn( Food{cell: Cell{x: 0, y: 0}} )])\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  startup: [setup]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Flatten_Error.None)
+	testing.expect_value(t, len(verdict.flat.routes), 0)
+}
+
+// stub_signal_tuple builds the constructed-term return `(Rng, [Eaten])` — a
+// signal hidden inside an RNG-threaded tuple tail. No surface behavior emits
+// this shape (snake's detect_eat/detect_death return bare [signal] lists), so
+// the fixture constructs the Typed_Ast directly to prove the edge check does not
+// silently drop a tuple-tail signal.
+stub_signal_tuple :: proc() -> Type {
+	return tuple_of({engine_type_of(.Rng), list_of(user_type_of("Eaten", .Signal))})
+}
+
+// orphan_tuple_signal_typed builds a one-stage pipeline whose sole behavior
+// emits a signal inside a tuple tail with no downstream consumer. write_of_return
+// unwraps the tuple to its [Eaten] producer position, so the signal routes and
+// then fails closure — proving a tuple-wrapped signal is rejected as unclosed,
+// not silently unrouted.
+orphan_tuple_signal_typed :: proc() -> Typed_Ast {
+	env: Type_Env
+	env.records = make(map[string]Record_Schema, context.temp_allocator)
+	env.enums = make(map[string]Enum_Schema, context.temp_allocator)
+	env.terms = make(map[string]Term_Schema, context.temp_allocator)
+	env.terms["emit_in_tuple"] = stub_term("emit_in_tuple", emits = stub_signal_tuple())
+
+	pipelines := make([]Pipeline_Node, 1, context.temp_allocator)
+	pipelines[0] = pipeline_with("Game", stage_with("eat", "emit_in_tuple"))
+	signals := make([]Signal_Node, 1, context.temp_allocator)
+	signals[0] = Signal_Node{name = "Eaten"}
+	return Typed_Ast{ast = Ast{pipelines = pipelines, signals = signals}, env = env}
+}
+
+@(test)
+test_closure_rejects_tuple_wrapped_orphan_signal :: proc(t: ^testing.T) {
+	// AC (tuple-tail signal is not silently unrouted): a behavior emitting a
+	// signal inside an RNG-threaded tuple tail `(Rng, [Eaten])` with no consumer
+	// is rejected as Unclosed_Signal — build_routes unwraps the return through
+	// write_of_return, so the tuple-tail Eaten routes as a producer and fails
+	// effect closure exactly as a bare [Eaten] would. Without the unwrap the
+	// signal would evade the edge check entirely (no route, vacuous pass), which
+	// is the closure hole this pins shut. The surface emits no such shape, so the
+	// fixture is constructed directly.
+	verdict := stage_flatten(orphan_tuple_signal_typed())
+	testing.expect_value(t, verdict.err, Flatten_Error.Unclosed_Signal)
+	testing.expect_value(t, verdict.signal, "Eaten")
 }
 
 // find_route looks up a signal's routing entry by name over a flattened

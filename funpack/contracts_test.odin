@@ -2,11 +2,16 @@
 // the node-check with every behavior classified into its pipeline slot and
 // validated against that slot's allowed inputs/returns, and the negative
 // fixtures — a render-slot behavior emitting a signal, a render-slot behavior
-// taking an inbound signal, and a startup-slot behavior reading an unspawned
-// thing — each reject at the contract stage with the diagnostic naming the
-// behavior. The positive fixture reads the live pong golden (the load-bearing
-// surface); the negative fixtures are small self-contained sources, so a
-// missing golden checkout never silences the rejection proofs.
+// taking an inbound signal, a render-slot behavior taking an Rng resource, and
+// a startup-slot behavior reading an unspawned thing — each reject at the
+// contract stage with the diagnostic naming the behavior. The snake/hunt
+// admission fixtures (CONTRACT_SIM_HEADER) clear the Startup/Update contracts on
+// the RNG-threaded tuple write `(Rng, [Spawn])` and the [Despawn] command
+// write, and pin that a tuple with no command/signal position is still dead
+// code. The positive golden fixture reads the live pong golden (the
+// load-bearing surface); the negative and snake/hunt fixtures are small
+// self-contained sources, so a missing golden checkout never silences the
+// proofs.
 package funpack
 
 import "core:strings"
@@ -188,6 +193,160 @@ test_pong_golden_compiles_clean_through_contracts :: proc(t: ^testing.T) {
 	testing.expect(t, err != Pipeline_Error.Gate_Failed)
 	testing.expect(t, err != Pipeline_Error.Typecheck_Failed)
 	testing.expect(t, err != Pipeline_Error.Contract_Failed)
+}
+
+// CONTRACT_SIM_HEADER declares the snake/hunt-shaped surface the new slot
+// fixtures need: the engine.rand Rng handle, the §04 Spawn/Despawn commands, a
+// Snake thing the Update/Startup behaviors write, and a Food thing a Spawn
+// carries. It is the contract-stage analogue of typecheck_sim_test's SIM_HEADER,
+// scoped to just the imports/declarations the slot fixtures reference, so a
+// missing golden checkout never silences these node-check proofs.
+CONTRACT_SIM_HEADER :: "import engine.math.{Fixed, Vec2}\n" +
+	"import engine.world.{View, Spawn, Despawn}\n" +
+	"import engine.render.{Draw, Color}\n" +
+	"import engine.rand.{Rng}\n" +
+	"data Cell { x: Int, y: Int }\n" +
+	"thing Snake { head: Cell = Cell{x: 0, y: 0} }\n" +
+	"thing Food { cell: Cell }\n"
+
+contract_sim :: proc(body: string) -> Contract_Verdict {
+	source := strings.concatenate({CONTRACT_SIM_HEADER, body}, context.temp_allocator)
+	return contracts_of(source)
+}
+
+@(test)
+test_contract_render_taking_rng_rejected :: proc(t: ^testing.T) {
+	// AC (§06 render-slot Rng rejection): a render-slot behavior with an Rng
+	// resource param rejects — Render is the deterministic projection stage, so
+	// threading the RNG into it is forbidden (a frame's pixels are a pure
+	// function of the world). The diagnostic names the behavior, distinct from
+	// the inbound-signal reject. This is the epic's named render-slot node check
+	// that the signal-only param loop did not yet cover.
+	verdict := contract_sim(
+		"behavior draw_snake on Snake {\n" +
+		"  fn step(self: Snake, rng: Rng) -> [Draw] {\n" +
+		"    return [Draw::Rect{at: Vec2{x: 0.0, y: 0.0}, size: Vec2{x: 4.0, y: 4.0}, color: Color::White}]\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  render: [draw_snake]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Contract_Error.Render_Takes_Rng)
+	testing.expect_value(t, verdict.behavior, "draw_snake")
+}
+
+@(test)
+test_contract_startup_tuple_spawn_clears :: proc(t: ^testing.T) {
+	// AC (startup-tuple accept): the RNG-threaded startup form — setup returning
+	// the §04 §1 pair `(Rng, [Spawn])` with an rng: Rng engine-resource param —
+	// clears the Startup contract. The tuple return is unwrapped to its [Spawn]
+	// write position (write_of_return), and the rng param is a permitted engine
+	// resource read, not an unspawned-thing read. This is snake's setup shape.
+	verdict := contract_sim(
+		"behavior setup on Snake {\n" +
+		"  fn step(rng: Rng) -> (Rng, [Spawn]) {\n" +
+		"    return (rng, [Spawn( Food{cell: Cell{x: 0, y: 0}} )])\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  startup: [setup]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Contract_Error.None)
+}
+
+@(test)
+test_contract_update_tuple_spawn_is_write :: proc(t: ^testing.T) {
+	// AC (update-tuple accept): snake's replenish is an interior-stage behavior
+	// whose write is the §04 §1 pair `(Rng, [Spawn])`. check_update unwraps the
+	// tuple to its [Spawn] command position and counts it as a write, not dead
+	// code — so the RNG-threaded eat-stage behavior clears the Update contract.
+	verdict := contract_sim(
+		"behavior replenish on Snake {\n" +
+		"  fn step(self: Snake, rng: Rng) -> (Rng, [Spawn]) {\n" +
+		"    return (rng, [Spawn( Food{cell: self.head} )])\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  eat: [replenish]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Contract_Error.None)
+}
+
+@(test)
+test_contract_update_despawn_is_write :: proc(t: ^testing.T) {
+	// AC (Despawn engine command): a [Despawn] return is recognized as an
+	// engine-consumed command write — is_any_command_list admits Despawn
+	// alongside Spawn/Draw — so an Update behavior returning [Despawn] clears the
+	// write obligation. This is snake's despawn_eaten shape on the contract side,
+	// the counterpart to surface.odin's Despawn admission.
+	verdict := contract_sim(
+		"behavior despawn_eaten on Food {\n" +
+		"  fn step(self: Food) -> [Despawn] {\n" +
+		"    return [Despawn()]\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  eat: [despawn_eaten]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Contract_Error.None)
+}
+
+@(test)
+test_contract_update_tuple_no_command_is_dead :: proc(t: ^testing.T) {
+	// AC (write_of_return falls through): a tuple return with NO command/signal
+	// position — `(Rng, Int)` — carries no write, so write_of_return passes it
+	// through unchanged and check_update rejects it as Update_Dead. The tuple
+	// unwrap admits a tuple-with-command-tail as a write WITHOUT admitting every
+	// tuple as a write; a tuple that threads only scalars is still dead code.
+	verdict := contract_sim(
+		"behavior bad_update on Snake {\n" +
+		"  fn step(self: Snake, rng: Rng) -> (Rng, Int) {\n" +
+		"    return (rng, 0)\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  eat: [bad_update]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Contract_Error.Update_Dead)
+	testing.expect_value(t, verdict.behavior, "bad_update")
+}
+
+@(test)
+test_is_any_command_list_admits_despawn :: proc(t: ^testing.T) {
+	// AC (is_any_command_list over Despawn): the closed engine-command set is
+	// {Spawn, Despawn, Draw}, so is_any_command_list returns true for each and
+	// false for a signal list and a bare scalar. This pins the unit predicate the
+	// Render/Update contracts share, independent of any source fixture.
+	testing.expect(t, is_any_command_list(list_of(engine_type_of(.Spawn))))
+	testing.expect(t, is_any_command_list(list_of(engine_type_of(.Despawn))))
+	testing.expect(t, is_any_command_list(list_of(engine_type_of(.Draw))))
+	testing.expect(t, !is_any_command_list(list_of(user_type_of("Goal", .Signal))))
+	testing.expect(t, !is_any_command_list(Ground_Type.Int))
+}
+
+@(test)
+test_write_of_return_unwraps_command_tail :: proc(t: ^testing.T) {
+	// The write-position extraction the node check rides: write_of_return pulls
+	// the command/signal-list element out of an RNG-threaded tuple `(Rng,
+	// [Spawn])` and passes a plain return through unchanged. A tuple with no
+	// command/signal position — `(Rng, Int)` — passes through unchanged, so the
+	// contract check rejects it rather than treating an arbitrary tuple as a
+	// write.
+	spawn_list := list_of(engine_type_of(.Spawn))
+	rng := engine_type_of(.Rng)
+	tuple_with_spawn := tuple_of({rng, spawn_list})
+	unwrapped := write_of_return(tuple_with_spawn)
+	testing.expect(t, is_command_list(unwrapped, .Spawn))
+
+	// A plain (non-tuple) return is its own write.
+	testing.expect(t, is_command_list(write_of_return(spawn_list), .Spawn))
+
+	// A tuple of only scalars carries no write: it passes through as the tuple
+	// itself, which is neither a command nor signal list.
+	scalar_tuple := tuple_of({rng, Ground_Type.Int})
+	passed := write_of_return(scalar_tuple)
+	testing.expect(t, !is_any_command_list(passed))
+	testing.expect(t, !is_signal_list(passed))
 }
 
 @(test)
