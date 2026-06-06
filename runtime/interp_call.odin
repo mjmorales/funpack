@@ -6,10 +6,12 @@
 //
 // A `call` is one of three things, decided by its callee node: a method-style
 // `recv.method(args)` (a `field` callee — input.value, the only resource query
-// pong evaluates here), an engine builtin (`abs`, `clamp`, `first`, `fold`,
-// `Spawn`, a record constructor), or a user §9 helper (`advance`, `overlaps`,
-// `add_goal`, …) evaluated by binding its args to its params and folding its
-// body. No float (spec §10); every numeric path is the fixed.odin kernel.
+// pong evaluates here), an engine builtin (the §08/§26 leaf combinators —
+// `abs`, `clamp`, `first`, `fold`, the §08 list set `prepend`/`init`/`contains`/
+// `map`/`filter`/`concat`/`is_empty`, the §26 `engine.grid.grid_cells`, `Spawn`,
+// a record constructor), or a user §9 helper (`advance`, `overlaps`, `add_goal`,
+// …) evaluated by binding its args to its params and folding its body. No float
+// (spec §10); every numeric path is the fixed.odin kernel.
 package funpack_runtime
 
 // --- match ----------------------------------------------------------------
@@ -185,6 +187,22 @@ eval_named_call :: proc(
 		return builtin_first(interp, node, env)
 	case "fold":
 		return builtin_fold(interp, node, env)
+	case "prepend":
+		return builtin_prepend(interp, node, env)
+	case "init":
+		return builtin_init(interp, node, env)
+	case "contains":
+		return builtin_contains(interp, node, env)
+	case "map":
+		return builtin_map(interp, node, env)
+	case "filter":
+		return builtin_filter(interp, node, env)
+	case "concat":
+		return builtin_concat(interp, node, env)
+	case "is_empty":
+		return builtin_is_empty(interp, node, env)
+	case "grid_cells":
+		return builtin_grid_cells(interp, node, env)
 	}
 	// A user §9 helper: bind its args to its params and fold its body.
 	if fn := program_function(interp.program, name); fn != nil {
@@ -349,6 +367,242 @@ builtin_fold :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	return acc, true
 }
 
+// builtin_prepend is the §08 list combinator `prepend(elem, list) -> [T]`: a new
+// list with `elem` at the front, then every element of `list` in order. Snake's
+// cells() prepends the head onto the body; the list is rebuilt fresh in the
+// evaluation arena (immutable data — the input list is never mutated, §08).
+builtin_prepend :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	elem_val, elem_ok := eval(interp, &node.children[1], env)
+	list_val, list_ok := eval(interp, &node.children[2], env)
+	if !elem_ok || !list_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	out := make([]Value, len(elements) + 1, interp.allocator)
+	out[0] = elem_val
+	for elem, i in elements {
+		out[i + 1] = elem
+	}
+	return List_Value{elements = out}, true
+}
+
+// builtin_init is the §08 list combinator `init(list) -> [T]`: a new list with
+// every element except the last. Snake's body_after drops the tail this way when
+// the snake is not growing. The empty list yields the empty list (total — never
+// a fault on a missing last element, §26 totality).
+builtin_init :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	if !list_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	if len(elements) == 0 {
+		return List_Value{elements = make([]Value, 0, interp.allocator)}, true
+	}
+	out := make([]Value, len(elements) - 1, interp.allocator)
+	for i in 0 ..< len(elements) - 1 {
+		out[i] = elements[i]
+	}
+	return List_Value{elements = out}, true
+}
+
+// builtin_contains is the §08 list combinator `contains(list, elem) -> Bool`:
+// true when any element of `list` structurally equals `elem` (§03 universal Eq).
+// Snake tests `contains(occ, c)` over Cell records and `contains(self.body,
+// self.head)`, so the membership is the deep record equality values_equal folds.
+builtin_contains :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	elem_val, elem_ok := eval(interp, &node.children[2], env)
+	if !list_ok || !elem_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	for elem in elements {
+		if values_equal(elem, elem_val) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+// builtin_map is the §08 list combinator `map(list, fn) -> [U]`: a new list
+// applying the unary lambda `fn` to each element in order. Snake projects food
+// rows to their cells and cells to draw rects this way. The lambda is applied
+// per element through apply_lambda; the result keeps the input's deterministic
+// order (§08 stable order — order is the source order, never an iteration order).
+builtin_map :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	fn_val, fn_ok := eval(interp, &node.children[2], env)
+	if !list_ok || !fn_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	lambda, is_lambda := fn_val.(Lambda_Value)
+	if !is_lambda {
+		return nil, false
+	}
+	out := make([]Value, len(elements), interp.allocator)
+	for elem, i in elements {
+		projected, projected_ok := apply_lambda(interp, lambda, elem)
+		if !projected_ok {
+			return nil, false
+		}
+		out[i] = projected
+	}
+	return List_Value{elements = out}, true
+}
+
+// builtin_filter is the §08 list combinator `filter(list, pred) -> [T]`: a new
+// list of the elements the unary predicate lambda accepts, in order. Snake's
+// free-cell selection filters all_cells() by un-occupied, and detect_eat filters
+// foods by the head cell. The kept elements preserve the input's deterministic
+// order (§08 stable order).
+builtin_filter :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	pred_val, pred_ok := eval(interp, &node.children[2], env)
+	if !list_ok || !pred_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	pred, is_lambda := pred_val.(Lambda_Value)
+	if !is_lambda {
+		return nil, false
+	}
+	kept := make([dynamic]Value, 0, len(elements), interp.allocator)
+	for elem in elements {
+		verdict, verdict_ok := apply_lambda(interp, pred, elem)
+		if !verdict_ok {
+			return nil, false
+		}
+		if as_bool(verdict) {
+			append(&kept, elem)
+		}
+	}
+	return List_Value{elements = kept[:]}, true
+}
+
+// builtin_concat is the §08 list combinator `concat(a, b) -> [T]`: a new list of
+// every element of `a` followed by every element of `b`, both in order. Snake's
+// occupied() concatenates the snake's cells with the food cells. The two inputs
+// are read, never mutated; the join is fresh in the evaluation arena (§08).
+builtin_concat :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	a_val, a_ok := eval(interp, &node.children[1], env)
+	b_val, b_ok := eval(interp, &node.children[2], env)
+	if !a_ok || !b_ok {
+		return nil, false
+	}
+	a_elements, a_elems_ok := as_elements(interp, a_val)
+	b_elements, b_elems_ok := as_elements(interp, b_val)
+	if !a_elems_ok || !b_elems_ok {
+		return nil, false
+	}
+	out := make([]Value, len(a_elements) + len(b_elements), interp.allocator)
+	for elem, i in a_elements {
+		out[i] = elem
+	}
+	for elem, i in b_elements {
+		out[len(a_elements) + i] = elem
+	}
+	return List_Value{elements = out}, true
+}
+
+// builtin_is_empty is the §08 list combinator `is_empty(list) -> Bool`: true
+// when the list has no elements. Snake gates grow/replenish/apply_death on an
+// empty signal list this way.
+builtin_is_empty :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	if !list_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	return len(elements) == 0, true
+}
+
+// builtin_grid_cells is the §26 `engine.grid.grid_cells(w, h, fn(x, y) -> Cell)
+// -> [Cell]`: every cell of a w×h grid in STABLE ROW-MAJOR order, built by the
+// supplied two-arg lambda. The order is driven by the loop indices — the outer
+// loop walks rows (y from 0), the inner loop walks columns within a row (x from
+// 0) — so the enumeration is machine-identical, never dependent on any map/hash
+// iteration (§08 stable order, §26 "stable row-major order"). Snake's all_cells()
+// folds free-cell selection through this; a non-positive extent yields the empty
+// list (total — no fault on a degenerate grid). No float: w/h are Ints (§10).
+builtin_grid_cells :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 4 {
+		return nil, false
+	}
+	w_val, w_ok := eval(interp, &node.children[1], env)
+	h_val, h_ok := eval(interp, &node.children[2], env)
+	fn_val, fn_ok := eval(interp, &node.children[3], env)
+	if !w_ok || !h_ok || !fn_ok {
+		return nil, false
+	}
+	w, w_is_int := w_val.(i64)
+	h, h_is_int := h_val.(i64)
+	if !w_is_int || !h_is_int {
+		return nil, false
+	}
+	lambda, is_lambda := fn_val.(Lambda_Value)
+	if !is_lambda {
+		return nil, false
+	}
+	count := (w > 0 && h > 0) ? int(w) * int(h) : 0
+	out := make([]Value, count, interp.allocator)
+	idx := 0
+	// Row-major: y is the outer (row) index, x the inner (column) index, so the
+	// list reads row 0 left-to-right, then row 1, …  The two indices fully order
+	// the output, independent of any map iteration.
+	for y in 0 ..< h {
+		for x in 0 ..< w {
+			cell, cell_ok := apply_two_arg_lambda(interp, lambda, x, y)
+			if !cell_ok {
+				return nil, false
+			}
+			out[idx] = cell
+			idx += 1
+		}
+	}
+	return List_Value{elements = out}, true
+}
+
 // --- builtin support ------------------------------------------------------
 
 // as_elements reads a value as a list's elements: a List_Value yields its slice;
@@ -365,13 +619,42 @@ as_elements :: proc(interp: ^Interp, v: Value) -> (elements: []Value, ok: bool) 
 }
 
 // apply_lambda applies a unary lambda closure to one argument: bind the arg to
-// the lambda's param in a child of its captured scope, then evaluate the body.
+// the lambda's single param in a child of its captured scope, then evaluate the
+// body. A lambda whose arity is not one is a malformed application (ok=false) —
+// the unary combinators (first/map/filter) only ever hold a one-param closure.
 apply_lambda :: proc(interp: ^Interp, lambda: Lambda_Value, arg: Value) -> (value: Value, ok: bool) {
+	if len(lambda.params) != 1 {
+		return nil, false
+	}
 	scope := Env {
 		names  = make(map[string]Value, interp.allocator),
 		parent = lambda.captured,
 	}
-	scope.names[lambda.param] = arg
+	scope.names[lambda.params[0]] = arg
+	return eval(interp, lambda.body, &scope)
+}
+
+// apply_two_arg_lambda applies a binary lambda closure to (a, b): bind both args
+// to the lambda's two params in order in a child of its captured scope, then
+// evaluate the body. grid_cells applies this with (x, y) per grid cell — the
+// only binary-lambda combinator. A lambda whose arity is not two is malformed.
+apply_two_arg_lambda :: proc(
+	interp: ^Interp,
+	lambda: Lambda_Value,
+	a, b: Value,
+) -> (
+	value: Value,
+	ok: bool,
+) {
+	if len(lambda.params) != 2 {
+		return nil, false
+	}
+	scope := Env {
+		names  = make(map[string]Value, interp.allocator),
+		parent = lambda.captured,
+	}
+	scope.names[lambda.params[0]] = a
+	scope.names[lambda.params[1]] = b
 	return eval(interp, lambda.body, &scope)
 }
 

@@ -51,11 +51,14 @@ Variant_Value :: struct {
 	payload:   ^Value, // nil for a unit variant; the Some-payload otherwise
 }
 
-// Lambda_Value is an evaluated lambda closure: its single parameter name, its
-// body node, and the captured environment it closes over. `first`/`fold` apply
-// it per element. Pong's only lambda is paddle_bounce's `pad => overlaps(...)`.
+// Lambda_Value is an evaluated lambda closure: its parameter names in order, its
+// body node, and the captured environment it closes over. Most combinators apply
+// a unary lambda per element (pong's `pad => overlaps(...)`, snake's `f => f.cell`);
+// grid_cells applies a binary `fn(x, y) -> Cell`, so the arity is the param count,
+// not a fixed one. apply_lambda binds the unary case, apply_two_arg_lambda the
+// binary case.
 Lambda_Value :: struct {
-	param:    string,
+	params:   []string,
 	body:     ^Node,
 	captured: ^Env,
 }
@@ -441,10 +444,12 @@ eval_list :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 }
 
 // eval_lambda closes a lambda over its current environment: `lambda PARAM_COUNT
-// PARAM` with the body as child[0]. Pong's only lambda is unary, so PARAM is the
-// single binder name; the closure captures `env` so the body sees outer names.
+// PARAM…` with the body as child[0]. fields[0] is the param count, fields[1:] the
+// binder names in order — one for pong's `pad => …`, two for snake's grid_cells
+// `fn(x, y) => …`. The closure captures `env` so the body sees outer names.
 eval_lambda :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> Value {
-	return Lambda_Value{param = node.fields[1], body = &node.children[0], captured = env}
+	params := node.fields[1:]
+	return Lambda_Value{params = params, body = &node.children[0], captured = env}
 }
 
 // eval_unary applies a unary operator. Pong uses only `neg` (Fixed/Int/Vec2
@@ -580,7 +585,9 @@ apply_vec2_arith :: proc(op: string, a: Vec2, rhs: Value) -> (value: Value, ok: 
 }
 
 // eval_compare applies a comparison op, yielding a Bool. Fixed and Int compare
-// by their kernel-stable bits; an enum-value equality compares case names. A
+// by their kernel-stable bits; an enum value and a record (`data`) compare by
+// structural equality (§03 — every `data` carries universal `Eq`, so snake's
+// `f.cell == self.head` and `contains` over Cell records resolve here). A
 // comparison the checked AST never emits for these operand shapes is ok=false.
 eval_compare :: proc(op: string, lhs, rhs: Value) -> (value: Value, ok: bool) {
 	#partial switch l in lhs {
@@ -596,21 +603,88 @@ eval_compare :: proc(op: string, lhs, rhs: Value) -> (value: Value, ok: bool) {
 			return nil, false
 		}
 		return compare_ordered(op, l, r), true
-	case Variant_Value:
-		r, r_ok := rhs.(Variant_Value)
-		if !r_ok {
-			return nil, false
-		}
-		eq := l.enum_type == r.enum_type && l.case_name == r.case_name
+	case Variant_Value, Record_Value:
+		// An enum or a `data` record is an equality-only comparison (§03 universal
+		// Eq): `eq`/`ne` is structural, an ordered op over these shapes is malformed.
 		switch op {
 		case "eq":
-			return eq, true
+			return values_equal(lhs, rhs), true
 		case "ne":
-			return !eq, true
+			return !values_equal(lhs, rhs), true
 		}
 		return nil, false
 	}
 	return nil, false
+}
+
+// values_equal is structural value equality over the §03 universal-Eq surface:
+// two values are equal when they share an arm and that arm's contents match. A
+// `data` record compares field-by-field by name (order-independent — the map is
+// the canonical shape), an enum compares type+case+payload, a list compares
+// length-then-elementwise in order, and the scalar arms compare by their
+// kernel-stable bits. A cross-arm comparison (Int vs record) is never equal. This
+// is the equality `contains`/`filter`/the `==` operator fold through over Cell
+// records (snake's free-cell selection); a non-comparable arm (lambda) is never
+// equal, since a closure has no value identity.
+values_equal :: proc(a, b: Value) -> bool {
+	switch av in a {
+	case i64:
+		bv, ok := b.(i64)
+		return ok && av == bv
+	case Fixed:
+		// A Fixed and an Int never share an arm here — the checked AST keeps an `==`
+		// on one numeric kind, so a Fixed compares only to a Fixed by its raw bits.
+		bv, ok := b.(Fixed)
+		return ok && av == bv
+	case bool:
+		bv, ok := b.(bool)
+		return ok && av == bv
+	case Vec2:
+		bv, ok := b.(Vec2)
+		return ok && av.x == bv.x && av.y == bv.y
+	case Ref:
+		bv, ok := b.(Ref)
+		return ok && av == bv
+	case Variant_Value:
+		bv, ok := b.(Variant_Value)
+		if !ok || av.enum_type != bv.enum_type || av.case_name != bv.case_name {
+			return false
+		}
+		// A unit variant has nil payload on both sides; a single-payload variant
+		// (Option::Some(x)) compares its boxed payloads structurally.
+		if av.payload == nil || bv.payload == nil {
+			return av.payload == nil && bv.payload == nil
+		}
+		return values_equal(av.payload^, bv.payload^)
+	case Record_Value:
+		bv, ok := b.(Record_Value)
+		if !ok || len(av.fields) != len(bv.fields) {
+			return false
+		}
+		for name, val in av.fields {
+			other, present := bv.fields[name]
+			if !present || !values_equal(val, other) {
+				return false
+			}
+		}
+		return true
+	case List_Value:
+		bv, ok := b.(List_Value)
+		if !ok || len(av.elements) != len(bv.elements) {
+			return false
+		}
+		for elem, i in av.elements {
+			if !values_equal(elem, bv.elements[i]) {
+				return false
+			}
+		}
+		return true
+	case Lambda_Value, String_Value:
+		// A closure has no value identity, and a String is render-only; neither is a
+		// comparand the §03 Eq surface admits.
+		return false
+	}
+	return false
 }
 
 // compare_ordered applies an ordered/equality comparison over two i64 operands —
