@@ -129,6 +129,23 @@ Project_Error :: enum {
 	// project.fcfg's Malformed_Project_Fcfg: the error names a specific §14.4
 	// rule (the builds production), not the identity production.
 	Malformed_Builds_Fcfg,
+	// Malformed_Seam is a gen/*.gen.fun seam the §06/§07 grammar cannot read:
+	// a file the lexer/parser rejects, or one the reader cannot read off disk.
+	// A committed seam is canonical funpack the bake pipeline emitted, so a seam
+	// that does not lex+parse is a stale/corrupt baked output — a tree-level
+	// compile error, distinct from a hand-written src/ source's pipeline error
+	// (the test verb reports those per-source). A dedicated arm so a broken seam
+	// is never confused with a malformed authoring config.
+	Malformed_Seam,
+	// Seam_Imports_Behavior is the §17 module-layering reject: a generated seam
+	// (gen/*.gen.fun) imports a BEHAVIOR module — a user module that declares
+	// `behavior`s or a `pipeline`. §17 keeps the schema → seam → behavior import
+	// graph acyclic BY CONSTRUCTION: a seam imports schema modules + engine.*
+	// only; a behavior module imports schema + seam. A seam importing a behavior
+	// module closes the cycle (behavior → seam → behavior), so it is a compile
+	// error. A dedicated arm, never a catch-all — the error names the specific
+	// §17 layering invariant the bake pipeline rests on.
+	Seam_Imports_Behavior,
 }
 
 read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
@@ -145,7 +162,7 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 	if parse_err != .None {
 		return Project{}, parse_err
 	}
-	sources, src_err := collect_sources(root)
+	src_sources, src_err := collect_sources(root)
 	if src_err != .None {
 		return Project{}, src_err
 	}
@@ -154,6 +171,28 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 		return Project{}, builds_err
 	}
 	capabilities := derive_tree_capabilities(root)
+	// A baked gen/*.gen.fun seam joins the source set so it rides the same
+	// lex → parse → … pipeline any .fun module does (§17 seam #4). The gen/ root
+	// is a derived source root peer to src/: its module derives by stripping the
+	// gen/ prefix exactly as src/ is stripped (gen/arena.gen.fun ⇒ `arena`, NOT
+	// `gen.arena`). The src/ and gen/ sets merge into one source set, re-running
+	// the §15.6 duplicate-module and §15.7 reserved-root checks across the
+	// COMBINED set so a seam colliding with a hand-written module fails the tree.
+	seam_sources, seam_collect_err := collect_seam_sources(root, capabilities)
+	if seam_collect_err != .None {
+		return Project{}, seam_collect_err
+	}
+	sources, merge_err := merge_sources(src_sources, seam_sources)
+	if merge_err != .None {
+		return Project{}, merge_err
+	}
+	// §17 acyclic layering: a generated seam imports schema modules + engine.*
+	// only. A seam importing a behavior module closes the import cycle, so it is
+	// a compile error (Seam_Imports_Behavior). The check runs over the combined
+	// set so it can classify every imported user module by its declarations.
+	if layer_err := check_seam_layering(seam_sources, sources); layer_err != .None {
+		return Project{}, layer_err
+	}
 	return Project {
 			name = identity.name,
 			version = identity.version,
@@ -960,4 +999,196 @@ subsystem_expected_gen :: proc(root: string, sub: string, ext: string) -> []stri
 		outs[i] = out
 	}
 	return outs
+}
+
+// ── §17 seam-import path ────────────────────────────────────────────────
+// A baked gen/*.gen.fun seam joins the source set and rides the same
+// lex → parse → gates → typecheck → contracts → flatten → evaluate pipeline any
+// .fun module does (lore #10 seam #4). gen/ is a DERIVED source root peer to
+// src/: a seam's §15 module derives by stripping the gen/ prefix exactly as src/
+// is stripped, so gen/arena.gen.fun ⇒ module `arena` (NOT `gen.arena`). The seam
+// sources merge into Project.sources alongside src/, re-running the §15.6
+// duplicate-module and §15.7 reserved-root checks across the COMBINED set, and
+// the §17 schema/seam/behavior acyclic layering is enforced: a seam imports
+// schema modules + engine.* only — importing a behavior module is a compile
+// error (Seam_Imports_Behavior).
+
+GEN_ROOT :: "gen"
+GEN_SUFFIX :: ".gen.fun"
+
+// collect_seam_sources walks the gen/ directory for *.gen.fun seams when a
+// subsystem capability is ON, pairing each with its §15 path-derived module
+// name. gen/ is a derived source root, so a seam's module is its location under
+// gen/ with the gen/ prefix and the `.gen.fun` suffix stripped and interior
+// directories dotted — the same derivation src/ uses, against the gen/ root.
+// When no capability is ON there is no expected gen/ output (§14.4), so the walk
+// is skipped and the seam set is empty — the pong/numerics/yard no-gen-tree case.
+// A seam whose derived module shadows the reserved `engine` root rejects with
+// Reserved_Engine_Root, the same §15.7 rule src/ enforces. The returned sources
+// are sorted by path for a deterministic order.
+collect_seam_sources :: proc(root: string, caps: Capabilities) -> ([]Source, Project_Error) {
+	// No ON subsystem ⇒ no expected gen/ seam (§14.4), so the gen/ root is not a
+	// source root for this tree — the no-gen-tree case (pong/numerics/yard).
+	if !capabilities_any_on(caps) {
+		return nil, .None
+	}
+	gen_dir, _ := filepath.join({root, GEN_ROOT}, context.temp_allocator)
+	if !os.is_dir(gen_dir) {
+		return nil, .None
+	}
+	paths := collect_seam_paths(gen_dir)
+	if len(paths) == 0 {
+		return nil, .None
+	}
+	slice.sort(paths)
+	abs_gen_dir, abs_err := filepath.abs(gen_dir, context.temp_allocator)
+	if abs_err != nil {
+		abs_gen_dir = gen_dir
+	}
+	sources := make([]Source, len(paths), context.temp_allocator)
+	for path, i in paths {
+		module := derive_seam_module_name(abs_gen_dir, path)
+		if module_under_reserved_root(module) {
+			return nil, .Reserved_Engine_Root
+		}
+		sources[i] = Source{path = path, module = module}
+	}
+	return sources, .None
+}
+
+// collect_seam_paths walks gen_dir for every regular `*.gen.fun` seam file,
+// cloning each fullpath into the temp allocator (the walker frees its own path
+// strings on destroy), mirroring collect_fun_paths over src/. The suffix is the
+// full `.gen.fun`, not bare `.fun`, so a stray hand-written `gen/notes.fun`
+// (which is not a generated seam) is not collected as one.
+collect_seam_paths :: proc(gen_dir: string) -> []string {
+	paths := make([dynamic]string, 0, 4, context.temp_allocator)
+	walker := os.walker_create(gen_dir)
+	defer os.walker_destroy(&walker)
+	for info in os.walker_walk(&walker) {
+		if info.type != .Regular || !strings.has_suffix(info.name, GEN_SUFFIX) {
+			continue
+		}
+		append(&paths, strings.clone(info.fullpath, context.temp_allocator))
+	}
+	return paths[:]
+}
+
+// derive_seam_module_name computes a seam's §15 module name as a pure function
+// of its path: relativize against the gen/ root, strip the `.gen.fun` suffix,
+// and dot the interior directory segments — gen/arena.gen.fun ⇒ `arena`,
+// gen/town/market.gen.fun ⇒ `town.market`. It is derive_module_name against the
+// gen/ root with the seam suffix: gen/ is a peer source root to src/, so a seam
+// carries the SAME module the schema it mirrors would, never a `gen.`-prefixed
+// one (a seam IS the `arena` module the behavior code imports).
+derive_seam_module_name :: proc(gen_root: string, source_path: string) -> string {
+	rel, rel_err := filepath.rel(gen_root, source_path, context.temp_allocator)
+	if rel_err != .None {
+		rel = source_path
+	}
+	stem := strings.trim_suffix(rel, GEN_SUFFIX)
+	segments := strings.split(stem, filepath.SEPARATOR_STRING, context.temp_allocator)
+	return strings.join(segments, ".", context.temp_allocator)
+}
+
+// capabilities_any_on reports whether any of the four §14.4 directory-backed
+// subsystems is ON — the precondition for an expected gen/ seam set. An all-OFF
+// tree (pong/numerics/yard) has no gen/ source root, so its source set is exactly
+// src/, unchanged by the seam-import path.
+capabilities_any_on :: proc(caps: Capabilities) -> bool {
+	return caps.levels || caps.models || caps.ui || caps.assets
+}
+
+// merge_sources combines the src/ and gen/ source sets into one source set,
+// preserving a deterministic sorted-by-path order and re-running the §15.6
+// duplicate-module and §15.7 reserved-root checks across the COMBINED set. The
+// per-set checks (collect_sources, collect_seam_sources) already cleared each
+// set in isolation; this re-check catches a CROSS-set collision — a seam whose
+// derived module equals a hand-written src/ module — which neither per-set pass
+// could see. A reserved-root module in either set fails the tree (the seam set
+// is pre-checked, so a reserved collision here can only come from src/, but the
+// arm is total over the combined set). The deterministic order matters because
+// downstream stages walk Project.sources by index.
+merge_sources :: proc(src_sources: []Source, seam_sources: []Source) -> ([]Source, Project_Error) {
+	combined := make([]Source, len(src_sources) + len(seam_sources), context.temp_allocator)
+	copy(combined[:len(src_sources)], src_sources)
+	copy(combined[len(src_sources):], seam_sources)
+	slice.sort_by(combined, proc(a, b: Source) -> bool {
+		return a.path < b.path
+	})
+	seen := make(map[string]bool, context.temp_allocator)
+	for source in combined {
+		if module_under_reserved_root(source.module) {
+			return nil, .Reserved_Engine_Root
+		}
+		if source.module in seen {
+			return nil, .Duplicate_Module
+		}
+		seen[source.module] = true
+	}
+	return combined, .None
+}
+
+// check_seam_layering enforces the §17 schema/seam/behavior acyclic-import
+// invariant: each generated seam imports schema modules + engine.* only — a seam
+// importing a BEHAVIOR module is a compile error (Seam_Imports_Behavior). It
+// parses each seam, walks its USER-module imports (the engine.* imports are
+// stdlib, never a layering concern), looks each imported module up in the
+// combined source set, and classifies it by its declarations: a module declaring
+// `behavior`s or a `pipeline` is a behavior module. A seam importing such a
+// module closes the behavior → seam → behavior cycle the layering forbids. A
+// seam the parser rejects is Malformed_Seam (a committed seam is canonical
+// funpack; a non-parsing one is a stale baked output). An imported user module
+// not in the source set is not classified here — that is a resolution concern
+// the per-source pipeline surfaces — so the layering check is conservative: it
+// rejects only a seam importing a module the tree proves is a behavior module.
+check_seam_layering :: proc(seam_sources: []Source, all_sources: []Source) -> Project_Error {
+	for seam in seam_sources {
+		seam_bytes, read_err := os.read_entire_file_from_path(seam.path, context.temp_allocator)
+		if read_err != nil {
+			return .Malformed_Seam
+		}
+		seam_ast, parse_err := stage_parse(stage_lex(string(seam_bytes)))
+		if parse_err != .None {
+			return .Malformed_Seam
+		}
+		for imp in seam_ast.imports {
+			// engine.* imports are stdlib — they never name a user module, so they
+			// are not a §17 layering concern (a seam imports engine types freely).
+			if module_under_reserved_root(imp.segments[0]) {
+				continue
+			}
+			imported := join_path(imp.segments)
+			if source_is_behavior_module(all_sources, imported) {
+				return .Seam_Imports_Behavior
+			}
+		}
+	}
+	return .None
+}
+
+// source_is_behavior_module reports whether the user module of the given name is
+// a §17 BEHAVIOR module — one whose source declares `behavior`s or a `pipeline`
+// (§17: a behavior module declares the behaviors and the pipeline; a schema
+// module declares only thing/data/enum/signal). It finds the module's source in
+// the combined set, parses it, and inspects the declaration kinds. A module not
+// in the set (or one the parser rejects) is NOT classified as a behavior module —
+// the layering check rejects only a module the tree positively proves is one,
+// leaving an unknown/unparseable import to the per-source resolution pipeline.
+source_is_behavior_module :: proc(all_sources: []Source, module: string) -> bool {
+	for source in all_sources {
+		if source.module != module {
+			continue
+		}
+		source_bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
+		if read_err != nil {
+			return false
+		}
+		ast, parse_err := stage_parse(stage_lex(string(source_bytes)))
+		if parse_err != .None {
+			return false
+		}
+		return len(ast.behaviors) > 0 || len(ast.pipelines) > 0
+	}
+	return false
 }

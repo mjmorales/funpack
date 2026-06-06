@@ -22,6 +22,13 @@ Token_Kind :: enum {
 	Let,
 	Return,
 	Fn,
+	// `extern` is the §02/§26 native-boundary opener: `extern fn name(…) -> R`
+	// declares a body-less function whose definition lives outside funpack — the
+	// generated §17 seam's symbol-table/spawn-list accessors (`extern fn arena()
+	// -> Arena`). It is a reserved keyword (grammar/fun.ll1.md §2) and a distinct
+	// FIRST(Declaration) opener, so it tokenizes here like every other unique
+	// declaration keyword rather than riding as a contextual Ident.
+	Extern,
 	Match,
 	// §06/§07 declaration and expression keywords. thing/singleton/signal
 	// are contextual leading keywords in the spec (§06: `let thing = …`
@@ -361,6 +368,8 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .Return, text = text}, i
 	case "fn":
 		return Token{kind = .Fn, text = text}, i
+	case "extern":
+		return Token{kind = .Extern, text = text}, i
 	case "match":
 		return Token{kind = .Match, text = text}, i
 	case "thing":

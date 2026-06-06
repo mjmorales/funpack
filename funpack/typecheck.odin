@@ -229,6 +229,13 @@ check_layer_value :: proc(expr: Expr, registry: []string) -> Type_Error {
 // its writes). bindings()/setup() are top-level fns, so they ride this sweep.
 check_bodies :: proc(bindings: Bindings, env: Type_Env, ast: Ast) -> Type_Error {
 	for fn in ast.fns {
+		// An `extern fn` (§26) has no body — its implementation is the engine's,
+		// not the source's — so there is nothing to type. Its signature is still
+		// resolved (resolve_env) and exported (collect_module_exports); only the
+		// body-typing pass skips it.
+		if fn.is_extern {
+			continue
+		}
 		check_fn_body(bindings, env, fn) or_return
 	}
 	for behavior in ast.behaviors {
