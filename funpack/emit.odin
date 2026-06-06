@@ -110,14 +110,16 @@ stage_emit :: proc(
 	return emit_artifact(input, allocator), .None
 }
 
-// emit_artifact serializes the checked program to the v1 artifact bytes
-// (docs/artifact-format.md). It writes the version stamp then every section in
-// the fixed order, each as a `[name N]` header followed by its records. The
-// returned string is the whole artifact, terminated by a single trailing '\n'
-// like every other line — byte-identical across emissions by construction.
+// emit_artifact serializes the checked program to the versioned artifact bytes
+// (docs/artifact-format.md). It writes the version stamp — the magic then the
+// current ARTIFACT_SCHEMA_VERSION, the single compatibility gate — then every
+// section in the fixed order, each as a `[name N]` header followed by its
+// records. The returned string is the whole artifact, terminated by a single
+// trailing '\n' like every other line — byte-identical across emissions by
+// construction.
 emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
-	emit_line(&b, ARTIFACT_MAGIC, " ", "1")
+	emit_line(&b, ARTIFACT_MAGIC, " ", encode_int(ARTIFACT_SCHEMA_VERSION, context.temp_allocator))
 
 	emit_meta(&b, input.project)
 	emit_enums(&b, input.ast)

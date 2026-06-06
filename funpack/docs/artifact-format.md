@@ -25,12 +25,20 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 1
+funpack-artifact 2
 ```
 
-- `schema_version` is the integer after the space (here `1`).
+- `schema_version` is the integer after the space (here `2`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
+- **Version history.** v1 was the initial gameplay-golden format (the pong
+  surface). v2 ratifies two §2.7 body-node arm KINDs the snake/hunt goldens
+  introduce: `bare_binder` (a tuple position binding the whole element) and
+  `tuple` (a positional tuple pattern). The `tuple` arm is the one arm kind that
+  carries children — its positional sub-pattern arms — so it ends in a trailing
+  `child_count`, unlike every other arm whose child count is fixed at 0 by kind.
+  A new arm kind and an arm-with-children are both layout changes, so the version
+  bumped 1 → 2.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -210,23 +218,34 @@ subtree shape:
 | `lambda` | `param_count:Int` `params:name…` | 1 = the single-`return` body expr | `fn(p) { return e }` |
 | `unary` | `op:name` | 1 = operand | `-x`, `not x` (`op` ∈ `neg`,`not`) |
 | `binary` | `op:name` | 2 = lhs, rhs | `a + b` (`op` table below) |
-| `match` | `arm_count:Int` `child_count:Int` | `child_count` = 1 scrutinee + (per arm: an `arm` then its body) = `1 + 2*arm_count` | `match e { … }` |
-| `arm` | `pat:name` `type:name` `case:name` `binder_count:Int` `binders:name…` | 0 (fixed by kind; no trailing `child_count`) | one match arm's pattern (its body is the following sibling) |
+| `match` | `arm_count:Int` `child_count:Int` | `child_count` = 1 scrutinee + (per arm: an `arm` subtree then its body) = `1 + 2*arm_count` | `match e { … }` |
+| `arm` (scalar) | `pat:name` `type:name` `case:name` `binder_count:Int` `binders:name…` | 0 (fixed by kind; no trailing `child_count`) | a `wildcard`/`bare_variant`/`variant_binds`/`bare_binder` pattern (its body is the following sibling) |
+| `arm` (tuple, v2) | `tuple` `child_count:Int` | `child_count` = the positional sub-pattern `arm` subtrees | a `(p, q, …)` tuple pattern, e.g. `(Option::Some(cell), next)` |
 | `let` | `name:name` | 1 = the bound value expr | `let n = e` |
 | `if_return` | (none) | 2 = condition, returned value | early-return `if cond { return v }` |
 | `return` | (none) | 1 = the returned value expr | `return e` |
 
 - `binary` `op` is the closed glyph set, by name: `add` `sub` `mul` `div` `mod`
   `eq` `ne` `lt` `le` `gt` `ge` `and` `or`. `unary` `op` is `neg` or `not`.
-- `arm` `pat` is the pattern kind: `wildcard` (`type`/`case` are `-`,
-  `binder_count` 0), `bare_variant` (`type::case`, `binder_count` 0), or
-  `variant_binds` (`type::case` with `binder_count` payload binder names following
-  on the same line — a binder of `_` is the discard binder). An `arm` carries no
-  child of its own; the arm's body is the **next** sibling subtree under the
-  `match`. A `match` therefore declares a `child_count` of `1 + 2*arm_count`: the
-  scrutinee subtree, then for each arm an `arm` node immediately followed by its
-  body subtree. (For pong every match is two-armed, so `arm_count` is `2` and
-  `child_count` is `5`.)
+- `arm` `pat` is the pattern kind. The **scalar** patterns carry no child of
+  their own (their body is the next sibling under the `match`): `wildcard`
+  (`type`/`case` are `-`, `binder_count` 0), `bare_variant` (`type::case`,
+  `binder_count` 0), `variant_binds` (`type::case` with `binder_count` payload
+  binder names following on the same line — a binder of `_` is the discard
+  binder), and `bare_binder` (v2 — a single binder name binding the whole tuple
+  position, e.g. snake's `next` Rng position; its body is likewise the next
+  sibling and it carries 0 children). The **tuple** pattern (v2) is the one arm
+  with children: `arm tuple child_count` is followed by `child_count` positional
+  sub-pattern `arm` subtrees, each a nested arm of any pattern kind (a variant, a
+  wildcard, a bare binder, or a nested tuple). A reader reads a scalar arm's
+  child count as 0 by kind, and a `tuple` arm's as the trailing `child_count`
+  token. A `match` declares a `child_count` of `1 + 2*arm_count`: the scrutinee
+  subtree, then for each arm an `arm` SUBTREE (a scalar arm is one line; a tuple
+  arm is its head plus its sub-pattern arms) immediately followed by its body
+  subtree. (For pong every match is two-armed with scalar arms, so `arm_count`
+  is `2` and `child_count` is `5`; snake's `match pick(free, rng)` is two-armed
+  with tuple arms, still `arm_count` `2` and `child_count` `5` because each
+  tuple arm and its sub-arms count as one subtree.)
 - A body's **top** is a single statement subtree per body line of the source: a
   `fn`/`step`/`const` body is a sequence of statements (`let`, `if_return`,
   `return`), so the owning record declares a `body_count` of top-level statement
@@ -261,7 +280,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 1
+funpack-artifact 2
 [meta 2]
 …
 [enums N]

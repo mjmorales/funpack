@@ -194,6 +194,34 @@ test_closure_rejects_orphaned_snake_signal :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_closure_rejects_orphaned_live_snake_signal :: proc(t: ^testing.T) {
+	// AC (the epic's named edge-check regression, derived from the LIVE golden):
+	// take the live snake source and drop the ONLY consumer of an emitted signal
+	// with a clearly-anchored edit — remove apply_death from the death stage, so
+	// detect_death's emitted Died signal has no downstream consuming stage. The
+	// edited source must reject at stage_flatten with Unclosed_Signal naming Died.
+	// The transform is an anchored replacement of the live golden text (not a
+	// hand-maintained parallel source), so the negative stays in lockstep with the
+	// golden: if snake's death stage is re-spelled, the anchor misses and the
+	// fixture fails loudly (found = false) rather than silently testing nothing.
+	// Died is the single-consumer signal (apply_death alone consumes it); dropping
+	// it orphans Died cleanly, while Eaten keeps its three consumers.
+	source, ok := snake_source()
+	if !ok {
+		return
+	}
+	variant, found := golden_variant(
+		source,
+		"death:   [detect_death, apply_death]",
+		"death:   [detect_death]",
+	)
+	testing.expect(t, found)
+	verdict := flatten_of(variant)
+	testing.expect_value(t, verdict.err, Flatten_Error.Unclosed_Signal)
+	testing.expect_value(t, verdict.signal, "Died")
+}
+
+@(test)
 test_closure_passes_snake_eat_stage_with_consumer :: proc(t: ^testing.T) {
 	// The positive control: re-adding the grow consumer downstream of detect_eat
 	// closes the Eaten signal, so the edge check passes — proof the orphan

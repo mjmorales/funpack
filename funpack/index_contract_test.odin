@@ -221,6 +221,68 @@ test_index_contract_pong_authored_and_derived_values :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_index_contract_snake_project_record :: proc(t: ^testing.T) {
+	// The snake project's Index Contract record, end to end through the full
+	// checked pipeline: a valid one-object-per-line NDJSON behind the leading
+	// INDEX_SCHEMA_VERSION (the index NDJSON shape is unchanged by the snake
+	// surface — the artifact-format schema bump for tuple/bare_binder arms is a
+	// separate compatibility gate, so INDEX_SCHEMA_VERSION holds), the single 8hz
+	// Snake entrypoint, the snake-shaped capability set (render/input/state), and
+	// the twelve-step depth-first flattened pipeline (setup → turn → advance →
+	// detect_eat → grow → despawn_eaten → replenish → detect_death → apply_death →
+	// draw_snake → draw_food → draw_state). The fixture resolves the sibling snake
+	// checkout (or FUNPACK_SNAKE_DIR) and SKIPs loudly when absent.
+	dir := resolve_snake_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP index contract snake: %s not found — set FUNPACK_SNAKE_DIR or check out funpack-spec as a sibling", dir)
+		return
+	}
+	identity, project_err := read_project(dir)
+	testing.expect_value(t, project_err, Project_Error.None)
+	if project_err != .None || len(identity.sources) == 0 {
+		return
+	}
+	source_bytes, read_err := os.read_entire_file_from_path(identity.sources[0].path, context.temp_allocator)
+	testing.expect(t, read_err == nil)
+	typed, flat, compiled := compile_for_index(string(source_bytes))
+	testing.expect(t, compiled)
+	if !compiled {
+		return
+	}
+	record, record_err := build_project_record(dir, typed, flat)
+	testing.expect_value(t, record_err, Index_Contract_Error.None)
+	if record_err != .None {
+		return
+	}
+
+	testing.expect_value(t, record.schema_version, INDEX_SCHEMA_VERSION)
+	testing.expect_value(t, len(record.entrypoints), 1)
+	if len(record.entrypoints) == 1 {
+		testing.expect_value(t, record.entrypoints[0].pipeline, "Snake")
+		testing.expect_value(t, record.entrypoints[0].tick_hz, 8)
+	}
+	// Render/input/state — snake wires no optional battery (no ui/, models/, net:,
+	// @expose, or audio: stage).
+	testing.expect_value(t, len(record.capabilities), 3)
+	testing.expect(t, index_capabilities_contains(record.capabilities, .Render))
+	testing.expect(t, index_capabilities_contains(record.capabilities, .Input))
+	testing.expect(t, index_capabilities_contains(record.capabilities, .State))
+	// The twelve-step depth-first total order (spec §07 §3), gap-free.
+	testing.expect_value(t, len(record.pipeline_flattened), 12)
+	if len(record.pipeline_flattened) == 12 {
+		testing.expect_value(t, record.pipeline_flattened[0].ordinal, 0)
+		testing.expect_value(t, record.pipeline_flattened[0].behavior, "setup")
+		testing.expect_value(t, record.pipeline_flattened[11].behavior, "draw_state")
+	}
+	// Every structural gate clears on the snake golden (spec §29 §1).
+	testing.expect_value(t, len(record.gate_results), int(max(Gate_Family)) + 1)
+	for result in record.gate_results {
+		testing.expectf(t, result.passed, "gate %v unexpectedly failed on the snake golden", result.gate)
+	}
+	log.infof("index contract snake project record verified (12-step pipeline, schema v%d)", INDEX_SCHEMA_VERSION)
+}
+
+@(test)
 test_index_contract_pong_double_emission_identical :: proc(t: ^testing.T) {
 	// Emitting the pong project record twice from the same source yields
 	// byte-identical NDJSON — the deterministic whole-stream obligation, end

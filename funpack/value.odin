@@ -14,13 +14,51 @@ Value :: union {
 	Vec3_Value,
 	Quat_Value,
 	List_Value,
+	Tuple_Value,
 	Lambda_Value,
 	Enum_Value,
 	Record_Value,
+	Input_Value,
+	Time_Value,
 }
 
 List_Value :: struct {
 	elements: []Value,
+}
+
+// Tuple_Value is a fixed-arity positional aggregate — the §04 §1 `(value,
+// next_rng)` pair a draw/startup returns, and the `(Option, Rng)` shape a
+// pick result carries. Equality is positional: two tuples are equal iff they
+// have the same arity and every position compares equal (spec §10). A View.of
+// list materializes as a List_Value, so a tuple never holds a View.
+Tuple_Value :: struct {
+	elements: []Value,
+}
+
+// Input_Value is the test-position Input snapshot: the set of (player, action)
+// button presses an inline test seeds via Input.empty().with_pressed(…). It is
+// a §23 §2 read surface — pressed/released/held query whether a button is in
+// the set; an absent (player, action) reads false. The set is identified by the
+// player and action VARIANT names (PlayerId::P1, Move::Down), matching the
+// evaluator's Enum_Value (type_name, variant) identity. value/axis read the
+// analog channels, which a with_pressed snapshot never seeds, so they read the
+// zero/zero-vector default — a behavior never faults on input.
+Input_Value :: struct {
+	pressed: []Input_Press,
+}
+
+// Input_Press is one held button in an Input snapshot: the player and action
+// variant pair Input.with_pressed marked down-this-tick.
+Input_Press :: struct {
+	player: string, // the PlayerId variant (e.g. "P1")
+	action: string, // the action variant (e.g. "Down")
+}
+
+// Time_Value is the test-position Time resource: the fixed frame delta Time.at(dt)
+// seeds (§04). Its one member read is `time.dt`, the per-tick delta in fixed
+// seconds the hunt search countdown folds.
+Time_Value :: struct {
+	dt: Fixed,
 }
 
 // Enum_Value is a bare enum variant value — a user enum (Side::Left) or an
@@ -108,6 +146,25 @@ value_equal :: proc(a, b: Value) -> bool {
 			}
 		}
 		return true
+	case Tuple_Value:
+		bv, ok := b.(Tuple_Value)
+		if !ok || len(av.elements) != len(bv.elements) {
+			return false
+		}
+		for element, i in av.elements {
+			if !value_equal(element, bv.elements[i]) {
+				return false
+			}
+		}
+		return true
+	case Input_Value:
+		// Input snapshots have no value-equality in the surface (no test compares
+		// two Inputs); comparing them is always false rather than promising a set
+		// equality the language never defines.
+		return false
+	case Time_Value:
+		bv, ok := b.(Time_Value)
+		return ok && av.dt == bv.dt
 	case Lambda_Value:
 		// Functions have no extensional equality; comparing them is
 		// always false rather than an identity check the language never

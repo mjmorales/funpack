@@ -130,6 +130,8 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		return eval_record(ctx, env, e)
 	case ^List_Expr:
 		return eval_list(ctx, env, e)
+	case ^Tuple_Expr:
+		return eval_tuple(ctx, env, e)
 	case ^With_Expr:
 		return eval_with(ctx, env, e)
 	case ^Match_Expr:
@@ -146,6 +148,18 @@ eval_list :: proc(ctx: Eval_Ctx, env: ^Env, e: ^List_Expr) -> (value: Value, ok:
 		elements[i] = eval_expr(ctx, env, element) or_return
 	}
 	return List_Value{elements = elements}, true
+}
+
+// eval_tuple lowers a tuple literal `(a, b, …)` (spec §02; §04 §1): each position
+// evaluates in source order into a positional Tuple_Value — the `(value,
+// next_rng)` / `(Option, Rng)` shape a draw/startup returns and a tuple-pattern
+// match destructures.
+eval_tuple :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Tuple_Expr) -> (value: Value, ok: bool) {
+	elements := make([]Value, len(e.elements), context.temp_allocator)
+	for element, i in e.elements {
+		elements[i] = eval_expr(ctx, env, element) or_return
+	}
+	return Tuple_Value{elements = elements}, true
 }
 
 // apply_lambda binds the parameters in a fresh child frame off the
@@ -449,11 +463,9 @@ match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: 
 		child.bindings[pattern.binders[0]] = option.payload^
 		return child, true
 	case .Bare_Binder:
-		// A bare binder matches any value and binds it to its single name —
-		// the trivially-correct case the parser admits as a tuple-pattern
-		// position. The whole tuple-pattern evaluation path (decomposing a
-		// tuple value across positional sub-patterns) is a downstream
-		// semantics seam; the matcher binds the position name here.
+		// A bare binder matches any value and binds it to its single name — a
+		// tuple position that captures the whole element (snake's `next` Rng
+		// position in `(Option::Some(cell), next)`).
 		if len(pattern.binders) != 1 {
 			return env, false
 		}
@@ -461,20 +473,56 @@ match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: 
 		child.bindings[pattern.binders[0]] = scrutinee
 		return child, true
 	case .Tuple:
-		// Tuple-value decomposition belongs to the value/typing seam — the
-		// Value union carries no tuple arm, so no tuple scrutinee can reach
-		// this matcher. The grammar seam admits the pattern; the arm fails
-		// closed as a non-match rather than guessing a decomposition.
-		return env, false
+		// Tuple decomposition: the scrutinee must be a Tuple_Value of the same
+		// arity, and every positional sub-pattern must match its element. Binders
+		// from every position accumulate into one shared child frame, so
+		// `(Option::Some(cell), next)` binds both `cell` (from the nested variant
+		// arm) and `next` (the bare binder) for the body — the §04 §1 pick-result
+		// destructure. A non-tuple, an arity mismatch, or any position miss is a
+		// non-match.
+		return match_tuple_pattern(pattern, scrutinee, env)
 	}
 	return env, false
 }
 
+// match_tuple_pattern destructures a tuple scrutinee against a tuple pattern:
+// each positional sub-pattern is matched against the element at the same
+// position by a recursive match_pattern, threading the accumulating binder frame
+// through every position so binders from all positions are visible in the arm
+// body. The threaded frame starts at `env` and each matched sub-pattern returns
+// the next frame (a child when it bound names, the same frame otherwise).
+match_tuple_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: ^Env, matched: bool) {
+	tuple, is_tuple := scrutinee.(Tuple_Value)
+	if !is_tuple || len(tuple.elements) != len(pattern.elements) {
+		return env, false
+	}
+	current := env
+	for sub, i in pattern.elements {
+		next, sub_matched := match_pattern(sub, tuple.elements[i], current)
+		if !sub_matched {
+			return env, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+// eval_unary lowers the two unary forms (spec §02): numeric negation `-x` over a
+// Fixed/Int, and the word operator `not x` over a Bool — the `not contains(occ,
+// c)` predicate body snake's free-cell filter takes. `not` is carried as an
+// Ident token (parse_unary), so it is keyed by text, not kind.
 eval_unary :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Unary_Expr) -> (value: Value, ok: bool) {
+	operand := eval_expr(ctx, env, e.operand) or_return
+	if e.op.kind == .Ident && e.op.text == "not" {
+		b, is_bool := operand.(bool)
+		if !is_bool {
+			return nil, false
+		}
+		return !b, true
+	}
 	if e.op.kind != .Minus {
 		return nil, false
 	}
-	operand := eval_expr(ctx, env, e.operand) or_return
 	#partial switch v in operand {
 	case Fixed:
 		return fixed_neg(v), true
@@ -657,11 +705,16 @@ eval_member :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Member_Expr) -> (value: Value,
 }
 
 // eval_field_access reads a member off a value: a user record's field
-// (Goal.side, self.pos) or a Vec2/Vec3 component (v.x).
+// (Goal.side, self.pos), a Vec2/Vec3 component (v.x), or the §04 Time resource's
+// dt — the per-tick delta in fixed seconds the hunt search countdown folds.
 eval_field_access :: proc(receiver: Value, member: string) -> (value: Value, ok: bool) {
 	#partial switch r in receiver {
 	case Record_Value:
 		return record_field_value(r.fields, member)
+	case Time_Value:
+		if member == "dt" {
+			return r.dt, true
+		}
 	case Vec2_Value:
 		switch member {
 		case "x":
@@ -775,6 +828,22 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_fold(ctx, env, e)
 	case "first":
 		return eval_first(ctx, env, e)
+	case "prepend":
+		return eval_prepend(ctx, env, e)
+	case "init":
+		return eval_init(ctx, env, e)
+	case "contains":
+		return eval_contains(ctx, env, e)
+	case "concat":
+		return eval_concat(ctx, env, e)
+	case "is_empty":
+		return eval_is_empty(ctx, env, e)
+	case "map":
+		return eval_map(ctx, env, e)
+	case "filter":
+		return eval_filter(ctx, env, e)
+	case "grid_cells":
+		return eval_grid_cells(ctx, env, e)
 	}
 	// A call to a user-declared top-level fn (advance, goal_side, add_goal):
 	// resolve its body off the module and evaluate it against the arguments.
@@ -848,6 +917,158 @@ eval_first :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok
 	return Option_Value{is_some = false, payload = nil}, true
 }
 
+// eval_list_arg evaluates argument i of an expected-arity call and demands a
+// list — the shared shape the §08 list combinators read. A View materializes as
+// a List_Value (eval reads its rows as elements), so a View argument satisfies
+// this just as a literal list does.
+eval_list_arg :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr, i: int, arity: int) -> (elements: []Value, ok: bool) {
+	if len(e.args) != arity {
+		return nil, false
+	}
+	value := eval_expr(ctx, env, e.args[i]) or_return
+	list, is_list := value.(List_Value)
+	if !is_list {
+		return nil, false
+	}
+	return list.elements, true
+}
+
+// eval_prepend lowers `prepend(elem, list) -> [T]` (spec §08): a fresh list with
+// `elem` at the front then every element of `list` in order. Snake's cells()
+// prepends the head onto the body. The input list is never mutated.
+eval_prepend :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	elem := eval_expr(ctx, env, e.args[0]) or_return
+	elements := eval_list_arg(ctx, env, e, 1, 2) or_return
+	out := make([]Value, len(elements) + 1, context.temp_allocator)
+	out[0] = elem
+	for element, i in elements {
+		out[i + 1] = element
+	}
+	return List_Value{elements = out}, true
+}
+
+// eval_init lowers `init(list) -> [T]` (spec §08): every element except the last.
+// Snake's body_after drops the tail this way when the snake is not growing. The
+// empty list yields the empty list (total — no fault on a missing last element).
+eval_init :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 1) or_return
+	if len(elements) == 0 {
+		return List_Value{elements = make([]Value, 0, context.temp_allocator)}, true
+	}
+	out := make([]Value, len(elements) - 1, context.temp_allocator)
+	for i in 0 ..< len(elements) - 1 {
+		out[i] = elements[i]
+	}
+	return List_Value{elements = out}, true
+}
+
+// eval_contains lowers `contains(list, elem) -> Bool` (spec §08): true when any
+// element structurally equals `elem`. Snake tests `contains(self.body, self.head)`
+// over Cell records, so the membership is the deep record equality value_equal folds.
+eval_contains :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	elem := eval_expr(ctx, env, e.args[1]) or_return
+	for element in elements {
+		if value_equal(element, elem) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+// eval_concat lowers `concat(a, b) -> [T]` (spec §08): every element of `a` then
+// every element of `b`, both in order. Snake's occupied() concatenates the
+// snake's cells with the food cells. Both inputs are read, never mutated.
+eval_concat :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	a := eval_list_arg(ctx, env, e, 0, 2) or_return
+	b := eval_list_arg(ctx, env, e, 1, 2) or_return
+	out := make([]Value, len(a) + len(b), context.temp_allocator)
+	for element, i in a {
+		out[i] = element
+	}
+	for element, i in b {
+		out[len(a) + i] = element
+	}
+	return List_Value{elements = out}, true
+}
+
+// eval_is_empty lowers `is_empty(list) -> Bool` (spec §08): true when the list
+// has no elements. Snake gates grow/replenish/apply_death on an empty signal
+// list this way.
+eval_is_empty :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 1) or_return
+	return len(elements) == 0, true
+}
+
+// eval_map lowers `map(source, fn) -> [U]` (spec §08): a fresh list applying the
+// unary function to each element in source order. The function slot is a literal
+// lambda or a bare user-fn name (apply_combinator), the same two forms fold's
+// combinator admits. Snake projects food rows to cells and cells to draw rects
+// this way; the View source materializes as a list, so map over a View yields a list.
+eval_map :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	out := make([]Value, len(elements), context.temp_allocator)
+	for element, i in elements {
+		out[i] = apply_combinator(ctx, env, e.args[1], {element}) or_return
+	}
+	return List_Value{elements = out}, true
+}
+
+// eval_filter lowers `filter(source, pred) -> [T]` (spec §08): a fresh list of
+// the elements the unary predicate accepts, in source order. Snake's free-cell
+// selection filters all_cells() by un-occupied, and detect_eat filters foods by
+// the head cell. The kept elements preserve the deterministic source order.
+eval_filter :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	kept := make([dynamic]Value, 0, len(elements), context.temp_allocator)
+	for element in elements {
+		verdict := apply_combinator(ctx, env, e.args[1], {element}) or_return
+		accepted, is_bool := verdict.(bool)
+		if !is_bool {
+			return nil, false
+		}
+		if accepted {
+			append(&kept, element)
+		}
+	}
+	return List_Value{elements = kept[:]}, true
+}
+
+// eval_grid_cells lowers `grid_cells(w, h, fn(x, y) -> Cell) -> [Cell]` (spec
+// §26): every cell of a w×h grid in STABLE ROW-MAJOR order, built by the two-arg
+// lambda. The outer loop walks rows (y from 0), the inner walks columns (x from
+// 0), so the enumeration is machine-identical — driven by the loop indices, never
+// by any map iteration. A non-positive extent yields the empty list (total). The
+// w/h are Ints (§10). Snake's all_cells() folds free-cell selection through this.
+eval_grid_cells :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 3 {
+		return nil, false
+	}
+	w_val := eval_expr(ctx, env, e.args[0]) or_return
+	h_val := eval_expr(ctx, env, e.args[1]) or_return
+	fn_val := eval_expr(ctx, env, e.args[2]) or_return
+	w, w_is_int := w_val.(i64)
+	h, h_is_int := h_val.(i64)
+	lambda, is_lambda := fn_val.(Lambda_Value)
+	if !w_is_int || !h_is_int || !is_lambda {
+		return nil, false
+	}
+	count := (w > 0 && h > 0) ? int(w) * int(h) : 0
+	out := make([]Value, count, context.temp_allocator)
+	idx := 0
+	for y in 0 ..< h {
+		for x in 0 ..< w {
+			cell := apply_lambda(ctx, lambda, {x, y}) or_return
+			out[idx] = cell
+			idx += 1
+		}
+	}
+	return List_Value{elements = out}, true
+}
+
 // some_value boxes a value as Option::Some — the payload pointer a union
 // cannot hold inline.
 some_value :: proc(inner: Value) -> Value {
@@ -888,9 +1109,22 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 			if recv.name == "Quat" {
 				return eval_quat_constructor(ctx, env, callee.member, args)
 			}
+			// The §23 static resource builders: Input.empty() the empty input
+			// snapshot, Time.at(dt) a fixed-dt Time, View.of(list) a §08 read table
+			// materialized as a list. A resource name is never an env binding, so
+			// this branch only fires for the type-name static-method form.
+			if builder, is_builder := eval_resource_builder(ctx, env, recv.name, callee.member, args); is_builder {
+				return builder, true
+			}
 		}
 	}
 	receiver := eval_expr(ctx, env, callee.receiver) or_return
+	// A method call on a value receiver: the §23 §2 Input queries (an inline test
+	// seeds the snapshot via Input.empty().with_pressed(…) and reads it via
+	// .pressed(…)), then the quaternion methods.
+	if input, is_input := receiver.(Input_Value); is_input {
+		return eval_input_method(ctx, env, input, callee.member, args)
+	}
 	q := receiver.(Quat_Value) or_return
 	switch callee.member {
 	case "rotate":
@@ -918,6 +1152,131 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 		return quat_slerp(q, other, t), true
 	}
 	return nil, false
+}
+
+// eval_resource_builder lowers the §23 static resource builders applied as a
+// type-name static method (spec §23): Input.empty() is the empty input snapshot
+// an inline test seeds, Time.at(dt) a fixed-dt Time resource, and View.of(list) a
+// §08 read table built from a literal list — materialized as a List_Value so the
+// list combinators (first/map/filter) read its rows as elements exactly as they
+// read a literal list. is_builder is false for any other (type, member) pair so
+// the caller falls through to its other type-name forms.
+eval_resource_builder :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: string, args: []Expr) -> (value: Value, is_builder: bool) {
+	switch type_name {
+	case "Input":
+		if member == "empty" && len(args) == 0 {
+			return Input_Value{pressed = make([]Input_Press, 0, context.temp_allocator)}, true
+		}
+	case "Time":
+		if member == "at" && len(args) == 1 {
+			dt_value, dt_ok := eval_expr(ctx, env, args[0])
+			if !dt_ok {
+				return nil, false
+			}
+			dt, is_fixed := dt_value.(Fixed)
+			if !is_fixed {
+				return nil, false
+			}
+			return Time_Value{dt = dt}, true
+		}
+	case "View":
+		if member == "of" && len(args) == 1 {
+			source, source_ok := eval_expr(ctx, env, args[0])
+			if !source_ok {
+				return nil, false
+			}
+			// View.of(list) materializes the read table as the list itself — a View
+			// row read is the underlying element read (the runtime threads View rows
+			// to a behavior as a list, so the evaluator mirrors that here).
+			list, is_list := source.(List_Value)
+			if !is_list {
+				return nil, false
+			}
+			return list, true
+		}
+	}
+	return nil, false
+}
+
+// eval_input_method lowers a §23 §2 query on an Input snapshot value: pressed/
+// released/held read whether a (player, action) button is in the snapshot's held
+// set, with_pressed returns a new snapshot adding one held button, and value/axis
+// read the analog channels — which a with_pressed snapshot never seeds, so they
+// read the zero / zero-vector default (a behavior never faults on input). The
+// (player, action) pair is identified by its variant names (PlayerId::P1,
+// Move::Down), matching the snapshot's recorded press identity.
+eval_input_method :: proc(ctx: Eval_Ctx, env: ^Env, input: Input_Value, member: string, args: []Expr) -> (value: Value, ok: bool) {
+	switch member {
+	case "with_pressed":
+		player, action, args_ok := eval_input_button_args(ctx, env, args)
+		if !args_ok {
+			return nil, false
+		}
+		next := make([]Input_Press, len(input.pressed) + 1, context.temp_allocator)
+		copy(next, input.pressed)
+		next[len(input.pressed)] = Input_Press{player = player, action = action}
+		return Input_Value{pressed = next}, true
+	case "pressed", "held":
+		player, action, args_ok := eval_input_button_args(ctx, env, args)
+		if !args_ok {
+			return nil, false
+		}
+		return input_is_pressed(input, player, action), true
+	case "released":
+		// A released edge is never set by with_pressed (which marks down-this-tick),
+		// so a seeded snapshot reads no release — the §23 §2 default.
+		_, _, args_ok := eval_input_button_args(ctx, env, args)
+		if !args_ok {
+			return nil, false
+		}
+		return false, true
+	case "value":
+		// The analog 1D read of an unseeded channel is the zero default.
+		_, _, args_ok := eval_input_button_args(ctx, env, args)
+		if !args_ok {
+			return nil, false
+		}
+		return Fixed(0), true
+	case "axis":
+		// The analog 2D read of an unseeded channel is the zero vector default.
+		_, _, args_ok := eval_input_button_args(ctx, env, args)
+		if !args_ok {
+			return nil, false
+		}
+		return Vec2_Value{}, true
+	}
+	return nil, false
+}
+
+// eval_input_button_args evaluates an Input query's (player, action) argument
+// pair to their variant names — the (PlayerId, action-enum) the snapshot keys a
+// press on. ok is false on a wrong arity or a non-variant argument.
+eval_input_button_args :: proc(ctx: Eval_Ctx, env: ^Env, args: []Expr) -> (player, action: string, ok: bool) {
+	if len(args) != 2 {
+		return "", "", false
+	}
+	player_value, p_ok := eval_expr(ctx, env, args[0])
+	action_value, a_ok := eval_expr(ctx, env, args[1])
+	if !p_ok || !a_ok {
+		return "", "", false
+	}
+	player_variant, is_player := player_value.(Enum_Value)
+	action_variant, is_action := action_value.(Enum_Value)
+	if !is_player || !is_action {
+		return "", "", false
+	}
+	return player_variant.variant, action_variant.variant, true
+}
+
+// input_is_pressed reports whether a (player, action) button is in a snapshot's
+// held set — a linear scan over the recorded presses, keyed by variant name.
+input_is_pressed :: proc(input: Input_Value, player, action: string) -> bool {
+	for press in input.pressed {
+		if press.player == player && press.action == action {
+			return true
+		}
+	}
+	return false
 }
 
 // eval_quat_constructor lowers the Quat.axis_angle associated constructor.

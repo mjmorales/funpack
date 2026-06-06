@@ -21,11 +21,21 @@ import "core:strings"
 // (docs/artifact-format.md §1). Any field/layout/encoding change bumps it;
 // a runtime exact-matches it and refuses a mismatch rather than
 // best-effort parsing. It is the single compatibility gate.
-ARTIFACT_SCHEMA_VERSION :: 1
+//
+// Version 2 ratifies two §2.7 body-node arm KINDs the snake/hunt goldens first
+// emit: `bare_binder` (a tuple position binding the whole element — snake's
+// `next` Rng position) and `tuple` (a positional tuple pattern, e.g.
+// `(Option::Some(cell), next)`). The closed node-kind set gains the `tuple` arm,
+// and — the layout-changing part — a `tuple` arm carries its positional
+// sub-pattern arms as CHILDREN, so its line ends in a child count read the
+// generic way, unlike every other arm whose child count is fixed at 0 by kind.
+// A new arm kind and an arm-with-children are both layout changes, so the
+// version bumps from 1 to 2 (it is the single compatibility gate, §1).
+ARTIFACT_SCHEMA_VERSION :: 2
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
-// `funpack-artifact 1`. A parser asserts the magic and the version before
-// reading any payload.
+// `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
+// magic and the version before reading any payload.
 ARTIFACT_MAGIC :: "funpack-artifact"
 
 // encode_int writes a funpack Int (64-bit signed saturating, §10) as plain
@@ -208,7 +218,7 @@ split_artifact_lines :: proc(content: string) -> []string {
 }
 
 // parse_version_stamp splits line 1 into its magic token and integer
-// version: `funpack-artifact 1`. ok is false on a missing space or a
+// version: `funpack-artifact <version>`. ok is false on a missing space or a
 // non-integer version, which the caller maps to Bad_Magic/Bad_Version.
 parse_version_stamp :: proc(line: string) -> (magic: string, version: int, ok: bool) {
 	space := strings.index_byte(line, ' ')
@@ -252,11 +262,20 @@ artifact_find_section :: proc(doc: Artifact_Doc, name: string) -> (section: Arti
 // many of the immediately-following lines are its children.
 NODE_LINE_KEYWORD :: "node"
 
-// ARM_NODE_KIND is the one node kind whose child count is fixed at 0 by its
-// kind rather than read as the trailing token: an `arm` line ends in its
-// variable-length `binders` list, not a `child_count` (§2.7). Every other
-// node line ends in its child count.
+// ARM_NODE_KIND is the node kind whose child count is governed by its arm
+// PATTERN kind, not the generic trailing-token rule (§2.7). A scalar-pattern arm
+// (`wildcard`/`bare_variant`/`variant_binds`/`bare_binder`) ends in its
+// variable-length `binders` list and carries 0 children; a `tuple` arm
+// (schema v2) instead carries its positional sub-pattern arms as children and
+// ends in a trailing child count read the generic way.
 ARM_NODE_KIND :: "arm"
+
+// ARM_TUPLE_PATTERN is the one arm pattern kind that carries children: a `tuple`
+// arm's positional sub-pattern arms (e.g. `(Option::Some(cell), next)` over its
+// two sub-arms). Its line is `node arm tuple <child_count>`, so the count is the
+// trailing token — unlike every scalar arm pattern, whose child count is fixed at
+// 0 (§2.7, schema v2).
+ARM_TUPLE_PATTERN :: "tuple"
 
 // node_line_kind returns a body node line's KIND token — the second
 // space-separated field after the `node` keyword (`node KIND field… count`).
@@ -274,15 +293,26 @@ node_line_kind :: proc(line: string) -> (kind: string, ok: bool) {
 }
 
 // node_child_count returns a body node line's declared child count: the
-// trailing decimal token (§2.7), except an `arm` line whose child count is
-// fixed at 0 by its kind (its trailing field is the binder list). ok is false
-// on a malformed line or a non-integer trailing token.
+// trailing decimal token (§2.7). An `arm` line is special: a scalar-pattern arm
+// is fixed at 0 by its kind (its trailing field is the binder list), while a
+// `tuple` arm (schema v2) carries its positional sub-pattern arms as children, so
+// its trailing token IS the child count read the generic way. ok is false on a
+// malformed line or a non-integer trailing token.
 node_child_count :: proc(line: string) -> (count: int, ok: bool) {
 	kind, kind_ok := node_line_kind(line)
 	if !kind_ok {
 		return 0, false
 	}
 	if kind == ARM_NODE_KIND {
+		// A `tuple` arm carries children (the trailing count); every other arm
+		// pattern is fixed at 0 (its trailing field is the binder list).
+		if arm_pattern_kind(line) == ARM_TUPLE_PATTERN {
+			space := strings.last_index_byte(line, ' ')
+			if space < 0 {
+				return 0, false
+			}
+			return strconv.parse_int(line[space + 1:])
+		}
 		return 0, true
 	}
 	space := strings.last_index_byte(line, ' ')
@@ -290,6 +320,23 @@ node_child_count :: proc(line: string) -> (count: int, ok: bool) {
 		return 0, false
 	}
 	return strconv.parse_int(line[space + 1:])
+}
+
+// arm_pattern_kind returns an `arm` line's pattern-kind token — the field after
+// the `node arm ` prefix (`wildcard`/`bare_variant`/`variant_binds`/`bare_binder`
+// /`tuple`, §2.7). It is the empty string for a non-arm line or an arm with no
+// pattern token; the caller distinguishes a `tuple` arm (children) from every
+// other arm pattern (0 children) through this.
+arm_pattern_kind :: proc(line: string) -> string {
+	prefix := NODE_LINE_KEYWORD + " " + ARM_NODE_KIND + " "
+	if !strings.has_prefix(line, prefix) {
+		return ""
+	}
+	tail := line[len(prefix):]
+	if end := strings.index_byte(tail, ' '); end >= 0 {
+		return tail[:end]
+	}
+	return tail
 }
 
 // consume_node_subtree consumes one pre-order checked-AST subtree from a body

@@ -12,6 +12,7 @@ package funpack
 import "core:log"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 // test_emit_pong_artifact_matches_golden is the load-bearing acceptance: the
@@ -58,6 +59,97 @@ test_emit_pong_artifact_double_emit_identical :: proc(t: ^testing.T) {
 	}
 }
 
+// test_emit_snake_artifact_schema_v2_round_trips is the snake-side emission
+// acceptance: the production emitter, run over the live snake source, emits a
+// well-formed artifact whose body forest carries the schema-v2 tuple/bare_binder
+// arm shapes the pong golden never reaches. The snake surface is the first to
+// emit a §02 tuple-pattern match (`match pick(free, rng) { (Option::Some(cell),
+// next) => … }`), a [Despawn] command return, and an RNG-threaded (Rng, [Spawn])
+// startup. The check pins three load-bearing properties: the artifact carries the
+// bumped ARTIFACT_SCHEMA_VERSION (2), parses well-formed through the funpack
+// reader (every section count reconciles), and is deterministic (double-emit
+// byte-identical). The body-forest well-formedness over the tuple arms is proven
+// by the dedicated reader test below; this is the end-to-end emission proof. The
+// fixture resolves the sibling snake checkout (or FUNPACK_SNAKE_DIR) and SKIPs
+// loudly when absent.
+@(test)
+test_emit_snake_artifact_schema_v2_round_trips :: proc(t: ^testing.T) {
+	inputs, ok := snake_emit_inputs(t)
+	if !ok {
+		return
+	}
+	artifact, emit_err := stage_emit(inputs.source, inputs.module, inputs.project, inputs.entrypoint_fcfg, context.temp_allocator)
+	testing.expect_value(t, emit_err, Emit_Error.None)
+	if emit_err != .None {
+		return
+	}
+	doc, parse_err := parse_artifact(artifact)
+	testing.expect_value(t, parse_err, Artifact_Parse_Error.None)
+	// The bumped schema version (v2) the tuple/bare_binder arm KINDs land under.
+	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)
+	// Deterministic emission (spec §09, §29): two emissions are byte-identical.
+	second, second_err := stage_emit(inputs.source, inputs.module, inputs.project, inputs.entrypoint_fcfg, context.temp_allocator)
+	testing.expect_value(t, second_err, Emit_Error.None)
+	testing.expect(t, artifact == second)
+	if artifact == second {
+		log.infof("emit snake: schema-v2 artifact emits well-formed and byte-identical twice (%d bytes)", len(artifact))
+	}
+}
+
+// test_emit_schema_v2_tuple_arm_body_forest_round_trips proves the §2.7 schema-v2
+// body-node change end to end on the funpack side: a behavior body holding a
+// tuple-pattern match — `match pick(free, rng) { (Option::Some(cell), next) => …
+// (Option::None, next) => … }`, snake's replenish/setup shape — serializes to a
+// node forest whose `tuple` arms carry their positional sub-pattern arms as
+// children, and that forest is well-formed under the funpack reader. Before the
+// schema bump the reader fixed every arm at 0 children, so a tuple arm's nested
+// sub-arms leaked as siblings and the forest under-counted; the v2 reader reads a
+// `tuple` arm's child count from its trailing token while keeping every scalar
+// arm at 0. This is the schema-bump's load-bearing contract, self-contained so a
+// missing golden checkout never silences it.
+@(test)
+test_emit_schema_v2_tuple_arm_body_forest_round_trips :: proc(t: ^testing.T) {
+	// A behavior whose step body is a single `return match …` over a tuple-pattern
+	// match — the exact arm shape snake's replenish emits, minimized to one
+	// statement so the body is one top-level subtree.
+	source := strings.concatenate({SCHEMA_V2_TUPLE_HEADER,
+		"behavior replenish on Snake {\n" +
+		"  fn step(self: Snake, rng: Rng) -> (Rng, [Spawn]) {\n" +
+		"    return match pick(self.free, rng) {\n" +
+		"      (Option::Some(cell), next) => (next, [Spawn( Food{cell: cell} )])\n" +
+		"      (Option::None, next) => (next, [])\n" +
+		"    }\n" +
+		"  }\n" +
+		"}\n"}, context.temp_allocator)
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	behavior, found := find_behavior(ast, "replenish")
+	testing.expect(t, found)
+	if !found {
+		return
+	}
+	// Serialize the step body to its §2.7 node run and read it back through the
+	// funpack body-forest reader: one top-level statement subtree, no leftover.
+	b := strings.builder_make(context.temp_allocator)
+	emit_body(&b, behavior.step.body)
+	nodes := split_artifact_lines(strings.to_string(b))
+	testing.expect(t, body_forest_is_well_formed(nodes, len(behavior.step.body)))
+}
+
+// SCHEMA_V2_TUPLE_HEADER declares the minimal surface a tuple-arm body fixture
+// needs: the §04 Spawn command, the engine.rand Rng handle and pick draw, a Cell
+// value and a Food thing a Spawn scopes, and a Snake thing carrying a [Cell] free
+// list the pick reduces. It is self-contained so the body-forest reader test runs
+// without a golden checkout.
+SCHEMA_V2_TUPLE_HEADER :: "import engine.world.{Spawn}\n" +
+	"import engine.rand.{Rng, pick}\n" +
+	"data Cell { x: Int, y: Int }\n" +
+	"thing Food { cell: Cell }\n" +
+	"thing Snake { free: [Cell] = [] }\n"
+
 // Pong_Emit_Inputs bundles the pure inputs the emitter consumes for the pong
 // project: the single source's bytes, its §15 module name, the §14 project
 // identity, and the §14 entrypoints.fcfg text.
@@ -66,6 +158,39 @@ Pong_Emit_Inputs :: struct {
 	module:          string,
 	project:         Project_Identity,
 	entrypoint_fcfg: string,
+}
+
+// snake_emit_inputs resolves the snake project tree and reads the emitter's
+// inputs (source bytes, §15 module, §14 identity, entrypoints.fcfg) — the same
+// shape pong_emit_inputs reads for pong. ok = false (with the golden SKIP
+// warning through snake_source) when the sibling checkout is absent.
+snake_emit_inputs :: proc(t: ^testing.T) -> (inputs: Pong_Emit_Inputs, ok: bool) {
+	dir := resolve_snake_dir()
+	if !os.is_dir(dir) {
+		_, present := snake_source()
+		_ = present
+		return Pong_Emit_Inputs{}, false
+	}
+	project, read_err := read_project(dir)
+	if read_err != .None || len(project.sources) == 0 {
+		return Pong_Emit_Inputs{}, false
+	}
+	source_bytes, src_err := os.read_entire_file_from_path(project.sources[0].path, context.temp_allocator)
+	if src_err != nil {
+		return Pong_Emit_Inputs{}, false
+	}
+	entrypoint_path, _ := filepath.join({dir, "funpack_configs", "entrypoints.fcfg"}, context.temp_allocator)
+	entrypoint_bytes, ep_err := os.read_entire_file_from_path(entrypoint_path, context.temp_allocator)
+	if ep_err != nil {
+		return Pong_Emit_Inputs{}, false
+	}
+	return Pong_Emit_Inputs {
+			source          = string(source_bytes),
+			module          = project.sources[0].module,
+			project         = Project_Identity{name = project.name, version = project.version},
+			entrypoint_fcfg = string(entrypoint_bytes),
+		},
+		true
 }
 
 // pong_emit_inputs resolves the pong project tree and reads the emitter's
