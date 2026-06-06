@@ -234,17 +234,17 @@ test_krognid_seam_projection_derives_slots :: proc(t: ^testing.T) {
 // deterministic forward step (a pure Vec3), advance_gait's phase accumulation
 // (== 3.0 via the `% tau` wrap), pose_walk's rest-crossing leg (the §16 §7 Pose/
 // Transform arms), and locomotion's silent-at-rest case (== [], a pure empty list).
-// TWO asserts are NOT counted — they exercise ENGINE-VALUE execution the RUNTIME
-// owns, not the funpack evaluator (the same View/Nav/Draw3 split the arena and yard
-// goldens draw, golden_arena_test.odin / golden_yard_test.odin): read_drive reads
-// `input.value(player, axis)` against a seeded Input snapshot (the evaluator does
-// not materialize Input axis state, so it returns the zero default), and
-// locomotion's loop-while-moving case constructs and compares a §22 Audio.track
-// value (an opaque engine-audio value, like a Draw3 — the funpack evaluator has no
-// Audio execution). The count is PINNED exactly: a regression that drops an
-// evaluable assert, or mis-evaluates one, moves this number — never loosen it to a
-// range.
-KROGNID_EVALUABLE_ASSERTS :: 4
+// locomotion's loop-while-moving case ALSO counts: the §22 Audio.track/.pitch/
+// .gain/.bus builder chain evaluates through the engine.audio constructor/adder
+// arms (the ui-audio surface story), so its equality assert is funpack-owned.
+// ONE assert is NOT counted — it exercises ENGINE-VALUE execution the RUNTIME
+// owns, not the funpack evaluator (the same View/Nav/Draw3 split the arena and
+// yard goldens draw, golden_arena_test.odin / golden_yard_test.odin): read_drive
+// reads `input.value(player, axis)` against a seeded with_value Input snapshot,
+// and the evaluator does not materialize Input axis state. The count is PINNED
+// exactly: a regression that drops an evaluable assert, or mis-evaluates one,
+// moves this number — never loosen it to a range.
+KROGNID_EVALUABLE_ASSERTS :: 5
 
 // test_krognid_project_reads_and_joins_seam pins the §17 seam-import path
 // (lore #10 seam #4) over the LIVE krognid tree: read_project discovers
@@ -397,7 +397,7 @@ test_krognid_whole_tree_green :: proc(t: ^testing.T) {
 	// it to a range.
 	testing.expect_value(t, report.passed, KROGNID_EVALUABLE_ASSERTS)
 	log.infof(
-		"krognid whole-tree: the full krognid project (gen/krognid.gen.fun seam + stroll) types and clears end-to-end; the %d funpack-evaluable inline asserts pass (the read_drive and locomotion-loop engine-value asserts are the runtime's, per the arena/yard split)",
+		"krognid whole-tree: the full krognid project (gen/krognid.gen.fun seam + stroll) types and clears end-to-end; the %d funpack-evaluable inline asserts pass (the read_drive engine-value assert is the runtime's, per the arena/yard split)",
 		report.passed,
 	)
 }
