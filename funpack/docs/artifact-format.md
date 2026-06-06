@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 2
+funpack-artifact 3
 ```
 
-- `schema_version` is the integer after the space (here `2`).
+- `schema_version` is the integer after the space (here `3`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -38,7 +38,12 @@ funpack-artifact 2
   carries children — its positional sub-pattern arms — so it ends in a trailing
   `child_count`, unlike every other arm whose child count is fixed at 0 by kind.
   A new arm kind and an arm-with-children are both layout changes, so the version
-  bumped 1 → 2.
+  bumped 1 → 2. v3 ratifies the closed §14 binding SOURCE-form set: the emitter
+  lowers every §23 §3 builder helper into it (a key-list button source spreads
+  to one `key(…)` bind per key; `wasd()` lowers to the 2D
+  `keys_quad(neg_x,pos_x,neg_y,pos_y)` form; `stick(Stick)` is a first-class 2D
+  source). The source vocabulary is a closed taxonomy, so growing it bumped
+  2 → 3.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -646,14 +651,39 @@ bind button PLAYER ACTION source:SOURCE
   §03 §4 role kind (`Axis` → `axis`, `Button` → `button`).
 - `PLAYER` is the `PlayerId` (`P1`..`P4`), a name field.
 - `ACTION` is the enum variant the binding targets (`Steer::Move`), a name field.
-- `source:SOURCE` is the device source, recorded as the builder call that produced
-  it: `keys_axis(Key::W,Key::S)`, `stick_y(Stick::Left)` — the device names
-  (§23 §3) appear **only here**, never in sim logic. Multiple bindings for one
-  action stack (§23 §3); each is its own record.
+- `source:SOURCE` is the device source, one of the **closed v3 source-form set**
+  below, rendered as a builder call — the device names (§23 §3) appear **only
+  here**, never in sim logic. Multiple bindings for one action stack (§23 §3);
+  each is its own record.
+
+The v3 SOURCE forms (a closed taxonomy — a new form bumps the version, §1):
+
+| Form | Arity | Contribution |
+|------|-------|--------------|
+| `key(Key::X)` | 1 | digital button edge/level |
+| `pad(PadButton::X)` | 1 | digital button edge/level |
+| `keys_axis(neg,pos)` | 2 | 1D axis: neg key −1, pos key +1 |
+| `stick_x(Stick::S)` / `stick_y(Stick::S)` | 1 | 1D axis: that stick component's deadzoned sample |
+| `keys_quad(neg_x,pos_x,neg_y,pos_y)` | 4 | 2D axis: digital ±1 per component |
+| `stick(Stick::S)` | 1 | 2D axis: both deadzoned stick components |
+
+A 1D form contributes to the action's single 1D value (the slot `input.value`
+reads); a 2D form (`keys_quad`, `stick`) contributes both components (the Vec2
+`input.axis` reads). The emitter **lowers** the §23 §3 builder helpers into this
+set: a key-list button source (`.button(P1, Move::Up, [Key::W, Key::Up])`)
+spreads into one `key(…)` record per listed key (stacking, §23 §3); `wasd()`
+lowers to `keys_quad(Key::A,Key::D,Key::W,Key::S)` — argument order
+(neg_x, pos_x, neg_y, pos_y), where **up is `neg_y`** in the y-down draw space
+(§20), matching stick polarity (stick-up samples negative) so keyboard and stick
+contributions agree; `stick(Stick)` is recorded verbatim as a first-class 2D
+source, **never** spread into the 1D `stick_x`/`stick_y` halves.
 
 Pong binds P1 `Steer::Move` to `keys_axis(Key::W,Key::S)` and
 `stick_y(Stick::Left)`, and P2 `Steer::Move` to `keys_axis(Key::Up,Key::Down)` and
-`stick_y(Stick::Left)` — four binding records.
+`stick_y(Stick::Left)` — four binding records. Snake spreads its four key-list
+button bindings into eight `key(…)` records; hunt binds P1 `Drive::Move` to
+`keys_quad(Key::A,Key::D,Key::W,Key::S)` and `stick(Stick::Left)` — two 2D
+records.
 
 ---
 

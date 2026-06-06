@@ -796,7 +796,11 @@ binding_calls :: proc(ast: Ast) -> []Binding_Record {
 // one record per `.axis(…)`/`.button(…)` call so the output is in source-call
 // order (docs/artifact-format.md §14). It recurses into the call's receiver
 // (the prior link) before recording the current call, so `.empty()` and any
-// non-binding link contribute nothing and the binding calls land in order.
+// non-binding link contribute nothing and the binding calls land in order. A
+// key-LIST button source (`[Key::W, Key::Up]`) SPREADS into one record per
+// listed key — stacking is §23 §3 semantics, so each key is its own bind — and
+// a builder-call source lowers through lower_source_call into the closed §14
+// source-form set (schema v3).
 collect_binding_calls :: proc(expr: Expr, binds: ^[dynamic]Binding_Record) {
 	call, is_call := expr.(^Call_Expr)
 	if !is_call {
@@ -814,12 +818,73 @@ collect_binding_calls :: proc(expr: Expr, binds: ^[dynamic]Binding_Record) {
 	if len(call.args) != 3 {
 		return
 	}
+	player := variant_case(call.args[0])
+	action := variant_path(call.args[1])
+	if list, is_list := call.args[2].(^List_Expr); is_list {
+		// One stacked bind per listed device code: `[Key::W, Key::Up]` becomes
+		// `source:key(Key::W)` + `source:key(Key::Up)` (§23 §3 stacking). An
+		// element whose enum is not a device set contributes nothing — the
+		// checker owns refusing it; the emitter never emits an empty source.
+		for element in list.elements {
+			source := device_code_source(element)
+			if source == "" {
+				continue
+			}
+			append(binds, Binding_Record{kind = kind, player = player, action = action, source = source})
+		}
+		return
+	}
 	append(binds, Binding_Record{
 		kind   = kind,
-		player = variant_case(call.args[0]),
-		action = variant_path(call.args[1]),
-		source = builder_call_string(call.args[2]),
+		player = player,
+		action = action,
+		source = lower_source_call(call.args[2]),
 	})
+}
+
+// device_code_source renders one spread key-list element as its single-code
+// §14 source form: `Key::W` → `key(Key::W)`, `PadButton::A` → `pad(PadButton::A)`.
+// The helper name comes from the device enum, so the artifact records the same
+// builder-call spelling an explicit `key(…)` source would produce. A non-device
+// element returns "" and is skipped by the caller.
+device_code_source :: proc(expr: Expr) -> string {
+	variant, is_variant := expr.(^Variant_Expr)
+	if !is_variant {
+		return ""
+	}
+	helper := ""
+	switch variant.type_name {
+	case "Key":
+		helper = "key"
+	case "PadButton":
+		helper = "pad"
+	case:
+		return ""
+	}
+	return strings.concatenate({helper, "(", variant.type_name, "::", variant.variant, ")"}, context.temp_allocator)
+}
+
+// lower_source_call lowers a §23 §3 builder-call source into its ratified §14
+// source form (schema v3): `wasd()` lowers to the 2D digital quad
+// `keys_quad(Key::A,Key::D,Key::W,Key::S)` — argument order (neg_x, pos_x,
+// neg_y, pos_y), up = neg_y in the y-down draw space, matching SDL stick
+// polarity — and every already-canonical helper (key/pad/keys_axis/stick/
+// stick_x/stick_y) renders verbatim through builder_call_string. `stick(Stick)`
+// is deliberately NOT spread into stick_x/stick_y: those are 1D forms feeding
+// the action's single 1D value slot, while `stick` is a first-class 2D source
+// the runtime folds as both components (ADR
+// 2026-06-06-binding-source-lowering-2d-quad-and-stick).
+lower_source_call :: proc(expr: Expr) -> string {
+	call, is_call := expr.(^Call_Expr)
+	if !is_call {
+		return ""
+	}
+	if name, is_name := call.callee.(^Name_Expr); is_name {
+		if name.name == "wasd" && len(call.args) == 0 {
+			return "keys_quad(Key::A,Key::D,Key::W,Key::S)"
+		}
+	}
+	return builder_call_string(expr)
 }
 
 // binding_kind maps the builder method to the artifact bind kind

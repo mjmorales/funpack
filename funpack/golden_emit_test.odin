@@ -66,7 +66,7 @@ test_emit_pong_artifact_double_emit_identical :: proc(t: ^testing.T) {
 // emit a §02 tuple-pattern match (`match pick(free, rng) { (Option::Some(cell),
 // next) => … }`), a [Despawn] command return, and an RNG-threaded (Rng, [Spawn])
 // startup. The check pins three load-bearing properties: the artifact carries the
-// bumped ARTIFACT_SCHEMA_VERSION (2), parses well-formed through the funpack
+// current ARTIFACT_SCHEMA_VERSION, parses well-formed through the funpack
 // reader (every section count reconciles), and is deterministic (double-emit
 // byte-identical). The body-forest well-formedness over the tuple arms is proven
 // by the dedicated reader test below; this is the end-to-end emission proof. The

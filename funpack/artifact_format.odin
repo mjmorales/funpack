@@ -31,7 +31,16 @@ import "core:strings"
 // generic way, unlike every other arm whose child count is fixed at 0 by kind.
 // A new arm kind and an arm-with-children are both layout changes, so the
 // version bumps from 1 to 2 (it is the single compatibility gate, §1).
-ARTIFACT_SCHEMA_VERSION :: 2
+//
+// Version 3 ratifies the closed §14 binding source-form set the emitter lowers
+// the §23 §3 builder helpers into: a key-list button source spreads to one
+// `key(…)` bind per listed key (stacking, §23 §3), `wasd()` lowers to the 2D
+// `keys_quad(neg_x,pos_x,neg_y,pos_y)` form, and `stick(Stick)` is a
+// first-class 2D source the runtime folds as both components — never spread
+// into stick_x/stick_y 1D halves. The source vocabulary is a closed taxonomy,
+// so growing it is a deliberate bump from 2 to 3 (§1; ADR
+// 2026-06-06-binding-source-lowering-2d-quad-and-stick).
+ARTIFACT_SCHEMA_VERSION :: 3
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
