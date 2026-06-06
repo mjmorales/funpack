@@ -65,17 +65,16 @@ Signal_Mailbox :: struct {
 // the deterministic flattened-pipeline + stable-Id order this file already
 // enforces), and the advanced state is read back out at the tick boundary into the
 // run's persistent Rng so the NEXT tick observes it (§04 §1 — never silently
-// advanced, threaded forward). `rng_active` distinguishes a tick that threads an
-// Rng (an RNG-using program) from one that does not (pong), so a non-RNG fold
-// never perturbs an Rng it has no business touching.
+// advanced, threaded forward). Whether a fold threads an Rng at all is the
+// nil-gating in step_tick (`rng != nil`): a non-RNG program (pong, hunt) passes
+// no Rng and the fold never perturbs one it has no business touching.
 Tick_State :: struct {
-	tables:     []Tick_Table,
-	mailbox:    Signal_Mailbox,
-	spawns:     [dynamic]Pending_Spawn,
-	despawns:   [dynamic]Ref,
-	rng:        Rng, // the per-tick PRNG state a draw advances, threaded fold-forward
-	rng_active: bool, // true when this fold threads an Rng (false for a non-RNG program)
-	allocator:  Runtime_Allocator,
+	tables:    []Tick_Table,
+	mailbox:   Signal_Mailbox,
+	spawns:    [dynamic]Pending_Spawn,
+	despawns:  [dynamic]Ref,
+	rng:       Rng, // the per-tick PRNG state a draw advances, threaded fold-forward
+	allocator: Runtime_Allocator,
 }
 
 // Pending_Spawn is one queued Spawn command awaiting the tick-boundary batch: the
@@ -151,13 +150,12 @@ run_startup_seeded :: proc(
 	// returns `(Rng, [Spawn])`. The tuple split queues the spawns and advances the Rng.
 	tables := new_tick_tables(base, allocator)
 	state := Tick_State {
-		tables     = tables,
-		mailbox    = Signal_Mailbox{by_type = make(map[string][]Value, allocator)},
-		spawns     = make([dynamic]Pending_Spawn, allocator),
-		despawns   = make([dynamic]Ref, allocator),
-		rng        = seed,
-		rng_active = true,
-		allocator  = allocator,
+		tables    = tables,
+		mailbox   = Signal_Mailbox{by_type = make(map[string][]Value, allocator)},
+		spawns    = make([dynamic]Pending_Spawn, allocator),
+		despawns  = make([dynamic]Ref, allocator),
+		rng       = seed,
+		allocator = allocator,
 	}
 	base_version := base
 	interp := new_interp(program, &base_version, &state, empty(), Record_Value{}, allocator)
@@ -314,7 +312,6 @@ step_tick :: proc(
 	state := new_tick_state(prior, allocator)
 	if rng != nil {
 		state.rng = rng^
-		state.rng_active = true
 	}
 	prior_version := prior
 	interp := new_interp(program, &prior_version, &state, input, time, allocator)
