@@ -271,11 +271,13 @@ emit_match :: proc(b: ^strings.Builder, e: ^Match_Expr) {
 }
 
 // emit_arm serializes one match arm's pattern (docs/artifact-format.md §2.7): an
-// `arm pat type case binder_count binders…` node. The arm always has 0 children
-// (its body is the next sibling under the match), and its trailing field is the
-// variable-length binder list, so the line ends in the binders rather than a
-// child_count. wildcard records `- -` for type/case; bare_variant and
-// variant_binds record `type case`, the latter with its payload binder names.
+// `arm pat type case binder_count binders…` node. A SCALAR-pattern arm (wildcard /
+// bare_variant / variant_binds / bare_binder) has 0 children (its body is the next
+// sibling under the match) and ends in its variable-length binder list rather than
+// a child_count; a `tuple` arm (schema v2) instead carries its positional
+// sub-pattern arms as children, so its line ends in the trailing child count.
+// wildcard records `- -` for type/case; bare_variant and variant_binds record
+// `type case`, the latter with its payload binder names.
 emit_arm :: proc(b: ^strings.Builder, pattern: Pattern) {
 	strings.write_string(b, "node arm ")
 	switch pattern.kind {
