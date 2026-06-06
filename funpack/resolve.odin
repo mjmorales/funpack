@@ -320,8 +320,12 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 	switch name {
 	case "Spawn":
 		return engine_type_of(.Spawn), true
+	case "Despawn":
+		return engine_type_of(.Despawn), true
 	case "Draw":
 		return engine_type_of(.Draw), true
+	case "Rng":
+		return engine_type_of(.Rng), true
 	case "Input":
 		return engine_type_of(.Input), true
 	case "Bindings":

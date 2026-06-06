@@ -31,7 +31,8 @@ Module_Surface :: struct {
 // STDLIB_SURFACE partitions the importable stdlib names by owning
 // module (spec §26): the prelude's always-in-scope core, the §10 math
 // surface, the §08 world read surface, the §23 input surface, the §20
-// render surface, the §04 core resources, and the list combinators.
+// render surface, the §04 core resources, the list combinators, the
+// engine.rand threaded-RNG surface, and the engine.grid helper surface.
 // One responsibility per module — the owning module is the only
 // exporter of each name (§26), and a cross-partition duplicate is legal
 // only as a declared STDLIB_REEXPORTS row. Enums and resource types both occupy the
@@ -86,17 +87,19 @@ STDLIB_SURFACE := []Module_Surface{
 	},
 	{
 		// §08: the read/reference surface. View[T] is the read-only
-		// table; Spawn is a closed §04 command-type constructor.
+		// table; Spawn and Despawn are closed §04 command-type constructors.
 		path = "engine.world",
 		decls = {
 			{"View", .Type_Name},
 			{"Spawn", .Type_Name},
+			{"Despawn", .Type_Name},
 		},
 	},
 	{
 		// §23: the input surface. Input is the read-only resource;
 		// PlayerId/Key/Stick are enums; Bindings is the builder type;
-		// keys_axis/stick_y are engine-provided source helpers.
+		// keys_axis/stick_y/wasd/stick are engine-provided axis-source helpers
+		// (wasd is the 2D WASD axis source, stick a gamepad-stick axis source).
 		path = "engine.input",
 		decls = {
 			{"Input", .Type_Name},
@@ -106,6 +109,8 @@ STDLIB_SURFACE := []Module_Surface{
 			{"Stick", .Type_Name},
 			{"keys_axis", .Func},
 			{"stick_y", .Func},
+			{"wasd", .Func},
+			{"stick", .Func},
 		},
 	},
 	{
@@ -125,6 +130,11 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
+		// The list combinator surface. fold/map/filter/find/first plus the
+		// snake/hunt combinators prepend/init/contains/concat/is_empty: every
+		// row's signature is call-site-inferred (surface_signatures returns
+		// found = false for them), so admission here is the Func table row —
+		// their typing rule is combinator inference's, not a fixed signature.
 		path = "engine.list",
 		decls = {
 			{"fold", .Func},
@@ -132,6 +142,33 @@ STDLIB_SURFACE := []Module_Surface{
 			{"filter", .Func},
 			{"find", .Func},
 			{"first", .Func},
+			{"prepend", .Func},
+			{"init", .Func},
+			{"contains", .Func},
+			{"concat", .Func},
+			{"is_empty", .Func},
+		},
+	},
+	{
+		// engine.rand: the threaded-resource RNG surface. Rng is the §04-style
+		// threaded handle (a behavior takes `rng: Rng` and returns it in its
+		// tuple, so the stream advances deterministically); pick is the
+		// call-site-inferred draw combinator (surface_signatures returns
+		// found = false for it, like the list combinators).
+		path = "engine.rand",
+		decls = {
+			{"Rng", .Type_Name},
+			{"pick", .Func},
+		},
+	},
+	{
+		// engine.grid: the grid helper surface. grid_cells enumerates a grid's
+		// cells, taking the grid dims and a fn(x, y) -> Cell builder; its
+		// signature is call-site-inferred (the Cell element is the user's, not
+		// the engine's), so admission here is the Func table row.
+		path = "engine.grid",
+		decls = {
+			{"grid_cells", .Func},
 		},
 	},
 }
@@ -422,15 +459,34 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 
 // surface_static_method types a Type-name static builder applied as a method
 // (spec §23): Bindings.empty() is the empty input-binding builder the pong
-// bindings() chains .axis(…) onto. Distinct from surface_associated, which
-// types a Type's associated constants and constructors; a static builder
-// returns an engine value (the builder itself) rather than a ground value.
+// bindings() chains .axis(…)/.button(…) onto, Input.empty() the empty input
+// snapshot the inline tests seed with .with_pressed(…), Time.at(dt) a fixed-dt
+// Time resource, and View.of(list) a §08 read table built from a literal list
+// (its element is call-site-inferred, so the View elem is the nil unknown).
+// Distinct from surface_associated, which types a Type's associated constants
+// and constructors; a static builder returns an engine value (the builder /
+// resource itself) rather than a ground value.
 surface_static_method :: proc(type_name: string, member: string) -> (signature: Type, found: bool) {
 	switch type_name {
 	case "Bindings":
 		switch member {
 		case "empty":
 			return func_of({}, engine_type_of(.Bindings)), true
+		}
+	case "Input":
+		switch member {
+		case "empty":
+			return func_of({}, engine_type_of(.Input)), true
+		}
+	case "Time":
+		switch member {
+		case "at":
+			return func_of({Ground_Type.Fixed}, engine_type_of(.Time)), true
+		}
+	case "View":
+		switch member {
+		case "of":
+			return func_of({nil}, engine_type_of(.View)), true
 		}
 	}
 	return nil, false
@@ -454,12 +510,14 @@ surface_engine_member :: proc(receiver: ^Engine_Type, member: string) -> (type: 
 // surface_engine_method types a method call off an engine-typed value
 // (spec §23): the five §23 §2 Input queries — pressed/released/held read a
 // player's bound button action as the edge/level Bools, value/axis read a
-// bound axis action as a fixed scalar / a Vec2 — and Bindings.axis registers
-// one axis mapping and returns the builder for chaining. The action-role
-// parameter (each query's second arg, Bindings.axis's second arg) and the
-// axis-source parameter (Bindings.axis's third arg) have no checker ground,
-// so they type as the nil unknown that unifies with the user Button/Axis enum
-// and the keys_axis/stick_y result.
+// bound axis action as a fixed scalar / a Vec2 — plus with_pressed, the
+// test-producer that returns an Input snapshot with a player's button held;
+// and the two Bindings registrars — axis maps one axis action, button one
+// button action — each returning the builder for chaining. The action-role
+// parameter (each query's second arg, each registrar's second arg) and the
+// source/key-list parameter (axis's third arg, button's third arg) have no
+// checker ground, so they type as the nil unknown that unifies with the user
+// Button/Axis enum and the keys_axis/stick_y/wasd/stick result.
 surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signature: Type, found: bool) {
 	#partial switch receiver.kind {
 	case .Input:
@@ -470,10 +528,12 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 			return func_of({engine_type_of(.PlayerId), nil}, Ground_Type.Fixed), true
 		case "axis":
 			return func_of({engine_type_of(.PlayerId), nil}, Ground_Type.Vec2), true
+		case "with_pressed":
+			return func_of({engine_type_of(.PlayerId), nil}, engine_type_of(.Input)), true
 		}
 	case .Bindings:
 		switch member {
-		case "axis":
+		case "axis", "button":
 			return func_of({engine_type_of(.PlayerId), nil, nil}, engine_type_of(.Bindings)), true
 		}
 	}
@@ -481,13 +541,17 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 }
 
 // surface_command types an engine command constructor applied as a call
-// (spec §04): Spawn(thing) wraps a thing's blackboard into a spawn command.
-// The single argument is any thing — a §06 thing/singleton record — so the
-// param is the nil unknown the call site's record type unifies with.
+// (spec §04): Spawn(thing) wraps a thing's blackboard into a spawn command —
+// its single argument is any thing (a §06 thing/singleton record), so the param
+// is the nil unknown the call site's record type unifies with. Despawn() takes
+// no argument: it despawns the behavior's own target thing (the §04 self-scoped
+// despawn), so its param list is empty.
 surface_command :: proc(name: string) -> (signature: Type, found: bool) {
 	switch name {
 	case "Spawn":
 		return func_of({nil}, engine_type_of(.Spawn)), true
+	case "Despawn":
+		return func_of({}, engine_type_of(.Despawn)), true
 	}
 	return nil, false
 }

@@ -22,9 +22,10 @@ Type :: union {
 
 // Engine_Type is the nominal handle for an engine/stdlib type the value
 // kernel does not ground (spec §08/§20/§23/§04): the §08 read table View[T],
-// the §04 command constructors Spawn/Draw, the §23 Input/Bindings resources,
-// the §04 Time resource, the engine String, and the engine enums
-// (PlayerId/Key/Stick/Color). Engine_Kind is the closed set of those names;
+// the §04 command constructors Spawn/Despawn/Draw, the §23 Input/Bindings
+// resources, the §04 Time resource, the engine.rand Rng handle, the engine
+// String, and the engine enums (PlayerId/Key/Stick/Color). Engine_Kind is the
+// closed set of those names;
 // View carries its element type in elem (nil for the non-parameterized
 // kinds). Two engine types are compatible only when their kind matches and,
 // for View, their element types unify — nominal like User_Type, never
@@ -39,10 +40,12 @@ Engine_Type :: struct {
 Engine_Kind :: enum {
 	View,     // §08 read table View[T]
 	Spawn,    // §04 spawn command
+	Despawn,  // §04 despawn command
 	Draw,     // §20 draw command
 	Input,    // §23 input resource
 	Bindings, // §23 input-binding builder
 	Time,     // §04 frame-time resource
+	Rng,      // threaded-resource RNG handle (engine.rand)
 	String,   // engine String (string literals, Draw::Text)
 	PlayerId, // §23 player-id enum
 	Key,      // §23 keyboard-key enum

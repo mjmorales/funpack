@@ -104,11 +104,206 @@ test_pong_imports_populate_bindings :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_snake_imports_populate_bindings :: proc(t: ^testing.T) {
+	// snake.fun's seven engine.* import forms, verbatim (engine.prelude is
+	// pre-bound, so the file omits it). Every member must bind to its owning
+	// module with the expected Decl_Kind — the new engine.rand surface, the
+	// engine.world Despawn command, the engine.grid helper, and the engine.list
+	// combinators snake adds beyond the existing fold/map/filter set.
+	source := "import engine.math.{Vec2, to_fixed}\n" +
+		"import engine.world.{View, Spawn, Despawn}\n" +
+		"import engine.input.{Input, Key, PlayerId, Bindings}\n" +
+		"import engine.render.{Draw, Color}\n" +
+		"import engine.rand.{Rng, pick}\n" +
+		"import engine.grid.grid_cells\n" +
+		"import engine.list.{prepend, init, contains, map, filter, concat, is_empty}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		{"Vec2", "engine.math", .Type_Name},
+		{"to_fixed", "engine.math", .Func},
+		{"View", "engine.world", .Type_Name},
+		{"Spawn", "engine.world", .Type_Name},
+		{"Despawn", "engine.world", .Type_Name},
+		{"Input", "engine.input", .Type_Name},
+		{"Key", "engine.input", .Type_Name},
+		{"PlayerId", "engine.input", .Type_Name},
+		{"Bindings", "engine.input", .Type_Name},
+		{"Draw", "engine.render", .Type_Name},
+		{"Color", "engine.render", .Type_Name},
+		{"Rng", "engine.rand", .Type_Name},
+		{"pick", "engine.rand", .Func},
+		{"grid_cells", "engine.grid", .Func},
+		{"prepend", "engine.list", .Func},
+		{"init", "engine.list", .Func},
+		{"contains", "engine.list", .Func},
+		{"map", "engine.list", .Func},
+		{"filter", "engine.list", .Func},
+		{"concat", "engine.list", .Func},
+		{"is_empty", "engine.list", .Func},
+	}
+	expect_bindings(t, bindings, expectations)
+}
+
+@(test)
+test_hunt_imports_populate_bindings :: proc(t: ^testing.T) {
+	// hunt.fun's seven engine.* import forms, verbatim. Every member binds to
+	// its owning module: Fixed re-exports through engine.math to the OWNING
+	// prelude (§26 §3), the engine.input Stick enum and wasd/stick axis-source
+	// helpers, and the engine.list.first combinator imported as a dotted single
+	// member.
+	source := "import engine.math.{Fixed, Vec2, length}\n" +
+		"import engine.world.{Spawn, View}\n" +
+		"import engine.input.{Input, PlayerId, Bindings, Stick, wasd, stick}\n" +
+		"import engine.core.Time\n" +
+		"import engine.render.{Draw, Color}\n" +
+		"import engine.list.first\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		// Fixed canonicalizes to the owning prelude even through engine.math.
+		{"Fixed", "engine.prelude", .Type_Name},
+		{"Vec2", "engine.math", .Type_Name},
+		{"length", "engine.math", .Func},
+		{"Spawn", "engine.world", .Type_Name},
+		{"View", "engine.world", .Type_Name},
+		{"Input", "engine.input", .Type_Name},
+		{"PlayerId", "engine.input", .Type_Name},
+		{"Bindings", "engine.input", .Type_Name},
+		{"Stick", "engine.input", .Type_Name},
+		{"wasd", "engine.input", .Func},
+		{"stick", "engine.input", .Func},
+		{"Time", "engine.core", .Type_Name},
+		{"Draw", "engine.render", .Type_Name},
+		{"Color", "engine.render", .Type_Name},
+		{"first", "engine.list", .Func},
+	}
+	expect_bindings(t, bindings, expectations)
+}
+
+@(test)
+test_snake_hunt_import_lines_compile_clean :: proc(t: ^testing.T) {
+	// The whole pipeline accepts the snake and hunt import lines ahead of a
+	// passing assert — no unknown-module / unknown-member halts typecheck, so
+	// the example surfaces resolve clean through run_test_pipeline. Body typing
+	// of the call sites is the next story; this pins import admission alone.
+	source := "import engine.math.{Vec2, to_fixed, length, Fixed}\n" +
+		"import engine.world.{View, Spawn, Despawn}\n" +
+		"import engine.input.{Input, Key, PlayerId, Bindings, Stick, wasd, stick}\n" +
+		"import engine.render.{Draw, Color}\n" +
+		"import engine.rand.{Rng, pick}\n" +
+		"import engine.grid.grid_cells\n" +
+		"import engine.list.{prepend, init, contains, map, filter, concat, is_empty, first}\n" +
+		"import engine.core.Time\n" +
+		"test \"x\" {\n\tassert to_fixed(2) == 2.0\n}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_engine_rand_despawn_resolve_to_handles :: proc(t: ^testing.T) {
+	// AC: engine_type_name maps Rng and Despawn to their nominal Engine_Type
+	// handles, so an `rng: Rng` param and a `[Despawn]` return resolve. The
+	// existing Spawn handle is unchanged; the two new spellings join it.
+	rng, has_rng := engine_type_name("Rng")
+	testing.expect(t, has_rng)
+	testing.expect(t, is_engine(rng, .Rng))
+
+	despawn, has_despawn := engine_type_name("Despawn")
+	testing.expect(t, has_despawn)
+	testing.expect(t, is_engine(despawn, .Despawn))
+}
+
+@(test)
+test_despawn_types_as_command :: proc(t: ^testing.T) {
+	// AC: surface_command types Despawn() as a §04 command (mirroring Spawn) —
+	// a no-argument constructor whose result is the Despawn command handle, so
+	// snake's despawn_eaten `[Despawn()]` is a recognized command list.
+	signature, found := surface_command("Despawn")
+	testing.expect(t, found)
+	command, is_func := signature.(^Func_Type)
+	testing.expect(t, is_func)
+	if is_func {
+		testing.expect_value(t, len(command.params), 0)
+		testing.expect(t, is_engine(command.result, .Despawn))
+	}
+}
+
+@(test)
+test_input_test_producers_resolve :: proc(t: ^testing.T) {
+	// AC: the §23 inline-test producers resolve to their engine-value
+	// signatures — Input.empty() and Time.at(dt) as static builders, View.of()
+	// as a §08 read-table static builder, Input.with_pressed and Bindings.button
+	// as chained engine methods returning the resource/builder. Deep call typing
+	// is the next story; this pins the table rows the producers resolve through.
+	empty, has_empty := surface_static_method("Input", "empty")
+	testing.expect(t, has_empty)
+	testing.expect(t, returns_engine(empty, .Input))
+
+	at, has_at := surface_static_method("Time", "at")
+	testing.expect(t, has_at)
+	testing.expect(t, returns_engine(at, .Time))
+
+	of, has_of := surface_static_method("View", "of")
+	testing.expect(t, has_of)
+	testing.expect(t, returns_engine(of, .View))
+
+	input := engine_type_of(.Input).(^Engine_Type)
+	with_pressed, has_with_pressed := surface_engine_method(input, "with_pressed")
+	testing.expect(t, has_with_pressed)
+	testing.expect(t, returns_engine(with_pressed, .Input))
+
+	bindings_recv := engine_type_of(.Bindings).(^Engine_Type)
+	button, has_button := surface_engine_method(bindings_recv, "button")
+	testing.expect(t, has_button)
+	testing.expect(t, returns_engine(button, .Bindings))
+}
+
+// Surface_Expectation is one imported member, the module it must resolve to,
+// and the Decl_Kind the surface table declares for it — the row shape the
+// snake/hunt import fixtures and the pong import fixture assert against.
+Surface_Expectation :: struct {
+	name:   string,
+	module: string,
+	kind:   Decl_Kind,
+}
+
+// expect_bindings asserts each expectation row binds to its owning module with
+// the declared kind — the shared check the import-line fixtures run.
+expect_bindings :: proc(t: ^testing.T, bindings: Bindings, expectations: []Surface_Expectation) {
+	for want in expectations {
+		binding, bound := bindings.names[want.name]
+		testing.expectf(t, bound, "%s did not bind", want.name)
+		testing.expect_value(t, binding.module, want.module)
+		testing.expect_value(t, binding.kind, want.kind)
+	}
+}
+
+// returns_engine reports whether a func signature's result is an engine type of
+// the given kind — the producer fixtures assert a static builder / engine method
+// yields the expected engine value without depending on its parameter shape.
+returns_engine :: proc(signature: Type, kind: Engine_Kind) -> bool {
+	command, is_func := signature.(^Func_Type)
+	if !is_func {
+		return false
+	}
+	return is_engine(command.result, kind)
+}
+
+@(test)
 test_pong_unknown_world_member_rejected :: proc(t: ^testing.T) {
-	// The closed-table proof: a name absent from the new engine.world
-	// partition still rejects with Unknown_Member. Admitting View/Spawn
-	// did not open the module to arbitrary names.
-	ast, parse_err := stage_parse(stage_lex("import engine.world.{View, Despawn}\n"))
+	// The closed-table proof: a name absent from the engine.world partition
+	// still rejects with Unknown_Member. Admitting View/Spawn/Despawn did not
+	// open the module to arbitrary names — `Reap` is owned by no module.
+	ast, parse_err := stage_parse(stage_lex("import engine.world.{View, Reap}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	_, err := resolve_imports(ast)
 	testing.expect_value(t, err, Type_Error.Unknown_Member)

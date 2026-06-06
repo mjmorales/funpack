@@ -157,6 +157,55 @@ test_closure_rejects_unconsumed_signal :: proc(t: ^testing.T) {
 	testing.expect_value(t, verdict.signal, "Goal")
 }
 
+// SNAKE_CLOSURE_HEADER declares a snake-shaped surface: a Snake thing whose
+// detect_eat emits an Eaten signal and whose grow consumes it. The negative
+// fixture removes the consumer so the emitted Eaten goes unclosed, mirroring
+// snake's eat stage (detect_eat → grow) with the consumer dropped.
+SNAKE_CLOSURE_HEADER :: "import engine.math.{Vec2}\n" +
+	"import engine.world.{View, Spawn}\n" +
+	"import engine.render.{Draw, Color}\n" +
+	"thing Snake { grow: Bool }\n" +
+	"signal Eaten { x: Fixed }\n" +
+	"behavior detect_eat on Snake {\n" +
+	"  fn step(self: Snake) -> [Eaten] {\n" +
+	"    return [Eaten{x: 0.0}]\n" +
+	"  }\n" +
+	"}\n"
+
+@(test)
+test_closure_rejects_orphaned_snake_signal :: proc(t: ^testing.T) {
+	// AC (snake-shaped orphan): a snake-shaped program whose detect_eat emits an
+	// Eaten with no downstream consuming stage fails the effect-closure edge
+	// check with Unclosed_Signal naming Eaten. The eat stage lists only the
+	// emitter — the grow consumer that would close it is absent — so the signal
+	// is produced and never consumed, exactly the §04 §4 / §07 §2 violation.
+	source := strings.concatenate({SNAKE_CLOSURE_HEADER,
+		"pipeline Snake {\n" +
+		"  eat: [detect_eat]\n" +
+		"}\n"}, context.temp_allocator)
+	verdict := flatten_of(source)
+	testing.expect_value(t, verdict.err, Flatten_Error.Unclosed_Signal)
+	testing.expect_value(t, verdict.signal, "Eaten")
+}
+
+@(test)
+test_closure_passes_snake_eat_stage_with_consumer :: proc(t: ^testing.T) {
+	// The positive control: re-adding the grow consumer downstream of detect_eat
+	// closes the Eaten signal, so the edge check passes — proof the orphan
+	// fixture rejects for the missing consumer, not an incidental header gap.
+	source := strings.concatenate({SNAKE_CLOSURE_HEADER,
+		"behavior grow on Snake {\n" +
+		"  fn step(self: Snake, eaten: [Eaten]) -> Snake {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Snake {\n" +
+		"  eat: [detect_eat, grow]\n" +
+		"}\n"}, context.temp_allocator)
+	verdict := flatten_of(source)
+	testing.expect_value(t, verdict.err, Flatten_Error.None)
+}
+
 @(test)
 test_closure_rejects_upstream_only_consumer :: proc(t: ^testing.T) {
 	// The boundary opposite the positive: a consumer listed BEFORE the emitter
