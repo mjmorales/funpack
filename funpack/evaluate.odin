@@ -461,10 +461,10 @@ match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: 
 		child.bindings[pattern.binders[0]] = scrutinee
 		return child, true
 	case .Tuple:
-		// Tuple-value decomposition is a downstream semantics seam (no
-		// Tuple_Value exists yet); the frontend admits the pattern, evaluation
-		// of it lands with the value/typing seam. No tuple scrutinee reaches
-		// here in this grammar seam, so it is a non-match.
+		// Tuple-value decomposition belongs to the value/typing seam — the
+		// Value union carries no tuple arm, so no tuple scrutinee can reach
+		// this matcher. The grammar seam admits the pattern; the arm fails
+		// closed as a non-match rather than guessing a decomposition.
 		return env, false
 	}
 	return env, false
