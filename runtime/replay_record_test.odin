@@ -217,9 +217,12 @@ test_read_replay_refuses_wrong_magic :: proc(t: ^testing.T) {
 	// The read-back fails closed on a non-replay file or a version it was not built
 	// for — it never best-effort-parses a foreign log (the artifact format's
 	// exact-match discipline, §1, applied to the replay log).
-	_, bad_magic_ok := read_replay("notreplay 1\n[ticks 0]\n", context.temp_allocator)
+	_, bad_magic_ok := read_replay("notreplay 2\n[ticks 0]\n", context.temp_allocator)
 	testing.expect(t, !bad_magic_ok)
 
-	_, bad_version_ok := read_replay("funpack-replay 2\n[ticks 0]\n", context.temp_allocator)
+	// A v1 log — the pre-seed format, before the header gained `HAS_SEED SEED_BITS`
+	// (§25 §60) — is refused: the schema bump has no compatible tier, so an old log
+	// is rejected before any tick rather than re-folded under a missing seed.
+	_, bad_version_ok := read_replay("funpack-replay 1\n[ticks 0]\n", context.temp_allocator)
 	testing.expect(t, !bad_version_ok)
 }

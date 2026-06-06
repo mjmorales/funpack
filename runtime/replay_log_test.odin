@@ -307,7 +307,7 @@ test_production_reader_fails_closed_on_malformed_record :: proc(t: ^testing.T) {
 	// The production reader fails closed on a MALFORMED record: a button line whose
 	// player ordinal is out of the P1..P4 range does not parse, so the whole log is
 	// refused rather than re-folding a record with a bad key.
-	malformed := "funpack-replay 1\nartifact 1 L4:pong L5:0.1.0 60 17361641481138401621\n[ticks 1]\ntick 1 0\nbutton 9 1 true false true\n"
+	malformed := "funpack-replay 2\nartifact 1 L4:pong L5:0.1.0 60 17361641481138401621 false 0\n[ticks 1]\ntick 1 0\nbutton 9 1 true false true\n"
 	_, ok := read_replay(malformed, context.temp_allocator)
 	testing.expect(t, !ok)
 }

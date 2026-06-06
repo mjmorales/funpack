@@ -317,11 +317,33 @@ when #config(FUNPACK_LIVE, false) {
 		// from setup, and the Time resource at the artifact's fixed tick rate.
 		table := build_bindings_table(program, IDENTITY_OVERLAY)
 		queue := new_device_queue()
-		identity := identity_from_program(program, string(artifact_bytes))
+
+		// SEED PICK (§25 §60): a program with an interpretable setup body (a Startup
+		// function) is SEEDED — its tick-0 population is drawn from an RNG (snake's first
+		// food cell). The seed is a RUN-TIME determinism input the artifact does not
+		// carry, so the live session picks it ONCE here from the wall clock and RECORDS
+		// it in the header — that turns the only live nondeterminism (the seed pick) into
+		// a recorded determinism input, so a re-fold re-feeds the exact seed and
+		// reproduces the run. A seedless program (pong, hunt) pins the bare build
+		// identity (has_seed = false) and runs the pre-evaluated [Spawn] batch unchanged.
+		seeded := program_startup(&program) != nil
+		seed := i64(sdl.GetPerformanceCounter())
+
+		identity :=
+			seeded ? identity_from_program_seeded(program, string(artifact_bytes), seed) : identity_from_program(program, string(artifact_bytes))
 		writer := open_replay_writer(identity)
 
 		world := new_world(program)
-		version := run_startup(&program, initial_version(world))
+		// rng is the run's persistent tick-0 Rng for a seeded program; nil-threaded
+		// (left zero, passed only when seeded) for a seedless one.
+		base := initial_version(world)
+		version: World_Version
+		rng: Rng
+		if seeded {
+			version, rng = run_startup_seeded(&program, base, rand_seed(seed))
+		} else {
+			version = run_startup(&program, base)
+		}
 		time := live_time(program.entrypoint.tick_hz)
 
 		// prev_held threads each resolve_tick's held_after into the next so released
@@ -351,7 +373,9 @@ when #config(FUNPACK_LIVE, false) {
 			}
 
 			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels)
-			version = step_tick(&program, version, snapshot, time)
+			// Thread the persistent Rng through a seeded run so each tick observes the
+			// prior tick's draws (§04 §1); a seedless run threads nothing (rng stays nil).
+			version = step_tick(&program, version, snapshot, time, context.allocator, seeded ? &rng : nil)
 			draw := render_version(&program, version, snapshot, time)
 			present_frame(device.renderer, draw)
 			record_tick(&writer, snapshot)

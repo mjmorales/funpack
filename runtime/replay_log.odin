@@ -171,7 +171,11 @@ parse_header :: proc(
 // parse_identity_record parses the `artifact …` line back into a Replay_Identity.
 // The two project strings are length-prefixed (§2.4), so the record is scanned
 // field-by-field with a small cursor rather than split on spaces — a name could
-// contain a space inside its length-prefixed bytes.
+// contain a space inside its length-prefixed bytes. The trailing `HAS_SEED
+// SEED_BITS` (§25 §60) is parsed in fixed order after the content hash: the seed
+// flag as a bare bool, the seed as its raw integer (§10). A v1 log lacking these
+// fields fails closed here — but parse_header refuses the v1 magic before reaching
+// this parser, so a version-mismatched log never gets this far.
 @(private = "file")
 parse_identity_record :: proc(line: string) -> (identity: Replay_Identity, ok: bool) {
 	rest := line
@@ -213,12 +217,32 @@ parse_identity_record :: proc(line: string) -> (identity: Replay_Identity, ok: b
 	}
 	rest = after_hz
 
-	hash_tok, _, hash_field_ok := take_field(rest)
+	hash_tok, after_hash, hash_field_ok := take_field(rest)
 	if !hash_field_ok {
 		return {}, false
 	}
 	content_hash, hash_ok := strconv.parse_u64(hash_tok)
 	if !hash_ok {
+		return {}, false
+	}
+	rest = after_hash
+
+	has_seed_tok, after_has_seed, has_seed_field_ok := take_field(rest)
+	if !has_seed_field_ok {
+		return {}, false
+	}
+	has_seed, has_seed_ok := parse_bool(has_seed_tok)
+	if !has_seed_ok {
+		return {}, false
+	}
+	rest = after_has_seed
+
+	seed_tok, _, seed_field_ok := take_field(rest)
+	if !seed_field_ok {
+		return {}, false
+	}
+	seed, seed_ok := strconv.parse_i64(seed_tok)
+	if !seed_ok {
 		return {}, false
 	}
 
@@ -228,6 +252,8 @@ parse_identity_record :: proc(line: string) -> (identity: Replay_Identity, ok: b
 			project_version = version,
 			tick_hz = tick_hz,
 			content_hash = content_hash,
+			has_seed = has_seed,
+			seed = seed,
 		},
 		true
 }

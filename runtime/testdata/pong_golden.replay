@@ -1,5 +1,5 @@
-funpack-replay 1
-artifact 1 L4:pong L5:0.1.0 60 1884849173557046552
+funpack-replay 2
+artifact 1 L4:pong L5:0.1.0 60 1884849173557046552 false 0
 [ticks 600]
 tick 0 1
 axis 0 0 4294967296 0

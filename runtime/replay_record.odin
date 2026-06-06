@@ -36,36 +36,55 @@ import "core:strings"
 // REPLAY_SCHEMA_VERSION stamps the replay-log format. Any change to the header,
 // a record's field order, or an encoding bumps this — there is no compatible
 // tier, mirroring the artifact format's exact-match versioning (§29 §2). The
-// replay re-feed driver refuses a log whose stamp it was not built for.
-REPLAY_SCHEMA_VERSION :: 1
+// replay re-feed driver refuses a log whose stamp it was not built for. Bumped to
+// 2 when the artifact-identity record gained the tick-0 RNG seed (§25 §60): the
+// header now carries `… HAS_SEED SEED_BITS` after the content hash, so a v1 log
+// no longer parses and a re-fold of a v1 log is refused before any tick.
+REPLAY_SCHEMA_VERSION :: 2
 
 // REPLAY_MAGIC is line 1 of every replay log: the format name and its schema
 // version, so the consumer rejects a wrong-version or non-replay file before
 // reading any payload (artifact format §1 discipline applied to the replay log).
 REPLAY_MAGIC :: "funpack-replay"
 
-// Replay_Identity is the artifact identity the header pins so a replay refuses a
-// mismatched build (§09 §5). It is the build-independent fingerprint of the
-// artifact a recording was made against: the artifact schema version, the §4
-// project name + version, the single fixed tick rate, and a content hash over the
-// artifact bytes. A re-fold whose loaded artifact does not reproduce this exact
-// identity is NOT the same build, so the recorded snapshots would re-fold against
-// the wrong program — the header is the gate that catches that.
+// Replay_Identity is the determinism identity the header pins so a replay refuses
+// a mismatched build (§09 §5) AND re-feeds the recorded run's exact tick-0 RNG
+// seed (§25 §60). It is the build-independent fingerprint of the artifact a
+// recording was made against — the artifact schema version, the §4 project name +
+// version, the single fixed tick rate, and a content hash over the artifact bytes
+// — PLUS the recorded determinism INPUT that is not in the artifact: the tick-0
+// RNG seed. The seed rides this record exactly as Input does — it is recorded, not
+// ambient (§01 §50), so same-inputs+seed → bit-identical still holds. A re-fold
+// whose loaded artifact does not reproduce this exact build identity is NOT the
+// same build, and a run started under a DIFFERENT seed is NOT the same run — the
+// header is the gate that catches both.
+//
+// NO-SEED REPRESENTATION (the seedless-program decision): a program with no RNG
+// (pong, hunt — Input is the sole nondeterminism source, Lore #7) has NO tick-0
+// seed, so `has_seed` is false and `seed` is 0. This is an EXPLICIT absence, not a
+// magic numeric sentinel: a real run can legitimately seed with 0, so the gate
+// distinguishes "seedless" from "seeded with 0" by the boolean, never by the value.
+// The two fields are recorded in fixed order (`HAS_SEED SEED_BITS`) so a seedless
+// log and a seeded-with-0 log encode to DIFFERENT bytes and gate differently.
 Replay_Identity :: struct {
 	artifact_schema_version: int, // the artifact's own schema stamp (Program.schema_version)
 	project_name:            string, // §4 project name (Project_Meta.name)
 	project_version:         string, // §4 project version (Project_Meta.version)
 	tick_hz:                 int, // the single fixed tick rate (Entrypoint.tick_hz)
 	content_hash:            u64, // xxh64 over the artifact bytes — the build fingerprint
+	has_seed:                bool, // whether the run carried a tick-0 RNG seed (false = seedless)
+	seed:                    i64, // the tick-0 RNG seed (raw integer, §10); 0 when has_seed is false
 }
 
-// identity_from_program derives the artifact identity from the loaded Program and
-// the raw artifact bytes it was loaded from. The content hash is xxh64 (core:hash,
-// per the Odin-first policy — no custom hasher) over the artifact bytes verbatim:
-// xxh64 is byte-defined and endian-neutral, so the same bytes hash identically on
-// every machine, which the determinism contract requires. The bytes are the same
-// `content` string load_program parsed, so the recording pins the exact build it
-// ran against.
+// identity_from_program derives the BUILD identity from the loaded Program and the
+// raw artifact bytes it was loaded from, for a SEEDLESS run (no RNG). The content
+// hash is xxh64 (core:hash, per the Odin-first policy — no custom hasher) over the
+// artifact bytes verbatim: xxh64 is byte-defined and endian-neutral, so the same
+// bytes hash identically on every machine, which the determinism contract requires.
+// The bytes are the same `content` string load_program parsed, so the recording
+// pins the exact build it ran against. A seedless identity (has_seed = false, the
+// pong/hunt path) is the bare build fingerprint with no determinism seed; a seeded
+// run derives this then sets the seed through identity_from_program_seeded.
 identity_from_program :: proc(program: Program, artifact_bytes: string) -> Replay_Identity {
 	return Replay_Identity {
 		artifact_schema_version = program.schema_version,
@@ -73,7 +92,27 @@ identity_from_program :: proc(program: Program, artifact_bytes: string) -> Repla
 		project_version = program.meta.version,
 		tick_hz = program.entrypoint.tick_hz,
 		content_hash = u64(xxhash.XXH64(transmute([]u8)artifact_bytes)),
+		has_seed = false,
+		seed = 0,
 	}
+}
+
+// identity_from_program_seeded derives the determinism identity for a SEEDED run
+// (snake — the tick-0 food cell is drawn from the seed). It is the build identity
+// identity_from_program produces with the recorded tick-0 seed folded in, so the
+// header pins the seed alongside the build fingerprint (§25 §60) and a re-fold
+// re-feeds exactly this seed. A seed change yields a different recorded identity,
+// so a log recorded under one seed refuses to re-fold against a run started under
+// a different seed (§09 §5).
+identity_from_program_seeded :: proc(
+	program: Program,
+	artifact_bytes: string,
+	seed: i64,
+) -> Replay_Identity {
+	identity := identity_from_program(program, artifact_bytes)
+	identity.has_seed = true
+	identity.seed = seed
+	return identity
 }
 
 // Replay_Writer accumulates the byte-stable log: an underlying byte builder plus
@@ -169,9 +208,12 @@ finish_replay :: proc(writer: ^Replay_Writer, allocator := context.allocator) ->
 
 // write_header writes the magic line and the artifact-identity record. The
 // identity record's field order is fixed: schema version, project name (length-
-// prefixed §2.4), project version (length-prefixed), tick rate, then the content
-// hash. A replay reader checks this record against its freshly-loaded artifact and
-// refuses a mismatch (§09 §5) before reading a single tick.
+// prefixed §2.4), project version (length-prefixed), tick rate, the content hash,
+// then the tick-0 RNG seed pinned as `HAS_SEED SEED_BITS` (§25 §60) — the seed-
+// present flag as a bare bool (§2.5) and the seed as its raw integer decimal (§10,
+// no float), so a seedless run and a seeded-with-0 run encode to DIFFERENT bytes.
+// A replay reader checks this record against its freshly-loaded artifact AND the
+// run's seed, refusing a mismatch (§09 §5) before reading a single tick.
 @(private = "file")
 write_header :: proc(b: ^strings.Builder, identity: Replay_Identity) {
 	strings.write_string(b, REPLAY_MAGIC)
@@ -189,6 +231,10 @@ write_header :: proc(b: ^strings.Builder, identity: Replay_Identity) {
 	strings.write_int(b, identity.tick_hz)
 	strings.write_byte(b, ' ')
 	write_u64(b, identity.content_hash)
+	strings.write_byte(b, ' ')
+	write_bool(b, identity.has_seed)
+	strings.write_byte(b, ' ')
+	strings.write_i64(b, identity.seed)
 	strings.write_byte(b, '\n')
 }
 
