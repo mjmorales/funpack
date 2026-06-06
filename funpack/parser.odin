@@ -219,7 +219,8 @@ Parse_Error :: enum {
 	None,
 	Unexpected_Token,
 	Unexpected_End,
-	Wrong_Case, // an identifier whose casing class is wrong for its grammar position (spec §02)
+	Wrong_Case,   // an identifier whose casing class is wrong for its grammar position (spec §02)
+	Missing_Else, // an if-EXPRESSION with no `else` arm (spec §02 §5): both arms are required in value position, so a missing alternate has no type to unify against — never a silent fallback (grammar/fun.ebnf §15 IfExpr)
 }
 
 Parser :: struct {
