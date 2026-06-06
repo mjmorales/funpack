@@ -83,103 +83,103 @@ Model_Param :: struct {
 // a model) an empty dependency list — a model has no input assets (§4), so its
 // hash depends only on its own source and the importer version.
 import_model :: proc(src: string) -> (asset: Model_Asset, err: Importer_Error) {
-	p := Fpm_Parser{tokens = lex_fpm(src)}
-	asset = fpm_parse_model(&p) or_return
+	p := Afpm_Parser{tokens = lex_fpm(src)}
+	asset = afpm_parse_model(&p) or_return
 	asset.hash = asset_content_hash(transmute([]byte)src, MODEL_IMPORTER_VERSION, nil)
 	return asset, .None
 }
 
-// fpm_parse_model parses one `model <Name> { … }` block: the header, then the
+// afpm_parse_model parses one `model <Name> { … }` block: the header, then the
 // param/emit/material clauses in any order until the closing brace. emit and
 // material are single-slot (§16: a model declares one `emit`); a duplicate or a
 // missing model header is malformed. params accumulate in source order.
-fpm_parse_model :: proc(p: ^Fpm_Parser) -> (asset: Model_Asset, err: Importer_Error) {
-	fpm_expect(p, .Model) or_return
-	name := fpm_expect(p, .Ident) or_return
+afpm_parse_model :: proc(p: ^Afpm_Parser) -> (asset: Model_Asset, err: Importer_Error) {
+	afpm_expect(p, .Model) or_return
+	name := afpm_expect(p, .Ident) or_return
 	asset.name = name.text
-	fpm_expect(p, .L_Brace) or_return
+	afpm_expect(p, .L_Brace) or_return
 
 	params := make([dynamic]Model_Param, 0, 4, context.temp_allocator)
 	saw_emit := false
-	for fpm_peek(p).kind != .R_Brace {
-		switch fpm_peek(p).kind {
+	for afpm_peek(p).kind != .R_Brace {
+		switch afpm_peek(p).kind {
 		case .Param:
-			append(&params, fpm_parse_param(p) or_return)
+			append(&params, afpm_parse_param(p) or_return)
 		case .Emit:
 			if saw_emit {
 				return Model_Asset{}, .Malformed_Source
 			}
-			asset.emit_prim, asset.emit_args = fpm_parse_emit(p) or_return
+			asset.emit_prim, asset.emit_args = afpm_parse_emit(p) or_return
 			saw_emit = true
 		case .Material:
-			asset.material = fpm_parse_material(p) or_return
+			asset.material = afpm_parse_material(p) or_return
 		case .Invalid, .Model, .Ident, .Number, .L_Brace, .R_Brace, .L_Paren, .R_Paren, .Colon, .Comma, .Eq:
 			return Model_Asset{}, .Malformed_Source
 		}
 	}
-	fpm_expect(p, .R_Brace) or_return
+	afpm_expect(p, .R_Brace) or_return
 	asset.params = params[:]
 	return asset, .None
 }
 
-// fpm_parse_param parses `param <name>: <Type> = <default>`. The default is a
+// afpm_parse_param parses `param <name>: <Type> = <default>`. The default is a
 // number literal (Int or decimal), folded into a Fixed because Length is a
 // §10 fixed-point dimension.
-fpm_parse_param :: proc(p: ^Fpm_Parser) -> (param: Model_Param, err: Importer_Error) {
-	fpm_expect(p, .Param) or_return
-	name := fpm_expect(p, .Ident) or_return
-	fpm_expect(p, .Colon) or_return
-	type := fpm_expect(p, .Ident) or_return
-	fpm_expect(p, .Eq) or_return
-	value := fpm_expect(p, .Number) or_return
+afpm_parse_param :: proc(p: ^Afpm_Parser) -> (param: Model_Param, err: Importer_Error) {
+	afpm_expect(p, .Param) or_return
+	name := afpm_expect(p, .Ident) or_return
+	afpm_expect(p, .Colon) or_return
+	type := afpm_expect(p, .Ident) or_return
+	afpm_expect(p, .Eq) or_return
+	value := afpm_expect(p, .Number) or_return
 	param.name = name.text
 	param.type = type.text
 	param.default = value.fixed_value
 	return param, .None
 }
 
-// fpm_parse_emit parses `emit <prim>(<arg>, …)` — the render geometry. The
+// afpm_parse_emit parses `emit <prim>(<arg>, …)` — the render geometry. The
 // primitive is the geometry-algebra name (§16: box/sphere/cyl/capsule, unions);
 // arguments are the as-written param references, captured by text for the
 // content surface without evaluating the CSG (the bake's mesh stage owns that).
-fpm_parse_emit :: proc(p: ^Fpm_Parser) -> (prim: string, args: []string, err: Importer_Error) {
-	fpm_expect(p, .Emit) or_return
-	prim_tok := fpm_expect(p, .Ident) or_return
-	fpm_expect(p, .L_Paren) or_return
+afpm_parse_emit :: proc(p: ^Afpm_Parser) -> (prim: string, args: []string, err: Importer_Error) {
+	afpm_expect(p, .Emit) or_return
+	prim_tok := afpm_expect(p, .Ident) or_return
+	afpm_expect(p, .L_Paren) or_return
 	arg_list := make([dynamic]string, 0, 2, context.temp_allocator)
-	for fpm_peek(p).kind == .Ident {
-		arg := fpm_expect(p, .Ident) or_return
+	for afpm_peek(p).kind == .Ident {
+		arg := afpm_expect(p, .Ident) or_return
 		append(&arg_list, arg.text)
-		for fpm_peek(p).kind == .Comma {
+		for afpm_peek(p).kind == .Comma {
 			p.pos += 1
 		}
 	}
-	fpm_expect(p, .R_Paren) or_return
+	afpm_expect(p, .R_Paren) or_return
 	return prim_tok.text, arg_list[:], .None
 }
 
-// fpm_parse_material parses `material <name> = <appearance>` and records the
+// afpm_parse_material parses `material <name> = <appearance>` and records the
 // named slot. The appearance expression (`pbr(color: gold, rough: 0.3)`) is the
 // bake's material-binding concern (§16); this importer records the slot name
 // the seam exposes and consumes the appearance to the clause's end.
-fpm_parse_material :: proc(p: ^Fpm_Parser) -> (name: string, err: Importer_Error) {
-	fpm_expect(p, .Material) or_return
-	name_tok := fpm_expect(p, .Ident) or_return
-	fpm_expect(p, .Eq) or_return
-	fpm_expect(p, .Ident) or_return // the appearance constructor (`pbr`)
-	fpm_skip_balanced_parens(p) or_return
+afpm_parse_material :: proc(p: ^Afpm_Parser) -> (name: string, err: Importer_Error) {
+	afpm_expect(p, .Material) or_return
+	name_tok := afpm_expect(p, .Ident) or_return
+	afpm_expect(p, .Eq) or_return
+	afpm_expect(p, .Ident) or_return // the appearance constructor (`pbr`)
+	afpm_skip_balanced_parens(p) or_return
 	return name_tok.text, .None
 }
 
-// fpm_skip_balanced_parens consumes a balanced `( … )` group (the material
+// afpm_skip_balanced_parens consumes a balanced `( … )` group (the material
 // appearance constructor's argument list, whose interior — named args, decimal
 // literals — is the bake's concern, not this importer's). A missing opener or
 // an unbalanced group is malformed.
-fpm_skip_balanced_parens :: proc(p: ^Fpm_Parser) -> Importer_Error {
-	fpm_expect(p, .L_Paren) or_return
+afpm_skip_balanced_parens :: proc(p: ^Afpm_Parser) -> Importer_Error {
+	afpm_expect(p, .L_Paren) or_return
 	depth := 1
 	for depth > 0 {
-		tok := fpm_peek(p)
+		tok := afpm_peek(p)
 		#partial switch tok.kind {
 		case .L_Paren:
 			depth += 1
@@ -406,13 +406,21 @@ import_audio :: proc(bytes: []byte) -> (asset: Audio_Asset, err: Importer_Error)
 }
 
 // ── .fpm lexer ───────────────────────────────────────────────────────────
-// Fpm_Token_Kind is the closed token set the §16 model surface this battery
+// Every type/proc in this importer-local .fpm lexing surface carries an `afpm_`
+// (asset-fpm) prefix because the canonical full .fpm lexer, fpm_lexer.odin, owns
+// the bare `fpm_`/`Fpm_` namespace for the complete §16 rig grammar (fn/let/for,
+// full CSG expressions). This battery needs only the model/param/emit/material
+// parse+produce subset, so it keeps its own prefixed lexer rather than depending
+// on the full rig. Consolidating both onto the one canonical lexer is tracked as
+// a follow-up story.
+//
+// Afpm_Token_Kind is the closed token set the §16 model surface this battery
 // reads needs. The model/param/emit/material keywords open the productions;
 // Ident/Number are the atoms; the bracket/colon/comma/eq glyphs drive the
 // clause structure. The .fpm grammar is far larger than this (fn/let/for, full
 // CSG expressions) — this token set is exactly the parse+produce surface the
 // importer needs, no more.
-Fpm_Token_Kind :: enum {
+Afpm_Token_Kind :: enum {
 	Invalid, // end of input or an unrecognized glyph
 	Model,
 	Param,
@@ -429,34 +437,34 @@ Fpm_Token_Kind :: enum {
 	Eq,
 }
 
-Fpm_Token :: struct {
-	kind:        Fpm_Token_Kind,
+Afpm_Token :: struct {
+	kind:        Afpm_Token_Kind,
 	text:        string,
 	fixed_value: Fixed, // Number value, as a §10 Fixed
 }
 
-Fpm_Parser :: struct {
-	tokens: []Fpm_Token,
+Afpm_Parser :: struct {
+	tokens: []Afpm_Token,
 	pos:    int,
 }
 
-fpm_at_end :: proc(p: ^Fpm_Parser) -> bool {
+afpm_at_end :: proc(p: ^Afpm_Parser) -> bool {
 	return p.pos >= len(p.tokens)
 }
 
-// fpm_peek reports an Invalid token at end of input so a kind check fails
+// afpm_peek reports an Invalid token at end of input so a kind check fails
 // closed without a separate end test.
-fpm_peek :: proc(p: ^Fpm_Parser) -> Fpm_Token {
-	if fpm_at_end(p) {
-		return Fpm_Token{kind = .Invalid}
+afpm_peek :: proc(p: ^Afpm_Parser) -> Afpm_Token {
+	if afpm_at_end(p) {
+		return Afpm_Token{kind = .Invalid}
 	}
 	return p.tokens[p.pos]
 }
 
-fpm_expect :: proc(p: ^Fpm_Parser, kind: Fpm_Token_Kind) -> (tok: Fpm_Token, err: Importer_Error) {
-	tok = fpm_peek(p)
+afpm_expect :: proc(p: ^Afpm_Parser, kind: Afpm_Token_Kind) -> (tok: Afpm_Token, err: Importer_Error) {
+	tok = afpm_peek(p)
 	if tok.kind != kind {
-		return Fpm_Token{}, .Malformed_Source
+		return Afpm_Token{}, .Malformed_Source
 	}
 	p.pos += 1
 	return tok, .None
@@ -466,8 +474,8 @@ fpm_expect :: proc(p: ^Fpm_Parser, kind: Fpm_Token_Kind) -> (tok: Fpm_Token, err
 // unrecognized glyph becomes an Invalid token for the parser to reject. `//`
 // opens a line comment consumed to end-of-line (§16: .fpm allows `//`);
 // whitespace and newlines are insignificant.
-lex_fpm :: proc(content: string) -> []Fpm_Token {
-	tokens := make([dynamic]Fpm_Token, 0, 32, context.temp_allocator)
+lex_fpm :: proc(content: string) -> []Afpm_Token {
+	tokens := make([dynamic]Afpm_Token, 0, 32, context.temp_allocator)
 	i := 0
 	for i < len(content) {
 		ch := content[i]
@@ -479,27 +487,27 @@ lex_fpm :: proc(content: string) -> []Fpm_Token {
 				i += 1
 			}
 		case is_digit(ch):
-			tok, next := fpm_scan_number(content, i)
+			tok, next := afpm_scan_number(content, i)
 			append(&tokens, tok)
 			i = next
 		case is_ident_start(ch):
-			tok, next := fpm_scan_ident(content, i)
+			tok, next := afpm_scan_ident(content, i)
 			append(&tokens, tok)
 			i = next
 		case:
-			append(&tokens, fpm_scan_punct(ch))
+			append(&tokens, afpm_scan_punct(ch))
 			i += 1
 		}
 	}
 	return tokens[:]
 }
 
-// fpm_scan_number scans a number literal — an integer run with an optional
+// afpm_scan_number scans a number literal — an integer run with an optional
 // `.` fractional part — and folds it to a §10 Fixed, mirroring the .fun and
 // .flvl number scanners. A `.` is consumed into the literal only when a digit
 // follows it (no member-access concern in this surface, but the rule keeps the
 // scan total and identical to the family).
-fpm_scan_number :: proc(content: string, start: int) -> (tok: Fpm_Token, next: int) {
+afpm_scan_number :: proc(content: string, start: int) -> (tok: Afpm_Token, next: int) {
 	i := start
 	for i < len(content) && is_digit(content[i]) {
 		i += 1
@@ -511,15 +519,15 @@ fpm_scan_number :: proc(content: string, start: int) -> (tok: Fpm_Token, next: i
 			j += 1
 		}
 		bits := fixed_from_decimal(parse_digits(content[start:i]), content[frac_start:j])
-		return Fpm_Token{kind = .Number, text = content[start:j], fixed_value = bits}, j
+		return Afpm_Token{kind = .Number, text = content[start:j], fixed_value = bits}, j
 	}
 	text := content[start:i]
-	return Fpm_Token{kind = .Number, text = text, fixed_value = to_fixed(parse_digits(text))}, i
+	return Afpm_Token{kind = .Number, text = text, fixed_value = to_fixed(parse_digits(text))}, i
 }
 
-// fpm_scan_ident scans an identifier run and maps the model keywords. A
+// afpm_scan_ident scans an identifier run and maps the model keywords. A
 // non-keyword run is an Ident.
-fpm_scan_ident :: proc(content: string, start: int) -> (tok: Fpm_Token, next: int) {
+afpm_scan_ident :: proc(content: string, start: int) -> (tok: Afpm_Token, next: int) {
 	i := start
 	for i < len(content) && is_ident_char(content[i]) {
 		i += 1
@@ -527,37 +535,37 @@ fpm_scan_ident :: proc(content: string, start: int) -> (tok: Fpm_Token, next: in
 	text := content[start:i]
 	switch text {
 	case "model":
-		return Fpm_Token{kind = .Model, text = text}, i
+		return Afpm_Token{kind = .Model, text = text}, i
 	case "param":
-		return Fpm_Token{kind = .Param, text = text}, i
+		return Afpm_Token{kind = .Param, text = text}, i
 	case "emit":
-		return Fpm_Token{kind = .Emit, text = text}, i
+		return Afpm_Token{kind = .Emit, text = text}, i
 	case "material":
-		return Fpm_Token{kind = .Material, text = text}, i
+		return Afpm_Token{kind = .Material, text = text}, i
 	}
-	return Fpm_Token{kind = .Ident, text = text}, i
+	return Afpm_Token{kind = .Ident, text = text}, i
 }
 
-// fpm_scan_punct maps the structural glyphs the model surface uses; every other
+// afpm_scan_punct maps the structural glyphs the model surface uses; every other
 // single character is Invalid, the parser's reject signal.
-fpm_scan_punct :: proc(ch: u8) -> Fpm_Token {
+afpm_scan_punct :: proc(ch: u8) -> Afpm_Token {
 	switch ch {
 	case '{':
-		return Fpm_Token{kind = .L_Brace, text = "{"}
+		return Afpm_Token{kind = .L_Brace, text = "{"}
 	case '}':
-		return Fpm_Token{kind = .R_Brace, text = "}"}
+		return Afpm_Token{kind = .R_Brace, text = "}"}
 	case '(':
-		return Fpm_Token{kind = .L_Paren, text = "("}
+		return Afpm_Token{kind = .L_Paren, text = "("}
 	case ')':
-		return Fpm_Token{kind = .R_Paren, text = ")"}
+		return Afpm_Token{kind = .R_Paren, text = ")"}
 	case ':':
-		return Fpm_Token{kind = .Colon, text = ":"}
+		return Afpm_Token{kind = .Colon, text = ":"}
 	case ',':
-		return Fpm_Token{kind = .Comma, text = ","}
+		return Afpm_Token{kind = .Comma, text = ","}
 	case '=':
-		return Fpm_Token{kind = .Eq, text = "="}
+		return Afpm_Token{kind = .Eq, text = "="}
 	case:
-		return Fpm_Token{kind = .Invalid}
+		return Afpm_Token{kind = .Invalid}
 	}
 }
 
