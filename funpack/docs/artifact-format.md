@@ -1,4 +1,4 @@
-# funpack artifact format — v1
+# funpack artifact format — v5
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 4
+funpack-artifact 5
 ```
 
-- `schema_version` is the integer after the space (here `4`).
+- `schema_version` is the integer after the space (here `5`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -47,7 +47,26 @@ funpack-artifact 4
   — the fixed logical draw space (§20 §3) in integer world units, declared in
   the entrypoint block (§14 §4) — so the present pass letterboxes from the
   artifact instead of a hardcoded board constant. A required field on an
-  existing record is a layout change: 3 → 4.
+  existing record is a layout change: 3 → 4. v5 is the **yard cross-epic
+  format** the §11 physics, §20 camera, and §24 persistence surfaces first
+  reach. Four layout changes ride it: (a) the **§06 §2 singleton tick-0 spawn
+  marker** — a `singleton`'s [things] row carries `SINGLETON true` plus its
+  COMPLETE defaulted field schema, so the runtime spawns the singleton
+  population (yard's Scoreboard/Camera/Menu) once before tick 0 from the artifact
+  alone, accessed by type (§8); (b) the **§11 §3 physics-stage encoding** — the
+  engine-closed `physics: solve` battery occupies a [pipeline_flattened] step
+  (`stage:physics behavior:solve`), a battery step distinct from a behavior step,
+  recording the engine boundary in the total order (§11); (c) the **§03 §4
+  CollisionLayer enum KIND tag** — an `enum Layer: CollisionLayer` [enums] record
+  stamps the `CollisionLayer` role kind (§5); (d) the **§6 engine-type field
+  defaults** — an `Option[String]` singleton default (`status: Option[String] =
+  Option::None`, an enum-variant token) and engine-type composite defaults (a
+  Settings static-builder default `Settings.defaults()` lowered to its evaluated
+  `Settings(volume=128,fullscreen=false)` record inline, decoded against a
+  synthesized §8 Settings data projection, and a Body's inline composite default
+  with its `impulse: Vec2 = zero` / `mass: Fixed = 1.0` field defaults applied).
+  A marker row, a new flattened-step occupant kind, an enum KIND value, and
+  widened §6/§8 default forms are each a layout change: 4 → 5.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -289,7 +308,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 2
+funpack-artifact 5
 [meta 2]
 …
 [enums N]
@@ -399,17 +418,35 @@ field NAME TYPE DEFAULT
     spelling (cf. the §14 builder-call `keys_axis(Key::W,Key::S)` form) keeps a
     composite default in the one token a `field` line allows, where the §13
     space-spread `vec2` form cannot fit.
+  - an **engine-type composite** default (v5) — a §11/§24 engine record used as a
+    default — reuses the same inline-constructor token `Type(field=enc,…)`, with
+    two v5 wrinkles. (i) A `Settings.defaults()` **static-builder** default is a
+    CALL, not a value the §29-pure artifact can carry verbatim, so the emitter
+    **evaluates** it to its canonical factory record and inlines that:
+    `=Settings(volume=128,fullscreen=false)` — `volume` the default gain (Int),
+    `fullscreen` off (Bool). The Settings the artifact carries is the runtime's
+    representable two-field projection (`{ volume: Int, fullscreen: Bool }`),
+    **synthesized into [data] as a `Settings` data record** (§8) so a reader
+    resolves the default's nested field types by declared type. (ii) A `Body`
+    default inlines with its **§11 §2 field defaults applied** — an omitted
+    `impulse: Vec2` seeds `Vec2(x=0,y=0)` (`zero`), an omitted `mass: Fixed` seeds
+    `1.0` (`4294967296`) — so the emitted Body token carries the complete resolved
+    field set, never a half-built record the runtime would have to default. An
+    `Option[String]` default is the enum-variant token `=Option::None` (the bare
+    `Type::Case` form above; the `[String]` element only shapes the field's
+    declared TYPE column, not the default token).
 
-This is a **value-encoding addition within the schema-v2 field-default token**, not
-a new section, node kind, or record layout: a `field` line still carries exactly
-`NAME TYPE DEFAULT`, and `DEFAULT` is still the one `=ENCODED` token a reader reads
-at `sf[3]`. No section ordering, no record shape, and no node-kind set changes — so
-`ARTIFACT_SCHEMA_VERSION` does **not** bump (it stays `2`). The bump rule (§1) fires
-on a section/field/ordering/layout change; widening the set of values an existing
-token may hold, within its existing one-token slot, is none of those. The gameplay
-(pong) surface emits only the scalar forms, so every pong default is byte-identical
-to v1's scalar encoding; the composite forms are first reached by the snake (`Cell`,
-`Dir`, `[]`) and hunt (`Hunt::Patrol`, `Vec2`) goldens.
+This is a **value-encoding addition within the field-default token**, not a new
+section or node kind: a `field` line still carries exactly `NAME TYPE DEFAULT`, and
+`DEFAULT` is still the one `=ENCODED` token a reader reads at `sf[3]`. The v5 bump
+(§1) is driven by the singleton marker (§8), the physics-stage step (§11), the
+CollisionLayer KIND value (§5), and — for §6 — the **synthesized engine-type data
+projection** the Settings default decode requires (a [data] record the source's
+defaults add, a record-layout change). The gameplay (pong) surface emits only the
+scalar forms, so every pong default is byte-identical to v1's scalar encoding; the
+composite forms are reached by the snake (`Cell`, `Dir`, `[]`) and hunt
+(`Hunt::Patrol`, `Vec2`) goldens, and the engine-type composite/static-builder
+forms by the yard (`Settings.defaults()`, `Option::None`, `Body`) surface.
 
 `Board` is the one pong `data` type; `BOARD` is a module-level `let`, recorded in
 `[functions]` as a `const` (§9) since it is a named value, not a type.
@@ -452,8 +489,25 @@ field NAME TYPE DEFAULT
 - `field` records are the §6 field grammar: name, type, default. A defaulted
   field (`Scoreboard.left = 0`) records its default so a Spawn may omit it.
 
+**Singleton tick-0 spawn marker (v5).** A `SINGLETON true` row IS the §06 §2
+tick-0 spawn marker: a singleton is spawned **once before tick 0, accessed by
+type**, and no `[setup]` Spawn supplies it (the §13 batch carries only `thing`
+spawns). So the singleton's [things] row must carry its **complete defaulted
+field schema** — every field with a §6 `=ENCODED` default — because that schema is
+the *only* source the runtime has to fill the row's columns. A reader spawns one
+row per `SINGLETON true` thing before tick 0, every column the field's decoded
+default. yard's three singletons exercise the full §6 default vocabulary:
+`Scoreboard { delivered: Int = 0 }` (a bare scalar), `Camera { at: Vec2 =
+Vec2(x=…,y=…), zoom: Fixed = …, shake: Vec2 = … }` (composite Vec2 + Fixed), and
+`Menu { settings: Settings = Settings(volume=128,fullscreen=false), dirty: Bool =
+false, status: Option[String] = Option::None }` (an engine-type composite default,
+a Bool, and an enum-variant Option default). A singleton field with no default
+would leave a column the runtime cannot fill, so every singleton field carries one.
+
 Pong's things: `Paddle`, `Ball`, `Scoreboard` (all `thing`; pong models the
-score as a once-spawned `thing` in `setup`, not a `singleton`).
+score as a once-spawned `thing` in `setup`, not a `singleton`). yard's things:
+`Player`, `Crate`, `Wall`, `Pad` (`thing`), and `Scoreboard`, `Camera`, `Menu`
+(`singleton` — the tick-0 marker case).
 
 ---
 
@@ -577,15 +631,37 @@ step ORDINAL stage:STAGE behavior:NAME
   fold (§07 §4) visits this step at. It is contiguous and gap-free.
 - `stage:STAGE` is the owning stage name (documentary; its position is the
   contract, §07 §1).
-- `behavior:NAME` is the behavior run at this step. A behavior referenced here
-  must have a `[behaviors]` record (§10).
+- `behavior:NAME` is the **occupant** run at this step — a user behavior, or (v5)
+  an engine **battery**. A behavior occupant must have a `[behaviors]` record
+  (§10); a battery occupant has none.
+
+**Physics-stage encoding (v5, §11 §3).** The §11 §3 `physics:` stage is an
+**engine-closed** stage whose single member is the `solve` battery — collision
+resolution writes BOTH bodies, which a behavior may never do, so it is the engine's,
+not a behavior. It still occupies a real pipeline **position**: stage position is
+the ordering — intent is written by the stages **before** `solve`, reactions are
+consumed by the stages **after** (§11 §3). So a `physics: solve` stage flattens to
+one **battery step** in the total order, the same line shape as a behavior step:
+
+```
+step 2 stage:physics behavior:solve
+```
+
+A battery step is **distinct from a behavior step**: its `behavior:NAME` is the
+battery name (`solve`), not a `[behaviors]` record, so a reader keeps the step
+position but binds **no** user behavior — it dispatches the step to the native
+solver by the `(stage, behavior) = (physics, solve)` pair, never a behavior lookup.
+The battery name was validated against the engine battery set upstream (only `solve`
+exists, §11 §3). Because a battery step holds no signature, it produces **no**
+[signal_routing] endpoint (§12): the engine's `Contact`/`Trigger` outputs are an
+optional inbound edge, not a user-emitted signal subject to effect closure.
 
 This is the derived, never-drifting flattened tree (§07 §3): effect closure
 (§12's routing) runs on the same order, so the order recorded here **is** the
 order the runtime folds. `startup:` steps (run once before tick 0, §07 §1) are
-recorded first with `stage:startup`; the interior Update stages
-(`control`, `collision`, `scoring`) follow; the terminal `render:` projection
-stage is last.
+recorded first with `stage:startup`; the interior Update stages (yard's `control`,
+then the `physics:solve` battery step, then `delivery`/`menu`/`camera`) follow;
+the terminal `render:` projection stage is last.
 
 ---
 

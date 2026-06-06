@@ -399,6 +399,17 @@ eval_variant :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 // `Snake{}` evaluates to a Snake carrying head/body/dir/grow/state, the same way
 // a `setup` Spawn fills omitted fields, and a later `snake.head` read never faults
 // on an absent column (§03 §1, §06).
+//
+// A struct-payload variant VALUE (`Shape2::Box{size}`, `Draw::Rect{…}`) is
+// serialized by the emitter as a `record Type::Case` node (emit_struct_variant), so
+// it lands here as a Record_Value carrying the `::`-joined type name verbatim. That
+// ONE representation serves two consumers: the engine render path keys a draw
+// command off the `Draw::Rect`/`Draw::Camera` type_name (render.odin), and a §2.5
+// struct-pun `match` reads its case and puns its fields (struct_arm_matches accepts
+// a `::`-named Record_Value as the struct-variant value). Keeping the §2.7 record
+// shape — rather than re-boxing into a Variant_Value — serves both without a
+// representation split (a Variant_Value re-box would break the render decode, which
+// reads the `Draw::*` Record_Value by type_name).
 eval_record :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	type_name := node.fields[0]
 	fields := make(map[string]Value, interp.allocator)

@@ -131,10 +131,11 @@ STDLIB_SURFACE := []Module_Surface{
 	},
 	{
 		// The list combinator surface. fold/map/filter/find/first plus the
-		// snake/hunt combinators prepend/init/contains/concat/is_empty: every
-		// row's signature is call-site-inferred (surface_signatures returns
-		// found = false for them), so admission here is the Func table row —
-		// their typing rule is combinator inference's, not a fixed signature.
+		// snake/hunt combinators prepend/init/contains/concat/is_empty and the
+		// yard length read len: every row's signature is call-site-inferred
+		// (surface_signatures returns found = false for them), so admission here
+		// is the Func table row — their typing rule is combinator inference's,
+		// not a fixed signature.
 		path = "engine.list",
 		decls = {
 			{"fold", .Func},
@@ -147,6 +148,7 @@ STDLIB_SURFACE := []Module_Surface{
 			{"contains", .Func},
 			{"concat", .Func},
 			{"is_empty", .Func},
+			{"len", .Func},
 		},
 	},
 	{
@@ -484,7 +486,11 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 		}
 	case "Key":
 		switch variant {
-		case "W", "S", "A", "D", "Up", "Down", "Left", "Right", "Space":
+		case "W", "S", "A", "D", "Up", "Down", "Left", "Right", "Space",
+		     "F5", "F9", "M", "Enter":
+			// yard's menu keybinds (quicksave/quickload/toggle-motion/apply) bind to
+			// the function keys, M, and Enter; the runtime treats a key code as an
+			// opaque interned string, so admitting the variant here is the whole gate.
 			return engine_type_of(.Key), true
 		}
 	case "Stick":
@@ -589,6 +595,15 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 			return func_of({engine_type_of(.PlayerId), nil}, Ground_Type.Vec2), true
 		case "with_pressed":
 			return func_of({engine_type_of(.PlayerId), nil}, engine_type_of(.Input)), true
+		case "with_axis":
+			// The test producer that seeds an axis action's Vec2 on an Input
+			// snapshot (yard's drive test: with_axis(P1, Drive::Move, Vec2{1,0})),
+			// the analog twin of with_pressed. The action-role arg is the nil
+			// unknown (the user Axis enum); the value is the Vec2 sample.
+			return func_of(
+				{engine_type_of(.PlayerId), nil, Ground_Type.Vec2},
+				engine_type_of(.Input),
+			), true
 		}
 	case .Bindings:
 		switch member {
@@ -646,6 +661,17 @@ surface_struct_variant :: proc(type_name: string, variant: string) -> (result: T
 					{name = "at", type = Ground_Type.Vec2},
 					{name = "text", type = engine_type_of(.String)},
 					{name = "color", type = engine_type_of(.Color)},
+				}), true
+		case "Camera":
+			// §20 §3: the 2D camera command — camera-as-data, the view a behavior
+			// projects. `at` is the world point centered on, `zoom` scales the
+			// world→pixel projection, `rotation` is carried for the command set
+			// (yard's `view` behavior emits rotation: 0.0). The runtime present
+			// pass reads these by name to build the world↔screen transform.
+			return engine_type_of(.Draw), clone_fields({
+					{name = "at", type = Ground_Type.Vec2},
+					{name = "zoom", type = Ground_Type.Fixed},
+					{name = "rotation", type = Ground_Type.Fixed},
 				}), true
 		}
 	case "Shape2":

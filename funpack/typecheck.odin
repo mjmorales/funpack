@@ -931,6 +931,9 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "is_empty":
 		t, ie := is_empty_check(ctx, e)
 		return t, true, ie
+	case "len":
+		t, le := len_check(ctx, e)
+		return t, true, le
 	case "pick":
 		t, pe := pick_check(ctx, e)
 		return t, true, pe
@@ -1075,6 +1078,22 @@ is_empty_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_
 		return nil, .Type_Mismatch
 	}
 	return Ground_Type.Bool, .None
+}
+
+// len_check types len(source) (spec §08): a List[T] or a View[T] yielding the
+// element count as an Int — yard's `tally` reads `len(done)` over the inbound
+// [Delivered] signal list to fold the tick's deliveries into the running tally.
+// Like is_empty, only that the argument is a read source matters; the element
+// type is irrelevant to the Int result.
+len_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	if _, ok := source_element(source); !ok {
+		return nil, .Type_Mismatch
+	}
+	return Ground_Type.Int, .None
 }
 
 // pick_check types pick(list, rng) (spec §04 §1, engine.rand): a List[T] and the

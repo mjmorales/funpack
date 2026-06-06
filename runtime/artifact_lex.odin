@@ -39,7 +39,20 @@ import "core:strings"
 // fixed logical draw space (§20 §3) in integer world units the present pass
 // letterboxes to. A required field on an existing record is a layout change:
 // 3 → 4 (funpack/docs/artifact-format.md §1, §15).
-ARTIFACT_SCHEMA_VERSION :: 4
+//
+// v5 is the yard cross-epic format the §11 physics / §20 camera / §24 persistence
+// surfaces first reach. Four layout changes ride it: the §06 §2 SINGLETON tick-0
+// spawn marker (a `singleton`'s [things] row carries SINGLETON true plus its
+// complete defaulted field schema, so this runtime spawns the singleton population
+// from the artifact alone); the §11 §3 PHYSICS-STAGE step (`stage:physics
+// behavior:solve` in [pipeline_flattened], a battery step the tick fold dispatches
+// to the native solver, not a behavior lookup); the §03 §4 CollisionLayer enum
+// KIND tag; and the §6 ENGINE-TYPE field defaults (Option[String] = Option::None,
+// and a Settings composite default `Settings(volume=128,fullscreen=false)` decoded
+// against the §8 Settings data projection). A marker row, a new flattened-step
+// occupant kind, an enum KIND value, and widened §6/§8 default forms are layout
+// changes: 4 → 5 (funpack/docs/artifact-format.md §1, §6, §8, §11).
+ARTIFACT_SCHEMA_VERSION :: 5
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"

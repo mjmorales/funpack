@@ -47,7 +47,24 @@ import "core:strings"
 // letterboxes from the artifact instead of a hardcoded board constant. A
 // required field on an existing record is a layout change: 3 → 4 (§1; ADR
 // 2026-06-06-logical-space-entrypoint-field).
-ARTIFACT_SCHEMA_VERSION :: 4
+//
+// Version 5 is the yard cross-epic format the §11 physics, §20 camera, and §24
+// persistence surfaces first reach. Four layout changes ride it: (1) the §06 §2
+// SINGLETON tick-0 spawn marker — a `singleton`'s [things] row carries SINGLETON
+// true plus its COMPLETE defaulted field schema, so the runtime spawns the
+// singleton population (Scoreboard/Camera/Menu) from the artifact alone; (2) the
+// §11 §3 PHYSICS-STAGE encoding — the engine-closed `physics: solve` battery
+// occupies a [pipeline_flattened] step (`stage:physics behavior:solve`), a battery
+// step distinct from a behavior step, recording the engine boundary in the total
+// order (intent before, reactions after); (3) the §03 §4 CollisionLayer KIND tag —
+// an `enum Layer: CollisionLayer` [enums] record stamps the `CollisionLayer` role
+// kind; (4) the §6 ENGINE-TYPE field defaults — Option[String] singleton defaults
+// (`status: Option[String] = Option::None`), and engine-type composite defaults
+// (a Settings static-builder default `Settings.defaults()` lowered to its evaluated
+// `Settings(volume=128,fullscreen=false)` record inline, against a synthesized §8
+// Settings data projection). A marker row, a new flattened-step occupant kind, an
+// enum KIND value, and widened §6/§8 default forms are layout changes: 4 → 5 (§1).
+ARTIFACT_SCHEMA_VERSION :: 5
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

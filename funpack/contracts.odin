@@ -310,11 +310,22 @@ is_command_list :: proc(t: Type, kind: Engine_Kind) -> bool {
 	return is_engine(list.elem, kind)
 }
 
-// is_any_command_list reports an engine-command list of any closed §04
-// command kind ([Spawn], [Despawn], or [Draw]) — the "is this an emit?" test the
-// Render and Update contracts share. The closed set mirrors surface_command and
-// surface_struct_variant's emitting kinds; [Despawn] is the self-scoped despawn
-// an Update behavior emits (snake's `despawn_eaten` returns [Despawn]).
+// is_any_command_list reports an engine-command list of any closed §04/§24
+// command kind — the "is this an emit?" test the Render and Update contracts
+// share. The closed set mirrors surface_command and the §24 save surface's
+// emitting kinds: [Spawn]/[Despawn]/[Draw] (§04) plus [Save]/[Restore]/
+// [ApplySettings] (§24 §1/§2 — the command a persist behavior emits to ask the
+// engine to write the disk; yard's save_key/restore_key/apply_settings return
+// these, so an Update behavior emitting one is a real write, not dead code).
+// [Despawn] is the self-scoped despawn an Update behavior emits (snake's
+// `despawn_eaten`).
 is_any_command_list :: proc(t: Type) -> bool {
-	return is_command_list(t, .Spawn) || is_command_list(t, .Despawn) || is_command_list(t, .Draw)
+	return(
+		is_command_list(t, .Spawn) ||
+		is_command_list(t, .Despawn) ||
+		is_command_list(t, .Draw) ||
+		is_command_list(t, .Save) ||
+		is_command_list(t, .Restore) ||
+		is_command_list(t, .ApplySettings) \
+	)
 }

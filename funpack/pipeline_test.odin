@@ -476,19 +476,47 @@ test_gate_bare_variant_is_a_flat_atom :: proc(t: ^testing.T) {
 	// compositional container (spec §03 §2). So a list of records each
 	// carrying a bare variant field nests call(0)→list(1)→record(1)→bare-
 	// variant(0) = 2, NOT 3: the pong `tally` assert shape clears the
-	// nesting gate. A payload-bearing variant still opens a level, so a
-	// regression that re-counted bare variants would fire here.
+	// nesting gate.
 	chain := "assert tally([Goal{side: Side::Left}, Goal{side: Side::Left}]) == 2\n"
 	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
 }
 
 @(test)
-test_gate_payload_variant_still_opens_a_level :: proc(t: ^testing.T) {
-	// The bare-variant fix is scoped: a payload-bearing variant nested under
-	// three containers is still depth 4 and fires the gate. call(1)→arg
-	// Some(2)→arg Some(3)→arg Some(4) overshoots the budget of 3.
+test_gate_payload_variant_is_a_transparent_aggregate :: proc(t: ^testing.T) {
+	// A payload-bearing variant is a TRANSPARENT AGGREGATE — pure value
+	// construction (an enum value carrying a payload), like a record or list
+	// literal — so it passes its deepest payload through WITHOUT opening a
+	// nesting level. A chain of payload variants `Box::A(Box::B(Box::C(1)))`
+	// is therefore flat construction: call(1)→arg (the variant chain, depth 0
+	// — all transparent to the leaf `1`) = depth 1, which clears the budget.
+	// This is the v5 metric refinement that lets the canonical yard surface's
+	// `fold(_, _, fn{ match { => m with { status: Option::Some(_) } } })` clear
+	// the fixed §01 P5 budget (wrapping a value in an enum case is the same flat
+	// construction `Vec2{x, y}` already is). Genuine control nesting — calls,
+	// lambdas, `with`, match arms — still deepens (see the predicate-body and
+	// fold-with-match tests), so the budget still fires on real scope-creep.
 	chain := "assert wrap(Box::A(Box::B(Box::C(1)))) == 1\n"
-	testing.expect_value(t, gate_error_of(chain), Gate_Error.Nesting_Exceeded)
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
+}
+
+@(test)
+test_gate_yard_fold_match_with_option_clears_budget :: proc(t: ^testing.T) {
+	// The exact yard `on_persist_result` shape that drove the v5 nesting-metric
+	// refinement: `fold(coll, init, fn(m, r) { return match r.result {
+	// Result::Ok(_) => m with { status: Option::Some("saved") } ... } })`. Under
+	// the old metric this was depth 4 = combinator-call(1) + match-arm(1) +
+	// with(1) + Option::Some payload-variant(1), over the budget of 3 — but a
+	// canonical spec example (funpack-spec/examples/yard) must clear the fixed
+	// §01 P5 budget by construction, so the over-counting payload-variant level
+	// was the bug. With the variant treated as a transparent aggregate the chain
+	// is depth 3 = combinator(1, lambda level collapsed) + match-arm(1) + with(1),
+	// at the budget. This pins the canonical example's shape directly so the
+	// refinement can never silently regress to a false Nesting_Exceeded.
+	chain := "assert fold(saved, self, fn(m, r) { return match r.result {\n" +
+		"  Result::Ok(_)  => m with { status: Option::Some(\"saved\") }\n" +
+		"  Result::Err(_) => m with { status: Option::Some(\"save failed\") }\n" +
+		"} }) == self\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
 }
 
 @(test)

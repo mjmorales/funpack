@@ -21,6 +21,8 @@
 // destructure, and the wildcard.
 package funpack_runtime
 
+import "core:strings"
+
 // --- match ----------------------------------------------------------------
 
 // eval_match evaluates `match SCRUTINEE { arm => body, … }`: child[0] is the
@@ -114,26 +116,27 @@ arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 }
 
 // struct_arm_matches tests the §2.5 struct-field-pun pattern `Enum::Case{f, …}`
-// (yard's `Shape2::Box{size} => size`): it matches a Variant_Value of the named
-// case whose payload is the struct Record_Value, then binds EACH named field of
-// the pattern to the same-named payload column (the pun — `{size}` binds `size`
-// to `payload.size`, not the whole payload). fields: pat, enum, case, field_count,
-// field_names…  A `_` field name discards; a payload missing a punned field is a
-// non-match (the case carries no such column). Distinct from variant_binds, which
-// binds the WHOLE payload to one binder rather than punning its struct fields.
+// (yard's `Shape2::Box{size} => size`): it matches a struct-payload variant value
+// of the named case, then binds EACH named field of the pattern to the same-named
+// payload column (the pun — `{size}` binds `size` to `payload.size`, not the whole
+// payload). fields: pat, enum, case, field_count, field_names…  A `_` field name
+// discards; a payload missing a punned field is a non-match (the case carries no
+// such column). Distinct from variant_binds, which binds the WHOLE payload to one
+// binder rather than punning its struct fields.
+//
+// The scrutinee arrives in EITHER of the two shapes a struct-payload variant value
+// takes on this runtime: a Variant_Value whose payload is the struct Record_Value
+// (a hand-built or combinator-produced enum value), OR — the EMITTED form (seam #1)
+// — a `::`-named Record_Value the funpack emitter serializes a `Shape2::Box{size}`
+// expression into (a `record Type::Case` node, eval_record). struct_variant_payload
+// normalizes both to (case_name, payload columns), so a struct-pun arm matches a
+// struct-variant VALUE whether it was hand-built or emitted-and-loaded.
 struct_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
-	v, is_variant := scrutinee.(Variant_Value)
-	if !is_variant {
+	case_name, payload, ok := struct_variant_payload(scrutinee)
+	if !ok {
 		return false
 	}
-	if v.case_name != arm.fields[2] {
-		return false
-	}
-	if v.payload == nil {
-		return false
-	}
-	payload, is_record := v.payload^.(Record_Value)
-	if !is_record {
+	if case_name != arm.fields[2] {
 		return false
 	}
 	field_count := 0
@@ -148,13 +151,42 @@ struct_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 		if field_name == "_" {
 			continue
 		}
-		column, present := payload.fields[field_name]
+		column, present := payload[field_name]
 		if !present {
 			return false
 		}
 		scope.names[field_name] = column
 	}
 	return true
+}
+
+// struct_variant_payload normalizes a struct-payload variant value to its case name
+// and its payload columns, accepting both runtime shapes (seam #1): a Variant_Value
+// whose boxed payload is the struct Record_Value, and the EMITTED `::`-named
+// Record_Value (`Shape2::Box`) the funpack emitter produces for a struct-payload
+// variant expression. ok is false for any other value (a bare variant, a plain
+// record, a scalar) — a non-struct-variant scrutinee never matches a struct-pun arm.
+struct_variant_payload :: proc(scrutinee: Value) -> (case_name: string, columns: map[string]Value, ok: bool) {
+	#partial switch v in scrutinee {
+	case Variant_Value:
+		if v.payload == nil {
+			return "", nil, false
+		}
+		record, is_record := v.payload^.(Record_Value)
+		if !is_record {
+			return "", nil, false
+		}
+		return v.case_name, record.fields, true
+	case Record_Value:
+		// The emitted form: a `::`-named record IS the struct-variant value, its
+		// case the segment after `::` and its columns the record's own fields.
+		sep := strings.index(v.type_name, "::")
+		if sep < 0 {
+			return "", nil, false
+		}
+		return v.type_name[sep + 2:], v.fields, true
+	}
+	return "", nil, false
 }
 
 // tuple_arm_matches destructures a tuple scrutinee against a tuple pattern arm: the

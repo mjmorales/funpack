@@ -366,7 +366,16 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Trigger), true
 	// §24 persistence: a `settings: Settings` field and the inbound result
 	// signals (`saved: [Saved]`, `restored: [Restored]`, `applied:
-	// [SettingsApplied]`) name engine types in field/param position.
+	// [SettingsApplied]`) name engine types in field/param position; the
+	// Save/Restore/ApplySettings command types name the element of a persist
+	// behavior's emitted command list (`-> [Save]`, `-> [Restore]`,
+	// `-> [ApplySettings]`), so they ground here like Spawn/Despawn/Draw.
+	case "Save":
+		return engine_type_of(.Save), true
+	case "Restore":
+		return engine_type_of(.Restore), true
+	case "ApplySettings":
+		return engine_type_of(.ApplySettings), true
 	case "Settings":
 		return engine_type_of(.Settings), true
 	case "AccessOpts":

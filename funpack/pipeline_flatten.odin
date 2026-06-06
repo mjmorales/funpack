@@ -34,11 +34,20 @@ package funpack
 // Flat_Step is one step of the depth-first flattened total order (spec §07 §3,
 // artifact-format §11): the 0-based ordinal a tick's fold visits it at, the
 // owning stage name (documentary — its position is the contract, spec §07 §1),
-// and the behavior run at this step. Ordinals are contiguous and gap-free.
+// and the occupant run at this step. Ordinals are contiguous and gap-free.
+//
+// An occupant is either a user behavior or an engine-closed BATTERY (the §11 §3
+// `physics:` stage's `solve`). is_battery marks the latter: a battery step holds
+// no user Behavior_Decl (the runtime dispatches it to the native solver by the
+// (stage, behavior) pair, not a behavior lookup), and its `behavior` field is
+// the battery name (`solve`). The artifact §11 line is the same shape either way
+// — `step ORDINAL stage:STAGE behavior:NAME` — so the marker stays in-memory;
+// the runtime re-derives "this is the battery" from `stage:physics behavior:solve`.
 Flat_Step :: struct {
-	ordinal:  int,
-	stage:    string,
-	behavior: string,
+	ordinal:    int,
+	stage:      string,
+	behavior:   string,
+	is_battery: bool,
 }
 
 // Signal_Endpoint is a producer or consumer of a signal at a flattened
@@ -158,6 +167,22 @@ expand_pipeline :: proc(
 	visiting[pipeline.name] = true
 	defer delete_key(visiting, pipeline.name)
 	for stage in pipeline.stages {
+		// A bare-battery stage (`physics: solve`, spec §11 §3) is an engine-closed
+		// stage occupying a real pipeline POSITION with no user behaviors — stage
+		// position is the ordering (intent written before it, reactions consumed
+		// after). It flattens to one battery step at the next ordinal, so the §11
+		// total order records the engine boundary between the upstream intent
+		// stages and the downstream reaction stages. The battery name was validated
+		// against the engine battery set in the contract node check (contracts.odin).
+		if stage.is_battery {
+			append(steps, Flat_Step{
+				ordinal    = len(steps),
+				stage      = stage.name,
+				behavior   = stage.battery,
+				is_battery = true,
+			})
+			continue
+		}
 		for member in stage.behaviors {
 			if sub, is_pipeline := find_pipeline_decl(typed.ast, member); is_pipeline {
 				expand_pipeline(typed, sub, steps, visiting) or_return

@@ -29,11 +29,11 @@ load_golden :: proc(t: ^testing.T) -> (program: Program, ok: bool) {
 	return loaded, true
 }
 
-// The version gate is exact-match: the golden's stamp is v4, and the loader
+// The version gate is exact-match: the golden's stamp is v5, and the loader
 // builds against exactly that. A wrong stamp or version is refused, never parsed
-// (§1). v4 is the accept case (the entrypoint logical-extent schema bump); v3
-// and any future v5 are mismatches the loader refuses before reading any
-// payload.
+// (§1). v5 is the accept case (the yard cross-epic schema bump — singleton
+// marker, physics stage, CollisionLayer tag, engine-type defaults); v4 and any
+// future v6 are mismatches the loader refuses before reading any payload.
 @(test)
 test_load_version_gate :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
@@ -42,14 +42,15 @@ test_load_version_gate :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, program.schema_version, ARTIFACT_SCHEMA_VERSION)
 
-	// A v3 stamp is a mismatch — refused before any payload.
-	old_version := "funpack-artifact 3\n[meta 0]\n"
+	// A v4 stamp is now a mismatch — the prior (logical-extent) schema, refused
+	// before any payload.
+	old_version := "funpack-artifact 4\n[meta 0]\n"
 	_, old_err := load_program(old_version, context.temp_allocator)
 	testing.expect_value(t, old_err, Artifact_Error.Version_Mismatch)
 
-	// A FUTURE version (v5) is equally a mismatch — the gate is exact, not
+	// A FUTURE version (v6) is equally a mismatch — the gate is exact, not
 	// floor-or-ceiling.
-	future_version := "funpack-artifact 5\n[meta 0]\n"
+	future_version := "funpack-artifact 6\n[meta 0]\n"
 	_, future_err := load_program(future_version, context.temp_allocator)
 	testing.expect_value(t, future_err, Artifact_Error.Version_Mismatch)
 
@@ -574,12 +575,12 @@ test_body_string_node_retains_interpolation :: proc(t: ^testing.T) {
 // emitted yard.artifact once v5 and its golden exist.
 
 // V5_ARTIFACT is a hand-written artifact exercising every v5 additive arm under
-// the v4 stamp: a CollisionLayer enum (§5), a `Body` data decl whose `body` field
+// the v5 stamp: a CollisionLayer enum (§5), a `Body` data decl whose `body` field
 // carries a §6 composite default nesting a Vec2 record + a CollisionLayer token +
 // an Option::None token, a SINGLETON thing (the singleton-spawn marker), and a
 // `physics:`/`solve` pipeline step that is engine-closed (no [behaviors] record).
 // It is the artifact-before-artifact fixture: hand-built, not compiler-emitted.
-V5_ARTIFACT :: "funpack-artifact 4\n" +
+V5_ARTIFACT :: "funpack-artifact 5\n" +
 	"[meta 2]\n" +
 	"project yard\n" +
 	"version L5:0.1.0\n" +
@@ -673,12 +674,12 @@ test_load_v5_additive_arms :: proc(t: ^testing.T) {
 @(test)
 test_load_v5_malformed_refused :: proc(t: ^testing.T) {
 	// An unknown section name is a schema mismatch — build_program refuses it.
-	unknown_section := "funpack-artifact 4\n[meta 2]\nproject yard\nversion L5:0.1.0\n[gravity 0]\n"
+	unknown_section := "funpack-artifact 5\n[meta 2]\nproject yard\nversion L5:0.1.0\n[gravity 0]\n"
 	_, unknown_err := load_program(unknown_section, context.temp_allocator)
 	testing.expect_value(t, unknown_err, Artifact_Error.Malformed_Header)
 
 	// A declared count that over-shapes the section is a parse-layer refusal.
-	bad_count := "funpack-artifact 4\n[enums 2]\nenum CollisionLayer CollisionLayer 1\nvariant Solid unit\n"
+	bad_count := "funpack-artifact 5\n[enums 2]\nenum CollisionLayer CollisionLayer 1\nvariant Solid unit\n"
 	_, count_err := load_program(bad_count, context.temp_allocator)
 	testing.expect_value(t, count_err, Artifact_Error.Section_Count_Mismatch)
 }

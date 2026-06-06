@@ -219,9 +219,17 @@ variant_payload_tag :: proc(variant: Variant_Decl) -> string {
 
 // emit_data writes one `data` record per declaration in source order, each
 // followed by its fields. `mut` is `true` for a `mut data` (§03 §7) — pong has
-// none, so it is always `false` here.
+// none, so it is always `false` here. After the user data decls, it emits any
+// SYNTHESIZED engine-type data decls (docs/artifact-format.md §8): an engine
+// record the source uses by default but has no user `data` for (yard's Settings).
+// The runtime's composite-default decode resolves a `Settings(…)` default's nested
+// field types against the §8 data decl, so the projection must be present in
+// [data]; the funpack surface owns the engine type, the artifact carries its
+// representable projection. The synthesized decls land in a fixed order after the
+// user decls, so the section stays byte-deterministic.
 emit_data :: proc(b: ^strings.Builder, ast: Ast) {
-	emit_header(b, "data", len(ast.datas))
+	synthetic := synthetic_data_decls(ast)
+	emit_header(b, "data", len(ast.datas) + len(synthetic))
 	for decl in ast.datas {
 		strings.write_string(b, "data ")
 		strings.write_string(b, decl.name)
@@ -229,6 +237,86 @@ emit_data :: proc(b: ^strings.Builder, ast: Ast) {
 		strings.write_int(b, len(decl.fields))
 		emit_line(b, " false")
 		emit_fields(b, decl.fields)
+	}
+	for decl in synthetic {
+		emit_synthetic_data(b, decl)
+	}
+}
+
+// Synthetic_Data is one emitter-synthesized engine-type data decl — the
+// runtime-representable projection of an engine record the source references by
+// type but does not declare as user `data` (yard's Settings). name is the
+// artifact type name; fields is the projected field schema (all required).
+Synthetic_Data :: struct {
+	name:   string,
+	fields: []Synthetic_Field,
+}
+
+// synthetic_data_decls returns the engine-type data decls the source's defaults
+// require the artifact to carry (docs/artifact-format.md §8). The one current
+// case: a Settings default (`Settings.defaults()`) needs the §8 Settings
+// projection in [data] so the runtime decode resolves its nested `volume`/
+// `fullscreen` field types. The decl is emitted iff some thing/data/signal field
+// declares the engine type, so a source that never uses Settings emits no extra
+// data record (pong/snake/hunt are unchanged). The scan is over the ordered
+// declaration slices, so the result is determinism-stable.
+synthetic_data_decls :: proc(ast: Ast) -> []Synthetic_Data {
+	out := make([dynamic]Synthetic_Data, 0, 1, context.temp_allocator)
+	if uses_engine_type(ast, "Settings") {
+		append(&out, Synthetic_Data{name = "Settings", fields = SETTINGS_DATA_FIELDS})
+	}
+	return out[:]
+}
+
+// uses_engine_type reports whether any thing/singleton/data/signal field declares
+// the given engine type name as its field type — the trigger for synthesizing
+// that engine type's §8 data projection. It reads the field TYPE spelling
+// (type_ref_string), so `Settings` matches the bare engine type a singleton field
+// holds (yard's `Menu.settings: Settings`).
+uses_engine_type :: proc(ast: Ast, type_name: string) -> bool {
+	for decl in ast.things {
+		if fields_declare_type(decl.fields, type_name) {
+			return true
+		}
+	}
+	for decl in ast.datas {
+		if fields_declare_type(decl.fields, type_name) {
+			return true
+		}
+	}
+	for decl in ast.signals {
+		if fields_declare_type(decl.fields, type_name) {
+			return true
+		}
+	}
+	return false
+}
+
+// fields_declare_type reports whether any field's declared type renders to the
+// given bare type name — the per-record half of uses_engine_type.
+fields_declare_type :: proc(fields: []Field_Decl, type_name: string) -> bool {
+	for field in fields {
+		if type_ref_string(field.type) == type_name {
+			return true
+		}
+	}
+	return false
+}
+
+// emit_synthetic_data writes one synthesized engine-type data record (the §8
+// shape): `data NAME field_count false` then one `field NAME TYPE -` per field.
+// Every projected field is required (the §6 DEFAULT slot is `-`); a Settings
+// default supplies both `volume`/`fullscreen` inline, so the runtime never reads a
+// field-level default off this decl. mut is always false (an engine record
+// projection is never `mut data`).
+emit_synthetic_data :: proc(b: ^strings.Builder, decl: Synthetic_Data) {
+	strings.write_string(b, "data ")
+	strings.write_string(b, decl.name)
+	strings.write_byte(b, ' ')
+	strings.write_int(b, len(decl.fields))
+	emit_line(b, " false")
+	for field in decl.fields {
+		emit_line(b, "field ", field.name, " ", field.type_name, " -")
 	}
 }
 
@@ -307,7 +395,11 @@ field_default_token :: proc(field: Field_Decl) -> string {
 // composite record default (Vec2/Cell/any constructor) is its inline constructor
 // token `Type(field=enc,…)` — the §6 single-token realization of "its constructor
 // record inline", parenthesized and space-free so it fits the one-token slot the
-// §13 space-spread `vec2` form cannot.
+// §13 space-spread `vec2` form cannot. An engine static-builder default
+// (`Settings.defaults()`) is a CALL the artifact cannot carry as an expression
+// (the §13 spawn batch and §6 defaults hold only evaluated values, §29 purity),
+// so it lowers to the evaluated factory-default record inline — the same
+// `Type(field=enc,…)` composite token a record default produces (engine_builder_default).
 encode_field_default :: proc(expr: Expr) -> string {
 	#partial switch e in expr {
 	case ^Variant_Expr:
@@ -318,8 +410,69 @@ encode_field_default :: proc(expr: Expr) -> string {
 		return "[]"
 	case ^Record_Expr:
 		return encode_record_default(e)
+	case ^Call_Expr:
+		if token, found := engine_builder_default(e); found {
+			return token
+		}
 	}
 	return encode_literal(expr)
+}
+
+// engine_builder_default lowers an engine static-builder default call to its
+// evaluated factory-default record token (docs/artifact-format.md §6, §8). A
+// builder like `Settings.defaults()` is a no-arg static call, not a value the
+// §29-pure artifact can carry verbatim — so the emitter EVALUATES it to its
+// canonical default record and inlines that, matching how a composite record
+// default already inline-encodes (`Type(field=enc,…)`). The Settings the artifact
+// carries is the runtime's representable two-field projection `{volume: Int,
+// fullscreen: Bool}` (the cross-product contract the runtime decode reads against
+// the synthesized §8 Settings data decl, emit_data), so the factory default is
+// the documented `Settings(volume=128,fullscreen=false)`. The set is closed: a
+// new engine builder default is a deliberate edit, mirroring the closed surface.
+engine_builder_default :: proc(call: ^Call_Expr) -> (token: string, found: bool) {
+	member, is_member := call.callee.(^Member_Expr)
+	if !is_member || len(call.args) != 0 {
+		return "", false
+	}
+	type_name, is_name := member.receiver.(^Name_Expr)
+	if !is_name {
+		return "", false
+	}
+	if type_name.name == "Settings" && member.member == "defaults" {
+		return SETTINGS_DEFAULT_TOKEN, true
+	}
+	return "", false
+}
+
+// SETTINGS_DEFAULT_TOKEN is the evaluated `Settings.defaults()` factory default
+// in the artifact's representable two-field Settings projection (volume: Int,
+// fullscreen: Bool) — the byte-exact token the runtime's composite-default decode
+// reads (runtime/decode_default_test.odin). Volume 128 is the mid-scale default
+// gain; fullscreen defaults off. It is a single space-free §6 composite token.
+SETTINGS_DEFAULT_TOKEN :: "Settings(volume=128,fullscreen=false)"
+
+// SETTINGS_DATA_FIELDS is the runtime-representable §8 Settings projection the
+// emitter synthesizes into [data] so the runtime can decode a Settings composite
+// default's nested field types by declared type (volume → i64, fullscreen → bool).
+// The funpack SURFACE Settings (§24 §2: volume/binds/graphics/access) is the
+// typecheck shape yard's source reads through; the ARTIFACT Settings is this
+// two-field projection — the closed cross-product contract waves 1-2 fixed in the
+// runtime decode. The fields are required (no §6 default of their own); a Settings
+// default supplies both inline, so the runtime never applies a field-level default.
+@(rodata)
+SETTINGS_DATA_FIELDS := []Synthetic_Field{
+	{name = "volume", type_name = "Int"},
+	{name = "fullscreen", type_name = "Bool"},
+}
+
+// Synthetic_Field is one field of an emitter-synthesized engine-type data decl —
+// the runtime-representable projection of an engine record (Settings) the source
+// has no user `data` declaration for. Each carries the field name and its bare
+// artifact type spelling; the field is required (no default), so the §6 DEFAULT
+// slot is always `-`.
+Synthetic_Field :: struct {
+	name:      string,
+	type_name: string,
 }
 
 // encode_record_default renders a composite record default `Type{f: v, …}` as its

@@ -493,15 +493,20 @@ nesting_depth :: proc(expr: Expr) -> int {
 	case ^Lambda_Expr:
 		return 1 + nesting_depth(e.body)
 	case ^Variant_Expr:
-		// A bare variant (Side::Left, Option::None) carries no sub-
-		// expressions — it is a 0-arg constructor, a value atom like a name
-		// or constant (spec §03 §2), so it opens no nesting level. A
-		// payload-bearing variant (Option::Some(v), Draw::Rect{…}) is a
-		// constructor application that adds one level over its contents — the
-		// computational composition a chain of `Box::A(Box::B(…))` builds up.
-		if !e.has_payload && !e.has_fields {
-			return 0
-		}
+		// A variant constructor is a transparent aggregate, like a record or
+		// list literal: it is pure value construction (an enum value carrying a
+		// payload), NOT control nesting, so it passes its deepest payload/field
+		// value's depth through without adding a level. A bare variant
+		// (Side::Left, Option::None) is the 0-arg leaf case; a payload variant
+		// (`Option::Some(v)`, `Draw::Rect{…}`) contributes its deepest argument —
+		// so `m with { status: Option::Some("saved") }` is a single `with` level
+		// over a leaf, the same as `m with { status: STR }`. Spec §01 P5 frames
+		// the nesting budget as a scope-creep-inside-one-function control on
+		// COMPOSITION depth, not a count of constructor edges; wrapping a value in
+		// an enum case is the same flat construction `Vec2{x, y}` already is
+		// (without it, the canonical yard surface's `fold(_, _, fn{ match { => m
+		// with { status: Option::Some(_) } } })` over-counts to depth 4 and the
+		// spec example fails its own fixed budget).
 		inner := 0
 		for arg in e.payload {
 			inner = max(inner, nesting_depth(arg))
@@ -509,7 +514,7 @@ nesting_depth :: proc(expr: Expr) -> int {
 		for field in e.fields {
 			inner = max(inner, nesting_depth(field.value))
 		}
-		return 1 + inner
+		return inner
 	case ^With_Expr:
 		// A `with` update is a record-update computation: its field
 		// replacements open one nesting level over the base.
