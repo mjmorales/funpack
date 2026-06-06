@@ -1,6 +1,6 @@
 // Proof for the live session's pure presentation helpers — the device-pure half
-// of the live producer that compiles in every build (the SDL window/renderer is a
-// later task, excluded from this deterministic suite). The tests pin the exact
+// of the live producer that compiles in every build (the SDL window/renderer is
+// when-gated live code, excluded from this deterministic suite). The tests pin the exact
 // pixel rails the 4x integer scale guarantees (origin → (0,0), the 160x120 board
 // extent → (640,480), the ball start (80,60) → (320,240)), the totality of the
 // §20 Draw_Color → RGBA8 lowering over all five variants, and the block-digit

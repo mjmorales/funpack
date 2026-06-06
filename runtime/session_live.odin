@@ -5,7 +5,7 @@
 // build and the headless suite (session_live_test.odin) pins its rails — the
 // `stick_sample_to_fixed` / `key_code_from_scancode` discipline mirrored for the
 // present side. The window loop, the SDL renderer, and the CLI entry that consume
-// these are tasks 1.2 and 2.1 — none of that lives in this file.
+// these live in the when-gated session driver and device layer, never in this file.
 //
 // NO FLOAT (§10, §10.5): world→pixel is exact-integer over i128 — the Q32.32
 // scale on the world coordinate and the same scale on the board extent cancel in
@@ -15,7 +15,7 @@
 // never feeds back into resolve_tick / step_tick (the determinism core sees no
 // pixel).
 //
-// vendor:sdl2/ttf is DELIBERATELY NOT USED (per PRD): the pong score is drawn
+// vendor:sdl2/ttf is DELIBERATELY NOT USED: the pong score is drawn
 // with a block-digit glyph table emitting filled §20-style rects, so the live
 // presentation carries no font dependency and the digit geometry is itself
 // pure and headless-testable.
@@ -113,7 +113,6 @@ DIGIT_GLYPH_ROWS :: 5
 // row to bottom row. A bit set means "emit a filled rect for this cell"; the glyphs
 // are the canonical seven-segment-style block shapes over a 3x5 grid.
 DIGIT_GLYPHS :: [10][DIGIT_GLYPH_ROWS]u8 {
-	// 0       1       2       3       4
 	{0b111, 0b101, 0b101, 0b101, 0b111}, // 0
 	{0b010, 0b110, 0b010, 0b010, 0b111}, // 1
 	{0b111, 0b001, 0b111, 0b100, 0b111}, // 2
