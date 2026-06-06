@@ -36,6 +36,18 @@ test_pipeline_failing_assert_counts_fail :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pipeline_bool_literals_evaluate :: proc(t: ^testing.T) {
+	// §02 §2 Bool literals end to end: a Bool comparison asserts against
+	// `true`/`false` through typecheck and evaluation — the pong overlaps
+	// rail test's miss cases are this form.
+	source := "test \"bool literals compare\" {\n\tassert (1.0 < 2.0) == true\n\tassert (2.0 < 1.0) == false\n}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
 test_pipeline_rejects_implicit_int_promotion :: proc(t: ^testing.T) {
 	// No implicit Int → Fixed promotion (spec §10): a bare Int against
 	// a Fixed literal is a type error, not a coercion.

@@ -196,6 +196,12 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 // variant head, or `.step` receiver), so it is Unsupported_Expr; a name no
 // partition claims is Unresolved_Name.
 name_check :: proc(ctx: Check_Ctx, e: ^Name_Expr) -> (type: Type, err: Type_Error) {
+	// §02 §2 Bool literals: `true`/`false` ride as Ident tokens (the same
+	// carriage `and`/`or` use) and are keywords — checked before the scope so
+	// no binding can shadow them.
+	if e.name == "true" || e.name == "false" {
+		return Ground_Type.Bool, .None
+	}
 	if bound, found := ctx.scope[e.name]; found {
 		return bound, .None
 	}

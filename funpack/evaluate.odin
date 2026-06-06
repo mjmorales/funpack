@@ -94,6 +94,14 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 	case ^Fixed_Lit_Expr:
 		return e.bits, true
 	case ^Name_Expr:
+		// §02 §2 Bool literals resolve before the environment, mirroring
+		// name_check — they are keywords, never shadowable bindings.
+		if e.name == "true" {
+			return true, true
+		}
+		if e.name == "false" {
+			return false, true
+		}
 		if bound, found := env_lookup(env, e.name); found {
 			return bound, true
 		}

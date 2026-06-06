@@ -63,6 +63,21 @@ test_option_heads_do_not_cross :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_bool_literals_type_as_bool :: proc(t: ^testing.T) {
+	// §02 §2: `true`/`false` are Bool literals riding as Ident tokens, so a
+	// Bool-returning expression compares against them (snake's `== true`,
+	// pong's overlaps rail test).
+	for literal in ([]string{"true", "false"}) {
+		type, err := check_expr_source(literal)
+		testing.expect_value(t, err, Type_Error.None)
+		testing.expect(t, is_ground(type, .Bool))
+	}
+	cmp, cmp_err := check_expr_source("(1.0 < 2.0) == true")
+	testing.expect_value(t, cmp_err, Type_Error.None)
+	testing.expect(t, is_ground(cmp, .Bool))
+}
+
+@(test)
 test_variant_expr_types_carry_payload :: proc(t: ^testing.T) {
 	some, err := check_expr_source("Option::Some(1.0)")
 	testing.expect_value(t, err, Type_Error.None)
