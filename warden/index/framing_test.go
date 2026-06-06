@@ -64,7 +64,7 @@ func TestSpineStreamBlankLineIsError(t *testing.T) {
 func TestSpineStreamPropagatesVersionMismatch(t *testing.T) {
 	// A version-mismatched line anywhere in the stream aborts the whole stream
 	// with the fix-it — decode is fail-fast, never a partially-decoded index.
-	bad := strings.Replace(projectLine, `"schema_version":1`, `"schema_version":7`, 1)
+	bad := strings.Replace(projectLine, `"schema_version":2`, `"schema_version":7`, 1)
 	stream := projectLine + "\n" + bad + "\n"
 	_, err := DecodeStream(strings.NewReader(stream))
 	if err == nil {

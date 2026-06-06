@@ -11,14 +11,14 @@ import (
 // (use_enum_names). It is a minimal-but-valid fixture — the spine classifies on
 // the top-level key signature, not the nested field values, so the slices stay
 // small. No `kind` tag is present, mirroring the producer's bare-struct marshal.
-const projectLine = `{"schema_version":1,"entrypoints":[{"name":"main","pipeline":"Pong","tick_hz":60,"bindings":"bindings"}],"builds":[{"name":"native","platform":"desktop"}],"tag_registry":["game"],"capabilities":["Render","Input","State"],"pipeline_flattened":[{"ordinal":0,"stage":"startup","behavior":"setup"}],"gate_results":[{"gate":"Cyclomatic","passed":true}]}`
+const projectLine = `{"schema_version":2,"entrypoints":[{"name":"main","pipeline":"Pong","tick_hz":60,"bindings":"bindings"}],"builds":[{"name":"native","platform":"desktop"}],"tag_registry":["game"],"capabilities":["Render","Input","State"],"pipeline_flattened":[{"ordinal":0,"stage":"startup","behavior":"setup"}],"gate_results":[{"gate":"Cyclomatic","passed":true}]}`
 
 func TestSchemaVersionMismatchIsHardRefusalWithFixIt(t *testing.T) {
 	// A line carrying a schema_version other than IndexSchemaVersion is refused
 	// hard — the gate returns a typed *SchemaVersionError whose message is the
-	// fix-it shape ("index schema vN, warden expects v1; rebuild with a matching
+	// fix-it shape ("index schema vN, warden expects v2; rebuild with a matching
 	// funpack"), never coerced/best-effort parsing.
-	line := strings.Replace(projectLine, `"schema_version":1`, `"schema_version":2`, 1)
+	line := strings.Replace(projectLine, `"schema_version":2`, `"schema_version":3`, 1)
 	_, err := DecodeLine([]byte(line))
 	if err == nil {
 		t.Fatal("expected a hard refusal on schema-version mismatch, got nil error")
@@ -27,11 +27,11 @@ func TestSchemaVersionMismatchIsHardRefusalWithFixIt(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *SchemaVersionError, got %T: %v", err, err)
 	}
-	if sve.Got != 2 || sve.Want != IndexSchemaVersion {
-		t.Fatalf("expected Got=2 Want=%d, got Got=%d Want=%d", IndexSchemaVersion, sve.Got, sve.Want)
+	if sve.Got != 3 || sve.Want != IndexSchemaVersion {
+		t.Fatalf("expected Got=3 Want=%d, got Got=%d Want=%d", IndexSchemaVersion, sve.Got, sve.Want)
 	}
 	msg := err.Error()
-	for _, want := range []string{"index schema v2", "warden expects v1", "rebuild with a matching funpack"} {
+	for _, want := range []string{"index schema v3", "warden expects v2", "rebuild with a matching funpack"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("fix-it message missing %q; got %q", want, msg)
 		}
@@ -47,12 +47,12 @@ func TestSchemaVersionMatchPasses(t *testing.T) {
 }
 
 func TestSchemaVersionConstMatchesProducer(t *testing.T) {
-	// The Go-side const must equal the producer's INDEX_SCHEMA_VERSION (1). This
+	// The Go-side const must equal the producer's INDEX_SCHEMA_VERSION (2). This
 	// is the anchored value, not a guessed number — the producer-side assertion
-	// (grep 'INDEX_SCHEMA_VERSION :: 1' funpack/index_contract.odin) is the
-	// other half of this gate, checked by the task's bash AC.
-	if IndexSchemaVersion != 1 {
-		t.Fatalf("IndexSchemaVersion must be 1 to match the producer, got %d", IndexSchemaVersion)
+	// (grep 'INDEX_SCHEMA_VERSION :: 2' funpack/index_contract.odin) is the
+	// other half of this gate.
+	if IndexSchemaVersion != 2 {
+		t.Fatalf("IndexSchemaVersion must be 2 to match the producer, got %d", IndexSchemaVersion)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestRecordKindUnknownIsFailure(t *testing.T) {
 	// A line at a valid schema_version but with a top-level key set matching no
 	// known record kind is a FAILURE — the kind enum is closed, so an
 	// unrecognized record shape is refused, never guessed.
-	line := `{"schema_version":1,"mystery_field":true}`
+	line := `{"schema_version":2,"mystery_field":true}`
 	_, err := DecodeLine([]byte(line))
 	if err == nil {
 		t.Fatal("expected an unknown record kind to fail, got nil error")
@@ -90,7 +90,7 @@ func TestRecordKindUnknownErrorIsDeterministic(t *testing.T) {
 	// The unknown-kind error lists the offending top-level keys in a stable
 	// sorted order, so the diagnostic is byte-reproducible (warden's determinism
 	// obligation — no map iteration order reaching output).
-	line := `{"schema_version":1,"zeta":1,"alpha":2,"mu":3}`
+	line := `{"schema_version":2,"zeta":1,"alpha":2,"mu":3}`
 	_, err := DecodeLine([]byte(line))
 	if err == nil {
 		t.Fatal("expected an unknown record kind to fail, got nil error")

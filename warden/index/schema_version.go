@@ -22,7 +22,7 @@ import "fmt"
 // HARD REFUSAL with a fix-it, never best-effort parsing. Bumping the producer's
 // INDEX_SCHEMA_VERSION (a contract reshape) requires bumping this in lockstep —
 // the two values are one compatibility gate split across the process boundary.
-const IndexSchemaVersion = 1
+const IndexSchemaVersion = 2
 
 // SchemaVersionError is the typed hard-refusal returned when a record's
 // schema_version does not exact-match IndexSchemaVersion. It carries the fix-it
