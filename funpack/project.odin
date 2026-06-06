@@ -295,7 +295,7 @@ parse_builds_fcfg :: proc(content: string) -> (builds: Builds, err: Project_Erro
 	for !cfg_at_end(&p) {
 		#partial switch cfg_peek(&p).kind {
 		case .At:
-			cfg_skip_doc(&p) or_return
+			cfg_skip_doc_builds(&p) or_return
 		case .Ident:
 			// The only legal top-level identifier is the `build` block opener;
 			// any other top-level token is outside the builds grammar.
@@ -888,11 +888,9 @@ module_under_reserved_root :: proc(module: string) -> bool {
 // does NOT read or compare gen/ seam contents (the harness story) and does NOT
 // join gen/ into the source set (the seam-import story).
 
-// SUBSYSTEM_DIRS pairs each directory-backed subsystem's authoring directory
+// Subsystem_Dir pairs one directory-backed subsystem's authoring directory
 // with the authoring-file extension that makes it non-empty (§14 §1):
-// levels/*.flvl, models/*.fpm, ui/*.fui, assets/*.manifest. The set is the
-// closed §14.4 directory-backed subsystem list; a new subsystem is a deliberate
-// addition here.
+// levels/*.flvl, models/*.fpm, ui/*.fui, assets/*.manifest.
 Subsystem_Dir :: struct {
 	dir: string,
 	ext: string,
@@ -910,6 +908,8 @@ Subsystem_Dir :: struct {
 derive_tree_capabilities :: proc(root: string) -> Capabilities {
 	caps: Capabilities
 	expected := make([dynamic]string, 0, 4, context.temp_allocator)
+	// The closed §14.4 directory-backed subsystem list — a new subsystem is a
+	// deliberate addition here.
 	subsystems := [4]Subsystem_Dir {
 		{dir = "levels", ext = ".flvl"},
 		{dir = "models", ext = ".fpm"},
