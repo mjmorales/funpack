@@ -15,6 +15,8 @@ package funpack
 
 import "core:log"
 import "core:os"
+import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 HUNT_DEFAULT_DIR :: "../funpack-spec/examples/hunt"
@@ -137,6 +139,75 @@ test_golden_hunt_full_pipeline_passes :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.passed, 10)
 	testing.expect_value(t, report.failed, 0)
 	testing.expect_value(t, report.exit_code, 0)
+}
+
+// test_emit_hunt_artifact_carries_composite_defaults is the end-to-end emission
+// acceptance for the §6 composite field-default fix: the production emitter, run
+// over the live hunt source, must carry hunt's two composite Hunter defaults as
+// their one-token forms — `field ai Hunt =Hunt::Patrol` (the enum-variant default
+// that cures the no-arm-match freeze) and `field last_seen Vec2 =Vec2(x=0,y=0)`
+// (the composite record default) — never the bare `=` the encode_literal-only
+// path produced. The check also pins the scalar Fixed default (`search_t: Fixed =
+// 0.0` → `=0`) byte-identical and proves emission stays deterministic. The fixture
+// resolves the live hunt source (or FUNPACK_HUNT_DIR) and SKIPs loudly when absent.
+@(test)
+test_emit_hunt_artifact_carries_composite_defaults :: proc(t: ^testing.T) {
+	inputs, ok := hunt_emit_inputs(t)
+	if !ok {
+		return
+	}
+	artifact, emit_err := stage_emit(inputs.source, inputs.module, inputs.project, inputs.entrypoint_fcfg, context.temp_allocator)
+	testing.expect_value(t, emit_err, Emit_Error.None)
+	if emit_err != .None {
+		return
+	}
+	// The two freeze-relevant composite defaults, each a single space-free token.
+	testing.expect(t, strings.contains(artifact, "field ai Hunt =Hunt::Patrol\n"))
+	testing.expect(t, strings.contains(artifact, "field last_seen Vec2 =Vec2(x=0,y=0)\n"))
+	// The scalar Fixed default stays the original raw-bits form (0.0 → 0).
+	testing.expect(t, strings.contains(artifact, "field search_t Fixed =0\n"))
+	// No bare `=` default leaks (a default token always carries an encoded value).
+	testing.expect(t, !strings.contains(artifact, " =\n"))
+	// Deterministic emission (spec §09, §29): two emissions are byte-identical.
+	second, second_err := stage_emit(inputs.source, inputs.module, inputs.project, inputs.entrypoint_fcfg, context.temp_allocator)
+	testing.expect_value(t, second_err, Emit_Error.None)
+	testing.expect(t, artifact == second)
+	if artifact == second {
+		log.infof("emit hunt: composite defaults emit as one-token forms, byte-identical twice (%d bytes)", len(artifact))
+	}
+}
+
+// hunt_emit_inputs resolves the hunt project tree and reads the emitter's inputs
+// (source bytes, §15 module, §14 identity, entrypoints.fcfg) — the same shape
+// snake_emit_inputs/pong_emit_inputs read (golden_emit_test.odin). ok = false
+// (with the golden SKIP warning through hunt_source) when the checkout is absent.
+hunt_emit_inputs :: proc(t: ^testing.T) -> (inputs: Pong_Emit_Inputs, ok: bool) {
+	dir := resolve_hunt_dir()
+	if !os.is_dir(dir) {
+		_, present := hunt_source()
+		_ = present
+		return Pong_Emit_Inputs{}, false
+	}
+	project, read_err := read_project(dir)
+	if read_err != .None || len(project.sources) == 0 {
+		return Pong_Emit_Inputs{}, false
+	}
+	source_bytes, src_err := os.read_entire_file_from_path(project.sources[0].path, context.temp_allocator)
+	if src_err != nil {
+		return Pong_Emit_Inputs{}, false
+	}
+	entrypoint_path, _ := filepath.join({dir, "funpack_configs", "entrypoints.fcfg"}, context.temp_allocator)
+	entrypoint_bytes, ep_err := os.read_entire_file_from_path(entrypoint_path, context.temp_allocator)
+	if ep_err != nil {
+		return Pong_Emit_Inputs{}, false
+	}
+	return Pong_Emit_Inputs {
+			source          = string(source_bytes),
+			module          = project.sources[0].module,
+			project         = Project_Identity{name = project.name, version = project.version},
+			entrypoint_fcfg = string(entrypoint_bytes),
+		},
+		true
 }
 
 // hunt_source reads the hunt project's single source file via the §14

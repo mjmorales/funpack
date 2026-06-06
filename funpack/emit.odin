@@ -288,14 +288,60 @@ emit_gtags :: proc(b: ^strings.Builder, gtags: []string) {
 
 // field_default_token renders a field's DEFAULT (docs/artifact-format.md §6):
 // `-` when the field has no default, else `=ENCODED` where ENCODED is the
-// default's primitive encoding (an Int/Fixed/Bool/String per §2). Pong's only
-// defaults are the Scoreboard `Int = 0` pair, so the encoding here covers the
-// scalar-literal defaults the gameplay surface declares.
+// default's single-token encoding. Pong's defaults are all scalar (the Scoreboard
+// `Int = 0` pair); snake and hunt add the enum-variant, empty-list, and composite
+// record forms (`Dir::Right`, `[]`, `Cell(x=10,y=10)`, `Hunt::Patrol`,
+// `Vec2(x=0,y=0)`) — every form a single space-free token, since a `field` line
+// is whitespace-delimited and a reader reads DEFAULT at one position.
 field_default_token :: proc(field: Field_Decl) -> string {
 	if !field.has_default {
 		return "-"
 	}
-	return strings.concatenate({"=", encode_literal(field.default)}, context.temp_allocator)
+	return strings.concatenate({"=", encode_field_default(field.default)}, context.temp_allocator)
+}
+
+// encode_field_default renders a field default's value as the one space-free token
+// the §6 DEFAULT slot carries. A scalar (Int/Fixed/Bool/String) routes through
+// encode_literal, byte-identical to the original scalar-only encoding. An
+// enum-variant default is its `Type::Case` token (§2.6); an empty list is `[]`; a
+// composite record default (Vec2/Cell/any constructor) is its inline constructor
+// token `Type(field=enc,…)` — the §6 single-token realization of "its constructor
+// record inline", parenthesized and space-free so it fits the one-token slot the
+// §13 space-spread `vec2` form cannot.
+encode_field_default :: proc(expr: Expr) -> string {
+	#partial switch e in expr {
+	case ^Variant_Expr:
+		return strings.concatenate({e.type_name, "::", e.variant}, context.temp_allocator)
+	case ^List_Expr:
+		// A defaulted list seeds empty (the only list literal a default admits,
+		// e.g. snake's `body: [Cell] = []`), so the token is the empty-list `[]`.
+		return "[]"
+	case ^Record_Expr:
+		return encode_record_default(e)
+	}
+	return encode_literal(expr)
+}
+
+// encode_record_default renders a composite record default `Type{f: v, …}` as its
+// single-token inline constructor `Type(field=enc,…)` (docs/artifact-format.md §6):
+// the type name, then a parenthesized comma-joined `field=ENCODED` list with no
+// interior spaces, each value recursively a space-free field-default token so the
+// form nests. `Vec2{x: 0.0, y: 0.0}` → `Vec2(x=0,y=0)`; `Cell{x: 10, y: 10}` →
+// `Cell(x=10,y=10)`.
+encode_record_default :: proc(record: ^Record_Expr) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, record.type_name)
+	strings.write_byte(&b, '(')
+	for field, i in record.fields {
+		if i > 0 {
+			strings.write_byte(&b, ',')
+		}
+		strings.write_string(&b, field.name)
+		strings.write_byte(&b, '=')
+		strings.write_string(&b, encode_field_default(field.value))
+	}
+	strings.write_byte(&b, ')')
+	return strings.to_string(b)
 }
 
 // ───────────────────────────────────────────────────────────────────────────

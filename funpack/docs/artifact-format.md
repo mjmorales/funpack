@@ -365,10 +365,42 @@ field NAME TYPE DEFAULT
   written `Ctor[Arg]`, e.g. `Ref[Switch]`, `[Goal]` for a list), and `DEFAULT`.
 - `DEFAULT` is `-` when the field has no default (it must be supplied at every
   literal), or `=ENCODED` where `ENCODED` is the default value in this format's
-  primitive encoding (a `Fixed`, `Int`, `Bool`, or `String` per §2; a composite
-  default is its constructor record inline — pong has none). A defaulted field may
-  be omitted from a literal (§03 §1), so the runtime applies `DEFAULT` when a
-  `setup` Spawn omits it.
+  primitive encoding. A defaulted field may be omitted from a literal (§03 §1), so
+  the runtime applies `DEFAULT` when a `setup` Spawn omits it.
+- `ENCODED` is **one space-free token** — a `field` line is whitespace-delimited
+  (`field NAME TYPE DEFAULT`) and §2.1 forbids a raw space in a non-string field,
+  so the default is the line's fourth token, never a multi-token run. The §13
+  `set FIELD =vec2 x y` setup form (a 3-token spread) is a `[setup]`-only spelling
+  a reader shapes by the `set` record; it is **not** the field-default form. The
+  default-token forms, by `TYPE`:
+  - a `Fixed`, `Int`, `Bool`, or `String` scalar in its §2 primitive encoding
+    (`=0`, `=4294967296`, `=true`, `=L0:`) — the original scalar form, unchanged;
+  - an **enum-variant** default as its `Type::Case` token (§2.6), e.g.
+    `=Hunt::Patrol`, `=Dir::Right`. Already space-free; a reader carries it as the
+    enum token verbatim (the same shape an enum column holds);
+  - an **empty-list** default `[]` as `=[]` (the only list literal a default
+    admits — a defaulted list seeds empty, e.g. snake's `body: [Cell] = []`);
+  - a **composite record** default (`Vec2`, `Cell`, any constructor) as its
+    inline constructor token `Type(field=enc,…)`: the type name, then a
+    parenthesized, comma-joined `field=ENCODED` list with **no interior spaces**
+    (each `ENCODED` itself a space-free scalar/enum/record token, so the form
+    nests). A `Vec2{x: 0.0, y: 0.0}` default is `=Vec2(x=0,y=0)`; a
+    `Cell{x: 10, y: 10}` default is `=Cell(x=10,y=10)`. This is the §6 single-token
+    realization of "its constructor record inline" — the parens-and-no-spaces
+    spelling (cf. the §14 builder-call `keys_axis(Key::W,Key::S)` form) keeps a
+    composite default in the one token a `field` line allows, where the §13
+    space-spread `vec2` form cannot fit.
+
+This is a **value-encoding addition within the schema-v2 field-default token**, not
+a new section, node kind, or record layout: a `field` line still carries exactly
+`NAME TYPE DEFAULT`, and `DEFAULT` is still the one `=ENCODED` token a reader reads
+at `sf[3]`. No section ordering, no record shape, and no node-kind set changes — so
+`ARTIFACT_SCHEMA_VERSION` does **not** bump (it stays `2`). The bump rule (§1) fires
+on a section/field/ordering/layout change; widening the set of values an existing
+token may hold, within its existing one-token slot, is none of those. The gameplay
+(pong) surface emits only the scalar forms, so every pong default is byte-identical
+to v1's scalar encoding; the composite forms are first reached by the snake (`Cell`,
+`Dir`, `[]`) and hunt (`Hunt::Patrol`, `Vec2`) goldens.
 
 `Board` is the one pong `data` type; `BOARD` is a module-level `let`, recorded in
 `[functions]` as a `const` (§9) since it is a named value, not a type.
