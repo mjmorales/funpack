@@ -7,8 +7,9 @@
 // A `call` is one of three things, decided by its callee node: a method-style
 // `recv.method(args)` (a `field` callee — input.value, the only resource query
 // pong evaluates here), an engine builtin (the §08/§26 leaf combinators —
-// `abs`, `clamp`, `first`, `fold`, the §08 list set `prepend`/`init`/`contains`/
-// `map`/`filter`/`concat`/`is_empty`, the §26 `engine.grid.grid_cells`, `Spawn`,
+// `abs`, `clamp`, the §10 `length`, `first`, `fold`, the §08 list set `prepend`/
+// `init`/`contains`/`map`/`filter`/`concat`/`is_empty`, the §26
+// `engine.grid.grid_cells`, `Spawn`,
 // a record constructor), or a user §9 helper (`advance`, `overlaps`, `add_goal`,
 // …) evaluated by binding its args to its params and folding its body. No float
 // (spec §10); every numeric path is the fixed.odin kernel.
@@ -224,6 +225,8 @@ eval_named_call :: proc(
 		return builtin_first(interp, node, env)
 	case "fold":
 		return builtin_fold(interp, node, env)
+	case "length":
+		return builtin_length(interp, node, env)
 	case "prepend":
 		return builtin_prepend(interp, node, env)
 	case "init":
@@ -320,6 +323,29 @@ builtin_clamp :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 		return nil, false
 	}
 	return fixed_clamp(x, lo, hi), true
+}
+
+// builtin_length is the §10 vector magnitude `length(v: Vec2) -> Fixed`:
+// sqrt(dot(v, v)) over the Q32.32 kernel through vec2_length, which routes
+// vec2_dot into fixed_sqrt (digit-by-digit binary restoring — bit-exact on a
+// perfect square, floor-rounded otherwise, no libm/float on the path, §10.5).
+// hunt's step_to reads `speed / length(delta)` and visible's perception
+// predicate reads `length(p.pos - from) <= SIGHT`, so the single arg is always a
+// Vec2; a non-Vec2 arg is ok=false (fail-closed — the magnitude of a scalar/list
+// is undefined, never coerced).
+builtin_length :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	v, is_vec2 := arg.(Vec2)
+	if !is_vec2 {
+		return nil, false
+	}
+	return vec2_length(v), true
 }
 
 // builtin_first is the §08 list combinator `first(list) -> Option[T]`: the head

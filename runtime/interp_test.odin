@@ -202,6 +202,53 @@ test_eval_input_axis_unwritten_reads_zero :: proc(t: ^testing.T) {
 	testing.expect_value(t, vec.y, VEC2_ZERO.y)
 }
 
+// length((3.0, 4.0)) evaluates to exactly 5.0 in Q32.32 through the eval_named_call
+// `length` dispatch arm — the §10 perfect-square case fixed_sqrt resolves bit-exact
+// (3²+4²=25, sqrt(25)=5, no float on the path, §10.5). Driven through a hand-built
+// `length(v)` call node forest over a seeded env so the dispatch arm is exercised,
+// not vec2_length in isolation.
+@(test)
+test_eval_length_perfect_square :: proc(t: ^testing.T) {
+	program := Program{}
+	version := initial_version(new_world(program, context.temp_allocator), context.temp_allocator)
+	interp := make_interp(&program, &version)
+
+	got, ok := eval_length_call(&interp, Vec2{to_fixed(3), to_fixed(4)})
+	testing.expect(t, ok)
+	testing.expect_value(t, got.(Fixed), to_fixed(5))
+}
+
+// length((1.0, 1.0)) is the non-perfect-square floor case: sqrt(2) has no exact
+// Q32.32 representation, so the result is fixed_sqrt's floor-rounded value. Pinned
+// bit-for-bit to the kernel result so the dispatch arm returns the EXACT kernel
+// bits, never a re-rounded or float-derived magnitude (§10.5).
+@(test)
+test_eval_length_floor_case :: proc(t: ^testing.T) {
+	program := Program{}
+	version := initial_version(new_world(program, context.temp_allocator), context.temp_allocator)
+	interp := make_interp(&program, &version)
+
+	v := Vec2{to_fixed(1), to_fixed(1)}
+	got, ok := eval_length_call(&interp, v)
+	testing.expect(t, ok)
+	// The kernel value is the floor of sqrt(2) in Q32.32 — assert the dispatch arm
+	// returns it bit-for-bit, the same path vec2_length folds.
+	testing.expect_value(t, got.(Fixed), fixed_sqrt(vec2_dot(v, v)))
+}
+
+// length over a non-Vec2 arg is ok=false (fail-closed): the magnitude of a scalar
+// is undefined and never coerced, so the dispatch arm rejects it rather than
+// returning a value the §10 contract cannot define.
+@(test)
+test_eval_length_non_vec2_fails :: proc(t: ^testing.T) {
+	program := Program{}
+	version := initial_version(new_world(program, context.temp_allocator), context.temp_allocator)
+	interp := make_interp(&program, &version)
+
+	_, ok := eval_length_call(&interp, to_fixed(7))
+	testing.expect(t, !ok)
+}
+
 // --- test call helpers ----------------------------------------------------
 
 // axis_program is a minimal program carrying one Axis enum (Drive::Move) so the
@@ -246,6 +293,28 @@ eval_axis_call :: proc(
 		names = make(map[string]Value, context.temp_allocator),
 	}
 	env.names["input"] = input_marker(interp)
+	return eval(interp, &call, &env)
+}
+
+// eval_length_call builds and evaluates a `length(v)` named-call node forest by
+// hand — a `.Call` over a `.Name` callee (`length`) with a single `.Name` arg
+// (`v`) that resolves the supplied value out of a seeded env — so the
+// eval_named_call `length` dispatch arm is exercised, not vec2_length in
+// isolation. Reuses the node_fields/node_children heap-allocators (a compound
+// slice literal cannot escape this stack frame in Odin).
+@(private = "file")
+eval_length_call :: proc(interp: ^Interp, arg: Value) -> (result: Value, ok: bool) {
+	callee := Node{kind = .Name, fields = node_fields("length")}
+	arg_node := Node{kind = .Name, fields = node_fields("v")}
+	call := Node {
+		kind     = .Call,
+		children = node_children(callee, arg_node),
+	}
+
+	env := Env {
+		names = make(map[string]Value, context.temp_allocator),
+	}
+	env.names["v"] = arg
 	return eval(interp, &call, &env)
 }
 
