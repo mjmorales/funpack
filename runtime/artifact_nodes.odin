@@ -9,9 +9,12 @@
 //
 // The encoding is TOTAL and COUNT-DRIVEN: every node line ends in `child_count`,
 // and a reader consumes a node then exactly that many child subtrees, never
-// looking ahead past a node's own declared children. The ONE exception is `arm`,
-// which always has 0 children (its trailing field is a variable-length binder
-// list), so its child count is fixed by kind, not read as a trailing token.
+// looking ahead past a node's own declared children. The ONE exception is a
+// SCALAR-pattern `arm`, which always has 0 children (its trailing field is a
+// variable-length binder list), so its child count is fixed by kind, not read as
+// a trailing token. A `tuple` arm (schema v2) is the lone arm kind that DOES
+// carry children — its positional sub-pattern arms — so it ends in a trailing
+// `child_count` read the generic way.
 package funpack_runtime
 
 import "core:strconv"
@@ -105,9 +108,14 @@ node_kind_from_tag :: proc(tag: string) -> (kind: Node_Kind, ok: bool) {
 }
 
 // node_child_count reads how many child subtrees a node line declares. Every
-// node ends in `child_count` (its last token) EXCEPT `arm`, which is fixed at 0
-// by kind because its trailing field is a variable-length binder list, not a
-// count (§2.7). This is the single primitive the body forest reader is built on.
+// node ends in `child_count` (its last token) EXCEPT a SCALAR-pattern `arm`,
+// which is fixed at 0 by kind because its trailing field is a variable-length
+// binder list, not a count (§2.7). A `tuple` arm (schema v2) is the one arm kind
+// that carries children — its positional sub-pattern arms — so its line
+// `node arm tuple <child_count>` ends in a trailing count read the generic way.
+// This is the single primitive the body forest reader is built on, and it
+// mirrors funpack's emitter exactly (funpack/artifact_format.odin
+// node_child_count).
 //
 // A `string` node's scalar is a length-prefixed String (§2.4) that may contain
 // raw spaces, so its line is NOT whitespace-tokenizable: the count is the last
@@ -118,7 +126,13 @@ node_child_count :: proc(line: string) -> (count: int, ok: bool) {
 		return 0, false
 	}
 	if fields[1] == "arm" {
-		return 0, true // arm is always 0 children, regardless of trailing binders
+		// A `tuple` arm carries its sub-pattern arms as children (the trailing
+		// count); every scalar-pattern arm is fixed at 0 (its trailing field is
+		// the binder list). The pattern token is fields[2] (§2.7 v2).
+		if len(fields) >= 3 && fields[2] == "tuple" {
+			return strconv.parse_int(fields[len(fields) - 1])
+		}
+		return 0, true // scalar arm: always 0 children, regardless of trailing binders
 	}
 	if fields[1] == "string" {
 		_, child_count, str_ok := split_string_node(line)
