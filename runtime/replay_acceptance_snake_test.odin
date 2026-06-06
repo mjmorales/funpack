@@ -168,7 +168,10 @@ snake_live_capture :: proc(
 	world := new_world(program^, allocator)
 	version, rng := run_startup_seeded(program, initial_version(world, allocator), rand_seed(seed), allocator)
 	current := rng
-	time := snake_golden_time(program.entrypoint.tick_hz, allocator)
+	// Time binds through the one shared dt derivation (time_resource) — the same
+	// proc the re-fold binds through, so any digest divergence is the input source
+	// or the seed, never the clock.
+	time := time_resource(program.entrypoint.tick_hz, allocator)
 	per_tick := make([dynamic]Frame_Digest, 0, len(inputs), allocator)
 	for input in inputs {
 		version = step_tick(program, version, input, time, allocator, &current)
@@ -176,18 +179,6 @@ snake_live_capture :: proc(
 		append(&per_tick, capture_frame(version, draw, allocator))
 	}
 	return finish_capture(per_tick[:], allocator)
-}
-
-// snake_golden_time builds the Time resource the seeded live capture steps at — the
-// one `dt` field at the artifact's fixed tick rate (1/tick_hz in Q32.32 through the
-// kernel, no float). The replay driver derives Time the same way, so the live run
-// and the re-fold step at identical dt: any digest divergence would be the input
-// source or the seed, not the clock.
-@(private = "file")
-snake_golden_time :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
-	fields := make(map[string]Value, allocator)
-	fields["dt"] = fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))
-	return Record_Value{type_name = "Time", fields = fields}
 }
 
 // record_snake_golden_session records the scripted session through the production

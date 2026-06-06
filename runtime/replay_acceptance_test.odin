@@ -119,7 +119,9 @@ live_capture :: proc(
 ) -> Frame_Capture {
 	world := new_world(program^, allocator)
 	version := run_startup(program, initial_version(world, allocator), allocator)
-	time := golden_time(program.entrypoint.tick_hz, allocator)
+	// Time binds through the one shared dt derivation (time_resource) — the same
+	// proc the re-fold binds through, so live and re-fold cannot fork on the clock.
+	time := time_resource(program.entrypoint.tick_hz, allocator)
 	per_tick := make([dynamic]Frame_Digest, 0, len(inputs), allocator)
 	for input in inputs {
 		version = step_tick(program, version, input, time, allocator)
@@ -127,18 +129,6 @@ live_capture :: proc(
 		append(&per_tick, capture_frame(version, draw, allocator))
 	}
 	return finish_capture(per_tick[:], allocator)
-}
-
-// golden_time builds the Time resource the live capture steps at — the one `dt`
-// field at the artifact's fixed tick rate (1/tick_hz in Q32.32 through the kernel,
-// no float). The replay driver derives Time the same way, so the live run and the
-// re-fold step at identical dt: any digest divergence would be the input source, not
-// the clock.
-@(private = "file")
-golden_time :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
-	fields := make(map[string]Value, allocator)
-	fields["dt"] = fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))
-	return Record_Value{type_name = "Time", fields = fields}
 }
 
 // record_golden_session records the scripted session through the production

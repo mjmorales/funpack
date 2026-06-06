@@ -158,7 +158,7 @@ replay_refold :: proc(
 ) -> World_Version {
 	world := new_world(program^, allocator)
 	base := initial_version(world, allocator)
-	time := replay_time_resource(program.entrypoint.tick_hz, allocator)
+	time := time_resource(program.entrypoint.tick_hz, allocator)
 
 	if identity.has_seed {
 		version, rng := run_startup_seeded(program, base, rand_seed(identity.seed), allocator)
@@ -243,7 +243,7 @@ refold_capture :: proc(
 ) -> Frame_Capture {
 	world := new_world(program^, allocator)
 	base := initial_version(world, allocator)
-	time := replay_time_resource(program.entrypoint.tick_hz, allocator)
+	time := time_resource(program.entrypoint.tick_hz, allocator)
 	per_tick := make([dynamic]Frame_Digest, 0, len(snapshots), allocator)
 
 	if identity.has_seed {
@@ -333,14 +333,16 @@ seed_diagnostic :: proc(identity: Replay_Identity, allocator := context.allocato
 	return fmt.aprintf("seed=%d", identity.seed, allocator = allocator)
 }
 
-// replay_time_resource builds the Time resource each re-fold tick binds to: the
-// one `dt` field at the artifact's fixed tick rate (dt = 1/tick_hz in Q32.32
-// through the kernel — no float, identical bits every machine, §10). A live run
-// and a replay both step at this same fixed dt, so the re-fold reproduces the
-// original timing exactly. A non-positive tick rate folds to a zero dt rather than
-// dividing by zero (a malformed entrypoint the loader would have refused).
-@(private = "file")
-replay_time_resource :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
+// time_resource builds the Time resource each driver tick binds to: the one `dt`
+// field at the artifact's fixed tick rate (dt = 1/tick_hz in Q32.32 through the
+// kernel — no float, identical bits every machine, §10). It is the SINGLE dt
+// derivation every driver shares — the replay re-fold, the live SDL session, and
+// the golden-capture harnesses all bind Time through this one proc, so a live
+// run, a re-fold, and a recorded golden step at bit-identical dt and the
+// derivation cannot fork per driver. A non-positive tick rate folds to a zero dt
+// rather than dividing by zero (a malformed entrypoint the loader would have
+// refused).
+time_resource :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
 	fields := make(map[string]Value, allocator)
 	if tick_hz > 0 {
 		fields["dt"] = fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))

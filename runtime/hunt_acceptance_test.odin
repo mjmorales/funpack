@@ -152,16 +152,13 @@ hunt_session_inputs :: proc(allocator := context.allocator) -> []Input {
 	return inputs
 }
 
-// hunt_time builds the Time resource the captures step at — the one `dt` field at
-// the artifact's fixed tick rate (1/tick_hz in Q32.32 through the kernel, no
-// float). The replay driver derives Time the same way, so the live run and the
-// re-fold step at identical dt: any digest divergence would be the input source,
-// not the clock.
+// hunt_time binds the captures' Time through the ONE shared dt derivation
+// (replay.odin's time_resource) — the same proc the re-fold binds through, so
+// the two cannot fork and any digest divergence is the input source, not the
+// clock.
 @(private = "file")
 hunt_time :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
-	fields := make(map[string]Value, allocator)
-	fields["dt"] = fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))
-	return Record_Value{type_name = "Time", fields = fields}
+	return time_resource(tick_hz, allocator)
 }
 
 // load_hunt parses the embedded hunt fixture into a Program against the test's

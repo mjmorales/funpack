@@ -1,9 +1,13 @@
-// The LIVE device boundary: polls real keyboard + gamepad through vendor:sdl2
-// and feeds the SAME injected raw-event queue the headless producer drains
-// (bindings_resolve.odin's Device_Queue). It is an interchangeable producer of
-// the §23 §5 vocabulary — the deterministic contract is the resolved snapshot,
-// not the device, so a live session enqueues exactly the raw events a headless
-// one would and replays bit-identically (§23 §4, §09 §6).
+// The LIVE device boundary: owns the SDL resource lifecycle (window, renderer,
+// controllers) and the SDL→§23 name maps that translate real keyboard + gamepad
+// events onto the SAME injected raw-event queue the headless producer drains
+// (bindings_resolve.odin's Device_Queue). The per-frame PollEvent drain itself
+// lives in the session driver (session_live.odin's poll_session_events — the
+// single drain), which routes every event through THIS layer's maps. It is an
+// interchangeable producer of the §23 §5 vocabulary — the deterministic contract
+// is the resolved snapshot, not the device, so a live session enqueues exactly
+// the raw events a headless one would and replays bit-identically (§23 §4,
+// §09 §6).
 //
 // ODIN-FIRST (verified): vendor:sdl2 covers all three surfaces this layer needs
 // — keyboard (sdl_keyboard/sdl_scancode + KEYDOWN/KEYUP events), gamepad buttons
@@ -135,45 +139,6 @@ when #config(FUNPACK_LIVE, false) {
 		sdl.Quit()
 	}
 
-	// poll_live_window drains every SDL event waiting since the previous tick and
-	// translates each into a raw §23 device event enqueued onto the SAME headless
-	// queue bindings resolution drains. It adds NO coalescing or resolution — the
-	// queue's seq stamping preserves SDL's delivery order, and resolve_tick folds
-	// the window exactly as it does for an injected producer. An event whose
-	// device code has no §23 name (an unmapped key, an unmodeled pad button) is
-	// dropped here, so only the bindable vocabulary reaches the queue.
-	poll_live_window :: proc(queue: ^Device_Queue) {
-		event: Sdl_Event
-		for sdl.PollEvent(&event) {
-			#partial switch event.type {
-			case .KEYDOWN:
-				// SDL repeats a held key; only the first down is the §23 edge, so
-				// a repeat is ignored — the level is already set from the first.
-				if event.key.repeat == 0 {
-					if code, named := key_code_from_scancode(event.key.keysym.scancode); named {
-						enqueue_key_down(queue, code)
-					}
-				}
-			case .KEYUP:
-				if code, named := key_code_from_scancode(event.key.keysym.scancode); named {
-					enqueue_key_up(queue, code)
-				}
-			case .CONTROLLERBUTTONDOWN:
-				if code, named := pad_code_from_button(sdl.GameControllerButton(event.cbutton.button)); named {
-					enqueue_pad_down(queue, code)
-				}
-			case .CONTROLLERBUTTONUP:
-				if code, named := pad_code_from_button(sdl.GameControllerButton(event.cbutton.button)); named {
-					enqueue_pad_up(queue, code)
-				}
-			case .CONTROLLERAXISMOTION:
-				stick, stick_axis, named := stick_from_axis(sdl.GameControllerAxis(event.caxis.axis))
-				if named {
-					enqueue_stick_sample(queue, stick, stick_axis, stick_sample_to_fixed(event.caxis.value))
-				}
-			}
-		}
-	}
 }
 
 // stick_sample_to_fixed converts a raw i16 axis reading to a fixed-point

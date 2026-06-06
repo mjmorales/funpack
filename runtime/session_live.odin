@@ -544,7 +544,10 @@ when #config(FUNPACK_LIVE, false) {
 		} else {
 			version = run_startup(&program, base)
 		}
-		time := live_time(program.entrypoint.tick_hz)
+		// Time derives through the one shared dt derivation (replay.odin's
+		// time_resource) — bit-identical to what a re-fold of this session binds, so
+		// any digest divergence is the input source, never the clock.
+		time := time_resource(program.entrypoint.tick_hz)
 
 		// prev_held threads each resolve_tick's held_after into the next so released
 		// edges fire correctly; tick 0 seeds it empty (no button was down before it).
@@ -604,31 +607,17 @@ when #config(FUNPACK_LIVE, false) {
 		return 0
 	}
 
-	// live_time builds the Time resource the live loop steps at — the one `dt` field
-	// at the artifact's fixed tick rate, dt = 1/tick_hz in Q32.32 through the kernel.
-	// This is bit-identical to the golden_time / replay_time_resource pattern (no
-	// float, no wall-clock in dt), so a live run and a re-fold step at the same dt and
-	// any digest divergence would be the input source, never the clock.
-	live_time :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
-		fields := make(map[string]Value, allocator)
-		if tick_hz > 0 {
-			fields["dt"] = fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))
-		} else {
-			fields["dt"] = Fixed(0)
-		}
-		return Record_Value{type_name = "Time", fields = fields}
-	}
-
 	// poll_session_events is the driver-owned SINGLE PollEvent drain per frame: it
 	// dispatches .QUIT and an Escape KEYDOWN to the exit flag (Escape has no §23 Key
 	// variant, so the exit check claims it without touching the binding queue), and
 	// routes every other bindable event through the existing
 	// key_code_from_scancode / pad_code_from_button / stick_from_axis maps and the
-	// enqueue_* helpers onto the injected queue. It is the live producer's drain —
-	// the driver calls THIS, never poll_live_window AND its own loop, so the window is
-	// drained exactly once per tick (no double-drain). Returns true when an exit was
-	// requested. SDL repeats a held key; only the first down is the §23 edge, so a
-	// repeat KEYDOWN is ignored for the binding queue (the level is already set).
+	// enqueue_* helpers onto the injected queue. It is the live producer's ONLY
+	// drain — no second PollEvent loop exists anywhere, so the window is drained
+	// exactly once per tick (no double-drain) and the SDL→§23 dispatch lives in
+	// one switch. Returns true when an exit was requested. SDL repeats a held key;
+	// only the first down is the §23 edge, so a repeat KEYDOWN is ignored for the
+	// binding queue (the level is already set).
 	poll_session_events :: proc(queue: ^Device_Queue) -> (exit: bool) {
 		event: Sdl_Event
 		for sdl.PollEvent(&event) {

@@ -43,16 +43,13 @@ replay_input_at :: proc(tick: int, allocator: Runtime_Allocator) -> Input {
 	return empty()
 }
 
-// replay_time builds the Time resource the original live fold steps at — the one
-// `dt` field at the golden's fixed tick rate (1/tick_hz), the same value the
-// replay driver derives. Sharing the derivation is what makes the original run and
-// the re-fold step at identical dt, so any divergence is the input source, not the
-// clock.
+// replay_time binds the original live fold's Time through the ONE shared dt
+// derivation (replay.odin's time_resource) — the same proc the re-fold binds
+// through, so the two cannot fork and any divergence is the input source, not
+// the clock.
 @(private = "file")
 replay_time :: proc(tick_hz: int, allocator: Runtime_Allocator) -> Record_Value {
-	fields := make(map[string]Value, allocator)
-	fields["dt"] = fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))
-	return Record_Value{type_name = "Time", fields = fields}
+	return time_resource(tick_hz, allocator)
 }
 
 // run_live folds the recorded input sequence over the live tick loop — the
@@ -356,7 +353,7 @@ rps_seeded_program :: proc(pool: int) -> Program {
 	pipeline[0] = Pipeline_Step{ordinal = 0, stage = "eat", behavior = "seed_draw"}
 
 	// A name/version/tick_hz so the seeded identity has the same observable shape a
-	// real seeded artifact would; the entrypoint tick rate drives replay_time_resource.
+	// real seeded artifact would; the entrypoint tick rate drives time_resource.
 	return Program {
 		meta       = Project_Meta{name = "seeded", version = "0.1.0"},
 		entrypoint = Entrypoint{tick_hz = 60},
@@ -516,14 +513,11 @@ test_seedless_log_refuses_seeded_run :: proc(t: ^testing.T) {
 	testing.expect_value(t, result.refusal, Replay_Refusal.Identity_Mismatch)
 }
 
-// golden_seeded_time builds the Time resource the seeded live run and the re-fold
-// both step at — the one `dt` field at the program's fixed tick rate (1/tick_hz in
-// Q32.32, no float), the same value replay_time_resource derives. Sharing the
-// derivation is what makes the live seeded run and the seeded re-fold step at
-// identical dt, so any digest divergence would be the seed source, not the clock.
+// golden_seeded_time binds the seeded live run's Time through the ONE shared dt
+// derivation (replay.odin's time_resource) — the same proc the seeded re-fold
+// binds through, so any digest divergence would be the seed source, not the
+// clock.
 @(private = "file")
 golden_seeded_time :: proc(tick_hz: int, allocator := context.temp_allocator) -> Record_Value {
-	fields := make(map[string]Value, allocator)
-	fields["dt"] = fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))
-	return Record_Value{type_name = "Time", fields = fields}
+	return time_resource(tick_hz, allocator)
 }
