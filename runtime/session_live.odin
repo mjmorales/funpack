@@ -322,6 +322,14 @@ when #config(FUNPACK_LIVE, false) {
 		// edges fire correctly; tick 0 seeds it empty (no button was down before it).
 		prev_held := make(map[Player_Action]bool)
 
+		// prev_levels threads the persistent RAW device state (codes down, last stick
+		// samples) across ticks so a held key emitting one KEYDOWN edge keeps reading
+		// held on every later event-less frame, and a held stick keeps its sample
+		// without a fresh CONTROLLERAXISMOTION (§23 §4 level semantics). SDL delivers a
+		// single edge for a held key, so without this carrier a held W would die after
+		// one tick. Tick 0 seeds it empty (no device was down before the session).
+		prev_levels := new_device_levels()
+
 		// The integer pacing clock: deadline N is recomputed from the ABSOLUTE start
 		// (start + (tick_index+1)*frequency/tick_hz), so no accumulator drift creeps
 		// in over a long session. The clock throttles the loop; it never drives the
@@ -336,7 +344,7 @@ when #config(FUNPACK_LIVE, false) {
 				break
 			}
 
-			snapshot, held_after := resolve_tick(table, &queue, prev_held)
+			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels)
 			version = step_tick(&program, version, snapshot, time)
 			draw := render_version(&program, version, snapshot, time)
 			present_frame(device.renderer, draw)
@@ -344,6 +352,8 @@ when #config(FUNPACK_LIVE, false) {
 
 			delete(prev_held)
 			prev_held = held_after
+			delete_device_levels(prev_levels)
+			prev_levels = levels_after
 
 			pace_to_deadline(start, freq, tick_hz_u64, tick_index)
 		}

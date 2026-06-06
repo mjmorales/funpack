@@ -413,6 +413,40 @@ clear_window :: proc(queue: ^Device_Queue) {
 	queue.next_seq = 0
 }
 
+// --- Persistent raw device levels across ticks (§23 §4 LEVEL semantics) ----
+
+// Device_Levels is the raw device state that SURVIVES an event-less window: which
+// device codes are down at the tick instant, and the last analog sample per stick
+// component. §23 §4 makes `held` a LEVEL (down at the tick instant), so a real
+// device that emits a single KEYDOWN edge and then nothing must keep reading held
+// on every event-less tick that follows — the edge is gone from later windows but
+// the level persists. The window fold (resolve_window) seeds from this carrier and
+// updates it, so a held key's level and a held stick's sample outlive the window
+// that produced them. This is the device-side analog of prev_held: it is threaded
+// in/out of resolve_tick, NOT the action-level held set (that stays prev_held).
+Device_Levels :: struct {
+	down:         map[string]bool, // device code → down at the tick instant, surviving event-less windows
+	stick_sample: map[Stick_Sample_Key]Fixed, // (code, axis) → last analog sample, surviving event-less windows
+}
+
+// new_device_levels allocates an empty persistent device-level carrier — the
+// tick-0 seed (no code down, no stick sampled before the first tick). The live
+// loop and each test thread one of these through resolve_tick like prev_held.
+new_device_levels :: proc(allocator := context.allocator) -> Device_Levels {
+	return Device_Levels {
+		down = make(map[string]bool, allocator),
+		stick_sample = make(map[Stick_Sample_Key]Fixed, allocator),
+	}
+}
+
+// delete_device_levels releases the carrier's two maps. A leak-checked test that
+// threads an explicit carrier calls this on the final level set.
+delete_device_levels :: proc(levels: Device_Levels) {
+	lv := levels
+	delete(lv.down)
+	delete(lv.stick_sample)
+}
+
 // --- The per-tick fold: window of raw events → action snapshot (§23 §4) ---
 
 // AXIS_DEADZONE is the engine deadzone §23 §4 applies to every analog axis: a
@@ -425,11 +459,19 @@ AXIS_DEADZONE :: proc() -> Fixed {
 
 // resolve_tick folds the window of injected events into the per-tick action
 // snapshot through the §23 §4 coalescing rules, then clears the window for the
-// next tick. `prev_held` carries which (player, action) buttons were down at the
-// END of the previous tick — the level/edge distinction needs the prior level to
-// decide `released` and the carried-forward `held`. The returned snapshot is the
-// device-free Input behaviors query; the returned `held_after` is the level set
-// to feed into the next tick's resolve.
+// next tick. Two carriers thread across ticks:
+//
+//   - `prev_held` carries which (player, action) buttons were down at the END of
+//     the previous tick — the level/edge distinction needs the prior ACTION level
+//     to decide `released`; the returned `held_after` feeds the next tick.
+//   - `prev_levels` carries the persistent RAW DEVICE state that survives an
+//     event-less window: which device codes are down and each stick's last sample
+//     (§23 §4 LEVEL semantics — a single KEYDOWN edge keeps reading held on every
+//     later event-less tick). The returned `levels_after` feeds the next tick.
+//
+// The two are distinct: prev_held is the device-free action level the snapshot
+// derives `released` from; prev_levels is the device-code level the WINDOW seeds
+// from so a held key's level survives a window with no events.
 //
 // Resolution is two-pass so STACKED sources combine correctly (§23 §3): pass one
 // aggregates every binding for each (player, action) into a per-action accumulator
@@ -441,20 +483,24 @@ AXIS_DEADZONE :: proc() -> Fixed {
 // Button coalescing (§23 §4): an action is `pressed` if ANY bound source went
 // down in the window (even if it also went up — a tap still registers);
 // `released` if it was down before and is up across ALL sources at the tick
-// instant; `held` if any source is down at the tick instant. Axis coalescing:
-// every stacked source contributes; a keys_axis folds its neg/pos key levels to
-// −1/+1, a stick component takes its deadzoned last sample, the contributions sum,
-// then clamp to [-1,1].
+// instant; `held` if any source is down at the tick instant (a code down in a
+// PRIOR window with no edge since still counts — the level persists). Axis
+// coalescing: every stacked source contributes; a keys_axis folds its neg/pos key
+// levels to −1/+1, a stick component takes its deadzoned last sample (the last
+// sample persists across event-less windows), the contributions sum, then clamp to
+// [-1,1].
 resolve_tick :: proc(
 	table: Bindings_Table,
 	queue: ^Device_Queue,
 	prev_held: map[Player_Action]bool,
+	prev_levels: Device_Levels,
 	allocator := context.allocator,
 ) -> (
 	snapshot: Input,
 	held_after: map[Player_Action]bool,
+	levels_after: Device_Levels,
 ) {
-	window := resolve_window(queue, allocator)
+	window := resolve_window(queue, prev_levels, allocator)
 	defer delete_window(window)
 
 	// Pass one: aggregate stacked sources per (player, action).
@@ -492,20 +538,47 @@ resolve_tick :: proc(
 		snapshot.axes[key] = Vec2{x = fixed_clamp(total, fixed_neg(to_fixed(1)), to_fixed(1))}
 	}
 
+	// Carry the device-code levels and stick samples forward: the window's level
+	// map already folded prev_levels' persisted state plus this window's edges, so
+	// the tick-instant down set and last samples ARE the next tick's seed (§23 §4).
+	levels_after = level_set_from_window(window, allocator)
+
 	clear_window(queue)
-	return snapshot, held_after
+	return snapshot, held_after, levels_after
+}
+
+// level_set_from_window snapshots the window's tick-instant device levels into the
+// persistent carrier the next tick seeds from: the down set is the codes still down
+// after folding (the level map, which already merged the prior persisted state),
+// and the stick samples are the last reading per (code, axis). Cloning into fresh
+// maps decouples the carrier's lifetime from the window's (the window is deleted at
+// tick end).
+@(private = "file")
+level_set_from_window :: proc(window: Window_Levels, allocator := context.allocator) -> Device_Levels {
+	levels := new_device_levels(allocator)
+	for code, is_down in window.level {
+		if is_down {
+			levels.down[code] = true
+		}
+	}
+	for key, sample in window.stick_sample {
+		levels.stick_sample[key] = sample
+	}
+	return levels
 }
 
 // Window_Levels is the coalesced device state derived from one inter-tick window:
 // per device code, whether it went down in the window (the `pressed` edge), and
-// its level at the tick instant (the last edge wins). Stick samples keep the last
-// reading per (code, axis). This is the intermediate the per-binding fold reads,
+// its level at the tick instant (the last edge wins, seeded from the persisted
+// cross-tick level). Stick samples keep the last reading per (code, axis), seeded
+// from the last persisted sample so a held stick keeps reading without a fresh
+// CONTROLLERAXISMOTION. This is the intermediate the per-binding fold reads,
 // computed once per tick so each stacked binding shares it.
 @(private = "file")
 Window_Levels :: struct {
-	went_down:    map[string]bool, // code → went down anywhere in the window (tap-safe)
-	level:        map[string]bool, // code → down at the tick instant (last edge wins)
-	stick_sample: map[Stick_Sample_Key]Fixed, // (code, axis) → last analog sample
+	went_down:    map[string]bool, // code → went down IN this window (the pressed edge; never seeded)
+	level:        map[string]bool, // code → down at the tick instant (persisted level, then last edge wins)
+	stick_sample: map[Stick_Sample_Key]Fixed, // (code, axis) → last sample (persisted, then last in-window)
 }
 
 // Stick_Sample_Key keys the per-window last-sample table by stick code and axis
@@ -517,16 +590,35 @@ Stick_Sample_Key :: struct {
 }
 
 // resolve_window replays the window's raw events in injection order into the
-// coalesced Window_Levels: each down sets went_down and level, each up clears
-// level (leaving went_down latched so a down-then-up tap still reads pressed),
-// each stick sample overwrites the last reading for its (code, axis). Events are
-// folded in `seq` order, which is the injection order the queue stamped.
+// coalesced Window_Levels, SEEDED from the persistent cross-tick state: the level
+// map starts with every persisted-down code (so a held key with no event this
+// window keeps reading down) and the sample map with each persisted last sample (so
+// a held stick keeps its reading). Then each down sets went_down and level, each up
+// clears level (leaving went_down latched so a down-then-up tap still reads
+// pressed), each stick sample overwrites the last reading for its (code, axis).
+// went_down is NEVER seeded — only an edge IN this window is the pressed edge.
+// Events fold in `seq` order, the injection order the queue stamped.
 @(private = "file")
-resolve_window :: proc(queue: ^Device_Queue, allocator := context.allocator) -> Window_Levels {
+resolve_window :: proc(
+	queue: ^Device_Queue,
+	prev_levels: Device_Levels,
+	allocator := context.allocator,
+) -> Window_Levels {
 	levels := Window_Levels {
 		went_down    = make(map[string]bool, allocator),
 		level        = make(map[string]bool, allocator),
 		stick_sample = make(map[Stick_Sample_Key]Fixed, allocator),
+	}
+	// Seed the tick-instant level and last sample from the persisted carrier: a code
+	// down at the end of the previous tick is still down until an up edge clears it,
+	// and a stick's last sample holds until a fresh sample replaces it (§23 §4).
+	for code, is_down in prev_levels.down {
+		if is_down {
+			levels.level[code] = true
+		}
+	}
+	for key, sample in prev_levels.stick_sample {
+		levels.stick_sample[key] = sample
 	}
 	// The queue stamps seq in append order, so the events buffer is already in
 	// injection order; folding it in place is the deterministic replay.
