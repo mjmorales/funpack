@@ -26,7 +26,15 @@ import "core:strings"
 // fixed at 0 by token. A new arm-pattern token and an arm-with-children are both
 // layout changes, so the version bumped 1 → 2 (funpack/docs/artifact-format.md
 // §1, §2.7).
-ARTIFACT_SCHEMA_VERSION :: 2
+//
+// v3 ratifies the closed §14 binding SOURCE-form set the emitter lowers the
+// §23 §3 builder helpers into: key-list button sources arrive spread as one
+// `key(…)` bind per key, `wasd()` arrives lowered to the 2D
+// `keys_quad(neg_x,pos_x,neg_y,pos_y)` form, and `stick(Stick)` is a
+// first-class 2D source (both components fold into the action's Vec2). The
+// source vocabulary is a closed taxonomy, so growing it bumped 2 → 3
+// (funpack/docs/artifact-format.md §1, §14).
+ARTIFACT_SCHEMA_VERSION :: 3
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"

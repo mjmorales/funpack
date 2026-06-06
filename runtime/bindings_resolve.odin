@@ -108,31 +108,38 @@ delete_action_registry :: proc(registry: Action_Registry) {
 
 // --- Resolved bindings: the parsed device-source table (§23 §3) -----------
 
-// Source_Kind is the closed set of device-source builder helpers §23 §3 lists.
-// A button-contributing source (Key, Pad) drives the edge/level fold; an
-// axis-contributing source (Keys_Axis, Stick_X, Stick_Y) drives the analog fold.
-// `stick(Stick)` resolves both components, so it is not a single kind here — it
-// is expanded into a Stick_X + Stick_Y pair at parse time.
+// Source_Kind is the closed §14 v3 source-form set (artifact-format §14) the
+// emitter lowers the §23 §3 builder helpers into. A button-contributing source
+// (Key, Pad) drives the edge/level fold; a 1D axis source (Keys_Axis, Stick_X,
+// Stick_Y) contributes to the action's single 1D value slot (the x component
+// `value` reads); a 2D source (Keys_Quad, Stick) contributes both components of
+// the action's Vec2 (the vector `axis` reads). `stick(Stick)` is a FIRST-CLASS
+// 2D form — never spread into the 1D stick_x/stick_y halves, whose contributions
+// land in the 1D slot (ADR 2026-06-06-binding-source-lowering-2d-quad-and-stick).
 Source_Kind :: enum {
 	Key, // key(Key::X) — a single digital source
 	Pad, // pad(PadButton::A) — a single digital source
-	Keys_Axis, // keys_axis(neg, pos) — two keys form one analog axis
-	Stick_X, // stick_x(Stick::Left) — the x component of an analog stick
-	Stick_Y, // stick_y(Stick::Left) — the y component of an analog stick
+	Keys_Axis, // keys_axis(neg, pos) — two keys form one 1D analog axis
+	Stick_X, // stick_x(Stick::Left) — the x stick component into a 1D axis
+	Stick_Y, // stick_y(Stick::Left) — the y stick component into a 1D axis
+	Keys_Quad, // keys_quad(neg_x,pos_x,neg_y,pos_y) — four keys form one 2D axis
+	Stick, // stick(Stick::Left) — both stick components into a 2D axis
 }
 
 // Device_Source is one parsed binding source resolved from its builder-call
 // token. A digital source names one device code (`code`); a Keys_Axis names the
-// negative and positive key codes; a stick component names the stick code. The
-// codes are opaque interned strings (e.g. "Key::W", "Stick::Left") — the resolver
-// matches them against injected raw events by equality, so no Key/Pad enum is
-// modeled here, keeping the device vocabulary entirely string-keyed and the
-// layer agnostic to the concrete device set.
+// negative and positive key codes; a Keys_Quad adds the y pair; a stick form
+// names the stick code. The codes are opaque interned strings (e.g. "Key::W",
+// "Stick::Left") — the resolver matches them against injected raw events by
+// equality, so no Key/Pad enum is modeled here, keeping the device vocabulary
+// entirely string-keyed and the layer agnostic to the concrete device set.
 Device_Source :: struct {
-	kind:     Source_Kind,
-	code:     string, // Key/Pad: the device code; stick: the stick code
-	neg_code: string, // Keys_Axis only: the key driving −1
-	pos_code: string, // Keys_Axis only: the key driving +1
+	kind:       Source_Kind,
+	code:       string, // Key/Pad: the device code; Stick/Stick_X/Stick_Y: the stick code
+	neg_code:   string, // Keys_Axis: the key driving −1; Keys_Quad: the key driving x −1
+	pos_code:   string, // Keys_Axis: the key driving +1; Keys_Quad: the key driving x +1
+	neg_y_code: string, // Keys_Quad only: the key driving y −1 (up in the y-down draw space)
+	pos_y_code: string, // Keys_Quad only: the key driving y +1
 }
 
 // Resolved_Binding is one artifact binding parsed into its target and source:
@@ -149,8 +156,10 @@ Resolved_Binding :: struct {
 // reads. It is built once from the artifact (resolving the rebinding overlay —
 // stubbed to identity here — then parsing each source), then consulted every
 // tick. A binding whose action or player does not resolve is dropped silently:
-// the artifact is authoritative, so a malformed binding is not load-bearing for
-// pong, and dropping it keeps an unknown future source from refusing the table.
+// the artifact is authoritative, so a malformed binding is not load-bearing,
+// and dropping it keeps an unknown future source from refusing the table;
+// since v3 the schema stamp gates the source vocabulary, so a dropped source
+// inside a matching version is malformed data, not a version skew.
 Bindings_Table :: struct {
 	registry: Action_Registry,
 	resolved: []Resolved_Binding,
@@ -242,12 +251,14 @@ player_from_string :: proc(s: string) -> (player: PlayerId, ok: bool) {
 	return .P1, false
 }
 
-// parse_source parses a §23 §3 builder-call token into a Device_Source. The
+// parse_source parses a §14 v3 source-form token into a Device_Source. The
 // token is `helper(args)`: the helper name selects the kind, the comma-split args
 // are the device codes. `key`/`pad` take one code; `keys_axis` takes neg,pos;
-// `stick_x`/`stick_y` take one stick code. A `stick(Stick)` 2D source is not a
-// single binding here — the §14 emitter spreads it into stick_x + stick_y, so the
-// table never sees a bare `stick(...)`; an unrecognized helper returns ok=false.
+// `stick_x`/`stick_y` take one stick code; `keys_quad` takes the ratified
+// (neg_x, pos_x, neg_y, pos_y) quad; `stick` takes one stick code and is the
+// first-class 2D form — the emitter records it verbatim, never spread into the
+// 1D stick_x/stick_y halves (artifact-format §14 v3). An unrecognized helper
+// returns ok=false.
 parse_source :: proc(
 	token: string,
 	allocator := context.allocator,
@@ -298,6 +309,24 @@ parse_source :: proc(
 			return {}, false
 		}
 		return Device_Source{kind = .Stick_Y, code = strings.clone(strings.trim_space(parts[0]), allocator)},
+			true
+	case "keys_quad":
+		if len(parts) != 4 {
+			return {}, false
+		}
+		return Device_Source {
+				kind = .Keys_Quad,
+				neg_code = strings.clone(strings.trim_space(parts[0]), allocator),
+				pos_code = strings.clone(strings.trim_space(parts[1]), allocator),
+				neg_y_code = strings.clone(strings.trim_space(parts[2]), allocator),
+				pos_y_code = strings.clone(strings.trim_space(parts[3]), allocator),
+			},
+			true
+	case "stick":
+		if len(parts) != 1 {
+			return {}, false
+		}
+		return Device_Source{kind = .Stick, code = strings.clone(strings.trim_space(parts[0]), allocator)},
 			true
 	}
 	return {}, false
@@ -485,10 +514,12 @@ AXIS_DEADZONE :: proc() -> Fixed {
 // `released` if it was down before and is up across ALL sources at the tick
 // instant; `held` if any source is down at the tick instant (a code down in a
 // PRIOR window with no edge since still counts — the level persists). Axis
-// coalescing: every stacked source contributes; a keys_axis folds its neg/pos key
-// levels to −1/+1, a stick component takes its deadzoned last sample (the last
-// sample persists across event-less windows), the contributions sum, then clamp to
-// [-1,1].
+// coalescing: every stacked source contributes into the action's Vec2
+// accumulator — a 1D source (keys_axis ±1 key levels, a stick component's
+// deadzoned last sample) feeds the x slot `value` reads; a 2D source
+// (keys_quad, stick) feeds both components (§14 v3). Last samples persist
+// across event-less windows; the contributions sum, then clamp to [-1,1] per
+// component.
 resolve_tick :: proc(
 	table: Bindings_Table,
 	queue: ^Device_Queue,
@@ -503,10 +534,12 @@ resolve_tick :: proc(
 	window := resolve_window(queue, prev_levels, allocator)
 	defer delete_window(window)
 
-	// Pass one: aggregate stacked sources per (player, action).
+	// Pass one: aggregate stacked sources per (player, action). The axis
+	// accumulator is a Vec2: a 1D source contributes to x (the slot `value`
+	// reads), a 2D source (keys_quad, stick) to both components (§14 v3).
 	buttons := make(map[Player_Action]Button_Accum, allocator)
 	defer delete(buttons)
-	axes := make(map[Player_Action]Fixed, allocator)
+	axes := make(map[Player_Action]Vec2, allocator)
 	defer delete(axes)
 
 	for binding in table.resolved {
@@ -535,7 +568,11 @@ resolve_tick :: proc(
 		}
 	}
 	for key, total in axes {
-		snapshot.axes[key] = Vec2{x = fixed_clamp(total, fixed_neg(to_fixed(1)), to_fixed(1))}
+		// Clamp ONCE per component after all stacked sources summed (§23 §3).
+		snapshot.axes[key] = Vec2 {
+			x = fixed_clamp(total.x, fixed_neg(to_fixed(1)), to_fixed(1)),
+			y = fixed_clamp(total.y, fixed_neg(to_fixed(1)), to_fixed(1)),
+		}
 	}
 
 	// Carry the device-code levels and stick samples forward: the window's level
@@ -681,38 +718,69 @@ accumulate_button :: proc(
 }
 
 // accumulate_axis SUMS one axis-source binding's contribution into the
-// (player, action) running total (§23 §3 stacking). A keys_axis folds its neg/pos
-// key levels to a −1/0/+1 contribution; a stick component takes its
-// engine-deadzoned last sample. The total is clamped to [-1, 1] ONCE after all
-// stacked sources are summed (resolve_tick pass two), so two stacked sources never
-// each clamp independently. A digital button source contributes nothing.
+// (player, action) running Vec2 total (§23 §3 stacking). A 1D source feeds the
+// x component — the single 1D value slot `value` reads — regardless of WHICH
+// device axis it samples (pong's stick_y is a 1D paddle axis, not a y
+// contribution); a 2D source (keys_quad, stick) feeds both components. A
+// keys_axis/keys_quad folds key levels to digital −1/0/+1 per component; a
+// stick form takes engine-deadzoned last samples. The total is clamped to
+// [-1, 1] per component ONCE after all stacked sources are summed (resolve_tick
+// pass two), so two stacked sources never each clamp independently. A digital
+// button source contributes nothing.
 @(private = "file")
 accumulate_axis :: proc(
-	axes: ^map[Player_Action]Fixed,
+	axes: ^map[Player_Action]Vec2,
 	key: Player_Action,
 	source: Device_Source,
 	window: Window_Levels,
 ) {
-	contribution: Fixed
+	contribution: Vec2
 	switch source.kind {
 	case .Keys_Axis:
-		// Digital axis: pos key adds +1, neg key adds −1, both/neither cancel.
-		if window.level[source.pos_code] {
-			contribution = fixed_add(contribution, to_fixed(1))
-		}
-		if window.level[source.neg_code] {
-			contribution = fixed_sub(contribution, to_fixed(1))
-		}
+		// Digital 1D axis: pos key adds +1, neg key adds −1, both/neither cancel.
+		contribution.x = key_pair_level(window, source.neg_code, source.pos_code)
 	case .Stick_X, .Stick_Y:
+		// A 1D stick component: the suffix selects the DEVICE sample read; the
+		// contribution still lands in the action's 1D slot (x).
 		axis_component := source.kind == .Stick_X ? Stick_Axis.X : Stick_Axis.Y
 		sample, sampled := window.stick_sample[Stick_Sample_Key{source.code, axis_component}]
 		if sampled {
-			contribution = apply_deadzone(sample)
+			contribution.x = apply_deadzone(sample)
+		}
+	case .Keys_Quad:
+		// Digital 2D quad: each component is its own neg/pos key pair (§14 v3,
+		// order neg_x,pos_x,neg_y,pos_y; up = neg_y in the y-down draw space).
+		contribution.x = key_pair_level(window, source.neg_code, source.pos_code)
+		contribution.y = key_pair_level(window, source.neg_y_code, source.pos_y_code)
+	case .Stick:
+		// First-class 2D stick: both deadzoned components of the named stick.
+		if sample, sampled := window.stick_sample[Stick_Sample_Key{source.code, .X}]; sampled {
+			contribution.x = apply_deadzone(sample)
+		}
+		if sample, sampled := window.stick_sample[Stick_Sample_Key{source.code, .Y}]; sampled {
+			contribution.y = apply_deadzone(sample)
 		}
 	case .Key, .Pad:
 		return
 	}
-	axes[key] = fixed_add(axes[key], contribution)
+	total := axes[key]
+	axes[key] = Vec2{fixed_add(total.x, contribution.x), fixed_add(total.y, contribution.y)}
+}
+
+// key_pair_level folds a neg/pos key pair's tick-instant levels into a digital
+// −1/0/+1 contribution: the pos key adds +1, the neg key adds −1, both or
+// neither cancel to 0. Shared by the keys_axis 1D arm and each keys_quad
+// component.
+@(private = "file")
+key_pair_level :: proc(window: Window_Levels, neg_code: string, pos_code: string) -> Fixed {
+	level: Fixed
+	if window.level[pos_code] {
+		level = fixed_add(level, to_fixed(1))
+	}
+	if window.level[neg_code] {
+		level = fixed_sub(level, to_fixed(1))
+	}
+	return level
 }
 
 // apply_deadzone zeroes an analog sample whose magnitude is within the engine

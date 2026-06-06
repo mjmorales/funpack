@@ -6,9 +6,12 @@
 // a button action; stacked keyboard + stick bindings both contribute; the engine
 // deadzone clamps a tiny stick sample to 0 and an out-of-range sample into
 // [-1, 1] — and that pong's Steer::Move axis resolves to a fixed-point reading in
-// [-1, 1] through input.value. Every assertion is in the device-free query
-// vocabulary §23 §5 demands; raw device codes appear only on the producer side
-// (the injected queue), never in a query.
+// [-1, 1] through input.value. The §14 v3 2D forms get their own fixtures: a
+// keys_quad drives each Vec2 component from its ratified key pair, a first-class
+// stick(...) reads both deadzoned components, and stacked 2D sources sum then
+// clamp per component through input.axis. Every assertion is in the device-free
+// query vocabulary §23 §5 demands; raw device codes appear only on the producer
+// side (the injected queue), never in a query.
 package funpack_runtime
 
 import "core:testing"
@@ -358,6 +361,160 @@ test_stick_sample_persists_across_eventless_window :: proc(t: ^testing.T) {
 	snap_n1, _, _ := resolve_tick(table, &queue, held_n, levels_n, context.temp_allocator)
 	defer delete_input(snap_n1)
 	testing.expect_value(t, value(snap_n1, .P1, steer), half)
+}
+
+// axis2d_program builds a synthetic Program with one Axis-kinded action bound to
+// the two §14 v3 2D source forms — the hunt shape: P1 Drive::Move reads
+// keys_quad(Key::A,Key::D,Key::W,Key::S) stacked with stick(Stick::Left). Pong
+// binds only 1D sources, so the 2D fold (both Vec2 components) needs its own
+// minimal fixture, built like button_program on the passed allocator.
+@(private = "file")
+axis2d_program :: proc(allocator := context.allocator) -> Program {
+	variants := make([]Enum_Variant, 1, allocator)
+	variants[0] = Enum_Variant{name = "Move", payload = "unit"}
+	enums := make([]Enum_Decl, 1, allocator)
+	enums[0] = Enum_Decl{name = "Drive", kind = .Axis, variants = variants}
+	bindings := make([]Binding, 2, allocator)
+	bindings[0] = Binding {
+		kind   = "axis",
+		player = "P1",
+		action = "Drive::Move",
+		source = "keys_quad(Key::A,Key::D,Key::W,Key::S)",
+	}
+	bindings[1] = Binding {
+		kind   = "axis",
+		player = "P1",
+		action = "Drive::Move",
+		source = "stick(Stick::Left)",
+	}
+	return Program{enums = enums, bindings = bindings}
+}
+
+// test_keys_quad_resolves_components proves the §14 v3 keys_quad 2D fold: each
+// key drives its own component with the ratified (neg_x,pos_x,neg_y,pos_y)
+// order — W (neg_y, up in the y-down draw space) reads y = −1 with x untouched,
+// D (pos_x) reads x = +1, and an opposing pair (W + S) cancels its component to
+// 0. The 2D reading comes through input.axis; the components never bleed into
+// each other.
+@(test)
+test_keys_quad_resolves_components :: proc(t: ^testing.T) {
+	program := axis2d_program(context.temp_allocator)
+	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
+
+	drive, found := table.registry.by_name["Drive::Move"]
+	if !testing.expect(t, found) {
+		return
+	}
+
+	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
+	queue := new_device_queue(context.temp_allocator)
+
+	// W down (neg_y) → y reads −1, x stays 0.
+	enqueue_key_down(&queue, "Key::W")
+	snap_w, held_w, levels_w := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
+	defer delete_input(snap_w)
+	testing.expect_value(t, axis(snap_w, .P1, drive.id), Vec2{Fixed(0), fixed_neg(to_fixed(1))})
+
+	// D down too (pos_x) → x reads +1 alongside the held W's y = −1.
+	enqueue_key_down(&queue, "Key::D")
+	snap_wd, held_wd, levels_wd := resolve_tick(table, &queue, held_w, levels_w, context.temp_allocator)
+	defer delete_input(snap_wd)
+	testing.expect_value(t, axis(snap_wd, .P1, drive.id), Vec2{to_fixed(1), fixed_neg(to_fixed(1))})
+
+	// S down (pos_y) while W is still held → the y pair cancels to 0; x keeps +1.
+	enqueue_key_down(&queue, "Key::S")
+	snap_ws, _, _ := resolve_tick(table, &queue, held_wd, levels_wd, context.temp_allocator)
+	defer delete_input(snap_ws)
+	testing.expect_value(t, axis(snap_ws, .P1, drive.id), Vec2{to_fixed(1), Fixed(0)})
+}
+
+// test_stick_2d_resolves_both_components proves the §14 v3 first-class stick
+// fold: one stick(Stick::Left) binding reads BOTH the X and Y samples of the
+// named stick into the action's Vec2 — never spread into 1D stick_x/stick_y
+// halves — with the engine deadzone applied per component (a tiny X sample
+// zeroes while a real Y sample passes).
+@(test)
+test_stick_2d_resolves_both_components :: proc(t: ^testing.T) {
+	program := axis2d_program(context.temp_allocator)
+	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
+
+	drive, found := table.registry.by_name["Drive::Move"]
+	if !testing.expect(t, found) {
+		return
+	}
+
+	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
+	queue := new_device_queue(context.temp_allocator)
+
+	// Both components sampled: x at half magnitude, y at the −1 rail.
+	half := fixed_from_decimal(0, "5")
+	enqueue_stick_sample(&queue, "Stick::Left", .X, half)
+	enqueue_stick_sample(&queue, "Stick::Left", .Y, fixed_neg(to_fixed(1)))
+	snap, held_n, levels_n := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
+	defer delete_input(snap)
+	testing.expect_value(t, axis(snap, .P1, drive.id), Vec2{half, fixed_neg(to_fixed(1))})
+
+	// A tiny X sample (inside the 0.1 deadzone) zeroes that component only; the
+	// persisted Y sample keeps reading.
+	tiny := fixed_from_decimal(0, "05")
+	enqueue_stick_sample(&queue, "Stick::Left", .X, tiny)
+	snap_dz, _, _ := resolve_tick(table, &queue, held_n, levels_n, context.temp_allocator)
+	defer delete_input(snap_dz)
+	testing.expect_value(t, axis(snap_dz, .P1, drive.id), Vec2{Fixed(0), fixed_neg(to_fixed(1))})
+}
+
+// test_stacked_quad_and_stick_sum_per_component proves §23 §3 stacking across
+// the two 2D sources: a held W (keys_quad y −1) and a stick Y sample (−0.5) sum
+// to −1.5 and clamp to the −1 rail per component, while the untouched x
+// component stays 0 — the clamp is per component AFTER the stacked sum, exactly
+// the 1D rule lifted to Vec2.
+@(test)
+test_stacked_quad_and_stick_sum_per_component :: proc(t: ^testing.T) {
+	program := axis2d_program(context.temp_allocator)
+	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
+
+	drive, found := table.registry.by_name["Drive::Move"]
+	if !testing.expect(t, found) {
+		return
+	}
+
+	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
+	queue := new_device_queue(context.temp_allocator)
+
+	half := fixed_from_decimal(0, "5")
+	enqueue_key_down(&queue, "Key::W")
+	enqueue_stick_sample(&queue, "Stick::Left", .Y, fixed_neg(half))
+	snap, _, _ := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
+	defer delete_input(snap)
+	testing.expect_value(t, axis(snap, .P1, drive.id), Vec2{Fixed(0), fixed_neg(to_fixed(1))})
+}
+
+// test_parse_source_v3_forms pins the §14 v3 parse arms directly: keys_quad
+// parses its ratified four-code order into the x/y pairs, stick parses as the
+// first-class 2D kind, and the closed-set discipline still drops a malformed
+// quad (wrong arity) and an unknown helper.
+@(test)
+test_parse_source_v3_forms :: proc(t: ^testing.T) {
+	quad, quad_ok := parse_source("keys_quad(Key::A,Key::D,Key::W,Key::S)", context.temp_allocator)
+	testing.expect(t, quad_ok)
+	testing.expect_value(t, quad.kind, Source_Kind.Keys_Quad)
+	testing.expect_value(t, quad.neg_code, "Key::A")
+	testing.expect_value(t, quad.pos_code, "Key::D")
+	testing.expect_value(t, quad.neg_y_code, "Key::W")
+	testing.expect_value(t, quad.pos_y_code, "Key::S")
+
+	stick, stick_ok := parse_source("stick(Stick::Left)", context.temp_allocator)
+	testing.expect(t, stick_ok)
+	testing.expect_value(t, stick.kind, Source_Kind.Stick)
+	testing.expect_value(t, stick.code, "Stick::Left")
+
+	_, bad_arity := parse_source("keys_quad(Key::A,Key::D)", context.temp_allocator)
+	testing.expect(t, !bad_arity)
+	_, unknown := parse_source("wasd()", context.temp_allocator)
+	testing.expect(t, !unknown)
 }
 
 // test_action_registry_skips_non_input_enums proves the minting boundary: only

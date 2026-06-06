@@ -1,4 +1,4 @@
-funpack-artifact 2
+funpack-artifact 3
 [meta 2]
 project hunt
 version L5:0.1.0
@@ -366,7 +366,7 @@ spawn Hunter 2
 set pos =vec2 515396075520 171798691840
 set home =vec2 515396075520 171798691840
 [bindings 2]
-bind axis P1 Drive::Move source:wasd()
+bind axis P1 Drive::Move source:keys_quad(Key::A,Key::D,Key::W,Key::S)
 bind axis P1 Drive::Move source:stick(Stick::Left)
 [entrypoint 1]
 entrypoint main pipeline:Hunt tick_hz:60 bindings:bindings

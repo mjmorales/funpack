@@ -1,4 +1,4 @@
-funpack-artifact 2
+funpack-artifact 3
 [meta 2]
 project snake
 version L5:0.1.0
@@ -596,10 +596,14 @@ route Died 1 1
 producer 7 behavior:detect_death
 consumer 8 behavior:apply_death
 [setup 0]
-[bindings 4]
-bind button P1 Move::Up source:
-bind button P1 Move::Down source:
-bind button P1 Move::Left source:
-bind button P1 Move::Right source:
+[bindings 8]
+bind button P1 Move::Up source:key(Key::W)
+bind button P1 Move::Up source:key(Key::Up)
+bind button P1 Move::Down source:key(Key::S)
+bind button P1 Move::Down source:key(Key::Down)
+bind button P1 Move::Left source:key(Key::A)
+bind button P1 Move::Left source:key(Key::Left)
+bind button P1 Move::Right source:key(Key::D)
+bind button P1 Move::Right source:key(Key::Right)
 [entrypoint 1]
 entrypoint main pipeline:Snake tick_hz:8 bindings:bindings

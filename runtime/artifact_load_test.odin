@@ -29,10 +29,10 @@ load_golden :: proc(t: ^testing.T) -> (program: Program, ok: bool) {
 	return loaded, true
 }
 
-// The version gate is exact-match: the golden's stamp is v2, and the loader
+// The version gate is exact-match: the golden's stamp is v3, and the loader
 // builds against exactly that. A wrong stamp or version is refused, never parsed
-// (§1). v2 is the accept case (the snake/hunt tuple-arm schema bump); v1 and any
-// future v3 are mismatches the loader refuses before reading any payload.
+// (§1). v3 is the accept case (the binding source-form schema bump); v2 and any
+// future v4 are mismatches the loader refuses before reading any payload.
 @(test)
 test_load_version_gate :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
@@ -41,14 +41,14 @@ test_load_version_gate :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, program.schema_version, ARTIFACT_SCHEMA_VERSION)
 
-	// A v1 stamp is a mismatch — refused before any payload.
-	old_version := "funpack-artifact 1\n[meta 0]\n"
+	// A v2 stamp is a mismatch — refused before any payload.
+	old_version := "funpack-artifact 2\n[meta 0]\n"
 	_, old_err := load_program(old_version, context.temp_allocator)
 	testing.expect_value(t, old_err, Artifact_Error.Version_Mismatch)
 
-	// A FUTURE version (v3) is equally a mismatch — the gate is exact, not
+	// A FUTURE version (v4) is equally a mismatch — the gate is exact, not
 	// floor-or-ceiling.
-	future_version := "funpack-artifact 3\n[meta 0]\n"
+	future_version := "funpack-artifact 4\n[meta 0]\n"
 	_, future_err := load_program(future_version, context.temp_allocator)
 	testing.expect_value(t, future_err, Artifact_Error.Version_Mismatch)
 
