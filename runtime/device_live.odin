@@ -49,11 +49,12 @@ when #config(FUNPACK_LIVE, false) {
 
 	// Live_Device is the open SDL resource set the live producer holds for the
 	// session: the visible window the OS routes keyboard focus to, the renderer
-	// task 2.1 presents the frame through, and the game controllers opened at
-	// startup. The keyboard needs no handle — SDL delivers key events through the
-	// event queue once the window holds focus. The renderer is created here so its
-	// lifetime is bound to the open/close pair (PRD Resolved Question 2); this
-	// layer creates and destroys it but never draws or presents — that is task 2.1.
+	// the session loop presents the frame through, and the game controllers opened
+	// at startup. The keyboard needs no handle — SDL delivers key events through
+	// the event queue once the window holds focus. The renderer is created here so
+	// its lifetime is bound to the open/close pair; this layer creates and destroys
+	// it but never draws or presents — drawing and presenting belong to the session
+	// loop, not this layer.
 	Live_Device :: struct {
 		window:      ^sdl.Window,
 		renderer:    ^sdl.Renderer,
