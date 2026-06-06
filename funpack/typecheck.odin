@@ -1759,40 +1759,65 @@ variant_check :: proc(ctx: Check_Ctx, e: ^Variant_Expr) -> (type: Type, err: Typ
 			}
 			return engine, .None
 		}
+		// A CROSS-MODULE user enum (spec §15: every top-level declaration is
+		// importable): the imported `Screen`/`AppMsg` enum's variant used as a
+		// value resolves its variant set + payloads through the project-wide index,
+		// the variant-value analogue of module_record_schema for an imported record
+		// literal. Typed by the same enum_variant_value_check as a local enum, so a
+		// `Screen::Pause` value, an `AppMsg::Hud` variant-as-function value, and an
+		// `AppMsg::Hud(m)` construction type identically whichever module declared
+		// the enum.
+		if enum_schema, found := module_enum_schema(ctx.index, ctx.bindings, e.type_name); found {
+			return enum_variant_value_check(ctx, e, enum_schema)
+		}
 		return nil, .Unsupported_Expr
 	}
 	if enum_schema, declared := ctx.env.enums[e.type_name]; declared {
-		if !name_in_set(e.variant, enum_schema.variants) {
-			return nil, .Type_Mismatch
-		}
-		payload, has_payload := enum_variant_payload(enum_schema, e.variant)
-		enum_type := user_type_of(e.type_name, .Enum)
-		if e.has_payload {
-			// A §21 §3 tagged-union construction: AppMsg::Hud(m), SettingsMsg::
-			// SetVolume(50). The variant must declare a single tuple payload, and the
-			// argument must match its declared type; the result is the enum.
-			if !has_payload || len(e.payload) != 1 {
-				return nil, .Type_Mismatch
-			}
-			arg := expr_check(ctx, e.payload[0]) or_return
-			if !types_compatible(arg, payload) {
-				return nil, .Type_Mismatch
-			}
-			return enum_type, .None
-		}
-		// A bare variant reference. A nullary variant is the value itself; a
-		// payload variant named WITHOUT its payload is the §21 §3
-		// variant-as-function value AppMsg::Hud == fn(HudMsg) -> AppMsg (the form
-		// .map(AppMsg::Hud) re-tags a child screen's messages through).
-		if has_payload {
-			return func_of({payload}, enum_type), .None
-		}
-		return enum_type, .None
+		return enum_variant_value_check(ctx, e, enum_schema)
 	}
 	if env_declares(ctx.env, e.type_name) {
 		return nil, .Unsupported_Expr
 	}
 	return nil, .Unresolved_Name
+}
+
+// enum_variant_value_check types one user-enum variant used as a VALUE against
+// its resolved Enum_Schema — the shared body the local-env and cross-module
+// (index) variant-value paths both run, so a local `Screen::Pause` and an
+// imported `Screen::Pause` type identically (spec §15: a declaration's module of
+// origin is invisible at the use site). Three forms (spec §21 §3): a nullary
+// variant is the enum value itself; a tagged construction `AppMsg::Hud(m)` checks
+// its single payload argument against the variant's declared payload type and
+// yields the enum; a payload variant named WITHOUT its payload is the
+// variant-as-function value `AppMsg::Hud == fn(HudMsg) -> AppMsg` the
+// `.map(AppMsg::Hud)` re-tag passes through.
+enum_variant_value_check :: proc(ctx: Check_Ctx, e: ^Variant_Expr, enum_schema: Enum_Schema) -> (type: Type, err: Type_Error) {
+	if !name_in_set(e.variant, enum_schema.variants) {
+		return nil, .Type_Mismatch
+	}
+	payload, has_payload := enum_variant_payload(enum_schema, e.variant)
+	enum_type := user_type_of(e.type_name, .Enum)
+	if e.has_payload {
+		// A §21 §3 tagged-union construction: AppMsg::Hud(m), SettingsMsg::
+		// SetVolume(50). The variant must declare a single tuple payload, and the
+		// argument must match its declared type; the result is the enum.
+		if !has_payload || len(e.payload) != 1 {
+			return nil, .Type_Mismatch
+		}
+		arg := expr_check(ctx, e.payload[0]) or_return
+		if !types_compatible(arg, payload) {
+			return nil, .Type_Mismatch
+		}
+		return enum_type, .None
+	}
+	// A bare variant reference. A nullary variant is the value itself; a payload
+	// variant named WITHOUT its payload is the §21 §3 variant-as-function value
+	// AppMsg::Hud == fn(HudMsg) -> AppMsg (the form .map(AppMsg::Hud) re-tags a
+	// child screen's messages through).
+	if has_payload {
+		return func_of({payload}, enum_type), .None
+	}
+	return enum_type, .None
 }
 
 // option_variant_check types Option::Some(v) into Option[typeof v] and

@@ -483,6 +483,16 @@ eval_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value,
 	if record, declared := ctx.env.records[e.type_name]; declared {
 		return eval_user_record(ctx, env, e, record)
 	}
+	// A CROSS-MODULE user record literal (spec §15: every top-level declaration is
+	// importable) — SettingsPresetRow{value: 50} / PauseView{} built from a seam's
+	// imported `data`. The record's schema + declared defaults live in the OWNING
+	// module's env/ast, so the literal resolves through the cross-module eval
+	// surface, mirroring eval_module_qualified_const. The literal's named field
+	// VALUES are consumer expressions (the `50` is this test's), so they evaluate in
+	// the CONSUMER ctx; only the omitted defaults come from the owner.
+	if crossmod_value, crossmod_ok, is_crossmod := eval_module_record(ctx, env, e); is_crossmod {
+		return crossmod_value, crossmod_ok
+	}
 	// A §19 typed asset-handle literal (MeshHandle{name: "coin"}, SoundHandle{name:
 	// "coin_sfx"}): the only engine records the evaluator constructs — each named
 	// field evaluates into a tagged Record_Value carrying the handle's type name, so
@@ -547,6 +557,66 @@ eval_user_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr, schema: Reco
 		append(&fields, Record_Field_Value{name = decl.name, value = v})
 	}
 	return Record_Value{type_name = e.type_name, fields = fields[:]}, true
+}
+
+// eval_module_record builds a CROSS-MODULE user record literal (spec §15: a
+// declaration's module of origin is invisible at the use site) — a seam's
+// imported `data` constructed in a consumer test (SettingsPresetRow{value: 50},
+// PauseView{}). The record's type binds to its OWNING module (the consumer's
+// .Type_Name binding), whose eval surface carries the declared field defaults; the
+// literal's NAMED field values are consumer expressions, so they evaluate in the
+// CONSUMER ctx/env, while each omitted default evaluates in a fresh OWNER ctx (the
+// default is an owner-module expression over owner-module names). is_crossmod =
+// false when the type is not a sibling-module record, so eval_record falls through
+// to its other arms. Mirrors eval_module_qualified_const for the record position.
+eval_module_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value, ok: bool, is_crossmod: bool) {
+	binding, bound := ctx.bindings.names[e.type_name]
+	if !bound || binding.kind != .Type_Name {
+		return nil, false, false
+	}
+	owner, found := module_eval_lookup(ctx.modules, binding.module)
+	if !found {
+		return nil, false, false
+	}
+	if _, declared := owner.env.records[e.type_name]; !declared {
+		return nil, false, false
+	}
+	owner_ctx := Eval_Ctx {
+		ast      = owner.ast,
+		env      = owner.env,
+		bindings = owner.bindings,
+		modules  = owner.modules,
+		module   = binding.module,
+		visiting = ctx.visiting,
+	}
+
+	fields := make([dynamic]Record_Field_Value, 0, 4, context.temp_allocator)
+	for field in e.fields {
+		// A named field value is the CONSUMER's expression — evaluated in the
+		// consumer ctx/env, exactly as a local record literal's field is.
+		v, field_ok := eval_expr(ctx, env, field.value)
+		if !field_ok {
+			return nil, false, true
+		}
+		append(&fields, Record_Field_Value{name = field.name, value = v})
+	}
+	// Each omitted default is an OWNER-module expression (it names owner-module
+	// types/consts), so it evaluates in the owner ctx over a fresh owner env.
+	owner_env := new_env(nil)
+	for decl in record_decl_fields(owner.ast, e.type_name) {
+		if !decl.has_default {
+			continue
+		}
+		if _, present := record_field_value(fields[:], decl.name); present {
+			continue
+		}
+		v, default_ok := eval_expr(owner_ctx, owner_env, decl.default)
+		if !default_ok {
+			return nil, false, true
+		}
+		append(&fields, Record_Field_Value{name = decl.name, value = v})
+	}
+	return Record_Value{type_name = e.type_name, fields = fields[:]}, true, true
 }
 
 // record_decl_fields returns a user record's declared field list (with the

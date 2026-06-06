@@ -72,6 +72,21 @@ Module_Record_Schema :: struct {
 	schema: Record_Schema,
 }
 
+// Module_Enum_Schema pairs one exported ENUM type's name with its resolved
+// Enum_Schema (variant set + per-variant tuple-payload types). It is the
+// cross-module VARIANT-VALUE surface a CONSUMER needs to type an imported enum's
+// variant used as a value — `Screen::Pause` in a `with`-update RHS, the §21 §3
+// variant-as-function value `AppMsg::Hud` a `.map(AppMsg::Hud)` re-tags through,
+// and a `match`-arm binder over an imported tagged union (`AppMsg::Hud(m)`). The
+// enum analogue of Module_Record_Schema: an enum carries no fields, so it
+// contributes a variant schema, not a record one. The name-only index leaves
+// enum_schemas empty — only build_module_index_typed, which resolves each
+// module's own env, fills it.
+Module_Enum_Schema :: struct {
+	name:   string,
+	schema: Enum_Schema,
+}
+
 // Module_Entry is one user module's exported surface: its §15 path-derived
 // module name, the ORDERED export list (source order within each kind, type
 // exports before term exports), and the resolved record schemas of its exported
@@ -82,6 +97,7 @@ Module_Entry :: struct {
 	module:         string,
 	exports:        []Module_Export,
 	record_schemas: []Module_Record_Schema,
+	enum_schemas:   []Module_Enum_Schema,
 }
 
 // Module_Index is the project-wide name index: one Module_Entry per user module,
@@ -161,8 +177,13 @@ build_module_index_typed :: proc(modules: []string, asts: []Ast) -> Module_Index
 	entries := make([dynamic]Module_Entry, 0, len(asts), context.temp_allocator)
 	for ast, i in asts {
 		exports := collect_module_exports(ast)
-		record_schemas := fill_export_types(&exports, ast, name_index)
-		append(&entries, Module_Entry{module = modules[i], exports = exports, record_schemas = record_schemas})
+		record_schemas, enum_schemas := fill_export_types(&exports, ast, name_index)
+		append(&entries, Module_Entry {
+			module         = modules[i],
+			exports        = exports,
+			record_schemas = record_schemas,
+			enum_schemas   = enum_schemas,
+		})
 	}
 	return Module_Index{modules = entries[:]}
 }
@@ -172,21 +193,31 @@ build_module_index_typed :: proc(modules: []string, asts: []Ast) -> Module_Index
 // index: each .Term fn export's signature is copied onto its export (the
 // cross-module CALL surface), each .Const let export's declared type is copied
 // onto its export (the cross-module CONST surface — `assets.coin_sfx` types as
-// SoundHandle), and each exported RECORD type's resolved field schema is collected
+// SoundHandle), each exported RECORD type's resolved field schema is collected
 // (the cross-module FIELD surface — a member read, a literal, a `with` on a
-// sibling-module record). It is the typed half of build_module_index_typed; the
-// name pass already ran, so a cross-module type a signature/const/field references
+// sibling-module record), and each exported ENUM type's resolved variant schema
+// is collected (the cross-module VARIANT-VALUE surface — `Screen::Pause` as a
+// value, `AppMsg::Hud` as a variant-as-function value, an imported tagged-union
+// match binder). It is the typed half of build_module_index_typed; the name pass
+// already ran, so a cross-module type a signature/const/field/payload references
 // is visible. A module whose imports or env do not resolve leaves its export
-// signatures and let types nil and its record-schema set empty — that module's own
-// typecheck reports the real error.
-fill_export_types :: proc(exports: ^[]Module_Export, ast: Ast, name_index: Module_Index) -> []Module_Record_Schema {
+// signatures and let types nil and its record/enum schema sets empty — that
+// module's own typecheck reports the real error.
+fill_export_types :: proc(
+	exports: ^[]Module_Export,
+	ast: Ast,
+	name_index: Module_Index,
+) -> (
+	record_schemas: []Module_Record_Schema,
+	enum_schemas: []Module_Enum_Schema,
+) {
 	bindings, bind_err := resolve_imports_indexed(ast, name_index)
 	if bind_err != .None {
-		return nil
+		return nil, nil
 	}
 	env, env_err := resolve_env(ast, bindings, name_index)
 	if env_err != .None {
-		return nil
+		return nil, nil
 	}
 	for &export in exports {
 		#partial switch export.kind {
@@ -203,18 +234,23 @@ fill_export_types :: proc(exports: ^[]Module_Export, ast: Ast, name_index: Modul
 			}
 		}
 	}
-	schemas := make([dynamic]Module_Record_Schema, 0, 8, context.temp_allocator)
+	records := make([dynamic]Module_Record_Schema, 0, 8, context.temp_allocator)
+	enums := make([dynamic]Module_Enum_Schema, 0, 8, context.temp_allocator)
 	for &export in exports {
 		if export.kind != .Type {
 			continue
 		}
-		// Only record-shaped types (thing/data/signal) carry a field schema; an
-		// enum is a variant set with no fields, so it contributes no record schema.
+		// A record-shaped type (thing/data/signal) carries a field schema; an enum
+		// carries a variant schema instead — the two cross-module surfaces are
+		// disjoint, so each type contributes to exactly one set.
 		if record, declared := env.records[export.name]; declared {
-			append(&schemas, Module_Record_Schema{name = export.name, schema = record})
+			append(&records, Module_Record_Schema{name = export.name, schema = record})
+		}
+		if enum_schema, declared := env.enums[export.name]; declared {
+			append(&enums, Module_Enum_Schema{name = export.name, schema = enum_schema})
 		}
 	}
-	return schemas[:]
+	return records[:], enums[:]
 }
 
 // module_call_signature resolves the signature of a name an import bound to a
@@ -318,6 +354,34 @@ module_record_schema :: proc(index: Module_Index, bindings: Bindings, name: stri
 		}
 	}
 	return Record_Schema{}, false
+}
+
+// module_enum_schema resolves the variant schema of a name an import bound to a
+// sibling user module's ENUM — the cross-module VARIANT-VALUE surface a CONSUMER
+// needs to type an imported enum's variant used as a value: `Screen::Pause` in a
+// `with`-update RHS, the §21 §3 variant-as-function value `AppMsg::Hud` a
+// `.map(AppMsg::Hud)` re-tags through, and an imported tagged-union match binder
+// (`AppMsg::Hud(m)`). It mirrors module_record_schema for the enum position: the
+// name must bind to a sibling module as a .Type_Name, that module must be in the
+// index, and the module must carry an enum schema for the name. found = false
+// leaves the variant check to its local-env arm, so a local enum (or a non-enum
+// type) is untouched. The CONSUMER passes its own bindings so the name's OWNING
+// module is recovered from the binding (spec §02 one-name-one-meaning).
+module_enum_schema :: proc(index: Module_Index, bindings: Bindings, name: string) -> (schema: Enum_Schema, found: bool) {
+	binding, bound := bindings.names[name]
+	if !bound || binding.kind != .Type_Name {
+		return Enum_Schema{}, false
+	}
+	entry, has_entry := module_index_lookup(index, binding.module)
+	if !has_entry {
+		return Enum_Schema{}, false
+	}
+	for candidate in entry.enum_schemas {
+		if candidate.name == name {
+			return candidate.schema, true
+		}
+	}
+	return Enum_Schema{}, false
 }
 
 // collect_module_exports lifts a parsed module's top-level declarations into its
