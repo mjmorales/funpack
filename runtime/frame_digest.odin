@@ -38,7 +38,11 @@ import "core:slice"
 // and so bumps this — a digest is only comparable to one produced at the same
 // version (the closed-enum / exact-match discipline §04). The session digest
 // seeds from this stamp so two runs at different encodings never collide.
-FRAME_DIGEST_SCHEMA_VERSION :: 1
+// v2 adds the Bool / Record / List column tags the snake blackboard introduces
+// (`grow: Bool`, `head: Cell`, `body: [Cell]`) — a composite column is part of the
+// committed state the digest covers, so a new column arm is a digest-encoding
+// change and bumps this stamp.
+FRAME_DIGEST_SCHEMA_VERSION :: 2
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
@@ -50,6 +54,9 @@ Field_Tag :: enum u8 {
 	Variant = 2, // an enum variant token (a length-prefixed string)
 	Vec2    = 3, // a two-Fixed vector column
 	Ref     = 4, // a weak typed handle (target thing name + raw Id)
+	Bool    = 5, // a Bool column (one tag byte + one 0/1 byte)
+	Record  = 6, // a composite record column (type name + sorted-name fields)
+	List    = 7, // a `[T]` list column (element count + each element in order)
 }
 
 // Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
@@ -202,8 +209,11 @@ sorted_field_names :: proc(fields: map[string]Field_Value) -> [dynamic]string {
 // numeric arm is raw fixed-width little-endian bits — a Fixed/Int as its 8-byte
 // i64 bits, a Vec2 as two such — never a float or a decimal point (§10). A Ref
 // serializes as its target thing name plus the raw target Id (a flat id-graph,
-// never a pointer value, §08 §1). The Field_Value union has no other arm, so the
-// switch is total.
+// never a pointer value, §08 §1). A Bool is one 0/1 byte; a Record digests its
+// type name then its fields in SORTED name order (the same map-invariance the row
+// blackboard uses); a List digests its element count then each element in list
+// order (order IS canonical for a list). The Field_Value union has no other arm,
+// so the switch is total.
 @(private = "file")
 write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	switch v in value {
@@ -213,6 +223,9 @@ write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	case Fixed:
 		append(buf, u8(Field_Tag.Fixed))
 		put_u64_le(buf, u64(i64(v)))
+	case bool:
+		append(buf, u8(Field_Tag.Bool))
+		append(buf, v ? u8(1) : u8(0))
 	case string:
 		append(buf, u8(Field_Tag.Variant))
 		write_length_prefixed(buf, v)
@@ -223,7 +236,95 @@ write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 		append(buf, u8(Field_Tag.Ref))
 		write_length_prefixed(buf, v.thing)
 		put_u64_le(buf, u64(v.id.raw))
+	case Record_Value:
+		write_record_column(buf, v)
+	case List_Value:
+		write_list_column(buf, v)
 	}
+}
+
+// write_record_column digests a composite record column (snake's `head: Cell`):
+// the Record tag, the type name, the field count, then each field's name and
+// value in SORTED name order — the same sorted-key discipline write_world_state
+// applies to a row blackboard, so a Record column is machine-invariant regardless
+// of Odin's unspecified map iteration order.
+@(private = "file")
+write_record_column :: proc(buf: ^[dynamic]u8, rec: Record_Value) {
+	append(buf, u8(Field_Tag.Record))
+	write_length_prefixed(buf, rec.type_name)
+	put_u64_le(buf, u64(len(rec.fields)))
+	names := sorted_value_field_names(rec.fields)
+	defer delete(names)
+	for name in names {
+		write_length_prefixed(buf, name)
+		write_column_value(buf, rec.fields[name])
+	}
+}
+
+// write_list_column digests a `[T]` list column (snake's `body: [Cell]`): the
+// List tag, the element count, then each element in LIST order — order is the
+// list's canonical sequence (the deterministic fold order it was built in), so it
+// is written verbatim, never sorted.
+@(private = "file")
+write_list_column :: proc(buf: ^[dynamic]u8, list: List_Value) {
+	append(buf, u8(Field_Tag.List))
+	put_u64_le(buf, u64(len(list.elements)))
+	for elem in list.elements {
+		write_column_value(buf, elem)
+	}
+}
+
+// write_column_value digests one Value nested inside a structural column (a Cell
+// in `body: [Cell]`, an x/y in a Cell). It tags by the SAME Field_Tag set the
+// top-level columns use, so a Cell column and a Cell nested in a list digest
+// identically. A nested enum Variant_Value is rendered to its "Enum::Case" token
+// — the same form a top-level enum column carries — so the two never diverge. A
+// non-column transient (lambda / render String / tuple / Rng) cannot appear in a
+// committed structural column; it is written tag-less as a defensive no-op rather
+// than aborting the digest.
+@(private = "file")
+write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
+	switch x in v {
+	case i64:
+		append(buf, u8(Field_Tag.Int))
+		put_u64_le(buf, u64(x))
+	case Fixed:
+		append(buf, u8(Field_Tag.Fixed))
+		put_u64_le(buf, u64(i64(x)))
+	case bool:
+		append(buf, u8(Field_Tag.Bool))
+		append(buf, x ? u8(1) : u8(0))
+	case Vec2:
+		append(buf, u8(Field_Tag.Vec2))
+		write_vec2(buf, x)
+	case Ref:
+		append(buf, u8(Field_Tag.Ref))
+		write_length_prefixed(buf, x.thing)
+		put_u64_le(buf, u64(x.id.raw))
+	case Variant_Value:
+		append(buf, u8(Field_Tag.Variant))
+		write_length_prefixed(buf, variant_to_token(x))
+	case Record_Value:
+		write_record_column(buf, x)
+	case List_Value:
+		write_list_column(buf, x)
+	case Lambda_Value, String_Value, Tuple_Value, Rng:
+	// A transient value never lands in a committed structural column.
+	}
+}
+
+// sorted_value_field_names returns a Record_Value's field names in ascending byte
+// order — the same defined total order sorted_field_names gives a row blackboard,
+// applied to the `map[string]Value` a structural column carries so a nested record
+// is digested map-invariantly. The dynamic array is freed by the caller.
+@(private = "file")
+sorted_value_field_names :: proc(fields: map[string]Value) -> [dynamic]string {
+	names := make([dynamic]string, 0, len(fields))
+	for name in fields {
+		append(&names, name)
+	}
+	slice.sort(names[:])
+	return names
 }
 
 // --- Draw-list serialization (flattened render order) -----------------------

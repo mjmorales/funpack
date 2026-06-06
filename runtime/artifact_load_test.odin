@@ -41,7 +41,7 @@ test_load_version_gate :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, program.schema_version, ARTIFACT_SCHEMA_VERSION)
 
-	// The PRIOR version (v1) is now a mismatch — refused before any payload.
+	// A v1 stamp is a mismatch — refused before any payload.
 	old_version := "funpack-artifact 1\n[meta 0]\n"
 	_, old_err := load_program(old_version, context.temp_allocator)
 	testing.expect_value(t, old_err, Artifact_Error.Version_Mismatch)

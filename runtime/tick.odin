@@ -28,6 +28,7 @@
 package funpack_runtime
 
 import "core:slice"
+import "core:strings"
 
 // --- Working state the fold threads ---------------------------------------
 
@@ -215,7 +216,7 @@ build_spawn_blackboard :: proc(
 				continue
 			}
 			if fd.has_default {
-				if v, ok := decode_default(fd); ok {
+				if v, ok := decode_default(program, fd, allocator); ok {
 					fields[fd.name] = v
 				}
 			}
@@ -252,21 +253,194 @@ spawn_field_to_value :: proc(
 	return field.fixed
 }
 
-// decode_default decodes a Field_Decl's `=ENCODED` default into a column value —
-// an Int field's `=0`, a Fixed field's raw bits, or an enum token. Pong's
-// Scoreboard left/right default to Int 0 this way. ok is false for an
-// undecodable default (a malformed artifact the loader would have refused).
-decode_default :: proc(fd: Field_Decl) -> (value: Field_Value, ok: bool) {
-	if fd.type == "Int" {
-		n, n_ok := decode_int(fd.default_encoded)
-		return n, n_ok
+// decode_default decodes a Field_Decl's `=ENCODED` default into a column value,
+// dispatching on the field's declared TYPE — the inverse of the emitter's
+// field-default token (funpack emit.odin encode_field_default, docs/artifact-
+// format.md §6). The forms, by declared type:
+//
+//   - Int          → `0`            → an i64 column (decode_int)
+//   - Fixed        → raw Q32.32 bits → a Fixed column (decode_fixed)
+//   - Bool         → `true`/`false` → a bool column
+//   - `[T]`        → `[]`           → an empty List_Value column (snake's `body: [Cell]`)
+//   - a data type  → `Type(f=enc,…)` → a Record_Value column (snake's `head: Cell`)
+//   - an enum type → `Enum::Case`   → the enum token, verbatim (snake's `dir`/`state`)
+//
+// Pong's Scoreboard `Int = 0` pair still decodes through the Int arm. ok is false
+// for an undecodable default (a malformed artifact the loader would have refused).
+// `program` resolves a nested record field's declared type so a `Cell(x=10,y=10)`
+// default decodes `x`/`y` as Int columns; `allocator` owns the structural column
+// (the commit arena), independent of the transient default arena.
+decode_default :: proc(
+	program: ^Program,
+	fd: Field_Decl,
+	allocator := context.allocator,
+) -> (
+	value: Field_Value,
+	ok: bool,
+) {
+	return decode_default_value(program, fd.type, fd.default_encoded, allocator)
+}
+
+// decode_default_value decodes one `=ENCODED` token against a declared type into a
+// blackboard column. It is the recursive core decode_default and the record-field
+// decoder both call: a nested `Cell(x=10,y=10)` field decodes its `x`/`y` through
+// this same proc against the data-decl's field types, so the composite form nests
+// to any depth the emitter produces.
+decode_default_value :: proc(
+	program: ^Program,
+	type_name: string,
+	encoded: string,
+	allocator := context.allocator,
+) -> (
+	value: Field_Value,
+	ok: bool,
+) {
+	switch type_name {
+	case "Int":
+		return decode_int(encoded)
+	case "Fixed":
+		return decode_fixed(encoded)
+	case "Bool":
+		return decode_bool(encoded)
 	}
-	if fd.type == "Fixed" {
-		f, f_ok := decode_fixed(fd.default_encoded)
-		return f, f_ok
+	if strings.has_prefix(type_name, "[") {
+		// A `[T]` list default — the emitter admits only the empty-list `[]` literal.
+		if encoded == "[]" {
+			return List_Value{elements = make([]Value, 0, allocator)}, true
+		}
+		return nil, false
 	}
-	// A non-numeric default (an enum token) carries verbatim.
-	return fd.default_encoded, true
+	if strings.contains(encoded, "::") {
+		// An enum-variant default (`Enum::Case`) carries verbatim as a token column.
+		return strings.clone(encoded, allocator), true
+	}
+	if strings.contains(encoded, "(") {
+		// A composite record default `Type(f=enc,…)` — the §6 single-token inline
+		// constructor (snake's `head: Cell = Cell(x=10,y=10)`).
+		return decode_record_default(program, type_name, encoded, allocator)
+	}
+	if is_signed_decimal(encoded) {
+		// A numeric default whose declared type is not the literal `Int`/`Fixed` (a
+		// nested field decoded against an unknown data decl): decode as Fixed, the
+		// numeric reading the loader's setup-field path also defaults to.
+		return decode_fixed(encoded)
+	}
+	// A bare token with no `::` and no `(` — keep it as a token column so the field
+	// stays loadable (the gate stage already proved defaults are concrete §6 forms).
+	return strings.clone(encoded, allocator), true
+}
+
+// decode_record_default decodes a composite record default `Type(f=enc,g=enc,…)`
+// into a Record_Value column — the inverse of the emitter's encode_record_default
+// (funpack emit.odin). The body between the outer parens is split at TOP-LEVEL
+// commas (so a nested `Vec2(x=0,y=0)` inside the body is not split mid-record),
+// each `name=enc` pair decoded against that field's declared type from the data
+// decl, so a `Cell(x=10,y=10)` decodes `x`/`y` as Int columns and a value lifts
+// to the SAME Record_Value a runtime `Cell{…}` literal evaluates to. The fields
+// are lifted to interpreter Values so the record column round-trips through
+// field_value_to_value unchanged.
+decode_record_default :: proc(
+	program: ^Program,
+	type_name: string,
+	encoded: string,
+	allocator := context.allocator,
+) -> (
+	value: Field_Value,
+	ok: bool,
+) {
+	open := strings.index_byte(encoded, '(')
+	if open < 0 || !strings.has_suffix(encoded, ")") {
+		return nil, false
+	}
+	ctor := encoded[:open] // the constructor type name, e.g. "Cell"
+	body := encoded[open + 1:len(encoded) - 1] // the interior "x=10,y=10"
+
+	// Vec2 is the built-in §10 vector — its default collapses to a Vec2 column
+	// (its x/y are Fixed components), the same shape a runtime `Vec2{…}` literal
+	// evaluates to, not a by-name Record_Value. It has no §3 Data_Decl, so its
+	// components decode as Fixed.
+	vec2_fields := ctor == "Vec2"
+	decl := program_data(program, ctor)
+	fields := make(map[string]Value, allocator)
+	if len(body) > 0 {
+		for pair in split_top_level(body, ',', allocator) {
+			eq := strings.index_byte(pair, '=')
+			if eq < 0 {
+				return nil, false
+			}
+			name := pair[:eq]
+			field_enc := pair[eq + 1:]
+			field_type := vec2_fields ? "Fixed" : data_field_type(decl, name)
+			fv, fv_ok := decode_default_value(program, field_type, field_enc, allocator)
+			if !fv_ok {
+				return nil, false
+			}
+			fields[strings.clone(name, allocator)] = field_value_to_value(fv)
+		}
+	}
+	if vec2_fields {
+		if v, vec_ok := record_to_vec2(fields); vec_ok {
+			if vec, is_vec := v.(Vec2); is_vec {
+				return vec, true
+			}
+		}
+		return nil, false
+	}
+	return Record_Value{type_name = strings.clone(ctor, allocator), fields = fields}, true
+}
+
+// split_top_level splits a record-body string at TOP-LEVEL `sep` bytes only —
+// commas inside a nested `Type(…)` constructor are skipped by tracking paren depth
+// — so `x=10,y=10` splits into two pairs while `inner=Vec2(x=0,y=0),z=1` splits
+// into two, not three. The pieces are sub-slices of `s` (no per-piece allocation);
+// the result slice lives in the supplied allocator.
+split_top_level :: proc(s: string, sep: byte, allocator := context.allocator) -> []string {
+	pieces := make([dynamic]string, allocator)
+	depth := 0
+	start := 0
+	for i in 0 ..< len(s) {
+		switch s[i] {
+		case '(':
+			depth += 1
+		case ')':
+			depth -= 1
+		case:
+			if s[i] == sep && depth == 0 {
+				append(&pieces, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	append(&pieces, s[start:])
+	return pieces[:]
+}
+
+// program_data finds a §3 data descriptor by name, or nil — the field-type lookup
+// decode_record_default reads to decode a composite default's nested fields by
+// their declared type (Int vs Fixed vs Bool).
+program_data :: proc(program: ^Program, name: string) -> ^Data_Decl {
+	for &decl in program.data {
+		if decl.name == name {
+			return &decl
+		}
+	}
+	return nil
+}
+
+// data_field_type returns a data decl's named field's declared type, or "" when
+// the decl or field is unknown. An unknown field type falls through to the bare-
+// token / numeric decode arms, so a record default stays loadable even without a
+// matching data decl (e.g. the built-in Vec2, which has no §3 Data_Decl).
+data_field_type :: proc(decl: ^Data_Decl, name: string) -> string {
+	if decl == nil {
+		return ""
+	}
+	for fd in decl.fields {
+		if fd.name == name {
+			return fd.type
+		}
+	}
+	return ""
 }
 
 // field_is_int reports whether a thing's named field is declared Int (vs Fixed),
@@ -460,12 +634,33 @@ fold_behavior_result :: proc(
 	case emit == "[Draw]":
 		// The render projection is not committed to the world — a Draw list is a
 		// pure read-side projection of committed state, not a state write.
+	case emit == "[Despawn]":
+		// A `[Despawn]` emit despawns the SELF row when the returned list is non-empty
+		// (snake's despawn_eaten emits `[Despawn()]` to remove the eaten Food). The
+		// command targets self_row — the no-arg `Despawn()` carries no Ref, so the tick
+		// fold (which knows the bound self row) supplies the target. An empty list is
+		// the no-despawn path (no command queued).
+		fold_despawn_emit(state, behavior.on_thing, self_row, result)
 	case is_command_list_type(emit):
 		queue_commands(interp, state, result)
 	case:
 		// A blackboard write: fold the returned record into the working row.
 		write_blackboard(interp, state, behavior.on_thing, self_row.id, result)
 	}
+}
+
+// fold_despawn_emit queues a tick-boundary despawn of the SELF row when a
+// `[Despawn]` behavior return is non-empty — the self-despawn the §02 `Despawn()`
+// command marks. A despawn references the on-Thing type plus the self row's Id, so
+// apply_spawn_batch removes exactly the bound instance at the boundary (population
+// stays fixed for the rest of the tick, §08). An empty `[Despawn]` list is the
+// no-op path (the food was not eaten this tick).
+fold_despawn_emit :: proc(state: ^Tick_State, on_thing: string, self_row: Row, result: Value) {
+	list, is_list := result.(List_Value)
+	if !is_list || len(list.elements) == 0 {
+		return
+	}
+	queue_despawn(state, Ref{thing = on_thing, id = self_row.id})
 }
 
 // fold_tuple_emit splits a `(Rng, [Spawn])` behavior return into its halves: the
@@ -817,20 +1012,23 @@ input_marker :: proc(interp: ^Interp) -> Value {
 // --- Type-string predicates (§06 §3 param/emit type forms) ----------------
 
 // is_signal_list_type reports whether a param/emit type is a `[Signal]` list of a
-// declared signal — the shape a producer emits and a consumer reads. A `[Draw]`
-// or `[Spawn]` list is a command/render list, not a signal list, so those are
-// excluded here and routed by their own predicates.
+// declared signal — the shape a producer emits and a consumer reads. The three
+// engine command/render lists `[Draw]`, `[Spawn]`, and `[Despawn]` are NOT signal
+// lists, so they are excluded here and routed by their own predicates (a `[Draw]`
+// projection, a `[Spawn]` mint, a `[Despawn]` self-remove) — otherwise a
+// `[Despawn]` emit would mis-route into the signal mailbox instead of the despawn
+// batch.
 is_signal_list_type :: proc(type: string) -> bool {
 	if !is_bracket_list(type) {
 		return false
 	}
 	inner := signal_type_of(type)
-	return inner != "Draw" && inner != "Spawn"
+	return inner != "Draw" && inner != "Spawn" && inner != "Despawn"
 }
 
 // is_command_list_type reports whether an emit type is a `[Spawn]` command list —
-// the tick-boundary batch shape. (`[Draw]` is handled as the render projection
-// separately.)
+// the tick-boundary mint batch. (`[Draw]` is the render projection and `[Despawn]`
+// the self-remove batch, each handled by its own arm in fold_behavior_result.)
 is_command_list_type :: proc(type: string) -> bool {
 	return type == "[Spawn]"
 }

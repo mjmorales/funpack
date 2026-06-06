@@ -302,14 +302,16 @@ emit_arm :: proc(b: ^strings.Builder, pattern: Pattern) {
 		}
 		emit_line(b, "")
 	case .Bare_Binder:
-		// A bare binder position carries its single binding name. The
-		// artifact-format §2.7 ratification of the bare_binder/tuple arm KINDs
-		// lands with the golden-integration seam (a closed-set schema bump);
-		// this grammar seam emits the structurally-honest form so the body
-		// walk stays total and the complete Pattern_Kind switch is exhaustive.
-		strings.write_string(b, "bare_binder ")
-		strings.write_string(b, tuple_binder_name(pattern))
-		emit_line(b, " 0")
+		// A bare binder position binds the WHOLE tuple element to one name. It
+		// uses the SAME 5-field scalar-arm layout every other arm pattern uses
+		// (docs/artifact-format.md §2.7: `pat type case binder_count binders…`), so
+		// a positional arm reader finds the binder name at the binder slot:
+		// `bare_binder - - 1 next` — the `- -` type/case are unused for a binder,
+		// the binder_count is 1, and the name follows. A 3-field `bare_binder next 0`
+		// form would mis-slot the name (a reader keys the binder off the count
+		// position). A scalar arm carries no trailing child_count (0 by kind).
+		strings.write_string(b, "bare_binder - - 1 ")
+		emit_line(b, tuple_binder_name(pattern))
 	case .Tuple:
 		strings.write_string(b, "tuple ")
 		strings.write_int(b, len(pattern.elements))
@@ -388,12 +390,15 @@ binary_op_name :: proc(op: Token) -> string {
 	return ""
 }
 
-// type_ref_string renders a syntactic Type_Ref to its source spelling
-// (docs/artifact-format.md §2.6, §6, §9): a bare name (`Fixed`), a list `[T]`,
-// a tuple `(T, U)`, or a generic application `Ctor[Arg, …]` (`View[Paddle]`,
-// `Option[Side]`). The artifact carries the type as written, so a list head
-// "[]" renders to the bracketed form, a tuple head "()" to the parenthesized
-// comma-list, and a generic to its `Ctor[args]` form.
+// type_ref_string renders a syntactic Type_Ref to its SPACE-FREE artifact
+// spelling (docs/artifact-format.md §2.6, §6, §9): a bare name (`Fixed`), a list
+// `[T]`, a tuple `(T,U)`, or a generic application `Ctor[Arg,…]` (`View[Paddle]`,
+// `Option[Side]`). Every form is one whitespace-free token because the §9
+// `function NAME KIND param_count return:TYPE body_count …` record (and the §6
+// `field` line) is whitespace-DELIMITED and reads TYPE at one position — an
+// interior space would split the token and shift every later field. So the tuple
+// separator is a BARE comma, not `, `: the §04 §1 return pair `(Rng,[Spawn])` is
+// the artifact token, distinct from the source spelling `(Rng, [Spawn])`.
 type_ref_string :: proc(ref: Type_Ref) -> string {
 	if ref.name == "[]" {
 		if len(ref.args) == 1 {
@@ -402,13 +407,14 @@ type_ref_string :: proc(ref: Type_Ref) -> string {
 		return "[]"
 	}
 	if ref.name == "()" {
-		// A tuple type spells as `(T, U, …)` — its positional element types
-		// comma-joined, the source spelling the §04 §1 return pair is written in.
+		// A tuple type is the §04 §1 return pair `(T,U,…)` — its positional element
+		// types comma-joined with NO interior space, so the whole type stays one
+		// artifact token the §9 positional reader reads at one field.
 		b := strings.builder_make(context.temp_allocator)
 		strings.write_byte(&b, '(')
 		for arg, i in ref.args {
 			if i > 0 {
-				strings.write_string(&b, ", ")
+				strings.write_byte(&b, ',')
 			}
 			strings.write_string(&b, type_ref_string(arg))
 		}

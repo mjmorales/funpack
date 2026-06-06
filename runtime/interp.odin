@@ -301,11 +301,20 @@ eval :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool
 	return nil, false
 }
 
-// eval_name resolves an identifier: a local binding (param / let / lambda
-// binder) first, walking the scope chain; otherwise a module-level const or a
-// nullary function evaluated on demand (BOARD reads this way). An unbound name
-// is ok=false.
+// eval_name resolves an identifier: the Bool literals `true`/`false` (the §2
+// `encode_literal` spelling for a Bool — a bare-name node, not a variant), then a
+// local binding (param / let / lambda binder), walking the scope chain; otherwise
+// a module-level const or a nullary function evaluated on demand (BOARD reads this
+// way). A local binding shadows the literals only if a program ever bound a name
+// `true`/`false` (it cannot — they are reserved), so checking the literal first is
+// safe and lets snake's `grow: false` recfield resolve. An unbound name is ok=false.
 eval_name :: proc(interp: ^Interp, name: string, env: ^Env) -> (value: Value, ok: bool) {
+	switch name {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
 	for scope := env; scope != nil; scope = scope.parent {
 		if v, present := scope.names[name]; present {
 			return v, true
@@ -386,6 +395,10 @@ eval_variant :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 // `recfield NAME = value` child per field. A Vec2 record collapses to the Vec2
 // value (its x/y recfields), so vector arithmetic stays on the kernel's Vec2;
 // every other record becomes a by-name Record_Value carrying its declared type.
+// A field the literal OMITS is filled from the type's §06 declared default — so
+// `Snake{}` evaluates to a Snake carrying head/body/dir/grow/state, the same way
+// a `setup` Spawn fills omitted fields, and a later `snake.head` read never faults
+// on an absent column (§03 §1, §06).
 eval_record :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	type_name := node.fields[0]
 	fields := make(map[string]Value, interp.allocator)
@@ -402,7 +415,43 @@ eval_record :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	if type_name == "Vec2" {
 		return record_to_vec2(fields)
 	}
+	fill_record_defaults(interp, type_name, &fields)
 	return Record_Value{type_name = type_name, fields = fields}, true
+}
+
+// fill_record_defaults fills any field a record literal omitted with the type's
+// §06 declared default, looked up in the program's thing then data decls. A field
+// already supplied is left untouched (an explicit value overrides the default);
+// an undecodable default is skipped, leaving the field absent. The decoded
+// default is lifted from a Field_Value column to an interpreter Value so the
+// filled record carries the same value shape an explicit literal would.
+fill_record_defaults :: proc(interp: ^Interp, type_name: string, fields: ^map[string]Value) {
+	decls := record_field_decls(interp.program, type_name)
+	for fd in decls {
+		if _, present := fields[fd.name]; present {
+			continue
+		}
+		if !fd.has_default {
+			continue
+		}
+		if fv, decoded := decode_default(interp.program, fd, interp.allocator); decoded {
+			fields[strings.clone(fd.name, interp.allocator)] = field_value_to_value(fv)
+		}
+	}
+}
+
+// record_field_decls returns a type's declared §06 fields — a thing's blackboard
+// schema or a data type's field list — or nil for an unknown/built-in type
+// (Vec2, handled separately). It is the schema lookup eval_record reads to fill a
+// record literal's omitted defaults.
+record_field_decls :: proc(program: ^Program, type_name: string) -> []Field_Decl {
+	if thing := program_thing(program, type_name); thing != nil {
+		return thing.fields
+	}
+	if data := program_data(program, type_name); data != nil {
+		return data.fields
+	}
+	return nil
 }
 
 // eval_with reconstructs a record with some fields replaced: `with CHANGE_COUNT`
@@ -489,24 +538,31 @@ eval_lambda :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> Value {
 	return Lambda_Value{params = params, body = &node.children[0], captured = env}
 }
 
-// eval_unary applies a unary operator. Pong uses only `neg` (Fixed/Int/Vec2
-// negation); the kernel's saturating negate keeps it total at the rails.
+// eval_unary applies a unary operator: `neg` (Fixed/Int/Vec2 negation, the
+// kernel's saturating negate, total at the rails) or `not` (Bool logical
+// negation, snake's `not contains(occ, c)` free-cell predicate). An operator on
+// the wrong operand arm is ok=false.
 eval_unary :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	operand, operand_ok := eval(interp, &node.children[0], env)
 	if !operand_ok {
 		return nil, false
 	}
-	if node.fields[0] != "neg" {
-		return nil, false
-	}
-	switch v in operand {
-	case Fixed:
-		return fixed_neg(v), true
-	case i64:
-		return int_neg(v), true
-	case Vec2:
-		return Vec2{fixed_neg(v.x), fixed_neg(v.y)}, true
-	case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+	switch node.fields[0] {
+	case "neg":
+		switch v in operand {
+		case Fixed:
+			return fixed_neg(v), true
+		case i64:
+			return int_neg(v), true
+		case Vec2:
+			return Vec2{fixed_neg(v.x), fixed_neg(v.y)}, true
+		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+			return nil, false
+		}
+	case "not":
+		if b, is_bool := operand.(bool); is_bool {
+			return !b, true
+		}
 		return nil, false
 	}
 	return nil, false
@@ -890,17 +946,27 @@ record_to_vec2 :: proc(fields: map[string]Value) -> (v: Value, ok: bool) {
 
 // field_value_to_value lifts a blackboard Field_Value (state.odin's stored
 // column type) into the interpreter's Value. The two unions overlap on the
-// scalar/Vec2/Ref arms; a stored enum token (a string column) becomes a
-// Variant_Value by splitting its "Enum::Case" form so a match can read the case.
+// scalar/Bool/Vec2/Ref and the structural Record/List arms; a stored enum token
+// (a string column) becomes a Variant_Value by splitting its "Enum::Case" form so
+// a match can read the case. A Record_Value/List_Value column lifts unchanged —
+// the column already holds the same value shape (snake's `head: Cell` / `body:
+// [Cell]`), so a `self.head` field read and a `contains(self.body, …)` fold see
+// the committed structural value directly.
 field_value_to_value :: proc(fv: Field_Value) -> Value {
 	switch v in fv {
 	case i64:
 		return v
 	case Fixed:
 		return v
+	case bool:
+		return v
 	case Vec2:
 		return v
 	case Ref:
+		return v
+	case Record_Value:
+		return v
+	case List_Value:
 		return v
 	case string:
 		return variant_from_token(v)
@@ -910,11 +976,14 @@ field_value_to_value :: proc(fv: Field_Value) -> Value {
 
 // value_to_field_value lowers an interpreter Value back into a blackboard
 // Field_Value for the tick transaction to commit — the inverse of
-// field_value_to_value over the scalar/Vec2/Ref/enum arms. A structural value
-// (record/list/lambda) is not a column and yields ok=false; the tick commits a
-// row by writing each field's lowered value. An enum token lowers into the
-// supplied allocator (the tick arena that owns the committed version), so the
-// committed row owns its string column — never the transient default allocator.
+// field_value_to_value over the scalar/Bool/Vec2/Ref/enum AND the structural
+// Record/List arms. A Bool/Record/List lowers into a real column (snake's `grow`,
+// `head`, `body`); a Record/List is cloned into the supplied allocator (the tick
+// arena that owns the committed version) so the committed row owns its structural
+// column independent of the transient eval arena, exactly as the enum-token arm
+// clones its string. A genuinely non-column value (lambda / render String / a
+// tuple split before commit / a threaded Rng) yields ok=false; the commit path
+// skips it, leaving the prior column.
 value_to_field_value :: proc(
 	v: Value,
 	allocator := context.allocator,
@@ -927,13 +996,19 @@ value_to_field_value :: proc(
 		return x, true
 	case Fixed:
 		return x, true
+	case bool:
+		return x, true
 	case Vec2:
 		return x, true
 	case Ref:
 		return x, true
 	case Variant_Value:
 		return variant_to_token(x, allocator), true
-	case bool, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+	case Record_Value:
+		return clone_record_value(x, allocator), true
+	case List_Value:
+		return clone_list_value(x, allocator), true
+	case Lambda_Value, String_Value, Tuple_Value, Rng:
 		// A String is render-only (§20 Text); a Tuple is split by the tick into its
 		// halves before commit and never lands whole on a row; an Rng is THREADED
 		// (carried in Tick_State, written forward), never persisted as a column. None
@@ -941,6 +1016,66 @@ value_to_field_value :: proc(
 		return nil, false
 	}
 	return nil, false
+}
+
+// clone_record_value deep-copies a Record_Value into the supplied allocator so a
+// committed structural column outlives the transient eval arena it was built in —
+// the structural analog of variant_to_token's string clone. Each field value is
+// recursively cloned (a nested record/list/Vec2 too), so the committed `head:
+// Cell` carries no pointer back into the freed tick-temp arena.
+clone_record_value :: proc(rec: Record_Value, allocator := context.allocator) -> Record_Value {
+	fields := make(map[string]Value, len(rec.fields), allocator)
+	for k, v in rec.fields {
+		fields[strings.clone(k, allocator)] = clone_column_value(v, allocator)
+	}
+	return Record_Value{type_name = strings.clone(rec.type_name, allocator), fields = fields}
+}
+
+// clone_list_value deep-copies a List_Value (snake's `body: [Cell]`) into the
+// supplied allocator, recursively cloning each element, so the committed list
+// column owns its elements in the tick arena, never the freed eval arena.
+clone_list_value :: proc(list: List_Value, allocator := context.allocator) -> List_Value {
+	elements := make([]Value, len(list.elements), allocator)
+	for elem, i in list.elements {
+		elements[i] = clone_column_value(elem, allocator)
+	}
+	return List_Value{elements = elements}
+}
+
+// clone_column_value deep-copies one column-shaped Value into the supplied
+// allocator. The scalar/Vec2/Ref/Bool arms copy by value; an enum Variant_Value
+// keeps its split form; a nested Record/List recurses. A non-column value
+// (lambda / render String / tuple / Rng) is not stored in a structural column, so
+// it copies by value as a defensive identity — value_to_field_value already
+// excludes the standalone forms.
+clone_column_value :: proc(v: Value, allocator := context.allocator) -> Value {
+	switch x in v {
+	case Record_Value:
+		return clone_record_value(x, allocator)
+	case List_Value:
+		return clone_list_value(x, allocator)
+	case Variant_Value:
+		return clone_variant_value(x, allocator)
+	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng:
+		return v
+	}
+	return v
+}
+
+// clone_variant_value deep-copies a Variant_Value's tag strings and its optional
+// payload into the supplied allocator, so a Variant nested in a committed
+// structural column owns its bytes in the tick arena.
+clone_variant_value :: proc(v: Variant_Value, allocator := context.allocator) -> Variant_Value {
+	out := Variant_Value {
+		enum_type = strings.clone(v.enum_type, allocator),
+		case_name = strings.clone(v.case_name, allocator),
+	}
+	if v.payload != nil {
+		payload := new(Value, allocator)
+		payload^ = clone_column_value(v.payload^, allocator)
+		out.payload = payload
+	}
+	return out
 }
 
 // variant_from_token splits a stored "Enum::Case" enum token into a Variant_Value

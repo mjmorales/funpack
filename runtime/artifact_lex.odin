@@ -18,13 +18,14 @@ import "core:strings"
 // The version gate is exact-match, no best-effort: a mismatch is refused with
 // a diagnostic, never parsed leniently (§1, §29 §2).
 //
-// v2 ratifies two §2.7 body-node arm KINDs the snake/hunt goldens introduce:
-// `bare_binder` (a tuple position binding the whole element) and `tuple` (a
-// positional tuple pattern). The `tuple` arm is the one arm kind that carries
-// children — its positional sub-pattern arms — so its line ends in a trailing
-// `child_count`, unlike every other arm whose count is fixed at 0 by kind. A new
-// arm kind and an arm-with-children are both layout changes, so the version
-// bumped 1 → 2 (funpack/docs/artifact-format.md §1, §2.7).
+// v2 ratifies two §2.7 arm-pattern tokens within the Arm node kind that the
+// snake/hunt goldens introduce: `bare_binder` (a tuple position binding the whole
+// element) and `tuple` (a positional tuple pattern). The `tuple` arm pattern is
+// the one that carries children — its positional sub-pattern arms — so its line
+// ends in a trailing `child_count`, unlike every other arm pattern whose count is
+// fixed at 0 by token. A new arm-pattern token and an arm-with-children are both
+// layout changes, so the version bumped 1 → 2 (funpack/docs/artifact-format.md
+// §1, §2.7).
 ARTIFACT_SCHEMA_VERSION :: 2
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.

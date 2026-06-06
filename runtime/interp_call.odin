@@ -167,15 +167,65 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	}
 	// The method receivers in the executed (non-render) pipeline are all the Input
 	// snapshot; the receiver value carries no Input arm, so resolve the query
-	// against interp.input directly, keyed by the evaluated args.
+	// against interp.input directly, keyed by the evaluated args. The 1D/2D analog
+	// reads are `value`/`axis`; the digital Button edge/level reads are
+	// `pressed`/`released`/`held` (§23 §2 — snake's `dir_from_input` turns on
+	// `input.pressed(P1, Move::Up)`).
 	_ = recv
 	switch method {
 	case "value":
 		return eval_input_value(interp, node, env)
 	case "axis":
 		return eval_input_axis(interp, node, env)
+	case "pressed":
+		return eval_input_button(interp, node, env, pressed)
+	case "released":
+		return eval_input_button(interp, node, env, released)
+	case "held":
+		return eval_input_button(interp, node, env, held)
 	}
 	return nil, false
+}
+
+// eval_input_button evaluates a digital Button query `input.pressed/released/held(
+// player, action)` — the §23 §2 edge/level read snake's control stage turns on. It
+// resolves the PlayerId and action-variant args, maps the action to its stable
+// ActionId through the program's action registry, and reads the snapshot through
+// the supplied reader (one of pressed/released/held), returning a Bool. An
+// unresolved player or action reads false (the snapshot default), mirroring
+// eval_input_value's zero default so a behavior never faults on input.
+eval_input_button :: proc(
+	interp: ^Interp,
+	node: ^Node,
+	env: ^Env,
+	reader: proc(input: Input, player: PlayerId, action: ActionId) -> bool,
+) -> (
+	result: Value,
+	ok: bool,
+) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	player_val, player_ok := eval(interp, &node.children[1], env)
+	action_val, action_ok := eval(interp, &node.children[2], env)
+	if !player_ok || !action_ok {
+		return nil, false
+	}
+	player_variant, is_player := player_val.(Variant_Value)
+	action_variant, is_action := action_val.(Variant_Value)
+	if !is_player || !is_action {
+		return nil, false
+	}
+	player, player_resolved := player_from_string(player_variant.case_name)
+	if !player_resolved {
+		return false, true
+	}
+	action_name := variant_to_token(action_variant, interp.allocator)
+	def, action_found := interp.registry.by_name[action_name]
+	if !action_found {
+		return false, true
+	}
+	return reader(interp.input, player, def.id), true
 }
 
 // eval_input_value evaluates `input.value(self.player, Steer::Move)`: resolve the
@@ -289,6 +339,8 @@ eval_named_call :: proc(
 		return builtin_pick(interp, node, env)
 	case "Spawn":
 		return builtin_spawn(interp, node, env)
+	case "Despawn":
+		return builtin_despawn(interp, node, env)
 	}
 	// A user §9 helper: bind its args to its params and fold its body.
 	if fn := program_function(interp.program, name); fn != nil {
@@ -776,6 +828,18 @@ builtin_spawn :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 		return nil, false
 	}
 	return eval(interp, &node.children[1], env)
+}
+
+// builtin_despawn is the §02 §2 command-wrap `Despawn()` — the self-despawn
+// command a behavior's `[Despawn]` list carries (snake's despawn_eaten emits
+// `[Despawn()]` to remove the eaten Food). The no-arg form despawns the behavior's
+// SELF row; it returns a marker Record_Value of type "Despawn" so the `[Despawn]`
+// list is non-empty and fold_behavior_result detects the despawn intent, then
+// queues a despawn of self_row at the tick boundary (§07 §4). The marker carries
+// no fields — the target is the self row the tick fold already knows, not a field
+// of this value (a future `Despawn(ref)` form would carry the Ref here).
+builtin_despawn :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	return Record_Value{type_name = "Despawn", fields = make(map[string]Value, interp.allocator)}, true
 }
 
 // --- builtin support ------------------------------------------------------

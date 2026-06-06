@@ -1,0 +1,605 @@
+funpack-artifact 2
+[meta 2]
+project snake
+version L5:0.1.0
+[enums 3]
+enum Dir - 4
+variant Up unit
+variant Down unit
+variant Left unit
+variant Right unit
+enum GameState - 2
+variant Playing unit
+variant Dead unit
+enum Move Button 4
+variant Up unit
+variant Down unit
+variant Left unit
+variant Right unit
+[data 2]
+data Cell 2 false
+field x Int -
+field y Int -
+data Grid 1 false
+field size Cell -
+[signals 2]
+signal Eaten 1
+field cell Cell -
+signal Died 0
+[things 2]
+thing Snake false 1 5
+gtag L5:snake
+field head Cell =Cell(x=10,y=10)
+field body [Cell] =[]
+field dir Dir =Dir::Right
+field grow Bool =false
+field state GameState =GameState::Playing
+thing Food false 1 1
+gtag L4:food
+field cell Cell -
+[functions 11]
+function step_cell fn 2 return:Cell 1 span:snake:48
+param c Cell
+param d Dir
+node return 1
+node match 4 9
+node name d 0
+node arm bare_variant Dir Up 0
+node record Cell 2 2
+node recfield x 1
+node field x 1
+node name c 0
+node recfield y 1
+node binary sub 2
+node field y 1
+node name c 0
+node int 1 0
+node arm bare_variant Dir Down 0
+node record Cell 2 2
+node recfield x 1
+node field x 1
+node name c 0
+node recfield y 1
+node binary add 2
+node field y 1
+node name c 0
+node int 1 0
+node arm bare_variant Dir Left 0
+node record Cell 2 2
+node recfield x 1
+node binary sub 2
+node field x 1
+node name c 0
+node int 1 0
+node recfield y 1
+node field y 1
+node name c 0
+node arm bare_variant Dir Right 0
+node record Cell 2 2
+node recfield x 1
+node binary add 2
+node field x 1
+node name c 0
+node int 1 0
+node recfield y 1
+node field y 1
+node name c 0
+function cells fn 1 return:[Cell] 1 span:snake:58
+param snake Snake
+node return 1
+node call 3
+node name prepend 0
+node field head 1
+node name snake 0
+node field body 1
+node name snake 0
+function body_after fn 1 return:[Cell] 3 span:snake:63
+param snake Snake
+node let extended 1
+node call 3
+node name prepend 0
+node field head 1
+node name snake 0
+node field body 1
+node name snake 0
+node if_return 2
+node field grow 1
+node name snake 0
+node name extended 0
+node return 1
+node call 2
+node name init 0
+node name extended 0
+function off_grid fn 1 return:Bool 1 span:snake:70
+param c Cell
+node return 1
+node binary or 2
+node binary or 2
+node binary or 2
+node binary lt 2
+node field x 1
+node name c 0
+node int 0 0
+node binary lt 2
+node field y 1
+node name c 0
+node int 0 0
+node binary ge 2
+node field x 1
+node name c 0
+node field x 1
+node field size 1
+node name GRID 0
+node binary ge 2
+node field y 1
+node name c 0
+node field y 1
+node field size 1
+node name GRID 0
+function dir_from_input fn 2 return:Dir 5 span:snake:75
+param input Input
+param current Dir
+node if_return 2
+node binary and 2
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Move Up false 0
+node binary ne 2
+node name current 0
+node variant Dir Down false 0
+node variant Dir Up false 0
+node if_return 2
+node binary and 2
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Move Down false 0
+node binary ne 2
+node name current 0
+node variant Dir Up false 0
+node variant Dir Down false 0
+node if_return 2
+node binary and 2
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Move Left false 0
+node binary ne 2
+node name current 0
+node variant Dir Right false 0
+node variant Dir Left false 0
+node if_return 2
+node binary and 2
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Move Right false 0
+node binary ne 2
+node name current 0
+node variant Dir Left false 0
+node variant Dir Right false 0
+node return 1
+node name current 0
+function cell_rect fn 2 return:Draw 1 span:snake:84
+param c Cell
+param color Color
+node return 1
+node record Draw::Rect 3 3
+node recfield at 1
+node record Vec2 2 2
+node recfield x 1
+node binary mul 2
+node call 2
+node name to_fixed 0
+node field x 1
+node name c 0
+node fixed 34359738368 0
+node recfield y 1
+node binary mul 2
+node call 2
+node name to_fixed 0
+node field y 1
+node name c 0
+node fixed 34359738368 0
+node recfield size 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 34359738368 0
+node recfield y 1
+node fixed 34359738368 0
+node recfield color 1
+node name color 0
+function occupied fn 2 return:[Cell] 1 span:snake:89
+param snake Snake
+param foods View[Food]
+node return 1
+node call 3
+node name concat 0
+node call 2
+node name cells 0
+node name snake 0
+node call 3
+node name map 0
+node name foods 0
+node lambda 1 f 1
+node field cell 1
+node name f 0
+function all_cells fn 0 return:[Cell] 1 span:snake:94
+node return 1
+node call 4
+node name grid_cells 0
+node field x 1
+node field size 1
+node name GRID 0
+node field y 1
+node field size 1
+node name GRID 0
+node lambda 2 x y 1
+node record Cell 2 2
+node recfield x 1
+node name x 0
+node recfield y 1
+node name y 0
+function GRID const 0 return:Grid 1 span:snake:21
+node return 1
+node record Grid 1 1
+node recfield size 1
+node record Cell 2 2
+node recfield x 1
+node int 20 0
+node recfield y 1
+node int 20 0
+function bindings bindings 0 return:Bindings 1 span:snake:200
+node return 1
+node call 4
+node field button 1
+node call 4
+node field button 1
+node call 4
+node field button 1
+node call 4
+node field button 1
+node call 1
+node field empty 1
+node name Bindings 0
+node variant PlayerId P1 false 0
+node variant Move Up false 0
+node list 2 2
+node variant Key W false 0
+node variant Key Up false 0
+node variant PlayerId P1 false 0
+node variant Move Down false 0
+node list 2 2
+node variant Key S false 0
+node variant Key Down false 0
+node variant PlayerId P1 false 0
+node variant Move Left false 0
+node list 2 2
+node variant Key A false 0
+node variant Key Left false 0
+node variant PlayerId P1 false 0
+node variant Move Right false 0
+node list 2 2
+node variant Key D false 0
+node variant Key Right false 0
+function setup startup 1 return:(Rng,[Spawn]) 3 span:snake:210
+param rng Rng
+node let snake 1
+node record Snake 0 0
+node let free 1
+node call 3
+node name filter 0
+node call 1
+node name all_cells 0
+node lambda 1 c 1
+node unary not 1
+node call 3
+node name contains 0
+node call 2
+node name cells 0
+node name snake 0
+node name c 0
+node return 1
+node match 2 5
+node call 3
+node name pick 0
+node name free 0
+node name rng 0
+node arm tuple 2
+node arm variant_binds Option Some 1 cell
+node arm bare_binder - - 1 next
+node tuple 2 2
+node name next 0
+node list 2 2
+node call 2
+node name Spawn 0
+node name snake 0
+node call 2
+node name Spawn 0
+node record Food 1 1
+node recfield cell 1
+node name cell 0
+node arm tuple 2
+node arm bare_variant Option None 0
+node arm bare_binder - - 1 next
+node tuple 2 2
+node name next 0
+node list 1 1
+node call 2
+node name Spawn 0
+node name snake 0
+[behaviors 11]
+behavior turn on:Snake stage:control contract:Update 2 2 1 1
+gtag L5:input
+gtag L5:snake
+param self Snake
+param input Input
+emit Snake
+node return 1
+node with 1 2
+node name self 0
+node recfield dir 1
+node call 3
+node name dir_from_input 0
+node name input 0
+node field dir 1
+node name self 0
+behavior advance on:Snake stage:control contract:Update 1 1 1 2
+gtag L5:snake
+param self Snake
+emit Snake
+node if_return 2
+node binary eq 2
+node field state 1
+node name self 0
+node variant GameState Dead false 0
+node name self 0
+node return 1
+node with 3 4
+node name self 0
+node recfield head 1
+node call 3
+node name step_cell 0
+node field head 1
+node name self 0
+node field dir 1
+node name self 0
+node recfield body 1
+node call 2
+node name body_after 0
+node name self 0
+node recfield grow 1
+node name false 0
+behavior detect_eat on:Snake stage:eat contract:Update 2 2 1 1
+gtag L4:food
+gtag L5:event
+param self Snake
+param foods View[Food]
+emit [Eaten]
+node return 1
+node call 3
+node name map 0
+node call 3
+node name filter 0
+node name foods 0
+node lambda 1 f 1
+node binary eq 2
+node field cell 1
+node name f 0
+node field head 1
+node name self 0
+node lambda 1 f 1
+node record Eaten 1 1
+node recfield cell 1
+node field cell 1
+node name f 0
+behavior grow on:Snake stage:eat contract:Update 1 2 1 2
+gtag L5:snake
+param self Snake
+param eaten [Eaten]
+emit Snake
+node if_return 2
+node call 2
+node name is_empty 0
+node name eaten 0
+node name self 0
+node return 1
+node with 1 2
+node name self 0
+node recfield grow 1
+node name true 0
+behavior replenish on:Snake stage:eat contract:Update 2 4 1 4
+gtag L4:food
+gtag L3:rng
+param self Snake
+param eaten [Eaten]
+param foods View[Food]
+param rng Rng
+emit (Rng,[Spawn])
+node if_return 2
+node call 2
+node name is_empty 0
+node name eaten 0
+node tuple 2 2
+node name rng 0
+node list 0 0
+node let occ 1
+node call 3
+node name occupied 0
+node name self 0
+node name foods 0
+node let free 1
+node call 3
+node name filter 0
+node call 1
+node name all_cells 0
+node lambda 1 c 1
+node unary not 1
+node call 3
+node name contains 0
+node name occ 0
+node name c 0
+node return 1
+node match 2 5
+node call 3
+node name pick 0
+node name free 0
+node name rng 0
+node arm tuple 2
+node arm variant_binds Option Some 1 cell
+node arm bare_binder - - 1 next
+node tuple 2 2
+node name next 0
+node list 1 1
+node call 2
+node name Spawn 0
+node record Food 1 1
+node recfield cell 1
+node name cell 0
+node arm tuple 2
+node arm bare_variant Option None 0
+node arm bare_binder - - 1 next
+node tuple 2 2
+node name next 0
+node list 0 0
+behavior detect_death on:Snake stage:death contract:Update 2 1 1 2
+gtag L5:state
+gtag L5:event
+param self Snake
+emit [Died]
+node if_return 2
+node binary or 2
+node call 2
+node name off_grid 0
+node field head 1
+node name self 0
+node call 3
+node name contains 0
+node field body 1
+node name self 0
+node field head 1
+node name self 0
+node list 1 1
+node record Died 0 0
+node return 1
+node list 0 0
+behavior apply_death on:Snake stage:death contract:Update 1 2 1 2
+gtag L5:state
+param self Snake
+param died [Died]
+emit Snake
+node if_return 2
+node call 2
+node name is_empty 0
+node name died 0
+node name self 0
+node return 1
+node with 1 2
+node name self 0
+node recfield state 1
+node variant GameState Dead false 0
+behavior despawn_eaten on:Food stage:eat contract:Update 1 2 1 2
+gtag L4:food
+param self Food
+param eaten [Eaten]
+emit [Despawn]
+node if_return 2
+node call 3
+node name contains 0
+node call 3
+node name map 0
+node name eaten 0
+node lambda 1 e 1
+node field cell 1
+node name e 0
+node field cell 1
+node name self 0
+node list 1 1
+node call 1
+node name Despawn 0
+node return 1
+node list 0 0
+behavior draw_snake on:Snake stage:render contract:Render 1 1 1 1
+gtag L6:render
+param self Snake
+emit [Draw]
+node return 1
+node call 3
+node name map 0
+node call 2
+node name cells 0
+node name self 0
+node lambda 1 c 1
+node call 3
+node name cell_rect 0
+node name c 0
+node variant Color Green false 0
+behavior draw_state on:Snake stage:render contract:Render 1 1 1 2
+gtag L6:render
+param self Snake
+emit [Draw]
+node if_return 2
+node binary eq 2
+node field state 1
+node name self 0
+node variant GameState Dead false 0
+node list 1 1
+node record Draw::Text 3 3
+node recfield at 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 171798691840 0
+node recfield y 1
+node fixed 300647710720 0
+node recfield text 1
+node string L9:GAME OVER 0
+node recfield color 1
+node variant Color White false 0
+node return 1
+node list 0 0
+behavior draw_food on:Food stage:render contract:Render 1 1 1 1
+gtag L6:render
+param self Food
+emit [Draw]
+node return 1
+node list 1 1
+node call 3
+node name cell_rect 0
+node field cell 1
+node name self 0
+node variant Color Red false 0
+[pipeline_flattened 12]
+step 0 stage:startup behavior:setup
+step 1 stage:control behavior:turn
+step 2 stage:control behavior:advance
+step 3 stage:eat behavior:detect_eat
+step 4 stage:eat behavior:grow
+step 5 stage:eat behavior:despawn_eaten
+step 6 stage:eat behavior:replenish
+step 7 stage:death behavior:detect_death
+step 8 stage:death behavior:apply_death
+step 9 stage:render behavior:draw_snake
+step 10 stage:render behavior:draw_food
+step 11 stage:render behavior:draw_state
+[signal_routing 2]
+route Eaten 1 3
+producer 3 behavior:detect_eat
+consumer 4 behavior:grow
+consumer 5 behavior:despawn_eaten
+consumer 6 behavior:replenish
+route Died 1 1
+producer 7 behavior:detect_death
+consumer 8 behavior:apply_death
+[setup 0]
+[bindings 4]
+bind button P1 Move::Up source:
+bind button P1 Move::Down source:
+bind button P1 Move::Left source:
+bind button P1 Move::Right source:
+[entrypoint 1]
+entrypoint main pipeline:Snake tick_hz:8 bindings:bindings

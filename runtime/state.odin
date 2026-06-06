@@ -38,17 +38,24 @@ Id :: struct {
 
 // Field_Value is one column of a row's blackboard: the runtime value a field
 // holds, type-erased to a closed variant because the field's static type lives
-// in the Thing_Decl descriptor, not in the Odin type system. The variants mirror
-// the loader's decoded Spawn_Value_Kind (Int / Fixed / Variant / Vec2) plus the
-// Ref the read side resolves — every concrete value pong's blackboard carries.
-// No float ever (spec §10): a numeric column is a Fixed or an Int over the
-// kernel's raw bits.
+// in the Thing_Decl descriptor, not in the Odin type system. The scalar variants
+// mirror the loader's decoded Spawn_Value_Kind (Int / Fixed / Variant / Vec2)
+// plus the Ref the read side resolves; the structural variants (Bool / Record /
+// List) are the COMPOSITE columns snake's blackboard carries — `grow: Bool`,
+// `head: Cell` (a record), `body: [Cell]` (a list of records) — that pong did not
+// have. No float ever (spec §10): a numeric column is a Fixed or an Int over the
+// kernel's raw bits. A Record_Value/List_Value column is structural data the tick
+// commits and the read layer lifts back; it never carries a transient value
+// (lambda/tuple/Rng/string-render) — those are split or threaded before commit.
 Field_Value :: union {
 	i64, // an Int column
 	Fixed, // a Fixed column (Q32.32 bits)
+	bool, // a Bool column (§03 Bool; snake's `grow`)
 	string, // an enum variant token, e.g. "Side::Left"
 	Vec2, // a two-Fixed vector column (§10 Num kind)
 	Ref, // a weak typed handle to another row (§08 §1)
+	Record_Value, // a composite record column, e.g. snake's `head: Cell`
+	List_Value, // a `[T]` list column, e.g. snake's `body: [Cell]`
 }
 
 // Row is one thing instance — a database row keyed by Id (§08 table). The whole
@@ -414,18 +421,30 @@ world_versions_equal :: proc(a, b: World_Version) -> bool {
 }
 
 // blackboards_equal compares two row blackboards column-for-column: same field
-// set, same Field_Value per field (the union compares structurally, so a Fixed
-// column compares by its raw bits). A column present in one but not the other is
-// a mismatch.
+// set, same value per field. A column present in one but not the other is a
+// mismatch. Each pair compares through field_values_equal, which deep-compares the
+// structural arms (a Record/List column is a map/slice, not simply comparable) the
+// same way the §03 universal-Eq surface does.
 blackboards_equal :: proc(a, b: map[string]Field_Value) -> bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for key, value_a in a {
 		value_b, present := b[key]
-		if !present || value_a != value_b {
+		if !present || !field_values_equal(value_a, value_b) {
 			return false
 		}
 	}
 	return true
+}
+
+// field_values_equal compares two blackboard columns structurally. The scalar
+// arms compare by their kernel-stable bits, an enum token compares by its string,
+// and a Record/List column deep-compares field-by-field / element-by-element —
+// done by lifting both columns to interpreter Values and deferring to
+// values_equal, the single §03 universal-Eq definition (so a committed structural
+// column compares the same way a `==` over the same shape does). Lifting is exact:
+// field_value_to_value is the column→Value inverse, so no arm is lost.
+field_values_equal :: proc(a, b: Field_Value) -> bool {
+	return values_equal(field_value_to_value(a), field_value_to_value(b))
 }
