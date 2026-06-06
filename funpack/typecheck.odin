@@ -38,29 +38,45 @@ Type_Error :: enum {
 Scope :: map[string]Type
 
 // Check_Ctx threads the file-level import resolutions, the resolved
-// user-declaration environment (resolve.odin), and the current scope through
-// expression checking. expected_return is the body sweep's declared `-> R`
-// type, against which a `return`/`if`-arm `return` is checked; it is nil in
-// the test sweep, where statements are let/assert with no return. Every map
-// is lookup-only below stage_typecheck.
+// user-declaration environment (resolve.odin), the project-wide module index
+// (for a cross-module body type/call), and the current scope through expression
+// checking. expected_return is the body sweep's declared `-> R` type, against
+// which a `return`/`if`-arm `return` is checked; it is nil in the test sweep,
+// where statements are let/assert with no return. index is empty (single-source)
+// for stage_typecheck and the project-wide index for stage_typecheck_indexed —
+// the seam a cross-module call (`arena_spawns()`) resolves its signature through.
+// Every map is lookup-only below stage_typecheck.
 Check_Ctx :: struct {
 	bindings:        Bindings,
 	env:             Type_Env,
+	index:           Module_Index,
 	scope:           Scope,
 	expected_return: Type,
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
-	bindings := resolve_imports(ast) or_return
-	env := resolve_env(ast, bindings) or_return
+	return stage_typecheck_indexed(ast, Module_Index{})
+}
+
+// stage_typecheck_indexed types a module against a project-wide Module_Index so a
+// cross-module import (a sibling user module's type or fn) resolves: imports bind
+// through resolve_imports_indexed, the env resolves cross-module type refs, and a
+// cross-module CALL resolves its signature off the index (call_check). An empty
+// index reduces this to the single-source stage_typecheck — every user-module
+// import is .Unknown_Module. It is the multi-module project pipeline's per-module
+// typecheck (the arena example: arena_game types against arena_world + the arena
+// seam), keeping the single-source entry unchanged for every non-importing module.
+stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index) -> (typed: Typed_Ast, err: Type_Error) {
+	bindings := resolve_imports_indexed(ast, index) or_return
+	env := resolve_env(ast, bindings, index) or_return
 	// The §11 §5 layer registry is a pure-AST membership rule (it reads the
 	// CollisionLayer enums' variant sets, not resolved value types), so it runs
 	// BEFORE body/test typing — an unregistered layer surfaces as the precise
 	// Unregistered_Layer diagnostic rather than the generic Type_Mismatch the
 	// later variant check would raise for the same out-of-set reference.
 	check_layer_registry(ast) or_return
-	check_bodies(bindings, env, ast) or_return
-	check_tests(bindings, env, ast) or_return
+	check_bodies(bindings, env, index, ast) or_return
+	check_tests(bindings, env, index, ast) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
 }
 
@@ -232,7 +248,10 @@ check_layer_value :: proc(expr: Expr, registry: []string) -> Type_Error {
 // check_bodies types every top-level fn body and behavior step body against
 // its parameters (spec §06 §3: a behavior's params are its reads, its return
 // its writes). bindings()/setup() are top-level fns, so they ride this sweep.
-check_bodies :: proc(bindings: Bindings, env: Type_Env, ast: Ast) -> Type_Error {
+// The index threads through so a body's param/return type naming a sibling
+// module's type (a behavior step over View[Switch] where Switch is imported)
+// resolves cross-module.
+check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast) -> Type_Error {
 	for fn in ast.fns {
 		// An `extern fn` (§26) has no body — its implementation is the engine's,
 		// not the source's — so there is nothing to type. Its signature is still
@@ -241,26 +260,30 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, ast: Ast) -> Type_Error 
 		if fn.is_extern {
 			continue
 		}
-		check_fn_body(bindings, env, fn) or_return
+		check_fn_body(bindings, env, index, fn) or_return
 	}
 	for behavior in ast.behaviors {
-		check_fn_body(bindings, env, behavior.step) or_return
+		check_fn_body(bindings, env, index, behavior.step) or_return
 	}
 	return .None
 }
 
 // check_fn_body types one fn/step body: it seeds a scope with the declared
 // parameters as their resolved types, threads the declared return type as the
-// body's expected_return, and types the statement sequence.
-check_fn_body :: proc(bindings: Bindings, env: Type_Env, fn: Fn_Node) -> Type_Error {
+// body's expected_return, and types the statement sequence. The index resolves a
+// param/return type naming a sibling user module's type (so a `setup() -> [Spawn]`
+// or a `step(self: Door, switches: View[Switch])` whose element is imported
+// grounds correctly).
+check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Type_Error {
 	ctx := Check_Ctx {
 		bindings        = bindings,
 		env             = env,
+		index           = index,
 		scope           = make(Scope, context.temp_allocator),
-		expected_return = resolve_type_ref(env, bindings, fn.return_type),
+		expected_return = resolve_type_ref(env, bindings, fn.return_type, index),
 	}
 	for param in fn.params {
-		ctx.scope[param.name] = resolve_type_ref(env, bindings, param.type)
+		ctx.scope[param.name] = resolve_type_ref(env, bindings, param.type, index)
 	}
 	return check_statements(ctx, fn.body)
 }
@@ -296,10 +319,12 @@ check_statements :: proc(ctx: Check_Ctx, body: []Statement) -> Type_Error {
 
 // check_tests types every test block: a let binds its inferred type, an
 // assert demands a Bool expression. The §04 name.step form and the closed
-// return-form literals reach the same expr_check the bodies use.
-check_tests :: proc(bindings: Bindings, env: Type_Env, ast: Ast) -> Type_Error {
+// return-form literals reach the same expr_check the bodies use. The index
+// threads through so a test calling a cross-module fn (or constructing a
+// sibling-module type) resolves it.
+check_tests :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast) -> Type_Error {
 	for test in ast.tests {
-		ctx := Check_Ctx{bindings = bindings, env = env, scope = make(Scope, context.temp_allocator)}
+		ctx := Check_Ctx{bindings = bindings, env = env, index = index, scope = make(Scope, context.temp_allocator)}
 		for stmt in test.body {
 			switch node in stmt {
 			case Let_Node:
@@ -477,8 +502,13 @@ binary_check :: proc(ctx: Check_Ctx, e: ^Binary_Expr) -> (type: Type, err: Type_
 	}
 	#partial switch e.op.kind {
 	case .Lt, .Lt_Eq, .Gt, .Gt_Eq:
-		// Ordering compares two same-typed numeric sides into a Bool.
-		if !is_numeric_ground(lhs) || !types_compatible(lhs, rhs) {
+		// Ordering compares two same-typed numeric sides into a Bool. A nil side
+		// is the unknown that unifies (an Option::None-seeded fold's binder reads
+		// nil), so the compare grounds on the CONCRETE side: at least one side must
+		// be numeric, and the sides must unify (types_compatible treats nil as
+		// unifying), mirroring the §02 nil-as-unknown convention the rest of the
+		// type system uses.
+		if !(is_numeric_ground(lhs) || is_numeric_ground(rhs)) || !types_compatible(lhs, rhs) {
 			return nil, .Type_Mismatch
 		}
 		return Ground_Type.Bool, .None
@@ -503,7 +533,19 @@ binary_check :: proc(ctx: Check_Ctx, e: ^Binary_Expr) -> (type: Type, err: Type_
 // the §10 kernel lowers: two same-typed numeric scalars, a vector with a
 // matching vector, or a vector scaled by a numeric scalar on either side.
 // There is no Int→Fixed promotion — the two scalar sides must already agree.
+// A nil side is the §02 unknown that unifies (an Option::None-seeded fold's
+// binder reads nil, so `b - from` in arena's nearest_player has a nil `b`): the
+// op grounds on the CONCRETE side, mirroring how types_compatible treats nil as
+// unifying everywhere else.
 arithmetic_check :: proc(lhs, rhs: Type) -> (type: Type, err: Type_Error) {
+	// A nil (unknown) side grounds the op on the concrete side: `nil op X` and
+	// `X op nil` both keep X. Both-nil keeps nil (still unknown).
+	if lhs == nil {
+		return rhs, .None
+	}
+	if rhs == nil {
+		return lhs, .None
+	}
 	if is_numeric_ground(lhs) && types_compatible(lhs, rhs) {
 		return lhs, .None
 	}
@@ -557,12 +599,26 @@ associated_member :: proc(type_name: string, member: string) -> (type: Type, err
 	return associated, .None
 }
 
+// ctx_record_schema resolves a record type's field schema by name, the local env
+// FIRST and the project-wide index second — so a CROSS-MODULE record (an imported
+// Switch's `on`, a `Switch{…}` literal, a `with` over an imported record) reads
+// its declared fields from the owning module's schema. A local declaration of the
+// same name wins (the §02 collision check already rejected a local decl shadowing
+// an import), and a name that is neither local nor a cross-module record is the
+// caller's miss.
+ctx_record_schema :: proc(ctx: Check_Ctx, name: string) -> (schema: Record_Schema, found: bool) {
+	if record, declared := ctx.env.records[name]; declared {
+		return record, true
+	}
+	return module_record_schema(ctx.index, ctx.bindings, name)
+}
+
 // field_member reads a member off a value's type: a user record's declared
 // field, a Vec2/Vec3 component, or an engine resource's member (Time.dt).
 field_member :: proc(ctx: Check_Ctx, receiver: Type, member: string) -> (type: Type, err: Type_Error) {
 	switch r in receiver {
 	case ^User_Type:
-		if record, found := ctx.env.records[r.name]; found {
+		if record, found := ctx_record_schema(ctx, r.name); found {
 			if field, has := record_field_type(record, member); has {
 				return field, .None
 			}
@@ -630,9 +686,16 @@ record_check :: proc(ctx: Check_Ctx, e: ^Record_Expr) -> (type: Type, err: Type_
 			engine_record_check(ctx, e, fields) or_return
 			return result, .None
 		}
+		// A CROSS-MODULE user record literal (`Switch{pos:…, on:…}` over a Switch
+		// imported from arena_world): the name binds as a sibling-module .Type_Name,
+		// so its field schema comes from the project-wide index, not the local env.
+		if record, declared := module_record_schema(ctx.index, ctx.bindings, e.type_name); declared {
+			user_record_check(ctx, e, record) or_return
+			return user_type_of(record.type_name, record.kind), .None
+		}
 		return nil, .Unsupported_Expr
 	}
-	if record, declared := ctx.env.records[e.type_name]; declared {
+	if record, declared := ctx_record_schema(ctx, e.type_name); declared {
 		user_record_check(ctx, e, record) or_return
 		return user_type_of(record.type_name, record.kind), .None
 	}
@@ -746,7 +809,10 @@ with_check :: proc(ctx: Check_Ctx, e: ^With_Expr) -> (type: Type, err: Type_Erro
 	if !is_user {
 		return nil, .Type_Mismatch
 	}
-	record, declared := ctx.env.records[user.name]
+	// The base may be a local OR a cross-module record (a chase step returns
+	// `self with {pos:…}` over a Hunter imported from arena_world), so the schema
+	// resolves through the local env first and the project-wide index second.
+	record, declared := ctx_record_schema(ctx, user.name)
 	if !declared {
 		return nil, .Type_Mismatch
 	}
@@ -957,6 +1023,16 @@ call_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 	if binding.kind != .Func {
 		return nil, .Type_Mismatch
 	}
+	// A call to a fn imported from a SIBLING user module (arena_game's setup calls
+	// the arena seam's `arena_spawns()`): the project-wide index carries the
+	// imported fn's resolved signature, so the call checks its args against the
+	// cross-module params and yields the cross-module result type. The stdlib
+	// surface owns no name a user module exports, so this arm precedes the
+	// combinator/overload arms (a user fn is never a combinator).
+	if signature, is_cross := module_call_signature(ctx.index, ctx.bindings, name.name); is_cross {
+		check_args(ctx, e, signature.params) or_return
+		return signature.result, .None
+	}
 	if comb_type, handled, comb_err := combinator_call_check(ctx, name.name, e); handled {
 		return comb_type, comb_err
 	}
@@ -983,6 +1059,9 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "first":
 		t, fe := first_check(ctx, e)
 		return t, true, fe
+	case "or_else":
+		t, oe := or_else_check(ctx, e)
+		return t, true, oe
 	case "map":
 		t, me := map_check(ctx, e)
 		return t, true, me
@@ -1240,21 +1319,24 @@ combinator_result :: proc(ctx: Check_Ctx, arg: Expr, params: []Type) -> (result:
 	return func.result, .None
 }
 
-// fold is (List[T], A, (A, T) -> A) -> A: T unifies from the list's element
+// fold is (source, A, (A, T) -> A) -> A: T unifies from the source's element
 // type, A from the init, and the accumulator function is either a literal
 // lambda inferred as (A, T) or a bare fn whose recorded signature is checked
-// against (A, T) -> A — the form tally's fold(goals, self, add_goal) takes.
+// against (A, T) -> A — the form tally's fold(goals, self, add_goal) takes. The
+// source is a List[T] OR a §08 View[T] (arena's nearest_player folds
+// `players: View[Player]` into an Option[Vec2]), so the element comes through
+// source_element, the same read both first and map use.
 fold_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
 	if len(e.args) != 3 {
 		return nil, .Type_Mismatch
 	}
-	list_type := expr_check(ctx, e.args[0]) or_return
+	source := expr_check(ctx, e.args[0]) or_return
 	init := expr_check(ctx, e.args[1]) or_return
-	list, is_list := list_type.(^List_Type)
-	if !is_list {
+	elem, ok := source_element(source)
+	if !ok {
 		return nil, .Type_Mismatch
 	}
-	combinator_check(ctx, e.args[2], {init, list.elem}, init) or_return
+	combinator_check(ctx, e.args[2], {init, elem}, init) or_return
 	return init, .None
 }
 
@@ -1281,6 +1363,33 @@ first_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Err
 	}
 	combinator_check(ctx, e.args[1], {elem}, Ground_Type.Bool) or_return
 	return option_of(elem), .None
+}
+
+// or_else is (Option[T], T) -> T (spec §26): it unwraps an Option to its element
+// or falls back to a default, the form arena's nearest_player uses
+// (`or_else(best, from)` over an Option[Vec2] best). The fallback (the second arg)
+// drives T — it is always a concrete value, while the Option may be the
+// element-unknown Option[nil] from an Option::None fold init — so the rule reads
+// T off the fallback, requires the first arg to be an Option whose element unifies
+// with T, and yields T. A non-Option first arg or a fallback that does not match
+// the Option's element is a Type_Mismatch.
+or_else_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	opt_type := expr_check(ctx, e.args[0]) or_return
+	fallback := expr_check(ctx, e.args[1]) or_return
+	option, is_option := opt_type.(^Option_Type)
+	if !is_option {
+		return nil, .Type_Mismatch
+	}
+	// The Option's element must unify with the fallback (a nil element — the
+	// Option::None placeholder — unifies with any fallback, mirroring the other
+	// combinators' nil-element handling).
+	if !types_compatible(option.elem, fallback) {
+		return nil, .Type_Mismatch
+	}
+	return fallback, .None
 }
 
 // source_element reads the element type of a read source — a View[T] read

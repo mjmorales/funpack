@@ -42,20 +42,39 @@ Module_Export_Kind :: enum {
 // a fn reference resolves to a term-position binding. user_kind carries the §06
 // declaration form of a .Type export (Thing/Data/Enum/Signal) so a cross-module
 // type reference resolves to a nominal User_Type with the right kind; it is
-// meaningless (.Thing as a placeholder) for a .Term export.
+// meaningless (.Thing as a placeholder) for a .Term export. signature carries the
+// resolved fn signature of a .Term fn export so a CONSUMER can type a cross-module
+// CALL (`arena_spawns() -> [Spawn]` in arena_game's setup): the name-only index
+// (build_module_index_from_asts) leaves it nil — only build_module_index_typed,
+// which resolves each module's own env, fills it.
 Module_Export :: struct {
 	name:      string,
 	kind:      Module_Export_Kind,
-	user_kind: User_Kind, // the §06 form of a .Type export; unused for a .Term
+	user_kind: User_Kind,   // the §06 form of a .Type export; unused for a .Term
+	signature: ^Func_Type,  // the resolved signature of a .Term fn export; nil otherwise
+}
+
+// Module_Record_Schema pairs one exported RECORD type's name with its resolved
+// field schema (field name → type). It is the cross-module field surface a
+// CONSUMER needs to type a record-member read (`s.on` on an imported Switch), a
+// record literal (`Switch{pos:…, on:…}`), or a `with` update on a sibling-module
+// record. The name-only index leaves record_schemas empty — only
+// build_module_index_typed, which resolves each module's own env, fills it.
+Module_Record_Schema :: struct {
+	name:   string,
+	schema: Record_Schema,
 }
 
 // Module_Entry is one user module's exported surface: its §15 path-derived
-// module name and the ORDERED export list (source order within each kind, type
-// exports before term exports). The list is walked by index — never a map — so
-// the resolver's verdict is reproducible from the source set alone.
+// module name, the ORDERED export list (source order within each kind, type
+// exports before term exports), and the resolved record schemas of its exported
+// record types (the cross-module field surface). The lists are walked by index —
+// never a map — so the resolver's verdict is reproducible from the source set
+// alone.
 Module_Entry :: struct {
-	module:  string,
-	exports: []Module_Export,
+	module:         string,
+	exports:        []Module_Export,
+	record_schemas: []Module_Record_Schema,
 }
 
 // Module_Index is the project-wide name index: one Module_Entry per user module,
@@ -115,6 +134,122 @@ build_module_index_from_asts :: proc(modules: []string, asts: []Ast) -> Module_I
 		append(&entries, Module_Entry{module = modules[i], exports = collect_module_exports(ast)})
 	}
 	return Module_Index{modules = entries[:]}
+}
+
+// build_module_index_typed builds the project-wide index over already-parsed
+// (module, Ast) pairs AND records each exported fn's resolved signature, the form
+// a CONSUMER's typecheck needs to type a cross-module CALL (`arena_spawns() ->
+// [Spawn]`). It is the two-pass index the multi-module project pipeline builds:
+// pass 1 collects the name-only entries (build_module_index_from_asts) so every
+// module's exports are visible; pass 2 resolves each module's own imports + env
+// against that name index and copies the resolved fn signature onto each .Term
+// export. The name pass runs first because a module's signature may reference a
+// sibling module's exported type (a fn returning a cross-module record), so the
+// whole name surface must be visible before any signature resolves. A module that
+// fails to resolve its own imports/env is left with nil-signature exports — the
+// per-module typecheck surfaces the error precisely, so the index never aborts the
+// whole build over one module's resolution failure.
+build_module_index_typed :: proc(modules: []string, asts: []Ast) -> Module_Index {
+	name_index := build_module_index_from_asts(modules, asts)
+	entries := make([dynamic]Module_Entry, 0, len(asts), context.temp_allocator)
+	for ast, i in asts {
+		exports := collect_module_exports(ast)
+		record_schemas := fill_export_types(&exports, ast, name_index)
+		append(&entries, Module_Entry{module = modules[i], exports = exports, record_schemas = record_schemas})
+	}
+	return Module_Index{modules = entries[:]}
+}
+
+// fill_export_types resolves one module's own imports + env against the
+// project-wide NAME index and lifts the resolved types a CONSUMER needs into the
+// index: each .Term fn export's signature is copied onto its export (the
+// cross-module CALL surface), and each exported RECORD type's resolved field
+// schema is collected (the cross-module FIELD surface — a member read, a literal,
+// a `with` on a sibling-module record). It is the typed half of
+// build_module_index_typed; the name pass already ran, so a cross-module type a
+// signature or field references is visible. A module whose imports or env do not
+// resolve leaves its export signatures nil and its record-schema set empty — that
+// module's own typecheck reports the real error.
+fill_export_types :: proc(exports: ^[]Module_Export, ast: Ast, name_index: Module_Index) -> []Module_Record_Schema {
+	bindings, bind_err := resolve_imports_indexed(ast, name_index)
+	if bind_err != .None {
+		return nil
+	}
+	env, env_err := resolve_env(ast, bindings, name_index)
+	if env_err != .None {
+		return nil
+	}
+	for &export in exports {
+		if export.kind != .Term {
+			continue
+		}
+		if term, found := env_term_name(env, export.name); found {
+			export.signature = term.signature
+		}
+	}
+	schemas := make([dynamic]Module_Record_Schema, 0, 8, context.temp_allocator)
+	for &export in exports {
+		if export.kind != .Type {
+			continue
+		}
+		// Only record-shaped types (thing/data/signal) carry a field schema; an
+		// enum is a variant set with no fields, so it contributes no record schema.
+		if record, declared := env.records[export.name]; declared {
+			append(&schemas, Module_Record_Schema{name = export.name, schema = record})
+		}
+	}
+	return schemas[:]
+}
+
+// module_call_signature resolves the signature of a name an import bound to a
+// sibling user module's fn — the cross-module CALL surface (`arena_spawns()` in
+// arena_game's setup resolves to the `arena` seam's `extern fn arena_spawns() ->
+// [Spawn]`). It mirrors index_user_type for the term position: the name must bind
+// to a sibling module as a .Func, that module must be in the index, and the export
+// must be a .Term carrying a resolved signature. found = false leaves the call-site
+// check to fall through to the stdlib/combinator arms, so a name that is not a
+// cross-module fn is untouched.
+module_call_signature :: proc(index: Module_Index, bindings: Bindings, name: string) -> (signature: ^Func_Type, found: bool) {
+	binding, bound := bindings.names[name]
+	if !bound || binding.kind != .Func {
+		return nil, false
+	}
+	entry, has_entry := module_index_lookup(index, binding.module)
+	if !has_entry {
+		return nil, false
+	}
+	export, exported := module_export_lookup(entry, name)
+	if !exported || export.kind != .Term || export.signature == nil {
+		return nil, false
+	}
+	return export.signature, true
+}
+
+// module_record_schema resolves the field schema of a RECORD type an import bound
+// to a sibling user module — the cross-module FIELD surface a consumer reads to
+// type `s.on` on an imported Switch, a `Switch{…}` literal, or a `self with {…}`
+// over an imported record. It mirrors module_call_signature for the type position:
+// the name must bind to a sibling module as a .Type_Name, that module must be in
+// the index, and the module must carry a record schema for the name. found = false
+// leaves the field/literal/with check to its local-env arm, so a local record (or
+// a non-record type) is untouched. The CONSUMER passes its own bindings so the
+// name's OWNING module is recovered from the binding (spec §02 one-name-one-
+// meaning — the binding carries the source of the name's meaning).
+module_record_schema :: proc(index: Module_Index, bindings: Bindings, name: string) -> (schema: Record_Schema, found: bool) {
+	binding, bound := bindings.names[name]
+	if !bound || binding.kind != .Type_Name {
+		return Record_Schema{}, false
+	}
+	entry, has_entry := module_index_lookup(index, binding.module)
+	if !has_entry {
+		return Record_Schema{}, false
+	}
+	for candidate in entry.record_schemas {
+		if candidate.name == name {
+			return candidate.schema, true
+		}
+	}
+	return Record_Schema{}, false
 }
 
 // collect_module_exports lifts a parsed module's top-level declarations into its

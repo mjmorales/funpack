@@ -52,6 +52,13 @@ STDLIB_SURFACE := []Module_Surface{
 			{"Option", .Type_Name},
 			{"Result", .Type_Name},
 			{"Ordering", .Type_Name},
+			// or_else is the §26 Option fallback combinator (`or_else(Option[T],
+			// T) -> T`): the arena hunter's nearest_player folds players into an
+			// Option[Vec2] and `or_else(best, from)` falls back to its own position
+			// when there is none. Call-site-inferred (the fallback drives T), so it
+			// is a combinator row — its typing rule is combinator inference's, not a
+			// fixed signature (surface_signatures returns found = false for it).
+			{"or_else", .Func},
 		},
 	},
 	{
@@ -869,6 +876,19 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 		if member == "apply_impulse" {
 			return func_of({Ground_Type.Vec2}, engine_type_of(.Body)), true
 		}
+	case .View:
+		// §08: the read table's reference surface — the §17 level bake hands a
+		// behavior a typed Ref the View resolves back to a value. resolve(Ref[T])
+		// yields Option[T] (None when the referent despawned — the gate behavior
+		// reads `switches.resolve(self.gate)`); ref(Int) mints a Ref[T] to the i-th
+		// row (the test producer `switches.ref(0)`). Both carry the receiver's
+		// element T, so a View[Switch] resolves a Ref[Switch] to an Option[Switch].
+		switch member {
+		case "resolve":
+			return func_of({engine_type_of(.Ref, receiver.elem)}, option_of(receiver.elem)), true
+		case "ref":
+			return func_of({Ground_Type.Int}, engine_type_of(.Ref, receiver.elem)), true
+		}
 	case .Nav:
 		// §08: the chase AI queries a route off the Nav handle. path(from, to)
 		// returns a Result[Path] (the route, or a NavError when no path exists);
@@ -1063,6 +1083,16 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 		// an inbound [Trigger] list; a test constructs the empty Trigger{} value.
 		// No fields, so any named field rejects.
 		return engine_type_of(.Trigger), clone_fields({}), true
+	case "Path":
+		// §08 nav route value: the ordered waypoint list and the route's total
+		// cost. A Hunter's `path` field defaults to `Path{steps: [], cost: 0.0}`
+		// and the chase-AI fixture constructs `Path{steps: [Vec2{…}], cost: 10.0}`,
+		// so both fields are typed (steps a [Vec2] list, cost a Fixed scalar) — the
+		// route the §17 nav query returns and a behavior threads forward.
+		return engine_type_of(.Path), clone_fields({
+				{name = "steps", type = list_of(Ground_Type.Vec2)},
+				{name = "cost", type = Ground_Type.Fixed},
+			}), true
 	case "Body":
 		return engine_type_of(.Body), clone_fields({
 				{name = "kind", type = engine_type_of(.BodyKind)},
