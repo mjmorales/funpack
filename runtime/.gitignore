@@ -1,3 +1,0 @@
-# derived build product of `task -d runtime live` — the FUNPACK_LIVE-defined
-# binary that links vendor:sdl2. Gitignored, rebuilt on demand.
-funpack-live
