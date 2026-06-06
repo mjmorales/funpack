@@ -786,7 +786,7 @@ match_check :: proc(ctx: Check_Ctx, e: ^Match_Expr) -> (type: Type, err: Type_Er
 	result: Type
 	for arm in e.arms {
 		check_pattern_arity(arm.pattern, scrutinee) or_return
-		binders, types := pattern_binders(arm.pattern, scrutinee)
+		binders, types := pattern_binders(ctx.env, arm.pattern, scrutinee)
 		saved := overlay_scope(&ctx.scope, binders, types)
 		body, body_err := expr_check(ctx, arm.body)
 		restore_scope(&ctx.scope, binders, saved)
@@ -842,10 +842,10 @@ check_pattern_arity :: proc(pattern: Pattern, scrutinee: Type) -> Type_Error {
 // `next` to the second tuple element). A bare-variant or wildcard pattern binds
 // nothing; a user-enum variant carries no payload on this surface, so it
 // contributes none either.
-pattern_binders :: proc(pattern: Pattern, scrutinee: Type) -> (names: []string, types: []Type) {
+pattern_binders :: proc(env: Type_Env, pattern: Pattern, scrutinee: Type) -> (names: []string, types: []Type) {
 	out_names := make([dynamic]string, 0, 4, context.temp_allocator)
 	out_types := make([dynamic]Type, 0, 4, context.temp_allocator)
-	collect_pattern_binders(pattern, scrutinee, &out_names, &out_types)
+	collect_pattern_binders(env, pattern, scrutinee, &out_names, &out_types)
 	return out_names[:], out_types[:]
 }
 
@@ -859,6 +859,7 @@ pattern_binders :: proc(pattern: Pattern, scrutinee: Type) -> (names: []string, 
 // than rejecting, since exhaustiveness/shape is the gate's and resolver's
 // concern.
 collect_pattern_binders :: proc(
+	env: Type_Env,
 	pattern: Pattern,
 	scrutinee: Type,
 	names: ^[dynamic]string,
@@ -874,15 +875,23 @@ collect_pattern_binders :: proc(
 			append(types, scrutinee)
 		}
 	case .Variant_Binds:
-		// A variant-with-binders over an Option binds the single payload to the
-		// option's element type.
-		binder_type: Type
-		if option, is_option := scrutinee.(^Option_Type); is_option && len(pattern.binders) == 1 {
-			binder_type = option.elem
+		// A variant-with-payload binds through its one payload sub-pattern (grammar
+		// §13: each payload position is a full Pattern): the position's type is the
+		// Option's element (Option::Some(v)) or the §21 §3 user tagged-union variant's
+		// declared payload (AppMsg::Hud(m), SettingsMsg::SetVolume(v)), and the
+		// sub-pattern recurses against it — a Bare_Binder binds `m`/`v` to that type,
+		// a nested Bare_Variant (AppMsg::Hud(HudMsg::Coin)) binds nothing. The surface
+		// carries one payload per variant, so the single sub-pattern takes the
+		// position's type.
+		position_type: Type
+		if option, is_option := scrutinee.(^Option_Type); is_option {
+			position_type = option.elem
+		} else if schema, declared := env.enums[pattern.type_name]; declared {
+			payload, _ := enum_variant_payload(schema, pattern.variant)
+			position_type = payload
 		}
-		for binder in pattern.binders {
-			append(names, binder)
-			append(types, binder_type)
+		for sub in pattern.elements {
+			collect_pattern_binders(env, sub, position_type, names, types)
 		}
 	case .Struct_Binds:
 		// A struct-payload field-pun (`Shape2::Box{size}`) binds each field name
@@ -911,7 +920,7 @@ collect_pattern_binders :: proc(
 			if is_tuple && i < len(tuple.elements) {
 				element = tuple.elements[i]
 			}
-			collect_pattern_binders(sub, element, names, types)
+			collect_pattern_binders(env, sub, element, names, types)
 		}
 	}
 }
@@ -1007,6 +1016,9 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "len":
 		t, le := len_check(ctx, e)
 		return t, true, le
+	case "get":
+		t, ge := get_check(ctx, e)
+		return t, true, ge
 	case "pick":
 		t, pe := pick_check(ctx, e)
 		return t, true, pe
@@ -1167,6 +1179,26 @@ len_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error
 		return nil, .Type_Mismatch
 	}
 	return Ground_Type.Int, .None
+}
+
+// get_check types get(source, i) (spec §08 engine.list): a List[T] or a View[T]
+// and an Int index, yielding Option[T] — total, None on out-of-range. The hud
+// `get(App{}.settings_view().volume_presets, 1)` reads the second preset row off
+// a [SettingsPresetRow], so the element type drives the Option payload.
+get_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	index := expr_check(ctx, e.args[1]) or_return
+	elem, ok := source_element(source)
+	if !ok {
+		return nil, .Type_Mismatch
+	}
+	if !is_ground(index, .Int) {
+		return nil, .Type_Mismatch
+	}
+	return option_of(elem), .None
 }
 
 // pick_check types pick(list, rng) (spec §04 §1, engine.rand): a List[T] and the
@@ -1469,11 +1501,26 @@ static_method_check :: proc(
 	return signature.result, true, .None
 }
 
-// value_method_check types a method off a typed value receiver: an engine
-// resource's method (Input.value, Bindings.axis) or a ground type's method
-// (the Quat method set).
+// value_method_check types a method off a typed value receiver, in the §02 §4
+// resolution order: (1) UFCS — a top-level user fn whose first param has the
+// receiver's type, called with the receiver as that argument (App{}.pause_view(),
+// self.hud_view()); then (2) an engine value method — View.map (the §21 §3
+// element-inferred re-tag) before the fixed-signature surface table (Sound/Audio
+// builders, View.class/when, Input queries); then (3) a ground type's method (the
+// Quat set). UFCS is tried first so a user projection fn shadows nothing — a
+// receiver type has no surface method of the same name on this surface.
 value_method_check :: proc(ctx: Check_Ctx, receiver: Type, member: string, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if ufcs, handled, ufcs_err := ufcs_method_check(ctx, receiver, member, e); handled {
+		return ufcs, ufcs_err
+	}
 	if engine, is_engine := receiver.(^Engine_Type); is_engine {
+		// §21 §3 View.map(into) re-tags every message a View[A] can emit through
+		// into: fn(A) -> B, yielding View[B] — the element B is read off the function
+		// argument's result, so it is element-inferred here, not a fixed-signature
+		// surface row (the result type depends on the call site).
+		if engine.kind == .View && member == "map" {
+			return view_map_check(ctx, engine, e)
+		}
 		if signature, found := surface_engine_method(engine, member); found {
 			method := signature.(^Func_Type)
 			check_args(ctx, e, method.params) or_return
@@ -1491,6 +1538,50 @@ value_method_check :: proc(ctx: Check_Ctx, receiver: Type, member: string, e: ^C
 	}
 	check_args(ctx, e, signature.params) or_return
 	return signature.result, .None
+}
+
+// ufcs_method_check types the §02 §4 UFCS call `recv.f(args)` → `f(recv, args)`:
+// a top-level user fn whose first parameter's type unifies with the receiver is
+// called with the receiver prepended to the arguments. handled is false when no
+// such user fn exists (the caller falls through to engine/ground methods). The
+// hud projections (hud_view/pause_view/settings_view, each `fn(self: App)`) are
+// reached this way as App{}.pause_view() / self.hud_view(). A user fn whose first
+// param does NOT match the receiver is not a UFCS candidate, so it falls through.
+ufcs_method_check :: proc(ctx: Check_Ctx, receiver: Type, member: string, e: ^Call_Expr) -> (type: Type, handled: bool, err: Type_Error) {
+	term, found := env_term_name(ctx.env, member)
+	if !found || term.kind != .Fn || term.signature == nil || len(term.signature.params) == 0 {
+		return nil, false, .None
+	}
+	if !types_compatible(receiver, term.signature.params[0]) {
+		return nil, false, .None
+	}
+	// Check the remaining arguments against the fn's tail parameters (the
+	// receiver fills the first), then yield the fn's result.
+	tail := term.signature.params[1:]
+	if len(e.args) != len(tail) {
+		return nil, true, .Type_Mismatch
+	}
+	for want, i in tail {
+		got := expr_check(ctx, e.args[i]) or_return
+		if !types_compatible(got, want) {
+			return nil, true, .Type_Mismatch
+		}
+	}
+	return term.signature.result, true, .None
+}
+
+// view_map_check types View[A].map(into) (spec §21 §3): the single argument is a
+// re-tag function fn(A) -> B (the Elm Html.map primitive — AppMsg::Hud is the
+// variant-as-function value fn(HudMsg) -> AppMsg the router passes), and the
+// result is View[B], B read off the function's result. The function's parameter
+// is the receiver's element A; a literal lambda infers it, and a
+// variant-as-function value carries its own fn type.
+view_map_check :: proc(ctx: Check_Ctx, view: ^Engine_Type, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	result := combinator_result(ctx, e.args[0], {view.elem}) or_return
+	return engine_type_of(.View, result), .None
 }
 
 // variant_check types an enum-variant value. Option carries the evaluable
@@ -1518,14 +1609,32 @@ variant_check :: proc(ctx: Check_Ctx, e: ^Variant_Expr) -> (type: Type, err: Typ
 		return nil, .Unsupported_Expr
 	}
 	if enum_schema, declared := ctx.env.enums[e.type_name]; declared {
-		if e.has_payload {
-			// User enums on the pong surface carry no tuple payload.
-			return nil, .Unsupported_Expr
-		}
 		if !name_in_set(e.variant, enum_schema.variants) {
 			return nil, .Type_Mismatch
 		}
-		return user_type_of(e.type_name, .Enum), .None
+		payload, has_payload := enum_variant_payload(enum_schema, e.variant)
+		enum_type := user_type_of(e.type_name, .Enum)
+		if e.has_payload {
+			// A §21 §3 tagged-union construction: AppMsg::Hud(m), SettingsMsg::
+			// SetVolume(50). The variant must declare a single tuple payload, and the
+			// argument must match its declared type; the result is the enum.
+			if !has_payload || len(e.payload) != 1 {
+				return nil, .Type_Mismatch
+			}
+			arg := expr_check(ctx, e.payload[0]) or_return
+			if !types_compatible(arg, payload) {
+				return nil, .Type_Mismatch
+			}
+			return enum_type, .None
+		}
+		// A bare variant reference. A nullary variant is the value itself; a
+		// payload variant named WITHOUT its payload is the §21 §3
+		// variant-as-function value AppMsg::Hud == fn(HudMsg) -> AppMsg (the form
+		// .map(AppMsg::Hud) re-tags a child screen's messages through).
+		if has_payload {
+			return func_of({payload}, enum_type), .None
+		}
+		return enum_type, .None
 	}
 	if env_declares(ctx.env, e.type_name) {
 		return nil, .Unsupported_Expr

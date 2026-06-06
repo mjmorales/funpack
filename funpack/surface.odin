@@ -81,6 +81,7 @@ STDLIB_SURFACE := []Module_Surface{
 			{"floor", .Func},
 			{"round", .Func},
 			{"checked_div", .Func},
+			{"max", .Func},
 			{"pi", .Value},
 			{"tau", .Value},
 		},
@@ -165,6 +166,7 @@ STDLIB_SURFACE := []Module_Surface{
 			{"concat", .Func},
 			{"is_empty", .Func},
 			{"len", .Func},
+			{"get", .Func},
 		},
 	},
 	{
@@ -253,6 +255,74 @@ STDLIB_SURFACE := []Module_Surface{
 			{"frame", .Func},
 		},
 	},
+	{
+		// §21 the UI surface (engine.ui): the retained-mode View[Msg] read tree, the
+		// closed widget-builder set, and the UiAction/Theme handles. View is owned by
+		// engine.world (§08) and RE-EXPORTED here (§26 §3 / §21: the §08 read table
+		// doubles as the §21 view tree) — a declared STDLIB_REEXPORTS row, never a
+		// second owning decl. The eleven builders (text/button/row/col/field/slider/
+		// class/when/map plus the layout/content/input rest) are the closed §21 §1
+		// widget set the hand-authored escape hatch uses; each is call-site-inferred
+		// over the screen's Msg type (its signature depends on the View[Msg] receiver
+		// /elements, so surface_signatures returns found = false and the typing rule is
+		// the call site's — surface_engine_method for the value-receiver builders, the
+		// View static/free arm for the constructors). map is the §21 §3 Elm Html.map
+		// re-tag the router mounts screens through. A member outside this set is
+		// Unknown_Member, the closed-table gate this partition rests on.
+		path = "engine.ui",
+		decls = {
+			// View is owned by engine.world (§08) and re-exported here (the §08 read
+			// table doubles as the §21 view tree) — a STDLIB_REEXPORTS row below, never
+			// an owned decl, so the table-shape single-owner rule holds.
+			{"UiAction", .Type_Name},
+			{"Theme", .Type_Name},
+			{"text", .Func},
+			{"button", .Func},
+			{"image", .Func},
+			{"spacer", .Func},
+			{"panel", .Func},
+			{"row", .Func},
+			{"col", .Func},
+			{"grid", .Func},
+			{"stack", .Func},
+			{"scroll", .Func},
+			{"icon", .Func},
+			{"field", .Func},
+			{"slider", .Func},
+			{"toggle", .Func},
+			{"select", .Func},
+			{"class", .Func},
+			{"when", .Func},
+			// map is NOT owned here — it is the §08/§26 list combinator name, owned by
+			// engine.list, re-exported by engine.ui below so `import engine.ui.{View,
+			// map}` (the hud router's import) resolves. View.map vs list.map are
+			// receiver-overloaded (§02 §4 UFCS): the bare-name binding records one
+			// owner, and the actual method is selected at the call site by the receiver
+			// type (value_method_check's View.map arm), so the table keeps one owning
+			// row per name.
+		},
+	},
+	{
+		// §22 the audio surface (engine.audio): the two effect-as-data regimes and
+		// their shared mixer-group enum. Sound is the §22 §1 one-shot command record,
+		// Audio the §22 §2 keyed sustained projection record, Bus the §22 §4 mixer
+		// group. The builders are associated constructors (Sound.sfx/.sfx_at,
+		// Audio.track — surface_static_method) and self-first chained adders (.gain/
+		// .pitch/.bus/.at — surface_engine_method) per §26 §1.6; they carry no free
+		// Func row (they are reached as Type.builder / value.builder, not bare names),
+		// so this partition's importable members are the three types alone. A member
+		// outside this set is Unknown_Member. NOTE: task 5.1 owns the SUSTAINED Audio
+		// regime + Bus; this branch admits the ONE-SHOT Sound regime and adds Audio/Bus
+		// as shared surface ROWS (table entries merge textually) for the music-bed
+		// test — the integration merge reconciles, and there is one owning Engine_Kind
+		// for each, never a duplicate.
+		path = "engine.audio",
+		decls = {
+			{"Sound", .Type_Name},
+			{"Audio", .Type_Name},
+			{"Bus", .Type_Name},
+		},
+	},
 }
 
 // Reexport declares one name a partition exposes on behalf of its owning
@@ -273,6 +343,19 @@ Reexport :: struct {
 @(rodata)
 STDLIB_REEXPORTS := []Reexport{
 	{"engine.math", "Fixed", "engine.prelude"},
+	// §21/§26: engine.ui re-exports engine.world's View — the §08 read table IS the
+	// §21 retained-mode view tree (one type, one meaning), so the hud seam's
+	// `import engine.ui.View` resolves to the owning engine.world handle. A
+	// declared re-export, not a second owning decl.
+	{"engine.ui", "View", "engine.world"},
+	// §21 §3/§02 §4: engine.ui re-exports the `map` name (owned by engine.list as
+	// the [T] combinator) so the hud router's `import engine.ui.{View, map}`
+	// resolves. View.map and list.map are receiver-overloaded methods (the Elm
+	// Html.map re-tag vs the list map); the bare import binds the name to the
+	// engine.list owner, and the value_method_check View.map arm selects the view
+	// method at the call site by the View receiver — one owning table row, one
+	// name, dispatched by `self`.
+	{"engine.ui", "map", "engine.list"},
 }
 
 // Binding records the declaration an imported name resolved to.
@@ -502,6 +585,16 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 		return clone_types({func_of({Ground_Type.Fixed}, Ground_Type.Int)}), true
 	case "checked_div":
 		return clone_types({func_of({Ground_Type.Fixed, Ground_Type.Fixed}, option_of(Ground_Type.Fixed))}), true
+	case "max":
+		// §10/§26 the binary maximum. The stdlib declares it over Fixed (max(a,
+		// b: Fixed) -> Fixed); the hud `max(self.clock - 1, 0)` clamps an Int
+		// countdown, so both an Int and a Fixed overload are admitted — each
+		// total, neither promoting across the kinds (spec §10: the two sides
+		// already agree).
+		return clone_types({
+			func_of({Ground_Type.Fixed, Ground_Type.Fixed}, Ground_Type.Fixed),
+			func_of({Ground_Type.Int, Ground_Type.Int}, Ground_Type.Int),
+		}), true
 	case "cross":
 		return clone_types({func_of({Ground_Type.Vec3, Ground_Type.Vec3}, Ground_Type.Vec3)}), true
 	case "dot":
@@ -549,6 +642,47 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 		return clone_types({func_of({engine_type_of(.String)}, engine_type_of(.SoundHandle))}), true
 	case "atlas":
 		return clone_types({func_of({engine_type_of(.String)}, engine_type_of(.AtlasHandle))}), true
+	case "text", "icon":
+		// §21 §1 content builders that take a String and yield a view. The view's
+		// Msg element is call-site-inferred (the composing tree's), so the result is
+		// a View whose elem is the nil unknown the parent container unifies.
+		return clone_types({func_of({engine_type_of(.String)}, engine_type_of(.View))}), true
+	case "image":
+		// §21 §1 an image from a TextureHandle (owned by engine.assets).
+		return clone_types({func_of({engine_type_of(.TextureHandle)}, engine_type_of(.View))}), true
+	case "spacer":
+		// §21 §1 a flexible empty cell — no argument.
+		return clone_types({func_of({}, engine_type_of(.View))}), true
+	case "panel", "row", "col", "grid", "stack":
+		// §21 §1 the layout containers: a list of child views into one view. The
+		// child Msg and the result Msg are the nil unknown (call-site-inferred), so
+		// the param is a list of the nil-elem View and the result a nil-elem View.
+		return clone_types({func_of({list_of(engine_type_of(.View))}, engine_type_of(.View))}), true
+	case "scroll":
+		// §21 §1 a clipped viewport around ONE child view.
+		return clone_types({func_of({engine_type_of(.View)}, engine_type_of(.View))}), true
+	case "button":
+		// §21 §1 a button emitting a message when clicked: a String label and the
+		// Msg value emitted on click. The Msg is the nil unknown (the screen's
+		// message type), so the on_click param types as nil.
+		return clone_types({func_of({engine_type_of(.String), nil}, engine_type_of(.View))}), true
+	case "field":
+		// §21 §1 a text field: the current String value and on_input: fn(String) ->
+		// Msg (the two-way-bind lowering). The Msg is nil, so on_input types as
+		// fn(String) -> nil.
+		return clone_types({func_of({engine_type_of(.String), func_of({engine_type_of(.String)}, nil)}, engine_type_of(.View))}), true
+	case "slider":
+		// §21 §1 an integer slider over [min, max]: the current Int value, the Int
+		// bounds, and on_change: fn(Int) -> Msg. The Msg is nil.
+		return clone_types({
+			func_of(
+				{Ground_Type.Int, Ground_Type.Int, Ground_Type.Int, func_of({Ground_Type.Int}, nil)},
+				engine_type_of(.View),
+			),
+		}), true
+	case "toggle":
+		// §21 §1 a boolean toggle: the current Bool and on_change: fn(Bool) -> Msg.
+		return clone_types({func_of({Ground_Type.Bool, func_of({Ground_Type.Bool}, nil)}, engine_type_of(.View))}), true
 	}
 	return nil, false
 }
@@ -591,6 +725,14 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 		switch variant {
 		case "Static", "Dynamic", "Kinematic":
 			return engine_type_of(.BodyKind), true
+		}
+	case "Bus":
+		// §22 §4: the mixer-group enum. A bare-variant value (Bus::Ui, Bus::Music)
+		// routes a Sound/Audio to a bus through the .bus(b) adder; the closed set is
+		// Master/Music/Sfx/Ui/Voice. A variant outside it is not a value.
+		switch variant {
+		case "Master", "Music", "Sfx", "Ui", "Voice":
+			return engine_type_of(.Bus), true
 		}
 	}
 	return nil, false
@@ -641,6 +783,28 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 			// route (the chase-AI fixture's `Nav.of(route)`), the nav twin of
 			// View.of — yields the Nav handle Nav.path then queries.
 			return func_of({engine_type_of(.Path)}, engine_type_of(.Nav)), true
+		}
+	case "Sound":
+		// §22 §1 the one-shot constructors: Sound.sfx(clip) builds a non-positional
+		// one-shot at unity gain/pitch on the Sfx bus; Sound.sfx_at(clip, pos) places
+		// it in the world. Each takes the §26 SoundHandle (owned by engine.assets,
+		// not re-admitted here) and yields a Sound the .gain/.pitch/.bus/.at adders
+		// then chain.
+		switch member {
+		case "sfx":
+			return func_of({engine_type_of(.SoundHandle)}, engine_type_of(.Sound)), true
+		case "sfx_at":
+			return func_of({engine_type_of(.SoundHandle), Ground_Type.Vec3}, engine_type_of(.Sound)), true
+		}
+	case "Audio":
+		// §22 §2 the sustained constructor: Audio.track(key, clip) builds a keyed
+		// sustained sound at unity gain/pitch on the Music bus. The key is a String
+		// (the stable identity the engine diffs on), the clip a SoundHandle; the
+		// result is an Audio the same .gain/.pitch/.bus/.at adders chain. (Task 5.1
+		// owns the sustained regime; this row is shared for the music-bed test.)
+		switch member {
+		case "track":
+			return func_of({engine_type_of(.String), engine_type_of(.SoundHandle)}, engine_type_of(.Audio)), true
 		}
 	}
 	return nil, false
@@ -726,6 +890,44 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 				{Ground_Type.Vec2, Ground_Type.Fixed},
 				tuple_of({option_of(Ground_Type.Vec2), engine_type_of(.Path)}),
 			), true
+		}
+	case .Sound:
+		// §22 §1 the one-shot self-first adders, each returning a new Sound so they
+		// chain (Sound.sfx(clip).bus(Bus::Ui).gain(g)): gain/pitch take a Fixed, bus
+		// a Bus, at a world Vec3.
+		switch member {
+		case "gain", "pitch":
+			return func_of({Ground_Type.Fixed}, engine_type_of(.Sound)), true
+		case "bus":
+			return func_of({engine_type_of(.Bus)}, engine_type_of(.Sound)), true
+		case "at":
+			return func_of({Ground_Type.Vec3}, engine_type_of(.Sound)), true
+		}
+	case .Audio:
+		// §22 §2 the sustained self-first adders (same shape as Sound's), each
+		// returning a new Audio so they chain (Audio.track(k, c).gain(g).bus(b)).
+		// (Task 5.1 owns the sustained regime; shared for the music-bed test.)
+		switch member {
+		case "gain", "pitch":
+			return func_of({Ground_Type.Fixed}, engine_type_of(.Audio)), true
+		case "bus":
+			return func_of({engine_type_of(.Bus)}, engine_type_of(.Audio)), true
+		case "at":
+			return func_of({Ground_Type.Vec3}, engine_type_of(.Audio)), true
+		}
+	case .View:
+		// §21 §1 the view-decorating self-first adders: class(tokens) applies
+		// space-separated theme style tokens (a String checked against the project
+		// Theme at bake — a typing-only String here), when(cond) shows the view only
+		// when a Bool holds. Both keep the receiver's Msg element, so the result is
+		// the same View[Msg] — View.map (which RE-TAGS the element to a new Msg) is
+		// element-inferred and lives in value_method_check, not this fixed-signature
+		// table.
+		switch member {
+		case "class":
+			return func_of({engine_type_of(.String)}, engine_type_of(.View, receiver.elem)), true
+		case "when":
+			return func_of({Ground_Type.Bool}, engine_type_of(.View, receiver.elem)), true
 		}
 	}
 	return nil, false

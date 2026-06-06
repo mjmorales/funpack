@@ -85,6 +85,26 @@ Engine_Kind :: enum {
 	TextureHandle,   // §26 a baked-texture handle (texture("…"))
 	SoundHandle,     // §26 a baked-sound handle (sound("…"))
 	AtlasHandle,     // §26 a sprite-atlas handle (atlas("…"); cell/frame accessors)
+	// §22 audio surface (engine.audio): the two effect-as-data regimes and their
+	// shared mixer-group enum. Sound is the §22 §1 one-shot command record
+	// (Sound.sfx(clip) + .gain/.pitch/.bus/.at); Audio the §22 §2 keyed sustained
+	// projection record (Audio.track(key, clip) + the same builders); Bus the
+	// §22 §4 mixer-group enum (Master/Music/Sfx/Ui/Voice). NOTE: task 5.1 owns the
+	// SUSTAINED Audio regime + Bus; this branch admits the ONE-SHOT Sound regime
+	// and adds Audio/Bus as shared surface rows for the music-bed test — an
+	// integration merge reconciles the overlap (Engine_Kind is a closed enum, so a
+	// duplicate arm would break the merged package; keep the names here, not twice).
+	Sound,           // §22 §1 one-shot sound command record (engine.audio)
+	Audio,           // §22 §2 keyed sustained sound projection record
+	Bus,             // §22 §4 mixer-group enum (Master/Music/Sfx/Ui/Voice)
+	// §21 ui surface (engine.ui): the UI navigation-action enum and the project
+	// style-token vocabulary handle. View[Msg] already exists above (the §08 read
+	// table doubles as the §21 retained-mode view tree, re-exported by engine.ui
+	// per §26). UiAction is the closed focus/gamepad action set
+	// (NavUp/NavDown/NavLeft/NavRight/Confirm/Cancel); Theme is the opaque
+	// style-token vocabulary a class= token is checked against.
+	UiAction,        // §21 §5 closed UI navigation-action enum (engine.ui)
+	Theme,           // §21 §1 opaque project style-token vocabulary handle
 }
 
 // User_Type is the nominal handle for a name the source declares

@@ -148,18 +148,20 @@ Pattern_Kind :: enum {
 
 // Pattern is a match-arm pattern. type_name/variant are set for the three
 // variant forms (Bare_Variant, Variant_Binds, Struct_Binds); binders holds
-// the payload binder names for Variant_Binds (positional) and Struct_Binds
-// (field-pun: a binder name equals the bound field name), empty otherwise;
-// elements holds the positional sub-patterns for the Tuple form (empty
-// otherwise). A tuple sub-pattern is itself a Pattern — snake's only depth
-// is one variant-with-binder plus one bare binder per position, but the
-// shape recurses by construction.
+// the field-pun binder names for Struct_Binds (a binder name equals the bound
+// field name), empty otherwise; elements holds the positional sub-patterns for
+// both the Tuple form AND the Variant_Binds payload (grammar/fun.ebnf §13:
+// `VariantPat ::= '(' Pattern (',' Pattern)* ')'` — each payload position is a
+// full nested Pattern, so AppMsg::Hud(HudMsg::Coin) is a Variant_Binds whose one
+// element is a Bare_Variant, and Option::Some(v) a Variant_Binds whose one
+// element is a Bare_Binder). A sub-pattern is itself a Pattern — the §21 §3
+// router nests one variant inside another, but the shape recurses by construction.
 Pattern :: struct {
 	kind:      Pattern_Kind,
 	type_name: string,    // variant forms: the enum type (`Option`, `Dir`)
 	variant:   string,    // variant forms: the variant (`Some`, `Box`)
-	binders:   []string,  // Variant_Binds / Struct_Binds: payload binder names
-	elements:  []Pattern, // Tuple: positional sub-patterns
+	binders:   []string,  // Struct_Binds: field-pun binder names
+	elements:  []Pattern, // Tuple / Variant_Binds: positional sub-patterns
 }
 
 // Match_Arm is one `pattern => body` arm; the body is a single
@@ -513,12 +515,12 @@ parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
 	}
 	#partial switch peek_kind(p) {
 	case .L_Paren:
-		binders := parse_pattern_binders(p) or_return
+		elements := parse_pattern_payload(p) or_return
 		return Pattern{
 			kind = .Variant_Binds,
 			type_name = tok.text,
 			variant = variant.text,
-			binders = binders,
+			elements = elements,
 		}, .None
 	case .L_Brace:
 		binders := parse_struct_pattern_binders(p) or_return
@@ -558,18 +560,21 @@ parse_struct_pattern_binders :: proc(p: ^Parser) -> (binders: []string, err: Par
 	return list[:], .None
 }
 
-// parse_pattern_binders parses `(a, b)` — the payload binder names of a
-// variant pattern. Binders are value names, so snake_case; nested
-// patterns are out of this minimal scope.
-parse_pattern_binders :: proc(p: ^Parser) -> (binders: []string, err: Parse_Error) {
+// parse_pattern_payload parses a variant pattern's `( … )` payload (grammar/
+// fun.ebnf §13: `VariantPat ::= '(' Pattern (',' Pattern)* ')'`): each position
+// is a full sub-pattern, so a bare snake_case binder (`v` in Option::Some(v),
+// `m` in AppMsg::Hud(m)) is a Bare_Binder and a nested variant (`HudMsg::Coin`
+// in AppMsg::Hud(HudMsg::Coin)) is a Bare_Variant — the §21 §3 router's
+// tagged-union destructure. Each position reuses parse_tuple_sub_pattern, the
+// same position-parser the tuple form uses (a leading snake_case Ident is a
+// binder, anything else a full pattern), so a nested pattern recurses by
+// construction.
+parse_pattern_payload :: proc(p: ^Parser) -> (elements: []Pattern, err: Parse_Error) {
 	expect(p, .L_Paren) or_return
-	list := make([dynamic]string, 0, 4, context.temp_allocator)
+	list := make([dynamic]Pattern, 0, 4, context.temp_allocator)
 	for peek_kind(p) != .R_Paren {
-		name := expect(p, .Ident) or_return
-		if name.class != .Snake_Case {
-			return nil, .Wrong_Case
-		}
-		append(&list, name.text)
+		sub := parse_tuple_sub_pattern(p) or_return
+		append(&list, sub)
 		if peek_kind(p) == .Comma {
 			p.pos += 1
 		} else {
