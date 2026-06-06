@@ -398,6 +398,217 @@ pong_entrypoints_source :: proc() -> string {
 	return string(bytes)
 }
 
+// ── §14.4 builds.fcfg ──────────────────────────────────────────────────
+// parse_builds_fcfg owns the §14.4 builds production of the smaller config
+// grammar over the lex_fcfg/Cfg_Parser machinery. These exercise its surface
+// directly: the closed platform set, a labelless block, an unknown platform,
+// and non-grammar constructs.
+
+@(test)
+test_parse_builds_fcfg_happy :: proc(t: ^testing.T) {
+	// The arena exemplar shape parses to one `native` target on `desktop` —
+	// the build name (the label) is distinct from the platform value.
+	builds, err := parse_builds_fcfg("build native {\n  platform = desktop\n}\n")
+	testing.expect_value(t, err, Project_Error.None)
+	testing.expect_value(t, len(builds.targets), 1)
+	if len(builds.targets) == 1 {
+		testing.expect_value(t, builds.targets[0].name, "native")
+		testing.expect_value(t, builds.targets[0].platform, Build_Platform.Desktop)
+	}
+}
+
+@(test)
+test_parse_builds_fcfg_wasm_and_multiple :: proc(t: ^testing.T) {
+	// The grammar generalizes beyond the single golden block: two blocks, one
+	// per closed platform, parse in authored order — proving the production
+	// reads the grammar, not a single hardcoded block.
+	content := "build native {\n  platform = desktop\n}\nbuild web {\n  platform = wasm\n}\n"
+	builds, err := parse_builds_fcfg(content)
+	testing.expect_value(t, err, Project_Error.None)
+	testing.expect_value(t, len(builds.targets), 2)
+	if len(builds.targets) == 2 {
+		testing.expect_value(t, builds.targets[0].platform, Build_Platform.Desktop)
+		testing.expect_value(t, builds.targets[1].name, "web")
+		testing.expect_value(t, builds.targets[1].platform, Build_Platform.Wasm)
+	}
+}
+
+@(test)
+test_parse_builds_fcfg_empty_is_no_targets :: proc(t: ^testing.T) {
+	// An empty (or absent) builds.fcfg is zero declared emit targets, never an
+	// error — a tree may declare no targets.
+	builds, err := parse_builds_fcfg("")
+	testing.expect_value(t, err, Project_Error.None)
+	testing.expect_value(t, len(builds.targets), 0)
+}
+
+@(test)
+test_parse_builds_fcfg_unknown_platform_rejected :: proc(t: ^testing.T) {
+	// The platform value is a closed set (§14.6 — desktop|wasm); an unknown
+	// platform rejects through the dedicated Malformed_Builds_Fcfg arm, never
+	// silently accepted.
+	_, err := parse_builds_fcfg("build native {\n  platform = console\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Builds_Fcfg)
+}
+
+@(test)
+test_parse_builds_fcfg_missing_label_rejected :: proc(t: ^testing.T) {
+	// A labelless `build { … }` has no build name — the label is mandatory.
+	_, err := parse_builds_fcfg("build {\n  platform = desktop\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Builds_Fcfg)
+}
+
+@(test)
+test_parse_builds_fcfg_missing_platform_rejected :: proc(t: ^testing.T) {
+	// `platform` is the one required key; a block missing it rejects.
+	_, err := parse_builds_fcfg("build native {\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Builds_Fcfg)
+}
+
+@(test)
+test_parse_builds_fcfg_non_grammar_construct_rejected :: proc(t: ^testing.T) {
+	// A top-level token that is not a `build` block opener (a stray `use`
+	// reference) is outside the builds grammar and rejects.
+	_, err := parse_builds_fcfg("use pong.{X}\nbuild native {\n  platform = desktop\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Builds_Fcfg)
+}
+
+@(test)
+test_parse_builds_fcfg_string_value_rejected :: proc(t: ^testing.T) {
+	// The platform value is a bare identifier, never a string literal — a
+	// quoted value is not in the block-body grammar.
+	_, err := parse_builds_fcfg("build native {\n  platform = \"desktop\"\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Builds_Fcfg)
+}
+
+// ── §14.4 derived-capability tree-walk ─────────────────────────────────
+// derive_tree_capabilities walks the four directory-backed subsystem dirs;
+// these exercise the OFF/ON arms against scratch trees, independent of the
+// arena exemplar.
+
+@(test)
+test_derive_tree_capabilities_all_off_no_subsystem_dirs :: proc(t: ^testing.T) {
+	// A tree with no subsystem dirs (the pong/numerics shape) derives all four
+	// capabilities OFF — absent ⇒ off, the same arm as present-empty — and
+	// expects no gen/ seams.
+	root, ok := write_scratch_tree(t, "project numerics {\n  version = \"0.1.0\"\n}\n")
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	caps := derive_tree_capabilities(root)
+	testing.expect(t, !caps.levels)
+	testing.expect(t, !caps.models)
+	testing.expect(t, !caps.ui)
+	testing.expect(t, !caps.assets)
+	testing.expect_value(t, len(caps.expected_gen_out), 0)
+}
+
+@(test)
+test_derive_tree_capabilities_present_empty_is_off :: proc(t: ^testing.T) {
+	// A present-but-empty levels/ derives the levels capability OFF (§14.4 —
+	// present-empty ⇒ off, the same arm as absent) and expects no gen/ seam.
+	root, ok := write_scratch_tree(t, "project numerics {\n  version = \"0.1.0\"\n}\n")
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	levels_dir := scratch_join({root, "levels"})
+	if os.make_directory_all(levels_dir) != nil {
+		log.warnf("SKIP present-empty levels: cannot create %s", levels_dir)
+		return
+	}
+
+	caps := derive_tree_capabilities(root)
+	testing.expect(t, !caps.levels)
+	testing.expect_value(t, len(caps.expected_gen_out), 0)
+}
+
+@(test)
+test_derive_tree_capabilities_non_empty_levels_on :: proc(t: ^testing.T) {
+	// A levels/ holding an authoring file derives the levels capability ON and
+	// expects the matching gen/<stem>.gen.fun seam, derived from the authoring
+	// filename. The other three subsystems are absent ⇒ off.
+	root, ok := write_scratch_tree(t, "project numerics {\n  version = \"0.1.0\"\n}\n")
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	levels_dir := scratch_join({root, "levels"})
+	if os.make_directory_all(levels_dir) != nil ||
+	   os.write_entire_file(scratch_join({levels_dir, "arena.flvl"}), "level Arena 2d {\n}\n") != nil {
+		log.warnf("SKIP non-empty levels: cannot write under %s", levels_dir)
+		return
+	}
+
+	caps := derive_tree_capabilities(root)
+	testing.expect(t, caps.levels)
+	testing.expect(t, !caps.models)
+	testing.expect(t, !caps.ui)
+	testing.expect(t, !caps.assets)
+	testing.expect_value(t, len(caps.expected_gen_out), 1)
+	if len(caps.expected_gen_out) == 1 {
+		testing.expect_value(t, caps.expected_gen_out[0], "gen/arena.gen.fun")
+	}
+}
+
+// ── arena exemplar tree (acceptance) ───────────────────────────────────
+
+// test_arena_builds_and_capabilities is the load-bearing acceptance: reading
+// the live arena exemplar tree parses builds.fcfg to one `desktop` target and
+// derives the §14.4 capability set — a non-empty levels/ ⇒ levels ON with the
+// expected gen/arena.gen.fun output, while the other three subsystem dirs
+// (absent) derive OFF. It resolves the sibling funpack-spec checkout (or
+// FUNPACK_ARENA_DIR) and SKIPs loudly when absent, so a missing checkout never
+// silently passes.
+@(test)
+test_arena_builds_and_capabilities :: proc(t: ^testing.T) {
+	dir := resolve_arena_dir()
+	if !os.is_dir(dir) {
+		log.warnf(
+			"SKIP arena builds+capabilities: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling of the repo",
+			dir,
+		)
+		return
+	}
+
+	project, err := read_project(dir)
+	testing.expect_value(t, err, Project_Error.None)
+	if err != .None {
+		return
+	}
+
+	// builds.fcfg parses to one `desktop` target.
+	testing.expect_value(t, len(project.builds.targets), 1)
+	if len(project.builds.targets) == 1 {
+		testing.expect_value(t, project.builds.targets[0].platform, Build_Platform.Desktop)
+	}
+
+	// levels ON with the expected gen/arena.gen.fun; models/ui/assets OFF.
+	caps := project.capabilities
+	testing.expect(t, caps.levels)
+	testing.expect(t, !caps.models)
+	testing.expect(t, !caps.ui)
+	testing.expect(t, !caps.assets)
+	testing.expect_value(t, len(caps.expected_gen_out), 1)
+	if len(caps.expected_gen_out) == 1 {
+		testing.expect_value(t, caps.expected_gen_out[0], "gen/arena.gen.fun")
+	}
+	log.infof(
+		"arena §14.4: builds.fcfg → 1 desktop target; levels ON ⇒ gen/arena.gen.fun; models/ui/assets OFF",
+	)
+}
+
+// ARENA_DEFAULT_DIR is the arena exemplar's sibling-checkout default, resolved
+// the same way the golden trees resolve theirs (resolve_spec_dir anchors it at
+// the main checkout root and honors the env override).
+ARENA_DEFAULT_DIR :: "../funpack-spec/examples/arena"
+
+resolve_arena_dir :: proc() -> string {
+	return resolve_spec_dir("FUNPACK_ARENA_DIR", ARENA_DEFAULT_DIR)
+}
+
 // write_scratch_tree materializes a minimal §14 project tree under a
 // unique temp root: funpack_configs/project.fcfg carrying the given config
 // plus a single src/x.fun so collect_sources succeeds. ok = false (with a

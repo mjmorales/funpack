@@ -39,9 +39,65 @@ Source :: struct {
 }
 
 Project :: struct {
-	name:    string,
-	version: string,
-	sources: []Source,
+	name:         string,
+	version:      string,
+	sources:      []Source,
+	// builds is the parsed builds.fcfg (§14.4/§6): the presentation platform
+	// targets the build driver emits. It is read off the tree alongside
+	// identity and sources, so a Project carries its declared emit targets.
+	builds:       Builds,
+	// capabilities is the §14.4 derived-capability set: which subsystem
+	// directories (levels/models/ui/assets) are present-and-non-empty, and the
+	// committed gen/ seam each ON subsystem is expected to have baked. It is
+	// derived from the filesystem, never declared — there is no features config
+	// (§14 §4) — so it travels with the Project as a fact of the tree.
+	capabilities: Capabilities,
+}
+
+// Build_Platform is the closed §14.4/§6 presentation-platform set a build
+// target selects. builds.fcfg declares the presentation platform and nothing
+// else (no realm field — the server/client split is derived from source, §14
+// §6), so the value set is exactly `desktop` and `wasm`. The set is closed and
+// compiler-fixed: a new platform is a deliberate addition here, never a
+// silently-accepted string — an unknown platform value rejects the tree.
+Build_Platform :: enum {
+	Desktop,
+	Wasm,
+}
+
+// Build_Target is one `build <name> { platform = … }` block of builds.fcfg:
+// the build's label (a name distinct from the platform — the arena exemplar
+// labels its single target `native`) and its closed presentation platform.
+Build_Target :: struct {
+	name:     string,
+	platform: Build_Platform,
+}
+
+// Builds is the parsed builds.fcfg: the declared build targets in authored
+// order. An empty-but-present (or absent) builds.fcfg yields zero targets — a
+// tree may declare no emit targets — but a present file with a non-grammar
+// construct or an unknown platform value rejects (§14.4).
+Builds :: struct {
+	targets: []Build_Target,
+}
+
+// Capabilities is the §14.4 derived-capability set over the four
+// directory-backed subsystems: each flag is ON when its authoring directory is
+// present-and-non-empty (holds the subsystem's authoring files), OFF when the
+// directory is absent or present-but-empty (the same arm — both mean the
+// feature is off). For each ON subsystem, the matching gen/ seam(s) are
+// expected: one gen/<stem>.gen.fun per authoring file (levels/arena.flvl ⇒
+// gen/arena.gen.fun). The expected-output paths are derived from the authoring
+// filenames, never declared. This struct does NOT read or compare seam
+// contents (the harness story) and does NOT join gen/ into the source set (the
+// seam-import story) — it only records what the tree declares and what gen/
+// outputs that declaration expects.
+Capabilities :: struct {
+	levels:           bool,
+	models:           bool,
+	ui:               bool,
+	assets:           bool,
+	expected_gen_out: []string,
 }
 
 Project_Error :: enum {
@@ -65,6 +121,14 @@ Project_Error :: enum {
 	// error (an import site could resolve to either), and the collision
 	// fails the whole tree. A dedicated arm, never a catch-all.
 	Duplicate_Module,
+	// Malformed_Builds_Fcfg is the §14.4 builds.fcfg grammar reject: a
+	// present builds.fcfg that violates the `build <name> { platform =
+	// desktop|wasm }` production — a missing label, a missing platform key,
+	// an unknown platform value (the platform set is closed), or any
+	// non-grammar construct. A dedicated arm, never folded into the
+	// project.fcfg's Malformed_Project_Fcfg: the error names a specific §14.4
+	// rule (the builds production), not the identity production.
+	Malformed_Builds_Fcfg,
 }
 
 read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
@@ -85,7 +149,34 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 	if src_err != .None {
 		return Project{}, src_err
 	}
-	return Project{name = identity.name, version = identity.version, sources = sources}, .None
+	builds, builds_err := read_builds_fcfg(configs_dir)
+	if builds_err != .None {
+		return Project{}, builds_err
+	}
+	capabilities := derive_tree_capabilities(root)
+	return Project {
+			name = identity.name,
+			version = identity.version,
+			sources = sources,
+			builds = builds,
+			capabilities = capabilities,
+		},
+		.None
+}
+
+// read_builds_fcfg reads the optional builds.fcfg out of the configs dir and
+// parses it through the §14.4 builds grammar. An absent file is zero declared
+// targets (a tree may declare no emit targets), never an error — mirroring the
+// authored-config readers (read_builds, read_tag_registry) that treat absence
+// as an empty-but-present field. A present file that violates the grammar
+// surfaces Malformed_Builds_Fcfg.
+read_builds_fcfg :: proc(configs_dir: string) -> (builds: Builds, err: Project_Error) {
+	path, _ := filepath.join({configs_dir, "builds.fcfg"}, context.temp_allocator)
+	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	if read_err != nil {
+		return Builds{}, .None
+	}
+	return parse_builds_fcfg(string(bytes))
 }
 
 // Project_Identity is the §14 project.fcfg payload: the block label as the
@@ -176,6 +267,147 @@ cfg_parse_assignment :: proc(p: ^Cfg_Parser) -> (key: string, value: string, err
 	cfg_expect(p, .Eq) or_return
 	value_tok := cfg_expect(p, .String) or_return
 	return key_tok.text, value_tok.text, .None
+}
+
+// ── §14.4 builds.fcfg ──────────────────────────────────────────────────
+// The builds production of the §14 smaller config grammar: a sequence of
+// `build <name> { platform = desktop|wasm }` blocks (exemplar:
+// funpack-spec/examples/arena/funpack_configs/builds.fcfg, `build native {
+// platform = desktop }`). Each block's label is the build name and its sole
+// required key is `platform`, whose value is the closed §14.6 presentation set.
+// It rides the same lex_fcfg/Cfg_Parser machinery the project.fcfg production
+// uses (the value here is a bare platform identifier, never a string literal),
+// distinct from index_contract.odin's line-oriented read_builds: that one
+// projects lenient Build_Records for the NDJSON, this one is the strict grammar
+// production with a closed platform set that feeds Project.builds and rejects an
+// unknown platform.
+
+// parse_builds_fcfg parses the §14.4 builds grammar into the declared targets,
+// or rejects a present file that violates it. The grammar is a sequence of
+// top-level `@doc(…)` directives and `build <name> { platform = P }` blocks; P
+// is a closed identifier (`desktop` or `wasm`). A missing label, a missing or
+// repeated platform, an unknown platform value, or any non-grammar construct is
+// a Malformed_Builds_Fcfg rejection. Zero blocks is legal (no declared emit
+// targets) — only a malformed construct rejects.
+parse_builds_fcfg :: proc(content: string) -> (builds: Builds, err: Project_Error) {
+	p := Cfg_Parser{tokens = lex_fcfg(content)}
+	targets := make([dynamic]Build_Target, 0, 2, context.temp_allocator)
+	for !cfg_at_end(&p) {
+		#partial switch cfg_peek(&p).kind {
+		case .At:
+			cfg_skip_doc_builds(&p) or_return
+		case .Ident:
+			// The only legal top-level identifier is the `build` block opener;
+			// any other top-level token is outside the builds grammar.
+			if cfg_peek(&p).text != "build" {
+				return Builds{}, .Malformed_Builds_Fcfg
+			}
+			target := cfg_parse_build_block(&p) or_return
+			append(&targets, target)
+		case:
+			return Builds{}, .Malformed_Builds_Fcfg
+		}
+	}
+	return Builds{targets = targets[:]}, .None
+}
+
+// cfg_parse_build_block parses one `build <name> { platform = P }` block. The
+// label is mandatory (a labelless `build { … }` rejects) and becomes the build
+// name; `platform` is the one required key and its value is the closed §14.6
+// platform set. A missing or repeated platform, an unknown platform value, or a
+// non-platform key rejects.
+cfg_parse_build_block :: proc(p: ^Cfg_Parser) -> (target: Build_Target, err: Project_Error) {
+	cfg_expect_builds_text(p, "build") or_return
+	label := cfg_expect_builds(p, .Ident) or_return // the build-name label
+	cfg_expect_builds(p, .L_Brace) or_return
+	target.name = label.text
+	saw_platform := false
+	for cfg_peek(p).kind != .R_Brace {
+		#partial switch cfg_peek(p).kind {
+		case .At:
+			cfg_skip_doc_builds(p) or_return
+		case .Ident:
+			key := cfg_expect_builds(p, .Ident) or_return
+			if key.text != "platform" || saw_platform {
+				return Build_Target{}, .Malformed_Builds_Fcfg
+			}
+			cfg_expect_builds(p, .Eq) or_return
+			// The platform value is a bare identifier in the closed §14.6 set,
+			// never a string literal — the smaller config grammar's block bodies
+			// carry bare values.
+			value := cfg_expect_builds(p, .Ident) or_return
+			platform, ok := parse_build_platform(value.text)
+			if !ok {
+				return Build_Target{}, .Malformed_Builds_Fcfg
+			}
+			target.platform = platform
+			saw_platform = true
+		case:
+			// End of input before `}` (Invalid), or any non-assignment,
+			// non-doc construct inside the block.
+			return Build_Target{}, .Malformed_Builds_Fcfg
+		}
+	}
+	cfg_expect_builds(p, .R_Brace) or_return
+	if !saw_platform {
+		return Build_Target{}, .Malformed_Builds_Fcfg
+	}
+	return target, .None
+}
+
+// parse_build_platform maps a platform identifier to the closed Build_Platform
+// set, reporting ok = false for any value outside it. The set is the §14.6
+// presentation platforms (`desktop`, `wasm`); an unknown value is the reject
+// signal cfg_parse_build_block turns into Malformed_Builds_Fcfg.
+parse_build_platform :: proc(text: string) -> (platform: Build_Platform, ok: bool) {
+	switch text {
+	case "desktop":
+		return .Desktop, true
+	case "wasm":
+		return .Wasm, true
+	case:
+		return .Desktop, false
+	}
+}
+
+// cfg_expect_builds is cfg_expect threading the builds error type: it consumes
+// the next token, demanding the given kind, and surfaces Malformed_Builds_Fcfg
+// on a mismatch so the builds production threads its own closed arm rather than
+// project.fcfg's.
+cfg_expect_builds :: proc(p: ^Cfg_Parser, kind: Cfg_Token_Kind) -> (tok: Cfg_Token, err: Project_Error) {
+	tok = cfg_peek(p)
+	if tok.kind != kind {
+		return Cfg_Token{}, .Malformed_Builds_Fcfg
+	}
+	p.pos += 1
+	return tok, .None
+}
+
+// cfg_expect_builds_text is cfg_expect_builds demanding a specific identifier
+// text too — the `build` block-opener keyword. A kind or text mismatch is
+// Malformed_Builds_Fcfg.
+cfg_expect_builds_text :: proc(p: ^Cfg_Parser, text: string) -> Project_Error {
+	tok := cfg_peek(p)
+	if tok.kind != .Ident || tok.text != text {
+		return .Malformed_Builds_Fcfg
+	}
+	p.pos += 1
+	return .None
+}
+
+// cfg_skip_doc_builds consumes a `@doc("…")` directive inside the builds
+// grammar, mirroring cfg_skip_doc but threading the builds error arm so a
+// malformed `@` directive in builds.fcfg surfaces Malformed_Builds_Fcfg.
+cfg_skip_doc_builds :: proc(p: ^Cfg_Parser) -> Project_Error {
+	cfg_expect_builds(p, .At) or_return
+	name := cfg_expect_builds(p, .Ident) or_return
+	if name.text != "doc" {
+		return .Malformed_Builds_Fcfg
+	}
+	cfg_expect_builds(p, .L_Paren) or_return
+	cfg_expect_builds(p, .String) or_return
+	cfg_expect_builds(p, .R_Paren) or_return
+	return .None
 }
 
 // ── §23/§07 entrypoints.fcfg ───────────────────────────────────────────
@@ -642,4 +874,90 @@ derive_module_name :: proc(src_root: string, source_path: string) -> string {
 // `engineering` module does not collide.
 module_under_reserved_root :: proc(module: string) -> bool {
 	return module == RESERVED_ROOT || strings.has_prefix(module, RESERVED_ROOT + ".")
+}
+
+// ── §14.4 derived-capability tree-walk ─────────────────────────────────
+// The capability set is derived, never declared (§14 §4): there is no
+// features config. Each of the four directory-backed subsystems switches on
+// from its backing authoring directory — a present-and-non-empty levels/ ⇒
+// levels ON, and so on for models/ ui/ assets/ — and for each ON subsystem the
+// matching gen/ seam is expected. An absent or present-but-empty directory is
+// the same arm: the feature is OFF (the spec collapses absence and empty —
+// present-but-empty ⇒ off; an absent dir has no authoring files, so it is off
+// too). This walk reads directory presence and the authoring filenames only; it
+// does NOT read or compare gen/ seam contents (the harness story) and does NOT
+// join gen/ into the source set (the seam-import story).
+
+// Subsystem_Dir pairs one directory-backed subsystem's authoring directory
+// with the authoring-file extension that makes it non-empty (§14 §1):
+// levels/*.flvl, models/*.fpm, ui/*.fui, assets/*.manifest.
+Subsystem_Dir :: struct {
+	dir: string,
+	ext: string,
+}
+
+// derive_tree_capabilities walks the four §14.4 directory-backed subsystem
+// directories and reports which are ON (present-and-non-empty with the
+// subsystem's authoring files) plus, for each ON subsystem, the gen/ seam(s) its
+// authoring files expect. The result is deterministic: the expected gen outputs
+// are collected in sorted authoring-path order. The name is distinct from
+// index_contract.odin's derive_capabilities — that one projects the closed
+// Capability battery vector (which folds in net/expose/audio source signals) for
+// the NDJSON; this one is the §14.4 directory-backed tree-walk that records the
+// expected gen/ seams, the fact the bake pipeline consumes.
+derive_tree_capabilities :: proc(root: string) -> Capabilities {
+	caps: Capabilities
+	expected := make([dynamic]string, 0, 4, context.temp_allocator)
+	// The closed §14.4 directory-backed subsystem list — a new subsystem is a
+	// deliberate addition here.
+	subsystems := [4]Subsystem_Dir {
+		{dir = "levels", ext = ".flvl"},
+		{dir = "models", ext = ".fpm"},
+		{dir = "ui", ext = ".fui"},
+		{dir = "assets", ext = ".manifest"},
+	}
+	flags := [4]^bool{&caps.levels, &caps.models, &caps.ui, &caps.assets}
+	for sub, i in subsystems {
+		gen_outs := subsystem_expected_gen(root, sub.dir, sub.ext)
+		if len(gen_outs) > 0 {
+			flags[i]^ = true
+			append(&expected, ..gen_outs)
+		}
+	}
+	caps.expected_gen_out = expected[:]
+	return caps
+}
+
+// subsystem_expected_gen walks one subsystem directory for its authoring files
+// (regular files with the given extension) and returns the gen/ seam path each
+// expects — gen/<stem>.gen.fun, the authoring filename with its extension
+// swapped for `.gen.fun` (levels/arena.flvl ⇒ gen/arena.gen.fun). Returns an
+// empty slice when the directory is absent or holds no authoring file (the OFF
+// arm). The paths are sorted by authoring filename so the expected set is
+// deterministic regardless of the walk order.
+subsystem_expected_gen :: proc(root: string, sub: string, ext: string) -> []string {
+	dir, _ := filepath.join({root, sub}, context.temp_allocator)
+	if !os.is_dir(dir) {
+		return nil
+	}
+	stems := make([dynamic]string, 0, 4, context.temp_allocator)
+	walker := os.walker_create(dir)
+	defer os.walker_destroy(&walker)
+	for info in os.walker_walk(&walker) {
+		if info.type != .Regular || !strings.has_suffix(info.name, ext) {
+			continue
+		}
+		stem := strings.trim_suffix(info.name, ext)
+		append(&stems, strings.clone(stem, context.temp_allocator))
+	}
+	if len(stems) == 0 {
+		return nil
+	}
+	slice.sort(stems[:])
+	outs := make([]string, len(stems), context.temp_allocator)
+	for stem, i in stems {
+		out, _ := filepath.join({"gen", strings.concatenate({stem, ".gen.fun"}, context.temp_allocator)}, context.temp_allocator)
+		outs[i] = out
+	}
+	return outs
 }
