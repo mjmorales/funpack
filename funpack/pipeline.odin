@@ -72,6 +72,43 @@ run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline
 	return run_module_pipeline(source, Module_Index{})
 }
 
+// run_module_pipeline_named is run_module_pipeline_evaled with the module's own §15
+// name threaded through to the evaluator — the namespace half of an intra-module
+// const's cycle key, so a self/mutual const cycle within THIS module is caught
+// fail-closed by the evaluator's visited set. run_module_pipeline_evaled is the
+// nameless projection (module = "") the single-source path keeps using.
+run_module_pipeline_named :: proc(
+	source: string,
+	index: Module_Index,
+	modules: []Module_Eval,
+	module: string,
+) -> (
+	report: Test_Report,
+	err: Pipeline_Error,
+) {
+	tokens := stage_lex(source)
+	ast, parse_err := stage_parse(tokens)
+	if parse_err != .None {
+		return Test_Report{}, .Parse_Failed
+	}
+	gate_err := stage_gates(ast)
+	if gate_err != .None {
+		return Test_Report{}, .Gate_Failed
+	}
+	typed, type_err := stage_typecheck_indexed(ast, index)
+	if type_err != .None {
+		return Test_Report{}, .Typecheck_Failed
+	}
+	if verdict := stage_contracts(typed); verdict.err != .None {
+		return Test_Report{}, .Contract_Failed
+	}
+	if verdict := stage_flatten(typed); verdict.err != .None {
+		return Test_Report{}, .Closure_Failed
+	}
+	result := stage_evaluate_indexed(typed, modules, module)
+	return stage_report(result), .None
+}
+
 // run_module_pipeline threads one module's source through the stage pipeline
 // against a project-wide module index, so a module importing a sibling user module
 // (the arena seam, the arena schema) types cross-module. An empty index reduces it
@@ -92,27 +129,7 @@ run_module_pipeline :: proc(source: string, index: Module_Index) -> (report: Tes
 // unchanged. Only the evaluate stage becomes eval-surface-aware; every prior stage
 // is identical.
 run_module_pipeline_evaled :: proc(source: string, index: Module_Index, modules: []Module_Eval) -> (report: Test_Report, err: Pipeline_Error) {
-	tokens := stage_lex(source)
-	ast, parse_err := stage_parse(tokens)
-	if parse_err != .None {
-		return Test_Report{}, .Parse_Failed
-	}
-	gate_err := stage_gates(ast)
-	if gate_err != .None {
-		return Test_Report{}, .Gate_Failed
-	}
-	typed, type_err := stage_typecheck_indexed(ast, index)
-	if type_err != .None {
-		return Test_Report{}, .Typecheck_Failed
-	}
-	if verdict := stage_contracts(typed); verdict.err != .None {
-		return Test_Report{}, .Contract_Failed
-	}
-	if verdict := stage_flatten(typed); verdict.err != .None {
-		return Test_Report{}, .Closure_Failed
-	}
-	result := stage_evaluate_indexed(typed, modules)
-	return stage_report(result), .None
+	return run_module_pipeline_named(source, index, modules, "")
 }
 
 // Project_Pipeline_Error is closed with the source-set staging error a multi-module
@@ -170,7 +187,10 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 
 	report := Project_Report{}
 	for source, i in sources {
-		module_report, err := run_module_pipeline_evaled(source_texts[i], index, eval_modules)
+		// The module's own §15 name threads to the evaluator so an intra-module
+		// const cycle in THIS module keys on its module (and a cross-module cycle
+		// shares the same visited set through the eval surface).
+		module_report, err := run_module_pipeline_named(source_texts[i], index, eval_modules, source.module)
 		if err != .None {
 			report.module_err = err
 			report.failed_path = source.path

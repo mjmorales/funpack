@@ -423,3 +423,98 @@ test_module_qualified_unknown_member_rejected :: proc(t: ^testing.T) {
 	_, type_err := stage_typecheck_indexed(consumer_ast, index)
 	testing.expect_value(t, type_err, Type_Error.Unknown_Member)
 }
+
+@(test)
+test_module_qualified_type_member_unsupported :: proc(t: ^testing.T) {
+	// Coverage gap: an EXPORTED but non-const member of a whole-module handle is
+	// .Unsupported_Expr — a module-qualified type or fn name is not a value. The
+	// seam exports a `data Item` type and a top-level fn; reaching either through
+	// `handle.NAME` in a value position grounds to .Unsupported_Expr (module_member_check
+	// kind != .Const arm), distinct from the .Unknown_Member an unexported member gives.
+	// In-memory, no spec checkout needed.
+	seam := "data Item { id: Int }\n" + "fn count() -> Int { return 0 }\n"
+	seam_ast, seam_parse := stage_parse(stage_lex(seam))
+	testing.expect_value(t, seam_parse, Parse_Error.None)
+
+	// A type member (`store.Item`) reached as a value through the handle.
+	type_consumer := "import store\n" +
+		"test \"a module-qualified type is not a value\" {\n" +
+		"  assert store.Item == store.Item\n" +
+		"}\n"
+	type_ast, type_parse := stage_parse(stage_lex(type_consumer))
+	testing.expect_value(t, type_parse, Parse_Error.None)
+	type_index := build_module_index_typed({"store", "consumer"}, {seam_ast, type_ast})
+	_, type_err := stage_typecheck_indexed(type_ast, type_index)
+	testing.expect_value(t, type_err, Type_Error.Unsupported_Expr)
+
+	// A fn member (`store.count`) reached as a value through the handle — also not
+	// a value, the same .Unsupported_Expr the type member gives.
+	fn_consumer := "import store\n" +
+		"test \"a module-qualified fn name is not a value\" {\n" +
+		"  assert store.count == store.count\n" +
+		"}\n"
+	fn_ast, fn_parse := stage_parse(stage_lex(fn_consumer))
+	testing.expect_value(t, fn_parse, Parse_Error.None)
+	fn_index := build_module_index_typed({"store", "consumer"}, {seam_ast, fn_ast})
+	_, fn_err := stage_typecheck_indexed(fn_ast, fn_index)
+	testing.expect_value(t, fn_err, Type_Error.Unsupported_Expr)
+}
+
+@(test)
+test_module_handle_shadowed_by_local_binding :: proc(t: ^testing.T) {
+	// Coverage gap: a local `let` binding of the handle name SHADOWS the module
+	// handle — `handle.member` is then a field access on the local value, not a
+	// module-qualified const access. The test binds `assets` to an Int, so
+	// `assets.coin_sfx` types through field_member on Int (a Ground type with no
+	// such field) → .Type_Mismatch, NOT the SoundHandle the module-handle arm would
+	// give. module_member_check's in-scope guard routes the local binding away from
+	// the cross-module arm (spec §02 one-name-one-meaning, innermost scope wins).
+	// In-memory, no spec checkout needed.
+	seam := "import engine.assets.{SoundHandle}\n" +
+		"let coin_sfx: SoundHandle = SoundHandle{name: \"coin_sfx\"}\n"
+	seam_ast, _ := stage_parse(stage_lex(seam))
+
+	consumer := "import assets\n" +
+		"test \"a local binding shadows the module handle\" {\n" +
+		"  let assets = 5\n" +
+		"  assert assets.coin_sfx == assets.coin_sfx\n" +
+		"}\n"
+	consumer_ast, parse_err := stage_parse(stage_lex(consumer))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	index := build_module_index_typed({"assets", "consumer"}, {seam_ast, consumer_ast})
+	_, type_err := stage_typecheck_indexed(consumer_ast, index)
+	// The local Int has no `coin_sfx` field — the shadow won, so the cross-module
+	// const arm never fired (which would have typed it SoundHandle and passed).
+	testing.expect_value(t, type_err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_module_handle_name_collision_with_user_decl :: proc(t: ^testing.T) {
+	// Coverage gap: a user declaration named like an imported WHOLE-MODULE handle is
+	// .Name_Collision — the §02 one-name-one-meaning rule holds across the module-handle
+	// namespace too. `import assets` binds `assets` as a .Module handle in bindings.names;
+	// a user `let assets = …` then claims the same name, which name_taken rejects (the
+	// handle is an in-scope import). The user decl is a `let`, not a `data`/`enum`: a
+	// §15 module name is lowercase, so it can only collide in the lowercase term
+	// namespace (a PascalCase type name could never spell a module name). The collision
+	// fires at resolve, before typing. In-memory, no spec checkout needed.
+	seam := "import engine.assets.{SoundHandle}\n" +
+		"let coin_sfx: SoundHandle = SoundHandle{name: \"coin_sfx\"}\n"
+	seam_ast, _ := stage_parse(stage_lex(seam))
+
+	// The consumer whole-module imports `assets` AND declares a user `let assets` —
+	// the name now means both the module handle and a const, which §02 forbids.
+	consumer := "import assets\n" + "let assets: Int = 5\n"
+	consumer_ast, parse_err := stage_parse(stage_lex(consumer))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	index := build_module_index_typed({"assets", "consumer"}, {seam_ast, consumer_ast})
+
+	// Resolution rejects the colliding decl: the whole-module handle and the user
+	// const cannot share the name.
+	bindings, bind_err := resolve_imports_indexed(consumer_ast, index)
+	testing.expect_value(t, bind_err, Type_Error.None)
+	_, env_err := resolve_env(consumer_ast, bindings, index)
+	testing.expect_value(t, env_err, Type_Error.Name_Collision)
+}
