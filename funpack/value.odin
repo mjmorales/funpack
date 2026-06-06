@@ -7,8 +7,9 @@ package funpack
 
 Value :: union {
 	Fixed,
-	i64,  // Int — counts and indices
-	bool, // Bool — the result of ==
+	i64,    // Int — counts and indices
+	bool,   // Bool — the result of ==
+	string, // String — a string literal's text; a §19 asset handle's `name` field
 	Option_Value,
 	Vec2_Value,
 	Vec3_Value,
@@ -20,6 +21,43 @@ Value :: union {
 	Record_Value,
 	Input_Value,
 	Time_Value,
+	Transform_Value,
+	Pose_Value,
+}
+
+// Transform_Value is a §16 §7 local bone transform: translation, orientation,
+// and scale relative to the parent bone (the engine.anim Transform record). The
+// free builders rot_x/up construct it — rot_x(angle) is the identity translation
+// with a quaternion rotation about the local X axis and unit scale; up(d) is a
+// +Y translation with the identity rotation and unit scale. Its three component
+// values are plain comparable structs, so equality is the bit-exact field match
+// `pose_walk(…).get(Bone::LUpperLeg) == rot_x(0.0)` rests on (spec §10).
+Transform_Value :: struct {
+	pos:   Vec3_Value,
+	rot:   Quat_Value,
+	scale: Vec3_Value,
+}
+
+// Pose_Value is a §16 §7 sparse map of bone → local transform (the engine.anim
+// Pose extern type). The bones it omits sit at rest, so a `.get` of an undriven
+// bone reads the identity transform. The driven bones live in a DETERMINISTIC
+// insert-ordered slice — never an iterated map — so the value an evaluation
+// produces is machine-identical: `.set` appends (or overwrites in place), and
+// blend/layer build the union of driven bones in a fixed order (the base/a
+// bones in their order, then the overlay/b bones new to the result in theirs).
+// Equality is by driven-bone set: two poses are equal iff they drive the same
+// bones each with an equal transform, so insertion order never reaches the
+// verdict (the same name-keyed shape Record_Value equality takes, spec §10).
+Pose_Value :: struct {
+	bones: []Pose_Bone_Transform,
+}
+
+// Pose_Bone_Transform is one driven bone of a Pose_Value: the Bone variant name
+// (matching the Enum_Value identity Bone::LUpperLeg lowers to) and the local
+// Transform it drives.
+Pose_Bone_Transform :: struct {
+	bone:      string, // the Bone variant name (e.g. "LUpperLeg")
+	transform: Transform_Value,
 }
 
 List_Value :: struct {
@@ -54,22 +92,29 @@ Input_Press :: struct {
 	action: string, // the action variant (e.g. "Down")
 }
 
-// Time_Value is the test-position Time resource: the fixed frame delta Time.at(dt)
-// seeds (§04). Its one member read is `time.dt`, the per-tick delta in fixed
-// seconds the hunt search countdown folds.
+// Time_Value is the test-position Time resource: the fixed frame delta and the
+// accumulated logical time the Time.at(dt) double seeds (§04; engine.core.Time is
+// `data Time { dt: Fixed, t: Fixed }`). `dt` is the per-tick delta in fixed
+// seconds the hunt search countdown folds; `t` is logical time since startup,
+// zero for a Time.at(dt) double (Time.at seeds t at zero, per the stdlib). Both
+// member reads (`time.dt`, `time.t`) resolve to these fields.
 Time_Value :: struct {
 	dt: Fixed,
+	t:  Fixed,
 }
 
-// Enum_Value is a bare enum variant value — a user enum (Side::Left) or an
-// engine enum (Color::White, PlayerId::P1). The pong surface's user enums
-// carry no payload, so a variant is identified by its owning type and its
-// variant name alone. Equality is by (type_name, variant): two variants are
-// equal iff they name the same variant of the same enum (spec §10 demands
-// matching tags; §03 §2 closes the variant set).
+// Enum_Value is an enum variant value — a user enum (Side::Left, AppMsg::Hud(m))
+// or an engine enum (Color::White, PlayerId::P1, Bus::Ui). A bare variant
+// carries no payload (payload nil); a §21 §3 tagged-union variant carries its
+// single payload value (AppMsg::Hud(HudMsg::Coin) → payload is the HudMsg::Coin
+// Enum_Value). Equality is by (type_name, variant) AND payload: two variants are
+// equal iff they name the same variant of the same enum and their payloads are
+// equal (spec §10 demands matching tags; §03 §2 closes the variant set). The
+// payload is a pointer because a union cannot contain itself by value.
 Enum_Value :: struct {
 	type_name: string,
 	variant:   string,
+	payload:   ^Value, // nil for a nullary variant; the single tuple payload otherwise
 }
 
 // Record_Value is a constructed record value: a user thing/data/signal
@@ -116,6 +161,12 @@ value_equal :: proc(a, b: Value) -> bool {
 		return ok && av == bv
 	case bool:
 		bv, ok := b.(bool)
+		return ok && av == bv
+	case string:
+		// String equality is byte-exact (spec §10 demands matching tags). The §19
+		// asset handle's `name` field compares this way, so a typed handle constant
+		// equals the string-constructor handle iff they name the same asset.
+		bv, ok := b.(string)
 		return ok && av == bv
 	case Option_Value:
 		bv, ok := b.(Option_Value)
@@ -172,15 +223,67 @@ value_equal :: proc(a, b: Value) -> bool {
 		return false
 	case Enum_Value:
 		bv, ok := b.(Enum_Value)
-		return ok && av.type_name == bv.type_name && av.variant == bv.variant
+		if !ok || av.type_name != bv.type_name || av.variant != bv.variant {
+			return false
+		}
+		// A nullary variant has no payload on either side; a §21 §3 tagged variant
+		// compares its single payload (AppMsg::Hud(HudMsg::Coin) equals another iff
+		// the inner HudMsg::Coin does). A payload present on one side only is a
+		// mismatch — different variant arities never compare equal.
+		if (av.payload == nil) != (bv.payload == nil) {
+			return false
+		}
+		if av.payload == nil {
+			return true
+		}
+		return value_equal(av.payload^, bv.payload^)
 	case Record_Value:
 		bv, ok := b.(Record_Value)
 		if !ok || av.type_name != bv.type_name || av.variant != bv.variant {
 			return false
 		}
 		return record_fields_equal(av.fields, bv.fields)
+	case Transform_Value:
+		// A Transform's three components (pos, rot, scale) are plain comparable
+		// structs over the Fixed kernel, so equality is the bit-exact field match
+		// — `rot_x(0.0)` from two sites builds the identical Transform (§10).
+		bv, ok := b.(Transform_Value)
+		return ok && av == bv
+	case Pose_Value:
+		bv, ok := b.(Pose_Value)
+		return ok && pose_bones_equal(av.bones, bv.bones)
 	}
 	return false
+}
+
+// pose_bones_equal compares two driven-bone sets by bone name: every bone one
+// pose drives must be driven by the other with an equal transform, and the two
+// must drive the same number of bones. Matching by name (not slice position)
+// makes insertion order irrelevant — two poses that drive the same bones in a
+// different `.set` order compare equal (spec §10, the determinism tripwire).
+pose_bones_equal :: proc(a, b: []Pose_Bone_Transform) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for driven in a {
+		other, found := pose_bone_transform(b, driven.bone)
+		if !found || driven.transform != other {
+			return false
+		}
+	}
+	return true
+}
+
+// pose_bone_transform reads the transform a pose drives on a bone by name — a
+// linear lookup over the insert-ordered slice, so bone order never reaches the
+// result. found = false when the pose leaves the bone at rest.
+pose_bone_transform :: proc(bones: []Pose_Bone_Transform, bone: string) -> (transform: Transform_Value, found: bool) {
+	for driven in bones {
+		if driven.bone == bone {
+			return driven.transform, true
+		}
+	}
+	return Transform_Value{}, false
 }
 
 // record_fields_equal compares two record field sets by name: every field on

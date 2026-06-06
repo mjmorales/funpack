@@ -164,6 +164,12 @@ Fn_Node :: struct {
 	doc:         string,
 	gtags:       []string,
 	line:        int, // 1-based source line of the `fn` keyword (artifact-format §9 span provenance)
+	// is_extern marks a §02/§26 `extern fn` — a body-less native-boundary
+	// declaration whose definition lives outside funpack (the §17 seam's
+	// `extern fn arena() -> Arena` accessors). An extern fn carries a signature
+	// (params + return_type) but no body, so the body-typing pass skips it: its
+	// implementation is the engine's, not the source's.
+	is_extern:   bool,
 }
 
 // Behavior_Node is a pure transition attached to a thing (spec §06 §3):
@@ -213,7 +219,8 @@ Parse_Error :: enum {
 	None,
 	Unexpected_Token,
 	Unexpected_End,
-	Wrong_Case, // an identifier whose casing class is wrong for its grammar position (spec §02)
+	Wrong_Case,   // an identifier whose casing class is wrong for its grammar position (spec §02)
+	Missing_Else, // an if-EXPRESSION with no `else` arm (spec §02 §5): both arms are required in value position, so a missing alternate has no type to unify against — never a silent fallback (grammar/fun.ebnf §15 IfExpr)
 }
 
 Parser :: struct {
@@ -323,6 +330,15 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		append(&out.signals, node)
 	case .Fn:
 		node := parse_fn_decl(p) or_return
+		node.doc = pending.doc
+		node.gtags = pending.gtags[:]
+		append(&out.fns, node)
+	case .Extern:
+		// `extern fn` (§02/§26) is the body-less native-boundary fn the §17 seam
+		// declares (`extern fn arena_spawns() -> [Spawn]`). It joins ast.fns
+		// alongside ordinary fns — same export surface, same term partition — and
+		// carries is_extern so the body-typing pass skips it.
+		node := parse_extern_fn_decl(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		append(&out.fns, node)
@@ -646,6 +662,34 @@ parse_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 	return fn, .None
 }
 
+// parse_extern_fn_decl parses an `extern fn name(p: T, …) -> R` declaration
+// (spec §02 §7, §26): a body-less native-boundary function. It shares the name
+// and signature grammar with parse_fn_decl but stops at the return type — an
+// extern fn has NO `{ … }` body, so the next token is the statement terminator,
+// not a brace. The node lands in ast.fns with is_extern set, so it exports its
+// name like any fn while the body-typing pass skips it. This is the §17 seam's
+// `extern fn arena() -> Arena` form, whose implementation the engine provides.
+parse_extern_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
+	extern_tok := expect(p, .Extern) or_return
+	expect(p, .Fn) or_return
+	name := expect(p, .Ident) or_return
+	if name.class != .Snake_Case {
+		return node, .Wrong_Case
+	}
+	params := parse_param_list(p) or_return
+	expect(p, .Arrow) or_return
+	return_type := parse_type_ref(p) or_return
+	terminate_statement(p) or_return
+	return Fn_Node {
+			name = name.text,
+			params = params,
+			return_type = return_type,
+			line = extern_tok.line,
+			is_extern = true,
+		},
+		.None
+}
+
 // parse_fn_rest parses everything after a function's name: the parameter
 // list, the `-> R` return type, and the brace-delimited statement body.
 // Shared by top-level fns and the behavior `step` entry point.
@@ -742,7 +786,14 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 	if name.class != .Snake_Case {
 		return node, .Wrong_Case
 	}
-	expect(p, .On) or_return
+	// `on` is a contextual keyword: it lexes as an Ident, so the header
+	// separator is recognized by text here (the same by-text recognition the
+	// reserved `step` entry point uses below). A behavior header missing the
+	// `on` separator is an Unexpected_Token.
+	on_tok := expect(p, .Ident) or_return
+	if on_tok.text != "on" {
+		return node, .Unexpected_Token
+	}
 	target := expect_type_name(p) or_return
 	expect(p, .L_Brace) or_return
 	skip_newlines(p)

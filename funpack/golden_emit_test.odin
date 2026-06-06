@@ -252,21 +252,44 @@ emit_pong_and_load_golden :: proc(t: ^testing.T) -> (emitted: string, golden: st
 // report_first_byte_diff logs the first byte index where the emitted artifact
 // diverges from the golden, with the surrounding line context, so a byte
 // mismatch points straight at the offending section rather than just failing
-// the equality. It runs only on a failing comparison.
+// the equality. It runs only on a failing comparison — it emits an error-level
+// log, which the test runner counts as a failure, so a passing path must never
+// call it. The pure locator first_byte_diff_index does the work; this wraps it
+// with the line context and the log.
 report_first_byte_diff :: proc(emitted: string, golden: string) {
-	limit := min(len(emitted), len(golden))
+	idx := first_byte_diff_index(emitted, golden)
+	if idx >= 0 {
+		log.errorf(
+			"first byte diff at %d: emitted line %q vs golden line %q",
+			idx,
+			line_around(emitted, idx),
+			line_around(golden, idx),
+		)
+		return
+	}
+	log.errorf(
+		"artifacts agree on first %d bytes but differ in length (emitted %d, golden %d)",
+		min(len(emitted), len(golden)),
+		len(emitted),
+		len(golden),
+	)
+}
+
+// first_byte_diff_index returns the index of the first byte at which `a` and `b`
+// differ, or -1 when they are byte-identical OR when one is a prefix of the other
+// (they agree on every shared byte and only the lengths differ — a length-only
+// divergence has no diverging byte to point at). It is the pure locator behind
+// report_first_byte_diff and the byte-divergence assertion the seam-compare
+// stale proof checks, kept side-effect-free so a test can locate the divergence
+// without emitting the error-level log that the diagnostic reporter does.
+first_byte_diff_index :: proc(a: string, b: string) -> int {
+	limit := min(len(a), len(b))
 	for i in 0 ..< limit {
-		if emitted[i] != golden[i] {
-			log.errorf(
-				"first byte diff at %d: emitted line %q vs golden line %q",
-				i,
-				line_around(emitted, i),
-				line_around(golden, i),
-			)
-			return
+		if a[i] != b[i] {
+			return i
 		}
 	}
-	log.errorf("artifacts agree on first %d bytes but differ in length (emitted %d, golden %d)", limit, len(emitted), len(golden))
+	return -1
 }
 
 // line_around returns the whole line containing byte index i, so a diff report

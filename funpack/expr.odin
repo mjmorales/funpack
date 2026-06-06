@@ -4,8 +4,13 @@
 // call/member → atom. `and`/`or`/`not` are word operators carried as Ident
 // tokens, so the table keys them by text; `with` (the record-update
 // operator, spec §02 §5) binds just above unary and just below the
-// call/member postfix loop. `if` parses as the early-return statement form
-// in fn bodies (parser.odin), not as an expression atom here. Indexing
+// call/member postfix loop. `if` is BOTH the early-return statement form in
+// fn bodies (parser.odin parse_if_stmt) AND a value expression atom here
+// (parse_if_expr): the value form `if cond { expr } else { expr }` requires
+// both arms — a missing `else` is the precise parse error .Missing_Else, never
+// a fallback — and the typechecker unifies the two arm types (the "if/match
+// pullout" of grammar/fun.ll1.md: `if` at statement head dispatches to the
+// statement construct, as an Atom elsewhere it is the expression). Indexing
 // `xs[i]` and ranges have no production and parse as errors; `match` parses
 // structurally (spec §02 §5), is typed by typecheck.odin's match_check, and
 // is proven exhaustive by the gate stage (gates.odin).
@@ -27,6 +32,7 @@ Expr :: union {
 	^With_Expr,
 	^Match_Expr,
 	^Tuple_Expr,
+	^If_Expr,
 }
 
 Int_Lit_Expr :: struct {
@@ -142,18 +148,20 @@ Pattern_Kind :: enum {
 
 // Pattern is a match-arm pattern. type_name/variant are set for the three
 // variant forms (Bare_Variant, Variant_Binds, Struct_Binds); binders holds
-// the payload binder names for Variant_Binds (positional) and Struct_Binds
-// (field-pun: a binder name equals the bound field name), empty otherwise;
-// elements holds the positional sub-patterns for the Tuple form (empty
-// otherwise). A tuple sub-pattern is itself a Pattern — snake's only depth
-// is one variant-with-binder plus one bare binder per position, but the
-// shape recurses by construction.
+// the field-pun binder names for Struct_Binds (a binder name equals the bound
+// field name), empty otherwise; elements holds the positional sub-patterns for
+// both the Tuple form AND the Variant_Binds payload (grammar/fun.ebnf §13:
+// `VariantPat ::= '(' Pattern (',' Pattern)* ')'` — each payload position is a
+// full nested Pattern, so AppMsg::Hud(HudMsg::Coin) is a Variant_Binds whose one
+// element is a Bare_Variant, and Option::Some(v) a Variant_Binds whose one
+// element is a Bare_Binder). A sub-pattern is itself a Pattern — the §21 §3
+// router nests one variant inside another, but the shape recurses by construction.
 Pattern :: struct {
 	kind:      Pattern_Kind,
 	type_name: string,    // variant forms: the enum type (`Option`, `Dir`)
 	variant:   string,    // variant forms: the variant (`Some`, `Box`)
-	binders:   []string,  // Variant_Binds / Struct_Binds: payload binder names
-	elements:  []Pattern, // Tuple: positional sub-patterns
+	binders:   []string,  // Struct_Binds: field-pun binder names
+	elements:  []Pattern, // Tuple / Variant_Binds: positional sub-patterns
 }
 
 // Match_Arm is one `pattern => body` arm; the body is a single
@@ -173,6 +181,22 @@ Match_Arm :: struct {
 Match_Expr :: struct {
 	scrutinee: Expr,
 	arms:      []Match_Arm,
+}
+
+// If_Expr is the value-producing conditional `if cond { then } else { else }`
+// (spec §02 §5; grammar/fun.ebnf §15 IfExpr). Distinct from the parser.odin
+// If_Node early-return STATEMENT — this is an EXPRESSION atom usable anywhere a
+// value is (a `let` RHS, a `return` value, a match-arm body, a call argument).
+// Both arms are REQUIRED in expression position: the parser rejects a missing
+// `else` with .Missing_Else, and the typechecker unifies the two arm types
+// (a disagreement is .Type_Mismatch). Each arm is a single value expression —
+// the minimal value-block `{ expr }` shape, mirroring the lambda body and the
+// match-arm body — and the else arm may itself be another If_Expr, so an
+// else-if chain `if a { … } else if b { … } else { … }` nests by construction.
+If_Expr :: struct {
+	cond:        Expr,
+	then_branch: Expr,
+	else_branch: Expr,
 }
 
 // With_Expr is the record-update operator `value with { field: v, … }`
@@ -341,6 +365,8 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		return parse_lambda(p)
 	case .Match:
 		return parse_match(p)
+	case .If:
+		return parse_if_expr(p)
 	case .Ident:
 		return parse_name_atom(p, tok)
 	}
@@ -414,6 +440,54 @@ parse_match :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	return node, .None
 }
 
+// parse_if_expr parses the value-producing conditional `if cond { then } else
+// { else }` (spec §02 §5; grammar/fun.ebnf §15 IfExpr), with the leading `if`
+// already consumed by parse_atom. The condition parses in the no-struct-literal
+// context — a trailing `{` opens the consequent block, not a record literal off
+// the condition — mirroring the match-scrutinee and if-statement rules. Each
+// arm is a single value expression wrapped in a `{ … }` value-block; the `else`
+// arm is REQUIRED in expression position (a missing `else` is .Missing_Else,
+// never a silent fallback). The else arm is either a block or a chained `if`
+// (`else if …`), so an else-if ladder nests through parse_atom by construction.
+parse_if_expr :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	saved := p.no_record_brace
+	p.no_record_brace = true
+	cond := parse_expression(p) or_return
+	p.no_record_brace = saved
+	then_branch := parse_if_branch(p) or_return
+	// The `else` arm is mandatory for the value form — the consequent's type
+	// has no counterpart to unify against without it (spec §02 §5).
+	if peek_kind(p) != .Else {
+		return nil, .Missing_Else
+	}
+	p.pos += 1
+	// `else if …` chains as a nested If_Expr; a plain `else { … }` is a value
+	// block. Both reach parse_atom (the if-expr arm), so the chain nests with
+	// no special case here.
+	else_branch: Expr
+	if peek_kind(p) == .If {
+		else_branch = parse_expression(p) or_return
+	} else {
+		else_branch = parse_if_branch(p) or_return
+	}
+	node := new(If_Expr, context.temp_allocator)
+	node^ = If_Expr{cond = cond, then_branch = then_branch, else_branch = else_branch}
+	return node, .None
+}
+
+// parse_if_branch parses one `{ expr }` value-block arm of an if-expression —
+// a single value expression between braces, the same minimal value-block shape
+// the lambda body and match-arm body use (spec §02 §5). Interior newlines are
+// skipped so a multi-line arm `{\n expr \n}` parses, mirroring the lambda body.
+parse_if_branch :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	expect(p, .L_Brace) or_return
+	skip_newlines(p)
+	value := parse_expression(p) or_return
+	skip_newlines(p)
+	expect(p, .R_Brace) or_return
+	return value, .None
+}
+
 // parse_pattern parses the pattern set (spec §02 §5; grammar §13): wildcard
 // `_`, a variant `Type::Variant`, a variant with payload binders
 // `Type::Variant(a, b)`, a struct-payload field-pun `Type::Variant{f, …}`, or
@@ -441,12 +515,12 @@ parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
 	}
 	#partial switch peek_kind(p) {
 	case .L_Paren:
-		binders := parse_pattern_binders(p) or_return
+		elements := parse_pattern_payload(p) or_return
 		return Pattern{
 			kind = .Variant_Binds,
 			type_name = tok.text,
 			variant = variant.text,
-			binders = binders,
+			elements = elements,
 		}, .None
 	case .L_Brace:
 		binders := parse_struct_pattern_binders(p) or_return
@@ -486,18 +560,21 @@ parse_struct_pattern_binders :: proc(p: ^Parser) -> (binders: []string, err: Par
 	return list[:], .None
 }
 
-// parse_pattern_binders parses `(a, b)` — the payload binder names of a
-// variant pattern. Binders are value names, so snake_case; nested
-// patterns are out of this minimal scope.
-parse_pattern_binders :: proc(p: ^Parser) -> (binders: []string, err: Parse_Error) {
+// parse_pattern_payload parses a variant pattern's `( … )` payload (grammar/
+// fun.ebnf §13: `VariantPat ::= '(' Pattern (',' Pattern)* ')'`): each position
+// is a full sub-pattern, so a bare snake_case binder (`v` in Option::Some(v),
+// `m` in AppMsg::Hud(m)) is a Bare_Binder and a nested variant (`HudMsg::Coin`
+// in AppMsg::Hud(HudMsg::Coin)) is a Bare_Variant — the §21 §3 router's
+// tagged-union destructure. Each position reuses parse_tuple_sub_pattern, the
+// same position-parser the tuple form uses (a leading snake_case Ident is a
+// binder, anything else a full pattern), so a nested pattern recurses by
+// construction.
+parse_pattern_payload :: proc(p: ^Parser) -> (elements: []Pattern, err: Parse_Error) {
 	expect(p, .L_Paren) or_return
-	list := make([dynamic]string, 0, 4, context.temp_allocator)
+	list := make([dynamic]Pattern, 0, 4, context.temp_allocator)
 	for peek_kind(p) != .R_Paren {
-		name := expect(p, .Ident) or_return
-		if name.class != .Snake_Case {
-			return nil, .Wrong_Case
-		}
-		append(&list, name.text)
+		sub := parse_tuple_sub_pattern(p) or_return
+		append(&list, sub)
 		if peek_kind(p) == .Comma {
 			p.pos += 1
 		} else {

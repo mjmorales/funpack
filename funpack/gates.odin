@@ -54,13 +54,21 @@ Gate_Unit :: struct {
 // order — tests, then top-level fns, then behavior steps. The order is
 // stable so a multi-violation source always reports the same first offender.
 // A behavior step's unit name is the behavior's own name, not the reserved
-// `step`, so the diagnostic anchors on the behavior the author wrote.
+// `step`, so the diagnostic anchors on the behavior the author wrote. An
+// `extern fn` (§26) has NO body — its implementation is the engine's, not the
+// source's — so it is not a code unit the structural gates score: skipping it
+// keeps the §17 seam's two body-less accessors (`extern fn arena_spawns`,
+// `extern fn arena`) from colliding on the duplication gate (two empty bodies
+// hash identically), which would be a false positive since neither carries code.
 gate_units :: proc(ast: Ast) -> []Gate_Unit {
 	units := make([dynamic]Gate_Unit, 0, len(ast.tests) + len(ast.fns) + len(ast.behaviors), context.temp_allocator)
 	for test in ast.tests {
 		append(&units, Gate_Unit{name = test.name, body = test.body})
 	}
 	for fn in ast.fns {
+		if fn.is_extern {
+			continue
+		}
 		append(&units, Gate_Unit{name = fn.name, body = fn.body})
 	}
 	for behavior in ast.behaviors {
@@ -268,6 +276,18 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 				return err
 			}
 		}
+	case ^If_Expr:
+		// An if-expression hosts its condition and both arm expressions, any of
+		// which can nest a lambda.
+		if err := arity_walk_expr(e.cond); err != .None {
+			return err
+		}
+		if err := arity_walk_expr(e.then_branch); err != .None {
+			return err
+		}
+		if err := arity_walk_expr(e.else_branch); err != .None {
+			return err
+		}
 	}
 	return .None
 }
@@ -364,6 +384,14 @@ count_short_circuit :: proc(expr: Expr) -> int {
 		for element in e.elements {
 			count += count_short_circuit(element)
 		}
+	case ^If_Expr:
+		// An if-EXPRESSION is itself a decision point (one branch), counted the
+		// same one the early-return `if` statement is in body_decisions, plus any
+		// short-circuits in its condition and the two arm expressions.
+		count += 1
+		count += count_short_circuit(e.cond)
+		count += count_short_circuit(e.then_branch)
+		count += count_short_circuit(e.else_branch)
 	}
 	return count
 }
@@ -561,6 +589,14 @@ nesting_depth :: proc(expr: Expr) -> int {
 		for element in e.elements {
 			inner = max(inner, nesting_depth(element))
 		}
+		return inner
+	case ^If_Expr:
+		// An if-expression is control nesting like a match: the condition is the
+		// discriminant computed before the branch opens, so it sits at the if's
+		// own level (it passes through), while each arm body deepens by one.
+		inner := nesting_depth(e.cond)
+		inner = max(inner, 1 + nesting_depth(e.then_branch))
+		inner = max(inner, 1 + nesting_depth(e.else_branch))
 		return inner
 	}
 	// An atom (literal or bare name) is a leaf — depth zero.
@@ -806,6 +842,18 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 			canon_expr(b, element, alpha)
 		}
 		strings.write_byte(b, ')')
+	case ^If_Expr:
+		// The `if` kind tag plus its three ordered children (condition, then
+		// arm, else arm) canonicalizes the conditional, so two if-expressions
+		// collide on a dup_class only when condition AND both arms are
+		// structurally identical (modulo alpha-renaming).
+		strings.write_string(b, "(if ")
+		canon_expr(b, e.cond, alpha)
+		strings.write_byte(b, ' ')
+		canon_expr(b, e.then_branch, alpha)
+		strings.write_byte(b, ' ')
+		canon_expr(b, e.else_branch, alpha)
+		strings.write_byte(b, ')')
 	case nil:
 		strings.write_string(b, "(nil)")
 	}
@@ -861,10 +909,18 @@ canon_pattern :: proc(b: ^strings.Builder, pattern: Pattern) {
 		strings.write_byte(b, ' ')
 		strings.write_string(b, pattern.variant)
 	case .Variant_Binds:
+		// The (type, variant) shape plus each payload sub-pattern's shape (grammar
+		// §13: the payload is nested Patterns), so AppMsg::Hud(HudMsg::Coin) and
+		// AppMsg::Hud(m) get distinct tags — a specific nested variant is a narrower
+		// arm than a binding one, and the dup gate must tell them apart.
 		strings.write_string(b, "binds ")
 		strings.write_string(b, pattern.type_name)
 		strings.write_byte(b, ' ')
 		strings.write_string(b, pattern.variant)
+		for sub in pattern.elements {
+			strings.write_byte(b, ' ')
+			canon_pattern(b, sub)
+		}
 	case .Struct_Binds:
 		// The field-pun binder names are alpha-renamed in the body, so the
 		// structural tag carries only the (type, variant) shape — two
@@ -894,9 +950,16 @@ push_pattern_binders :: proc(alpha: ^[dynamic]string, pattern: Pattern) {
 	switch pattern.kind {
 	case .Wildcard, .Bare_Variant:
 		// No binders.
-	case .Variant_Binds, .Struct_Binds, .Bare_Binder:
+	case .Struct_Binds, .Bare_Binder:
 		for binder in pattern.binders {
 			append(alpha, binder)
+		}
+	case .Variant_Binds:
+		// The payload binders live in the nested sub-patterns now (grammar §13), so
+		// recurse into each — Option::Some(v) / AppMsg::Hud(m) push their binder,
+		// AppMsg::Hud(HudMsg::Coin) pushes none.
+		for sub in pattern.elements {
+			push_pattern_binders(alpha, sub)
 		}
 	case .Tuple:
 		for sub in pattern.elements {
@@ -1126,6 +1189,17 @@ match_walk_expr :: proc(expr: Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 			}
 		}
 		return .None
+	case ^If_Expr:
+		// A match buried in an if-expression's condition or either arm is still
+		// checked for exhaustiveness (the arena's `Option::Some(b) => if … {
+		// Option::Some(p.pos) } else { Option::Some(b) }` arm body is an if-expr).
+		if err := match_walk_expr(e.cond, sets); err != .None {
+			return err
+		}
+		if err := match_walk_expr(e.then_branch, sets); err != .None {
+			return err
+		}
+		return match_walk_expr(e.else_branch, sets)
 	}
 	return .None
 }

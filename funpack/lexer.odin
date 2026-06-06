@@ -22,13 +22,24 @@ Token_Kind :: enum {
 	Let,
 	Return,
 	Fn,
+	// `extern` is the §02/§26 native-boundary opener: `extern fn name(…) -> R`
+	// declares a body-less function whose definition lives outside funpack — the
+	// generated §17 seam's symbol-table/spawn-list accessors (`extern fn arena()
+	// -> Arena`). It is a reserved keyword (grammar/fun.ll1.md §2) and a distinct
+	// FIRST(Declaration) opener, so it tokenizes here like every other unique
+	// declaration keyword rather than riding as a contextual Ident.
+	Extern,
 	Match,
 	// §06/§07 declaration and expression keywords. thing/singleton/signal
 	// are contextual leading keywords in the spec (§06: `let thing = …`
 	// stays legal); on the golden surface they appear only in declaration
 	// position, so they tokenize as reserved openers here. `on` is the
 	// behavior-target preposition, `with` the record-update operator, `if`
-	// the early-return statement opener.
+	// the conditional opener (both the early-return statement and the value
+	// expression, spec §02 §5), `else` the required value-expression alternate
+	// arm (`if cond { … } else { … }`); `else` is a reserved keyword (it never
+	// names a value on the golden surface, so reserving it preserves §02
+	// one-name-one-meaning).
 	Thing,
 	Singleton,
 	Behavior,
@@ -38,7 +49,9 @@ Token_Kind :: enum {
 	Pipeline,
 	With,
 	If,
-	On,
+	Else,
+	// `on` is a contextual keyword (the behavior-header separator), not a token
+	// kind: it lexes as an Ident and parse_behavior recognizes it by text.
 	// names and literals
 	Ident,
 	Int_Lit,
@@ -202,7 +215,11 @@ newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
 
 update_nesting :: proc(n: ^Nesting, kind: Token_Kind, prev: Token_Kind) {
 	#partial switch kind {
-	case .Match, .If, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .On, .Arrow:
+	case .Match, .If, .Else, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .Arrow:
+		// `behavior … on Ball {` keeps its body brace a block via the .Behavior
+		// arming above — `on` lexes as an Ident now and need not re-arm here, as
+		// nothing consumes block_pending before the body `{`. `.Else` arms the
+		// alternate arm's `{` as a block the same way `.If` arms the consequent's.
 		n.block_pending = true
 	case .L_Paren:
 		// A paren frame suppresses newlines (call args / grouping / tuple are
@@ -357,6 +374,8 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .Return, text = text}, i
 	case "fn":
 		return Token{kind = .Fn, text = text}, i
+	case "extern":
+		return Token{kind = .Extern, text = text}, i
 	case "match":
 		return Token{kind = .Match, text = text}, i
 	case "thing":
@@ -377,9 +396,15 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .With, text = text}, i
 	case "if":
 		return Token{kind = .If, text = text}, i
-	case "on":
-		return Token{kind = .On, text = text}, i
+	case "else":
+		return Token{kind = .Else, text = text}, i
 	}
+	// `on` is a CONTEXTUAL keyword, not a reserved one: it is the behavior-header
+	// separator (`behavior gate_logic on Door`) yet a perfectly valid §02
+	// snake_case value name elsewhere — a field (`thing Switch { on: Bool }`), a
+	// member read (`s.on`), a let. Lexing it as an Ident keeps the value-name
+	// namespace whole; parse_behavior recognizes the separator by text, the same
+	// by-text recognition `step` and the .fcfg keywords (`project`/`use`) use.
 	return Token{kind = .Ident, text = text, class = classify_ident(text)}, i
 }
 

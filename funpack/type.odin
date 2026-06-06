@@ -52,6 +52,7 @@ Engine_Kind :: enum {
 	Key,      // §23 keyboard-key enum
 	Stick,    // §23 gamepad-stick enum
 	Color,    // §20 palette enum
+	Flip,     // §20 sprite-mirroring enum (None | X | Y | XY), Draw::Sprite.flip
 	// §11 physics surface: the Body record, its kind/shape enums, and the
 	// engine-routed Trigger signal.
 	Body,            // §11 §2 physics body record (engine.physics)
@@ -69,6 +70,61 @@ Engine_Kind :: enum {
 	Settings,        // §24 §2 per-machine preferences record
 	AccessOpts,      // §24 §2 accessibility sub-record (reduce_motion)
 	Result,          // prelude Result[_, _] — matched Ok/Err with wildcard payloads
+	// §08 reference + navigation surface: the typed reference the §17 level
+	// bake resolves names to, the nav read/query handle, the route value a
+	// Path-field default carries, and the query-failure variant.
+	Ref,             // §08 typed reference Ref[T] (engine.world; Door.gate, Ref[Player])
+	Nav,             // §08 nav read/query handle (Nav.path queries a route)
+	Path,            // §08 route value (a thing-field default; Path.advance walks it)
+	NavError,        // §08 nav query-failure variant
+	// §19/§26 the shared typed asset handles (engine.assets): the typed constant a
+	// generated seam binds (`let coin: MeshHandle = MeshHandle{name: "coin"}`) and
+	// the result of the manifest-checked string constructor (mesh/texture/sound/
+	// atlas). Each is a single-field record over a String `name` — its schema is
+	// surface_engine_record.
+	MeshHandle,      // §26 a baked-mesh handle (mesh("…"); a model bakes to a mesh)
+	TextureHandle,   // §26 a baked-texture handle (texture("…"))
+	SoundHandle,     // §26 a baked-sound handle (sound("…"))
+	AtlasHandle,     // §26 a sprite-atlas handle (atlas("…"); cell/frame accessors)
+	// §16 §7 the rig/animation surface (engine.anim): the engine-provided
+	// skeleton, the part→slot mesh bindings, the sparse bone→Transform pose, and
+	// the bone/slot/side enums a pose generator and the generated rig seam name.
+	// A behavior reads none of these by field — they are opaque engine values
+	// composed through their builders (Pose.blend, PartSet.bind) and consumed by
+	// Draw3::Rigged. The pose generators are pure fixed-point, so every replay is
+	// bit-identical.
+	Skeleton,        // §16 §7 the bone topology (Skeleton.humanoid()/empty())
+	PartSet,         // §16 §7 the part→slot mesh bindings (PartSet.empty().bind(…))
+	Slot,            // §16 §7 a part-attach slot enum (Slot::Torso, Slot::Head, …)
+	Side,            // §16 §7 the mirror-side enum (Side::L | Side::R)
+	Pose,            // §16 §7 the sparse bone→Transform pose (Pose.empty().set(…))
+	Bone,            // §16 §7 a skeleton bone enum (Bone::LUpperLeg, Bone::Torso, …)
+	Transform,       // §16 §7 a per-bone transform value (rot_x(s), up(d))
+	// §20 §1 the 3D render command (engine.render3): the Draw3 draw-list a render3
+	// behavior emits, distinct from the §20 2D Draw command — render3 owns Draw3,
+	// it never reuses the .Draw kind. Material is the PBR surface a Draw3::Mesh
+	// names (Color is owned by engine.render and re-exported to render3, §26 §3).
+	Draw3,           // §20 §1 the 3D draw command (Camera/Light/Plane/Rigged/Mesh)
+	Material,        // §20 §1 the PBR material a Draw3::Mesh carries
+	// §22 §2 the sustained-audio scene value (engine.audio): the keyed Audio track
+	// an `audio:` behavior projects, built with Audio.track(key, clip) and the
+	// .pitch/.gain/.bus builders, plus the Bus group enum the one-shot Sound
+	// regime (5.2) shares. Audio is the level-triggered twin of the edge-triggered
+	// one-shot Sound command.
+	Audio,           // §22 §2 the keyed sustained-audio track (Audio.track(…).bus(…))
+	Bus,             // §22 §4 the audio bus group enum (Bus::Sfx, shared with Sound)
+	// §22 §1 the ONE-SHOT sound command record (engine.audio): Sound.sfx(clip)
+	// + .gain/.pitch/.bus/.at — the edge-triggered twin of the sustained Audio
+	// regime above; both regimes share the Bus mixer-group enum.
+	Sound,           // §22 §1 one-shot sound command record (engine.audio)
+	// §21 ui surface (engine.ui): the UI navigation-action enum and the project
+	// style-token vocabulary handle. View[Msg] already exists above (the §08 read
+	// table doubles as the §21 retained-mode view tree, re-exported by engine.ui
+	// per §26). UiAction is the closed focus/gamepad action set
+	// (NavUp/NavDown/NavLeft/NavRight/Confirm/Cancel); Theme is the opaque
+	// style-token vocabulary a class= token is checked against.
+	UiAction,        // §21 §5 closed UI navigation-action enum (engine.ui)
+	Theme,           // §21 §1 opaque project style-token vocabulary handle
 }
 
 // User_Type is the nominal handle for a name the source declares

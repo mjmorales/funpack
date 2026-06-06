@@ -1,0 +1,169 @@
+// The §19 §3 typed asset-handle seam emitter: the pure manifest → assets.gen.fun
+// source-TEXT serializer. It walks the manifest's closed registry in committed
+// order and emits one typed handle constant per registered asset — the
+// file-leading @doc, the single `import engine.assets.{…}` line carrying exactly
+// the handle types the assets use (in first-use order), then per asset a
+// @doc-headed, @gtag("assets")-tagged `let NAME: KINDHandle = KINDHandle{name:
+// "NAME"}` declaration. The byte target is the committed exemplar
+// funpack-spec/examples/assets/gen/assets.gen.fun.
+//
+// DOC SOURCING (the manifest-only signature's one wrinkle): the manifest carries
+// the registry truth — the closed name set, each asset's kind, and the canonical
+// order — but NOT the per-asset prose @doc strings, which are authored content no
+// upstream artifact (manifest reader §2, importers §4) produces. So the per-asset
+// docs ride alongside the manifest as a parallel []string the baker supplies, one
+// entry per manifest entry in the same order, exactly as the .flvl/arena seam
+// hand-carries its declaration docs in the Seam model. The manifest stays the
+// load-bearing input (it alone fixes which handles exist and their order); the
+// docs are the authored layer over it.
+//
+// DISTINCT FROM gen_emit.odin's emit_gen_fun: that emitter renders the shared
+// `data`/`extern fn` Seam shape the .flvl/arena seam uses (no @gtag, no blank
+// after the file doc, no `let` handle constants). The asset seam is a different
+// canonical byte shape — handle constants with an @gtag tag and a blank line after
+// the file doc — so it is its own emitter, reusing only the shared canonical-text
+// discipline (the @doc("…") line form, deterministic slice-order walks, a single
+// trailing newline), not the Seam_Decl union.
+//
+// PURITY (spec §09, §29): emission is a pure function of (manifest, docs). Every
+// layout decision is mechanical — the import-member list is the kinds in
+// first-use order, the per-asset block is fixed, the walks are slice-order — so
+// the emitter reads no clock, no path, no host bytes, and two emissions of the
+// same inputs are byte-identical.
+package funpack
+
+import "core:strings"
+
+// ASSETS_SEAM_MODULE_DOC is the file-leading @doc of every assets.gen.fun: fixed
+// boilerplate independent of which assets are registered, naming the seam's
+// logical module (`assets`) and the edit-the-source-not-this-file invariant the
+// closed registry enforces. Verbatim from the committed exemplar's line 1,
+// em-dash and apostrophe included.
+ASSETS_SEAM_MODULE_DOC :: "Generated typed asset handles, baked from assets.manifest — edit the source, not this file; a rename propagates as a compile error in every reader. Module name is the seam's logical name, assets."
+
+// ASSETS_SEAM_GTAG is the registered-tag every asset handle carries: the
+// @gtag("assets") line is the P7 closed-registry marker — the seam declares each
+// handle under the `assets` tag, the same tag the string constructors check
+// against, so a name not in this set resolves to nothing and is a compile error.
+ASSETS_SEAM_GTAG :: "assets"
+
+// asset_handle_type maps an Asset_Kind onto its engine.assets handle type — the
+// type token the `let NAME: KINDHandle` declaration and the import list use. The
+// mapping is total over the closed kind set: Model → MeshHandle (a model bakes to
+// a mesh), Atlas → AtlasHandle, Audio → SoundHandle. A new kind is a deliberate
+// addition here in lockstep with the Asset_Kind enum.
+asset_handle_type :: proc(kind: Asset_Kind) -> string {
+	switch kind {
+	case .Model:
+		return "MeshHandle"
+	case .Atlas:
+		return "AtlasHandle"
+	case .Audio:
+		return "SoundHandle"
+	}
+	return ""
+}
+
+// emit_assets_gen_fun renders the manifest's closed registry to canonical
+// assets.gen.fun source bytes, byte-matching the committed exemplar. `docs` is the
+// parallel per-asset @doc prose, one entry per manifest entry in the same order
+// (the manifest carries the registry, the baker carries the authored docs). Layout
+// mirrors the exemplar exactly: the file-leading @doc, a blank line, the single
+// `import engine.assets.{…}` line, a blank line, then per asset a @doc line, an
+// @gtag("assets") line, the `let NAME: KINDHandle = KINDHandle{name: "NAME"}`
+// declaration, and a trailing blank line — so the file ends in exactly one
+// newline. The returned string is allocated in `allocator`.
+//
+// `docs` shorter than the manifest emits an empty doc for the unaligned tail
+// (never a crash); the byte-match path always supplies a doc per entry.
+emit_assets_gen_fun :: proc(manifest: Asset_Manifest, docs: []string, allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
+
+	// File-leading @doc, then a blank line before the import (the assets seam
+	// offsets its module doc from the imports, unlike the .flvl/arena seam).
+	emit_seam_doc(&b, ASSETS_SEAM_MODULE_DOC)
+	strings.write_string(&b, "\n")
+
+	// One import line carrying exactly the handle types the registered assets
+	// use, in first-use order across the manifest — so an assets file with no
+	// atlas would not import AtlasHandle.
+	emit_assets_import(&b, manifest)
+
+	for entry, i in manifest.entries {
+		// A blank line before every handle block: the same separator the import
+		// gets, so the first handle is offset from the import and every adjacent
+		// pair is offset from each other.
+		strings.write_string(&b, "\n")
+		doc := i < len(docs) ? docs[i] : ""
+		emit_asset_handle(&b, entry, doc)
+	}
+	return strings.to_string(b)
+}
+
+// emit_assets_import writes the single `import engine.assets.{T0, T1, …}` line:
+// the handle types the registered assets use, deduplicated and ordered by first
+// use across the manifest entries. An assets file using only models imports only
+// MeshHandle; the exemplar uses all three because it registers one of each kind.
+emit_assets_import :: proc(b: ^strings.Builder, manifest: Asset_Manifest) {
+	types := assets_used_handle_types(manifest, context.temp_allocator)
+	strings.write_string(b, "import engine.assets.{")
+	for type, i in types {
+		if i > 0 {
+			strings.write_string(b, ", ")
+		}
+		strings.write_string(b, type)
+	}
+	strings.write_string(b, "}\n")
+}
+
+// assets_used_handle_types returns the engine.assets handle types the manifest's
+// assets use, deduplicated and in first-use order (the order each kind first
+// appears walking entries by index). First-use order, not enum order, is the byte
+// contract: it is a deterministic function of the committed manifest, so the same
+// manifest always yields the same import line.
+assets_used_handle_types :: proc(manifest: Asset_Manifest, allocator := context.allocator) -> []string {
+	types := make([dynamic]string, 0, 3, allocator)
+	for entry in manifest.entries {
+		type := asset_handle_type(entry.kind)
+		if !slice_contains_string(types[:], type) {
+			append(&types, type)
+		}
+	}
+	return types[:]
+}
+
+// emit_asset_handle writes one asset's three-line block: the authored @doc, the
+// @gtag("assets") closed-registry tag, and the `let NAME: KINDHandle =
+// KINDHandle{name: "NAME"}` typed handle constant. The handle's value is keyed on
+// the asset's own registered name, so the typed constant (assets.NAME) and the
+// string constructor (kind("NAME")) resolve to the same handle.
+emit_asset_handle :: proc(b: ^strings.Builder, entry: Asset_Entry, doc: string) {
+	emit_seam_doc(b, doc)
+	strings.write_string(b, "@gtag(\"")
+	strings.write_string(b, ASSETS_SEAM_GTAG)
+	strings.write_string(b, "\")\n")
+
+	type := asset_handle_type(entry.kind)
+	strings.write_string(b, "let ")
+	strings.write_string(b, entry.name)
+	strings.write_string(b, ": ")
+	strings.write_string(b, type)
+	strings.write_string(b, " = ")
+	strings.write_string(b, type)
+	strings.write_string(b, "{name: \"")
+	strings.write_string(b, entry.name)
+	strings.write_string(b, "\"}\n")
+}
+
+// slice_contains_string reports whether `items` already holds `needle` — the
+// dedup probe for the first-use import-type ordering. A linear scan: the handle
+// type set is at most the three closed kinds, so order-preserving membership over
+// a tiny slice beats a set whose iteration order the import line cannot depend on.
+slice_contains_string :: proc(items: []string, needle: string) -> bool {
+	for item in items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}

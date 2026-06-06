@@ -11,6 +11,8 @@
 // failure, so it gates evaluation like every prior stage.
 package funpack
 
+import "core:os"
+
 // Ast is the parsed module: the file-leading @doc, the imports, the §06/§07
 // top-level declarations the golden pong surface exercises, and the test
 // blocks. The declaration slices are parse-only — no name resolution and
@@ -67,6 +69,23 @@ Pipeline_Error :: enum {
 }
 
 run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline_Error) {
+	return run_module_pipeline(source, Module_Index{})
+}
+
+// run_module_pipeline_named is run_module_pipeline_evaled with the module's own §15
+// name threaded through to the evaluator — the namespace half of an intra-module
+// const's cycle key, so a self/mutual const cycle within THIS module is caught
+// fail-closed by the evaluator's visited set. run_module_pipeline_evaled is the
+// nameless projection (module = "") the single-source path keeps using.
+run_module_pipeline_named :: proc(
+	source: string,
+	index: Module_Index,
+	modules: []Module_Eval,
+	module: string,
+) -> (
+	report: Test_Report,
+	err: Pipeline_Error,
+) {
 	tokens := stage_lex(source)
 	ast, parse_err := stage_parse(tokens)
 	if parse_err != .None {
@@ -76,7 +95,7 @@ run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline
 	if gate_err != .None {
 		return Test_Report{}, .Gate_Failed
 	}
-	typed, type_err := stage_typecheck(ast)
+	typed, type_err := stage_typecheck_indexed(ast, index)
 	if type_err != .None {
 		return Test_Report{}, .Typecheck_Failed
 	}
@@ -86,8 +105,133 @@ run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline
 	if verdict := stage_flatten(typed); verdict.err != .None {
 		return Test_Report{}, .Closure_Failed
 	}
-	result := stage_evaluate(typed)
+	result := stage_evaluate_indexed(typed, modules, module)
 	return stage_report(result), .None
+}
+
+// run_module_pipeline threads one module's source through the stage pipeline
+// against a project-wide module index, so a module importing a sibling user module
+// (the arena seam, the arena schema) types cross-module. An empty index reduces it
+// to the single-source run_test_pipeline — every user-module import is
+// .Unknown_Module — so the all-OFF trees (pong/snake/numerics) are unchanged. The
+// stage order is identical to the single-source path; only the typecheck stage
+// becomes index-aware (stage_typecheck_indexed), and the downstream stages read
+// the Typed_Ast unchanged (their cross-module names are already resolved into it).
+run_module_pipeline :: proc(source: string, index: Module_Index) -> (report: Test_Report, err: Pipeline_Error) {
+	return run_module_pipeline_evaled(source, index, nil)
+}
+
+// run_module_pipeline_evaled is run_module_pipeline plus a project-wide EVAL
+// surface (one Module_Eval per sibling user module), so a test reaching a
+// cross-module const (`assets.coin_sfx`) evaluates it in its owning module's
+// environment. modules = nil reduces it to run_module_pipeline — the cross-module
+// eval arm never fires — so the single-source and per-module typecheck paths are
+// unchanged. Only the evaluate stage becomes eval-surface-aware; every prior stage
+// is identical.
+run_module_pipeline_evaled :: proc(source: string, index: Module_Index, modules: []Module_Eval) -> (report: Test_Report, err: Pipeline_Error) {
+	return run_module_pipeline_named(source, index, modules, "")
+}
+
+// Project_Pipeline_Error is closed with the source-set staging error a multi-module
+// run can hit BEFORE any module compiles: the project-wide index build itself can
+// fail to read or parse a source. It composes with Pipeline_Error — Index_Failed
+// is the index-build tier, then each module rides the per-module Pipeline_Error —
+// so the test verb maps both to the §29 §3 exit-2 compile-error class.
+Project_Pipeline_Error :: enum {
+	None,
+	Index_Failed,
+}
+
+// Project_Report is one multi-module run's outcome: the summed assertion counts
+// across every module, the first module to hit a compile error (with its
+// per-module Pipeline_Error and source path), and the index-build verdict. A
+// compile error halts the run — a malformed module has no well-defined pipeline,
+// so the §29 §3 all-or-nothing contract refuses the whole project rather than
+// reporting a partial pass.
+Project_Report :: struct {
+	passed:        int,
+	failed:        int,
+	module_err:    Pipeline_Error,     // the first module's compile error (.None when every module compiled)
+	failed_path:   string,             // the source path of module_err (when set)
+	index_err:     Project_Pipeline_Error,
+}
+
+// run_project_pipeline runs every source of a §14 project through the pipeline
+// against ONE project-wide module index, so a multi-module project (the arena
+// example: arena_world + the arena seam + arena_game) types end-to-end. It builds
+// the typed index once (resolving each module's exported fn signatures, the
+// cross-module call surface), then runs each source's pipeline against it,
+// short-circuiting on the first module's compile error (a compile error is never a
+// counted failure, §29 §3) and summing the assertion counts otherwise. A source
+// the index cannot read or parse fails the build before any module compiles.
+run_project_pipeline :: proc(sources: []Source) -> Project_Report {
+	modules := make([]string, len(sources), context.temp_allocator)
+	asts := make([]Ast, len(sources), context.temp_allocator)
+	source_texts := make([]string, len(sources), context.temp_allocator)
+	for source, i in sources {
+		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
+		if read_err != nil {
+			return Project_Report{index_err = .Index_Failed, failed_path = source.path}
+		}
+		ast, parse_err := stage_parse(stage_lex(string(bytes)))
+		if parse_err != .None {
+			return Project_Report{module_err = .Parse_Failed, failed_path = source.path}
+		}
+		modules[i] = source.module
+		asts[i] = ast
+		source_texts[i] = string(bytes)
+	}
+
+	index := build_module_index_typed(modules, asts)
+	eval_modules := build_module_eval_surface(modules, asts, index)
+
+	report := Project_Report{}
+	for source, i in sources {
+		// The module's own §15 name threads to the evaluator so an intra-module
+		// const cycle in THIS module keys on its module (and a cross-module cycle
+		// shares the same visited set through the eval surface).
+		module_report, err := run_module_pipeline_named(source_texts[i], index, eval_modules, source.module)
+		if err != .None {
+			report.module_err = err
+			report.failed_path = source.path
+			return report
+		}
+		report.passed += module_report.passed
+		report.failed += module_report.failed
+	}
+	return report
+}
+
+// build_module_eval_surface resolves each module's (ast, env, bindings) against the
+// project-wide typed index — the EVAL surface a cross-module const reference reads
+// to evaluate a let initializer in its OWNING module's environment. It is the
+// evaluation analogue of build_module_index_typed: the name+type index typed the
+// cross-module reference, this carries the values behind it. A module whose own
+// imports/env do not resolve gets an empty (ast, env, bindings) entry — its own
+// per-module typecheck already failed the project, so the entry is never read. The
+// shared eval_modules slice is back-referenced on every entry so a const RHS can
+// itself reach a further sibling module.
+build_module_eval_surface :: proc(modules: []string, asts: []Ast, index: Module_Index) -> []Module_Eval {
+	entries := make([]Module_Eval, len(asts), context.temp_allocator)
+	for ast, i in asts {
+		entries[i] = Module_Eval{module = modules[i], ast = ast}
+		bindings, bind_err := resolve_imports_indexed(ast, index)
+		if bind_err != .None {
+			continue
+		}
+		env, env_err := resolve_env(ast, bindings, index)
+		if env_err != .None {
+			continue
+		}
+		entries[i].env = env
+		entries[i].bindings = bindings
+	}
+	// Back-reference the shared surface onto every entry so a cross-module const
+	// whose initializer reaches a further sibling resolves through the same slice.
+	for i in 0 ..< len(entries) {
+		entries[i].modules = entries
+	}
+	return entries
 }
 
 stage_report :: proc(result: Eval_Result) -> Test_Report {

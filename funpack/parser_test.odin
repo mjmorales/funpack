@@ -114,8 +114,12 @@ test_parse_match_well_formed :: proc(t: ^testing.T) {
 	testing.expect_value(t, m.arms[0].pattern.kind, Pattern_Kind.Variant_Binds)
 	testing.expect_value(t, m.arms[0].pattern.type_name, "Option")
 	testing.expect_value(t, m.arms[0].pattern.variant, "Some")
-	testing.expect_value(t, len(m.arms[0].pattern.binders), 1)
-	testing.expect_value(t, m.arms[0].pattern.binders[0], "p")
+	// The payload is now a nested sub-pattern (grammar §13): Option::Some(p) carries
+	// one element, the Bare_Binder `p`.
+	testing.expect_value(t, len(m.arms[0].pattern.elements), 1)
+	testing.expect_value(t, m.arms[0].pattern.elements[0].kind, Pattern_Kind.Bare_Binder)
+	testing.expect_value(t, len(m.arms[0].pattern.elements[0].binders), 1)
+	testing.expect_value(t, m.arms[0].pattern.elements[0].binders[0], "p")
 	testing.expect_value(t, m.arms[1].pattern.kind, Pattern_Kind.Bare_Variant)
 	testing.expect_value(t, m.arms[2].pattern.kind, Pattern_Kind.Wildcard)
 	// The scrutinee is the bare value name, not a record literal off it.

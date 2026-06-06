@@ -29,6 +29,7 @@ Type_Error :: enum {
 	Name_Collision,   // one name, two meanings (spec §02): a user decl colliding with an import or another user decl, or two imports binding one name to different declarations
 	Unregistered_Layer, // a Body's layer/mask names a value outside any CollisionLayer-kinded enum's variant set (spec §11 §5)
 	Reserved_Signal_Name, // a user signal declared under an engine-routed name (Trigger/Contact, spec §11 §4) — the runtime routes those names per-instance, so the user signal would silently never broadcast
+	Tuple_Pattern_Arity,  // a tuple match pattern whose positional arity disagrees with its Tuple-typed scrutinee (spec §02 §5) — a 2-binder pattern over a 3-tuple can never bind coherently
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -37,29 +38,45 @@ Type_Error :: enum {
 Scope :: map[string]Type
 
 // Check_Ctx threads the file-level import resolutions, the resolved
-// user-declaration environment (resolve.odin), and the current scope through
-// expression checking. expected_return is the body sweep's declared `-> R`
-// type, against which a `return`/`if`-arm `return` is checked; it is nil in
-// the test sweep, where statements are let/assert with no return. Every map
-// is lookup-only below stage_typecheck.
+// user-declaration environment (resolve.odin), the project-wide module index
+// (for a cross-module body type/call), and the current scope through expression
+// checking. expected_return is the body sweep's declared `-> R` type, against
+// which a `return`/`if`-arm `return` is checked; it is nil in the test sweep,
+// where statements are let/assert with no return. index is empty (single-source)
+// for stage_typecheck and the project-wide index for stage_typecheck_indexed —
+// the seam a cross-module call (`arena_spawns()`) resolves its signature through.
+// Every map is lookup-only below stage_typecheck.
 Check_Ctx :: struct {
 	bindings:        Bindings,
 	env:             Type_Env,
+	index:           Module_Index,
 	scope:           Scope,
 	expected_return: Type,
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
-	bindings := resolve_imports(ast) or_return
-	env := resolve_env(ast, bindings) or_return
+	return stage_typecheck_indexed(ast, Module_Index{})
+}
+
+// stage_typecheck_indexed types a module against a project-wide Module_Index so a
+// cross-module import (a sibling user module's type or fn) resolves: imports bind
+// through resolve_imports_indexed, the env resolves cross-module type refs, and a
+// cross-module CALL resolves its signature off the index (call_check). An empty
+// index reduces this to the single-source stage_typecheck — every user-module
+// import is .Unknown_Module. It is the multi-module project pipeline's per-module
+// typecheck (the arena example: arena_game types against arena_world + the arena
+// seam), keeping the single-source entry unchanged for every non-importing module.
+stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index) -> (typed: Typed_Ast, err: Type_Error) {
+	bindings := resolve_imports_indexed(ast, index) or_return
+	env := resolve_env(ast, bindings, index) or_return
 	// The §11 §5 layer registry is a pure-AST membership rule (it reads the
 	// CollisionLayer enums' variant sets, not resolved value types), so it runs
 	// BEFORE body/test typing — an unregistered layer surfaces as the precise
 	// Unregistered_Layer diagnostic rather than the generic Type_Mismatch the
 	// later variant check would raise for the same out-of-set reference.
 	check_layer_registry(ast) or_return
-	check_bodies(bindings, env, ast) or_return
-	check_tests(bindings, env, ast) or_return
+	check_bodies(bindings, env, index, ast) or_return
+	check_tests(bindings, env, index, ast) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
 }
 
@@ -182,6 +199,10 @@ layer_walk_expr :: proc(expr: Expr, registry: []string) -> Type_Error {
 		for element in e.elements {
 			layer_walk_expr(element, registry) or_return
 		}
+	case ^If_Expr:
+		layer_walk_expr(e.cond, registry) or_return
+		layer_walk_expr(e.then_branch, registry) or_return
+		layer_walk_expr(e.else_branch, registry) or_return
 	}
 	return .None
 }
@@ -227,28 +248,42 @@ check_layer_value :: proc(expr: Expr, registry: []string) -> Type_Error {
 // check_bodies types every top-level fn body and behavior step body against
 // its parameters (spec §06 §3: a behavior's params are its reads, its return
 // its writes). bindings()/setup() are top-level fns, so they ride this sweep.
-check_bodies :: proc(bindings: Bindings, env: Type_Env, ast: Ast) -> Type_Error {
+// The index threads through so a body's param/return type naming a sibling
+// module's type (a behavior step over View[Switch] where Switch is imported)
+// resolves cross-module.
+check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast) -> Type_Error {
 	for fn in ast.fns {
-		check_fn_body(bindings, env, fn) or_return
+		// An `extern fn` (§26) has no body — its implementation is the engine's,
+		// not the source's — so there is nothing to type. Its signature is still
+		// resolved (resolve_env) and exported (collect_module_exports); only the
+		// body-typing pass skips it.
+		if fn.is_extern {
+			continue
+		}
+		check_fn_body(bindings, env, index, fn) or_return
 	}
 	for behavior in ast.behaviors {
-		check_fn_body(bindings, env, behavior.step) or_return
+		check_fn_body(bindings, env, index, behavior.step) or_return
 	}
 	return .None
 }
 
 // check_fn_body types one fn/step body: it seeds a scope with the declared
 // parameters as their resolved types, threads the declared return type as the
-// body's expected_return, and types the statement sequence.
-check_fn_body :: proc(bindings: Bindings, env: Type_Env, fn: Fn_Node) -> Type_Error {
+// body's expected_return, and types the statement sequence. The index resolves a
+// param/return type naming a sibling user module's type (so a `setup() -> [Spawn]`
+// or a `step(self: Door, switches: View[Switch])` whose element is imported
+// grounds correctly).
+check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Type_Error {
 	ctx := Check_Ctx {
 		bindings        = bindings,
 		env             = env,
+		index           = index,
 		scope           = make(Scope, context.temp_allocator),
-		expected_return = resolve_type_ref(env, bindings, fn.return_type),
+		expected_return = resolve_type_ref(env, bindings, fn.return_type, index),
 	}
 	for param in fn.params {
-		ctx.scope[param.name] = resolve_type_ref(env, bindings, param.type)
+		ctx.scope[param.name] = resolve_type_ref(env, bindings, param.type, index)
 	}
 	return check_statements(ctx, fn.body)
 }
@@ -284,10 +319,12 @@ check_statements :: proc(ctx: Check_Ctx, body: []Statement) -> Type_Error {
 
 // check_tests types every test block: a let binds its inferred type, an
 // assert demands a Bool expression. The §04 name.step form and the closed
-// return-form literals reach the same expr_check the bodies use.
-check_tests :: proc(bindings: Bindings, env: Type_Env, ast: Ast) -> Type_Error {
+// return-form literals reach the same expr_check the bodies use. The index
+// threads through so a test calling a cross-module fn (or constructing a
+// sibling-module type) resolves it.
+check_tests :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast) -> Type_Error {
 	for test in ast.tests {
-		ctx := Check_Ctx{bindings = bindings, env = env, scope = make(Scope, context.temp_allocator)}
+		ctx := Check_Ctx{bindings = bindings, env = env, index = index, scope = make(Scope, context.temp_allocator)}
 		for stmt in test.body {
 			switch node in stmt {
 			case Let_Node:
@@ -365,8 +402,35 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		return match_check(ctx, e)
 	case ^Tuple_Expr:
 		return tuple_check(ctx, e)
+	case ^If_Expr:
+		return if_check(ctx, e)
 	}
 	return nil, .Unsupported_Expr
+}
+
+// if_check types a value-producing if-expression (spec §02 §5): the condition
+// must be Bool, and the two arm types must unify — the unified type is the
+// if-expression's type, exactly like a two-armed match. Both arms are required
+// by the parser (.Missing_Else), so this pass always sees a then AND an else; a
+// disagreement between them is .Type_Mismatch (no implicit promotion). The else
+// arm may itself be an If_Expr (an else-if chain), which types recursively
+// through this same arm.
+if_check :: proc(ctx: Check_Ctx, e: ^If_Expr) -> (type: Type, err: Type_Error) {
+	cond := expr_check(ctx, e.cond) or_return
+	if !is_ground(cond, .Bool) {
+		return nil, .Type_Mismatch
+	}
+	then_type := expr_check(ctx, e.then_branch) or_return
+	else_type := expr_check(ctx, e.else_branch) or_return
+	if !types_compatible(then_type, else_type) {
+		return nil, .Type_Mismatch
+	}
+	// A nil arm (the unknown) lets the other arm carry the type, mirroring the
+	// match unification — types_compatible already accepted the pair.
+	if then_type == nil {
+		return else_type, .None
+	}
+	return then_type, .None
 }
 
 // tuple_check types a tuple expression `(a, b, …)` into a Tuple_Type over its
@@ -438,8 +502,13 @@ binary_check :: proc(ctx: Check_Ctx, e: ^Binary_Expr) -> (type: Type, err: Type_
 	}
 	#partial switch e.op.kind {
 	case .Lt, .Lt_Eq, .Gt, .Gt_Eq:
-		// Ordering compares two same-typed numeric sides into a Bool.
-		if !is_numeric_ground(lhs) || !types_compatible(lhs, rhs) {
+		// Ordering compares two same-typed numeric sides into a Bool. A nil side
+		// is the unknown that unifies (an Option::None-seeded fold's binder reads
+		// nil), so the compare grounds on the CONCRETE side: at least one side must
+		// be numeric, and the sides must unify (types_compatible treats nil as
+		// unifying), mirroring the §02 nil-as-unknown convention the rest of the
+		// type system uses.
+		if !(is_numeric_ground(lhs) || is_numeric_ground(rhs)) || !types_compatible(lhs, rhs) {
 			return nil, .Type_Mismatch
 		}
 		return Ground_Type.Bool, .None
@@ -464,7 +533,19 @@ binary_check :: proc(ctx: Check_Ctx, e: ^Binary_Expr) -> (type: Type, err: Type_
 // the §10 kernel lowers: two same-typed numeric scalars, a vector with a
 // matching vector, or a vector scaled by a numeric scalar on either side.
 // There is no Int→Fixed promotion — the two scalar sides must already agree.
+// A nil side is the §02 unknown that unifies (an Option::None-seeded fold's
+// binder reads nil, so `b - from` in arena's nearest_player has a nil `b`): the
+// op grounds on the CONCRETE side, mirroring how types_compatible treats nil as
+// unifying everywhere else.
 arithmetic_check :: proc(lhs, rhs: Type) -> (type: Type, err: Type_Error) {
+	// A nil (unknown) side grounds the op on the concrete side: `nil op X` and
+	// `X op nil` both keep X. Both-nil keeps nil (still unknown).
+	if lhs == nil {
+		return rhs, .None
+	}
+	if rhs == nil {
+		return lhs, .None
+	}
 	if is_numeric_ground(lhs) && types_compatible(lhs, rhs) {
 		return lhs, .None
 	}
@@ -489,6 +570,16 @@ arithmetic_check :: proc(lhs, rhs: Type) -> (type: Type, err: Type_Error) {
 // associated constant (Fixed.MAX, Quat.identity).
 member_check :: proc(ctx: Check_Ctx, e: ^Member_Expr) -> (type: Type, err: Type_Error) {
 	if recv, is_name := e.receiver.(^Name_Expr); is_name {
+		// A whole-module handle receiver (`import assets`, then `assets.coin_sfx`)
+		// selects an exported member of the sibling user module — a module-qualified
+		// const grounds to its declared let type before any value path. A let const
+		// member resolves through the index; any other exported member (a type, a fn)
+		// or an UNKNOWN member of the handle's module rejects precisely here, the
+		// user-module analogue of a member-group import's .Unknown_Member, so the
+		// receiver is never re-typed as a value (a .Module handle is not a value).
+		if member_type, handled, member_err := module_member_check(ctx, recv.name, e.member); handled {
+			return member_type, member_err
+		}
 		// A Type-name receiver imported through the surface selects an
 		// associated constant before any value path.
 		if _, in_scope := ctx.scope[recv.name]; !in_scope {
@@ -505,6 +596,40 @@ member_check :: proc(ctx: Check_Ctx, e: ^Member_Expr) -> (type: Type, err: Type_
 	return field_member(ctx, receiver, e.member)
 }
 
+// module_member_check types `handle.member` where `handle` is a whole-module
+// `.Module` binding of a sibling user module (the §19 `import assets` seam). It is
+// the term-position cross-module access arm: a .Const member grounds to its
+// declared let type (`assets.coin_sfx` → SoundHandle); a member the module exports
+// but is not a const (a type, a fn) is .Unsupported_Expr (a module-qualified type
+// or fn name is not a value here); a member the module does NOT export is the
+// precise .Unknown_Member reject, closing the handle's member surface exactly as a
+// member-group import closes its member list. handled = false when the receiver is
+// not a user-module handle (a local binding, a stdlib type-name, a value receiver),
+// leaving member_check's other arms untouched.
+module_member_check :: proc(ctx: Check_Ctx, handle: string, member: string) -> (type: Type, handled: bool, err: Type_Error) {
+	// A local binding of the handle name shadows the module handle (it is a value
+	// receiver, not a module-qualified access) — never re-route those here.
+	if _, in_scope := ctx.scope[handle]; in_scope {
+		return nil, false, .None
+	}
+	kind, exported, handle_known := module_member_kind(ctx.index, ctx.bindings, handle, member)
+	if !handle_known {
+		return nil, false, .None
+	}
+	if !exported {
+		return nil, true, .Unknown_Member
+	}
+	if kind != .Const {
+		// An exported type or fn reached through `handle.NAME` is not a value.
+		return nil, true, .Unsupported_Expr
+	}
+	const_type, found := module_const_type(ctx.index, ctx.bindings, handle, member)
+	if !found {
+		return nil, true, .Unknown_Member
+	}
+	return const_type, true, .None
+}
+
 // associated_member types a Type-name receiver's associated constant (a
 // constructor is only meaningful applied, so it is Unsupported_Expr here).
 associated_member :: proc(type_name: string, member: string) -> (type: Type, err: Type_Error) {
@@ -518,12 +643,26 @@ associated_member :: proc(type_name: string, member: string) -> (type: Type, err
 	return associated, .None
 }
 
+// ctx_record_schema resolves a record type's field schema by name, the local env
+// FIRST and the project-wide index second — so a CROSS-MODULE record (an imported
+// Switch's `on`, a `Switch{…}` literal, a `with` over an imported record) reads
+// its declared fields from the owning module's schema. A local declaration of the
+// same name wins (the §02 collision check already rejected a local decl shadowing
+// an import), and a name that is neither local nor a cross-module record is the
+// caller's miss.
+ctx_record_schema :: proc(ctx: Check_Ctx, name: string) -> (schema: Record_Schema, found: bool) {
+	if record, declared := ctx.env.records[name]; declared {
+		return record, true
+	}
+	return module_record_schema(ctx.index, ctx.bindings, name)
+}
+
 // field_member reads a member off a value's type: a user record's declared
 // field, a Vec2/Vec3 component, or an engine resource's member (Time.dt).
 field_member :: proc(ctx: Check_Ctx, receiver: Type, member: string) -> (type: Type, err: Type_Error) {
 	switch r in receiver {
 	case ^User_Type:
-		if record, found := ctx.env.records[r.name]; found {
+		if record, found := ctx_record_schema(ctx, r.name); found {
 			if field, has := record_field_type(record, member); has {
 				return field, .None
 			}
@@ -591,9 +730,16 @@ record_check :: proc(ctx: Check_Ctx, e: ^Record_Expr) -> (type: Type, err: Type_
 			engine_record_check(ctx, e, fields) or_return
 			return result, .None
 		}
+		// A CROSS-MODULE user record literal (`Switch{pos:…, on:…}` over a Switch
+		// imported from arena_world): the name binds as a sibling-module .Type_Name,
+		// so its field schema comes from the project-wide index, not the local env.
+		if record, declared := module_record_schema(ctx.index, ctx.bindings, e.type_name); declared {
+			user_record_check(ctx, e, record) or_return
+			return user_type_of(record.type_name, record.kind), .None
+		}
 		return nil, .Unsupported_Expr
 	}
-	if record, declared := ctx.env.records[e.type_name]; declared {
+	if record, declared := ctx_record_schema(ctx, e.type_name); declared {
 		user_record_check(ctx, e, record) or_return
 		return user_type_of(record.type_name, record.kind), .None
 	}
@@ -707,7 +853,10 @@ with_check :: proc(ctx: Check_Ctx, e: ^With_Expr) -> (type: Type, err: Type_Erro
 	if !is_user {
 		return nil, .Type_Mismatch
 	}
-	record, declared := ctx.env.records[user.name]
+	// The base may be a local OR a cross-module record (a chase step returns
+	// `self with {pos:…}` over a Hunter imported from arena_world), so the schema
+	// resolves through the local env first and the project-wide index second.
+	record, declared := ctx_record_schema(ctx, user.name)
 	if !declared {
 		return nil, .Type_Mismatch
 	}
@@ -746,7 +895,8 @@ match_check :: proc(ctx: Check_Ctx, e: ^Match_Expr) -> (type: Type, err: Type_Er
 	scrutinee := expr_check(ctx, e.scrutinee) or_return
 	result: Type
 	for arm in e.arms {
-		binders, types := pattern_binders(arm.pattern, scrutinee)
+		check_pattern_arity(arm.pattern, scrutinee) or_return
+		binders, types := pattern_binders(ctx.env, arm.pattern, scrutinee)
 		saved := overlay_scope(&ctx.scope, binders, types)
 		body, body_err := expr_check(ctx, arm.body)
 		restore_scope(&ctx.scope, binders, saved)
@@ -763,6 +913,35 @@ match_check :: proc(ctx: Check_Ctx, e: ^Match_Expr) -> (type: Type, err: Type_Er
 	return result, .None
 }
 
+// check_pattern_arity rejects a tuple match pattern whose positional arity
+// disagrees with its Tuple-typed scrutinee (spec §02 §5): a `(a, b)` pattern
+// over a 3-tuple, or a `(a, b, c)` pattern over a 2-tuple, can never bind
+// coherently, so it is .Tuple_Pattern_Arity rather than a silent nil-bound
+// position. The check recurses into each sub-pattern against the matching
+// tuple element, so a nested tuple `((x, y), z)` is arity-checked at every
+// level. A tuple pattern over a non-tuple (or nil/unknown) scrutinee is left to
+// the resolver/gate — this pass owns only the arity rule when both sides are
+// tuples; a non-tuple pattern (variant, wildcard, bare binder) has no arity to
+// disagree on and passes through.
+check_pattern_arity :: proc(pattern: Pattern, scrutinee: Type) -> Type_Error {
+	if pattern.kind != .Tuple {
+		return .None
+	}
+	tuple, is_tuple := scrutinee.(^Tuple_Type)
+	if !is_tuple {
+		// The scrutinee's tuple shape is unknown here — arity is the gate's /
+		// resolver's concern, not a precise mismatch this pass can claim.
+		return .None
+	}
+	if len(pattern.elements) != len(tuple.elements) {
+		return .Tuple_Pattern_Arity
+	}
+	for sub, i in pattern.elements {
+		check_pattern_arity(sub, tuple.elements[i]) or_return
+	}
+	return .None
+}
+
 // pattern_binders computes an arm pattern's binder names and their types against
 // the scrutinee, recursing through a tuple pattern. A Variant_Binds over Option
 // binds the single payload to the option's element; a Bare_Binder binds its name
@@ -773,20 +952,24 @@ match_check :: proc(ctx: Check_Ctx, e: ^Match_Expr) -> (type: Type, err: Type_Er
 // `next` to the second tuple element). A bare-variant or wildcard pattern binds
 // nothing; a user-enum variant carries no payload on this surface, so it
 // contributes none either.
-pattern_binders :: proc(pattern: Pattern, scrutinee: Type) -> (names: []string, types: []Type) {
+pattern_binders :: proc(env: Type_Env, pattern: Pattern, scrutinee: Type) -> (names: []string, types: []Type) {
 	out_names := make([dynamic]string, 0, 4, context.temp_allocator)
 	out_types := make([dynamic]Type, 0, 4, context.temp_allocator)
-	collect_pattern_binders(pattern, scrutinee, &out_names, &out_types)
+	collect_pattern_binders(env, pattern, scrutinee, &out_names, &out_types)
 	return out_names[:], out_types[:]
 }
 
 // collect_pattern_binders appends one pattern's binders and their types onto the
 // shared accumulators, recursing into a tuple pattern's positions against the
-// matching tuple scrutinee element. An unknown scrutinee shape (a nil position,
-// or a tuple pattern whose arity disagrees) binds the names to nil — the typing
-// pass leaves an unresolvable binder as the nil unknown rather than rejecting,
-// since exhaustiveness/shape is the gate's and resolver's concern.
+// matching tuple scrutinee element. A tuple pattern over a Tuple scrutinee is
+// already arity-checked by check_pattern_arity (run per arm in match_check), so
+// a disagreeing arity never reaches here; an unknown scrutinee shape (a nil
+// position, or a tuple pattern over a non-tuple scrutinee) binds the names to
+// nil — the typing pass leaves an unresolvable binder as the nil unknown rather
+// than rejecting, since exhaustiveness/shape is the gate's and resolver's
+// concern.
 collect_pattern_binders :: proc(
+	env: Type_Env,
 	pattern: Pattern,
 	scrutinee: Type,
 	names: ^[dynamic]string,
@@ -802,15 +985,23 @@ collect_pattern_binders :: proc(
 			append(types, scrutinee)
 		}
 	case .Variant_Binds:
-		// A variant-with-binders over an Option binds the single payload to the
-		// option's element type.
-		binder_type: Type
-		if option, is_option := scrutinee.(^Option_Type); is_option && len(pattern.binders) == 1 {
-			binder_type = option.elem
+		// A variant-with-payload binds through its one payload sub-pattern (grammar
+		// §13: each payload position is a full Pattern): the position's type is the
+		// Option's element (Option::Some(v)) or the §21 §3 user tagged-union variant's
+		// declared payload (AppMsg::Hud(m), SettingsMsg::SetVolume(v)), and the
+		// sub-pattern recurses against it — a Bare_Binder binds `m`/`v` to that type,
+		// a nested Bare_Variant (AppMsg::Hud(HudMsg::Coin)) binds nothing. The surface
+		// carries one payload per variant, so the single sub-pattern takes the
+		// position's type.
+		position_type: Type
+		if option, is_option := scrutinee.(^Option_Type); is_option {
+			position_type = option.elem
+		} else if schema, declared := env.enums[pattern.type_name]; declared {
+			payload, _ := enum_variant_payload(schema, pattern.variant)
+			position_type = payload
 		}
-		for binder in pattern.binders {
-			append(names, binder)
-			append(types, binder_type)
+		for sub in pattern.elements {
+			collect_pattern_binders(env, sub, position_type, names, types)
 		}
 	case .Struct_Binds:
 		// A struct-payload field-pun (`Shape2::Box{size}`) binds each field name
@@ -839,7 +1030,7 @@ collect_pattern_binders :: proc(
 			if is_tuple && i < len(tuple.elements) {
 				element = tuple.elements[i]
 			}
-			collect_pattern_binders(sub, element, names, types)
+			collect_pattern_binders(env, sub, element, names, types)
 		}
 	}
 }
@@ -885,6 +1076,16 @@ call_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 	if binding.kind != .Func {
 		return nil, .Type_Mismatch
 	}
+	// A call to a fn imported from a SIBLING user module (arena_game's setup calls
+	// the arena seam's `arena_spawns()`): the project-wide index carries the
+	// imported fn's resolved signature, so the call checks its args against the
+	// cross-module params and yields the cross-module result type. The stdlib
+	// surface owns no name a user module exports, so this arm precedes the
+	// combinator/overload arms (a user fn is never a combinator).
+	if signature, is_cross := module_call_signature(ctx.index, ctx.bindings, name.name); is_cross {
+		check_args(ctx, e, signature.params) or_return
+		return signature.result, .None
+	}
 	if comb_type, handled, comb_err := combinator_call_check(ctx, name.name, e); handled {
 		return comb_type, comb_err
 	}
@@ -911,6 +1112,9 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "first":
 		t, fe := first_check(ctx, e)
 		return t, true, fe
+	case "or_else":
+		t, oe := or_else_check(ctx, e)
+		return t, true, oe
 	case "map":
 		t, me := map_check(ctx, e)
 		return t, true, me
@@ -935,6 +1139,9 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "len":
 		t, le := len_check(ctx, e)
 		return t, true, le
+	case "get":
+		t, ge := get_check(ctx, e)
+		return t, true, ge
 	case "pick":
 		t, pe := pick_check(ctx, e)
 		return t, true, pe
@@ -1097,6 +1304,26 @@ len_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error
 	return Ground_Type.Int, .None
 }
 
+// get_check types get(source, i) (spec §08 engine.list): a List[T] or a View[T]
+// and an Int index, yielding Option[T] — total, None on out-of-range. The hud
+// `get(App{}.settings_view().volume_presets, 1)` reads the second preset row off
+// a [SettingsPresetRow], so the element type drives the Option payload.
+get_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	index := expr_check(ctx, e.args[1]) or_return
+	elem, ok := source_element(source)
+	if !ok {
+		return nil, .Type_Mismatch
+	}
+	if !is_ground(index, .Int) {
+		return nil, .Type_Mismatch
+	}
+	return option_of(elem), .None
+}
+
 // pick_check types pick(list, rng) (spec §04 §1, engine.rand): a List[T] and the
 // threaded Rng handle, yielding the draw pair (Option[T], Rng) — the first
 // result is an option of the list's element (None when the list is empty), the
@@ -1168,21 +1395,24 @@ combinator_result :: proc(ctx: Check_Ctx, arg: Expr, params: []Type) -> (result:
 	return func.result, .None
 }
 
-// fold is (List[T], A, (A, T) -> A) -> A: T unifies from the list's element
+// fold is (source, A, (A, T) -> A) -> A: T unifies from the source's element
 // type, A from the init, and the accumulator function is either a literal
 // lambda inferred as (A, T) or a bare fn whose recorded signature is checked
-// against (A, T) -> A — the form tally's fold(goals, self, add_goal) takes.
+// against (A, T) -> A — the form tally's fold(goals, self, add_goal) takes. The
+// source is a List[T] OR a §08 View[T] (arena's nearest_player folds
+// `players: View[Player]` into an Option[Vec2]), so the element comes through
+// source_element, the same read both first and map use.
 fold_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
 	if len(e.args) != 3 {
 		return nil, .Type_Mismatch
 	}
-	list_type := expr_check(ctx, e.args[0]) or_return
+	source := expr_check(ctx, e.args[0]) or_return
 	init := expr_check(ctx, e.args[1]) or_return
-	list, is_list := list_type.(^List_Type)
-	if !is_list {
+	elem, ok := source_element(source)
+	if !ok {
 		return nil, .Type_Mismatch
 	}
-	combinator_check(ctx, e.args[2], {init, list.elem}, init) or_return
+	combinator_check(ctx, e.args[2], {init, elem}, init) or_return
 	return init, .None
 }
 
@@ -1209,6 +1439,33 @@ first_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Err
 	}
 	combinator_check(ctx, e.args[1], {elem}, Ground_Type.Bool) or_return
 	return option_of(elem), .None
+}
+
+// or_else is (Option[T], T) -> T (spec §26): it unwraps an Option to its element
+// or falls back to a default, the form arena's nearest_player uses
+// (`or_else(best, from)` over an Option[Vec2] best). The fallback (the second arg)
+// drives T — it is always a concrete value, while the Option may be the
+// element-unknown Option[nil] from an Option::None fold init — so the rule reads
+// T off the fallback, requires the first arg to be an Option whose element unifies
+// with T, and yields T. A non-Option first arg or a fallback that does not match
+// the Option's element is a Type_Mismatch.
+or_else_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	opt_type := expr_check(ctx, e.args[0]) or_return
+	fallback := expr_check(ctx, e.args[1]) or_return
+	option, is_option := opt_type.(^Option_Type)
+	if !is_option {
+		return nil, .Type_Mismatch
+	}
+	// The Option's element must unify with the fallback (a nil element — the
+	// Option::None placeholder — unifies with any fallback, mirroring the other
+	// combinators' nil-element handling).
+	if !types_compatible(option.elem, fallback) {
+		return nil, .Type_Mismatch
+	}
+	return fallback, .None
 }
 
 // source_element reads the element type of a read source — a View[T] read
@@ -1397,11 +1654,26 @@ static_method_check :: proc(
 	return signature.result, true, .None
 }
 
-// value_method_check types a method off a typed value receiver: an engine
-// resource's method (Input.value, Bindings.axis) or a ground type's method
-// (the Quat method set).
+// value_method_check types a method off a typed value receiver, in the §02 §4
+// resolution order: (1) UFCS — a top-level user fn whose first param has the
+// receiver's type, called with the receiver as that argument (App{}.pause_view(),
+// self.hud_view()); then (2) an engine value method — View.map (the §21 §3
+// element-inferred re-tag) before the fixed-signature surface table (Sound/Audio
+// builders, View.class/when, Input queries); then (3) a ground type's method (the
+// Quat set). UFCS is tried first so a user projection fn shadows nothing — a
+// receiver type has no surface method of the same name on this surface.
 value_method_check :: proc(ctx: Check_Ctx, receiver: Type, member: string, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if ufcs, handled, ufcs_err := ufcs_method_check(ctx, receiver, member, e); handled {
+		return ufcs, ufcs_err
+	}
 	if engine, is_engine := receiver.(^Engine_Type); is_engine {
+		// §21 §3 View.map(into) re-tags every message a View[A] can emit through
+		// into: fn(A) -> B, yielding View[B] — the element B is read off the function
+		// argument's result, so it is element-inferred here, not a fixed-signature
+		// surface row (the result type depends on the call site).
+		if engine.kind == .View && member == "map" {
+			return view_map_check(ctx, engine, e)
+		}
 		if signature, found := surface_engine_method(engine, member); found {
 			method := signature.(^Func_Type)
 			check_args(ctx, e, method.params) or_return
@@ -1419,6 +1691,50 @@ value_method_check :: proc(ctx: Check_Ctx, receiver: Type, member: string, e: ^C
 	}
 	check_args(ctx, e, signature.params) or_return
 	return signature.result, .None
+}
+
+// ufcs_method_check types the §02 §4 UFCS call `recv.f(args)` → `f(recv, args)`:
+// a top-level user fn whose first parameter's type unifies with the receiver is
+// called with the receiver prepended to the arguments. handled is false when no
+// such user fn exists (the caller falls through to engine/ground methods). The
+// hud projections (hud_view/pause_view/settings_view, each `fn(self: App)`) are
+// reached this way as App{}.pause_view() / self.hud_view(). A user fn whose first
+// param does NOT match the receiver is not a UFCS candidate, so it falls through.
+ufcs_method_check :: proc(ctx: Check_Ctx, receiver: Type, member: string, e: ^Call_Expr) -> (type: Type, handled: bool, err: Type_Error) {
+	term, found := env_term_name(ctx.env, member)
+	if !found || term.kind != .Fn || term.signature == nil || len(term.signature.params) == 0 {
+		return nil, false, .None
+	}
+	if !types_compatible(receiver, term.signature.params[0]) {
+		return nil, false, .None
+	}
+	// Check the remaining arguments against the fn's tail parameters (the
+	// receiver fills the first), then yield the fn's result.
+	tail := term.signature.params[1:]
+	if len(e.args) != len(tail) {
+		return nil, true, .Type_Mismatch
+	}
+	for want, i in tail {
+		got := expr_check(ctx, e.args[i]) or_return
+		if !types_compatible(got, want) {
+			return nil, true, .Type_Mismatch
+		}
+	}
+	return term.signature.result, true, .None
+}
+
+// view_map_check types View[A].map(into) (spec §21 §3): the single argument is a
+// re-tag function fn(A) -> B (the Elm Html.map primitive — AppMsg::Hud is the
+// variant-as-function value fn(HudMsg) -> AppMsg the router passes), and the
+// result is View[B], B read off the function's result. The function's parameter
+// is the receiver's element A; a literal lambda infers it, and a
+// variant-as-function value carries its own fn type.
+view_map_check :: proc(ctx: Check_Ctx, view: ^Engine_Type, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	result := combinator_result(ctx, e.args[0], {view.elem}) or_return
+	return engine_type_of(.View, result), .None
 }
 
 // variant_check types an enum-variant value. Option carries the evaluable
@@ -1443,22 +1759,65 @@ variant_check :: proc(ctx: Check_Ctx, e: ^Variant_Expr) -> (type: Type, err: Typ
 			}
 			return engine, .None
 		}
+		// A CROSS-MODULE user enum (spec §15: every top-level declaration is
+		// importable): the imported `Screen`/`AppMsg` enum's variant used as a
+		// value resolves its variant set + payloads through the project-wide index,
+		// the variant-value analogue of module_record_schema for an imported record
+		// literal. Typed by the same enum_variant_value_check as a local enum, so a
+		// `Screen::Pause` value, an `AppMsg::Hud` variant-as-function value, and an
+		// `AppMsg::Hud(m)` construction type identically whichever module declared
+		// the enum.
+		if enum_schema, found := module_enum_schema(ctx.index, ctx.bindings, e.type_name); found {
+			return enum_variant_value_check(ctx, e, enum_schema)
+		}
 		return nil, .Unsupported_Expr
 	}
 	if enum_schema, declared := ctx.env.enums[e.type_name]; declared {
-		if e.has_payload {
-			// User enums on the pong surface carry no tuple payload.
-			return nil, .Unsupported_Expr
-		}
-		if !name_in_set(e.variant, enum_schema.variants) {
-			return nil, .Type_Mismatch
-		}
-		return user_type_of(e.type_name, .Enum), .None
+		return enum_variant_value_check(ctx, e, enum_schema)
 	}
 	if env_declares(ctx.env, e.type_name) {
 		return nil, .Unsupported_Expr
 	}
 	return nil, .Unresolved_Name
+}
+
+// enum_variant_value_check types one user-enum variant used as a VALUE against
+// its resolved Enum_Schema — the shared body the local-env and cross-module
+// (index) variant-value paths both run, so a local `Screen::Pause` and an
+// imported `Screen::Pause` type identically (spec §15: a declaration's module of
+// origin is invisible at the use site). Three forms (spec §21 §3): a nullary
+// variant is the enum value itself; a tagged construction `AppMsg::Hud(m)` checks
+// its single payload argument against the variant's declared payload type and
+// yields the enum; a payload variant named WITHOUT its payload is the
+// variant-as-function value `AppMsg::Hud == fn(HudMsg) -> AppMsg` the
+// `.map(AppMsg::Hud)` re-tag passes through.
+enum_variant_value_check :: proc(ctx: Check_Ctx, e: ^Variant_Expr, enum_schema: Enum_Schema) -> (type: Type, err: Type_Error) {
+	if !name_in_set(e.variant, enum_schema.variants) {
+		return nil, .Type_Mismatch
+	}
+	payload, has_payload := enum_variant_payload(enum_schema, e.variant)
+	enum_type := user_type_of(e.type_name, .Enum)
+	if e.has_payload {
+		// A §21 §3 tagged-union construction: AppMsg::Hud(m), SettingsMsg::
+		// SetVolume(50). The variant must declare a single tuple payload, and the
+		// argument must match its declared type; the result is the enum.
+		if !has_payload || len(e.payload) != 1 {
+			return nil, .Type_Mismatch
+		}
+		arg := expr_check(ctx, e.payload[0]) or_return
+		if !types_compatible(arg, payload) {
+			return nil, .Type_Mismatch
+		}
+		return enum_type, .None
+	}
+	// A bare variant reference. A nullary variant is the value itself; a payload
+	// variant named WITHOUT its payload is the §21 §3 variant-as-function value
+	// AppMsg::Hud == fn(HudMsg) -> AppMsg (the form .map(AppMsg::Hud) re-tags a
+	// child screen's messages through).
+	if has_payload {
+		return func_of({payload}, enum_type), .None
+	}
+	return enum_type, .None
 }
 
 // option_variant_check types Option::Some(v) into Option[typeof v] and

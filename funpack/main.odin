@@ -44,37 +44,46 @@ run_build_verb :: proc() -> int {
 	return 0
 }
 
-// run_test_verb runs every source of the §14 project tree at the
-// working directory through the pipeline. Exit codes: 2 for a
-// malformed tree or a compile error, 1 when assertions failed, 0 when
-// every assertion passed.
+// run_test_verb runs every source of the §14 project tree at the working
+// directory through the MULTI-MODULE pipeline: every module types against ONE
+// project-wide index, so a project whose modules import each other (the arena
+// example — arena_game imports arena_world + the arena seam) types end-to-end.
+// Exit codes honor §29 §3: 2 for a malformed tree, a failed index build, or any
+// module's compile error (never a counted failure); 1 when assertions failed; 0
+// when every assertion passed.
 run_test_verb :: proc() -> int {
 	project, project_err := read_project(".")
 	if project_err != .None {
 		fmt.eprintfln("funpack test: %v", project_err)
 		return 2
 	}
-	total := Test_Report{}
-	for source in project.sources {
-		source_bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
-		if read_err != nil {
-			fmt.eprintfln("funpack test: cannot read %s", source.path)
-			return 2
-		}
-		report, err := run_test_pipeline(string(source_bytes))
-		if err != .None {
-			fmt.eprintfln("funpack test: %s: %v", source.path, err)
-			return test_exit_code(err, report)
-		}
-		total.passed += report.passed
-		total.failed += report.failed
+	report := run_project_pipeline(project.sources)
+	if report.index_err != .None {
+		fmt.eprintfln("funpack test: %s: %v", report.failed_path, report.index_err)
+		return 2
 	}
-	fmt.printfln("funpack test: %d passed, %d failed", total.passed, total.failed)
-	return test_exit_code(.None, total)
+	if report.module_err != .None {
+		fmt.eprintfln("funpack test: %s: %v", report.failed_path, report.module_err)
+		return 2
+	}
+	fmt.printfln("funpack test: %d passed, %d failed", report.passed, report.failed)
+	return project_test_exit_code(report)
 }
 
-// test_exit_code is the CLI exit contract: a compile error is 2 — never
-// a counted failure — failed assertions are 1, all-pass is 0.
+// project_test_exit_code is the CLI exit contract over a project run: a compile
+// error (index or module) was already returned as 2 by the caller, so here a
+// nonzero failed count is 1 and an all-pass is 0.
+project_test_exit_code :: proc(report: Project_Report) -> int {
+	if report.failed != 0 {
+		return 1
+	}
+	return 0
+}
+
+// test_exit_code is the single-source exit contract: a compile error is 2 — never
+// a counted failure — failed assertions are 1, all-pass is 0. It is the per-module
+// projection of project_test_exit_code, kept as the unit the single-source
+// pipeline maps a (Pipeline_Error, Test_Report) pair through.
 test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 	if err != .None {
 		return 2

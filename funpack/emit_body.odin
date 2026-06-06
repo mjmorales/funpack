@@ -104,7 +104,24 @@ emit_expr :: proc(b: ^strings.Builder, expr: Expr) {
 		emit_match(b, e)
 	case ^Tuple_Expr:
 		emit_tuple(b, e)
+	case ^If_Expr:
+		emit_if(b, e)
 	}
+}
+
+// emit_if serializes a value-producing if-expression as a fixed-arity `if_expr`
+// node — an `if_expr` head over its 3 ordered children (condition, then arm,
+// else arm), the same total, lookahead-free shape every other expression node
+// uses. Like emit_tuple, the artifact-format §2.7 ratification of the `if_expr`
+// node KIND (a closed set, so a new kind is a schema-version bump) lands with
+// the golden-integration seam that first emits an if-expression body
+// end-to-end; this grammar seam emits the structurally-sound node so the body
+// walk stays total and the build's complete Expr switch is exhaustive.
+emit_if :: proc(b: ^strings.Builder, e: ^If_Expr) {
+	emit_line(b, "node if_expr 3")
+	emit_expr(b, e.cond)
+	emit_expr(b, e.then_branch)
+	emit_expr(b, e.else_branch)
 }
 
 // emit_tuple serializes a tuple literal `(a, b, …)` as a count-driven `tuple`
@@ -290,13 +307,20 @@ emit_arm :: proc(b: ^strings.Builder, pattern: Pattern) {
 		strings.write_string(b, pattern.variant)
 		emit_line(b, " 0")
 	case .Variant_Binds:
+		// The payload binders live in the nested sub-patterns now (grammar §13);
+		// the scalar artifact layout (`type case binder_count binders…`) carries the
+		// flat binder-name list a positional arm reader expects, so each sub-pattern
+		// renders to a binder slot: a Bare_Binder its name, a Wildcard `_` (the
+		// pong golden's `variant_binds Option Some 1 _`). The bake-less examples
+		// carry only binder/wildcard payloads, so the byte contract is unchanged.
+		binders := variant_payload_binders(pattern)
 		strings.write_string(b, "variant_binds ")
 		strings.write_string(b, pattern.type_name)
 		strings.write_byte(b, ' ')
 		strings.write_string(b, pattern.variant)
 		strings.write_byte(b, ' ')
-		strings.write_int(b, len(pattern.binders))
-		for binder in pattern.binders {
+		strings.write_int(b, len(binders))
+		for binder in binders {
 			strings.write_byte(b, ' ')
 			strings.write_string(b, binder)
 		}
@@ -345,6 +369,28 @@ tuple_binder_name :: proc(pattern: Pattern) -> string {
 		return pattern.binders[0]
 	}
 	return "-"
+}
+
+// variant_payload_binders flattens a Variant_Binds payload into the flat binder-
+// name list the scalar artifact layout carries (docs/artifact-format.md §2.7): a
+// Bare_Binder sub-pattern contributes its name, a Wildcard contributes `_`. The
+// bake-less golden examples carry only these two payload shapes (Option::Some(side),
+// Option::Some(_)), so this reproduces the committed bytes; a nested-variant payload
+// (the §21 router) is never emitted (no .fui bake in this story), so its flat
+// rendering is out of the byte contract here.
+variant_payload_binders :: proc(pattern: Pattern) -> []string {
+	out := make([]string, len(pattern.elements), context.temp_allocator)
+	for sub, i in pattern.elements {
+		#partial switch sub.kind {
+		case .Bare_Binder:
+			out[i] = tuple_binder_name(sub)
+		case .Wildcard:
+			out[i] = "_"
+		case:
+			out[i] = "-"
+		}
+	}
+	return out
 }
 
 // emit_node_head writes a node line's `node KIND … child_count` prefix for a

@@ -35,11 +35,31 @@ Field_Schema :: struct {
 // is the `enum Name: Kind` ascription ("" when absent) — the §03 §4 role
 // kind (e.g. `enum Steer: Axis`); variants is the declared variant names in
 // source order, the closed set the exhaustiveness gate proves coverage
-// against once it is registered (gates.odin).
+// against once it is registered (gates.odin). payloads carries each variant's
+// single tuple-payload type in lockstep with variants (nil for a plain or
+// multi-arg variant): the §21 §3 tagged-union router (AppMsg::Hud(HudMsg),
+// SettingsMsg::SetVolume(Int)) types its variant payloads off this — a payload
+// construction (AppMsg::Hud(m)) checks m against payloads[i], a match binder
+// (AppMsg::Hud(m) => …) binds m to payloads[i], and the variant-as-function
+// value (AppMsg::Hud per §21 §3) is fn(payloads[i]) -> the enum.
 Enum_Schema :: struct {
 	type_name: string,
 	role:      string,
 	variants:  []string,
+	payloads:  []Type, // variant i's single tuple-payload type; nil when plain
+}
+
+// enum_variant_payload reads an enum variant's single tuple-payload type by
+// variant name, returning has_payload = false for a plain variant or a name the
+// enum does not declare. A linear walk over the source-ordered variant slice, so
+// the verdict never depends on map order.
+enum_variant_payload :: proc(schema: Enum_Schema, variant: string) -> (payload: Type, has_payload: bool) {
+	for name, i in schema.variants {
+		if name == variant {
+			return schema.payloads[i], schema.payloads[i] != nil
+		}
+	}
+	return nil, false
 }
 
 // Term_Schema records a value-level name: a module-level `let` constant
@@ -81,7 +101,7 @@ Type_Env :: struct {
 // imports, so a forward reference (a `data` field typed by a `thing`
 // declared later) still resolves — the whole type namespace is collected
 // before any ref is resolved.
-resolve_env :: proc(ast: Ast, bindings: Bindings) -> (env: Type_Env, err: Type_Error) {
+resolve_env :: proc(ast: Ast, bindings: Bindings, index: Module_Index = {}) -> (env: Type_Env, err: Type_Error) {
 	env.records = make(map[string]Record_Schema, context.temp_allocator)
 	env.enums = make(map[string]Enum_Schema, context.temp_allocator)
 	env.terms = make(map[string]Term_Schema, context.temp_allocator)
@@ -94,9 +114,10 @@ resolve_env :: proc(ast: Ast, bindings: Bindings) -> (env: Type_Env, err: Type_E
 	collect_term_names(&env, ast, bindings) or_return
 
 	// Pass 2 — resolve each declaration's field/parameter/return Type_Refs
-	// against the now-complete type namespace and the imports, filling the
-	// recorded schemas.
-	resolve_schemas(&env, ast, bindings)
+	// against the now-complete type namespace, the imports, and the
+	// project-wide module index (a cross-module type name imported from a
+	// sibling module), filling the recorded schemas.
+	resolve_schemas(&env, ast, bindings, index)
 	return env, .None
 }
 
@@ -136,10 +157,14 @@ collect_type_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type
 		for variant, i in decl.variants {
 			variants[i] = variant.name
 		}
+		// payloads is sized here and filled in pass 2 (resolve_enum_payloads),
+		// once the whole type namespace is interned — a variant payload may name a
+		// type declared later (AppMsg::Hud(HudMsg) where HudMsg follows AppMsg).
 		env.enums[decl.name] = Enum_Schema {
 			type_name = decl.name,
 			role      = decl.kind,
 			variants  = variants,
+			payloads  = make([]Type, len(decl.variants), context.temp_allocator),
 		}
 	}
 	return .None
@@ -234,48 +259,69 @@ name_taken :: proc(env: ^Type_Env, name: string, bindings: Bindings) -> bool {
 // schema, resolving each declaration's Type_Refs against the complete
 // namespace. It is total over the AST and records nil for a ref it cannot
 // resolve yet — the typing pass refines those, never this one.
-resolve_schemas :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) {
+resolve_schemas :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings, index: Module_Index = {}) {
 	for decl in ast.things {
 		schema := env.records[decl.name]
-		schema.fields = resolve_field_schemas(env^, bindings, decl.fields)
+		schema.fields = resolve_field_schemas(env^, bindings, decl.fields, index)
 		env.records[decl.name] = schema
 	}
 	for decl in ast.datas {
 		schema := env.records[decl.name]
-		schema.fields = resolve_field_schemas(env^, bindings, decl.fields)
+		schema.fields = resolve_field_schemas(env^, bindings, decl.fields, index)
 		env.records[decl.name] = schema
 	}
 	for decl in ast.signals {
 		schema := env.records[decl.name]
-		schema.fields = resolve_field_schemas(env^, bindings, decl.fields)
+		schema.fields = resolve_field_schemas(env^, bindings, decl.fields, index)
 		env.records[decl.name] = schema
 	}
 	for decl in ast.lets {
 		term := env.terms[decl.name]
-		term.type = resolve_type_ref(env^, bindings, decl.type)
+		term.type = resolve_type_ref(env^, bindings, decl.type, index)
 		env.terms[decl.name] = term
 	}
 	for decl in ast.fns {
 		term := env.terms[decl.name]
-		term.signature = resolve_fn_signature(env^, bindings, decl.params, decl.return_type)
+		term.signature = resolve_fn_signature(env^, bindings, decl.params, decl.return_type, index)
 		env.terms[decl.name] = term
 	}
 	for decl in ast.behaviors {
 		term := env.terms[decl.name]
-		term.signature = resolve_fn_signature(env^, bindings, decl.step.params, decl.step.return_type)
+		term.signature = resolve_fn_signature(env^, bindings, decl.step.params, decl.step.return_type, index)
 		env.terms[decl.name] = term
+	}
+	resolve_enum_payloads(env, ast, bindings, index)
+}
+
+// resolve_enum_payloads fills each enum schema's variant payload types now that
+// the whole type namespace is interned (spec §03 §2 tuple-payload variants). A
+// single-arg tuple-payload variant (AppMsg::Hud(HudMsg), SettingsMsg::SetVolume(
+// Int)) records its one payload type; a plain variant or a struct-payload variant
+// leaves nil, and a multi-arg tuple payload (none on this surface) also leaves nil
+// — the §21 §3 router carries exactly one payload per tagged variant. The payload
+// ref resolves like any field ref, so a sibling-module type (a generated seam's
+// HudMsg) resolves through the index too.
+resolve_enum_payloads :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings, index: Module_Index = {}) {
+	for decl in ast.enums {
+		schema := env.enums[decl.name]
+		for variant, i in decl.variants {
+			if variant.payload == .Tuple && len(variant.tuple) == 1 {
+				schema.payloads[i] = resolve_type_ref(env^, bindings, variant.tuple[0], index)
+			}
+		}
+		env.enums[decl.name] = schema
 	}
 }
 
 // resolve_field_schemas resolves one record's field list into the recorded
 // schema: each field keeps its name, has_default flag, and best-effort
 // resolved type.
-resolve_field_schemas :: proc(env: Type_Env, bindings: Bindings, fields: []Field_Decl) -> []Field_Schema {
+resolve_field_schemas :: proc(env: Type_Env, bindings: Bindings, fields: []Field_Decl, index: Module_Index = {}) -> []Field_Schema {
 	out := make([]Field_Schema, len(fields), context.temp_allocator)
 	for field, i in fields {
 		out[i] = Field_Schema {
 			name        = field.name,
-			type        = resolve_type_ref(env, bindings, field.type),
+			type        = resolve_type_ref(env, bindings, field.type, index),
 			has_default = field.has_default,
 		}
 	}
@@ -285,14 +331,14 @@ resolve_field_schemas :: proc(env: Type_Env, bindings: Bindings, fields: []Field
 // resolve_fn_signature builds a fn/step Func_Type from its parameter and
 // return Type_Refs. The parameter types are the behavior's reads (spec §06
 // §3); typing the body against them is the typing pass's job.
-resolve_fn_signature :: proc(env: Type_Env, bindings: Bindings, params: []Param_Decl, return_type: Type_Ref) -> ^Func_Type {
+resolve_fn_signature :: proc(env: Type_Env, bindings: Bindings, params: []Param_Decl, return_type: Type_Ref, index: Module_Index = {}) -> ^Func_Type {
 	param_types := make([]Type, len(params), context.temp_allocator)
 	for param, i in params {
-		param_types[i] = resolve_type_ref(env, bindings, param.type)
+		param_types[i] = resolve_type_ref(env, bindings, param.type, index)
 	}
 	node := new(Func_Type, context.temp_allocator)
 	node.params = param_types
-	node.result = resolve_type_ref(env, bindings, return_type)
+	node.result = resolve_type_ref(env, bindings, return_type, index)
 	return node
 }
 
@@ -303,11 +349,11 @@ resolve_fn_signature :: proc(env: Type_Env, bindings: Bindings, params: []Param_
 // type with no checker ground (View, Input, Spawn), or a generic over one —
 // returns nil: the resolver records the schema slot without forcing a type
 // the typing pass owns.
-resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Type {
+resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref, index: Module_Index = {}) -> Type {
 	// A list type `[T]` is the head "[]" with one element argument.
 	if ref.name == "[]" {
 		if len(ref.args) == 1 {
-			return list_of(resolve_type_ref(env, bindings, ref.args[0]))
+			return list_of(resolve_type_ref(env, bindings, ref.args[0], index))
 		}
 		return nil
 	}
@@ -317,17 +363,23 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 	if ref.name == "()" {
 		elements := make([]Type, len(ref.args), context.temp_allocator)
 		for arg, i in ref.args {
-			elements[i] = resolve_type_ref(env, bindings, arg)
+			elements[i] = resolve_type_ref(env, bindings, arg, index)
 		}
 		return tuple_of(elements)
 	}
 	if ref.name == "Option" && len(ref.args) == 1 {
-		return option_of(resolve_type_ref(env, bindings, ref.args[0]))
+		return option_of(resolve_type_ref(env, bindings, ref.args[0], index))
 	}
 	// View[T] is the §08 read table over an element type; the element
 	// resolves like any other ref (a user thing for View[Paddle]).
 	if ref.name == "View" && len(ref.args) == 1 {
-		return engine_type_of(.View, resolve_type_ref(env, bindings, ref.args[0]))
+		return engine_type_of(.View, resolve_type_ref(env, bindings, ref.args[0], index))
+	}
+	// Ref[T] is the §08 typed reference the §17 level bake resolves names to
+	// (Ref[Player], a Door.gate); like View it is only ever parameterized, so
+	// its element resolves like any other ref and it carries no bare-name arm.
+	if ref.name == "Ref" && len(ref.args) == 1 {
+		return engine_type_of(.Ref, resolve_type_ref(env, bindings, ref.args[0]))
 	}
 	if len(ref.args) == 0 {
 		if ground, is_ground := ground_type_name(ref.name); is_ground {
@@ -341,6 +393,16 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 		}
 		if engine, is_engine := engine_type_name(ref.name); is_engine {
 			return engine
+		}
+		// A name imported from a sibling user module (a `gate: Ref[Switch]`
+		// where Switch came from arena_world, a `hero: Ref[Player]` in a seam):
+		// resolve it to the same nominal User_Type the owning module would,
+		// recovering its §06 kind from the module index. This runs after the
+		// local env so a local declaration of the same name wins (a §02
+		// collision would have already rejected a local decl shadowing the
+		// import).
+		if cross, is_cross := index_user_type(index, bindings, ref.name); is_cross {
+			return cross
 		}
 	}
 	// A ref naming nothing the checker grounds — an engine type with no
@@ -379,6 +441,11 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Stick), true
 	case "Color":
 		return engine_type_of(.Color), true
+	// §20 the sprite-mirroring enum: a bare `flip: Flip` field or `-> Flip` return
+	// names it in field/param/return position; its variants (None/X/Y/XY) are
+	// reached through surface_enum_variant, not as bare type-refs.
+	case "Flip":
+		return engine_type_of(.Flip), true
 	// §11 physics: a `body: Body` field, a `shape: Shape2` field, a `kind:
 	// BodyKind` field, and a `pads: [Trigger]` inbound signal all name an
 	// engine type here. Box/Circle and Static/Dynamic/Kinematic are reached
@@ -413,6 +480,70 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Restored), true
 	case "SettingsApplied":
 		return engine_type_of(.SettingsApplied), true
+	// §08 nav: a `nav: Nav` query handle, a `route: Path` field, and a
+	// NavError query-failure variant all name an engine type in field/param
+	// position. Ref is parameterized (Ref[T]) and grounds in the Ref[T] arm of
+	// resolve_type_ref, mirroring View — it is omitted here.
+	case "Nav":
+		return engine_type_of(.Nav), true
+	case "Path":
+		return engine_type_of(.Path), true
+	case "NavError":
+		return engine_type_of(.NavError), true
+	// §19/§26 the typed asset handles name an engine type in a seam constant's
+	// `let NAME: KINDHandle` declaration and a behavior's `atlas: AtlasHandle`
+	// field; they ground here like Spawn/Draw. Their construction schema (the
+	// single String `name` field) is surface_engine_record.
+	case "MeshHandle":
+		return engine_type_of(.MeshHandle), true
+	case "TextureHandle":
+		return engine_type_of(.TextureHandle), true
+	case "SoundHandle":
+		return engine_type_of(.SoundHandle), true
+	case "AtlasHandle":
+		return engine_type_of(.AtlasHandle), true
+	// §16 §7 anim: a pose generator's `-> Pose` return, a rig seam's `-> Skeleton`/
+	// `-> PartSet` returns, and a `transform: Transform` slot all name an engine
+	// type in field/param/return position. Slot/Side/Bone ground here too so a
+	// bare `kind: Bone` field would resolve; their variant values are reached
+	// through surface_enum_variant.
+	case "Skeleton":
+		return engine_type_of(.Skeleton), true
+	case "PartSet":
+		return engine_type_of(.PartSet), true
+	case "Slot":
+		return engine_type_of(.Slot), true
+	case "Side":
+		return engine_type_of(.Side), true
+	case "Pose":
+		return engine_type_of(.Pose), true
+	case "Bone":
+		return engine_type_of(.Bone), true
+	case "Transform":
+		return engine_type_of(.Transform), true
+	// §20 §1 render3: Draw3 names the element of a render3 behavior's `-> [Draw3]`
+	// return; Material a `mat: Material` field. Both ground here like Draw/Spawn.
+	case "Draw3":
+		return engine_type_of(.Draw3), true
+	case "Material":
+		return engine_type_of(.Material), true
+	// §22 audio: a `-> [Sound]` one-shot command list, a `-> [Audio]` sustained
+	// projection list, and a `bus: Bus` field all name an engine type in
+	// field/param/return position; the Sound/Audio builders' chained results
+	// ground here too. Master/Music/Sfx/Ui/Voice are reached through Bus's variant
+	// surface (surface_enum_variant), not as bare type-refs.
+	case "Sound":
+		return engine_type_of(.Sound), true
+	case "Audio":
+		return engine_type_of(.Audio), true
+	case "Bus":
+		return engine_type_of(.Bus), true
+	// §21 ui: a `-> View[Msg]` projection grounds through the View[T] arm above;
+	// UiAction and Theme name engine types in field/param position.
+	case "UiAction":
+		return engine_type_of(.UiAction), true
+	case "Theme":
+		return engine_type_of(.Theme), true
 	}
 	return nil, false
 }

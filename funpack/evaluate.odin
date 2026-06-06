@@ -15,6 +15,8 @@
 // those forms resolve; the numeric kernel forms ignore it.
 package funpack
 
+import "core:strings"
+
 // Env is a chained binding frame. Lookups walk toward the root; only
 // the owning scope ever inserts, and nothing iterates the map — map
 // order can never reach evaluation results (the determinism tripwire).
@@ -25,12 +27,59 @@ Env :: struct {
 
 // Eval_Ctx carries the resolved module through evaluation: ast supplies the
 // user fn/behavior bodies and the module-level `let` constants, env the
-// declared record/enum schemas (resolve.odin). It is read-only — evaluation
-// never mutates it — and is threaded alongside the per-call binding frame so
-// a user fn call or a name.step invocation reaches the body to execute.
+// declared record/enum schemas (resolve.odin). bindings is the module's own
+// imported-name resolutions (surface.odin) — read only to recover the OWNING
+// module of a whole-module handle (`assets`) when a test evaluates a cross-module
+// const (`assets.coin_sfx`). modules is the project-wide eval surface: one entry
+// per sibling user module, so a module-qualified const evaluates its initializer
+// in its OWNING module's environment. It is read-only — evaluation never mutates
+// it — and is threaded alongside the per-call binding frame so a user fn call or
+// a name.step invocation reaches the body to execute. In the single-source path
+// bindings is empty and modules is nil, so the cross-module arm never fires.
+//
+// module is this ctx's own §15 module name — the namespace half of a const's
+// cycle key (`module.const`). It is empty in the single-source path (no project
+// module name) and set to the owning module when the cross-module arm builds a
+// fresh ctx, so a const that reaches back to its origin keys the same entry.
+// visiting is the const-resolution cycle guard, threaded by pointer so the ONE
+// set is shared across every by-value Eval_Ctx copy (including the cross-module
+// owner_ctx): a const whose initializer transitively reaches itself registers
+// its key on entry and trips the guard on revisit, failing closed (ok = false)
+// instead of recursing to a stack overflow (spec §10 totality).
 Eval_Ctx :: struct {
-	ast: Ast,
-	env: Type_Env,
+	ast:      Ast,
+	env:      Type_Env,
+	bindings: Bindings,
+	modules:  []Module_Eval,
+	module:   string,
+	visiting: ^Const_Visit,
+}
+
+// Const_Visit is the const-resolution visited set: the module-qualified names
+// (`module.const`) currently mid-evaluation on the active initializer chain. A
+// const enters its key before evaluating its RHS and removes it after, so the
+// set holds exactly the chain in progress; reaching a key already present is a
+// const-initializer cycle. It is a map only for O(1) membership — never iterated
+// (the determinism tripwire), so map order never reaches an evaluation result.
+// Shared by pointer across every Eval_Ctx so the intra-module and cross-module
+// const paths consult ONE set.
+Const_Visit :: struct {
+	active: map[string]bool,
+}
+
+// Module_Eval is one sibling user module's evaluation surface: its §15 module
+// name plus the resolved (ast, env, bindings) triple a cross-module const
+// reference evaluates against. A module-qualified const (`assets.coin_sfx`) builds
+// a fresh Eval_Ctx over the OWNING module's triple and evaluates the let
+// initializer there — the value the seam emits, in the environment that declares
+// it. Walked by index (module_eval_lookup), never iterated — the determinism
+// tripwire mirrored from Module_Index.
+Module_Eval :: struct {
+	module:   string,
+	ast:      Ast,
+	env:      Type_Env,
+	bindings: Bindings,
+	modules:  []Module_Eval, // shared back-reference so a const RHS can itself reach a sibling
 }
 
 new_env :: proc(parent: ^Env) -> ^Env {
@@ -50,8 +99,31 @@ env_lookup :: proc(env: ^Env, name: string) -> (value: Value, ok: bool) {
 }
 
 stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
+	return stage_evaluate_indexed(typed, nil, "")
+}
+
+// stage_evaluate_indexed evaluates one module's tests against a project-wide eval
+// surface, so a test reaching a cross-module const (`assets.coin_sfx`) evaluates
+// the const in its owning module's environment. modules = nil reduces it to the
+// single-source stage_evaluate — the cross-module arm in eval_member never fires —
+// so every existing single-module test path is unchanged. The consumer's own
+// bindings thread in (eval_member recovers a handle's owning module from them).
+// module is this module's §15 name, the namespace half of an intra-module const's
+// cycle key (empty in the single-source path). A fresh Const_Visit is allocated
+// per stage run and shared by pointer through the ctx, so a const cycle reachable
+// from any test trips the guard rather than overflowing the stack.
+stage_evaluate_indexed :: proc(typed: Typed_Ast, modules: []Module_Eval, module: string) -> Eval_Result {
 	result := Eval_Result{}
-	ctx := Eval_Ctx{ast = typed.ast, env = typed.env}
+	visit := new(Const_Visit, context.temp_allocator)
+	visit.active = make(map[string]bool, context.temp_allocator)
+	ctx := Eval_Ctx {
+		ast      = typed.ast,
+		env      = typed.env,
+		bindings = typed.bindings,
+		modules  = modules,
+		module   = module,
+		visiting = visit,
+	}
 	for test in typed.ast.tests {
 		env := new_env(nil)
 		for stmt in test.body {
@@ -93,6 +165,12 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		return e.value, true
 	case ^Fixed_Lit_Expr:
 		return e.bits, true
+	case ^String_Lit_Expr:
+		// A string literal evaluates to its raw inner text — the §19 asset name a
+		// handle constructor (sound("coin_sfx")) or a handle literal (SoundHandle{
+		// name: "coin_sfx"}) keys on. Interpolation holes are retained verbatim
+		// (a lowering concern, not evaluation), matching the parse-only `text`.
+		return e.text, true
 	case ^Name_Expr:
 		// §02 §2 Bool literals resolve before the environment, mirroring
 		// name_check — they are keywords, never shadowable bindings.
@@ -111,9 +189,14 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		if constant, declared := eval_module_const(ctx, e.name); declared {
 			return constant, true
 		}
-		// The sanctioned lowercase constants are the builtin fallback.
+		// The sanctioned lowercase constants are the builtin fallback (spec §02:
+		// pi/tau are the only snake_case constant exceptions; §10: the nearest-Fixed
+		// angle constants). advance_gait wraps its phase into [0, tau) with `% tau`.
 		if e.name == "pi" {
 			return PI_FIXED, true
+		}
+		if e.name == "tau" {
+			return TAU_FIXED, true
 		}
 		return nil, false
 	case ^Unary_Expr:
@@ -136,10 +219,31 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		return eval_with(ctx, env, e)
 	case ^Match_Expr:
 		return eval_match(ctx, env, e)
+	case ^If_Expr:
+		return eval_if(ctx, env, e)
 	case ^Lambda_Expr:
 		return Lambda_Value{node = e, env = env}, true
 	}
 	return nil, false
+}
+
+// eval_if evaluates a value-producing if-expression (spec §02 §5): the
+// condition evaluates to a Bool, then exactly one arm evaluates and yields the
+// if-expression's value — the consequent when true, the alternate when false.
+// Both arms are present (the parser requires `else`) and unify (the
+// typechecker), so a false guard always has an alternate to take. A non-Bool
+// condition is a fail-closed ok = false — a typecheck-rejected shape that never
+// reaches a passing program.
+eval_if :: proc(ctx: Eval_Ctx, env: ^Env, e: ^If_Expr) -> (value: Value, ok: bool) {
+	cond := eval_expr(ctx, env, e.cond) or_return
+	guard, is_bool := cond.(bool)
+	if !is_bool {
+		return nil, false
+	}
+	if guard {
+		return eval_expr(ctx, env, e.then_branch)
+	}
+	return eval_expr(ctx, env, e.else_branch)
 }
 
 eval_list :: proc(ctx: Eval_Ctx, env: ^Env, e: ^List_Expr) -> (value: Value, ok: bool) {
@@ -179,17 +283,51 @@ apply_lambda :: proc(ctx: Eval_Ctx, lambda: Lambda_Value, args: []Value) -> (val
 // (resolve.odin records it as a Const term). The RHS reads no local binding,
 // so it evaluates against a fresh root frame; a name that is not a declared
 // const returns declared = false for the caller to fall through.
+//
+// A const-initializer cycle (`let a = b` / `let b = a`, or a self-reference)
+// is caught fail-closed: the const's module-qualified key registers in the
+// shared visited set before its RHS evaluates and clears after, so reaching a
+// key already on the active chain returns declared = false WITHOUT recursing —
+// the assert reading the cyclic const then fails (a counted failure), instead
+// of the unbounded recursion that would overflow the stack. declared stays true
+// only for a const that genuinely resolves to a value; the revisit is reported
+// as undeclared so the caller's fall-through arms (builtins) still run and the
+// reader fails on a missing binding, the same fail-closed shape a const whose
+// RHS does not evaluate already takes (spec §10 totality, the closed-error
+// discipline: no panic, no partial value).
 eval_module_const :: proc(ctx: Eval_Ctx, name: string) -> (value: Value, declared: bool) {
 	if term, found := env_term_name(ctx.env, name); !found || term.kind != .Const {
 		return nil, false
 	}
 	for decl in ctx.ast.lets {
 		if decl.name == name {
+			key := const_cycle_key(ctx.module, name)
+			if ctx.visiting != nil && ctx.visiting.active[key] {
+				// Already mid-evaluation on the active chain — a cycle. Fail
+				// closed: the reader sees an undeclared const and fails its
+				// assert, never the recursion that would overflow the stack.
+				return nil, false
+			}
+			if ctx.visiting != nil {
+				ctx.visiting.active[key] = true
+			}
 			v, ok := eval_expr(ctx, new_env(nil), decl.value)
+			if ctx.visiting != nil {
+				delete_key(&ctx.visiting.active, key)
+			}
 			return v, ok
 		}
 	}
 	return nil, false
+}
+
+// const_cycle_key is the visited-set key for a const: its §15 module name dotted
+// with the const name (`module.const`), so the SAME const has the SAME key whether
+// it is reached by bare name in its own module or cross-module through a handle, and
+// two modules' like-named consts never collide. An empty module (the single-source
+// path) keys as `.const`, still unique within that one module.
+const_cycle_key :: proc(module: string, name: string) -> string {
+	return strings.concatenate({module, ".", name}, context.temp_allocator)
 }
 
 // eval_user_fn evaluates a top-level user fn or a behavior's `step` body
@@ -251,12 +389,22 @@ eval_variant :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Variant_Expr) -> (value: Valu
 		return eval_struct_variant(ctx, env, e)
 	}
 	if e.has_payload {
-		// The pong surface carries no tuple-payload user or engine variant
-		// outside Option; such a form is outside the evaluable domain.
-		return nil, false
+		// A §21 §3 tagged-union construction: AppMsg::Hud(HudMsg::Coin),
+		// SettingsMsg::SetVolume(50). The surface carries exactly one payload per
+		// variant; the argument evaluates and is boxed onto the Enum_Value.
+		if len(e.payload) != 1 {
+			return nil, false
+		}
+		inner := eval_expr(ctx, env, e.payload[0]) or_return
+		boxed := new(Value, context.temp_allocator)
+		boxed^ = inner
+		return Enum_Value{type_name = e.type_name, variant = e.variant, payload = boxed}, true
 	}
-	// A bare variant value — a user enum (Side::Left) or an engine enum
-	// (Color::White). Both lower to the same (type_name, variant) tag.
+	// A bare variant value — a nullary user enum (Side::Left, HudMsg::Coin) or an
+	// engine enum (Color::White, Bus::Ui). Both lower to the same (type_name,
+	// variant) tag with no payload. (A payload variant named WITHOUT its payload
+	// is the §21 §3 variant-as-function value, reached only in a `view` body the
+	// asserts never evaluate, so it is left to the fail-closed path.)
 	return Enum_Value{type_name = e.type_name, variant = e.variant}, true
 }
 
@@ -335,7 +483,54 @@ eval_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value,
 	if record, declared := ctx.env.records[e.type_name]; declared {
 		return eval_user_record(ctx, env, e, record)
 	}
+	// A CROSS-MODULE user record literal (spec §15: every top-level declaration is
+	// importable) — SettingsPresetRow{value: 50} / PauseView{} built from a seam's
+	// imported `data`. The record's schema + declared defaults live in the OWNING
+	// module's env/ast, so the literal resolves through the cross-module eval
+	// surface, mirroring eval_module_qualified_const. The literal's named field
+	// VALUES are consumer expressions (the `50` is this test's), so they evaluate in
+	// the CONSUMER ctx; only the omitted defaults come from the owner.
+	if crossmod_value, crossmod_ok, is_crossmod := eval_module_record(ctx, env, e); is_crossmod {
+		return crossmod_value, crossmod_ok
+	}
+	// A §19 typed asset-handle literal (MeshHandle{name: "coin"}, SoundHandle{name:
+	// "coin_sfx"}): the only engine records the evaluator constructs — each named
+	// field evaluates into a tagged Record_Value carrying the handle's type name, so
+	// the typed seam constant compares equal to the string-constructor handle of the
+	// same name (the §19 golden's assets.coin_sfx == sound("coin_sfx")). Reached only
+	// for a handle name (surface_engine_record's handle arms); a non-handle engine
+	// record (Body, Save) never reaches construction in test position.
+	if _, _, is_handle := surface_engine_record(e.type_name); is_handle && is_asset_handle_name(e.type_name) {
+		return eval_asset_handle_literal(ctx, env, e)
+	}
 	return nil, false
+}
+
+// is_asset_handle_name reports whether `name` is one of the four §19/§26 typed
+// asset handle records — the closed set the evaluator constructs as literals.
+// surface_engine_record also schemas Body/Save/etc., which the evaluator does not
+// build in test position, so the handle set is named explicitly here rather than
+// constructing every engine record.
+is_asset_handle_name :: proc(name: string) -> bool {
+	switch name {
+	case "MeshHandle", "TextureHandle", "SoundHandle", "AtlasHandle":
+		return true
+	}
+	return false
+}
+
+// eval_asset_handle_literal builds a typed asset-handle value from its literal:
+// each named field evaluates and the result is a Record_Value tagged with the
+// handle's type name (no variant). A handle's one field is its String `name`, so
+// the value is the handle-typed record the equality compares structurally against
+// the string-constructor handle of the same name.
+eval_asset_handle_literal :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value, ok: bool) {
+	fields := make([]Record_Field_Value, len(e.fields), context.temp_allocator)
+	for field, i in e.fields {
+		v := eval_expr(ctx, env, field.value) or_return
+		fields[i] = Record_Field_Value{name = field.name, value = v}
+	}
+	return Record_Value{type_name = e.type_name, fields = fields}, true
 }
 
 // eval_user_record builds a user thing/data/signal value: every field the
@@ -362,6 +557,66 @@ eval_user_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr, schema: Reco
 		append(&fields, Record_Field_Value{name = decl.name, value = v})
 	}
 	return Record_Value{type_name = e.type_name, fields = fields[:]}, true
+}
+
+// eval_module_record builds a CROSS-MODULE user record literal (spec §15: a
+// declaration's module of origin is invisible at the use site) — a seam's
+// imported `data` constructed in a consumer test (SettingsPresetRow{value: 50},
+// PauseView{}). The record's type binds to its OWNING module (the consumer's
+// .Type_Name binding), whose eval surface carries the declared field defaults; the
+// literal's NAMED field values are consumer expressions, so they evaluate in the
+// CONSUMER ctx/env, while each omitted default evaluates in a fresh OWNER ctx (the
+// default is an owner-module expression over owner-module names). is_crossmod =
+// false when the type is not a sibling-module record, so eval_record falls through
+// to its other arms. Mirrors eval_module_qualified_const for the record position.
+eval_module_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value, ok: bool, is_crossmod: bool) {
+	binding, bound := ctx.bindings.names[e.type_name]
+	if !bound || binding.kind != .Type_Name {
+		return nil, false, false
+	}
+	owner, found := module_eval_lookup(ctx.modules, binding.module)
+	if !found {
+		return nil, false, false
+	}
+	if _, declared := owner.env.records[e.type_name]; !declared {
+		return nil, false, false
+	}
+	owner_ctx := Eval_Ctx {
+		ast      = owner.ast,
+		env      = owner.env,
+		bindings = owner.bindings,
+		modules  = owner.modules,
+		module   = binding.module,
+		visiting = ctx.visiting,
+	}
+
+	fields := make([dynamic]Record_Field_Value, 0, 4, context.temp_allocator)
+	for field in e.fields {
+		// A named field value is the CONSUMER's expression — evaluated in the
+		// consumer ctx/env, exactly as a local record literal's field is.
+		v, field_ok := eval_expr(ctx, env, field.value)
+		if !field_ok {
+			return nil, false, true
+		}
+		append(&fields, Record_Field_Value{name = field.name, value = v})
+	}
+	// Each omitted default is an OWNER-module expression (it names owner-module
+	// types/consts), so it evaluates in the owner ctx over a fresh owner env.
+	owner_env := new_env(nil)
+	for decl in record_decl_fields(owner.ast, e.type_name) {
+		if !decl.has_default {
+			continue
+		}
+		if _, present := record_field_value(fields[:], decl.name); present {
+			continue
+		}
+		v, default_ok := eval_expr(owner_ctx, owner_env, decl.default)
+		if !default_ok {
+			return nil, false, true
+		}
+		append(&fields, Record_Field_Value{name = decl.name, value = v})
+	}
+	return Record_Value{type_name = e.type_name, fields = fields[:]}, true, true
 }
 
 // record_decl_fields returns a user record's declared field list (with the
@@ -441,7 +696,8 @@ eval_match :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Match_Expr) -> (value: Value, o
 // match, returns a frame holding the pattern's payload binders. A wildcard
 // always matches with no binders; a bare variant matches an Enum_Value of the
 // same (type_name, variant) or the Option None tag; a payload-binding variant
-// matches Option::Some and binds its single payload.
+// matches Option::Some or a §21 §3 user tagged-union variant and recurses into
+// its one payload sub-pattern, accumulating its binders.
 match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: ^Env, matched: bool) {
 	switch pattern.kind {
 	case .Wildcard:
@@ -455,13 +711,29 @@ match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: 
 		matched = is_variant && variant.type_name == pattern.type_name && variant.variant == pattern.variant
 		return env, matched
 	case .Variant_Binds:
-		option, is_option := scrutinee.(Option_Value)
-		if !is_option || !option.is_some || pattern.variant != "Some" || len(pattern.binders) != 1 {
+		// The grammar carries the payload as one sub-pattern (Option::Some(v) →
+		// [Bare_Binder v]; AppMsg::Hud(m) → [Bare_Binder m]; AppMsg::Hud(HudMsg::Coin)
+		// → [Bare_Variant HudMsg::Coin]). Match the variant, then recurse the
+		// sub-pattern against the unboxed payload value, so a binder binds and a
+		// nested variant filters.
+		if len(pattern.elements) != 1 {
 			return env, false
 		}
-		child := new_env(env)
-		child.bindings[pattern.binders[0]] = option.payload^
-		return child, true
+		payload: Value
+		if option, is_option := scrutinee.(Option_Value); is_option {
+			if !option.is_some || pattern.variant != "Some" {
+				return env, false
+			}
+			payload = option.payload^
+		} else if variant, is_variant := scrutinee.(Enum_Value); is_variant {
+			if variant.type_name != pattern.type_name || variant.variant != pattern.variant || variant.payload == nil {
+				return env, false
+			}
+			payload = variant.payload^
+		} else {
+			return env, false
+		}
+		return match_pattern(pattern.elements[0], payload, env)
 	case .Struct_Binds:
 		// A struct-payload variant value materializes as a Record_Value carrying
 		// its variant tag and fields; the pattern matches on (type_name, variant)
@@ -703,6 +975,12 @@ eval_vec3_binary :: proc(op: Token_Kind, l: Vec3_Value, rhs: Value) -> (value: V
 eval_member :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Member_Expr) -> (value: Value, ok: bool) {
 	if recv, is_name := e.receiver.(^Name_Expr); is_name {
 		if _, bound := env_lookup(env, recv.name); !bound {
+			// A whole-module handle (`assets`) is not a local binding and not a
+			// type-name constant — a `handle.member` reaches a sibling module's
+			// exported const, evaluated in its owning module's environment.
+			if const_value, is_const := eval_module_qualified_const(ctx, recv.name, e.member); is_const {
+				return const_value, true
+			}
 			switch recv.name {
 			case "Fixed":
 				switch e.member {
@@ -722,16 +1000,68 @@ eval_member :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Member_Expr) -> (value: Value,
 	return eval_field_access(receiver, e.member)
 }
 
+// eval_module_qualified_const evaluates a cross-module const reference
+// `handle.member` (`assets.coin_sfx`): the handle name must bind to a sibling user
+// module as a .Module handle, that module's eval surface must be in scope, and the
+// member must be a module-level let in it. The let's initializer evaluates against
+// a FRESH Eval_Ctx over the OWNING module's (ast, env, bindings) — so the value is
+// exactly what that module's own test would compute for the bare const name (the
+// §19 seam's SoundHandle{name: "coin_sfx"}), and a const RHS that itself reaches a
+// further sibling resolves through the shared module surface. is_const = false when
+// the handle is not a module binding or the member is not its let, so the caller
+// falls through to its other member arms.
+eval_module_qualified_const :: proc(ctx: Eval_Ctx, handle: string, member: string) -> (value: Value, is_const: bool) {
+	binding, bound := ctx.bindings.names[handle]
+	if !bound || binding.kind != .Module {
+		return nil, false
+	}
+	owner, found := module_eval_lookup(ctx.modules, binding.module)
+	if !found {
+		return nil, false
+	}
+	// The owner ctx evaluates the let in its OWNING module — so its module name
+	// is the owner's, the namespace half of the const's cycle key — and SHARES
+	// the visited set (threaded by pointer) so a cross-module cycle (two
+	// mutually-importing modules whose consts reference each other) trips the
+	// same guard the intra-module path uses.
+	owner_ctx := Eval_Ctx {
+		ast      = owner.ast,
+		env      = owner.env,
+		bindings = owner.bindings,
+		modules  = owner.modules,
+		module   = binding.module,
+		visiting = ctx.visiting,
+	}
+	return eval_module_const(owner_ctx, member)
+}
+
+// module_eval_lookup finds a module's eval surface by name, walked by index like
+// every table here — never a map (the determinism tripwire). A name no sibling
+// module owns is the caller's miss.
+module_eval_lookup :: proc(modules: []Module_Eval, module: string) -> (entry: Module_Eval, found: bool) {
+	for candidate in modules {
+		if candidate.module == module {
+			return candidate, true
+		}
+	}
+	return Module_Eval{}, false
+}
+
 // eval_field_access reads a member off a value: a user record's field
 // (Goal.side, self.pos), a Vec2/Vec3 component (v.x), or the §04 Time resource's
-// dt — the per-tick delta in fixed seconds the hunt search countdown folds.
+// dt/t — `dt` is the per-tick delta in fixed seconds the hunt search countdown
+// folds, `t` the accumulated logical time since startup the renderer's idle bob
+// samples.
 eval_field_access :: proc(receiver: Value, member: string) -> (value: Value, ok: bool) {
 	#partial switch r in receiver {
 	case Record_Value:
 		return record_field_value(r.fields, member)
 	case Time_Value:
-		if member == "dt" {
+		switch member {
+		case "dt":
 			return r.dt, true
+		case "t":
+			return r.t, true
 		}
 	case Vec2_Value:
 		switch member {
@@ -842,6 +1172,22 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 	case "cos":
 		angle := eval_fixed_arg(ctx, env, e, 0, 1) or_return
 		return fixed_cos(angle), true
+	case "rot_x":
+		// §16 §7 the per-bone X-axis rotation builder: a fixed-point angle
+		// (radians) into a Transform with the identity translation, a rotation of
+		// `angle` about the local X axis, and unit scale — the leg/arm swing a pose
+		// generator drives a bone with (pose_walk's rot_x(s)). At angle 0 the
+		// quaternion is the identity, so rot_x(0.0) is the rest transform.
+		angle := eval_fixed_arg(ctx, env, e, 0, 1) or_return
+		return transform_rot_x(angle), true
+	case "up":
+		// §16 §7 the per-bone vertical-offset builder: a fixed-point displacement
+		// into a Transform translating by `d` along the local +Y axis, with the
+		// identity rotation and unit scale — pose_idle's torso breathing bob.
+		d := eval_fixed_arg(ctx, env, e, 0, 1) or_return
+		return transform_up(d), true
+	case "max":
+		return eval_max(ctx, env, e)
 	case "fold":
 		return eval_fold(ctx, env, e)
 	case "first":
@@ -856,12 +1202,22 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_concat(ctx, env, e)
 	case "is_empty":
 		return eval_is_empty(ctx, env, e)
+	case "get":
+		return eval_get(ctx, env, e)
 	case "map":
 		return eval_map(ctx, env, e)
 	case "filter":
 		return eval_filter(ctx, env, e)
 	case "grid_cells":
 		return eval_grid_cells(ctx, env, e)
+	case "mesh":
+		return eval_asset_constructor(ctx, env, e, "MeshHandle")
+	case "texture":
+		return eval_asset_constructor(ctx, env, e, "TextureHandle")
+	case "sound":
+		return eval_asset_constructor(ctx, env, e, "SoundHandle")
+	case "atlas":
+		return eval_asset_constructor(ctx, env, e, "AtlasHandle")
 	}
 	// A call to a user-declared top-level fn (advance, goal_side, add_goal):
 	// resolve its body off the module and evaluate it against the arguments.
@@ -870,6 +1226,29 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_user_fn(ctx, fn, args)
 	}
 	return nil, false
+}
+
+// eval_asset_constructor lowers a §19/§26 manifest-checked string constructor
+// (mesh/texture/sound/atlas): a single String asset name into the same typed
+// handle value the seam constant's literal builds — Record_Value tagged with the
+// handle type, carrying the one `name` field set to the string argument. So
+// sound("coin_sfx") evaluates to the identical handle that SoundHandle{name:
+// "coin_sfx"} (the typed constant assets.coin_sfx) does, and the two compare equal
+// (the §19 golden assertion). The closed-registry kind/name validity is the build
+// gate's (asset_registry.odin); the evaluator builds the value the typecheck-passed
+// reference names.
+eval_asset_constructor :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr, handle_type: string) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	arg := eval_expr(ctx, env, e.args[0]) or_return
+	name, is_string := arg.(string)
+	if !is_string {
+		return nil, false
+	}
+	fields := make([]Record_Field_Value, 1, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "name", value = name}
+	return Record_Value{type_name = handle_type, fields = fields}, true
 }
 
 // eval_args evaluates a call's argument expressions left-to-right into a value
@@ -1021,6 +1400,53 @@ eval_is_empty :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value,
 	return len(elements) == 0, true
 }
 
+// eval_get lowers `get(list, i) -> Option[T]` (spec §08): the element at index i
+// wrapped in Option::Some, or Option::None when i is out of range — total, never
+// faulting (the hud preset test reads get(volume_presets, 1)). A negative index is
+// out of range and reads None.
+eval_get :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	index_value := eval_expr(ctx, env, e.args[1]) or_return
+	i, is_int := index_value.(i64)
+	if !is_int {
+		return nil, false
+	}
+	if i < 0 || int(i) >= len(elements) {
+		return Option_Value{is_some = false, payload = nil}, true
+	}
+	return some_value(elements[i]), true
+}
+
+// eval_max lowers `max(a, b)` (spec §10/§26): the larger of two same-typed
+// numeric scalars — Int or Fixed, never crossing the kinds (no implicit
+// promotion). Fixed compares by its underlying Q32.32 integer ordering. The hud
+// `max(self.clock - 1, 0)` floors the Int countdown at zero.
+eval_max :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	a := eval_expr(ctx, env, e.args[0]) or_return
+	b := eval_expr(ctx, env, e.args[1]) or_return
+	if af, a_fixed := a.(Fixed); a_fixed {
+		bf, b_fixed := b.(Fixed)
+		if !b_fixed {
+			return nil, false
+		}
+		return (i64(af) >= i64(bf)) ? af : bf, true
+	}
+	if ai, a_int := a.(i64); a_int {
+		bi, b_int := b.(i64)
+		if !b_int {
+			return nil, false
+		}
+		return (ai >= bi) ? ai : bi, true
+	}
+	return nil, false
+}
+
 // eval_map lowers `map(source, fn) -> [U]` (spec §08): a fresh list applying the
 // unary function to each element in source order. The function slot is a literal
 // lambda or a bare user-fn name (apply_combinator), the same two forms fold's
@@ -1127,6 +1553,16 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 			if recv.name == "Quat" {
 				return eval_quat_constructor(ctx, env, callee.member, args)
 			}
+			if recv.name == "Pose" {
+				return eval_pose_static(ctx, env, callee.member, args)
+			}
+			// The §22 audio constructors: Sound.sfx(clip)/.sfx_at(clip, pos) and
+			// Audio.track(key, clip) build the one-shot / sustained record values the
+			// .gain/.pitch/.bus/.at adders then chain. A type name is never an env
+			// binding, so this branch only fires for the Type.constructor form.
+			if audio, is_audio := eval_audio_constructor(ctx, env, recv.name, callee.member, args); is_audio {
+				return audio, true
+			}
 			// The §23 static resource builders: Input.empty() the empty input
 			// snapshot, Time.at(dt) a fixed-dt Time, View.of(list) a §08 read table
 			// materialized as a list. A resource name is never an env binding, so
@@ -1137,11 +1573,32 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 		}
 	}
 	receiver := eval_expr(ctx, env, callee.receiver) or_return
+	// §02 §4 UFCS: recv.f(args) runs the top-level user fn f(recv, args) when f's
+	// first param matches the receiver — the hud projections App{}.pause_view() /
+	// self.hud_view() are reached this way. Tried before the value-method arms so a
+	// user projection fn resolves; a member that names no user fn falls through.
+	if ufcs, is_ufcs := eval_ufcs_method(ctx, env, receiver, callee.member, args); is_ufcs {
+		return ufcs, true
+	}
+	// §22 the one-shot / sustained adders on a built Sound/Audio record value
+	// (Sound.sfx(clip).bus(Bus::Ui), Audio.track(k, c).gain(g).bus(b)): each
+	// returns a new record with one field replaced, so they chain.
+	if record, is_record := receiver.(Record_Value); is_record {
+		if audio, is_audio := eval_audio_adder(ctx, env, record, callee.member, args); is_audio {
+			return audio, true
+		}
+	}
 	// A method call on a value receiver: the §23 §2 Input queries (an inline test
 	// seeds the snapshot via Input.empty().with_pressed(…) and reads it via
 	// .pressed(…)), then the quaternion methods.
 	if input, is_input := receiver.(Input_Value); is_input {
 		return eval_input_method(ctx, env, input, callee.member, args)
+	}
+	// A §16 §7 method on a Pose value: set(Bone, Transform) drives one bone
+	// (returning the Pose, so a generator chains .set across bones), get(Bone)
+	// reads a bone's Transform (rest when the pose leaves it undriven).
+	if pose, is_pose := receiver.(Pose_Value); is_pose {
+		return eval_pose_method(ctx, env, pose, callee.member, args)
 	}
 	q := receiver.(Quat_Value) or_return
 	switch callee.member {
@@ -1170,6 +1627,147 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 		return quat_slerp(q, other, t), true
 	}
 	return nil, false
+}
+
+// eval_ufcs_method lowers a §02 §4 UFCS call recv.method(args) → method(recv,
+// args): a top-level user fn whose first parameter is the receiver, called with
+// the receiver prepended to the evaluated arguments. is_ufcs is false when the
+// member names no user fn (the caller falls through to the value-method arms). The
+// hud projections hud_view/pause_view/settings_view (each fn(self: App)) are run
+// this way as App{}.pause_view() / self.hud_view().
+eval_ufcs_method :: proc(ctx: Eval_Ctx, env: ^Env, receiver: Value, member: string, args: []Expr) -> (value: Value, is_ufcs: bool) {
+	fn, declared := find_user_fn(ctx.ast, member)
+	if !declared || len(fn.params) == 0 {
+		return nil, false
+	}
+	tail, tail_ok := eval_args(ctx, env, args)
+	if !tail_ok {
+		return nil, false
+	}
+	values := make([]Value, len(tail) + 1, context.temp_allocator)
+	values[0] = receiver
+	copy(values[1:], tail)
+	result, ok := eval_user_fn(ctx, fn, values)
+	return result, ok
+}
+
+// eval_audio_constructor lowers the §22 audio constructors applied as a type-name
+// static method: Sound.sfx(clip)/.sfx_at(clip, pos) build the one-shot record at
+// the spec defaults (unity gain/pitch, Sfx bus, the given/None position),
+// Audio.track(key, clip) the sustained record (Music bus). is_audio is false for
+// any other (type, member) so the caller falls through. The records carry exactly
+// the §22 fields so a built value compares equal to another built the same way.
+eval_audio_constructor :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: string, args: []Expr) -> (value: Value, is_audio: bool) {
+	switch type_name {
+	case "Sound":
+		switch member {
+		case "sfx":
+			if len(args) != 1 {
+				return nil, false
+			}
+			clip, clip_ok := eval_expr(ctx, env, args[0])
+			if !clip_ok {
+				return nil, false
+			}
+			return sound_record(clip, none_value()), true
+		case "sfx_at":
+			if len(args) != 2 {
+				return nil, false
+			}
+			clip, clip_ok := eval_expr(ctx, env, args[0])
+			pos, pos_ok := eval_expr(ctx, env, args[1])
+			if !clip_ok || !pos_ok {
+				return nil, false
+			}
+			return sound_record(clip, some_value(pos)), true
+		}
+	case "Audio":
+		if member == "track" && len(args) == 2 {
+			key, key_ok := eval_expr(ctx, env, args[0])
+			clip, clip_ok := eval_expr(ctx, env, args[1])
+			if !key_ok || !clip_ok {
+				return nil, false
+			}
+			return audio_record(key, clip), true
+		}
+	}
+	return nil, false
+}
+
+// sound_record builds a §22 §1 Sound value at unity gain/pitch on the Sfx bus —
+// the Sound.sfx/.sfx_at default, before any .gain/.pitch/.bus/.at adder. Field
+// order is the §22 record order so equality (which matches by name) is stable.
+sound_record :: proc(clip: Value, at: Value) -> Value {
+	fields := make([]Record_Field_Value, 5, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "clip", value = clip}
+	fields[1] = Record_Field_Value{name = "gain", value = FIXED_ONE}
+	fields[2] = Record_Field_Value{name = "pitch", value = FIXED_ONE}
+	fields[3] = Record_Field_Value{name = "bus", value = bus_variant("Sfx")}
+	fields[4] = Record_Field_Value{name = "at", value = at}
+	return Record_Value{type_name = "Sound", fields = fields}
+}
+
+// audio_record builds a §22 §2 Audio value at unity gain/pitch on the Music bus —
+// the Audio.track default, before any adder.
+audio_record :: proc(key: Value, clip: Value) -> Value {
+	fields := make([]Record_Field_Value, 6, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "key", value = key}
+	fields[1] = Record_Field_Value{name = "clip", value = clip}
+	fields[2] = Record_Field_Value{name = "gain", value = FIXED_ONE}
+	fields[3] = Record_Field_Value{name = "pitch", value = FIXED_ONE}
+	fields[4] = Record_Field_Value{name = "bus", value = bus_variant("Music")}
+	fields[5] = Record_Field_Value{name = "at", value = none_value()}
+	return Record_Value{type_name = "Audio", fields = fields}
+}
+
+// bus_variant is a §22 §4 Bus enum value (Bus::Sfx, Bus::Ui) — the same
+// (type_name, variant) Enum_Value a Bus::X literal lowers to, so a default bus
+// compares equal to a literal-set one.
+bus_variant :: proc(variant: string) -> Value {
+	return Enum_Value{type_name = "Bus", variant = variant}
+}
+
+// none_value is the Option::None value an unplaced one-shot's `at` field carries.
+none_value :: proc() -> Value {
+	return Option_Value{is_some = false, payload = nil}
+}
+
+// eval_audio_adder lowers a §22 self-first adder on a built Sound/Audio record:
+// .gain(g)/.pitch(p) replace the Fixed field, .bus(b) the Bus field, .at(pos) the
+// Option position. Each returns a new record with the one field replaced (the base
+// untouched), so they chain. is_audio is false when the receiver is not a Sound/
+// Audio record or the member is not an adder (the caller falls through).
+eval_audio_adder :: proc(ctx: Eval_Ctx, env: ^Env, record: Record_Value, member: string, args: []Expr) -> (value: Value, is_audio: bool) {
+	if record.type_name != "Sound" && record.type_name != "Audio" {
+		return nil, false
+	}
+	field: string
+	wrap_some := false
+	switch member {
+	case "gain", "pitch", "bus":
+		field = member
+	case "at":
+		field = "at"
+		wrap_some = true
+	case:
+		return nil, false
+	}
+	if len(args) != 1 {
+		return nil, false
+	}
+	arg, arg_ok := eval_expr(ctx, env, args[0])
+	if !arg_ok {
+		return nil, false
+	}
+	if wrap_some {
+		arg = some_value(arg)
+	}
+	updated := make([]Record_Field_Value, len(record.fields), context.temp_allocator)
+	copy(updated, record.fields)
+	if !record_replace_field(updated, field, arg) {
+		return nil, false
+	}
+	return Record_Value{type_name = record.type_name, variant = record.variant, fields = updated}, true
 }
 
 // eval_resource_builder lowers the §23 static resource builders applied as a
@@ -1307,6 +1905,222 @@ eval_quat_constructor :: proc(ctx: Eval_Ctx, env: ^Env, member: string, args: []
 	angle_value := eval_expr(ctx, env, args[1]) or_return
 	angle := angle_value.(Fixed) or_return
 	return quat_axis_angle(axis, angle), true
+}
+
+// transform_identity is the §16 §7 rest transform: no translation, the identity
+// rotation, unit scale — the transform a Pose assigns to a bone it does not drive
+// (Pose.get of an undriven bone), and the base every rot_x/up builds off.
+transform_identity :: proc() -> Transform_Value {
+	return Transform_Value{
+		pos   = Vec3_Value{},
+		rot   = QUAT_IDENTITY,
+		scale = Vec3_Value{x = FIXED_ONE, y = FIXED_ONE, z = FIXED_ONE},
+	}
+}
+
+// transform_rot_x builds the §16 §7 rot_x(angle) Transform: the identity
+// translation, a quaternion rotating `angle` radians about the local X axis, and
+// unit scale. At angle 0 the quaternion is the identity (sin(0)=0, cos(0)=1), so
+// rot_x(0.0) equals the rest transform — the zero-crossing the pose_walk golden
+// asserts.
+transform_rot_x :: proc(angle: Fixed) -> Transform_Value {
+	t := transform_identity()
+	t.rot = quat_axis_angle(Vec3_Value{x = FIXED_ONE}, angle)
+	return t
+}
+
+// transform_up builds the §16 §7 up(d) Transform: a translation of `d` along the
+// local +Y axis, the identity rotation, and unit scale — the torso bob a pose
+// generator drives the torso with.
+transform_up :: proc(d: Fixed) -> Transform_Value {
+	t := transform_identity()
+	t.pos = Vec3_Value{y = d}
+	return t
+}
+
+// eval_pose_static lowers the §16 §7 Pose Type-name static builders/combinators:
+// empty() seeds the sparse pose a generator .set()s bones on; blend(a, b, weight)
+// per-bone interpolates two poses; layer(base, overlay) lets the overlay win per
+// bone. ok = false for any other (member, arity) shape — a typecheck-rejected
+// form that never reaches a passing program.
+eval_pose_static :: proc(ctx: Eval_Ctx, env: ^Env, member: string, args: []Expr) -> (value: Value, ok: bool) {
+	switch member {
+	case "empty":
+		if len(args) != 0 {
+			return nil, false
+		}
+		return Pose_Value{bones = make([]Pose_Bone_Transform, 0, context.temp_allocator)}, true
+	case "blend":
+		if len(args) != 3 {
+			return nil, false
+		}
+		a := eval_pose_expr(ctx, env, args[0]) or_return
+		b := eval_pose_expr(ctx, env, args[1]) or_return
+		weight := eval_expr(ctx, env, args[2]) or_return
+		w, is_fixed := weight.(Fixed)
+		if !is_fixed {
+			return nil, false
+		}
+		return eval_pose_blend(a, b, w), true
+	case "layer":
+		if len(args) != 2 {
+			return nil, false
+		}
+		base := eval_pose_expr(ctx, env, args[0]) or_return
+		overlay := eval_pose_expr(ctx, env, args[1]) or_return
+		return eval_pose_layer(base, overlay), true
+	}
+	return nil, false
+}
+
+// eval_pose_method lowers the §16 §7 Pose value methods: set(Bone, Transform)
+// returns a new pose driving the named bone, get(Bone) reads a bone's transform
+// (the rest transform when the pose leaves the bone undriven).
+eval_pose_method :: proc(ctx: Eval_Ctx, env: ^Env, pose: Pose_Value, member: string, args: []Expr) -> (value: Value, ok: bool) {
+	switch member {
+	case "set":
+		if len(args) != 2 {
+			return nil, false
+		}
+		bone := eval_bone_arg(ctx, env, args[0]) or_return
+		transform_value := eval_expr(ctx, env, args[1]) or_return
+		transform, is_transform := transform_value.(Transform_Value)
+		if !is_transform {
+			return nil, false
+		}
+		return eval_pose_set(pose, bone, transform), true
+	case "get":
+		if len(args) != 1 {
+			return nil, false
+		}
+		bone := eval_bone_arg(ctx, env, args[0]) or_return
+		return eval_pose_get(pose, bone), true
+	}
+	return nil, false
+}
+
+// eval_pose_set returns a new pose driving `bone` with `transform`: an existing
+// driven bone is overwritten in place (a re-`.set` of the same bone replaces, not
+// duplicates), a new bone is appended — keeping the driven-bone slice in a
+// deterministic insert order, never a map (the determinism tripwire). The input
+// pose is never mutated (a fresh slice copy).
+eval_pose_set :: proc(pose: Pose_Value, bone: string, transform: Transform_Value) -> Value {
+	for driven, i in pose.bones {
+		if driven.bone == bone {
+			next := make([]Pose_Bone_Transform, len(pose.bones), context.temp_allocator)
+			copy(next, pose.bones)
+			next[i].transform = transform
+			return Pose_Value{bones = next}
+		}
+	}
+	next := make([]Pose_Bone_Transform, len(pose.bones) + 1, context.temp_allocator)
+	copy(next, pose.bones)
+	next[len(pose.bones)] = Pose_Bone_Transform{bone = bone, transform = transform}
+	return Pose_Value{bones = next}
+}
+
+// eval_pose_get reads the transform a pose drives on `bone`, or the rest
+// (identity) transform when the pose leaves the bone undriven — the §16 §7
+// "absent bones default to rest" rule a sparse-pose comparison rests on
+// (Pose.get of an undriven bone == identity).
+eval_pose_get :: proc(pose: Pose_Value, bone: string) -> Value {
+	if transform, found := pose_bone_transform(pose.bones, bone); found {
+		return transform
+	}
+	return transform_identity()
+}
+
+// eval_pose_blend per-bone interpolates two poses by `weight` (§16 §7): for every
+// bone EITHER pose drives, the result drives the lerp from a's transform (a's
+// driven value, or rest when a omits it) to b's (b's driven value, or rest when b
+// omits it) — so a blend of disjoint bone sets keeps every bone, each
+// interpolating against the other pose's rest. The driven-bone union is built in
+// a deterministic order: a's bones in their order, then b's bones new to the
+// result in theirs. At weight 0 every bone reads a's transform, at weight 1 b's.
+eval_pose_blend :: proc(a, b: Pose_Value, weight: Fixed) -> Value {
+	bones := make([dynamic]Pose_Bone_Transform, 0, len(a.bones) + len(b.bones), context.temp_allocator)
+	for driven in a.bones {
+		other, _ := pose_bone_transform(b.bones, driven.bone)
+		append(&bones, Pose_Bone_Transform{
+			bone      = driven.bone,
+			transform = transform_blend(driven.transform, other, weight),
+		})
+	}
+	for driven in b.bones {
+		if _, already := pose_bone_transform(a.bones, driven.bone); already {
+			continue
+		}
+		append(&bones, Pose_Bone_Transform{
+			bone      = driven.bone,
+			transform = transform_blend(transform_identity(), driven.transform, weight),
+		})
+	}
+	return Pose_Value{bones = bones[:]}
+}
+
+// transform_blend interpolates two transforms: position and scale lerp
+// component-wise, orientation slerps — the §16 §7 "lerp position, slerp rotation"
+// rule. quat_slerp returns its endpoints bit-exactly, so a weight of 0 yields a
+// and 1 yields b without recomputation.
+transform_blend :: proc(a, b: Transform_Value, weight: Fixed) -> Transform_Value {
+	return Transform_Value{
+		pos   = vec3_lerp(a.pos, b.pos, weight),
+		rot   = quat_slerp(a.rot, b.rot, weight),
+		scale = vec3_lerp(a.scale, b.scale, weight),
+	}
+}
+
+// vec3_lerp interpolates two vectors component-wise over the saturating kernel —
+// each lane through fixed_lerp (spec §10: vector arithmetic is component-wise).
+vec3_lerp :: proc(a, b: Vec3_Value, t: Fixed) -> Vec3_Value {
+	return Vec3_Value{
+		x = fixed_lerp(a.x, b.x, t),
+		y = fixed_lerp(a.y, b.y, t),
+		z = fixed_lerp(a.z, b.z, t),
+	}
+}
+
+// eval_pose_layer composes two poses by override (§16 §7): the overlay's bones
+// replace the base's, the base shows through elsewhere — overlay wins per bone.
+// The result is the base's driven bones (each overwritten by the overlay where it
+// drives the same bone) followed by the overlay's bones new to the base, in a
+// deterministic order.
+eval_pose_layer :: proc(base, overlay: Pose_Value) -> Value {
+	bones := make([dynamic]Pose_Bone_Transform, 0, len(base.bones) + len(overlay.bones), context.temp_allocator)
+	for driven in base.bones {
+		if over, wins := pose_bone_transform(overlay.bones, driven.bone); wins {
+			append(&bones, Pose_Bone_Transform{bone = driven.bone, transform = over})
+		} else {
+			append(&bones, driven)
+		}
+	}
+	for driven in overlay.bones {
+		if _, already := pose_bone_transform(base.bones, driven.bone); already {
+			continue
+		}
+		append(&bones, driven)
+	}
+	return Pose_Value{bones = bones[:]}
+}
+
+// eval_pose_expr evaluates an expression expected to be a Pose value — the
+// shared shape blend/layer read their pose arguments through. ok = false on a
+// non-Pose value (a typecheck-rejected shape that never reaches a passing test).
+eval_pose_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (pose: Pose_Value, ok: bool) {
+	value := eval_expr(ctx, env, expr) or_return
+	return value.(Pose_Value)
+}
+
+// eval_bone_arg evaluates an argument expected to be a Bone variant and returns
+// its variant name — the key a Pose drives a transform on. ok = false on a
+// non-variant argument.
+eval_bone_arg :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (bone: string, ok: bool) {
+	value := eval_expr(ctx, env, expr) or_return
+	variant, is_variant := value.(Enum_Value)
+	if !is_variant {
+		return "", false
+	}
+	return variant.variant, true
 }
 
 // find_user_behavior looks up a behavior by name — the §04 name.step receiver.
