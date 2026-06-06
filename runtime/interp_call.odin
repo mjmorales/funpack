@@ -5,14 +5,20 @@
 // not by layer.
 //
 // A `call` is one of three things, decided by its callee node: a method-style
-// `recv.method(args)` (a `field` callee — input.value, the only resource query
-// pong evaluates here), an engine builtin (the §08/§26 leaf combinators —
+// `recv.method(args)` (a `field` callee — the §23 Input resource queries
+// `value`/`axis`/`pressed`/`released`/`held`, the record-intent `body.apply_impulse`
+// over a Body column, and the engine static constructor `Settings.defaults()`), an
+// engine builtin (the §08/§26 leaf combinators —
 // `abs`, `clamp`, the §10 `length`, `first`, `fold`, the §08 list set `prepend`/
-// `init`/`contains`/`map`/`filter`/`concat`/`is_empty`, the §26
+// `init`/`contains`/`map`/`filter`/`concat`/`is_empty`/`len`, the §26
 // `engine.grid.grid_cells`, `Spawn`,
 // a record constructor), or a user §9 helper (`advance`, `overlaps`, `add_goal`,
 // …) evaluated by binding its args to its params and folding its body. No float
 // (spec §10); every numeric path is the fixed.odin kernel.
+//
+// Match patterns span the closed §2.5 arm set: bare/binding variant arms, the
+// struct-field-pun `Enum::Case{f}` (yard's `Shape2::Box{size}`), tuple
+// destructure, and the wildcard.
 package funpack_runtime
 
 // --- match ----------------------------------------------------------------
@@ -99,10 +105,56 @@ arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 			}
 		}
 		return true
+	case "struct_binds":
+		return struct_arm_matches(scrutinee, arm, scope)
 	case "tuple":
 		return tuple_arm_matches(scrutinee, arm, scope)
 	}
 	return false
+}
+
+// struct_arm_matches tests the §2.5 struct-field-pun pattern `Enum::Case{f, …}`
+// (yard's `Shape2::Box{size} => size`): it matches a Variant_Value of the named
+// case whose payload is the struct Record_Value, then binds EACH named field of
+// the pattern to the same-named payload column (the pun — `{size}` binds `size`
+// to `payload.size`, not the whole payload). fields: pat, enum, case, field_count,
+// field_names…  A `_` field name discards; a payload missing a punned field is a
+// non-match (the case carries no such column). Distinct from variant_binds, which
+// binds the WHOLE payload to one binder rather than punning its struct fields.
+struct_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
+	v, is_variant := scrutinee.(Variant_Value)
+	if !is_variant {
+		return false
+	}
+	if v.case_name != arm.fields[2] {
+		return false
+	}
+	if v.payload == nil {
+		return false
+	}
+	payload, is_record := v.payload^.(Record_Value)
+	if !is_record {
+		return false
+	}
+	field_count := 0
+	if n, n_ok := decode_int(arm.fields[3]); n_ok {
+		field_count = int(n)
+	}
+	for i in 0 ..< field_count {
+		if 4 + i >= len(arm.fields) {
+			return false
+		}
+		field_name := arm.fields[4 + i]
+		if field_name == "_" {
+			continue
+		}
+		column, present := payload.fields[field_name]
+		if !present {
+			return false
+		}
+		scope.names[field_name] = column
+	}
+	return true
 }
 
 // tuple_arm_matches destructures a tuple scrutinee against a tuple pattern arm: the
@@ -136,9 +188,10 @@ tuple_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 // --- call -----------------------------------------------------------------
 
 // eval_call applies a call node. The callee (child[0]) decides the form: a
-// `field` callee is a method-style `recv.method(args)` (the resource queries —
-// input.value); a `name` callee is an engine builtin or a user §9 helper. Args
-// are children[1:], evaluated left-to-right so evaluation order is deterministic.
+// `field` callee is a method-style `recv.method(args)` (a resource query, a record
+// intent, or an engine static constructor — see eval_method_call); a `name` callee
+// is an engine builtin or a user §9 helper. Args are children[1:], evaluated
+// left-to-right so evaluation order is deterministic.
 eval_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	callee := &node.children[0]
 	switch callee.kind {
@@ -152,26 +205,33 @@ eval_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 	return nil, false
 }
 
-// eval_method_call evaluates `recv.method(args)` — the resource-query form. The
-// receiver is the `field` callee's child; the method name is its field token.
-// The Input resource queries the executed control/collision/scoring stages reach
-// are the 1D `value` and the 2D `axis` analog reads (the render [Draw] projection
-// is not produced here), so the receiver is the Input snapshot and the method
-// resolves an action reading; an unknown receiver/method is ok=false.
+// eval_method_call evaluates `recv.method(args)` — the resource-query, the
+// record-intent, and the engine static-constructor forms. The receiver is the
+// `field` callee's child; the method name is its field token. Two receiver
+// classes reach here: the Input snapshot (the §23 1D `value` / 2D `axis` analog
+// reads and the digital `pressed`/`released`/`held` Button reads) and a record
+// column carrying an intent method (yard's `body.apply_impulse(j)`, a Body record
+// receiver). A THIRD form has no value receiver at all — an engine static
+// constructor `Type.method()` (yard's `Settings.defaults()`) whose receiver is a
+// type name, resolved before the receiver is evaluated. An unknown receiver/
+// method is ok=false.
 eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	field_node := &node.children[0]
 	method := field_node.fields[0]
-	recv, recv_ok := eval(interp, &field_node.children[0], env)
+	// An engine static constructor `Type.method()` has a TYPE-NAME receiver, not a
+	// value — intercept it before evaluating the receiver (a type name is not a
+	// local, so eval would fail-closed on it). The receiver child is the bare type
+	// name node.
+	recv_node := &field_node.children[0]
+	if recv_node.kind == .Name {
+		if ctor, is_ctor := eval_engine_constructor(interp, recv_node.fields[0], method); is_ctor {
+			return ctor, true
+		}
+	}
+	recv, recv_ok := eval(interp, recv_node, env)
 	if !recv_ok {
 		return nil, false
 	}
-	// The method receivers in the executed (non-render) pipeline are all the Input
-	// snapshot; the receiver value carries no Input arm, so resolve the query
-	// against interp.input directly, keyed by the evaluated args. The 1D/2D analog
-	// reads are `value`/`axis`; the digital Button edge/level reads are
-	// `pressed`/`released`/`held` (§23 §2 — snake's `dir_from_input` turns on
-	// `input.pressed(P1, Move::Up)`).
-	_ = recv
 	switch method {
 	case "value":
 		return eval_input_value(interp, node, env)
@@ -183,8 +243,83 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 		return eval_input_button(interp, node, env, released)
 	case "held":
 		return eval_input_button(interp, node, env, held)
+	case "apply_impulse":
+		return eval_apply_impulse(interp, recv, node, env)
 	}
 	return nil, false
+}
+
+// eval_apply_impulse evaluates `body.apply_impulse(j)` — yard's drive intent: a
+// new Body with the impulse Vec2 ACCUMULATED (the prior impulse plus j), every
+// other column carried unchanged. The receiver is the Body Record_Value column
+// (NOT the Input snapshot), and the write is a functional update — the base body
+// is read, never mutated, and a fresh record carries the summed impulse, so two
+// pushes sum (the §11 solver consumes and zeroes it next stage). A prior impulse
+// absent from the body reads VEC2_ZERO (the no-intent default), so the first push
+// of a tick accumulates onto zero. A non-Body receiver or a non-Vec2 argument is
+// ok=false (the intent is defined only over a Body and a vector).
+eval_apply_impulse :: proc(interp: ^Interp, recv: Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	body, is_record := recv.(Record_Value)
+	if !is_record {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	push, is_vec2 := arg.(Vec2)
+	if !is_vec2 {
+		return nil, false
+	}
+	prior := VEC2_ZERO
+	if existing, present := body.fields["impulse"]; present {
+		if v, was_vec2 := existing.(Vec2); was_vec2 {
+			prior = v
+		}
+	}
+	merged := make(map[string]Value, interp.allocator)
+	for k, v in body.fields {
+		merged[k] = v
+	}
+	merged["impulse"] = vec2_add(prior, push)
+	return Record_Value{type_name = body.type_name, fields = merged}, true
+}
+
+// eval_engine_constructor resolves an engine static constructor `Type.method()`
+// to its canonical seed record (yard's `Settings.defaults()` → the factory-default
+// Settings). It is the engine-provided constructor surface §24 names: a behavior
+// reads the default settings record to seed a Menu, never authoring the engine's
+// internal preference layout. is_ctor is false for any (type, method) pair that is
+// not a recognized engine constructor, so a non-constructor `recv.method()` falls
+// through to the value-receiver dispatch.
+eval_engine_constructor :: proc(interp: ^Interp, type_name, method: string) -> (value: Value, is_ctor: bool) {
+	switch type_name {
+	case "Settings":
+		if method == "defaults" {
+			return settings_defaults(interp), true
+		}
+	}
+	return nil, false
+}
+
+// settings_defaults is the §24 factory-default Settings record `Settings.defaults()`
+// seeds a Menu with: the canonical preference layout the engine ships, with the
+// `access` sub-record carrying `reduce_motion: false` (the accessibility default
+// yard's toggle_motion flips). The record is the engine's, not the sim's — gameplay
+// never reads it back (the settings split, §24) — so the runtime owns this seed
+// shape rather than the artifact. Built in the evaluation arena so it outlives the
+// constructor call.
+settings_defaults :: proc(interp: ^Interp) -> Value {
+	access_fields := make(map[string]Value, interp.allocator)
+	access_fields["reduce_motion"] = false
+	access := Record_Value{type_name = "Access", fields = access_fields}
+
+	settings_fields := make(map[string]Value, interp.allocator)
+	settings_fields["access"] = access
+	return Record_Value{type_name = "Settings", fields = settings_fields}
 }
 
 // eval_input_button evaluates a digital Button query `input.pressed/released/held(
@@ -333,6 +468,8 @@ eval_named_call :: proc(
 		return builtin_concat(interp, node, env)
 	case "is_empty":
 		return builtin_is_empty(interp, node, env)
+	case "len":
+		return builtin_len(interp, node, env)
 	case "grid_cells":
 		return builtin_grid_cells(interp, node, env)
 	case "pick":
@@ -492,9 +629,13 @@ builtin_first :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 }
 
 // builtin_fold is the §08 list aggregate `fold(list, seed, f)`: fold f over the
-// list left-to-right from the seed, threading the accumulator. Pong's tally folds
-// add_goal over the inbound goals list onto the seed Scoreboard. `f` is a §9
-// helper name resolved here, applied per element as f(acc, element).
+// list left-to-right from the seed, threading the accumulator. The combiner takes
+// two forms: a §9 helper NAME (pong's tally folds add_goal), or an INLINE binary
+// lambda `fn(acc, elem) { … }` (yard's on_persist_result folds a match over each
+// signal's result). A named callee resolves to the program function directly; any
+// other combiner node is evaluated and must yield a two-param Lambda_Value. Either
+// way the combiner is applied per element as f(acc, element); a combiner that is
+// neither a binary helper nor a binary lambda is ok=false.
 builtin_fold :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 4 {
 		return nil, false
@@ -508,16 +649,48 @@ builtin_fold :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	if !elems_ok {
 		return nil, false
 	}
-	// The folding function is named directly (a §9 helper) — pong folds add_goal.
 	combiner := &node.children[3]
-	if combiner.kind != .Name {
+	// A bare-name combiner is a §9 helper resolved directly (pong's add_goal); any
+	// other combiner node evaluates to a binary lambda closure (yard's inline
+	// fn(m, r) over a signal's Result).
+	if combiner.kind == .Name {
+		fn := program_function(interp.program, combiner.fields[0])
+		if fn != nil && len(fn.params) == 2 {
+			return fold_with_helper(interp, fn, elements, seed_val)
+		}
+	}
+	combiner_val, combiner_ok := eval(interp, combiner, env)
+	if !combiner_ok {
 		return nil, false
 	}
-	fn := program_function(interp.program, combiner.fields[0])
-	if fn == nil || len(fn.params) != 2 {
+	lambda, is_lambda := combiner_val.(Lambda_Value)
+	if !is_lambda || len(lambda.params) != 2 {
 		return nil, false
 	}
 	acc := seed_val
+	for elem in elements {
+		next, next_ok := apply_two_arg_lambda(interp, lambda, acc, elem)
+		if !next_ok {
+			return nil, false
+		}
+		acc = next
+	}
+	return acc, true
+}
+
+// fold_with_helper folds a two-param §9 helper over the elements left-to-right
+// from the seed, threading the accumulator as f(acc, element) — the named-combiner
+// branch of builtin_fold (pong's add_goal).
+fold_with_helper :: proc(
+	interp: ^Interp,
+	fn: ^Function_Decl,
+	elements: []Value,
+	seed: Value,
+) -> (
+	value: Value,
+	ok: bool,
+) {
+	acc := seed
 	for elem in elements {
 		next, next_ok := apply_two_arg(interp, fn, acc, elem)
 		if !next_ok {
@@ -716,6 +889,26 @@ builtin_is_empty :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 		return nil, false
 	}
 	return len(elements) == 0, true
+}
+
+// builtin_len is the §08 list aggregate `len(list) -> Int`: the element count as
+// an Int (the i64 arm). Yard's tally folds this tick's deliveries into the running
+// count — `self.delivered + len(done)` — so the result lands on the Int rail the
+// `+` adds to a delivered count. A non-list arg is ok=false (the count of a
+// scalar is undefined, never coerced).
+builtin_len :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	if !list_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	return i64(len(elements)), true
 }
 
 // builtin_grid_cells is the §26 `engine.grid.grid_cells(w, h, fn(x, y) -> Cell)
