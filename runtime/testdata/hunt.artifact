@@ -19,8 +19,8 @@ thing Hunter false 1 5
 gtag L2:ai
 field pos Vec2 -
 field home Vec2 -
-field ai Hunt =
-field last_seen Vec2 =
+field ai Hunt =Hunt::Patrol
+field last_seen Vec2 =Vec2(x=0,y=0)
 field search_t Fixed =0
 [functions 13]
 function step_to fn 3 return:Vec2 4 span:hunt:40
