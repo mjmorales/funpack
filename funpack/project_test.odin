@@ -600,15 +600,6 @@ test_arena_builds_and_capabilities :: proc(t: ^testing.T) {
 	)
 }
 
-// ARENA_DEFAULT_DIR is the arena exemplar's sibling-checkout default, resolved
-// the same way the golden trees resolve theirs (resolve_spec_dir anchors it at
-// the main checkout root and honors the env override).
-ARENA_DEFAULT_DIR :: "../funpack-spec/examples/arena"
-
-resolve_arena_dir :: proc() -> string {
-	return resolve_spec_dir("FUNPACK_ARENA_DIR", ARENA_DEFAULT_DIR)
-}
-
 // write_scratch_tree materializes a minimal §14 project tree under a
 // unique temp root: funpack_configs/project.fcfg carrying the given config
 // plus a single src/x.fun so collect_sources succeeds. ok = false (with a
