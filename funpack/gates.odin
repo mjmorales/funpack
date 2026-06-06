@@ -909,10 +909,18 @@ canon_pattern :: proc(b: ^strings.Builder, pattern: Pattern) {
 		strings.write_byte(b, ' ')
 		strings.write_string(b, pattern.variant)
 	case .Variant_Binds:
+		// The (type, variant) shape plus each payload sub-pattern's shape (grammar
+		// §13: the payload is nested Patterns), so AppMsg::Hud(HudMsg::Coin) and
+		// AppMsg::Hud(m) get distinct tags — a specific nested variant is a narrower
+		// arm than a binding one, and the dup gate must tell them apart.
 		strings.write_string(b, "binds ")
 		strings.write_string(b, pattern.type_name)
 		strings.write_byte(b, ' ')
 		strings.write_string(b, pattern.variant)
+		for sub in pattern.elements {
+			strings.write_byte(b, ' ')
+			canon_pattern(b, sub)
+		}
 	case .Struct_Binds:
 		// The field-pun binder names are alpha-renamed in the body, so the
 		// structural tag carries only the (type, variant) shape — two
@@ -942,9 +950,16 @@ push_pattern_binders :: proc(alpha: ^[dynamic]string, pattern: Pattern) {
 	switch pattern.kind {
 	case .Wildcard, .Bare_Variant:
 		// No binders.
-	case .Variant_Binds, .Struct_Binds, .Bare_Binder:
+	case .Struct_Binds, .Bare_Binder:
 		for binder in pattern.binders {
 			append(alpha, binder)
+		}
+	case .Variant_Binds:
+		// The payload binders live in the nested sub-patterns now (grammar §13), so
+		// recurse into each — Option::Some(v) / AppMsg::Hud(m) push their binder,
+		// AppMsg::Hud(HudMsg::Coin) pushes none.
+		for sub in pattern.elements {
+			push_pattern_binders(alpha, sub)
 		}
 	case .Tuple:
 		for sub in pattern.elements {

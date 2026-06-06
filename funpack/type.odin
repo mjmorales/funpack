@@ -112,6 +112,18 @@ Engine_Kind :: enum {
 	// one-shot Sound command.
 	Audio,           // §22 §2 the keyed sustained-audio track (Audio.track(…).bus(…))
 	Bus,             // §22 §4 the audio bus group enum (Bus::Sfx, shared with Sound)
+	// §22 §1 the ONE-SHOT sound command record (engine.audio): Sound.sfx(clip)
+	// + .gain/.pitch/.bus/.at — the edge-triggered twin of the sustained Audio
+	// regime above; both regimes share the Bus mixer-group enum.
+	Sound,           // §22 §1 one-shot sound command record (engine.audio)
+	// §21 ui surface (engine.ui): the UI navigation-action enum and the project
+	// style-token vocabulary handle. View[Msg] already exists above (the §08 read
+	// table doubles as the §21 retained-mode view tree, re-exported by engine.ui
+	// per §26). UiAction is the closed focus/gamepad action set
+	// (NavUp/NavDown/NavLeft/NavRight/Confirm/Cancel); Theme is the opaque
+	// style-token vocabulary a class= token is checked against.
+	UiAction,        // §21 §5 closed UI navigation-action enum (engine.ui)
+	Theme,           // §21 §1 opaque project style-token vocabulary handle
 }
 
 // User_Type is the nominal handle for a name the source declares

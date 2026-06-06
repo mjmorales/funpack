@@ -278,12 +278,22 @@ eval_variant :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Variant_Expr) -> (value: Valu
 		return eval_struct_variant(ctx, env, e)
 	}
 	if e.has_payload {
-		// The pong surface carries no tuple-payload user or engine variant
-		// outside Option; such a form is outside the evaluable domain.
-		return nil, false
+		// A §21 §3 tagged-union construction: AppMsg::Hud(HudMsg::Coin),
+		// SettingsMsg::SetVolume(50). The surface carries exactly one payload per
+		// variant; the argument evaluates and is boxed onto the Enum_Value.
+		if len(e.payload) != 1 {
+			return nil, false
+		}
+		inner := eval_expr(ctx, env, e.payload[0]) or_return
+		boxed := new(Value, context.temp_allocator)
+		boxed^ = inner
+		return Enum_Value{type_name = e.type_name, variant = e.variant, payload = boxed}, true
 	}
-	// A bare variant value — a user enum (Side::Left) or an engine enum
-	// (Color::White). Both lower to the same (type_name, variant) tag.
+	// A bare variant value — a nullary user enum (Side::Left, HudMsg::Coin) or an
+	// engine enum (Color::White, Bus::Ui). Both lower to the same (type_name,
+	// variant) tag with no payload. (A payload variant named WITHOUT its payload
+	// is the §21 §3 variant-as-function value, reached only in a `view` body the
+	// asserts never evaluate, so it is left to the fail-closed path.)
 	return Enum_Value{type_name = e.type_name, variant = e.variant}, true
 }
 
@@ -505,7 +515,8 @@ eval_match :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Match_Expr) -> (value: Value, o
 // match, returns a frame holding the pattern's payload binders. A wildcard
 // always matches with no binders; a bare variant matches an Enum_Value of the
 // same (type_name, variant) or the Option None tag; a payload-binding variant
-// matches Option::Some and binds its single payload.
+// matches Option::Some or a §21 §3 user tagged-union variant and recurses into
+// its one payload sub-pattern, accumulating its binders.
 match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: ^Env, matched: bool) {
 	switch pattern.kind {
 	case .Wildcard:
@@ -519,13 +530,29 @@ match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: 
 		matched = is_variant && variant.type_name == pattern.type_name && variant.variant == pattern.variant
 		return env, matched
 	case .Variant_Binds:
-		option, is_option := scrutinee.(Option_Value)
-		if !is_option || !option.is_some || pattern.variant != "Some" || len(pattern.binders) != 1 {
+		// The grammar carries the payload as one sub-pattern (Option::Some(v) →
+		// [Bare_Binder v]; AppMsg::Hud(m) → [Bare_Binder m]; AppMsg::Hud(HudMsg::Coin)
+		// → [Bare_Variant HudMsg::Coin]). Match the variant, then recurse the
+		// sub-pattern against the unboxed payload value, so a binder binds and a
+		// nested variant filters.
+		if len(pattern.elements) != 1 {
 			return env, false
 		}
-		child := new_env(env)
-		child.bindings[pattern.binders[0]] = option.payload^
-		return child, true
+		payload: Value
+		if option, is_option := scrutinee.(Option_Value); is_option {
+			if !option.is_some || pattern.variant != "Some" {
+				return env, false
+			}
+			payload = option.payload^
+		} else if variant, is_variant := scrutinee.(Enum_Value); is_variant {
+			if variant.type_name != pattern.type_name || variant.variant != pattern.variant || variant.payload == nil {
+				return env, false
+			}
+			payload = variant.payload^
+		} else {
+			return env, false
+		}
+		return match_pattern(pattern.elements[0], payload, env)
 	case .Struct_Binds:
 		// A struct-payload variant value materializes as a Record_Value carrying
 		// its variant tag and fields; the pattern matches on (type_name, variant)
@@ -920,6 +947,8 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		// identity rotation and unit scale — pose_idle's torso breathing bob.
 		d := eval_fixed_arg(ctx, env, e, 0, 1) or_return
 		return transform_up(d), true
+	case "max":
+		return eval_max(ctx, env, e)
 	case "fold":
 		return eval_fold(ctx, env, e)
 	case "first":
@@ -934,6 +963,8 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_concat(ctx, env, e)
 	case "is_empty":
 		return eval_is_empty(ctx, env, e)
+	case "get":
+		return eval_get(ctx, env, e)
 	case "map":
 		return eval_map(ctx, env, e)
 	case "filter":
@@ -1130,6 +1161,53 @@ eval_is_empty :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value,
 	return len(elements) == 0, true
 }
 
+// eval_get lowers `get(list, i) -> Option[T]` (spec §08): the element at index i
+// wrapped in Option::Some, or Option::None when i is out of range — total, never
+// faulting (the hud preset test reads get(volume_presets, 1)). A negative index is
+// out of range and reads None.
+eval_get :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	index_value := eval_expr(ctx, env, e.args[1]) or_return
+	i, is_int := index_value.(i64)
+	if !is_int {
+		return nil, false
+	}
+	if i < 0 || int(i) >= len(elements) {
+		return Option_Value{is_some = false, payload = nil}, true
+	}
+	return some_value(elements[i]), true
+}
+
+// eval_max lowers `max(a, b)` (spec §10/§26): the larger of two same-typed
+// numeric scalars — Int or Fixed, never crossing the kinds (no implicit
+// promotion). Fixed compares by its underlying Q32.32 integer ordering. The hud
+// `max(self.clock - 1, 0)` floors the Int countdown at zero.
+eval_max :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	a := eval_expr(ctx, env, e.args[0]) or_return
+	b := eval_expr(ctx, env, e.args[1]) or_return
+	if af, a_fixed := a.(Fixed); a_fixed {
+		bf, b_fixed := b.(Fixed)
+		if !b_fixed {
+			return nil, false
+		}
+		return (i64(af) >= i64(bf)) ? af : bf, true
+	}
+	if ai, a_int := a.(i64); a_int {
+		bi, b_int := b.(i64)
+		if !b_int {
+			return nil, false
+		}
+		return (ai >= bi) ? ai : bi, true
+	}
+	return nil, false
+}
+
 // eval_map lowers `map(source, fn) -> [U]` (spec §08): a fresh list applying the
 // unary function to each element in source order. The function slot is a literal
 // lambda or a bare user-fn name (apply_combinator), the same two forms fold's
@@ -1239,6 +1317,13 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 			if recv.name == "Pose" {
 				return eval_pose_static(ctx, env, callee.member, args)
 			}
+			// The §22 audio constructors: Sound.sfx(clip)/.sfx_at(clip, pos) and
+			// Audio.track(key, clip) build the one-shot / sustained record values the
+			// .gain/.pitch/.bus/.at adders then chain. A type name is never an env
+			// binding, so this branch only fires for the Type.constructor form.
+			if audio, is_audio := eval_audio_constructor(ctx, env, recv.name, callee.member, args); is_audio {
+				return audio, true
+			}
 			// The §23 static resource builders: Input.empty() the empty input
 			// snapshot, Time.at(dt) a fixed-dt Time, View.of(list) a §08 read table
 			// materialized as a list. A resource name is never an env binding, so
@@ -1249,6 +1334,21 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 		}
 	}
 	receiver := eval_expr(ctx, env, callee.receiver) or_return
+	// §02 §4 UFCS: recv.f(args) runs the top-level user fn f(recv, args) when f's
+	// first param matches the receiver — the hud projections App{}.pause_view() /
+	// self.hud_view() are reached this way. Tried before the value-method arms so a
+	// user projection fn resolves; a member that names no user fn falls through.
+	if ufcs, is_ufcs := eval_ufcs_method(ctx, env, receiver, callee.member, args); is_ufcs {
+		return ufcs, true
+	}
+	// §22 the one-shot / sustained adders on a built Sound/Audio record value
+	// (Sound.sfx(clip).bus(Bus::Ui), Audio.track(k, c).gain(g).bus(b)): each
+	// returns a new record with one field replaced, so they chain.
+	if record, is_record := receiver.(Record_Value); is_record {
+		if audio, is_audio := eval_audio_adder(ctx, env, record, callee.member, args); is_audio {
+			return audio, true
+		}
+	}
 	// A method call on a value receiver: the §23 §2 Input queries (an inline test
 	// seeds the snapshot via Input.empty().with_pressed(…) and reads it via
 	// .pressed(…)), then the quaternion methods.
@@ -1288,6 +1388,147 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 		return quat_slerp(q, other, t), true
 	}
 	return nil, false
+}
+
+// eval_ufcs_method lowers a §02 §4 UFCS call recv.method(args) → method(recv,
+// args): a top-level user fn whose first parameter is the receiver, called with
+// the receiver prepended to the evaluated arguments. is_ufcs is false when the
+// member names no user fn (the caller falls through to the value-method arms). The
+// hud projections hud_view/pause_view/settings_view (each fn(self: App)) are run
+// this way as App{}.pause_view() / self.hud_view().
+eval_ufcs_method :: proc(ctx: Eval_Ctx, env: ^Env, receiver: Value, member: string, args: []Expr) -> (value: Value, is_ufcs: bool) {
+	fn, declared := find_user_fn(ctx.ast, member)
+	if !declared || len(fn.params) == 0 {
+		return nil, false
+	}
+	tail, tail_ok := eval_args(ctx, env, args)
+	if !tail_ok {
+		return nil, false
+	}
+	values := make([]Value, len(tail) + 1, context.temp_allocator)
+	values[0] = receiver
+	copy(values[1:], tail)
+	result, ok := eval_user_fn(ctx, fn, values)
+	return result, ok
+}
+
+// eval_audio_constructor lowers the §22 audio constructors applied as a type-name
+// static method: Sound.sfx(clip)/.sfx_at(clip, pos) build the one-shot record at
+// the spec defaults (unity gain/pitch, Sfx bus, the given/None position),
+// Audio.track(key, clip) the sustained record (Music bus). is_audio is false for
+// any other (type, member) so the caller falls through. The records carry exactly
+// the §22 fields so a built value compares equal to another built the same way.
+eval_audio_constructor :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: string, args: []Expr) -> (value: Value, is_audio: bool) {
+	switch type_name {
+	case "Sound":
+		switch member {
+		case "sfx":
+			if len(args) != 1 {
+				return nil, false
+			}
+			clip, clip_ok := eval_expr(ctx, env, args[0])
+			if !clip_ok {
+				return nil, false
+			}
+			return sound_record(clip, none_value()), true
+		case "sfx_at":
+			if len(args) != 2 {
+				return nil, false
+			}
+			clip, clip_ok := eval_expr(ctx, env, args[0])
+			pos, pos_ok := eval_expr(ctx, env, args[1])
+			if !clip_ok || !pos_ok {
+				return nil, false
+			}
+			return sound_record(clip, some_value(pos)), true
+		}
+	case "Audio":
+		if member == "track" && len(args) == 2 {
+			key, key_ok := eval_expr(ctx, env, args[0])
+			clip, clip_ok := eval_expr(ctx, env, args[1])
+			if !key_ok || !clip_ok {
+				return nil, false
+			}
+			return audio_record(key, clip), true
+		}
+	}
+	return nil, false
+}
+
+// sound_record builds a §22 §1 Sound value at unity gain/pitch on the Sfx bus —
+// the Sound.sfx/.sfx_at default, before any .gain/.pitch/.bus/.at adder. Field
+// order is the §22 record order so equality (which matches by name) is stable.
+sound_record :: proc(clip: Value, at: Value) -> Value {
+	fields := make([]Record_Field_Value, 5, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "clip", value = clip}
+	fields[1] = Record_Field_Value{name = "gain", value = FIXED_ONE}
+	fields[2] = Record_Field_Value{name = "pitch", value = FIXED_ONE}
+	fields[3] = Record_Field_Value{name = "bus", value = bus_variant("Sfx")}
+	fields[4] = Record_Field_Value{name = "at", value = at}
+	return Record_Value{type_name = "Sound", fields = fields}
+}
+
+// audio_record builds a §22 §2 Audio value at unity gain/pitch on the Music bus —
+// the Audio.track default, before any adder.
+audio_record :: proc(key: Value, clip: Value) -> Value {
+	fields := make([]Record_Field_Value, 6, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "key", value = key}
+	fields[1] = Record_Field_Value{name = "clip", value = clip}
+	fields[2] = Record_Field_Value{name = "gain", value = FIXED_ONE}
+	fields[3] = Record_Field_Value{name = "pitch", value = FIXED_ONE}
+	fields[4] = Record_Field_Value{name = "bus", value = bus_variant("Music")}
+	fields[5] = Record_Field_Value{name = "at", value = none_value()}
+	return Record_Value{type_name = "Audio", fields = fields}
+}
+
+// bus_variant is a §22 §4 Bus enum value (Bus::Sfx, Bus::Ui) — the same
+// (type_name, variant) Enum_Value a Bus::X literal lowers to, so a default bus
+// compares equal to a literal-set one.
+bus_variant :: proc(variant: string) -> Value {
+	return Enum_Value{type_name = "Bus", variant = variant}
+}
+
+// none_value is the Option::None value an unplaced one-shot's `at` field carries.
+none_value :: proc() -> Value {
+	return Option_Value{is_some = false, payload = nil}
+}
+
+// eval_audio_adder lowers a §22 self-first adder on a built Sound/Audio record:
+// .gain(g)/.pitch(p) replace the Fixed field, .bus(b) the Bus field, .at(pos) the
+// Option position. Each returns a new record with the one field replaced (the base
+// untouched), so they chain. is_audio is false when the receiver is not a Sound/
+// Audio record or the member is not an adder (the caller falls through).
+eval_audio_adder :: proc(ctx: Eval_Ctx, env: ^Env, record: Record_Value, member: string, args: []Expr) -> (value: Value, is_audio: bool) {
+	if record.type_name != "Sound" && record.type_name != "Audio" {
+		return nil, false
+	}
+	field: string
+	wrap_some := false
+	switch member {
+	case "gain", "pitch", "bus":
+		field = member
+	case "at":
+		field = "at"
+		wrap_some = true
+	case:
+		return nil, false
+	}
+	if len(args) != 1 {
+		return nil, false
+	}
+	arg, arg_ok := eval_expr(ctx, env, args[0])
+	if !arg_ok {
+		return nil, false
+	}
+	if wrap_some {
+		arg = some_value(arg)
+	}
+	updated := make([]Record_Field_Value, len(record.fields), context.temp_allocator)
+	copy(updated, record.fields)
+	if !record_replace_field(updated, field, arg) {
+		return nil, false
+	}
+	return Record_Value{type_name = record.type_name, variant = record.variant, fields = updated}, true
 }
 
 // eval_resource_builder lowers the §23 static resource builders applied as a

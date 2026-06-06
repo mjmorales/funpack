@@ -35,11 +35,31 @@ Field_Schema :: struct {
 // is the `enum Name: Kind` ascription ("" when absent) — the §03 §4 role
 // kind (e.g. `enum Steer: Axis`); variants is the declared variant names in
 // source order, the closed set the exhaustiveness gate proves coverage
-// against once it is registered (gates.odin).
+// against once it is registered (gates.odin). payloads carries each variant's
+// single tuple-payload type in lockstep with variants (nil for a plain or
+// multi-arg variant): the §21 §3 tagged-union router (AppMsg::Hud(HudMsg),
+// SettingsMsg::SetVolume(Int)) types its variant payloads off this — a payload
+// construction (AppMsg::Hud(m)) checks m against payloads[i], a match binder
+// (AppMsg::Hud(m) => …) binds m to payloads[i], and the variant-as-function
+// value (AppMsg::Hud per §21 §3) is fn(payloads[i]) -> the enum.
 Enum_Schema :: struct {
 	type_name: string,
 	role:      string,
 	variants:  []string,
+	payloads:  []Type, // variant i's single tuple-payload type; nil when plain
+}
+
+// enum_variant_payload reads an enum variant's single tuple-payload type by
+// variant name, returning has_payload = false for a plain variant or a name the
+// enum does not declare. A linear walk over the source-ordered variant slice, so
+// the verdict never depends on map order.
+enum_variant_payload :: proc(schema: Enum_Schema, variant: string) -> (payload: Type, has_payload: bool) {
+	for name, i in schema.variants {
+		if name == variant {
+			return schema.payloads[i], schema.payloads[i] != nil
+		}
+	}
+	return nil, false
 }
 
 // Term_Schema records a value-level name: a module-level `let` constant
@@ -137,10 +157,14 @@ collect_type_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type
 		for variant, i in decl.variants {
 			variants[i] = variant.name
 		}
+		// payloads is sized here and filled in pass 2 (resolve_enum_payloads),
+		// once the whole type namespace is interned — a variant payload may name a
+		// type declared later (AppMsg::Hud(HudMsg) where HudMsg follows AppMsg).
 		env.enums[decl.name] = Enum_Schema {
 			type_name = decl.name,
 			role      = decl.kind,
 			variants  = variants,
+			payloads  = make([]Type, len(decl.variants), context.temp_allocator),
 		}
 	}
 	return .None
@@ -265,6 +289,27 @@ resolve_schemas :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings, index: Mod
 		term := env.terms[decl.name]
 		term.signature = resolve_fn_signature(env^, bindings, decl.step.params, decl.step.return_type, index)
 		env.terms[decl.name] = term
+	}
+	resolve_enum_payloads(env, ast, bindings, index)
+}
+
+// resolve_enum_payloads fills each enum schema's variant payload types now that
+// the whole type namespace is interned (spec §03 §2 tuple-payload variants). A
+// single-arg tuple-payload variant (AppMsg::Hud(HudMsg), SettingsMsg::SetVolume(
+// Int)) records its one payload type; a plain variant or a struct-payload variant
+// leaves nil, and a multi-arg tuple payload (none on this surface) also leaves nil
+// — the §21 §3 router carries exactly one payload per tagged variant. The payload
+// ref resolves like any field ref, so a sibling-module type (a generated seam's
+// HudMsg) resolves through the index too.
+resolve_enum_payloads :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings, index: Module_Index = {}) {
+	for decl in ast.enums {
+		schema := env.enums[decl.name]
+		for variant, i in decl.variants {
+			if variant.payload == .Tuple && len(variant.tuple) == 1 {
+				schema.payloads[i] = resolve_type_ref(env^, bindings, variant.tuple[0], index)
+			}
+		}
+		env.enums[decl.name] = schema
 	}
 }
 
@@ -477,13 +522,23 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Draw3), true
 	case "Material":
 		return engine_type_of(.Material), true
-	// §22 audio: Audio names the element of an `audio:` behavior's `-> [Audio]`
-	// return; Bus a `bus: Bus` field. Variant values (Bus::Sfx) come through
-	// surface_enum_variant.
+	// §22 audio: a `-> [Sound]` one-shot command list, a `-> [Audio]` sustained
+	// projection list, and a `bus: Bus` field all name an engine type in
+	// field/param/return position; the Sound/Audio builders' chained results
+	// ground here too. Master/Music/Sfx/Ui/Voice are reached through Bus's variant
+	// surface (surface_enum_variant), not as bare type-refs.
+	case "Sound":
+		return engine_type_of(.Sound), true
 	case "Audio":
 		return engine_type_of(.Audio), true
 	case "Bus":
 		return engine_type_of(.Bus), true
+	// §21 ui: a `-> View[Msg]` projection grounds through the View[T] arm above;
+	// UiAction and Theme name engine types in field/param position.
+	case "UiAction":
+		return engine_type_of(.UiAction), true
+	case "Theme":
+		return engine_type_of(.Theme), true
 	}
 	return nil, false
 }

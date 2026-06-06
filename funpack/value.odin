@@ -99,15 +99,18 @@ Time_Value :: struct {
 	dt: Fixed,
 }
 
-// Enum_Value is a bare enum variant value — a user enum (Side::Left) or an
-// engine enum (Color::White, PlayerId::P1). The pong surface's user enums
-// carry no payload, so a variant is identified by its owning type and its
-// variant name alone. Equality is by (type_name, variant): two variants are
-// equal iff they name the same variant of the same enum (spec §10 demands
-// matching tags; §03 §2 closes the variant set).
+// Enum_Value is an enum variant value — a user enum (Side::Left, AppMsg::Hud(m))
+// or an engine enum (Color::White, PlayerId::P1, Bus::Ui). A bare variant
+// carries no payload (payload nil); a §21 §3 tagged-union variant carries its
+// single payload value (AppMsg::Hud(HudMsg::Coin) → payload is the HudMsg::Coin
+// Enum_Value). Equality is by (type_name, variant) AND payload: two variants are
+// equal iff they name the same variant of the same enum and their payloads are
+// equal (spec §10 demands matching tags; §03 §2 closes the variant set). The
+// payload is a pointer because a union cannot contain itself by value.
 Enum_Value :: struct {
 	type_name: string,
 	variant:   string,
+	payload:   ^Value, // nil for a nullary variant; the single tuple payload otherwise
 }
 
 // Record_Value is a constructed record value: a user thing/data/signal
@@ -216,7 +219,20 @@ value_equal :: proc(a, b: Value) -> bool {
 		return false
 	case Enum_Value:
 		bv, ok := b.(Enum_Value)
-		return ok && av.type_name == bv.type_name && av.variant == bv.variant
+		if !ok || av.type_name != bv.type_name || av.variant != bv.variant {
+			return false
+		}
+		// A nullary variant has no payload on either side; a §21 §3 tagged variant
+		// compares its single payload (AppMsg::Hud(HudMsg::Coin) equals another iff
+		// the inner HudMsg::Coin does). A payload present on one side only is a
+		// mismatch — different variant arities never compare equal.
+		if (av.payload == nil) != (bv.payload == nil) {
+			return false
+		}
+		if av.payload == nil {
+			return true
+		}
+		return value_equal(av.payload^, bv.payload^)
 	case Record_Value:
 		bv, ok := b.(Record_Value)
 		if !ok || av.type_name != bv.type_name || av.variant != bv.variant {

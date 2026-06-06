@@ -150,7 +150,12 @@ test_tuple_pattern_arity_match_accepted :: proc(t: ^testing.T) {
 	matching := Pattern {
 		kind = .Tuple,
 		elements = {
-			Pattern{kind = .Variant_Binds, type_name = "Option", variant = "Some", binders = {"wp"}},
+			Pattern {
+				kind = .Variant_Binds,
+				type_name = "Option",
+				variant = "Some",
+				elements = {Pattern{kind = .Bare_Binder, binders = {"wp"}}},
+			},
 			Pattern{kind = .Bare_Binder, binders = {"rest"}},
 		},
 	}
@@ -168,11 +173,16 @@ test_pattern_binders_destructure_tuple_scrutinee :: proc(t: ^testing.T) {
 	pattern := Pattern {
 		kind = .Tuple,
 		elements = {
-			Pattern{kind = .Variant_Binds, type_name = "Option", variant = "Some", binders = {"cell"}},
+			Pattern {
+				kind = .Variant_Binds,
+				type_name = "Option",
+				variant = "Some",
+				elements = {Pattern{kind = .Bare_Binder, binders = {"cell"}}},
+			},
 			Pattern{kind = .Bare_Binder, binders = {"next"}},
 		},
 	}
-	names, types := pattern_binders(pattern, scrutinee)
+	names, types := pattern_binders(Type_Env{}, pattern, scrutinee)
 	testing.expect_value(t, len(names), 2)
 	testing.expect_value(t, len(types), 2)
 	if len(names) == 2 {
