@@ -452,6 +452,38 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.SoundHandle), true
 	case "AtlasHandle":
 		return engine_type_of(.AtlasHandle), true
+	// §16 §7 anim: a pose generator's `-> Pose` return, a rig seam's `-> Skeleton`/
+	// `-> PartSet` returns, and a `transform: Transform` slot all name an engine
+	// type in field/param/return position. Slot/Side/Bone ground here too so a
+	// bare `kind: Bone` field would resolve; their variant values are reached
+	// through surface_enum_variant.
+	case "Skeleton":
+		return engine_type_of(.Skeleton), true
+	case "PartSet":
+		return engine_type_of(.PartSet), true
+	case "Slot":
+		return engine_type_of(.Slot), true
+	case "Side":
+		return engine_type_of(.Side), true
+	case "Pose":
+		return engine_type_of(.Pose), true
+	case "Bone":
+		return engine_type_of(.Bone), true
+	case "Transform":
+		return engine_type_of(.Transform), true
+	// §20 §1 render3: Draw3 names the element of a render3 behavior's `-> [Draw3]`
+	// return; Material a `mat: Material` field. Both ground here like Draw/Spawn.
+	case "Draw3":
+		return engine_type_of(.Draw3), true
+	case "Material":
+		return engine_type_of(.Material), true
+	// §22 audio: Audio names the element of an `audio:` behavior's `-> [Audio]`
+	// return; Bus a `bus: Bus` field. Variant values (Bus::Sfx) come through
+	// surface_enum_variant.
+	case "Audio":
+		return engine_type_of(.Audio), true
+	case "Bus":
+		return engine_type_of(.Bus), true
 	}
 	return nil, false
 }
