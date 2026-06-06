@@ -86,13 +86,29 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
-		// §08: the read/reference surface. View[T] is the read-only
-		// table; Spawn and Despawn are closed §04 command-type constructors.
+		// §08: the read/reference surface. View[T] is the read-only table; Ref
+		// is the typed reference the §17 level bake resolves names to (a
+		// Door.gate, a generated seam's Ref[Player]); Spawn and Despawn are
+		// closed §04 command-type constructors.
 		path = "engine.world",
 		decls = {
 			{"View", .Type_Name},
+			{"Ref", .Type_Name},
 			{"Spawn", .Type_Name},
 			{"Despawn", .Type_Name},
+		},
+	},
+	{
+		// §08 navigation surface: the read/query handle the chase AI imports
+		// (`import engine.nav.{Nav, Path}`). Nav is the read/query handle
+		// (Nav.path queries a route, Nav.of builds one); Path is the route value
+		// a Hunter's `route: Path` field defaults to and Path.advance walks;
+		// NavError is the query-failure variant Nav.path's Result wraps.
+		path = "engine.nav",
+		decls = {
+			{"Nav", .Type_Name},
+			{"Path", .Type_Name},
+			{"NavError", .Type_Name},
 		},
 	},
 	{
@@ -553,6 +569,14 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 			// (yard `Settings.defaults()`). No argument; yields the Settings record.
 			return func_of({}, engine_type_of(.Settings)), true
 		}
+	case "Nav":
+		switch member {
+		case "of":
+			// §08: the test producer that builds a Nav query handle from a Path
+			// route (the chase-AI fixture's `Nav.of(route)`), the nav twin of
+			// View.of — yields the Nav handle Nav.path then queries.
+			return func_of({engine_type_of(.Path)}, engine_type_of(.Nav)), true
+		}
 	}
 	return nil, false
 }
@@ -618,6 +642,25 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 		// both Body.
 		if member == "apply_impulse" {
 			return func_of({Ground_Type.Vec2}, engine_type_of(.Body)), true
+		}
+	case .Nav:
+		// §08: the chase AI queries a route off the Nav handle. path(from, to)
+		// returns a Result[Path] (the route, or a NavError when no path exists);
+		// Result carries no payload ground on this surface, so the result is the
+		// bare Result engine value matched Ok/Err downstream.
+		if member == "path" {
+			return func_of({Ground_Type.Vec2, Ground_Type.Vec2}, engine_type_of(.Result)), true
+		}
+	case .Path:
+		// §08: advance(from, arrive) walks the route one waypoint — `from` is the
+		// current position (Vec2), `arrive` the arrival radius (Fixed). It returns
+		// the pair (next waypoint as Option[Vec2], remaining Path), so a behavior
+		// reads the next target and threads the shortened route forward.
+		if member == "advance" {
+			return func_of(
+				{Ground_Type.Vec2, Ground_Type.Fixed},
+				tuple_of({option_of(Ground_Type.Vec2), engine_type_of(.Path)}),
+			), true
 		}
 	}
 	return nil, false

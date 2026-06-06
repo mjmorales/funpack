@@ -329,6 +329,12 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref) -> Ty
 	if ref.name == "View" && len(ref.args) == 1 {
 		return engine_type_of(.View, resolve_type_ref(env, bindings, ref.args[0]))
 	}
+	// Ref[T] is the §08 typed reference the §17 level bake resolves names to
+	// (Ref[Player], a Door.gate); like View it is only ever parameterized, so
+	// its element resolves like any other ref and it carries no bare-name arm.
+	if ref.name == "Ref" && len(ref.args) == 1 {
+		return engine_type_of(.Ref, resolve_type_ref(env, bindings, ref.args[0]))
+	}
 	if len(ref.args) == 0 {
 		if ground, is_ground := ground_type_name(ref.name); is_ground {
 			return ground
@@ -413,6 +419,16 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Restored), true
 	case "SettingsApplied":
 		return engine_type_of(.SettingsApplied), true
+	// §08 nav: a `nav: Nav` query handle, a `route: Path` field, and a
+	// NavError query-failure variant all name an engine type in field/param
+	// position. Ref is parameterized (Ref[T]) and grounds in the Ref[T] arm of
+	// resolve_type_ref, mirroring View — it is omitted here.
+	case "Nav":
+		return engine_type_of(.Nav), true
+	case "Path":
+		return engine_type_of(.Path), true
+	case "NavError":
+		return engine_type_of(.NavError), true
 	}
 	return nil, false
 }

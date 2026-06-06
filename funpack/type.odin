@@ -69,6 +69,13 @@ Engine_Kind :: enum {
 	Settings,        // §24 §2 per-machine preferences record
 	AccessOpts,      // §24 §2 accessibility sub-record (reduce_motion)
 	Result,          // prelude Result[_, _] — matched Ok/Err with wildcard payloads
+	// §08 reference + navigation surface: the typed reference the §17 level
+	// bake resolves names to, the nav read/query handle, the route value a
+	// Path-field default carries, and the query-failure variant.
+	Ref,             // §08 typed reference Ref[T] (engine.world; Door.gate, Ref[Player])
+	Nav,             // §08 nav read/query handle (Nav.path queries a route)
+	Path,            // §08 route value (a thing-field default; Path.advance walks it)
+	NavError,        // §08 nav query-failure variant
 }
 
 // User_Type is the nominal handle for a name the source declares
