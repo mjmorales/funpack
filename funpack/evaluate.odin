@@ -906,6 +906,20 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 	case "cos":
 		angle := eval_fixed_arg(ctx, env, e, 0, 1) or_return
 		return fixed_cos(angle), true
+	case "rot_x":
+		// §16 §7 the per-bone X-axis rotation builder: a fixed-point angle
+		// (radians) into a Transform with the identity translation, a rotation of
+		// `angle` about the local X axis, and unit scale — the leg/arm swing a pose
+		// generator drives a bone with (pose_walk's rot_x(s)). At angle 0 the
+		// quaternion is the identity, so rot_x(0.0) is the rest transform.
+		angle := eval_fixed_arg(ctx, env, e, 0, 1) or_return
+		return transform_rot_x(angle), true
+	case "up":
+		// §16 §7 the per-bone vertical-offset builder: a fixed-point displacement
+		// into a Transform translating by `d` along the local +Y axis, with the
+		// identity rotation and unit scale — pose_idle's torso breathing bob.
+		d := eval_fixed_arg(ctx, env, e, 0, 1) or_return
+		return transform_up(d), true
 	case "fold":
 		return eval_fold(ctx, env, e)
 	case "first":
@@ -1222,6 +1236,9 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 			if recv.name == "Quat" {
 				return eval_quat_constructor(ctx, env, callee.member, args)
 			}
+			if recv.name == "Pose" {
+				return eval_pose_static(ctx, env, callee.member, args)
+			}
 			// The §23 static resource builders: Input.empty() the empty input
 			// snapshot, Time.at(dt) a fixed-dt Time, View.of(list) a §08 read table
 			// materialized as a list. A resource name is never an env binding, so
@@ -1237,6 +1254,12 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 	// .pressed(…)), then the quaternion methods.
 	if input, is_input := receiver.(Input_Value); is_input {
 		return eval_input_method(ctx, env, input, callee.member, args)
+	}
+	// A §16 §7 method on a Pose value: set(Bone, Transform) drives one bone
+	// (returning the Pose, so a generator chains .set across bones), get(Bone)
+	// reads a bone's Transform (rest when the pose leaves it undriven).
+	if pose, is_pose := receiver.(Pose_Value); is_pose {
+		return eval_pose_method(ctx, env, pose, callee.member, args)
 	}
 	q := receiver.(Quat_Value) or_return
 	switch callee.member {
@@ -1402,6 +1425,222 @@ eval_quat_constructor :: proc(ctx: Eval_Ctx, env: ^Env, member: string, args: []
 	angle_value := eval_expr(ctx, env, args[1]) or_return
 	angle := angle_value.(Fixed) or_return
 	return quat_axis_angle(axis, angle), true
+}
+
+// transform_identity is the §16 §7 rest transform: no translation, the identity
+// rotation, unit scale — the transform a Pose assigns to a bone it does not drive
+// (Pose.get of an undriven bone), and the base every rot_x/up builds off.
+transform_identity :: proc() -> Transform_Value {
+	return Transform_Value{
+		pos   = Vec3_Value{},
+		rot   = QUAT_IDENTITY,
+		scale = Vec3_Value{x = FIXED_ONE, y = FIXED_ONE, z = FIXED_ONE},
+	}
+}
+
+// transform_rot_x builds the §16 §7 rot_x(angle) Transform: the identity
+// translation, a quaternion rotating `angle` radians about the local X axis, and
+// unit scale. At angle 0 the quaternion is the identity (sin(0)=0, cos(0)=1), so
+// rot_x(0.0) equals the rest transform — the zero-crossing the pose_walk golden
+// asserts.
+transform_rot_x :: proc(angle: Fixed) -> Transform_Value {
+	t := transform_identity()
+	t.rot = quat_axis_angle(Vec3_Value{x = FIXED_ONE}, angle)
+	return t
+}
+
+// transform_up builds the §16 §7 up(d) Transform: a translation of `d` along the
+// local +Y axis, the identity rotation, and unit scale — the torso bob a pose
+// generator drives the torso with.
+transform_up :: proc(d: Fixed) -> Transform_Value {
+	t := transform_identity()
+	t.pos = Vec3_Value{y = d}
+	return t
+}
+
+// eval_pose_static lowers the §16 §7 Pose Type-name static builders/combinators:
+// empty() seeds the sparse pose a generator .set()s bones on; blend(a, b, weight)
+// per-bone interpolates two poses; layer(base, overlay) lets the overlay win per
+// bone. ok = false for any other (member, arity) shape — a typecheck-rejected
+// form that never reaches a passing program.
+eval_pose_static :: proc(ctx: Eval_Ctx, env: ^Env, member: string, args: []Expr) -> (value: Value, ok: bool) {
+	switch member {
+	case "empty":
+		if len(args) != 0 {
+			return nil, false
+		}
+		return Pose_Value{bones = make([]Pose_Bone_Transform, 0, context.temp_allocator)}, true
+	case "blend":
+		if len(args) != 3 {
+			return nil, false
+		}
+		a := eval_pose_expr(ctx, env, args[0]) or_return
+		b := eval_pose_expr(ctx, env, args[1]) or_return
+		weight := eval_expr(ctx, env, args[2]) or_return
+		w, is_fixed := weight.(Fixed)
+		if !is_fixed {
+			return nil, false
+		}
+		return eval_pose_blend(a, b, w), true
+	case "layer":
+		if len(args) != 2 {
+			return nil, false
+		}
+		base := eval_pose_expr(ctx, env, args[0]) or_return
+		overlay := eval_pose_expr(ctx, env, args[1]) or_return
+		return eval_pose_layer(base, overlay), true
+	}
+	return nil, false
+}
+
+// eval_pose_method lowers the §16 §7 Pose value methods: set(Bone, Transform)
+// returns a new pose driving the named bone, get(Bone) reads a bone's transform
+// (the rest transform when the pose leaves the bone undriven).
+eval_pose_method :: proc(ctx: Eval_Ctx, env: ^Env, pose: Pose_Value, member: string, args: []Expr) -> (value: Value, ok: bool) {
+	switch member {
+	case "set":
+		if len(args) != 2 {
+			return nil, false
+		}
+		bone := eval_bone_arg(ctx, env, args[0]) or_return
+		transform_value := eval_expr(ctx, env, args[1]) or_return
+		transform, is_transform := transform_value.(Transform_Value)
+		if !is_transform {
+			return nil, false
+		}
+		return eval_pose_set(pose, bone, transform), true
+	case "get":
+		if len(args) != 1 {
+			return nil, false
+		}
+		bone := eval_bone_arg(ctx, env, args[0]) or_return
+		return eval_pose_get(pose, bone), true
+	}
+	return nil, false
+}
+
+// eval_pose_set returns a new pose driving `bone` with `transform`: an existing
+// driven bone is overwritten in place (a re-`.set` of the same bone replaces, not
+// duplicates), a new bone is appended — keeping the driven-bone slice in a
+// deterministic insert order, never a map (the determinism tripwire). The input
+// pose is never mutated (a fresh slice copy).
+eval_pose_set :: proc(pose: Pose_Value, bone: string, transform: Transform_Value) -> Value {
+	for driven, i in pose.bones {
+		if driven.bone == bone {
+			next := make([]Pose_Bone_Transform, len(pose.bones), context.temp_allocator)
+			copy(next, pose.bones)
+			next[i].transform = transform
+			return Pose_Value{bones = next}
+		}
+	}
+	next := make([]Pose_Bone_Transform, len(pose.bones) + 1, context.temp_allocator)
+	copy(next, pose.bones)
+	next[len(pose.bones)] = Pose_Bone_Transform{bone = bone, transform = transform}
+	return Pose_Value{bones = next}
+}
+
+// eval_pose_get reads the transform a pose drives on `bone`, or the rest
+// (identity) transform when the pose leaves the bone undriven — the §16 §7
+// "absent bones default to rest" rule a sparse-pose comparison rests on
+// (Pose.get of an undriven bone == identity).
+eval_pose_get :: proc(pose: Pose_Value, bone: string) -> Value {
+	if transform, found := pose_bone_transform(pose.bones, bone); found {
+		return transform
+	}
+	return transform_identity()
+}
+
+// eval_pose_blend per-bone interpolates two poses by `weight` (§16 §7): for every
+// bone EITHER pose drives, the result drives the lerp from a's transform (a's
+// driven value, or rest when a omits it) to b's (b's driven value, or rest when b
+// omits it) — so a blend of disjoint bone sets keeps every bone, each
+// interpolating against the other pose's rest. The driven-bone union is built in
+// a deterministic order: a's bones in their order, then b's bones new to the
+// result in theirs. At weight 0 every bone reads a's transform, at weight 1 b's.
+eval_pose_blend :: proc(a, b: Pose_Value, weight: Fixed) -> Value {
+	bones := make([dynamic]Pose_Bone_Transform, 0, len(a.bones) + len(b.bones), context.temp_allocator)
+	for driven in a.bones {
+		other, _ := pose_bone_transform(b.bones, driven.bone)
+		append(&bones, Pose_Bone_Transform{
+			bone      = driven.bone,
+			transform = transform_blend(driven.transform, other, weight),
+		})
+	}
+	for driven in b.bones {
+		if _, already := pose_bone_transform(a.bones, driven.bone); already {
+			continue
+		}
+		append(&bones, Pose_Bone_Transform{
+			bone      = driven.bone,
+			transform = transform_blend(transform_identity(), driven.transform, weight),
+		})
+	}
+	return Pose_Value{bones = bones[:]}
+}
+
+// transform_blend interpolates two transforms: position and scale lerp
+// component-wise, orientation slerps — the §16 §7 "lerp position, slerp rotation"
+// rule. quat_slerp returns its endpoints bit-exactly, so a weight of 0 yields a
+// and 1 yields b without recomputation.
+transform_blend :: proc(a, b: Transform_Value, weight: Fixed) -> Transform_Value {
+	return Transform_Value{
+		pos   = vec3_lerp(a.pos, b.pos, weight),
+		rot   = quat_slerp(a.rot, b.rot, weight),
+		scale = vec3_lerp(a.scale, b.scale, weight),
+	}
+}
+
+// vec3_lerp interpolates two vectors component-wise over the saturating kernel —
+// each lane through fixed_lerp (spec §10: vector arithmetic is component-wise).
+vec3_lerp :: proc(a, b: Vec3_Value, t: Fixed) -> Vec3_Value {
+	return Vec3_Value{
+		x = fixed_lerp(a.x, b.x, t),
+		y = fixed_lerp(a.y, b.y, t),
+		z = fixed_lerp(a.z, b.z, t),
+	}
+}
+
+// eval_pose_layer composes two poses by override (§16 §7): the overlay's bones
+// replace the base's, the base shows through elsewhere — overlay wins per bone.
+// The result is the base's driven bones (each overwritten by the overlay where it
+// drives the same bone) followed by the overlay's bones new to the base, in a
+// deterministic order.
+eval_pose_layer :: proc(base, overlay: Pose_Value) -> Value {
+	bones := make([dynamic]Pose_Bone_Transform, 0, len(base.bones) + len(overlay.bones), context.temp_allocator)
+	for driven in base.bones {
+		if over, wins := pose_bone_transform(overlay.bones, driven.bone); wins {
+			append(&bones, Pose_Bone_Transform{bone = driven.bone, transform = over})
+		} else {
+			append(&bones, driven)
+		}
+	}
+	for driven in overlay.bones {
+		if _, already := pose_bone_transform(base.bones, driven.bone); already {
+			continue
+		}
+		append(&bones, driven)
+	}
+	return Pose_Value{bones = bones[:]}
+}
+
+// eval_pose_expr evaluates an expression expected to be a Pose value — the
+// shared shape blend/layer read their pose arguments through. ok = false on a
+// non-Pose value (a typecheck-rejected shape that never reaches a passing test).
+eval_pose_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (pose: Pose_Value, ok: bool) {
+	value := eval_expr(ctx, env, expr) or_return
+	return value.(Pose_Value)
+}
+
+// eval_bone_arg evaluates an argument expected to be a Bone variant and returns
+// its variant name — the key a Pose drives a transform on. ok = false on a
+// non-variant argument.
+eval_bone_arg :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (bone: string, ok: bool) {
+	value := eval_expr(ctx, env, expr) or_return
+	variant, is_variant := value.(Enum_Value)
+	if !is_variant {
+		return "", false
+	}
+	return variant.variant, true
 }
 
 // find_user_behavior looks up a behavior by name — the §04 name.step receiver.

@@ -21,6 +21,43 @@ Value :: union {
 	Record_Value,
 	Input_Value,
 	Time_Value,
+	Transform_Value,
+	Pose_Value,
+}
+
+// Transform_Value is a §16 §7 local bone transform: translation, orientation,
+// and scale relative to the parent bone (the engine.anim Transform record). The
+// free builders rot_x/up construct it — rot_x(angle) is the identity translation
+// with a quaternion rotation about the local X axis and unit scale; up(d) is a
+// +Y translation with the identity rotation and unit scale. Its three component
+// values are plain comparable structs, so equality is the bit-exact field match
+// `pose_walk(…).get(Bone::LUpperLeg) == rot_x(0.0)` rests on (spec §10).
+Transform_Value :: struct {
+	pos:   Vec3_Value,
+	rot:   Quat_Value,
+	scale: Vec3_Value,
+}
+
+// Pose_Value is a §16 §7 sparse map of bone → local transform (the engine.anim
+// Pose extern type). The bones it omits sit at rest, so a `.get` of an undriven
+// bone reads the identity transform. The driven bones live in a DETERMINISTIC
+// insert-ordered slice — never an iterated map — so the value an evaluation
+// produces is machine-identical: `.set` appends (or overwrites in place), and
+// blend/layer build the union of driven bones in a fixed order (the base/a
+// bones in their order, then the overlay/b bones new to the result in theirs).
+// Equality is by driven-bone set: two poses are equal iff they drive the same
+// bones each with an equal transform, so insertion order never reaches the
+// verdict (the same name-keyed shape Record_Value equality takes, spec §10).
+Pose_Value :: struct {
+	bones: []Pose_Bone_Transform,
+}
+
+// Pose_Bone_Transform is one driven bone of a Pose_Value: the Bone variant name
+// (matching the Enum_Value identity Bone::LUpperLeg lowers to) and the local
+// Transform it drives.
+Pose_Bone_Transform :: struct {
+	bone:      string, // the Bone variant name (e.g. "LUpperLeg")
+	transform: Transform_Value,
 }
 
 List_Value :: struct {
@@ -186,8 +223,47 @@ value_equal :: proc(a, b: Value) -> bool {
 			return false
 		}
 		return record_fields_equal(av.fields, bv.fields)
+	case Transform_Value:
+		// A Transform's three components (pos, rot, scale) are plain comparable
+		// structs over the Fixed kernel, so equality is the bit-exact field match
+		// — `rot_x(0.0)` from two sites builds the identical Transform (§10).
+		bv, ok := b.(Transform_Value)
+		return ok && av == bv
+	case Pose_Value:
+		bv, ok := b.(Pose_Value)
+		return ok && pose_bones_equal(av.bones, bv.bones)
 	}
 	return false
+}
+
+// pose_bones_equal compares two driven-bone sets by bone name: every bone one
+// pose drives must be driven by the other with an equal transform, and the two
+// must drive the same number of bones. Matching by name (not slice position)
+// makes insertion order irrelevant — two poses that drive the same bones in a
+// different `.set` order compare equal (spec §10, the determinism tripwire).
+pose_bones_equal :: proc(a, b: []Pose_Bone_Transform) -> bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for driven in a {
+		other, found := pose_bone_transform(b, driven.bone)
+		if !found || driven.transform != other {
+			return false
+		}
+	}
+	return true
+}
+
+// pose_bone_transform reads the transform a pose drives on a bone by name — a
+// linear lookup over the insert-ordered slice, so bone order never reaches the
+// result. found = false when the pose leaves the bone at rest.
+pose_bone_transform :: proc(bones: []Pose_Bone_Transform, bone: string) -> (transform: Transform_Value, found: bool) {
+	for driven in bones {
+		if driven.bone == bone {
+			return driven.transform, true
+		}
+	}
+	return Transform_Value{}, false
 }
 
 // record_fields_equal compares two record field sets by name: every field on
