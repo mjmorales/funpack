@@ -111,17 +111,47 @@ Baked_Prefab_Instance :: struct {
 	members: []Baked_Ref,
 }
 
+// Baked_Symbol_Kind discriminates a top-level symbol-table entry: a simple named
+// instance (a single Baked_Ref) or a placed prefab instance (a
+// Baked_Prefab_Instance of member Refs). The seam's `data <Level>` record emits a
+// `Ref[Type]` field for a simple symbol and a `<Level><PrefabType>` record field
+// for a prefab symbol — so the projection reads this kind to choose the field
+// type.
+Baked_Symbol_Kind :: enum {
+	Ref,    // a simple named instance — a single Baked_Ref entry
+	Prefab, // a placed prefab instance — a Baked_Prefab_Instance entry
+}
+
+// Baked_Symbol is one entry of the level's TOP-LEVEL symbol table in DECLARATION
+// order (spec §17.2 — the `data <Level> { name: Ref[Type], … }` reader's field
+// order is the level's source order). It records only depth-0 named placements (a
+// prefab member is reached through its prefab symbol, never a top-level field), so
+// the seam's Arena record carries exactly the level's named top-level instances
+// and prefab placements, interleaved in source order. local_name is the seam field
+// key; the index points into refs (for a .Ref) or prefabs (for a .Prefab).
+Baked_Symbol :: struct {
+	kind:       Baked_Symbol_Kind,
+	local_name: string,
+	index:      int, // index into Baked_Level.refs (.Ref) or .prefabs (.Prefab)
+}
+
 // Baked_Level is the whole lowered model: the typed Ref symbol table (named
 // instances only), the deterministic spawn list (every instance, named and
-// anonymous, prefab/loop expanded in place), and the placed prefab instances.
-// It is the canonical initial-world data the seam emitter (the leaf story)
-// renders to `<level>.gen.fun` and the runtime loads.
+// anonymous, prefab/loop expanded in place), the placed prefab instances, and the
+// top-level symbol order (symbols) the seam's `data <Level>` record fields follow.
+// It is the canonical initial-world data the seam emitter (the leaf story) renders
+// to `<level>.gen.fun` and the runtime loads.
 Baked_Level :: struct {
-	level_name: string,
-	dim:        Flvl_Dim,
-	refs:       []Baked_Ref,
-	spawns:     []Baked_Spawn,
-	prefabs:    []Baked_Prefab_Instance,
+	level_name:    string,
+	dim:           Flvl_Dim,
+	// schema_module is the `things <module>` schema module the level placed
+	// against — the seam's schema import path (the level seam imports its schema
+	// module by this name, `import arena_world.{…}`).
+	schema_module: string,
+	refs:          []Baked_Ref,
+	spawns:        []Baked_Spawn,
+	prefabs:       []Baked_Prefab_Instance,
+	symbols:       []Baked_Symbol,
 }
 
 // ── Schema view ─────────────────────────────────────────────────────────────
@@ -219,6 +249,11 @@ Bake_Context :: struct {
 	refs:         [dynamic]Baked_Ref,
 	spawns:       [dynamic]Baked_Spawn,
 	prefabs:      [dynamic]Baked_Prefab_Instance,
+	// symbols is the TOP-LEVEL symbol order (depth-0 named placements) in
+	// declaration order — the seam's `data <Level>` record field order. A nested
+	// (prefab-member) placement is reached through its prefab symbol, so only
+	// depth-0 placements append here (scope.name_prefix == level.name).
+	symbols:      [dynamic]Baked_Symbol,
 }
 
 // ── Entry ───────────────────────────────────────────────────────────────────
@@ -256,6 +291,7 @@ bake_flvl :: proc(level: Flvl_Level, schema: Ast, schema_module: string, index: 
 		refs    = make([dynamic]Baked_Ref, 0, 16, context.temp_allocator),
 		spawns  = make([dynamic]Baked_Spawn, 0, 16, context.temp_allocator),
 		prefabs = make([dynamic]Baked_Prefab_Instance, 0, 4, context.temp_allocator),
+		symbols = make([dynamic]Baked_Symbol, 0, 8, context.temp_allocator),
 	}
 
 	// The top-level scope: the level name is the qualified-name root, and the
@@ -271,12 +307,23 @@ bake_flvl :: proc(level: Flvl_Level, schema: Ast, schema_module: string, index: 
 	expand_items(&ctx, &root, level.items, level.places, level.fors, bounds_min, bounds_max) or_return
 
 	return Baked_Level {
-		level_name = level.name,
-		dim        = level.dim,
-		refs       = ctx.refs[:],
-		spawns     = ctx.spawns[:],
-		prefabs    = ctx.prefabs[:],
+		level_name    = level.name,
+		dim           = level.dim,
+		schema_module = schema_module,
+		refs          = ctx.refs[:],
+		spawns        = ctx.spawns[:],
+		prefabs       = ctx.prefabs[:],
+		symbols       = ctx.symbols[:],
 	}, .None
+}
+
+// is_top_level_scope reports whether a scope is the level's depth-0 scope — the
+// only depth a placement contributes a TOP-LEVEL symbol-table entry. A loop body
+// shares the parent's name_prefix (a loop is repetition, not a namespace), so a
+// named placement inside a top-level loop still records as top-level; a prefab
+// body extends the prefix (`Arena.left_gun`), so its members never do.
+is_top_level_scope :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope) -> bool {
+	return scope.name_prefix == ctx.level.name
 }
 
 // expand_items expands one body's items in DECLARATION order (spec §17.4 — the
@@ -610,12 +657,23 @@ emit_thing_spawn :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Pla
 		}
 		ctx.names[qualified] = true
 		id = stable_id(qualified)
+		ref_index := len(ctx.refs)
 		append(&ctx.refs, Baked_Ref{
 			name       = qualified,
 			local_name = place.instance_name,
 			thing_type = place.type_name,
 			id         = id,
 		})
+		// A depth-0 named instance is a top-level symbol-table field; a nested
+		// (prefab-member) named instance is reached through its prefab symbol, so
+		// only top-level placements append to the seam's `data <Level>` field order.
+		if is_top_level_scope(ctx, scope) {
+			append(&ctx.symbols, Baked_Symbol{
+				kind       = .Ref,
+				local_name = place.instance_name,
+				index      = ref_index,
+			})
+		}
 		scope.siblings[place.instance_name] = pos
 	} else {
 		id = ctx.anon_counter
@@ -781,12 +839,22 @@ stamp_prefab :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Place, 
 	for i := before; i < len(ctx.refs); i += 1 {
 		append(&members, ctx.refs[i])
 	}
+	prefab_index := len(ctx.prefabs)
 	append(&ctx.prefabs, Baked_Prefab_Instance{
 		name    = prefix,
 		type    = place.type_name,
 		members = members[:],
 	})
-	_ = inst_name
+	// A depth-0 NAMED prefab placement is a top-level symbol-table field (a
+	// `<Level><PrefabType>` record field); an anonymous prefab is not exposed in
+	// the seam's symbol table, and a nested prefab is reached through its parent.
+	if place.has_name && is_top_level_scope(ctx, scope) {
+		append(&ctx.symbols, Baked_Symbol{
+			kind       = .Prefab,
+			local_name = inst_name,
+			index      = prefab_index,
+		})
+	}
 	return .None
 }
 
