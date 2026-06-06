@@ -92,6 +92,77 @@ test_world_axis_to_pixel_zero_board_is_total :: proc(t: ^testing.T) {
 	testing.expect_value(t, world_axis_to_pixel(to_fixed(80), 640, Fixed(0)), i32(0))
 }
 
+// --- camera world↔screen transform rails (§3) ------------------------------
+
+// test_camera_identity_is_world_to_pixel pins the no-transform invariant: the
+// identity camera (centered on the board center {80,60} at zoom 1.0) maps every
+// world point to exactly the pixel world_to_pixel alone gives — so a camera-less
+// artifact (pong/snake/hunt) projects through the unchanged board geometry. The
+// ball start {80,60} → window center {320,240}, the same rail the bare projection
+// pins, proving the camera pre-transform is the identity here.
+@(test)
+test_camera_identity_is_world_to_pixel :: proc(t: ^testing.T) {
+	camera := identity_camera(PONG_BOARD)
+	ball := Vec2{to_fixed(80), to_fixed(60)}
+	px := camera_world_to_pixel(ball, camera, PONG_BOARD, PONG_WINDOW)
+	testing.expect_value(t, px, Pixel{320, 240})
+}
+
+// test_camera_recenter_maps_camera_at_to_screen_center pins the recenter: a camera
+// at {40,30} (zoom 1.0) puts ITS center at the screen center — world {40,30} →
+// board_center {80,60} → pixel {320,240} — and a world point one camera-offset away,
+// world {80,60} → board_center + ({80,60}-{40,30}) = {120,90} → pixel
+// (120*640/160, 90*480/120) = {480,360}. Exact-integer over the kernel, no float.
+@(test)
+test_camera_recenter_maps_camera_at_to_screen_center :: proc(t: ^testing.T) {
+	camera := Camera_View{at = Vec2{to_fixed(40), to_fixed(30)}, zoom = to_fixed(1)}
+
+	center := camera_world_to_pixel(Vec2{to_fixed(40), to_fixed(30)}, camera, PONG_BOARD, PONG_WINDOW)
+	testing.expect_value(t, center, Pixel{320, 240})
+
+	offset := camera_world_to_pixel(Vec2{to_fixed(80), to_fixed(60)}, camera, PONG_BOARD, PONG_WINDOW)
+	testing.expect_value(t, offset, Pixel{480, 360})
+}
+
+// test_camera_zoom_scales_offset_from_center pins the zoom: a camera at the board
+// center {80,60} with zoom 2.0 doubles a world point's offset from that center —
+// world {100,60} → board_center + ({100,60}-{80,60})*2 = {80,60}+{40,0} = {120,60}
+// → pixel (120*640/160, 60*480/120) = {480,240}. The camera center itself is fixed
+// regardless of zoom: world {80,60} → {320,240}. Exact-integer, kernel-only (§10.5).
+@(test)
+test_camera_zoom_scales_offset_from_center :: proc(t: ^testing.T) {
+	camera := Camera_View{at = Vec2{to_fixed(80), to_fixed(60)}, zoom = to_fixed(2)}
+
+	zoomed := camera_world_to_pixel(Vec2{to_fixed(100), to_fixed(60)}, camera, PONG_BOARD, PONG_WINDOW)
+	testing.expect_value(t, zoomed, Pixel{480, 240})
+
+	center := camera_world_to_pixel(Vec2{to_fixed(80), to_fixed(60)}, camera, PONG_BOARD, PONG_WINDOW)
+	testing.expect_value(t, center, Pixel{320, 240})
+}
+
+// test_camera_pre_transform_is_exact_fixed_point pins the pre-transform output as a
+// raw Q32.32 world Vec2 (before the pixel projection), so the exact-integer
+// composition is asserted at the kernel level too: camera at {40,30}, zoom 2.0,
+// world {50,40} → board_center {80,60} + ({50,40}-{40,30})*2 = {80,60}+{20,20} =
+// {100,80}, in raw bits (100<<32, 80<<32). No float on the path.
+@(test)
+test_camera_pre_transform_is_exact_fixed_point :: proc(t: ^testing.T) {
+	camera := Camera_View{at = Vec2{to_fixed(40), to_fixed(30)}, zoom = to_fixed(2)}
+	world := Vec2{to_fixed(50), to_fixed(40)}
+	got := camera_pre_transform(world, camera, PONG_BOARD)
+	testing.expect_value(t, got, Vec2{to_fixed(100), to_fixed(80)})
+}
+
+// test_camera_from_command_zero_zoom_is_unity pins the degenerate guard: a lowered
+// Draw_Camera whose zoom is 0 (an absent/malformed scalar) reads as zoom 1.0, so a
+// malformed camera never collapses the world to its center — the present pass stays
+// total like the kernel.
+@(test)
+test_camera_from_command_zero_zoom_is_unity :: proc(t: ^testing.T) {
+	camera := camera_from_command(Draw_Camera{at = Vec2{to_fixed(80), to_fixed(60)}, zoom = Fixed(0), rotation = Fixed(0)})
+	testing.expect_value(t, camera.zoom, to_fixed(1))
+}
+
 // test_draw_color_to_rgba_totality pins the §20 palette lowering over ALL five
 // closed-enum variants to their fully-opaque RGBA8 tuples — the totality the
 // present boundary depends on (an unmapped variant would not compile).

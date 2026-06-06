@@ -186,6 +186,58 @@ test_render_is_deterministic :: proc(t: ^testing.T) {
 	testing.expect(t, draw_lists_equal(first, second))
 }
 
+// --- (camera) Draw::Camera lowering (§3: the view is a command) ------------
+
+// The Draw::Camera record the `view` behavior returns lowers to a Draw_Camera
+// draw-list command carrying the exact fields. This mirrors yard's in-source
+// `view emits the camera at its shaken position` test (glue_behaviors_test):
+// a Camera at {80,60} with shake {2,0} returns Draw::Camera{at: {82,60}, zoom:
+// 1.0, rotation: 0.0} — the glue story proves the behavior RETURNS that record;
+// this story proves the record LOWERS to the Draw_Camera command the present pass
+// projects. Built as the exact post-shake record the behavior emits, lowered by
+// draw_command_from_record, asserted by exact field equality.
+@(test)
+test_camera_record_lowers_to_draw_camera :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	// The record `view` returns: at = camera.at + camera.shake = {80,60}+{2,0} = {82,60}.
+	cam := camera_draw_record(Vec2{to_fixed(82), to_fixed(60)}, to_fixed(1), to_fixed(0))
+
+	cmd, ok := draw_command_from_record(cam)
+	testing.expect(t, ok)
+	camera, is_camera := cmd.(Draw_Camera)
+	testing.expect(t, is_camera)
+	testing.expect_value(t, camera.at, Vec2{to_fixed(82), to_fixed(60)})
+	testing.expect_value(t, camera.zoom, to_fixed(1))
+	testing.expect_value(t, camera.rotation, to_fixed(0))
+}
+
+// A Draw::Camera with no `at` field does NOT lower (ok=false): `at` is the one
+// required field (the camera center), so a malformed Camera record contributes no
+// command rather than faulting the projection — the totality the lowering rests on.
+@(test)
+test_camera_record_without_at_does_not_lower :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fields := make(map[string]Value, context.temp_allocator)
+	fields["zoom"] = to_fixed(1)
+	fields["rotation"] = to_fixed(0)
+	cam := Record_Value{type_name = "Draw::Camera", fields = fields}
+
+	_, ok := draw_command_from_record(cam)
+	testing.expect(t, !ok)
+}
+
+// camera_draw_record builds the Draw::Camera record the `view` behavior emits — the
+// at/zoom/rotation fields the lowering reads — so the assertion is grounded in the
+// record shape, not in the lowering it checks.
+@(private = "file")
+camera_draw_record :: proc(at: Vec2, zoom, rotation: Fixed) -> Record_Value {
+	fields := make(map[string]Value, context.temp_allocator)
+	fields["at"] = at
+	fields["zoom"] = zoom
+	fields["rotation"] = rotation
+	return Record_Value{type_name = "Draw::Camera", fields = fields}
+}
+
 // --- test helpers ---------------------------------------------------------
 
 // draw_at reads the i-th draw command, ok=false out of range — the option-shaped

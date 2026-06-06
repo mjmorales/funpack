@@ -49,13 +49,28 @@ Draw_Text :: struct {
 	color: Draw_Color,
 }
 
+// Draw_Camera is the §20 camera command (§3: the camera is state, the view is a
+// command): the world↔screen transform a `view` render behavior emits each tick.
+// `at` is the world point the camera is centered on, `zoom` scales the
+// world→pixel projection (1.0 = unscaled), and `rotation` is carried for the §20
+// command set but not yet projected (yard emits rotation:0.0). The present
+// boundary composes this transform with the letterbox geometry; like every other
+// draw field, all three are Fixed off the kernel — no float (§10).
+Draw_Camera :: struct {
+	at:       Vec2,
+	zoom:     Fixed,
+	rotation: Fixed,
+}
+
 // Draw_Cmd is the closed set of §20 draw commands a render behavior emits. A new
-// command kind is a schema-version bump (the closed-enum discipline §04). Pong
-// exercises Rect (paddles, ball) and Text (score); the union is the draw-list's
-// element type.
+// command kind is a schema-version bump (the closed-enum discipline §04, and the
+// frame digest folds the draw-list so a new arm bumps FRAME_DIGEST_SCHEMA_VERSION).
+// Pong exercises Rect (paddles, ball) and Text (score); yard adds Camera (the
+// world↔screen view); the union is the draw-list's element type.
 Draw_Cmd :: union {
 	Draw_Rect,
 	Draw_Text,
+	Draw_Camera,
 }
 
 // Draw_List is the §20 draw-list: the ordered draw commands of one committed
@@ -172,9 +187,10 @@ append_draw_commands :: proc(cmds: ^[dynamic]Draw_Cmd, result: Value) {
 
 // draw_command_from_record lowers one evaluated Draw::* record into a Draw_Cmd by
 // its declared type. Draw::Rect reads at/size (Vec2) + color; Draw::Text reads
-// at (Vec2) + text (the interpolated String) + color. An unknown draw type or a
-// missing required field yields ok=false, so only well-formed §20 commands enter
-// the draw-list.
+// at (Vec2) + text (the interpolated String) + color; Draw::Camera reads at (Vec2)
+// + zoom/rotation (Fixed) — the world↔screen transform (§3). An unknown draw type
+// or a missing required field yields ok=false, so only well-formed §20 commands
+// enter the draw-list.
 draw_command_from_record :: proc(record: Record_Value) -> (cmd: Draw_Cmd, ok: bool) {
 	switch record.type_name {
 	case "Draw::Rect":
@@ -191,6 +207,18 @@ draw_command_from_record :: proc(record: Record_Value) -> (cmd: Draw_Cmd, ok: bo
 			return nil, false
 		}
 		return Draw_Text{at = at, text = text, color = record_color(record, "color")}, true
+	case "Draw::Camera":
+		// at is required (the camera center); zoom/rotation default to absent-safe
+		// values so a partially-built Camera record still lowers — an absent zoom
+		// reads 0 (no recenter is observable until the present pass applies it), an
+		// absent rotation reads 0 (yard emits rotation:0.0 and rotation is unprojected).
+		at, at_ok := record_vec2(record, "at")
+		if !at_ok {
+			return nil, false
+		}
+		zoom := record_fixed(record, "zoom")
+		rotation := record_fixed(record, "rotation")
+		return Draw_Camera{at = at, zoom = zoom, rotation = rotation}, true
 	}
 	return nil, false
 }
@@ -206,6 +234,22 @@ record_vec2 :: proc(record: Record_Value, name: string) -> (v: Vec2, ok: bool) {
 	}
 	vec, is_vec := field.(Vec2)
 	return vec, is_vec
+}
+
+// record_fixed reads a Fixed field off a draw-command record — the zoom/rotation
+// of a Camera. A field that is absent or not a Fixed reads 0, the absent-safe
+// default a partially-built Camera record carries (zoom 0 / rotation 0): the
+// lowering never faults on a missing scalar, it folds the §20 default in.
+record_fixed :: proc(record: Record_Value, name: string) -> Fixed {
+	field, present := record.fields[name]
+	if !present {
+		return Fixed(0)
+	}
+	value, is_fixed := field.(Fixed)
+	if !is_fixed {
+		return Fixed(0)
+	}
+	return value
 }
 
 // record_text reads the interpolated String text off a Draw::Text record. ok is

@@ -42,7 +42,16 @@ import "core:slice"
 // (`grow: Bool`, `head: Cell`, `body: [Cell]`) — a composite column is part of the
 // committed state the digest covers, so a new column arm is a digest-encoding
 // change and bumps this stamp.
-FRAME_DIGEST_SCHEMA_VERSION :: 2
+// v3 adds the Camera draw-command tag yard's `view` introduces (Cmd_Tag.Camera):
+// the digest folds the §20 draw-list, so a new Draw_Cmd union arm is a digest
+// encoding change and bumps this stamp deliberately (§04 closed-enum). pong / snake
+// / hunt emit no Draw::Camera, so their CONTENT byte streams (per-tick AND session)
+// are byte-unchanged — the new tag never appears in them, and the session fold is
+// seeded from the fixed FRAME_SESSION_SEED rather than this version (see
+// fold_session), so the committed pong/snake/hunt golden digests do NOT move under
+// the v3 bump even though the stamp advances. The version is the comparability
+// stamp; the goldens are unmoved because their bytes are identical.
+FRAME_DIGEST_SCHEMA_VERSION :: 3
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
@@ -60,11 +69,14 @@ Field_Tag :: enum u8 {
 }
 
 // Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
-// Rect and a Text never alias in the stream. Fixed ordinals — a draw-command
-// kind added to the §20 union is a schema bump here too (§04).
+// Rect, a Text, and a Camera never alias in the stream. Fixed ordinals — a
+// draw-command kind added to the §20 union is a schema bump here too (§04). The
+// ordinals are append-only: Camera takes the next free ordinal so an existing
+// Rect/Text byte stream is unchanged (pong/snake/hunt emit no Camera).
 Cmd_Tag :: enum u8 {
-	Rect = 0, // a Draw_Rect: at, size, color
-	Text = 1, // a Draw_Text: at, length-prefixed text, color
+	Rect   = 0, // a Draw_Rect: at, size, color
+	Text   = 1, // a Draw_Text: at, length-prefixed text, color
+	Camera = 2, // a Draw_Camera: at, zoom (Fixed), rotation (Fixed)
 }
 
 // Frame_Digest is one committed tick's digest: the tick ordinal it was taken at
@@ -130,17 +142,34 @@ frame_digest :: proc(
 	return Frame_Digest{tick = version.tick, digest = u64(xxhash.XXH64(buf[:]))}
 }
 
+// FRAME_SESSION_SEED is the FIXED seed the session fold opens with. It is
+// deliberately a STABLE constant, NOT FRAME_DIGEST_SCHEMA_VERSION: the
+// cross-encoding distinction lives entirely in the per-tick stream (every
+// Field_Tag / Cmd_Tag byte is folded into each per-tick digest), so two runs at
+// different frame encodings already produce different per-tick digests and hence a
+// different session fold — the session seed need not re-encode the version to keep
+// that guarantee. Decoupling the seed from the version is what lets a closed-enum
+// bump that adds a tag NO existing golden emits (the Camera arm: pong/snake/hunt
+// emit no Draw::Camera) leave those content-identical goldens' session digests
+// unmoved, while the schema version still bumps as the comparability stamp (§04).
+// The value is pinned at 2 — the FRAME_DIGEST_SCHEMA_VERSION the committed
+// pong/snake/hunt golden digests were folded under — so decoupling the seed leaves
+// those goldens bit-identical to their committed fixtures (the "must not move"
+// invariant the camera bump must hold).
+FRAME_SESSION_SEED :: 2
+
 // fold_session folds an ordered per-tick digest sequence into the single session
-// digest. It seeds a running hash from the schema version (so two runs at
-// different frame encodings never collide) then chains each per-tick digest in
-// tick order — the session digest is therefore order-sensitive: the same digests
-// in a different order produce a different session hash, exactly as a run whose
-// ticks committed in a different order is a different run. xxh64 over the packed
-// (tick, digest) pairs keeps the fold on the one Odin-first hasher.
+// digest. It seeds a running hash from FRAME_SESSION_SEED then chains each per-tick
+// digest in tick order — the session digest is therefore order-sensitive: the same
+// digests in a different order produce a different session hash, exactly as a run
+// whose ticks committed in a different order is a different run. The encoding
+// distinction is carried by the per-tick digests themselves (their tag bytes), so
+// the seed stays a fixed constant. xxh64 over the packed (tick, digest) pairs keeps
+// the fold on the one Odin-first hasher.
 fold_session :: proc(per_tick: []Frame_Digest, allocator := context.allocator) -> u64 {
 	buf := make([dynamic]u8, allocator)
 	defer delete(buf)
-	put_u64_le(&buf, u64(FRAME_DIGEST_SCHEMA_VERSION))
+	put_u64_le(&buf, u64(FRAME_SESSION_SEED))
 	for frame in per_tick {
 		put_u64_le(&buf, u64(frame.tick))
 		put_u64_le(&buf, frame.digest)
@@ -345,9 +374,11 @@ write_draw_list :: proc(buf: ^[dynamic]u8, draw: Draw_List) {
 
 // write_draw_cmd writes one §20 draw command tagged by its kind. A Rect carries
 // its at/size as fixed-point Vec2s and a color ordinal; a Text carries its at, a
-// length-prefixed interpolated string, and a color ordinal. The color is the
-// closed Draw_Color enum's ordinal — a single byte, not a float. The Draw_Cmd
-// union has only these two arms, so the switch is total.
+// length-prefixed interpolated string, and a color ordinal; a Camera carries its
+// at, zoom, and rotation as raw fixed-point bits (the §3 world↔screen transform —
+// no color, it is not a painted primitive). Every number is raw Q32.32 little-endian
+// bits, never a float (§10). The Draw_Cmd union has only these three arms, so the
+// switch is total.
 @(private = "file")
 write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 	switch c in cmd {
@@ -361,6 +392,11 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		write_vec2(buf, c.at)
 		write_length_prefixed(buf, c.text)
 		append(buf, u8(c.color))
+	case Draw_Camera:
+		append(buf, u8(Cmd_Tag.Camera))
+		write_vec2(buf, c.at)
+		put_u64_le(buf, u64(i64(c.zoom)))
+		put_u64_le(buf, u64(i64(c.rotation)))
 	}
 }
 

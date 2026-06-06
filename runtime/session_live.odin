@@ -150,6 +150,64 @@ world_to_pixel :: proc(world: Vec2, board: Vec2, window: Window_Px) -> Pixel {
 	}
 }
 
+// --- camera world↔screen pre-transform (§3: camera is state, view is a command) ---
+
+// Camera_View is the active §20 Draw::Camera transform the present pass composes
+// onto the board geometry: the world point the camera is centered on and the zoom
+// factor (1.0 = unscaled). It is the render-boundary projection of the committed
+// Draw_Camera command — the sim never sees it (§3: only the engine reads
+// world↔screen). rotation is not carried here because it is unprojected (yard emits
+// rotation:0.0); when a story projects rotation it joins this struct.
+Camera_View :: struct {
+	at:   Vec2,
+	zoom: Fixed,
+}
+
+// identity_camera is the no-transform view: centered on the board center at zoom
+// 1.0, so camera_pre_transform is the identity (every world point maps exactly as
+// world_to_pixel alone would). A draw-list carrying no Draw::Camera (pong, snake,
+// hunt) presents through this, so the existing exact-pixel rails are unchanged.
+identity_camera :: proc(board: Vec2) -> Camera_View {
+	return Camera_View{at = Vec2{fixed_div(board.x, to_fixed(2)), fixed_div(board.y, to_fixed(2))}, zoom = to_fixed(1)}
+}
+
+// camera_from_command lifts a committed Draw_Camera draw command into the present
+// pass's Camera_View — the at/zoom the world↔screen pre-transform composes. A zoom
+// of 0 (an absent/malformed scalar lowered to 0) reads as 1.0, so a degenerate
+// command never collapses the whole world to the camera center; the present pass
+// stays total like the kernel.
+camera_from_command :: proc(cmd: Draw_Camera) -> Camera_View {
+	zoom := cmd.zoom
+	if zoom == 0 {
+		zoom = to_fixed(1)
+	}
+	return Camera_View{at = cmd.at, zoom = zoom}
+}
+
+// camera_pre_transform composes the §3 camera transform onto one world coordinate
+// BEFORE world_to_pixel: it recenters the world on the camera (`world - cam.at`),
+// scales the offset by `zoom`, then re-anchors to the board center so the camera's
+// `at` lands at screen center. screen_world = board/2 + (world - cam.at) * zoom.
+// With cam.at = board/2 and zoom = 1.0 this is the identity. The whole composition
+// is exact-integer over the Q32.32 kernel (fixed_sub / vec2_scale / fixed_add) —
+// NO float (§10.5) — and runs ONLY at the render-present boundary: its result feeds
+// world_to_pixel and never re-enters step_tick / the sim fold.
+camera_pre_transform :: proc(world: Vec2, camera: Camera_View, board: Vec2) -> Vec2 {
+	board_center := Vec2{fixed_div(board.x, to_fixed(2)), fixed_div(board.y, to_fixed(2))}
+	offset := vec2_scale(vec2_sub(world, camera.at), camera.zoom)
+	return vec2_add(board_center, offset)
+}
+
+// camera_world_to_pixel is the full present-boundary projection: compose the §3
+// camera pre-transform onto the world coordinate, then project the camera-space
+// world point onto integer window pixels. It is the one entry the live present pass
+// projects every rect/text corner through, so the active Draw::Camera transform
+// folds in uniformly. Exact-integer throughout (the pre-transform over the kernel,
+// world_to_pixel over i128) — no float, render-boundary-only (§10.5).
+camera_world_to_pixel :: proc(world: Vec2, camera: Camera_View, board: Vec2, window: Window_Px) -> Pixel {
+	return world_to_pixel(camera_pre_transform(world, camera, board), board, window)
+}
+
 // --- §20 palette → RGBA8 --------------------------------------------------
 
 // Rgba8 is a concrete 8-bit-per-channel color the renderer hands to the window
@@ -572,47 +630,72 @@ when #config(FUNPACK_LIVE, false) {
 	}
 
 	// present_frame paints one committed tick's §20 draw-list onto the window: clear
-	// to black, then per Draw_Rect project at/size through world_to_pixel (the same
-	// exact-integer projection the headless rails pin) + draw_color_to_rgba and
-	// RenderFillRect, then per Draw_Text emit its center-anchored block-glyph run
-	// through text_rects in the command's own color, then RenderPresent. The board
-	// and window come from the artifact's declared logical extent. Pixel conversion
-	// happens ONLY here at the present boundary; nothing it computes ever re-enters
-	// the sim fold (§10.5).
+	// to black, resolve the active §3 camera transform from the draw-list (the last
+	// Draw_Camera the `view` behavior emitted, else the identity camera so a
+	// camera-less artifact presents exactly as before), then per Draw_Rect project
+	// at/size through camera_world_to_pixel + draw_color_to_rgba and RenderFillRect,
+	// then per Draw_Text emit its center-anchored block-glyph run through the same
+	// camera projection in the command's own color, then RenderPresent. The Camera
+	// command itself paints nothing — it is the world↔screen state, not a primitive.
+	// The board and window come from the artifact's declared logical extent. Pixel
+	// conversion happens ONLY here at the present boundary; nothing it computes ever
+	// re-enters the sim fold (§10.5).
 	present_frame :: proc(renderer: ^sdl.Renderer, draw: Draw_List, board: Vec2, window: Window_Px) {
 		sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255)
 		sdl.RenderClear(renderer)
 
+		camera := active_camera(draw, board)
+
 		for cmd in draw.cmds {
 			switch c in cmd {
 			case Draw_Rect:
-				fill_world_rect(renderer, c.at, c.size, c.color, board, window)
+				fill_world_rect(renderer, c.at, c.size, c.color, camera, board, window)
 			case Draw_Text:
 				glyphs := text_rects(c.text, c.at, TEXT_CELL, c.color, context.temp_allocator)
 				for rect in glyphs {
-					fill_world_rect(renderer, rect.at, rect.size, rect.color, board, window)
+					fill_world_rect(renderer, rect.at, rect.size, rect.color, camera, board, window)
 				}
+			case Draw_Camera:
+			// The camera is the active world↔screen transform (resolved above), not a
+			// painted primitive — it contributes no pixels of its own.
 			}
 		}
 		sdl.RenderPresent(renderer)
 	}
 
+	// active_camera resolves the §3 camera transform a tick's draw-list presents
+	// through: the LAST Draw_Camera command emitted (a later `view` behavior overrides
+	// an earlier one in flattened-pipeline order), or the identity camera when the
+	// list carries none — so a camera-less artifact (pong, snake, hunt) projects
+	// through the unchanged board geometry. Pure over the committed draw-list; no SDL.
+	active_camera :: proc(draw: Draw_List, board: Vec2) -> Camera_View {
+		camera := identity_camera(board)
+		for cmd in draw.cmds {
+			if cam, is_camera := cmd.(Draw_Camera); is_camera {
+				camera = camera_from_command(cam)
+			}
+		}
+		return camera
+	}
+
 	// fill_world_rect projects one §20 center-anchored world rect into integer
-	// window pixels against the artifact's board/window geometry. §20's anchor is
-	// normative: `at` is the CENTER of the extent, so a corner-origin backend
-	// derives the top-left corner at the present boundary — at − size/2 — before
-	// projecting. The half is taken in fixed-point through the kernel (fixed_div by
-	// 2, truncating toward zero); pong's sizes are even world units at the exact 4x
-	// window scale, so the half lands on a whole world unit and the projected pixel
-	// stays exact. The top-left and the size go through the SAME world_to_pixel
-	// ratio, so the pixel extent matches the position projection. The whole
-	// conversion is render-boundary-only integer arithmetic; no result feeds back
-	// into the sim.
-	fill_world_rect :: proc(renderer: ^sdl.Renderer, at: Vec2, size: Vec2, color: Draw_Color, board: Vec2, window: Window_Px) {
+	// window pixels against the artifact's board/window geometry, composing the
+	// active §3 camera transform. §20's anchor is normative: `at` is the CENTER of
+	// the extent, so a corner-origin backend derives the top-left corner at the
+	// present boundary — at − size/2 — before projecting. The half is taken in
+	// fixed-point through the kernel (fixed_div by 2, truncating toward zero); pong's
+	// sizes are even world units at the exact 4x window scale, so the half lands on a
+	// whole world unit and the projected pixel stays exact. The corner projects
+	// through camera_world_to_pixel (recenter + zoom + letterbox); the size is a
+	// RELATIVE extent, so it takes only the camera zoom (vec2_scale) — never the
+	// recenter — before the same world_to_pixel ratio, keeping the pixel extent
+	// matched to the zoomed position projection. The whole conversion is
+	// render-boundary-only integer arithmetic; no result feeds back into the sim.
+	fill_world_rect :: proc(renderer: ^sdl.Renderer, at: Vec2, size: Vec2, color: Draw_Color, camera: Camera_View, board: Vec2, window: Window_Px) {
 		half := Vec2{fixed_div(size.x, to_fixed(2)), fixed_div(size.y, to_fixed(2))}
 		corner := Vec2{fixed_sub(at.x, half.x), fixed_sub(at.y, half.y)}
-		top_left := world_to_pixel(corner, board, window)
-		extent := world_to_pixel(size, board, window)
+		top_left := camera_world_to_pixel(corner, camera, board, window)
+		extent := world_to_pixel(vec2_scale(size, camera.zoom), board, window)
 		rgba := draw_color_to_rgba(color)
 		sdl.SetRenderDrawColor(renderer, rgba.r, rgba.g, rgba.b, rgba.a)
 		rect := sdl.Rect {
