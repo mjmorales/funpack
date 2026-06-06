@@ -88,8 +88,9 @@ test_digit_rects_space_is_empty :: proc(t: ^testing.T) {
 
 // test_digit_rects_one_glyph pins the simplest non-trivial glyph: '1' over the 3x5
 // grid lights 1+2+1+1+3 = 8 cells (0b010, 0b110, 0b010, 0b010, 0b111), so it emits
-// exactly 8 White rects, and the first lit cell sits at origin + (col 1, row 0) of
-// a unit cell — the column/row placement asserted at one exact point.
+// exactly 8 White rects, and the first lit cell's CENTER (§20 anchor) sits at the
+// col-1/row-0 corner plus half a cell — the column/row placement asserted at one
+// exact point under the center anchor.
 @(test)
 test_digit_rects_one_glyph :: proc(t: ^testing.T) {
 	cell := Vec2{to_fixed(2), to_fixed(3)}
@@ -97,12 +98,13 @@ test_digit_rects_one_glyph :: proc(t: ^testing.T) {
 	rects := digit_rects('1', origin, cell, context.temp_allocator)
 	// 0b010, 0b110, 0b010, 0b010, 0b111 -> 1 + 2 + 1 + 1 + 3 lit cells.
 	testing.expect_value(t, len(rects), 8)
-	// First lit cell of row 0 (mask 0b010) is column 1: at = origin + (1*cell.x, 0).
+	// First lit cell of row 0 (mask 0b010) is column 1: center = origin +
+	// (1*cell.x + cell.x/2, 0 + cell.y/2).
 	first := rects[0]
 	testing.expect_value(t, first.color, Draw_Color.White)
 	testing.expect_value(t, first.size, cell)
-	testing.expect_value(t, first.at.x, fixed_add(origin.x, cell.x))
-	testing.expect_value(t, first.at.y, origin.y)
+	testing.expect_value(t, first.at.x, fixed_add(fixed_add(origin.x, cell.x), fixed_div(cell.x, to_fixed(2))))
+	testing.expect_value(t, first.at.y, fixed_add(origin.y, fixed_div(cell.y, to_fixed(2))))
 }
 
 // test_digit_rects_eight_is_full_block pins the densest glyph: '8' lights every
@@ -117,9 +119,9 @@ test_digit_rects_eight_is_full_block :: proc(t: ^testing.T) {
 }
 
 // test_digit_rects_zero_corner_placement pins '0' (a hollow 3x5 box: 0b111, 0b101,
-// 0b101, 0b101, 0b111 = 12 cells) and checks the bottom-right lit cell lands at
-// origin + (col 2 * cell.x, row 4 * cell.y) — the far corner of the glyph grid, so
-// the row/col scaling is exact at both extremes.
+// 0b101, 0b101, 0b111 = 12 cells) and checks the bottom-right lit cell's CENTER
+// (§20 anchor) lands at the row-4/col-2 corner plus half a cell — the far corner of
+// the glyph grid, so the row/col scaling is exact at both extremes.
 @(test)
 test_digit_rects_zero_corner_placement :: proc(t: ^testing.T) {
 	cell := Vec2{to_fixed(5), to_fixed(7)}
@@ -127,8 +129,11 @@ test_digit_rects_zero_corner_placement :: proc(t: ^testing.T) {
 	rects := digit_rects('0', origin, cell, context.temp_allocator)
 	// 0b111, 0b101, 0b101, 0b101, 0b111 -> 3 + 2 + 2 + 2 + 3 = 12 lit cells.
 	testing.expect_value(t, len(rects), 12)
-	// The last appended cell is the bottom row's rightmost column (row 4, col 2).
+	// The last appended cell is the bottom row's rightmost column (row 4, col 2); its
+	// center is that corner plus half a cell on each axis.
 	last := rects[len(rects) - 1]
-	testing.expect_value(t, last.at.x, fixed_add(origin.x, fixed_mul(cell.x, to_fixed(2))))
-	testing.expect_value(t, last.at.y, fixed_add(origin.y, fixed_mul(cell.y, to_fixed(4))))
+	last_corner_x := fixed_add(origin.x, fixed_mul(cell.x, to_fixed(2)))
+	last_corner_y := fixed_add(origin.y, fixed_mul(cell.y, to_fixed(4)))
+	testing.expect_value(t, last.at.x, fixed_add(last_corner_x, fixed_div(cell.x, to_fixed(2))))
+	testing.expect_value(t, last.at.y, fixed_add(last_corner_y, fixed_div(cell.y, to_fixed(2))))
 }

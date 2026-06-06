@@ -176,12 +176,16 @@ DIGIT_GLYPHS :: [10][DIGIT_GLYPH_ROWS]u8 {
 }
 
 // digit_rects emits the filled §20 rects that draw one character as a block-digit
-// glyph at `origin`, each lit cell a `cell`-sized White rect. For '0'..'9' it walks
-// the 3x5 DIGIT_GLYPHS bitmap, placing a rect at `origin + (col*cell.x, row*cell.y)`
-// for every set bit; ' ' (and any non-digit) emits nothing — the score readout's
+// glyph, `origin` the glyph's top-left corner reference for layout. Per §20's
+// normative anchor, each emitted Draw_Rect.at is the CELL CENTER — origin +
+// ((col + 1/2)*cell.x, (row + 1/2)*cell.y) — so the glyph cell renders unshifted
+// under the center anchor the present pass derives a corner from (at − size/2). For
+// '0'..'9' it walks the 3x5 DIGIT_GLYPHS bitmap, emitting a `cell`-sized White rect
+// per set bit; ' ' (and any non-digit) emits nothing — the score readout's
 // inter-column gaps are blank cells, so a space advancing the cursor draws no rect.
-// All-fixed-point geometry off the kernel (no float), so the rects compose directly
-// into the draw-list the present pass paints; tested headless against exact glyphs.
+// The half-cell offset is taken in fixed-point off the kernel (fixed_div by 2), so
+// the geometry stays float-free and composes directly into the draw-list the
+// present pass paints; tested headless against exact glyphs.
 digit_rects :: proc(ch: rune, origin: Vec2, cell: Vec2, allocator := context.allocator) -> []Draw_Rect {
 	if ch < '0' || ch > '9' {
 		return nil
@@ -190,6 +194,7 @@ digit_rects :: proc(ch: rune, origin: Vec2, cell: Vec2, allocator := context.all
 	// digit index reads it (a constant cannot be indexed by a variable).
 	glyphs := DIGIT_GLYPHS
 	glyph := glyphs[ch - '0']
+	half := Vec2{fixed_div(cell.x, to_fixed(2)), fixed_div(cell.y, to_fixed(2))}
 	rects := make([dynamic]Draw_Rect, allocator)
 	for row in 0 ..< DIGIT_GLYPH_ROWS {
 		mask := glyph[row]
@@ -199,9 +204,10 @@ digit_rects :: proc(ch: rune, origin: Vec2, cell: Vec2, allocator := context.all
 			if bit == 0 {
 				continue
 			}
+			// Center the cell: corner (origin + col/row * cell) plus half a cell.
 			at := Vec2 {
-				fixed_add(origin.x, fixed_mul(cell.x, to_fixed(i64(col)))),
-				fixed_add(origin.y, fixed_mul(cell.y, to_fixed(i64(row)))),
+				fixed_add(fixed_add(origin.x, fixed_mul(cell.x, to_fixed(i64(col)))), half.x),
+				fixed_add(fixed_add(origin.y, fixed_mul(cell.y, to_fixed(i64(row)))), half.y),
 			}
 			append(&rects, Draw_Rect{at = at, size = cell, color = .White})
 		}
@@ -322,6 +328,14 @@ when #config(FUNPACK_LIVE, false) {
 		// edges fire correctly; tick 0 seeds it empty (no button was down before it).
 		prev_held := make(map[Player_Action]bool)
 
+		// prev_levels threads the persistent RAW device state (codes down, last stick
+		// samples) across ticks so a held key emitting one KEYDOWN edge keeps reading
+		// held on every later event-less frame, and a held stick keeps its sample
+		// without a fresh CONTROLLERAXISMOTION (§23 §4 level semantics). SDL delivers a
+		// single edge for a held key, so without this carrier a held W would die after
+		// one tick. Tick 0 seeds it empty (no device was down before the session).
+		prev_levels := new_device_levels()
+
 		// The integer pacing clock: deadline N is recomputed from the ABSOLUTE start
 		// (start + (tick_index+1)*frequency/tick_hz), so no accumulator drift creeps
 		// in over a long session. The clock throttles the loop; it never drives the
@@ -336,7 +350,7 @@ when #config(FUNPACK_LIVE, false) {
 				break
 			}
 
-			snapshot, held_after := resolve_tick(table, &queue, prev_held)
+			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels)
 			version = step_tick(&program, version, snapshot, time)
 			draw := render_version(&program, version, snapshot, time)
 			present_frame(device.renderer, draw)
@@ -344,6 +358,8 @@ when #config(FUNPACK_LIVE, false) {
 
 			delete(prev_held)
 			prev_held = held_after
+			delete_device_levels(prev_levels)
+			prev_levels = levels_after
 
 			pace_to_deadline(start, freq, tick_hz_u64, tick_index)
 		}
@@ -452,14 +468,20 @@ when #config(FUNPACK_LIVE, false) {
 		sdl.RenderPresent(renderer)
 	}
 
-	// fill_world_rect projects one world-space rect (top-left + size, both fixed
-	// point) into integer window pixels through world_to_pixel — the position and the
-	// size go through the SAME ratio, so the rect's pixel extent is the size projected
-	// against the board exactly like the position — sets the draw color from the §20
-	// palette, and fills it. The whole conversion is render-boundary-only integer
-	// arithmetic; no result feeds back into the sim.
+	// fill_world_rect projects one §20 center-anchored world rect into integer
+	// window pixels. §20's anchor is normative: `at` is the CENTER of the extent, so
+	// a corner-origin backend derives the top-left corner at the present boundary —
+	// at − size/2 — before projecting. The half is taken in fixed-point through the
+	// kernel (fixed_div by 2, truncating toward zero); pong's sizes are even world
+	// units at the exact 4x window scale, so the half lands on a whole world unit and
+	// the projected pixel stays exact. The top-left and the size go through the SAME
+	// world_to_pixel ratio, so the pixel extent matches the position projection. The
+	// whole conversion is render-boundary-only integer arithmetic; no result feeds
+	// back into the sim.
 	fill_world_rect :: proc(renderer: ^sdl.Renderer, at: Vec2, size: Vec2, color: Draw_Color) {
-		top_left := world_to_pixel(at, PONG_BOARD_LIVE, LIVE_WINDOW)
+		half := Vec2{fixed_div(size.x, to_fixed(2)), fixed_div(size.y, to_fixed(2))}
+		corner := Vec2{fixed_sub(at.x, half.x), fixed_sub(at.y, half.y)}
+		top_left := world_to_pixel(corner, PONG_BOARD_LIVE, LIVE_WINDOW)
 		extent := world_to_pixel(size, PONG_BOARD_LIVE, LIVE_WINDOW)
 		rgba := draw_color_to_rgba(color)
 		sdl.SetRenderDrawColor(renderer, rgba.r, rgba.g, rgba.b, rgba.a)
