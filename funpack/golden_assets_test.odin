@@ -17,11 +17,13 @@
 //
 // CRITICAL SCOPE (lore #13): examples/assets/src/pickups.fun ALSO imports
 // engine.render.{Draw, Color, Flip} (Draw::Sprite) and engine.audio.{Sound, Bus}
-// (Sound.sfx(...).bus(...)) — surface this epic does NOT own. So the golden pins
-// PARSE of pickups.fun + the .gen.fun seam typecheck + the asset-specific
-// assertion, and DOES NOT require full pickups.fun end-to-end typecheck — that is
-// gated cross-epic on the render-Sprite/Flip and engine.audio surface landing in
-// their pipelines (a driver-wired edge, not blocking this story).
+// (Sound.sfx(...).bus(...)) — surface the §19 asset epic did NOT own. Those
+// cross-epic surfaces have since LANDED on this branch (engine.render Flip +
+// Draw::Sprite, the §22 [Sound] Update emit, and the cross-module const route via
+// let-export), so the whole-example pickups.fun NOW typechecks + evaluates end to
+// end — pinned by test_golden_assets_pickups_compiles_whole_example below. The
+// parse-shape pin (test_golden_assets_pickups_parses) and the focused asset-equality
+// obligations remain as their own proofs.
 //
 // WHY THE ASSERTION RIDES A FOCUSED MODULE: src/pickups.fun reaches its handle
 // constant through the module-qualified `assets.coin_sfx` (a whole-module
@@ -187,14 +189,13 @@ test_golden_assets_typed_constant_equals_checked_string :: proc(t: ^testing.T) {
 // SoundHandle, and grounds to the seam's emitted handle value. SKIPs loudly when
 // the sibling checkout is absent so a missing checkout never silently passes.
 //
-// NOTE the documented scope boundary (lore #13) still holds: full src/pickups.fun
-// end-to-end typecheck remains gated cross-epic on the engine.render
-// Sprite/Flip surface (`import engine.render.{Draw, Color, Flip}` — Flip) and the
-// engine.audio surface (`import engine.audio.{Sound, Bus}`), both .Unknown_Member
-// against the current STDLIB_SURFACE. So the cross-module const route is proven on
-// this focused consumer importing the REAL seam, the route pickups.fun rides; the
-// const route itself is unblocked — only those two unrelated stdlib partitions gate
-// the full pickups.fun typecheck.
+// NOTE this focused consumer isolates the cross-module const route alone (the route
+// src/pickups.fun rides to reach assets.coin_sfx). The full src/pickups.fun
+// end-to-end typecheck — which also exercises the engine.render Sprite/Flip and
+// engine.audio surfaces — is pinned separately by
+// test_golden_assets_pickups_compiles_whole_example, now that those surfaces have
+// landed. Keeping the const-route proof focused here means a regression in the route
+// fails independently of the render/audio surfaces.
 @(test)
 test_golden_assets_cross_module_const_route_live :: proc(t: ^testing.T) {
 	// Resolve-or-SKIP off the same reader the seam-typecheck golden uses, so a
@@ -334,17 +335,76 @@ test_assets_closed_registry_rejects_unregistered_name :: proc(t: ^testing.T) {
 	}
 }
 
-// ── (scope) src/pickups.fun PARSES (full typecheck is cross-epic gated) ──
+// ── (whole-example) src/pickups.fun FULLY typechecks + evaluates ─────────
 
-// test_golden_assets_pickups_parses pins the documented scope boundary: the live
-// src/pickups.fun PARSES through the §06/§07 grammar — it is a well-formed module —
-// but full end-to-end typecheck is NOT asserted here. pickups.fun imports
-// engine.render.{Draw, Color, Flip} (Draw::Sprite) and engine.audio.{Sound, Bus}
-// (Sound.sfx(...).bus(...)), surface THIS epic does not own (lore #13); typing those
-// sites is gated on the render-Sprite/Flip and engine.audio surface landing in their
-// pipelines. So this proves the parse (the structural fingerprint the bake reads)
-// and stops there, deliberately — a later cross-epic edge wires the full typecheck.
-// SKIPs loudly when the sibling checkout is absent.
+// test_golden_assets_pickups_compiles_whole_example is the cross-epic leaf this
+// bake-pipeline-seams run lands: the live src/pickups.fun compiles end to end against
+// the live assets seam through run_project_pipeline — every previously-gated site now
+// types. The two formerly-missing surfaces are admitted: engine.render.Flip + the
+// Draw::Sprite struct-payload variant (this story) and engine.audio.{Sound, Bus} (the
+// 5.2 merge on this branch), and the cross-module const route (`import assets`, then
+// `assets.coin_sfx`/`assets.pickups`) resolves via let-export (also merged here). So
+// draw_coin's `Draw::Sprite{atlas: assets.pickups, cell: assets.pickups.frame("spin",
+// self.spin_t), …, flip: Flip::None, layer: 5}` and on_pickup's `Sound.sfx(
+// assets.coin_sfx).bus(Bus::Sfx)` both typecheck, and the test block's `assert
+// assets.coin_sfx == sound("coin_sfx")` evaluates true.
+//
+// It rides the production path against the real §14 tree's two sources — the seam
+// (module `assets`) and pickups.fun (module `pickups`, the §15 name src/pickups.fun
+// derives) — so a regression in any of the three landed surfaces fails the whole
+// example, not a focused stand-in. SKIPs loudly when the sibling checkout is absent.
+@(test)
+test_golden_assets_pickups_compiles_whole_example :: proc(t: ^testing.T) {
+	// Resolve-or-SKIP both live sources off the same readers the other goldens use,
+	// so a missing checkout warns loudly rather than silently passing.
+	if _, ok := assets_gen_fun_source(); !ok {
+		return
+	}
+	pickups_file, pickups_ok := pickups_path()
+	if !pickups_ok {
+		return
+	}
+	seam_path := resolve_assets_gen_path()
+
+	// The two live sources of the §14 assets project: the seam (module `assets`) and
+	// the consumer src/pickups.fun (module `pickups`). run_project_pipeline reads both
+	// off disk, builds the typed index + eval surface, and types/evaluates the project.
+	sources := []Source{
+		{path = seam_path, module = "assets"},
+		{path = pickups_file, module = "pickups"},
+	}
+	report := run_project_pipeline(sources)
+
+	// The whole example compiles clean: the index built, both modules typed — the
+	// seam against engine.assets, pickups.fun against engine.render (Flip/Draw::Sprite),
+	// engine.audio (Sound/Bus), the atlas accessors (assets.pickups.frame), AND the
+	// cross-module const route (assets.coin_sfx/assets.pickups) — and neither hit a
+	// compile error.
+	testing.expect_value(t, report.index_err, Project_Pipeline_Error.None)
+	testing.expect_value(t, report.module_err, Pipeline_Error.None)
+	if report.module_err != .None {
+		log.errorf("golden assets pickups whole-example: %s did not compile (%v)", report.failed_path, report.module_err)
+		return
+	}
+
+	// pickups.fun carries one test block (the typed-constant equality), which passes;
+	// no module fails. The count is pinned to the live source on purpose.
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+	if report.passed == 1 && report.failed == 0 {
+		log.infof("golden assets: src/pickups.fun compiles + evaluates end-to-end against the live seam (render Flip/Sprite + audio Sound/Bus + cross-module const route all landed)")
+	}
+}
+
+// ── (scope) src/pickups.fun PARSES — the structural fingerprint ──────────
+
+// test_golden_assets_pickups_parses pins the live src/pickups.fun's structural
+// fingerprint: it PARSES through the §06/§07 grammar — a well-formed module — and the
+// declaration inventory counts hold exactly. Full end-to-end typecheck is proven
+// separately by test_golden_assets_pickups_compiles_whole_example (now that the
+// render Sprite/Flip and engine.audio surfaces have landed); this test keeps the
+// parse-shape pin (the structural fingerprint the §19 bake reads) as its own focused
+// proof. SKIPs loudly when the sibling checkout is absent.
 @(test)
 test_golden_assets_pickups_parses :: proc(t: ^testing.T) {
 	source, ok := pickups_source()
@@ -359,10 +419,10 @@ test_golden_assets_pickups_parses :: proc(t: ^testing.T) {
 
 	// pickups.fun's declaration inventory: nine imports (prelude, math, core, world,
 	// render, audio, assets, list, and the whole-module `import assets` seam handle),
-	// one thing (Coin), one signal (Taken), two behaviors (advance_spin, on_pickup —
-	// draw_coin is the third), one fn (setup), one pipeline (Pickups), one test. The
-	// counts are pinned to the live source on purpose — when the spec evolves, the
-	// counts change in lockstep; never loosen them to ranges.
+	// one thing (Coin), one signal (Taken), three behaviors (advance_spin, on_pickup,
+	// draw_coin), one fn (setup), one pipeline (Pickups), one test. The counts are
+	// pinned to the live source on purpose — when the spec evolves, the counts change
+	// in lockstep; never loosen them to ranges.
 	testing.expect_value(t, len(ast.imports), 9)
 	testing.expect_value(t, len(ast.things), 1)
 	testing.expect_value(t, len(ast.signals), 1)
@@ -371,7 +431,7 @@ test_golden_assets_pickups_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(ast.pipelines), 1)
 	testing.expect_value(t, len(ast.tests), 1)
 	if parse_err == .None {
-		log.infof("golden assets: src/pickups.fun parses (full typecheck is cross-epic gated on render/audio surface)")
+		log.infof("golden assets: src/pickups.fun parses (the structural fingerprint; whole-example typecheck is pinned by test_golden_assets_pickups_compiles_whole_example)")
 	}
 }
 
@@ -417,4 +477,26 @@ pickups_source :: proc() -> (source: string, ok: bool) {
 		return "", false
 	}
 	return string(bytes), true
+}
+
+// pickups_path resolves the live src/pickups.fun DISK PATH (not its bytes) so
+// run_project_pipeline can read it off disk alongside the live seam; ok = false (with
+// a SKIP warning) when the sibling checkout is absent, matching pickups_source's
+// resolve-or-skip discipline. It joins src/pickups.fun under the resolved assets-tree
+// root — the path the §15 module name `pickups` derives from.
+pickups_path :: proc() -> (path: string, ok: bool) {
+	dir := resolve_assets_dir()
+	if !os.is_dir(dir) {
+		log.warnf(
+			"SKIP golden assets pickups: %s not found — set FUNPACK_ASSETS_DIR or check out funpack-spec as a sibling of the repo",
+			dir,
+		)
+		return "", false
+	}
+	joined, _ := filepath.join({dir, "src", "pickups.fun"}, context.temp_allocator)
+	if !os.is_file(joined) {
+		log.warnf("SKIP golden assets pickups: %s not found", joined)
+		return "", false
+	}
+	return joined, true
 }
