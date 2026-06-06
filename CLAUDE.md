@@ -98,3 +98,10 @@ For backend engine work, exhaust what Odin ships before writing anything new:
 - Before implementing any engine subsystem or utility (allocators, containers, math, serialization, platform/IO, asset loading, windowing, input), check Odin built-ins, `core:` stdlib packages, and `vendor:` libraries — in that order — and use the existing solution when one covers the need.
 - Never reimplement functionality Odin already provides; instead, wrap or extend the existing `core:`/`vendor:` package and document the gap that forced the extension.
 - When no built-in, `core:`, or `vendor:` option fits, state that verification in one line before writing the custom implementation or adding an external dependency.
+
+## CAFI Index Description Dispatch
+
+Dispatch `/prove:index` describe-batch subagents on the **haiku** model at **medium** effort — routing-hint descriptions are short formulaic read-and-summarize work haiku covers fully. Use the Agent tool, or the Workflow tool for batches over 50 files.
+
+- Keep these batches on haiku/medium; instead of escalating to a larger model or higher effort, split an oversized batch into more sub-batches.
+- Scope: `/prove:index` describe fan-outs only. Dispatch every other agent in this project at its normal model and effort.
