@@ -171,6 +171,42 @@ STDLIB_SURFACE := []Module_Surface{
 			{"grid_cells", .Func},
 		},
 	},
+	{
+		// §11 physics surface: the Tier-2 dynamics names a behavior writes intent
+		// against. Body is the §11 §2 record; BodyKind and Shape2 are its kind
+		// and shape enums (Shape2 carries struct-payload Box/Circle variants);
+		// Trigger is the §11 §4 zero-field signal the engine routes to a sensor
+		// overlap. solve is the §11 §3 physics battery — the single member of the
+		// engine-closed `physics:` stage, validated as a battery name (contracts),
+		// never as a callable, so it occupies the Func slot like grid_cells.
+		path = "engine.physics",
+		decls = {
+			{"Body", .Type_Name},
+			{"BodyKind", .Type_Name},
+			{"Shape2", .Type_Name},
+			{"Trigger", .Type_Name},
+			{"solve", .Func},
+		},
+	},
+	{
+		// §24 persistence surface: the command-out/Result-back save and settings
+		// names (spec §24 §1/§2). Save/Restore/ApplySettings are the §04 command
+		// constructors a behavior emits ({slot}/{settings} struct payloads);
+		// Saved/Restored/SettingsApplied are the engine-routed outcome signals
+		// each carrying a `result: Result[…]` matched Ok/Err. Settings is the §24
+		// §2 per-machine preferences record (with the .defaults() builder and the
+		// nested access sub-record).
+		path = "engine.save",
+		decls = {
+			{"Save", .Type_Name},
+			{"Restore", .Type_Name},
+			{"ApplySettings", .Type_Name},
+			{"Saved", .Type_Name},
+			{"Restored", .Type_Name},
+			{"SettingsApplied", .Type_Name},
+			{"Settings", .Type_Name},
+		},
+	},
 }
 
 // Reexport declares one name a partition exposes on behalf of its owning
@@ -461,6 +497,14 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 		case "White", "Black", "Red", "Green", "Blue":
 			return engine_type_of(.Color), true
 		}
+	case "BodyKind":
+		// §11 §2: the body kind enum. Static never moves, Dynamic is fully
+		// solved, Kinematic is moved by user code. A bare-variant value
+		// (BodyKind::Dynamic) selecting a Body's `kind` field.
+		switch variant {
+		case "Static", "Dynamic", "Kinematic":
+			return engine_type_of(.BodyKind), true
+		}
 	}
 	return nil, false
 }
@@ -495,6 +539,13 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 		switch member {
 		case "of":
 			return func_of({nil}, engine_type_of(.View)), true
+		}
+	case "Settings":
+		switch member {
+		case "defaults":
+			// §24 §2: the factory-default settings the Menu singleton seeds with
+			// (yard `Settings.defaults()`). No argument; yields the Settings record.
+			return func_of({}, engine_type_of(.Settings)), true
 		}
 	}
 	return nil, false
@@ -544,6 +595,15 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 		case "axis", "button":
 			return func_of({engine_type_of(.PlayerId), nil, nil}, engine_type_of(.Bindings)), true
 		}
+	case .Body:
+		// §11 §2: a behavior influences physics only by writing its OWN body —
+		// apply_impulse(Vec2) returns a new Body with the impulse accumulated (no
+		// call into the solver, no hidden accumulator). It chains (yard sums two
+		// pushes: b.apply_impulse(j).apply_impulse(k)), so receiver and result are
+		// both Body.
+		if member == "apply_impulse" {
+			return func_of({Ground_Type.Vec2}, engine_type_of(.Body)), true
+		}
 	}
 	return nil, false
 }
@@ -565,29 +625,146 @@ surface_command :: proc(name: string) -> (signature: Type, found: bool) {
 }
 
 // surface_struct_variant types a struct-payload engine-enum variant value
-// (spec §20): Draw::Rect{at, size, color} and Draw::Text{at, text, color}
-// are the §20 draw commands. fields is the closed field set with each
-// field's expected type; an unknown field or a mismatched value rejects.
-// The result is the engine Draw command type.
+// (spec §20 Draw, §11 Shape2): Draw::Rect{at, size, color} / Draw::Text{at,
+// text, color} are the §20 draw commands; Shape2::Box{size} / Shape2::Circle{
+// radius} are the §11 §2 collision shapes. fields is the closed field set with
+// each field's expected type; an unknown field or a mismatched value rejects.
+// The result is the owning engine type (the Draw command, or the Shape2 value
+// a Body's `shape` field holds).
 surface_struct_variant :: proc(type_name: string, variant: string) -> (result: Type, fields: []Surface_Field, found: bool) {
-	if type_name != "Draw" {
-		return nil, nil, false
+	switch type_name {
+	case "Draw":
+		switch variant {
+		case "Rect":
+			return engine_type_of(.Draw), clone_fields({
+					{name = "at", type = Ground_Type.Vec2},
+					{name = "size", type = Ground_Type.Vec2},
+					{name = "color", type = engine_type_of(.Color)},
+				}), true
+		case "Text":
+			return engine_type_of(.Draw), clone_fields({
+					{name = "at", type = Ground_Type.Vec2},
+					{name = "text", type = engine_type_of(.String)},
+					{name = "color", type = engine_type_of(.Color)},
+				}), true
+		}
+	case "Shape2":
+		switch variant {
+		case "Box":
+			return engine_type_of(.Shape2), clone_fields({
+					{name = "size", type = Ground_Type.Vec2},
+				}), true
+		case "Circle":
+			return engine_type_of(.Shape2), clone_fields({
+					{name = "radius", type = Ground_Type.Fixed},
+				}), true
+		}
 	}
-	switch variant {
-	case "Rect":
-		return engine_type_of(.Draw), clone_fields({
-				{name = "at", type = Ground_Type.Vec2},
-				{name = "size", type = Ground_Type.Vec2},
-				{name = "color", type = engine_type_of(.Color)},
+	return nil, nil, false
+}
+
+// surface_engine_record types a constructable engine record (spec §11 §2 Body,
+// §24 §1/§2 Save/Restore/ApplySettings/Settings/AccessOpts): the closed field
+// set with each field's expected value type. result is the engine type a
+// literal of this record yields (a Body value, a Save command, etc.), so the
+// one schema serves both literal construction (record_check), member reads
+// (field_member), and record-update (with_check). A record name with no schema
+// is not an engine record. The §11 §5 layer/mask fields type as the nil unknown
+// (they name the user's project-declared CollisionLayer enum, unknown to the
+// closed surface) — the layer-registry gate validates their values, not this
+// schema. Save/Restore carry a dynamic String slot (spec §24 §1: a save slot is
+// an honest runtime String, not a closed registry).
+surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_Field, found: bool) {
+	switch name {
+	case "Trigger":
+		// §11 §4: the zero-field sensor-overlap signal. A behavior consumes it as
+		// an inbound [Trigger] list; a test constructs the empty Trigger{} value.
+		// No fields, so any named field rejects.
+		return engine_type_of(.Trigger), clone_fields({}), true
+	case "Body":
+		return engine_type_of(.Body), clone_fields({
+				{name = "kind", type = engine_type_of(.BodyKind)},
+				{name = "shape", type = engine_type_of(.Shape2)},
+				{name = "mass", type = Ground_Type.Fixed},
+				{name = "restitution", type = Ground_Type.Fixed},
+				{name = "friction", type = Ground_Type.Fixed},
+				// layer/mask name the user's CollisionLayer enum — the nil unknown
+				// here, gated by the layer registry rather than the field schema.
+				{name = "layer", type = nil},
+				{name = "mask", type = nil},
+				{name = "sensor", type = Ground_Type.Bool},
+				{name = "impulse", type = Ground_Type.Vec2},
 			}), true
-	case "Text":
-		return engine_type_of(.Draw), clone_fields({
-				{name = "at", type = Ground_Type.Vec2},
-				{name = "text", type = engine_type_of(.String)},
-				{name = "color", type = engine_type_of(.Color)},
+	case "Settings":
+		// §24 §2 Settings { volume, binds, graphics, access }. Only `access` is
+		// reached by yard's typecheck (settings.access.reduce_motion); the rest are
+		// present as fields with the nil unknown so a `settings with {…}` over them
+		// would still resolve, but their full sub-record shapes are out of scope.
+		return engine_type_of(.Settings), clone_fields({
+				{name = "volume", type = nil},
+				{name = "binds", type = engine_type_of(.Bindings)},
+				{name = "graphics", type = nil},
+				{name = "access", type = engine_type_of(.AccessOpts)},
+			}), true
+	case "AccessOpts":
+		// §24 §2 accessibility sub-record. reduce_motion is the one field yard
+		// reads and toggles; admit just it (the registry gate's "just enough").
+		return engine_type_of(.AccessOpts), clone_fields({
+				{name = "reduce_motion", type = Ground_Type.Bool},
+			}), true
+	case "Save":
+		return engine_type_of(.Save), clone_fields({
+				{name = "slot", type = engine_type_of(.String)},
+			}), true
+	case "Restore":
+		return engine_type_of(.Restore), clone_fields({
+				{name = "slot", type = engine_type_of(.String)},
+			}), true
+	case "ApplySettings":
+		return engine_type_of(.ApplySettings), clone_fields({
+				{name = "settings", type = engine_type_of(.Settings)},
 			}), true
 	}
 	return nil, nil, false
+}
+
+// surface_engine_member_record reads a field off an engine record value (spec
+// §11 §2 / §24 §2): a Body's fields (a behavior reads self.body.shape,
+// self.body.impulse), Settings.access, AccessOpts.reduce_motion, and an outcome
+// signal's `result` field (Saved/Restored/SettingsApplied carry a
+// Result[…] the §24 forced match destructures). The Body/Settings/AccessOpts
+// reads share the construction schema (surface_engine_record), so a field is
+// readable iff it is constructable. The result-signal `result` field is the
+// Result engine value, typed here so its match scrutinee is well-formed.
+surface_engine_member_record :: proc(receiver: ^Engine_Type, member: string) -> (type: Type, found: bool) {
+	#partial switch receiver.kind {
+	case .Body, .Settings, .AccessOpts:
+		_, fields, has_schema := surface_engine_record(engine_kind_name(receiver.kind))
+		if !has_schema {
+			return nil, false
+		}
+		return surface_field_type(fields, member)
+	case .Saved, .Restored, .SettingsApplied:
+		if member == "result" {
+			return engine_type_of(.Result), true
+		}
+	}
+	return nil, false
+}
+
+// engine_kind_name maps the engine-record kinds back to their surface name, so
+// a member read can look the construction schema up by name (the one schema
+// table). Only the record kinds need a name; a non-record kind returns "".
+engine_kind_name :: proc(kind: Engine_Kind) -> string {
+	#partial switch kind {
+	case .Body:
+		return "Body"
+	case .Settings:
+		return "Settings"
+	case .AccessOpts:
+		return "AccessOpts"
+	}
+	return ""
 }
 
 // Surface_Field is one named field of an engine struct-payload variant — the

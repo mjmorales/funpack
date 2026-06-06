@@ -352,6 +352,31 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Stick), true
 	case "Color":
 		return engine_type_of(.Color), true
+	// §11 physics: a `body: Body` field, a `shape: Shape2` field, a `kind:
+	// BodyKind` field, and a `pads: [Trigger]` inbound signal all name an
+	// engine type here. Box/Circle and Static/Dynamic/Kinematic are reached
+	// through the enum's variant surface, not as bare type-refs.
+	case "Body":
+		return engine_type_of(.Body), true
+	case "BodyKind":
+		return engine_type_of(.BodyKind), true
+	case "Shape2":
+		return engine_type_of(.Shape2), true
+	case "Trigger":
+		return engine_type_of(.Trigger), true
+	// §24 persistence: a `settings: Settings` field and the inbound result
+	// signals (`saved: [Saved]`, `restored: [Restored]`, `applied:
+	// [SettingsApplied]`) name engine types in field/param position.
+	case "Settings":
+		return engine_type_of(.Settings), true
+	case "AccessOpts":
+		return engine_type_of(.AccessOpts), true
+	case "Saved":
+		return engine_type_of(.Saved), true
+	case "Restored":
+		return engine_type_of(.Restored), true
+	case "SettingsApplied":
+		return engine_type_of(.SettingsApplied), true
 	}
 	return nil, false
 }

@@ -919,6 +919,10 @@ Closed_Variant_Set :: struct {
 @(rodata)
 CLOSED_VARIANT_SETS := []Closed_Variant_Set{
 	{type_name = "Option", variants = {"Some", "None"}},
+	// engine.prelude Result, with variants Ok and Err — the §24 outcome match
+	// (Result::Ok(_)/Result::Err(_)) is forced to cover both arms, so a failed
+	// save/restore can never be silently dropped (spec §24 §1, AX4).
+	{type_name = "Result", variants = {"Ok", "Err"}},
 }
 
 // closed_variant_sets is the per-file closed table the exhaustiveness gate

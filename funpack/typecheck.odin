@@ -27,6 +27,7 @@ Type_Error :: enum {
 	Unknown_Member,   // an import naming a member its module lacks
 	Unresolved_Name,  // a free name with no let binding, no user decl, and no import
 	Name_Collision,   // one name, two meanings (spec §02): a user decl colliding with an import or another user decl, or two imports binding one name to different declarations
+	Unregistered_Layer, // a Body's layer/mask names a value outside any CollisionLayer-kinded enum's variant set (spec §11 §5)
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -50,9 +51,176 @@ Check_Ctx :: struct {
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 	bindings := resolve_imports(ast) or_return
 	env := resolve_env(ast, bindings) or_return
+	// The §11 §5 layer registry is a pure-AST membership rule (it reads the
+	// CollisionLayer enums' variant sets, not resolved value types), so it runs
+	// BEFORE body/test typing — an unregistered layer surfaces as the precise
+	// Unregistered_Layer diagnostic rather than the generic Type_Mismatch the
+	// later variant check would raise for the same out-of-set reference.
+	check_layer_registry(ast) or_return
 	check_bodies(bindings, env, ast) or_return
 	check_tests(bindings, env, ast) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
+}
+
+// check_layer_registry enforces the §11 §5 collision-layer registry: a Body's
+// `layer` and `mask` fields reference an enum variant, and every such variant
+// must belong to the registered closed set — the union of every
+// CollisionLayer-kinded enum's variants (`enum Layer: CollisionLayer { … }`). A
+// layer outside that set is a compile error, checked like a @gtag. The registry
+// is built from the ordered ast.enums slice (never the env's enum MAP — that is
+// the determinism tripwire), so the verdict is reproducible from the source
+// alone. It runs BEFORE body/test typing (see stage_typecheck) so an
+// unregistered layer surfaces as the precise Unregistered_Layer diagnostic
+// rather than the generic Type_Mismatch the later variant check would raise; it
+// adds only the registry rule the field schema cannot express (layer/mask type
+// as the nil unknown, since the enum is the user's, not the closed surface's).
+check_layer_registry :: proc(ast: Ast) -> Type_Error {
+	registry := collision_layer_registry(ast)
+	for fn in ast.fns {
+		layer_walk_body(fn.body, registry) or_return
+	}
+	for behavior in ast.behaviors {
+		layer_walk_body(behavior.step.body, registry) or_return
+	}
+	for test in ast.tests {
+		layer_walk_body(test.body, registry) or_return
+	}
+	return .None
+}
+
+// collision_layer_registry collects the registered layer names — the variants
+// of every CollisionLayer-kinded enum the source declares (spec §11 §5: a
+// project-declared closed set). Built from the ordered ast.enums slice so the
+// set is determinism-stable. A source with no CollisionLayer enum has an empty
+// registry, so any Body layer/mask reference is unregistered.
+collision_layer_registry :: proc(ast: Ast) -> []string {
+	names := make([dynamic]string, 0, 8, context.temp_allocator)
+	for decl in ast.enums {
+		if decl.kind != "CollisionLayer" {
+			continue
+		}
+		for variant in decl.variants {
+			append(&names, variant.name)
+		}
+	}
+	return names[:]
+}
+
+// layer_walk_body descends a statement body for Body record literals, recursing
+// into an `if` guard's condition and nested block. Every expression position is
+// walked so a Body buried in a list, a call argument, or a `with` value is still
+// gated.
+layer_walk_body :: proc(body: []Statement, registry: []string) -> Type_Error {
+	for stmt in body {
+		switch node in stmt {
+		case Let_Node:
+			layer_walk_expr(node.value, registry) or_return
+		case Assert_Node:
+			layer_walk_expr(node.expr, registry) or_return
+		case Return_Node:
+			layer_walk_expr(node.value, registry) or_return
+		case If_Node:
+			layer_walk_expr(node.cond, registry) or_return
+			layer_walk_body(node.body, registry) or_return
+		}
+	}
+	return .None
+}
+
+// layer_walk_expr descends one expression, validating any Body record literal's
+// layer/mask fields and recursing into every sub-expression. It mirrors the Expr
+// union arm-for-arm so a new expression form is a visible gap here, not a
+// silently-unwalked branch (the same discipline as the gate's match walk).
+layer_walk_expr :: proc(expr: Expr, registry: []string) -> Type_Error {
+	switch e in expr {
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
+		return .None
+	case ^Call_Expr:
+		layer_walk_expr(e.callee, registry) or_return
+		for arg in e.args {
+			layer_walk_expr(arg, registry) or_return
+		}
+	case ^Member_Expr:
+		layer_walk_expr(e.receiver, registry) or_return
+	case ^Variant_Expr:
+		for arg in e.payload {
+			layer_walk_expr(arg, registry) or_return
+		}
+		for field in e.fields {
+			layer_walk_expr(field.value, registry) or_return
+		}
+	case ^Record_Expr:
+		if e.type_name == "Body" {
+			check_body_layers(e, registry) or_return
+		}
+		for field in e.fields {
+			layer_walk_expr(field.value, registry) or_return
+		}
+	case ^List_Expr:
+		for element in e.elements {
+			layer_walk_expr(element, registry) or_return
+		}
+	case ^Lambda_Expr:
+		layer_walk_expr(e.body, registry) or_return
+	case ^Unary_Expr:
+		layer_walk_expr(e.operand, registry) or_return
+	case ^Binary_Expr:
+		layer_walk_expr(e.lhs, registry) or_return
+		layer_walk_expr(e.rhs, registry) or_return
+	case ^With_Expr:
+		layer_walk_expr(e.base, registry) or_return
+		for field in e.fields {
+			layer_walk_expr(field.value, registry) or_return
+		}
+	case ^Match_Expr:
+		layer_walk_expr(e.scrutinee, registry) or_return
+		for arm in e.arms {
+			layer_walk_expr(arm.body, registry) or_return
+		}
+	case ^Tuple_Expr:
+		for element in e.elements {
+			layer_walk_expr(element, registry) or_return
+		}
+	}
+	return .None
+}
+
+// check_body_layers validates a Body literal's `layer` and `mask` field values
+// against the layer registry (spec §11 §5). `layer` is a single variant value
+// (Layer::Wall); `mask` is a list of them ([Layer::Player, Layer::Crate]). Each
+// variant referenced must be a registered layer; an unregistered one is the
+// compile error. A non-variant value in these fields is left to the typing pass
+// (it already rejected an ill-typed field) — this pass only adds the registry
+// rule the field schema's nil type cannot express.
+check_body_layers :: proc(e: ^Record_Expr, registry: []string) -> Type_Error {
+	for field in e.fields {
+		if field.name == "layer" {
+			check_layer_value(field.value, registry) or_return
+		}
+		if field.name == "mask" {
+			if list, is_list := field.value.(^List_Expr); is_list {
+				for element in list.elements {
+					check_layer_value(element, registry) or_return
+				}
+			}
+		}
+	}
+	return .None
+}
+
+// check_layer_value rejects a single layer reference outside the registry. A
+// layer value is a variant `Layer::Wall`, so only a Variant_Expr is checked
+// against the registered set; any other expression shape is left to the typing
+// pass (this pass owns only the registry membership rule).
+check_layer_value :: proc(expr: Expr, registry: []string) -> Type_Error {
+	variant, is_variant := expr.(^Variant_Expr)
+	if !is_variant {
+		return .None
+	}
+	if !name_in_set(variant.variant, registry) {
+		return .Unregistered_Layer
+	}
+	return .None
 }
 
 // check_bodies types every top-level fn body and behavior step body against
@@ -369,7 +537,13 @@ field_member :: proc(ctx: Check_Ctx, receiver: Type, member: string) -> (type: T
 		}
 		return nil, .Type_Mismatch
 	case ^Engine_Type:
+		// Time.dt and the like read through surface_engine_member; the §11/§24
+		// engine RECORDS (Body, Settings, AccessOpts) and the outcome signals'
+		// `result` field read through surface_engine_member_record.
 		if field, found := surface_engine_member(r, member); found {
+			return field, .None
+		}
+		if field, found := surface_engine_member_record(r, member); found {
 			return field, .None
 		}
 		return nil, .Type_Mismatch
@@ -409,6 +583,13 @@ record_check :: proc(ctx: Check_Ctx, e: ^Record_Expr) -> (type: Type, err: Type_
 			ground_record_check(ctx, e, {"x", "y", "z"}) or_return
 			return Ground_Type.Vec3, .None
 		}
+		// A §11/§24 engine record literal (Body{…}, Save{…}, ApplySettings{…}):
+		// each named field checks against the closed surface schema, and the
+		// result is the record's engine type (the Body value, the Save command).
+		if result, fields, is_record := surface_engine_record(e.type_name); is_record {
+			engine_record_check(ctx, e, fields) or_return
+			return result, .None
+		}
 		return nil, .Unsupported_Expr
 	}
 	if record, declared := ctx.env.records[e.type_name]; declared {
@@ -433,6 +614,28 @@ user_record_check :: proc(ctx: Check_Ctx, e: ^Record_Expr, schema: Record_Schema
 		}
 		got := expr_check(ctx, field.value) or_return
 		if !types_compatible(got, declared) {
+			return .Type_Mismatch
+		}
+	}
+	return .None
+}
+
+// engine_record_check checks each field value of a §11/§24 engine record
+// literal against its closed surface schema (surface_engine_record) and demands
+// every named field belong to it. Like user_record_check, a missing field is not
+// rejected here — defaults make a field omittable (spec §11 §2: mass/restitution
+// /friction/sensor/impulse default), and field presence is downstream. A field
+// whose schema type is the nil unknown (a Body's layer/mask) accepts any value
+// shape; types_compatible's nil arm passes it, and the layer-registry gate
+// validates its variant.
+engine_record_check :: proc(ctx: Check_Ctx, e: ^Record_Expr, fields: []Surface_Field) -> Type_Error {
+	for field in e.fields {
+		want, known := surface_field_type(fields, field.name)
+		if !known {
+			return .Type_Mismatch
+		}
+		got := expr_check(ctx, field.value) or_return
+		if !types_compatible(got, want) {
 			return .Type_Mismatch
 		}
 	}
@@ -487,6 +690,18 @@ list_check :: proc(ctx: Check_Ctx, e: ^List_Expr) -> (type: Type, err: Type_Erro
 // the same record type (an update never changes the nominal type).
 with_check :: proc(ctx: Check_Ctx, e: ^With_Expr) -> (type: Type, err: Type_Error) {
 	base := expr_check(ctx, e.base) or_return
+	// An engine-record base (§24 `settings with {access: …}`, `access with
+	// {reduce_motion: …}`) updates against the closed surface schema; a user
+	// record updates against its declared schema. Both keep the base's nominal
+	// type — an update never changes it.
+	if engine, is_engine := base.(^Engine_Type); is_engine {
+		_, fields, has_schema := surface_engine_record(engine_kind_name(engine.kind))
+		if !has_schema {
+			return nil, .Type_Mismatch
+		}
+		engine_record_check(ctx, e_with_as_record(e), fields) or_return
+		return base, .None
+	}
 	user, is_user := base.(^User_Type)
 	if !is_user {
 		return nil, .Type_Mismatch
@@ -506,6 +721,16 @@ with_check :: proc(ctx: Check_Ctx, e: ^With_Expr) -> (type: Type, err: Type_Erro
 		}
 	}
 	return base, .None
+}
+
+// e_with_as_record adapts a With_Expr's update fields into a Record_Expr so the
+// engine-record field check (engine_record_check, shared with literal
+// construction) reads one field set. A `with` carries the same Record_Field
+// shape as a literal; only the base differs, which with_check already typed.
+e_with_as_record :: proc(e: ^With_Expr) -> ^Record_Expr {
+	adapter := new(Record_Expr, context.temp_allocator)
+	adapter.fields = e.fields
+	return adapter
 }
 
 // match_check types a match expression (spec §02 §5): the scrutinee is typed,
@@ -587,13 +812,23 @@ collect_pattern_binders :: proc(
 			append(types, binder_type)
 		}
 	case .Struct_Binds:
-		// A struct-payload field-pun binds each field name to a value. Resolving
-		// the per-field types needs the variant's struct-payload schema, which the
-		// surface story types; here the binders bind to the nil unknown rather than
-		// rejecting (mirroring the unresolvable-position rule above).
+		// A struct-payload field-pun (`Shape2::Box{size}`) binds each field name
+		// to a value of that field's declared type. The pattern carries its own
+		// type_name/variant, so the variant's struct-payload schema resolves
+		// directly from the surface (e.g. Shape2::Box's `size: Vec2`); a binder
+		// naming a field outside the schema, or a variant with no schema, binds to
+		// the nil unknown (the unresolvable-position rule above) rather than
+		// rejecting here — arm-shape validity is the gate's concern.
+		_, payload_fields, has_schema := surface_struct_variant(pattern.type_name, pattern.variant)
 		for binder in pattern.binders {
+			binder_type: Type
+			if has_schema {
+				if field_type, known := surface_field_type(payload_fields, binder); known {
+					binder_type = field_type
+				}
+			}
 			append(names, binder)
-			append(types, nil)
+			append(types, binder_type)
 		}
 	case .Tuple:
 		// A tuple pattern zips against a tuple scrutinee position by position.

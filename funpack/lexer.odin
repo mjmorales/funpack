@@ -98,7 +98,7 @@ Token :: struct {
 stage_lex :: proc(source: string) -> []Token {
 	tokens := make([dynamic]Token, 0, 16, context.temp_allocator)
 	nesting := Nesting {
-		brace_is_record = make([dynamic]bool, 0, 8, context.temp_allocator),
+		frames = make([dynamic]Bracket_Frame, 0, 8, context.temp_allocator),
 	}
 	prev_kind := Token_Kind.Invalid
 	// line tracks the 1-based source line of the byte at `i`: it advances by
@@ -146,35 +146,49 @@ stage_lex :: proc(source: string) -> []Token {
 }
 
 // Nesting tracks the bracket context that decides whether a newline is
-// a statement terminator (spec §02). Newlines inside ( ) and inside
-// record-literal { } are layout (suppressed); newlines inside a list
-// literal [ ] are SEPARATORS, kept — the pong `setup` list separates its
-// `Spawn(…)` elements by newline alone (the golden examples lead, 01 §5).
-// block { } interiors are statement sequences (or newline-separated
-// declaration members), so theirs are kept. The two brace roles are told
-// apart by the predecessor token: a `{` directly after an identifier — or
-// after the `with` operator — is a record-style field list (Vec2{…}, self
-// with {…}); any other `{` (after a test name string, a lambda's `)`)
-// opens a block.
-// block_pending arms the next `{` to open a block, not a record literal,
-// for the constructs whose body brace is preceded by an Ident that the
-// prev==Ident rule would otherwise misread as a record head: a `match`
-// scrutinee (ends in an Ident/`)`), an `if` condition (ends in any
-// value), a declaration body (`thing Paddle {`, `data Board {`,
-// `enum Steer: Axis {`, `pipeline Pong {`), a `behavior … on Thing {`,
-// and a function's return type (`-> Vec2 {`). Each of these arms the flag
-// (on the keyword, `on`, or the `->` arrow); the first `{` thereafter
-// clears it, so nested record literals inside the body still classify as
-// record braces.
+// a statement terminator (spec §02). The decision is the INNERMOST open
+// bracket's role, tracked as a stack of frames: newlines inside a ( ) frame
+// and inside a record-literal { } frame are layout (suppressed); newlines
+// inside a list literal [ ] frame and inside a block { } frame are SEPARATORS,
+// kept. A stack (not depth counters) is required because the roles interleave:
+// a block brace opened INSIDE parens (a lambda body's `match { … }` passed as a
+// combinator argument — `fold(xs, init, fn(a, b) { return match … })`) must keep
+// its arm-separator newlines even though a `(` is open further out. Counting
+// "any paren open" would suppress those arm separators and break the match. The
+// pong `setup` list (newline-separated `Spawn(…)` elements, 01 §5) keeps its
+// separators because the innermost frame is the list bracket.
+//
+// The two brace roles are told apart by the predecessor token: a `{` directly
+// after an identifier — or after the `with` operator — is a record-style field
+// list (Vec2{…}, self with {…}); any other `{` (after a test name string, a
+// lambda's `)`) opens a block. block_pending arms the next `{` to open a block,
+// not a record literal, for the constructs whose body brace is preceded by an
+// Ident that the prev==Ident rule would otherwise misread as a record head: a
+// `match` scrutinee (ends in an Ident/`)`), an `if` condition (ends in any
+// value), a declaration body (`thing Paddle {`, `data Board {`, `enum Steer:
+// Axis {`, `pipeline Pong {`), a `behavior … on Thing {`, and a function's
+// return type (`-> Vec2 {`). Each of these arms the flag (on the keyword, `on`,
+// or the `->` arrow); the first `{` thereafter clears it, so nested record
+// literals inside the body still classify as record braces.
 Nesting :: struct {
-	paren_depth:        int,
-	record_brace_depth: int,
-	brace_is_record:    [dynamic]bool,
-	block_pending:      bool,
+	frames:        [dynamic]Bracket_Frame,
+	block_pending: bool,
+}
+
+// Bracket_Frame is one open bracket's role on the nesting stack. suppress is
+// whether a newline inside this frame is layout (dropped) rather than a
+// statement/arm/element separator (kept). is_record is carried so a `}` knows
+// it is closing a record-brace frame for the diagnostic-free pop; it is not read
+// for the suppression decision (suppress already encodes it).
+Bracket_Frame :: struct {
+	suppress:  bool,
+	is_record: bool,
 }
 
 newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
-	if n.paren_depth > 0 || n.record_brace_depth > 0 {
+	// The innermost open bracket decides: a ( ) or record { } frame suppresses
+	// newlines; a list [ ] or block { } frame, and the top level, keep them.
+	if len(n.frames) > 0 && n.frames[len(n.frames) - 1].suppress {
 		return true
 	}
 	// Leading-dot chain continuation (spec §02): a newline whose next
@@ -191,23 +205,36 @@ update_nesting :: proc(n: ^Nesting, kind: Token_Kind, prev: Token_Kind) {
 	case .Match, .If, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .On, .Arrow:
 		n.block_pending = true
 	case .L_Paren:
-		n.paren_depth += 1
+		// A paren frame suppresses newlines (call args / grouping / tuple are
+		// comma-separated layout).
+		append(&n.frames, Bracket_Frame{suppress = true})
 	case .R_Paren:
-		n.paren_depth = max(0, n.paren_depth - 1)
+		pop_frame(n)
+	case .L_Bracket:
+		// A list frame keeps newlines — list elements separate by newline or
+		// comma (spec §02 §1, the pong setup program).
+		append(&n.frames, Bracket_Frame{suppress = false})
+	case .R_Bracket:
+		pop_frame(n)
 	case .L_Brace:
-		// A `{` after an Ident or the `with` operator is a record-style
-		// field list — unless block_pending armed it as a declaration body
-		// or control-flow block.
+		// A `{` after an Ident or the `with` operator is a record-style field
+		// list (suppress newlines) — unless block_pending armed it as a
+		// declaration body or control-flow block (keep newlines: a block's
+		// interior is a statement / arm / member sequence).
 		is_record := (prev == .Ident || prev == .With) && !n.block_pending
 		n.block_pending = false
-		append(&n.brace_is_record, is_record)
-		if is_record {
-			n.record_brace_depth += 1
-		}
+		append(&n.frames, Bracket_Frame{suppress = is_record, is_record = is_record})
 	case .R_Brace:
-		if len(n.brace_is_record) > 0 && pop(&n.brace_is_record) {
-			n.record_brace_depth = max(0, n.record_brace_depth - 1)
-		}
+		pop_frame(n)
+	}
+}
+
+// pop_frame closes the innermost bracket frame, guarding an unbalanced closer
+// (a stray `)`/`]`/`}`) so the lexer never underflows — an unbalanced source is
+// the parser's reject, not a lexer crash.
+pop_frame :: proc(n: ^Nesting) {
+	if len(n.frames) > 0 {
+		pop(&n.frames)
 	}
 }
 

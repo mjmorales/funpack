@@ -46,6 +46,7 @@ Contract_Error :: enum {
 	Startup_Reads_Thing, // a startup occupant reads an unspawned thing (blackboard or View) — only engine resources are in scope
 	Startup_No_Spawn,    // a startup occupant returns something other than a [Spawn] list
 	Update_Dead,         // an update behavior neither writes its blackboard nor emits a list — dead code
+	Unknown_Battery,     // a bare-battery stage names a battery outside the engine set (spec §11 §3: the only battery is `solve`)
 }
 
 // Contract_Verdict pairs a contract failure with the behavior it indicts, so
@@ -70,6 +71,18 @@ stage_contracts :: proc(typed: Typed_Ast) -> Contract_Verdict {
 	for pipeline in typed.ast.pipelines {
 		seen := make(map[string]bool, context.temp_allocator)
 		for stage in pipeline.stages {
+			// A bare-battery stage (`physics: solve`) is an engine-closed stage,
+			// not a behavior list: its battery name must resolve to a known engine
+			// battery (spec §11 §3: the only one is `solve`), so an unknown battery
+			// is a compile error. The parser left this unvalidated (Pipeline_Stage.
+			// battery is a free string); validate it here, where the pipeline stages
+			// are already walked.
+			if stage.is_battery {
+				if !is_engine_battery(stage.battery) {
+					return Contract_Verdict{err = .Unknown_Battery, behavior = stage.battery}
+				}
+				continue
+			}
 			slot := slot_of_stage(stage.name)
 			for member in stage.behaviors {
 				// A member listed in two stages keeps its first slot; the golden
@@ -86,6 +99,19 @@ stage_contracts :: proc(typed: Typed_Ast) -> Contract_Verdict {
 		}
 	}
 	return Contract_Verdict{err = .None}
+}
+
+// is_engine_battery reports whether a name is a known engine battery — the
+// closed set of engine-closed stage members (spec §11 §3). `solve` is the only
+// one: the §11 physics resolution battery, the single member of the `physics:`
+// stage. Growing this set is a deliberate edit, mirroring the closed surface
+// tables.
+is_engine_battery :: proc(name: string) -> bool {
+	switch name {
+	case "solve":
+		return true
+	}
+	return false
 }
 
 // check_member validates one pipeline-slot occupant against its slot

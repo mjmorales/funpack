@@ -436,6 +436,43 @@ test_reexported_fixed_binds_identically_on_both_routes :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_yard_physics_save_imports_populate_bindings :: proc(t: ^testing.T) {
+	// yard.fun's engine.physics and engine.save import forms, verbatim. Every
+	// member binds to its owning module with the expected Decl_Kind — the new
+	// §11 physics surface (Body/BodyKind/Shape2/Trigger type names + the solve
+	// battery func) and the §24 persistence surface (the Save/Restore/
+	// ApplySettings command constructors, the Saved/Restored/SettingsApplied
+	// outcome signals, and the Settings record — all type names).
+	source := "import engine.physics.{Body, BodyKind, Shape2, Trigger, solve}\n" +
+		"import engine.save.{Save, Restore, ApplySettings, Saved, Restored, SettingsApplied, Settings}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		{"Body", "engine.physics", .Type_Name},
+		{"BodyKind", "engine.physics", .Type_Name},
+		{"Shape2", "engine.physics", .Type_Name},
+		{"Trigger", "engine.physics", .Type_Name},
+		{"solve", "engine.physics", .Func},
+		{"Save", "engine.save", .Type_Name},
+		{"Restore", "engine.save", .Type_Name},
+		{"ApplySettings", "engine.save", .Type_Name},
+		{"Saved", "engine.save", .Type_Name},
+		{"Restored", "engine.save", .Type_Name},
+		{"SettingsApplied", "engine.save", .Type_Name},
+		{"Settings", "engine.save", .Type_Name},
+	}
+	for want in expectations {
+		binding, bound := bindings.names[want.name]
+		testing.expectf(t, bound, "%s did not bind", want.name)
+		testing.expect_value(t, binding.module, want.module)
+		testing.expect_value(t, binding.kind, want.kind)
+	}
+}
+
+@(test)
 test_bind_name_rejects_conflicting_rebind :: proc(t: ^testing.T) {
 	// The binding-layer floor behind the table test: re-binding the
 	// identical declaration is legal (the prelude pre-bind + a golden

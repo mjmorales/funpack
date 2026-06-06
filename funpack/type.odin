@@ -52,6 +52,23 @@ Engine_Kind :: enum {
 	Key,      // §23 keyboard-key enum
 	Stick,    // §23 gamepad-stick enum
 	Color,    // §20 palette enum
+	// §11 physics surface: the Body record, its kind/shape enums, and the
+	// engine-routed Trigger signal.
+	Body,            // §11 §2 physics body record (engine.physics)
+	BodyKind,        // §11 §2 Static | Dynamic | Kinematic enum
+	Shape2,          // §11 §2 collision-shape enum (struct-payload Box/Circle)
+	Trigger,         // §11 §4 zero-field sensor-overlap signal (engine-emitted)
+	// §24 persistence surface: the save/settings command constructors, the
+	// engine-routed result signals, and the settings records.
+	Save,            // §24 §1 Save{slot} command constructor (engine.save)
+	Restore,         // §24 §1 Restore{slot} command constructor
+	ApplySettings,   // §24 §2 ApplySettings{settings} command constructor
+	Saved,           // §24 §1 save-outcome signal (carries result: Result[…])
+	Restored,        // §24 §1 restore-outcome signal (carries result: Result[…])
+	SettingsApplied, // §24 §2 settings-apply-outcome signal (carries result)
+	Settings,        // §24 §2 per-machine preferences record
+	AccessOpts,      // §24 §2 accessibility sub-record (reduce_motion)
+	Result,          // prelude Result[_, _] — matched Ok/Err with wildcard payloads
 }
 
 // User_Type is the nominal handle for a name the source declares

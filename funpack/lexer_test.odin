@@ -178,14 +178,41 @@ test_lex_newline_joined_before_leading_dot :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_block_inside_call_keeps_statement_newlines :: proc(t: ^testing.T) {
-	// A lambda body nested in call args sits at paren depth > 0, so its
-	// interior newlines are suppressed along with the argument layout —
-	// the single-line body form the golden file uses is unaffected.
+	// A lambda body nested in call args opens a block frame, so the layout
+	// newlines AROUND the lambda (between the fold arguments) are suppressed by
+	// the enclosing paren frame, while the single-line body itself carries no
+	// interior newline. The golden file's single-return lambdas are unaffected.
 	tokens := stage_lex("fold([],\n  z,\n  fn(acc, x) { return acc })\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Ident, .L_Paren, .L_Bracket, .R_Bracket, .Comma, .Ident, .Comma,
 		.Fn, .L_Paren, .Ident, .Comma, .Ident, .R_Paren,
 		.L_Brace, .Return, .Ident, .R_Brace, .R_Paren, .Newline,
+	})
+}
+
+@(test)
+test_lex_match_arms_in_lambda_inside_call_keep_newlines :: proc(t: ^testing.T) {
+	// The §24 outcome-match shape: a multi-arm `match` inside a lambda body
+	// passed as a combinator argument. The innermost frame at each arm-separator
+	// newline is the match BLOCK brace, not the enclosing fold paren — so the arm
+	// separators survive even though a `(` is open further out. Counting "any
+	// paren open" would drop these and break the match parse (the bug this fix
+	// closes). The newlines around the lambda arguments and after the lambda's
+	// inner `return` line are still suppressed by their paren/block frames.
+	tokens := stage_lex(
+		"fold(rs, m, fn(a, r) {\n" +
+		"  return match r.result {\n" +
+		"    Result::Ok(_) => a\n" +
+		"    Result::Err(_) => a\n" +
+		"  }\n" +
+		"})\n")
+	expect_kinds(t, tokens, []Token_Kind{
+		.Ident, .L_Paren, .Ident, .Comma, .Ident, .Comma,
+		.Fn, .L_Paren, .Ident, .Comma, .Ident, .R_Paren, .L_Brace, .Newline,
+		.Return, .Match, .Ident, .Dot, .Ident, .L_Brace, .Newline,
+		.Ident, .Colon_Colon, .Ident, .L_Paren, .Ident, .R_Paren, .Eq_Arrow, .Ident, .Newline,
+		.Ident, .Colon_Colon, .Ident, .L_Paren, .Ident, .R_Paren, .Eq_Arrow, .Ident, .Newline,
+		.R_Brace, .Newline, .R_Brace, .R_Paren, .Newline,
 	})
 }
 
