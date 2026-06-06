@@ -43,19 +43,26 @@ Id :: struct {
 // plus the Ref the read side resolves; the structural variants (Bool / Record /
 // List) are the COMPOSITE columns snake's blackboard carries — `grow: Bool`,
 // `head: Cell` (a record), `body: [Cell]` (a list of records) — that pong did not
-// have. No float ever (spec §10): a numeric column is a Fixed or an Int over the
-// kernel's raw bits. A Record_Value/List_Value column is structural data the tick
-// commits and the read layer lifts back; it never carries a transient value
-// (lambda/tuple/Rng/string-render) — those are split or threaded before commit.
+// have. A UNIT variant commits as its bare `string` token; a PAYLOAD-CARRYING
+// variant (yard's `status: Option[String]` holding Some("saved")) commits as a
+// full Variant_Value so the boxed payload survives the tick boundary, and a
+// String column commits as String_Value (§03: String is an ordinary primitive —
+// only Float is render-only). No float ever (spec §10): a numeric column is a
+// Fixed or an Int over the kernel's raw bits. A Record_Value/List_Value column is
+// structural data the tick commits and the read layer lifts back; it never
+// carries a transient value (lambda/tuple/Rng) — those are split or threaded
+// before commit.
 Field_Value :: union {
 	i64, // an Int column
 	Fixed, // a Fixed column (Q32.32 bits)
 	bool, // a Bool column (§03 Bool; snake's `grow`)
-	string, // an enum variant token, e.g. "Side::Left"
+	string, // a UNIT enum variant token, e.g. "Side::Left"
 	Vec2, // a two-Fixed vector column (§10 Num kind)
 	Ref, // a weak typed handle to another row (§08 §1)
 	Record_Value, // a composite record column, e.g. snake's `head: Cell`
 	List_Value, // a `[T]` list column, e.g. snake's `body: [Cell]`
+	Variant_Value, // a PAYLOAD-CARRYING variant column, e.g. Option::Some("saved")
+	String_Value, // a String column (§03 primitive; yard's status payload text)
 }
 
 // Row is one thing instance — a database row keyed by Id (§08 table). The whole

@@ -309,6 +309,54 @@ test_draw_list_serializes_in_emitted_order :: proc(t: ^testing.T) {
 	testing.expect(t, slices_equal(forward_bytes, again))
 }
 
+// --- v4 payload / String sensitivity -----------------------------------------
+
+// fd_payload_world hand-builds a one-row world whose row carries a payload
+// variant column (`status`, an Option::Some boxing a String) and a String column
+// (`note`) — the two v4 arms. Parameterizing the texts lets a test pin that a
+// payload-only or String-only difference moves the digest.
+@(private = "file")
+fd_payload_world :: proc(status_text: string, note_text: string) -> World_Version {
+	payload := new(Value, context.temp_allocator)
+	payload^ = String_Value{text = status_text}
+
+	fields := make(map[string]Field_Value, context.temp_allocator)
+	fields["status"] = Variant_Value{enum_type = "Option", case_name = "Some", payload = payload}
+	fields["note"] = String_Value{text = note_text}
+
+	rows := make([]Row, 1, context.temp_allocator)
+	rows[0] = Row{id = Id{raw = 1}, fields = fields}
+	tables := make([]Version_Table, 1, context.temp_allocator)
+	tables[0] = Version_Table{thing = "Menu", singleton = true, rows = rows, next_id = 2}
+	return World_Version{tick = 1, tables = tables}
+}
+
+// test_digest_distinguishes_variant_payloads pins the v4 blindness fix: two
+// worlds whose only difference is a variant's BOXED PAYLOAD (the token is the
+// same Option::Some) digest differently — under the token-only fold they
+// collided, which is exactly how the snapshot codec's payload loss stayed
+// invisible to the acceptance harness. Same-payload worlds still digest equal.
+@(test)
+test_digest_distinguishes_variant_payloads :: proc(t: ^testing.T) {
+	saved := frame_digest(fd_payload_world("saved", "x"), nil)
+	restored := frame_digest(fd_payload_world("restored", "x"), nil)
+	saved_again := frame_digest(fd_payload_world("saved", "x"), nil)
+
+	testing.expect(t, saved.digest != restored.digest)
+	testing.expect_value(t, saved_again.digest, saved.digest)
+}
+
+// test_digest_distinguishes_string_columns pins the String half: two worlds
+// whose only difference is a String column's text digest differently — a String
+// is committed state (§03 primitive), so it must be inside the comparison
+// surface, not folded tag-less into nothing.
+@(test)
+test_digest_distinguishes_string_columns :: proc(t: ^testing.T) {
+	a := frame_digest(fd_payload_world("saved", "alpha"), nil)
+	b := frame_digest(fd_payload_world("saved", "beta"), nil)
+	testing.expect(t, a.digest != b.digest)
+}
+
 // --- byte helpers -----------------------------------------------------------
 
 // slices_equal reports whether two byte slices are length- and content-equal —

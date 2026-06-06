@@ -56,7 +56,12 @@ import "core:strings"
 // boxed payload instead of flattening to the bare token — v1 dropped the payload,
 // so a Restore swapped in degenerate collision/render shapes. A v1 slot fails
 // closed on restore per the stamp discipline.
-SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(2)
+// v3 extends both arms to the TOP-LEVEL row blackboard (a payload-carrying
+// variant column like yard's `status: Option[String]` and a String column are
+// committable Field_Values, no longer flattened/dropped at commit) and gives a
+// String the String tag — under v2 a nested String hit the tag-less no-op,
+// which would have CORRUPTED the stream once payloads carried text.
+SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(3)
 
 // SAVE_SNAPSHOT_MAGIC leads every snapshot so a stray byte stream (a truncated
 // file, an unrelated blob) is rejected before the version check rather than parsed
@@ -558,7 +563,9 @@ snap_write_row :: proc(buf: ^[dynamic]u8, row: Row) {
 // snap_write_field_value writes one blackboard column tagged by its Field_Tag arm —
 // the SAME closed tag set the frame digest uses, so a column serializes one way for
 // both surfaces. Numbers are raw little-endian bits (§10), a Record/List recurses,
-// a Ref is its target name + raw Id. The Field_Value union is total over these arms.
+// a Ref is its target name + raw Id, a payload-carrying variant column writes its
+// boxed payload after the token, a String column writes its text. The Field_Value
+// union is total over these arms.
 snap_write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	switch v in value {
 	case i64:
@@ -587,6 +594,22 @@ snap_write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	case List_Value:
 		append(buf, u8(Field_Tag.List))
 		snap_write_list(buf, v)
+	case Variant_Value:
+		// A Field_Value variant column is payload-carrying by construction (a unit
+		// variant commits as the bare-token string arm) — but a hand-built row can
+		// violate that, so a nil payload degrades to the token-only form rather
+		// than dereferencing nil (the codec stays total, §10 discipline).
+		if v.payload == nil {
+			append(buf, u8(Field_Tag.Variant))
+			snap_put_string(buf, variant_to_token(v, context.temp_allocator))
+		} else {
+			append(buf, u8(Field_Tag.Variant_Payload))
+			snap_put_string(buf, variant_to_token(v, context.temp_allocator))
+			snap_write_column_value(buf, v.payload^)
+		}
+	case String_Value:
+		append(buf, u8(Field_Tag.String))
+		snap_put_string(buf, v.text)
 	}
 }
 
@@ -656,7 +679,13 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	case List_Value:
 		append(buf, u8(Field_Tag.List))
 		snap_write_list(buf, x)
-	case Lambda_Value, String_Value, Tuple_Value, Rng:
+	case String_Value:
+		// A String nested in a payload/record/list serializes its text — lumping it
+		// into the transients' tag-less no-op would CORRUPT the stream (field
+		// framing with no value bytes).
+		append(buf, u8(Field_Tag.String))
+		snap_put_string(buf, x.text)
+	case Lambda_Value, Tuple_Value, Rng:
 	// A transient never lands in a committed structural column.
 	}
 }
@@ -755,11 +784,20 @@ snap_read_field_value :: proc(
 		list := snap_read_list(cur, allocator) or_return
 		return list, true
 	case .Variant_Payload:
-		// A payload variant never lands at the TOP level of a row blackboard — the
-		// committed Field_Value variant arm is a bare token (value_to_field_value)
-		// and the writer emits Variant_Payload only inside structural columns — so
-		// this tag at row level is a malformed snapshot and fails closed.
-		return nil, false
+		// A payload-carrying variant COLUMN (yard's `status: Option[String]`
+		// holding Some("saved")): the token splits back into its tag pair and the
+		// boxed payload parses recursively — the same reconstruction the nested
+		// reader does, lifted onto the Field_Value variant arm.
+		token := snap_get_string(cur, allocator) or_return
+		inner := snap_read_column_value(cur, allocator) or_return
+		payload := new(Value, allocator)
+		payload^ = inner
+		variant := variant_from_token(token)
+		variant.payload = payload
+		return variant, true
+	case .String:
+		text := snap_get_string(cur, allocator) or_return
+		return String_Value{text = text}, true
 	}
 	return nil, false
 }
@@ -843,6 +881,9 @@ snap_read_column_value :: proc(
 		variant := variant_from_token(token)
 		variant.payload = payload
 		return variant, true
+	case .String:
+		text := snap_get_string(cur, allocator) or_return
+		return String_Value{text = text}, true
 	case .Record:
 		rec := snap_read_record(cur, allocator) or_return
 		return rec, true

@@ -51,7 +51,18 @@ import "core:slice"
 // fold_session), so the committed pong/snake/hunt golden digests do NOT move under
 // the v3 bump even though the stamp advances. The version is the comparability
 // stamp; the goldens are unmoved because their bytes are identical.
-FRAME_DIGEST_SCHEMA_VERSION :: 3
+// v4 folds variant PAYLOADS and String columns: a payload-carrying variant (a
+// body's Shape2::Box{size}, a status's Option::Some("saved")) digests its boxed
+// payload under Variant_Payload instead of its bare token, and a String column
+// digests under the String tag instead of vanishing tag-less — closing the
+// blindness where two worlds differing only in a payload or a String digested
+// identically. Unit variants keep the token-only Variant encoding, so pong /
+// snake / hunt streams (no payload variants, no Strings) are byte-unchanged;
+// yard's golden digests move (its Body shapes carry payloads every tick) and
+// regenerate under the FUNPACK_REGEN_GOLDEN gate. The session fold stays seeded
+// from FRAME_SESSION_SEED (frozen, see the seed-decoupling rationale at
+// fold_session).
+FRAME_DIGEST_SCHEMA_VERSION :: 4
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
@@ -67,14 +78,16 @@ Field_Tag :: enum u8 {
 	Bool    = 5, // a Bool column (one tag byte + one 0/1 byte)
 	Record  = 6, // a composite record column (type name + sorted-name fields)
 	List    = 7, // a `[T]` list column (element count + each element in order)
-	// Variant_Payload is emitted ONLY by the §24 snapshot codec (its
-	// SAVE_SNAPSHOT_SCHEMA_VERSION v2 stream): a payload-carrying variant nested
-	// in a structural column — token + the boxed payload value — so a Restore
-	// swaps back the exact committed shape (a wall's Shape2::Box{size}). The
-	// frame digest's own fold stays token-only (its payload blindness is the
-	// documented Field_Value follow-up), so digest streams never carry this tag
-	// and FRAME_DIGEST_SCHEMA_VERSION is unmoved by its addition.
+	// Variant_Payload is a payload-carrying variant — token + the boxed payload
+	// value — so a Restore swaps back the exact committed shape (a wall's
+	// Shape2::Box{size}) and two worlds differing only in a payload digest
+	// differently. A unit variant stays on the token-only Variant tag, keeping
+	// payload-free streams byte-identical across the digest v4 / snapshot v3
+	// encoding bumps.
 	Variant_Payload = 8,
+	// String is a String column's text (§03 primitive) — length-prefixed bytes,
+	// digest v4 / snapshot v3.
+	String = 9,
 }
 
 // Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
@@ -278,7 +291,30 @@ write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 		write_record_column(buf, v)
 	case List_Value:
 		write_list_column(buf, v)
+	case Variant_Value:
+		write_variant_column(buf, v)
+	case String_Value:
+		append(buf, u8(Field_Tag.String))
+		write_length_prefixed(buf, v.text)
 	}
+}
+
+// write_variant_column digests one variant: a unit variant as the token-only
+// Variant tag (the encoding every payload-free stream has always carried), a
+// payload-carrying variant as Variant_Payload + token + the boxed payload —
+// so a payload difference changes the digest instead of hiding behind an
+// identical token. Shared by the top-level column arm and the nested fold so
+// the two encodings never diverge.
+@(private = "file")
+write_variant_column :: proc(buf: ^[dynamic]u8, v: Variant_Value) {
+	if v.payload == nil {
+		append(buf, u8(Field_Tag.Variant))
+		write_length_prefixed(buf, variant_to_token(v))
+		return
+	}
+	append(buf, u8(Field_Tag.Variant_Payload))
+	write_length_prefixed(buf, variant_to_token(v))
+	write_column_value(buf, v.payload^)
 }
 
 // write_record_column digests a composite record column (snake's `head: Cell`):
@@ -315,11 +351,12 @@ write_list_column :: proc(buf: ^[dynamic]u8, list: List_Value) {
 // write_column_value digests one Value nested inside a structural column (a Cell
 // in `body: [Cell]`, an x/y in a Cell). It tags by the SAME Field_Tag set the
 // top-level columns use, so a Cell column and a Cell nested in a list digest
-// identically. A nested enum Variant_Value is rendered to its "Enum::Case" token
-// — the same form a top-level enum column carries — so the two never diverge. A
-// non-column transient (lambda / render String / tuple / Rng) cannot appear in a
-// committed structural column; it is written tag-less as a defensive no-op rather
-// than aborting the digest.
+// identically. A nested variant digests through write_variant_column — token-only
+// when unit, token + payload when payload-carrying — and a nested String digests
+// its text, exactly as the top-level arms do, so the two encodings never diverge.
+// A non-column transient (lambda / tuple / Rng) cannot appear in a committed
+// structural column; it is written tag-less as a defensive no-op rather than
+// aborting the digest.
 @(private = "file")
 write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	switch x in v {
@@ -340,13 +377,15 @@ write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		write_length_prefixed(buf, x.thing)
 		put_u64_le(buf, u64(x.id.raw))
 	case Variant_Value:
-		append(buf, u8(Field_Tag.Variant))
-		write_length_prefixed(buf, variant_to_token(x))
+		write_variant_column(buf, x)
+	case String_Value:
+		append(buf, u8(Field_Tag.String))
+		write_length_prefixed(buf, x.text)
 	case Record_Value:
 		write_record_column(buf, x)
 	case List_Value:
 		write_list_column(buf, x)
-	case Lambda_Value, String_Value, Tuple_Value, Rng:
+	case Lambda_Value, Tuple_Value, Rng:
 	// A transient value never lands in a committed structural column.
 	}
 }

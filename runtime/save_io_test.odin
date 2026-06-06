@@ -145,9 +145,18 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	body_fields["shape"] = Variant_Value{enum_type = "Shape2", case_name = "Box", payload = shape_payload}
 	body_fields["mask"] = List_Value{elements = mask}
 
+	// status/note exercise the TOP-LEVEL v3 arms alongside the nested shape: a
+	// payload-variant column (Menu.status = Option::Some("saved")) and a String
+	// column — both committable Field_Values whose loss was the blackboard-column
+	// gap (a status read back after a tick boundary saw the bare token).
+	status_payload := new(Value)
+	status_payload^ = String_Value{text = "saved"}
+
 	row_fields := make(map[string]Field_Value)
 	row_fields["pos"] = Vec2{to_fixed(80), to_fixed(2)}
 	row_fields["body"] = Record_Value{type_name = "Body", fields = body_fields}
+	row_fields["status"] = Variant_Value{enum_type = "Option", case_name = "Some", payload = status_payload}
+	row_fields["note"] = String_Value{text = "quicksave row"}
 
 	rows := make([]Row, 1)
 	rows[0] = Row{id = Id{raw = 1}, fields = row_fields}
@@ -172,6 +181,50 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	}
 	payload_rec := restored_shape.payload^.(Record_Value)
 	testing.expect_value(t, payload_rec.fields["size"].(Vec2), Vec2{to_fixed(160), to_fixed(4)})
+
+	// And the top-level arms: the status variant keeps its boxed String text and
+	// the String column its bytes — the exact values a menu fold reads back.
+	restored_status := restored.tables[0].rows[0].fields["status"].(Variant_Value)
+	if !testing.expect(t, restored_status.payload != nil) {
+		return
+	}
+	testing.expect_value(t, restored_status.payload^.(String_Value).text, "saved")
+	testing.expect_value(t, restored.tables[0].rows[0].fields["note"].(String_Value).text, "quicksave row")
+}
+
+// The COMMIT lowering itself preserves what the codec then serializes: a
+// payload-carrying variant lowers to a full Variant_Value column (not its bare
+// token — the loss that made Option::Some("saved") read back payload-less after
+// a tick boundary), a unit variant still lowers to its byte-stable token string,
+// a String lowers to a committable column, and the read-side lift round-trips
+// payload-equal under the §03 universal Eq.
+@(test)
+test_commit_lowering_preserves_payload_and_string :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	payload := new(Value)
+	payload^ = String_Value{text = "saved"}
+	some := Variant_Value{enum_type = "Option", case_name = "Some", payload = payload}
+
+	fv, ok := value_to_field_value(some)
+	testing.expect(t, ok)
+	committed, is_variant := fv.(Variant_Value)
+	if !testing.expect(t, is_variant) {
+		return
+	}
+	testing.expect_value(t, committed.payload^.(String_Value).text, "saved")
+
+	// A unit variant still lowers to its bare token — the encoding every existing
+	// digest/snapshot stream carries, so payload-free worlds stay byte-identical.
+	unit_fv, unit_ok := value_to_field_value(Variant_Value{enum_type = "Side", case_name = "Left"})
+	testing.expect(t, unit_ok)
+	testing.expect_value(t, unit_fv.(string), "Side::Left")
+
+	str_fv, str_ok := value_to_field_value(String_Value{text = "note"})
+	testing.expect(t, str_ok)
+	testing.expect_value(t, str_fv.(String_Value).text, "note")
+
+	// The read-side lift hands a match arm the same value the behavior committed.
+	testing.expect(t, values_equal(field_value_to_value(fv), some))
 }
 
 // --- (2) Save round-trips through the store + next-tick Saved outcome ------

@@ -796,9 +796,15 @@ values_equal :: proc(a, b: Value) -> bool {
 			}
 		}
 		return true
-	case Lambda_Value, String_Value, Rng:
-		// A closure has no value identity, a String is render-only, and an Rng is a
-		// threaded resource — none is a comparand the §03 Eq surface admits.
+	case String_Value:
+		// §03: String is an ordinary primitive under the universal Eq (only Float
+		// is render-only), and Option[String]'s payload comparison needs it — two
+		// Strings compare by their text.
+		bv, ok := b.(String_Value)
+		return ok && av.text == bv.text
+	case Lambda_Value, Rng:
+		// A closure has no value identity and an Rng is a threaded resource —
+		// neither is a comparand the §03 Eq surface admits.
 		return false
 	}
 	return false
@@ -981,6 +987,12 @@ field_value_to_value :: proc(fv: Field_Value) -> Value {
 		return v
 	case string:
 		return variant_from_token(v)
+	case Variant_Value:
+		// A payload-carrying variant column lifts unchanged — the boxed payload is
+		// already the Value shape a match arm binds (Some("saved") reads its text).
+		return v
+	case String_Value:
+		return v
 	}
 	return nil
 }
@@ -1014,16 +1026,30 @@ value_to_field_value :: proc(
 	case Ref:
 		return x, true
 	case Variant_Value:
-		return variant_to_token(x, allocator), true
+		// A unit variant lowers to its bare token (the byte-stable form every
+		// existing digest/snapshot stream carries); a payload-carrying variant
+		// commits as the full Variant_Value so the boxed payload — Some("saved")'s
+		// text, a shape's size — survives the tick boundary instead of flattening
+		// to the token and silently vanishing.
+		if x.payload == nil {
+			return variant_to_token(x, allocator), true
+		}
+		return clone_variant_value(x, allocator), true
+	case String_Value:
+		// A String column is committable (§03: String is an ordinary primitive;
+		// only Float is render-only) — cloned so the committed text outlives the
+		// transient eval arena.
+		return String_Value{text = strings.clone(x.text, allocator)}, true
 	case Record_Value:
 		return clone_record_value(x, allocator), true
 	case List_Value:
 		return clone_list_value(x, allocator), true
-	case Lambda_Value, String_Value, Tuple_Value, Rng:
-		// A String is render-only (§20 Text); a Tuple is split by the tick into its
-		// halves before commit and never lands whole on a row; an Rng is THREADED
-		// (carried in Tick_State, written forward), never persisted as a column. None
-		// is a blackboard column — the commit path treats them as no-column values.
+	case Lambda_Value, Tuple_Value, Rng:
+		// A Tuple is split by the tick into its halves before commit and never
+		// lands whole on a row; an Rng is THREADED (carried in Tick_State, written
+		// forward), never persisted as a column; a closure has no value identity.
+		// None is a blackboard column — the commit path treats them as no-column
+		// values.
 		return nil, false
 	}
 	return nil, false
