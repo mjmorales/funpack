@@ -116,6 +116,64 @@ test_snapshot_codec_is_a_fixed_point :: proc(t: ^testing.T) {
 	}
 }
 
+// A payload-carrying variant NESTED in a structural column (a wall's
+// `body.shape = Shape2::Box{size}`) round-trips through the snapshot codec with
+// its payload intact — the arm a §24 Restore swaps back into the solver's
+// collision-extent read and the renderer's box_size read. Asserted through
+// world_versions_equal (universal Eq compares type + case + PAYLOAD), so a codec
+// that flattens the variant to its bare token fails here: a restored body would
+// degrade to the renderer's fallback extent and a degenerate collision shape —
+// the live-yard quickload that visually removed the walls.
+@(test)
+test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	// One wall-shaped row hand-built at the committed-column level: `body` is a
+	// Record column whose `shape` is a struct-payload variant and whose `mask` is
+	// a [Layer] list of unit variants — the exact nesting yard commits every tick.
+	size_fields := make(map[string]Value)
+	size_fields["size"] = Vec2{to_fixed(160), to_fixed(4)}
+	shape_payload := new(Value)
+	shape_payload^ = Record_Value{type_name = "", fields = size_fields}
+
+	mask := make([]Value, 2)
+	mask[0] = Variant_Value{enum_type = "Layer", case_name = "Player"}
+	mask[1] = Variant_Value{enum_type = "Layer", case_name = "Crate"}
+
+	body_fields := make(map[string]Value)
+	body_fields["kind"] = Variant_Value{enum_type = "BodyKind", case_name = "Static"}
+	body_fields["shape"] = Variant_Value{enum_type = "Shape2", case_name = "Box", payload = shape_payload}
+	body_fields["mask"] = List_Value{elements = mask}
+
+	row_fields := make(map[string]Field_Value)
+	row_fields["pos"] = Vec2{to_fixed(80), to_fixed(2)}
+	row_fields["body"] = Record_Value{type_name = "Body", fields = body_fields}
+
+	rows := make([]Row, 1)
+	rows[0] = Row{id = Id{raw = 1}, fields = row_fields}
+	tables := make([]Version_Table, 1)
+	tables[0] = Version_Table{thing = "Wall", singleton = false, rows = rows, next_id = 2}
+	committed := World_Version{tick = 7, tables = tables}
+
+	bytes := serialize_snapshot(committed)
+	restored, ok := deserialize_snapshot(bytes)
+	if !testing.expect(t, ok) {
+		return
+	}
+	testing.expect(t, world_versions_equal(committed, restored))
+
+	// Read the restored shape payload back explicitly: the size Vec2 must survive
+	// bit-for-bit — the exact value box_size and the solver extent read after a
+	// quickload.
+	restored_body := restored.tables[0].rows[0].fields["body"].(Record_Value)
+	restored_shape := restored_body.fields["shape"].(Variant_Value)
+	if !testing.expect(t, restored_shape.payload != nil) {
+		return
+	}
+	payload_rec := restored_shape.payload^.(Record_Value)
+	testing.expect_value(t, payload_rec.fields["size"].(Vec2), Vec2{to_fixed(160), to_fixed(4)})
+}
+
 // --- (2) Save round-trips through the store + next-tick Saved outcome ------
 
 // A Save command emitted at tick N writes the committed snapshot to the slot AND

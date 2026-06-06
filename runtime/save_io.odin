@@ -51,7 +51,12 @@ import "core:strings"
 // digest omits), so the two encodings move for different reasons. Bump this only on
 // a deliberate codec change; carrying the version stamp IS the save-schema-migration
 // surface this story owns (a migration BEYOND the stamp is OUT, §24).
-SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(1)
+// v2 adds the Variant_Payload arm: a payload-carrying variant nested in a
+// structural column (a body's Shape2::Box{size}/Circle{radius}) serializes its
+// boxed payload instead of flattening to the bare token — v1 dropped the payload,
+// so a Restore swapped in degenerate collision/render shapes. A v1 slot fails
+// closed on restore per the stamp discipline.
+SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(2)
 
 // SAVE_SNAPSHOT_MAGIC leads every snapshot so a stray byte stream (a truncated
 // file, an unrelated blob) is rejected before the version check rather than parsed
@@ -633,8 +638,18 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		snap_put_string(buf, x.thing)
 		snap_put_u64(buf, u64(x.id.raw))
 	case Variant_Value:
-		append(buf, u8(Field_Tag.Variant))
-		snap_put_string(buf, variant_to_token(x, context.temp_allocator))
+		// A payload-carrying variant (a body's Shape2::Box{size}) writes its boxed
+		// payload after the token under the v2 Variant_Payload tag — flattening to
+		// the bare token here is exactly the v1 lossiness that degraded restored
+		// collision/render shapes. A unit variant stays on the plain Variant tag.
+		if x.payload != nil {
+			append(buf, u8(Field_Tag.Variant_Payload))
+			snap_put_string(buf, variant_to_token(x, context.temp_allocator))
+			snap_write_column_value(buf, x.payload^)
+		} else {
+			append(buf, u8(Field_Tag.Variant))
+			snap_put_string(buf, variant_to_token(x, context.temp_allocator))
+		}
 	case Record_Value:
 		append(buf, u8(Field_Tag.Record))
 		snap_write_record(buf, x)
@@ -739,6 +754,12 @@ snap_read_field_value :: proc(
 	case .List:
 		list := snap_read_list(cur, allocator) or_return
 		return list, true
+	case .Variant_Payload:
+		// A payload variant never lands at the TOP level of a row blackboard — the
+		// committed Field_Value variant arm is a bare token (value_to_field_value)
+		// and the writer emits Variant_Payload only inside structural columns — so
+		// this tag at row level is a malformed snapshot and fails closed.
+		return nil, false
 	}
 	return nil, false
 }
@@ -810,6 +831,18 @@ snap_read_column_value :: proc(
 	case .Variant:
 		token := snap_get_string(cur, allocator) or_return
 		return variant_from_token(token), true
+	case .Variant_Payload:
+		// The inverse of the write side's payload arm: the token splits back into
+		// its tag pair and the boxed payload value parses recursively, so the
+		// restored variant compares payload-equal to the committed one (§03
+		// universal Eq) — the round-trip a Restore's shape read relies on.
+		token := snap_get_string(cur, allocator) or_return
+		inner := snap_read_column_value(cur, allocator) or_return
+		payload := new(Value, allocator)
+		payload^ = inner
+		variant := variant_from_token(token)
+		variant.payload = payload
+		return variant, true
 	case .Record:
 		rec := snap_read_record(cur, allocator) or_return
 		return rec, true

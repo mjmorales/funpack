@@ -56,7 +56,8 @@ FRAME_DIGEST_SCHEMA_VERSION :: 3
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
 // to the same bytes (an Int 0 and a Fixed 0 differ by their tag). A new arm is a
-// schema bump (§04). The ordinals are fixed — reordering would change the bytes.
+// schema bump (§04) of whichever stamp's stream emits it. The ordinals are fixed
+// — reordering would change the bytes.
 Field_Tag :: enum u8 {
 	Int     = 0, // an i64 Int column
 	Fixed   = 1, // a Fixed (Q32.32 bits) column
@@ -66,6 +67,14 @@ Field_Tag :: enum u8 {
 	Bool    = 5, // a Bool column (one tag byte + one 0/1 byte)
 	Record  = 6, // a composite record column (type name + sorted-name fields)
 	List    = 7, // a `[T]` list column (element count + each element in order)
+	// Variant_Payload is emitted ONLY by the §24 snapshot codec (its
+	// SAVE_SNAPSHOT_SCHEMA_VERSION v2 stream): a payload-carrying variant nested
+	// in a structural column — token + the boxed payload value — so a Restore
+	// swaps back the exact committed shape (a wall's Shape2::Box{size}). The
+	// frame digest's own fold stays token-only (its payload blindness is the
+	// documented Field_Value follow-up), so digest streams never carry this tag
+	// and FRAME_DIGEST_SCHEMA_VERSION is unmoved by its addition.
+	Variant_Payload = 8,
 }
 
 // Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
