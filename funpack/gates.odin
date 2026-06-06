@@ -442,9 +442,10 @@ nesting_walk_body :: proc(body: []Statement, depth: int) -> Gate_Error {
 
 // nesting_depth returns the deepest computational-composition nesting in one
 // Expr tree (the check_nesting metric). A computational construct (a call's
-// arguments, a lambda body, a payload-variant constructor, a `with`-update, a
-// match arm body) adds one level over its contents; a transparent aggregate (a
-// record or list literal), an operator spine, a member-access receiver, a
+// arguments, a lambda body, a `with`-update, a match arm body, and a
+// variant-of-variant chain link) adds one level over its contents; a transparent
+// aggregate (a record or list literal, a single-wrap payload variant over a
+// non-variant value), an operator spine, a member-access receiver, a
 // method-call chain's receiver spine, and a match scrutinee all pass their
 // child's depth through unchanged.
 nesting_depth :: proc(expr: Expr) -> int {
@@ -493,26 +494,44 @@ nesting_depth :: proc(expr: Expr) -> int {
 	case ^Lambda_Expr:
 		return 1 + nesting_depth(e.body)
 	case ^Variant_Expr:
-		// A variant constructor is a transparent aggregate, like a record or
-		// list literal: it is pure value construction (an enum value carrying a
+		// A SINGLE-WRAP payload variant is a transparent aggregate, like a record
+		// or list literal: it is pure value construction (an enum value carrying a
 		// payload), NOT control nesting, so it passes its deepest payload/field
 		// value's depth through without adding a level. A bare variant
-		// (Side::Left, Option::None) is the 0-arg leaf case; a payload variant
-		// (`Option::Some(v)`, `Draw::Rect{…}`) contributes its deepest argument —
-		// so `m with { status: Option::Some("saved") }` is a single `with` level
-		// over a leaf, the same as `m with { status: STR }`. Spec §01 P5 frames
-		// the nesting budget as a scope-creep-inside-one-function control on
-		// COMPOSITION depth, not a count of constructor edges; wrapping a value in
-		// an enum case is the same flat construction `Vec2{x, y}` already is
-		// (without it, the canonical yard surface's `fold(_, _, fn{ match { => m
-		// with { status: Option::Some(_) } } })` over-counts to depth 4 and the
-		// spec example fails its own fixed budget).
+		// (Side::Left, Option::None) is the 0-arg leaf case; a single-wrap payload
+		// variant (`Option::Some("saved")`, `Option::Some(p.pos)`, `Spawn(crate_at(…))`)
+		// contributes its deepest argument's depth — so `m with { status:
+		// Option::Some("saved") }` is a single `with` level over a leaf, the same
+		// as `m with { status: STR }`. Spec §01 P5 frames the nesting budget as a
+		// scope-creep-inside-one-function control on COMPOSITION depth, not a count
+		// of constructor edges; wrapping a value in an enum case is the same flat
+		// construction `Vec2{x, y}` already is (without it, the canonical yard
+		// surface's `fold(_, _, fn{ match { => m with { status: Option::Some(_) }
+		// } })` over-counts to depth 4 and the spec example fails its own fixed
+		// budget — §24 Option::Some(...) inside with-updates inside fold lambdas).
+		//
+		// A VARIANT-OF-VARIANT chain still opens a level per link: when the
+		// immediate payload is ITSELF a payload-bearing variant
+		// (`Box::A(Box::B(Box::C(1)))`), each wrap counts, re-bounding the
+		// pure-aggregate gaming vector at chain depth. The transparency is
+		// strictly the single-wrap-over-a-non-variant case; the discrimination is
+		// on the IMMEDIATE payload's form, not the whole subtree's.
 		inner := 0
+		opens_level := false
 		for arg in e.payload {
+			if is_payload_variant(arg) {
+				opens_level = true
+			}
 			inner = max(inner, nesting_depth(arg))
 		}
 		for field in e.fields {
+			if is_payload_variant(field.value) {
+				opens_level = true
+			}
 			inner = max(inner, nesting_depth(field.value))
+		}
+		if opens_level {
+			return 1 + inner
 		}
 		return inner
 	case ^With_Expr:
@@ -546,6 +565,22 @@ nesting_depth :: proc(expr: Expr) -> int {
 	}
 	// An atom (literal or bare name) is a leaf — depth zero.
 	return 0
+}
+
+// is_payload_variant reports whether an expression is a payload-bearing variant
+// constructor — a `Variant_Expr` carrying a tuple payload or struct fields
+// (`Option::Some(v)`, `Box::A(…)`, `Draw::Rect{…}`), as opposed to a bare
+// variant (`Option::None`, `Side::Left`) or any non-variant form. The nesting
+// metric uses it to discriminate the single-wrap transparency from a
+// variant-of-variant chain: a payload variant wrapping another payload variant
+// opens a level (the chain re-bounds the gaming vector), while a payload variant
+// wrapping a non-variant value is a transparent aggregate.
+is_payload_variant :: proc(expr: Expr) -> bool {
+	variant, is_variant := expr.(^Variant_Expr)
+	if !is_variant {
+		return false
+	}
+	return variant.has_payload || variant.has_fields
 }
 
 // arg_nesting_depth scores a call argument's nesting, collapsing an inline

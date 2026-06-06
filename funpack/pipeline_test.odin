@@ -482,20 +482,36 @@ test_gate_bare_variant_is_a_flat_atom :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_gate_payload_variant_is_a_transparent_aggregate :: proc(t: ^testing.T) {
-	// A payload-bearing variant is a TRANSPARENT AGGREGATE — pure value
-	// construction (an enum value carrying a payload), like a record or list
-	// literal — so it passes its deepest payload through WITHOUT opening a
-	// nesting level. A chain of payload variants `Box::A(Box::B(Box::C(1)))`
-	// is therefore flat construction: call(1)→arg (the variant chain, depth 0
-	// — all transparent to the leaf `1`) = depth 1, which clears the budget.
-	// This is the v5 metric refinement that lets the canonical yard surface's
-	// `fold(_, _, fn{ match { => m with { status: Option::Some(_) } } })` clear
-	// the fixed §01 P5 budget (wrapping a value in an enum case is the same flat
-	// construction `Vec2{x, y}` already is). Genuine control nesting — calls,
-	// lambdas, `with`, match arms — still deepens (see the predicate-body and
-	// fold-with-match tests), so the budget still fires on real scope-creep.
-	chain := "assert wrap(Box::A(Box::B(Box::C(1)))) == 1\n"
+test_gate_payload_variant_chain_rejects_at_chain_depth :: proc(t: ^testing.T) {
+	// A VARIANT-OF-VARIANT chain re-bounds the pure-aggregate gaming vector:
+	// each payload variant whose immediate payload is ITSELF a payload variant
+	// opens a nesting level, so a constructor chain is NOT flat. The chain
+	// `Box::A(Box::B(Box::C(Box::D(1))))` scores Box::A(1, payload is a variant)
+	// → Box::B(1, payload is a variant) → Box::C(1, payload is a variant) →
+	// Box::D(0, payload is the leaf `1`) = depth 3; wrapped in the `wrap(…)`
+	// call(1) it reaches depth 4, over the budget of 3 — the gate fires. This is
+	// the gaming bound the records/lists-are-transparent ADR relies on:
+	// single-wrap transparency (the test below) is admitted, but each chain link
+	// still counts so deep constructor nesting cannot game the budget to depth 0.
+	chain := "assert wrap(Box::A(Box::B(Box::C(Box::D(1))))) == 1\n"
+	testing.expect_value(t, gate_error_of(chain), Gate_Error.Nesting_Exceeded)
+}
+
+@(test)
+test_gate_single_wrap_payload_variant_is_transparent :: proc(t: ^testing.T) {
+	// A SINGLE-WRAP payload variant — one whose immediate payload is a record,
+	// list, or leaf rather than another payload variant — is a transparent
+	// aggregate: it passes its payload's depth through WITHOUT opening a level.
+	// `Option::Some(Vec2{x: p.x, y: p.y})` scores wrap call(1)→arg
+	// Option::Some(0, over a record)→record(0, transparent)→member chains(0) =
+	// depth 1, well under budget. This is the §24 yard shape — Option::Some(...)
+	// wrapping a value is the same flat construction `Vec2{x, y}` already is —
+	// and pins the transparency directly so it can never regress alongside the
+	// chain bound. The earlier 3-link chain `Box::A(Box::B(Box::C(1)))` now
+	// scores depth 3 under this narrowed metric (innermost C wraps a leaf, so it
+	// is transparent), which is why the gaming-bound fixture above uses a 4-link
+	// chain to land squarely over the budget.
+	chain := "assert wrap(Option::Some(Vec2{x: p.x, y: p.y})) == p\n"
 	testing.expect_value(t, gate_error_of(chain), Gate_Error.None)
 }
 
