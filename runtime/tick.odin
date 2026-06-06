@@ -70,12 +70,13 @@ Signal_Mailbox :: struct {
 // nil-gating in step_tick (`rng != nil`): a non-RNG program (pong, hunt) passes
 // no Rng and the fold never perturbs one it has no business touching.
 Tick_State :: struct {
-	tables:    []Tick_Table,
-	mailbox:   Signal_Mailbox,
-	spawns:    [dynamic]Pending_Spawn,
-	despawns:  [dynamic]Ref,
-	rng:       Rng, // the per-tick PRNG state a draw advances, threaded fold-forward
-	allocator: Runtime_Allocator,
+	tables:          []Tick_Table,
+	mailbox:         Signal_Mailbox,
+	spawns:          [dynamic]Pending_Spawn,
+	despawns:        [dynamic]Ref,
+	persist_commands: [dynamic]Record_Value, // the §24 Save/Restore/ApplySettings emits this tick
+	rng:             Rng, // the per-tick PRNG state a draw advances, threaded fold-forward
+	allocator:       Runtime_Allocator,
 }
 
 // Pending_Spawn is one queued Spawn command awaiting the tick-boundary batch: the
@@ -221,12 +222,13 @@ run_startup_seeded :: proc(
 	// returns `(Rng, [Spawn])`. The tuple split queues the spawns and advances the Rng.
 	tables := new_tick_tables(base, allocator)
 	state := Tick_State {
-		tables    = tables,
-		mailbox   = Signal_Mailbox{by_type = make(map[string][]Value, allocator)},
-		spawns    = make([dynamic]Pending_Spawn, allocator),
-		despawns  = make([dynamic]Ref, allocator),
-		rng       = seed,
-		allocator = allocator,
+		tables           = tables,
+		mailbox          = Signal_Mailbox{by_type = make(map[string][]Value, allocator)},
+		spawns           = make([dynamic]Pending_Spawn, allocator),
+		despawns         = make([dynamic]Ref, allocator),
+		persist_commands = make([dynamic]Record_Value, allocator),
+		rng              = seed,
+		allocator        = allocator,
 	}
 	base_version := base
 	interp := new_interp(program, &base_version, &state, empty(), Record_Value{}, allocator)
@@ -571,6 +573,27 @@ step_tick :: proc(
 	prior_version := prior
 	interp := new_interp(program, &prior_version, &state, input, time, allocator)
 
+	run_pipeline_fold(&interp, &state, program)
+
+	apply_spawn_batch(&state)
+	// Read the advanced Rng back into the run's persistent state so the next tick
+	// observes every draw this tick made — threaded forward, never silently dropped.
+	if rng != nil {
+		rng^ = state.rng
+	}
+	return commit_tick_state(prior, &state, allocator)
+}
+
+// run_pipeline_fold runs the executed pipeline over the working state: every
+// interior stage (control / collision / scoring) folds its behavior's returns into
+// the tick state, the engine-closed `physics:` stage runs the native solver, and
+// startup/render are skipped (startup ran pre-tick-0; render's [Draw] projection is
+// a read-side concern, not a state write). It is the shared fold body step_tick and
+// the §24 persist driver (step_tick_persist) both run, so a persist tick folds the
+// IDENTICAL pipeline a plain tick does — the only difference is the driver's
+// pre-seeded outcome signals and post-fold persist-command processing, never the
+// fold itself.
+run_pipeline_fold :: proc(interp: ^Interp, state: ^Tick_State, program: ^Program) {
 	for step in program.pipeline {
 		// Startup ran pre-tick-0; render's [Draw] projection is not produced by this
 		// fold — the executed interior stages are control/collision/scoring.
@@ -588,23 +611,15 @@ step_tick :: proc(
 		// behavior name unresolved). Stage position is the ordering: intent before,
 		// reactions after.
 		if is_physics_solve_step(step) {
-			run_solve(&interp, &state)
+			run_solve(interp, state)
 			continue
 		}
 		behavior := program_behavior(program, step.behavior)
 		if behavior == nil {
 			continue
 		}
-		run_behavior_over_instances(&interp, &state, step, behavior)
+		run_behavior_over_instances(interp, state, step, behavior)
 	}
-
-	apply_spawn_batch(&state)
-	// Read the advanced Rng back into the run's persistent state so the next tick
-	// observes every draw this tick made — threaded forward, never silently dropped.
-	if rng != nil {
-		rng^ = state.rng
-	}
-	return commit_tick_state(prior, &state, allocator)
 }
 
 // run_behavior_over_instances runs one behavior step once per instance of its
@@ -736,6 +751,12 @@ fold_behavior_result :: proc(
 		// fold (which knows the bound self row) supplies the target. An empty list is
 		// the no-despawn path (no command queued).
 		fold_despawn_emit(state, behavior.on_thing, self_row, result)
+	case is_persist_command_list_type(emit):
+		// A §24 persist command emit (yard's save_key/restore_key/apply_settings) —
+		// collect it into the tick's persist batch. The IO runs at the tick boundary
+		// (the persist driver), never as a committed-state write, so the determinism
+		// record never sees it (team Lore #9). The outcome signal arrives NEXT tick.
+		queue_persist_commands(interp, state, result)
 	case is_command_list_type(emit):
 		queue_commands(interp, state, result)
 	case:
@@ -882,6 +903,24 @@ queue_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
 	}
 }
 
+// queue_persist_commands collects a behavior's §24 command list (the Save/Restore/
+// ApplySettings records save_key/restore_key/apply_settings emit) into the tick's
+// persist batch. Unlike queue_commands, it keeps the records AS Record_Values — the
+// persist driver reads their `slot`/`settings` columns directly to run IO and never
+// lowers them into a blackboard row (a persist command is an output effect, not a
+// thing to commit). A non-record element (none expected) is skipped.
+queue_persist_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
+	list, is_list := result.(List_Value)
+	if !is_list {
+		return
+	}
+	for elem in list.elements {
+		if record, is_record := elem.(Record_Value); is_record {
+			append(&state.persist_commands, record)
+		}
+	}
+}
+
 // queue_spawn queues a directly-built spawn (a thing name + blackboard) for the
 // tick-boundary batch — the seam a test or a future command-emitting behavior
 // drives without routing through a [Draw]-shaped emit. The row is NOT visible
@@ -947,6 +986,7 @@ new_tick_state :: proc(prior: World_Version, allocator := context.allocator) -> 
 		mailbox = Signal_Mailbox{by_type = make(map[string][]Value, allocator)},
 		spawns = make([dynamic]Pending_Spawn, allocator),
 		despawns = make([dynamic]Ref, allocator),
+		persist_commands = make([dynamic]Record_Value, allocator),
 		allocator = allocator,
 	}
 }
@@ -1128,6 +1168,13 @@ is_signal_list_type :: proc(type: string) -> bool {
 	if !is_bracket_list(type) {
 		return false
 	}
+	if is_persist_command_list_type(type) {
+		// `[Save]`/`[Restore]`/`[ApplySettings]` are §24 OUTPUT-EFFECT command lists, not
+		// signals — they route to the persist batch, not the mailbox. Excluded here so a
+		// persist emit is never mis-delivered as a forward signal (the same disjointness
+		// Draw/Spawn/Despawn below get).
+		return false
+	}
 	inner := signal_type_of(type)
 	return inner != "Draw" && inner != "Spawn" && inner != "Despawn"
 }
@@ -1137,6 +1184,17 @@ is_signal_list_type :: proc(type: string) -> bool {
 // the self-remove batch, each handled by its own arm in fold_behavior_result.)
 is_command_list_type :: proc(type: string) -> bool {
 	return type == "[Spawn]"
+}
+
+// is_persist_command_list_type reports whether an emit type is one of the §24
+// engine.save command lists `[Save]` / `[Restore]` / `[ApplySettings]`. These are
+// NOT sim state and NOT the spawn batch: they are OUTPUT EFFECTS the persist driver
+// runs against the store (save_io.odin), each returning its outcome signal one tick
+// LATER. A persist command emit collects into the tick's persist_commands batch
+// rather than the spawn batch or the signal mailbox, so the IO boundary stays off
+// the determinism record (it never touches a committed table; team Lore #9).
+is_persist_command_list_type :: proc(type: string) -> bool {
+	return type == "[Save]" || type == "[Restore]" || type == "[ApplySettings]"
 }
 
 // is_view_type reports whether a param type is a `View[T]` read — the stable-Id
