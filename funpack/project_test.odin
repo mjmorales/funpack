@@ -269,9 +269,9 @@ test_read_project_reserved_engine_bare_root_rejected :: proc(t: ^testing.T) {
 
 // PONG_ENTRYPOINTS is the golden entrypoints.fcfg shape: the `use
 // pong.{Pong, bindings}` reference and the `entrypoint main { pipeline = Pong,
-// tick = 60hz, bindings = bindings }` block — the literal surface the pong
-// tree carries.
-PONG_ENTRYPOINTS :: "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick     = 60hz\n  bindings = bindings\n}\n"
+// tick = 60hz, logical = 160x120, bindings = bindings }` block — the literal
+// surface the pong tree carries.
+PONG_ENTRYPOINTS :: "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick     = 60hz\n  logical  = 160x120\n  bindings = bindings\n}\n"
 
 @(test)
 test_parse_entrypoints_fcfg_happy :: proc(t: ^testing.T) {
@@ -290,6 +290,7 @@ test_parse_entrypoints_fcfg_happy :: proc(t: ^testing.T) {
 		testing.expect_value(t, block.name, "main")
 		testing.expect_value(t, block.pipeline, "Pong")
 		testing.expect_value(t, block.tick, "60hz")
+		testing.expect_value(t, block.logical, "160x120")
 		testing.expect_value(t, block.bindings, "bindings")
 	}
 }
@@ -297,8 +298,17 @@ test_parse_entrypoints_fcfg_happy :: proc(t: ^testing.T) {
 @(test)
 test_parse_entrypoints_fcfg_missing_key_rejected :: proc(t: ^testing.T) {
 	// An entrypoint block missing a required key (tick) is malformed — all
-	// three of pipeline/tick/bindings are required.
-	content := "use pong.{Pong, bindings}\nentrypoint main {\n  pipeline = Pong\n  bindings = bindings\n}\n"
+	// four of pipeline/tick/logical/bindings are required.
+	content := "use pong.{Pong, bindings}\nentrypoint main {\n  pipeline = Pong\n  logical = 160x120\n  bindings = bindings\n}\n"
+	_, err := parse_entrypoints_fcfg(content)
+	testing.expect_value(t, err, Entrypoints_Error.Malformed_Entrypoints_Fcfg)
+}
+
+@(test)
+test_parse_entrypoints_fcfg_missing_logical_rejected :: proc(t: ^testing.T) {
+	// The logical draw-space extent is a required key (§20 §3 — the present
+	// pass letterboxes from the artifact, so an entrypoint cannot omit it).
+	content := "use pong.{Pong, bindings}\nentrypoint main {\n  pipeline = Pong\n  tick = 60hz\n  bindings = bindings\n}\n"
 	_, err := parse_entrypoints_fcfg(content)
 	testing.expect_value(t, err, Entrypoints_Error.Malformed_Entrypoints_Fcfg)
 }
@@ -351,7 +361,7 @@ test_validate_entrypoints_dangling_pipeline_rejected :: proc(t: ^testing.T) {
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 
-	content := "use pong.{Missing, bindings}\nentrypoint main {\n  pipeline = Missing\n  tick = 60hz\n  bindings = bindings\n}\n"
+	content := "use pong.{Missing, bindings}\nentrypoint main {\n  pipeline = Missing\n  tick = 60hz\n  logical = 160x120\n  bindings = bindings\n}\n"
 	entrypoints, cfg_err := parse_entrypoints_fcfg(content)
 	testing.expect_value(t, cfg_err, Entrypoints_Error.None)
 	testing.expect_value(t, validate_entrypoints(entrypoints, ast), Entrypoints_Error.Dangling_Reference)
@@ -368,7 +378,7 @@ test_validate_entrypoints_dangling_bindings_rejected :: proc(t: ^testing.T) {
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 
-	content := "use pong.{Pong, missing_bindings}\nentrypoint main {\n  pipeline = Pong\n  tick = 60hz\n  bindings = missing_bindings\n}\n"
+	content := "use pong.{Pong, missing_bindings}\nentrypoint main {\n  pipeline = Pong\n  tick = 60hz\n  logical = 160x120\n  bindings = missing_bindings\n}\n"
 	entrypoints, cfg_err := parse_entrypoints_fcfg(content)
 	testing.expect_value(t, cfg_err, Entrypoints_Error.None)
 	testing.expect_value(t, validate_entrypoints(entrypoints, ast), Entrypoints_Error.Dangling_Reference)

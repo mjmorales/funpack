@@ -9,7 +9,7 @@
 //     control flow, and no `use` references — project identity names no source
 //     (§14.2).
 //   - entrypoints.fcfg (§23/§07): a `use module.{members}` source reference
-//     and `entrypoint <name> { pipeline = …, tick = …hz, bindings = … }`
+//     and `entrypoint <name> { pipeline = …, tick = …hz, logical = WxH, bindings = … }`
 //     blocks, whose pipeline/bindings references are validated against the
 //     source module — a dangling reference rejects.
 // Both grammars share the closed config token set; a tree that violates either
@@ -181,7 +181,7 @@ cfg_parse_assignment :: proc(p: ^Cfg_Parser) -> (key: string, value: string, err
 // ── §23/§07 entrypoints.fcfg ───────────────────────────────────────────
 // The entrypoints config is the §14 smaller-config grammar's second
 // production: a `use module.{members}` source reference and one or more
-// `entrypoint <name> { pipeline = …, tick = …hz, bindings = … }` blocks. It
+// `entrypoint <name> { pipeline = …, tick = …hz, logical = WxH, bindings = … }` blocks. It
 // names source (a pipeline and a bindings fn the module declares) and a tick
 // rate, so its values are names and a tick literal — distinct from
 // project.fcfg's string-literal-only assignments. The referenced pipeline and
@@ -199,13 +199,16 @@ Entrypoints :: struct {
 }
 
 // Entrypoint is one `entrypoint <name> { … }` block: the engine wires the
-// named pipeline at the given tick rate with the named bindings fn (§23/§07).
-// pipeline and bindings are source names validated against the module; tick is
-// the `<digits>hz` rate value as written.
+// named pipeline at the given tick rate, logical draw space, and named bindings
+// fn (§23/§07, §20 §3). pipeline and bindings are source names validated
+// against the module; tick is the `<digits>hz` rate value as written; logical
+// is the `WxH` extent value as written (the fixed logical space §20 §3
+// letterboxes to, in integer world units).
 Entrypoint :: struct {
 	name:     string,
 	pipeline: string,
 	tick:     string,
+	logical:  string,
 	bindings: string,
 }
 
@@ -226,8 +229,8 @@ Entrypoints_Error :: enum {
 
 // parse_entrypoints_fcfg parses the entrypoints.fcfg grammar: a single
 // top-level `use module.{members}` reference followed by one or more
-// `entrypoint <name> { pipeline = N, tick = Rhz, bindings = N }` blocks.
-// pipeline/tick/bindings are the three required keys; a missing or extra key,
+// `entrypoint <name> { pipeline = N, tick = Rhz, logical = WxH, bindings = N }` blocks.
+// pipeline/tick/logical/bindings are the four required keys; a missing or extra key,
 // a value of the wrong shape, or any non-grammar construct is a
 // Malformed_Entrypoints_Fcfg rejection. Reference validation against the
 // source module is validate_entrypoints' job, not the parse's.
@@ -275,10 +278,11 @@ cfg_parse_use :: proc(p: ^Cfg_Parser) -> (module: string, members: []string, err
 }
 
 // cfg_parse_entrypoint parses one `entrypoint <name> { pipeline = N, tick =
-// Rhz, bindings = N }` block. The three keys are required and each is read by
-// name, so key order does not matter; a missing key or an unknown key is
-// malformed. tick demands a `<digits>hz` value; pipeline and bindings demand a
-// bare name.
+// Rhz, logical = WxH, bindings = N }` block. The four keys are required and
+// each is read by name, so key order does not matter; a missing key or an
+// unknown key is malformed. tick demands a `<digits>hz` value; logical demands
+// a `WxH` extent (a digit-led token whose W/H integers select_entrypoint
+// validates); pipeline and bindings demand a bare name.
 cfg_parse_entrypoint :: proc(p: ^Cfg_Parser) -> (block: Entrypoint, err: Entrypoints_Error) {
 	cfg_take(p, .Ident, "entrypoint") or_return
 	name := cfg_take(p, .Ident) or_return
@@ -286,6 +290,7 @@ cfg_parse_entrypoint :: proc(p: ^Cfg_Parser) -> (block: Entrypoint, err: Entrypo
 	block.name = name.text
 	saw_pipeline := false
 	saw_tick := false
+	saw_logical := false
 	saw_bindings := false
 	for cfg_peek(p).kind == .Ident {
 		key := cfg_take(p, .Ident) or_return
@@ -306,6 +311,12 @@ cfg_parse_entrypoint :: proc(p: ^Cfg_Parser) -> (block: Entrypoint, err: Entrypo
 			}
 			block.tick = value.text
 			saw_tick = true
+		case "logical":
+			// A `WxH` extent lexes as one digit-led token (the same scan a tick
+			// rides); the W/H integer split is select_entrypoint's job.
+			value := cfg_take(p, .Tick) or_return
+			block.logical = value.text
+			saw_logical = true
 		case:
 			return Entrypoint{}, .Malformed_Entrypoints_Fcfg
 		}
@@ -316,7 +327,7 @@ cfg_parse_entrypoint :: proc(p: ^Cfg_Parser) -> (block: Entrypoint, err: Entrypo
 		}
 	}
 	cfg_take(p, .R_Brace) or_return
-	if !saw_pipeline || !saw_tick || !saw_bindings {
+	if !saw_pipeline || !saw_tick || !saw_logical || !saw_bindings {
 		return Entrypoint{}, .Malformed_Entrypoints_Fcfg
 	}
 	return block, .None

@@ -40,7 +40,14 @@ import "core:strings"
 // into stick_x/stick_y 1D halves. The source vocabulary is a closed taxonomy,
 // so growing it is a deliberate bump from 2 to 3 (§1; ADR
 // 2026-06-06-binding-source-lowering-2d-quad-and-stick).
-ARTIFACT_SCHEMA_VERSION :: 3
+//
+// Version 4 adds the required `logical:WxH` field to the §15 entrypoint record
+// — the fixed logical draw space (§20 §3) in integer world units, lifted from
+// the entrypoint block's `logical = WxH` (§14 §4) so the present pass
+// letterboxes from the artifact instead of a hardcoded board constant. A
+// required field on an existing record is a layout change: 3 → 4 (§1; ADR
+// 2026-06-06-logical-space-entrypoint-field).
+ARTIFACT_SCHEMA_VERSION :: 4
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

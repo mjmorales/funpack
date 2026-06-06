@@ -24,7 +24,7 @@ test_index_lift_entrypoint_records :: proc(t: ^testing.T) {
 	// then convert every block onto the record shape with its integer tick
 	// rate. Two blocks lift two records — the contract reports all authored
 	// entrypoints, unlike the emit path's single selection.
-	content := "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick     = 60hz\n  bindings = bindings\n}\nentrypoint replay {\n  pipeline = Pong\n  tick = 30hz\n  bindings = bindings\n}\n"
+	content := "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick     = 60hz\n  logical  = 160x120\n  bindings = bindings\n}\nentrypoint replay {\n  pipeline = Pong\n  tick = 30hz\n  logical = 160x120\n  bindings = bindings\n}\n"
 	parsed, parse_err := parse_entrypoints_fcfg(content)
 	testing.expect_value(t, parse_err, Entrypoints_Error.None)
 	records, ok := lift_entrypoint_records(parsed)
@@ -44,7 +44,7 @@ test_index_lift_entrypoint_records :: proc(t: ^testing.T) {
 test_index_lift_entrypoint_records_bad_rate_rejected :: proc(t: ^testing.T) {
 	// `60khz` passes the grammar's `hz`-suffix check but is not an integer
 	// rate — the lift catches the one value error the grammar cannot.
-	content := "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick = 60khz\n  bindings = bindings\n}\n"
+	content := "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick = 60khz\n  logical = 160x120\n  bindings = bindings\n}\n"
 	parsed, parse_err := parse_entrypoints_fcfg(content)
 	testing.expect_value(t, parse_err, Entrypoints_Error.None)
 	_, ok := lift_entrypoint_records(parsed)

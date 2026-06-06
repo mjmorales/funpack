@@ -20,13 +20,17 @@ import "core:strings"
 
 // Entrypoint_Config is the resolved [entrypoint] record (docs/artifact-format.md
 // §15): the entrypoint block label, the root pipeline whose flattened order the
-// artifact carries, the fixed tick rate in integer Hz, and the bindings fn whose
-// resolved table the artifact's [bindings] section carries.
+// artifact carries, the fixed tick rate in integer Hz, the logical draw-space
+// extent in integer world units (§20 §3 — the fixed space the engine
+// letterboxes to), and the bindings fn whose resolved table the artifact's
+// [bindings] section carries.
 Entrypoint_Config :: struct {
-	name:     string,
-	pipeline: string,
-	tick_hz:  int,
-	bindings: string,
+	name:      string,
+	pipeline:  string,
+	tick_hz:   int,
+	logical_w: int,
+	logical_h: int,
+	bindings:  string,
 }
 
 // select_entrypoint selects the wiring the artifact's [entrypoint 1] section
@@ -35,7 +39,8 @@ Entrypoint_Config :: struct {
 // more than one block rejects with the dedicated Multiple_Entrypoints arm —
 // never a silent first-block pick. A tick whose digits do not parse as an
 // integer rate (`60khz` passes the grammar's `hz`-suffix check but is not a
-// rate) rejects as malformed.
+// rate) rejects as malformed, as does a logical extent whose W/H are not
+// positive integers.
 select_entrypoint :: proc(parsed: Entrypoints) -> (config: Entrypoint_Config, err: Entrypoints_Error) {
 	if len(parsed.entrypoints) != 1 {
 		return Entrypoint_Config{}, .Multiple_Entrypoints
@@ -45,10 +50,16 @@ select_entrypoint :: proc(parsed: Entrypoints) -> (config: Entrypoint_Config, er
 	if !ok {
 		return Entrypoint_Config{}, .Malformed_Entrypoints_Fcfg
 	}
+	w, h, logical_ok := parse_logical_extent(block.logical)
+	if !logical_ok {
+		return Entrypoint_Config{}, .Malformed_Entrypoints_Fcfg
+	}
 	return Entrypoint_Config{
 			name = block.name,
 			pipeline = block.pipeline,
 			tick_hz = hz,
+			logical_w = w,
+			logical_h = h,
 			bindings = block.bindings,
 		},
 		.None
@@ -65,4 +76,23 @@ parse_tick_hz :: proc(text: string) -> (hz: int, ok: bool) {
 		return 0, false
 	}
 	return strconv.parse_int(digits)
+}
+
+// parse_logical_extent extracts the integer width/height world units from a
+// `WxH` logical-space token (`160x120` → 160, 120; docs/artifact-format.md
+// §15, §20 §3). Both dimensions must be positive integers — a missing `x`
+// separator, a non-integer side, or a zero/negative extent rejects, so a
+// degenerate letterbox space can never reach the artifact. The single logical
+// converter, mirroring parse_tick_hz.
+parse_logical_extent :: proc(text: string) -> (w: int, h: int, ok: bool) {
+	sep := strings.index_byte(text, 'x')
+	if sep <= 0 || sep >= len(text) - 1 {
+		return 0, 0, false
+	}
+	parsed_w, w_ok := strconv.parse_int(text[:sep])
+	parsed_h, h_ok := strconv.parse_int(text[sep + 1:])
+	if !w_ok || !h_ok || parsed_w <= 0 || parsed_h <= 0 {
+		return 0, 0, false
+	}
+	return parsed_w, parsed_h, true
 }

@@ -952,9 +952,10 @@ builder_call_string :: proc(expr: Expr) -> string {
 // ───────────────────────────────────────────────────────────────────────────
 
 // emit_entrypoint writes the single entrypoint record (docs/artifact-format.md
-// §15): the pipeline ↔ tick ↔ bindings wiring lifted from
+// §15): the pipeline ↔ tick ↔ logical ↔ bindings wiring lifted from
 // funpack_configs/entrypoints.fcfg (§14 §4), which a pipeline carries no
-// configuration for. tick_hz is the integer Hz of the `60hz` tick.
+// configuration for. tick_hz is the integer Hz of the `60hz` tick; logical is
+// the `WxH` draw-space extent in integer world units (§20 §3).
 emit_entrypoint :: proc(b: ^strings.Builder, entrypoint: Entrypoint_Config) {
 	emit_header(b, "entrypoint", 1)
 	strings.write_string(b, "entrypoint ")
@@ -963,5 +964,9 @@ emit_entrypoint :: proc(b: ^strings.Builder, entrypoint: Entrypoint_Config) {
 	strings.write_string(b, entrypoint.pipeline)
 	strings.write_string(b, " tick_hz:")
 	strings.write_int(b, entrypoint.tick_hz)
+	strings.write_string(b, " logical:")
+	strings.write_int(b, entrypoint.logical_w)
+	strings.write_byte(b, 'x')
+	strings.write_int(b, entrypoint.logical_h)
 	emit_line(b, " bindings:", entrypoint.bindings)
 }

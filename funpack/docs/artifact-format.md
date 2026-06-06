@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 3
+funpack-artifact 4
 ```
 
-- `schema_version` is the integer after the space (here `3`).
+- `schema_version` is the integer after the space (here `4`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -43,7 +43,11 @@ funpack-artifact 3
   to one `key(…)` bind per key; `wasd()` lowers to the 2D
   `keys_quad(neg_x,pos_x,neg_y,pos_y)` form; `stick(Stick)` is a first-class 2D
   source). The source vocabulary is a closed taxonomy, so growing it bumped
-  2 → 3.
+  2 → 3. v4 adds the required `logical:WxH` field to the §15 entrypoint record
+  — the fixed logical draw space (§20 §3) in integer world units, declared in
+  the entrypoint block (§14 §4) — so the present pass letterboxes from the
+  artifact instead of a hardcoded board constant. A required field on an
+  existing record is a layout change: 3 → 4.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -695,7 +699,7 @@ wiring that a pipeline carries **no** configuration for (§07 §1 — wiring liv
 the entrypoint, never the pipeline):
 
 ```
-entrypoint NAME pipeline:PIPELINE tick_hz:HZ bindings:BINDINGS
+entrypoint NAME pipeline:PIPELINE tick_hz:HZ logical:WxH bindings:BINDINGS
 ```
 
 - `NAME` is the entrypoint block label (`main`).
@@ -703,6 +707,11 @@ entrypoint NAME pipeline:PIPELINE tick_hz:HZ bindings:BINDINGS
   §11.
 - `tick_hz:HZ` is the fixed tick rate as an integer Hz (`60` for `60hz`). There
   are no multi-rate ticks (§07 §1); this is the single top-level tick.
+- `logical:WxH` is the fixed logical draw space (§20 §3) in integer world units
+  (`160x120` for pong, `160x160` for snake), lifted from the entrypoint block's
+  required `logical = WxH` (§14 §4). The present pass scales and letterboxes
+  this extent to the window; both dimensions are positive integers — a
+  zero/negative or malformed extent is refused at fcfg parse and at load.
 - `bindings:BINDINGS` names the `bindings` function (§14, §23) whose resolved
   table is §14's `[bindings]`.
 

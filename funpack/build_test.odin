@@ -248,7 +248,7 @@ write_broken_pong_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	}
 	ok_writes :=
 		os.write_entire_file(scratch_join({configs, "project.fcfg"}), "project pong {\n  version = \"0.1.0\"\n}\n") == nil &&
-		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick = 60hz\n  bindings = bindings\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick = 60hz\n  logical = 160x120\n  bindings = bindings\n}\n") == nil &&
 		os.write_entire_file(scratch_join({configs, "builds.fcfg"}), "build native {\n  platform = desktop\n}\n") == nil &&
 		os.write_entire_file(scratch_join({configs, "tags.fcfg"}), "tags {\n  game\n}\n") == nil &&
 		// A source that fails to parse — a `fn` head with no body and a dangling
@@ -285,7 +285,7 @@ write_minimal_valid_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	}
 	ok_writes :=
 		os.write_entire_file(scratch_join({configs, "project.fcfg"}), "project mini {\n  version = \"0.1.0\"\n}\n") == nil &&
-		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use mini.{Loop, bindings}\n\nentrypoint main {\n  pipeline = Loop\n  tick = 60hz\n  bindings = bindings\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use mini.{Loop, bindings}\n\nentrypoint main {\n  pipeline = Loop\n  tick = 60hz\n  logical = 160x120\n  bindings = bindings\n}\n") == nil &&
 		os.write_entire_file(scratch_join({configs, "builds.fcfg"}), "build native {\n  platform = desktop\n}\n") == nil &&
 		os.write_entire_file(scratch_join({configs, "tags.fcfg"}), "tags {\n  game\n}\n") == nil &&
 		os.write_entire_file(src_path, MINI_SOURCE) == nil
