@@ -127,6 +127,61 @@ test_parse_match_well_formed :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_match_struct_payload_destructure :: proc(t: ^testing.T) {
+	// The yard `box_size` shape (spec §02 §5): a struct-payload field-pun arm
+	// `Shape2::Box{size} => size` binds the field `size` by name, parallel to
+	// the value-side struct-payload Variant_Expr. A wildcard arm follows.
+	source := "match shape {\n" +
+		"  Shape2::Box{size} => size\n" +
+		"  _ => fallback\n" +
+		"}\n"
+	p := Parser{tokens = stage_lex(source)}
+	expr, err := parse_match_from_keyword(&p)
+	testing.expect_value(t, err, Parse_Error.None)
+	m, is_match := expr.(^Match_Expr)
+	testing.expect(t, is_match)
+	if !is_match {
+		return
+	}
+	testing.expect_value(t, len(m.arms), 2)
+	pat := m.arms[0].pattern
+	testing.expect_value(t, pat.kind, Pattern_Kind.Struct_Binds)
+	testing.expect_value(t, pat.type_name, "Shape2")
+	testing.expect_value(t, pat.variant, "Box")
+	// The field-pun binder is the single field name `size` (binds `size` to the
+	// `size` field).
+	testing.expect_value(t, len(pat.binders), 1)
+	testing.expect_value(t, pat.binders[0], "size")
+	testing.expect_value(t, m.arms[1].pattern.kind, Pattern_Kind.Wildcard)
+}
+
+@(test)
+test_parse_match_struct_payload_multi_field :: proc(t: ^testing.T) {
+	// A struct-payload field-pun arm binds every named field, in source order —
+	// the binder list pins more than one pun.
+	expr, err := parse_expr_text("match shape { Shape2::Rect{w, h} => w, _ => h }")
+	testing.expect_value(t, err, Parse_Error.None)
+	m, is_match := expr.(^Match_Expr)
+	testing.expect(t, is_match)
+	if !is_match {
+		return
+	}
+	pat := m.arms[0].pattern
+	testing.expect_value(t, pat.kind, Pattern_Kind.Struct_Binds)
+	testing.expect_value(t, len(pat.binders), 2)
+	testing.expect_value(t, pat.binders[0], "w")
+	testing.expect_value(t, pat.binders[1], "h")
+}
+
+@(test)
+test_parse_match_struct_payload_wrong_case_field_rejected :: proc(t: ^testing.T) {
+	// A field-pun binder is a value name — snake_case (spec §02); an UpperCamel
+	// field name in the pun position rejects as Wrong_Case.
+	_, err := parse_expr_text("match shape { Shape2::Box{Size} => 0, _ => 1 }")
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
+}
+
+@(test)
 test_parse_match_comma_separated_arms :: proc(t: ^testing.T) {
 	// `,` is a legal arm separator (Sep), so the inline one-line form
 	// parses too (spec §02 §5).
@@ -384,6 +439,84 @@ test_parse_pipeline_ordered_named_stages :: proc(t: ^testing.T) {
 	testing.expect_value(t, pl.stages[2].behaviors[1], "tally")
 	testing.expect_value(t, pl.stages[3].name, "render")
 	testing.expect_value(t, len(pl.stages[3].behaviors), 3)
+}
+
+@(test)
+test_parse_pipeline_bare_battery_stage :: proc(t: ^testing.T) {
+	// The yard `physics: solve` shape (spec §07 §1): a stage whose value is a
+	// single bare battery name, not a `[behavior, …]` list. The battery stage
+	// is_battery is set and its name lives in `battery`; behavior-list stages
+	// around it keep the list form. The battery name is recorded as written,
+	// not validated here.
+	source := "pipeline Yard {\n" +
+		"  control:  [drive]\n" +
+		"  physics:  solve\n" +
+		"  delivery: [deliver, tally]\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.pipelines), 1)
+	pl := ast.pipelines[0]
+	testing.expect_value(t, len(pl.stages), 3)
+	// The bordering stages stay behavior-list stages.
+	testing.expect_value(t, pl.stages[0].name, "control")
+	testing.expect(t, !pl.stages[0].is_battery)
+	testing.expect_value(t, len(pl.stages[0].behaviors), 1)
+	// The `physics: solve` stage is a single-battery stage.
+	battery := pl.stages[1]
+	testing.expect_value(t, battery.name, "physics")
+	testing.expect(t, battery.is_battery)
+	testing.expect_value(t, battery.battery, "solve")
+	testing.expect_value(t, len(battery.behaviors), 0)
+	testing.expect_value(t, pl.stages[2].name, "delivery")
+	testing.expect(t, !pl.stages[2].is_battery)
+	testing.expect_value(t, len(pl.stages[2].behaviors), 2)
+}
+
+@(test)
+test_parse_pipeline_battery_wrong_case_rejected :: proc(t: ^testing.T) {
+	// A battery name is a value name — snake_case (spec §07); an UpperCamel
+	// battery name rejects as Wrong_Case.
+	_, err := stage_parse(stage_lex("pipeline Yard {\n  physics: Solve\n}\n"))
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
+}
+
+@(test)
+test_parse_fn_tuple_of_command_lists_return_type :: proc(t: ^testing.T) {
+	// The yard `deliver` return signature (spec §02 §3; §04 §1): a tuple of two
+	// list types `([Despawn], [Delivered])`. The tuple is the head "()" with two
+	// args, each a list head "[]" whose single arg is the element command type —
+	// composing the existing tuple-type and list-type productions, no new
+	// grammar. The tuple VALUE `([Despawn()], [Delivered{}])` is two List_Expr.
+	source := "fn step(self: Crate, pads: [Trigger]) -> ([Despawn], [Delivered]) {\n" +
+		"  return ([Despawn()], [Delivered{}])\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	f := ast.fns[0]
+	rt := f.return_type
+	testing.expect_value(t, rt.name, "()")
+	testing.expect_value(t, len(rt.args), 2)
+	// Each tuple element is a list type `[T]` (head "[]") of one command type.
+	testing.expect_value(t, rt.args[0].name, "[]")
+	testing.expect_value(t, len(rt.args[0].args), 1)
+	testing.expect_value(t, rt.args[0].args[0].name, "Despawn")
+	testing.expect_value(t, rt.args[1].name, "[]")
+	testing.expect_value(t, rt.args[1].args[0].name, "Delivered")
+	// The return value is a Tuple_Expr of two List_Expr (both already parse).
+	ret, is_return := f.body[0].(Return_Node)
+	testing.expect(t, is_return)
+	if is_return {
+		tuple, is_tuple := ret.value.(^Tuple_Expr)
+		testing.expect(t, is_tuple)
+		if is_tuple {
+			testing.expect_value(t, len(tuple.elements), 2)
+			_, first_is_list := tuple.elements[0].(^List_Expr)
+			testing.expect(t, first_is_list)
+			_, second_is_list := tuple.elements[1].(^List_Expr)
+			testing.expect(t, second_is_list)
+		}
+	}
 }
 
 @(test)

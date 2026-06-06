@@ -586,6 +586,15 @@ collect_pattern_binders :: proc(
 			append(names, binder)
 			append(types, binder_type)
 		}
+	case .Struct_Binds:
+		// A struct-payload field-pun binds each field name to a value. Resolving
+		// the per-field types needs the variant's struct-payload schema, which the
+		// surface story types; here the binders bind to the nil unknown rather than
+		// rejecting (mirroring the unresolvable-position rule above).
+		for binder in pattern.binders {
+			append(names, binder)
+			append(types, nil)
+		}
 	case .Tuple:
 		// A tuple pattern zips against a tuple scrutinee position by position.
 		tuple, is_tuple := scrutinee.(^Tuple_Type)

@@ -123,31 +123,36 @@ Binary_Expr :: struct {
 	rhs: Expr,
 }
 
-// Pattern_Kind is the closed, minimal pattern taxonomy this parser
-// admits (spec §02 §5; grammar/fun.ebnf §13): the exhaustiveness gate
-// over Option/enum variants needs these four. Struct-field-pun patterns
-// are deliberately out of this minimal scope; the tuple pattern is the
-// snake/hunt `match pick(free, rng) { (Option::Some(cell), next) => … }`
-// shape — a parenthesized sequence of sub-patterns, each a child Pattern.
+// Pattern_Kind is the closed pattern taxonomy this parser admits (spec §02
+// §5; grammar/fun.ebnf §13): the exhaustiveness gate over Option/enum
+// variants needs these. Struct_Binds is the struct-payload field-pun form
+// `Shape2::Box{size}` (yard `box_size`), parallel to the value-side
+// struct-payload Variant_Expr (expr.odin Variant_Expr.fields): each named
+// field binds a value of the same name. The tuple pattern is the snake/hunt
+// `match pick(free, rng) { (Option::Some(cell), next) => … }` shape — a
+// parenthesized sequence of sub-patterns, each a child Pattern.
 Pattern_Kind :: enum {
 	Wildcard,      // `_`
 	Bare_Variant,  // `Dir::Up`
 	Variant_Binds, // `Option::Some(v)` — payload positions bind value names
+	Struct_Binds,  // `Shape2::Box{size}` — struct-payload fields field-pun bind
 	Tuple,         // `(Option::Some(cell), next)` — positional sub-patterns
 	Bare_Binder,   // `next` — a snake_case name binding the whole position
 }
 
-// Pattern is a match-arm pattern. type_name/variant are set for the two
-// variant forms; binders holds the payload binder names for the
-// Variant_Binds form (empty otherwise); elements holds the positional
-// sub-patterns for the Tuple form (empty otherwise). A tuple sub-pattern is
-// itself a Pattern — snake's only depth is one variant-with-binder plus one
-// bare binder per position, but the shape recurses by construction.
+// Pattern is a match-arm pattern. type_name/variant are set for the three
+// variant forms (Bare_Variant, Variant_Binds, Struct_Binds); binders holds
+// the payload binder names for Variant_Binds (positional) and Struct_Binds
+// (field-pun: a binder name equals the bound field name), empty otherwise;
+// elements holds the positional sub-patterns for the Tuple form (empty
+// otherwise). A tuple sub-pattern is itself a Pattern — snake's only depth
+// is one variant-with-binder plus one bare binder per position, but the
+// shape recurses by construction.
 Pattern :: struct {
 	kind:      Pattern_Kind,
 	type_name: string,    // variant forms: the enum type (`Option`, `Dir`)
-	variant:   string,    // variant forms: the variant (`Some`, `Up`)
-	binders:   []string,  // Variant_Binds: payload binder names
+	variant:   string,    // variant forms: the variant (`Some`, `Box`)
+	binders:   []string,  // Variant_Binds / Struct_Binds: payload binder names
 	elements:  []Pattern, // Tuple: positional sub-patterns
 }
 
@@ -409,11 +414,13 @@ parse_match :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	return node, .None
 }
 
-// parse_pattern parses the minimal pattern set (spec §02 §5; grammar
-// §13): wildcard `_`, a variant `Type::Variant`, a variant with payload
-// binders `Type::Variant(a, b)`, or a tuple `(p, q, …)` of positional
-// sub-patterns. A `(` head opens the tuple form; otherwise a `_` (lexed as a
-// snake_case Ident) is the wildcard and an UPPER_IDENT head a variant.
+// parse_pattern parses the pattern set (spec §02 §5; grammar §13): wildcard
+// `_`, a variant `Type::Variant`, a variant with payload binders
+// `Type::Variant(a, b)`, a struct-payload field-pun `Type::Variant{f, …}`, or
+// a tuple `(p, q, …)` of positional sub-patterns. A `(` head opens the tuple
+// form; otherwise a `_` (lexed as a snake_case Ident) is the wildcard and an
+// UPPER_IDENT head a variant. After the variant, a `(` opens positional
+// binders and a `{` opens struct-payload field-pun binders.
 parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
 	if peek_kind(p) == .L_Paren {
 		return parse_tuple_pattern(p)
@@ -422,8 +429,8 @@ parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
 	if tok.text == "_" {
 		return Pattern{kind = .Wildcard}, .None
 	}
-	// The two remaining forms are variant patterns: an UPPER_IDENT enum
-	// type, `::`, then an UPPER_IDENT variant (lexical-core.ebnf §2).
+	// The remaining forms are variant patterns: an UPPER_IDENT enum type,
+	// `::`, then an UPPER_IDENT variant (lexical-core.ebnf §2).
 	if !is_upper_ident(tok.class) {
 		return pattern, .Wrong_Case
 	}
@@ -432,16 +439,51 @@ parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
 	if !is_upper_ident(variant.class) {
 		return pattern, .Wrong_Case
 	}
-	if peek_kind(p) != .L_Paren {
-		return Pattern{kind = .Bare_Variant, type_name = tok.text, variant = variant.text}, .None
+	#partial switch peek_kind(p) {
+	case .L_Paren:
+		binders := parse_pattern_binders(p) or_return
+		return Pattern{
+			kind = .Variant_Binds,
+			type_name = tok.text,
+			variant = variant.text,
+			binders = binders,
+		}, .None
+	case .L_Brace:
+		binders := parse_struct_pattern_binders(p) or_return
+		return Pattern{
+			kind = .Struct_Binds,
+			type_name = tok.text,
+			variant = variant.text,
+			binders = binders,
+		}, .None
 	}
-	binders := parse_pattern_binders(p) or_return
-	return Pattern{
-		kind = .Variant_Binds,
-		type_name = tok.text,
-		variant = variant.text,
-		binders = binders,
-	}, .None
+	return Pattern{kind = .Bare_Variant, type_name = tok.text, variant = variant.text}, .None
+}
+
+// parse_struct_pattern_binders parses `{f, g}` — the struct-payload field-pun
+// binders of a struct-payload variant pattern `Shape2::Box{size}` (spec §02
+// §5; yard `box_size`). Each entry is a bare snake_case field name that binds
+// a value of the same name (field-pun: the binder name equals the field it
+// reads). Field names separate by `,` or newline, both legal (spec §02 §1).
+parse_struct_pattern_binders :: proc(p: ^Parser) -> (binders: []string, err: Parse_Error) {
+	expect(p, .L_Brace) or_return
+	list := make([dynamic]string, 0, 4, context.temp_allocator)
+	skip_arm_separators(p)
+	for peek_kind(p) == .Ident {
+		name := expect(p, .Ident) or_return
+		// A field-pun binder is a value name — snake_case (spec §02).
+		if name.class != .Snake_Case {
+			return nil, .Wrong_Case
+		}
+		append(&list, name.text)
+		if peek_kind(p) == .Comma || peek_kind(p) == .Newline {
+			skip_arm_separators(p)
+		} else {
+			break
+		}
+	}
+	expect(p, .R_Brace) or_return
+	return list[:], .None
 }
 
 // parse_pattern_binders parses `(a, b)` — the payload binder names of a

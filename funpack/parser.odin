@@ -178,14 +178,20 @@ Behavior_Node :: struct {
 	gtags:  []string,
 }
 
-// Pipeline_Stage is one ordered named stage of a pipeline (spec §07 §1):
-// `name: [behavior, …]`. Stage order is the contract, so stages travel as
-// an ordered slice; the value is the behavior-name list. The golden pong
-// surface uses only the `[behavior]`-list stage form (not engine-stage
-// symbols or sub-pipeline names).
+// Pipeline_Stage is one ordered named stage of a pipeline (spec §07 §1).
+// Stage order is the contract, so stages travel as an ordered slice. A stage
+// has one of two value shapes: a behavior-name list `name: [behavior, …]`
+// (behaviors holds the names, is_battery false), or a single bare battery
+// name `name: solve` (battery holds the name, is_battery true) — the yard
+// `physics: solve` engine-owned stage that integrates and resolves with no
+// user behaviors. is_battery discriminates the two; the unused slice/field is
+// empty. The battery name is not validated here — the surface/typecheck story
+// owns that.
 Pipeline_Stage :: struct {
-	name:      string,
-	behaviors: []string,
+	name:       string,
+	behaviors:  []string, // behavior-list stage: the member behavior names
+	battery:    string,   // single-battery stage: the bare battery name
+	is_battery: bool,      // true for the bare-battery stage form
 }
 
 Pipeline_Node :: struct {
@@ -754,9 +760,10 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 	return Behavior_Node{name = name.text, target = target, step = step}, .None
 }
 
-// parse_pipeline parses `pipeline Name { stage: [behaviors] … }`
-// (spec §07 §1). Stage order is the contract, so stages keep source order;
-// each stage's value on the golden surface is a `[behavior, …]` list.
+// parse_pipeline parses `pipeline Name { stage: value … }` (spec §07 §1).
+// Stage order is the contract, so stages keep source order. A stage value is
+// either a `[behavior, …]` list or a single bare battery name (`physics:
+// solve`); a leading `[` selects the list form, a bare ident the battery form.
 parse_pipeline :: proc(p: ^Parser) -> (node: Pipeline_Node, err: Parse_Error) {
 	expect(p, .Pipeline) or_return
 	name := expect_type_name(p) or_return
@@ -770,12 +777,31 @@ parse_pipeline :: proc(p: ^Parser) -> (node: Pipeline_Node, err: Parse_Error) {
 			return node, .Wrong_Case
 		}
 		expect(p, .Colon) or_return
-		behaviors := parse_behavior_list(p) or_return
-		append(&stages, Pipeline_Stage{name = sname.text, behaviors = behaviors})
+		stage := parse_pipeline_stage(p, sname.text) or_return
+		append(&stages, stage)
 		skip_field_separators(p)
 	}
 	expect(p, .R_Brace) or_return
 	return Pipeline_Node{name = name, stages = stages[:]}, .None
+}
+
+// parse_pipeline_stage parses one stage's value after its `name:` (spec §07
+// §1): a `[behavior, …]` list, or a single bare battery name (`solve`). A
+// leading `[` opens the behavior-list form; a bare snake_case ident is the
+// battery form — an engine-owned stage (yard `physics: solve`) carrying no
+// user behaviors. The battery name is recorded as written; validating that it
+// names a real battery is the surface/typecheck story's job.
+parse_pipeline_stage :: proc(p: ^Parser, name: string) -> (stage: Pipeline_Stage, err: Parse_Error) {
+	if peek_kind(p) == .L_Bracket {
+		behaviors := parse_behavior_list(p) or_return
+		return Pipeline_Stage{name = name, behaviors = behaviors}, .None
+	}
+	battery := expect(p, .Ident) or_return
+	// A battery name is a value name — snake_case (spec §07).
+	if battery.class != .Snake_Case {
+		return stage, .Wrong_Case
+	}
+	return Pipeline_Stage{name = name, battery = battery.text, is_battery = true}, .None
 }
 
 // parse_behavior_list parses a `[behavior_name, …]` stage value

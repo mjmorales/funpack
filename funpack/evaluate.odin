@@ -462,6 +462,24 @@ match_pattern :: proc(pattern: Pattern, scrutinee: Value, env: ^Env) -> (frame: 
 		child := new_env(env)
 		child.bindings[pattern.binders[0]] = option.payload^
 		return child, true
+	case .Struct_Binds:
+		// A struct-payload variant value materializes as a Record_Value carrying
+		// its variant tag and fields; the pattern matches on (type_name, variant)
+		// and field-puns each named binder from the record's fields. A missing
+		// field is a non-match rather than a binding to a hole.
+		record, is_record := scrutinee.(Record_Value)
+		if !is_record || record.type_name != pattern.type_name || record.variant != pattern.variant {
+			return env, false
+		}
+		child := new_env(env)
+		for binder in pattern.binders {
+			value, found := record_field_value(record.fields, binder)
+			if !found {
+				return env, false
+			}
+			child.bindings[binder] = value
+		}
+		return child, true
 	case .Bare_Binder:
 		// A bare binder matches any value and binds it to its single name — a
 		// tuple position that captures the whole element (snake's `next` Rng

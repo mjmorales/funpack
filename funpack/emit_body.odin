@@ -301,6 +301,22 @@ emit_arm :: proc(b: ^strings.Builder, pattern: Pattern) {
 			strings.write_string(b, binder)
 		}
 		emit_line(b, "")
+	case .Struct_Binds:
+		// A struct-payload field-pun arm reuses the scalar-arm layout (`pat type
+		// case binder_count binders…`): the field-pun names are both the fields
+		// read and the names bound, so they occupy the binder list. A reader keys
+		// off the count, so the names follow it like variant_binds.
+		strings.write_string(b, "struct_binds ")
+		strings.write_string(b, pattern.type_name)
+		strings.write_byte(b, ' ')
+		strings.write_string(b, pattern.variant)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, len(pattern.binders))
+		for binder in pattern.binders {
+			strings.write_byte(b, ' ')
+			strings.write_string(b, binder)
+		}
+		emit_line(b, "")
 	case .Bare_Binder:
 		// A bare binder position binds the WHOLE tuple element to one name. It
 		// uses the SAME 5-field scalar-arm layout every other arm pattern uses

@@ -825,6 +825,15 @@ canon_pattern :: proc(b: ^strings.Builder, pattern: Pattern) {
 		strings.write_string(b, pattern.type_name)
 		strings.write_byte(b, ' ')
 		strings.write_string(b, pattern.variant)
+	case .Struct_Binds:
+		// The field-pun binder names are alpha-renamed in the body, so the
+		// structural tag carries only the (type, variant) shape — two
+		// struct-payload patterns of the same variant collide regardless of
+		// which fields they pun.
+		strings.write_string(b, "struct ")
+		strings.write_string(b, pattern.type_name)
+		strings.write_byte(b, ' ')
+		strings.write_string(b, pattern.variant)
 	case .Bare_Binder:
 		// A bare binder is a structural slot; its name is alpha-renamed, so the
 		// shape tag carries no name.
@@ -845,7 +854,7 @@ push_pattern_binders :: proc(alpha: ^[dynamic]string, pattern: Pattern) {
 	switch pattern.kind {
 	case .Wildcard, .Bare_Variant:
 		// No binders.
-	case .Variant_Binds, .Bare_Binder:
+	case .Variant_Binds, .Struct_Binds, .Bare_Binder:
 		for binder in pattern.binders {
 			append(alpha, binder)
 		}
