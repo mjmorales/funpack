@@ -163,9 +163,11 @@ test_camera_from_command_zero_zoom_is_unity :: proc(t: ^testing.T) {
 	testing.expect_value(t, camera.zoom, to_fixed(1))
 }
 
-// test_draw_color_to_rgba_totality pins the §20 palette lowering over ALL five
-// closed-enum variants to their fully-opaque RGBA8 tuples — the totality the
-// present boundary depends on (an unmapped variant would not compile).
+// test_draw_color_to_rgba_totality pins the §20 palette lowering over ALL NINE
+// closed-enum members to their fully-opaque RGBA8 tuples — the totality the
+// present boundary depends on (an unmapped member would not compile). Of the
+// four added members, Yellow/Cyan/Magenta are the canonical full-saturation
+// complements; Gray is the mid-channel 0.5 → 128 (krognid's ground plane).
 @(test)
 test_draw_color_to_rgba_totality :: proc(t: ^testing.T) {
 	testing.expect_value(t, draw_color_to_rgba(.White), Rgba8{255, 255, 255, 255})
@@ -173,6 +175,10 @@ test_draw_color_to_rgba_totality :: proc(t: ^testing.T) {
 	testing.expect_value(t, draw_color_to_rgba(.Red), Rgba8{255, 0, 0, 255})
 	testing.expect_value(t, draw_color_to_rgba(.Green), Rgba8{0, 255, 0, 255})
 	testing.expect_value(t, draw_color_to_rgba(.Blue), Rgba8{0, 0, 255, 255})
+	testing.expect_value(t, draw_color_to_rgba(.Yellow), Rgba8{255, 255, 0, 255})
+	testing.expect_value(t, draw_color_to_rgba(.Cyan), Rgba8{0, 255, 255, 255})
+	testing.expect_value(t, draw_color_to_rgba(.Magenta), Rgba8{255, 0, 255, 255})
+	testing.expect_value(t, draw_color_to_rgba(.Gray), Rgba8{128, 128, 128, 255})
 }
 
 // test_glyph_rects_space_is_empty pins the layout gap: a space emits no rect,

@@ -238,6 +238,95 @@ camera_draw_record :: proc(at: Vec2, zoom, rotation: Fixed) -> Record_Value {
 	return Record_Value{type_name = "Draw::Camera", fields = fields}
 }
 
+// --- (palette) record_color closed-palette lowering + fail-loud refusal ----
+
+// color_record builds a one-color draw-ish record carrying a `color` field naming
+// the given Color case — the input record_color reads. case_name is the bare
+// variant name (no "Color::" prefix), matching how the evaluator boxes a Color::X.
+@(private = "file")
+color_record :: proc(case_name: string) -> Record_Value {
+	fields := make(map[string]Value, context.temp_allocator)
+	fields["color"] = Variant_Value{enum_type = "Color", case_name = case_name}
+	return Record_Value{type_name = "Draw::Rect", fields = fields}
+}
+
+// The four members the nine-member palette adds over the original five lower to
+// their Draw_Color with ok=true — the extension closes the §20 palette to the
+// spec render.fun named set (White..Gray). The original five are covered by the
+// draw-list render tests above; this pins the new arms.
+@(test)
+test_record_color_lowers_new_palette_members :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	cases := []struct {
+		name: string,
+		want: Draw_Color,
+	} {
+		{"Yellow", .Yellow},
+		{"Cyan", .Cyan},
+		{"Magenta", .Magenta},
+		{"Gray", .Gray},
+	}
+	for c in cases {
+		got, ok := record_color(color_record(c.name), "color")
+		testing.expectf(t, ok, "%s must lower with ok=true", c.name)
+		testing.expect_value(t, got, c.want)
+	}
+}
+
+// An ABSENT color field is the well-formed "no color stated" shape: it defaults to
+// White with ok=true (pong's common case), NOT a refusal — only a PRESENT,
+// out-of-palette name refuses.
+@(test)
+test_record_color_absent_field_defaults_white_ok :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	rec := Record_Value{type_name = "Draw::Rect", fields = make(map[string]Value, context.temp_allocator)}
+	got, ok := record_color(rec, "color")
+	testing.expect(t, ok)
+	testing.expect_value(t, got, Draw_Color.White)
+}
+
+// An UNKNOWN color case_name REFUSES (ok=false) — fail-closed: a silent White
+// fallback would mispaint any out-of-palette color (a Gray ground plane
+// rendering White). The refusal must hold for any name outside the closed nine
+// (a typo, a future member, or the spec's `Color::Rgb{...}` escape the named
+// draw-list has no slot for). The returned ok=false is the loud signal; the
+// color value is not consumed.
+@(test)
+test_record_color_unknown_name_refuses :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	_, ok_typo := record_color(color_record("Whtie"), "color")
+	testing.expect(t, !ok_typo)
+	_, ok_rgb := record_color(color_record("Rgb"), "color")
+	testing.expect(t, !ok_rgb)
+	_, ok_future := record_color(color_record("Chartreuse"), "color")
+	testing.expect(t, !ok_future)
+}
+
+// The fail-loud refusal PROPAGATES through draw_command_from_record: a Draw::Rect
+// naming an out-of-palette color does NOT lower (ok=false), so append_draw_commands
+// DROPS it from the draw-list rather than emitting a White-mispainted command — the
+// closed-palette contract enforced end-to-end at the projection boundary.
+@(test)
+test_draw_command_unknown_color_does_not_lower :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fields := make(map[string]Value, context.temp_allocator)
+	fields["at"] = Vec2{to_fixed(1), to_fixed(2)}
+	fields["size"] = Vec2{to_fixed(3), to_fixed(4)}
+	fields["color"] = Variant_Value{enum_type = "Color", case_name = "Rgb"}
+	rec := Record_Value{type_name = "Draw::Rect", fields = fields}
+
+	_, ok := draw_command_from_record(rec)
+	testing.expect(t, !ok)
+
+	// A well-formed Gray Draw::Rect, by contrast, lowers and carries the member.
+	fields["color"] = Variant_Value{enum_type = "Color", case_name = "Gray"}
+	cmd, gray_ok := draw_command_from_record(rec)
+	testing.expect(t, gray_ok)
+	rect, is_rect := cmd.(Draw_Rect)
+	testing.expect(t, is_rect)
+	testing.expect_value(t, rect.color, Draw_Color.Gray)
+}
+
 // --- test helpers ---------------------------------------------------------
 
 // draw_at reads the i-th draw command, ok=false out of range — the option-shaped

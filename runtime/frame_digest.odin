@@ -62,7 +62,19 @@ import "core:slice"
 // regenerate under the FUNPACK_REGEN_GOLDEN gate. The session fold stays seeded
 // from FRAME_SESSION_SEED (frozen, see the seed-decoupling rationale at
 // fold_session).
-FRAME_DIGEST_SCHEMA_VERSION :: 4
+// v5 extends the §20 Draw_Color closed palette from five named members to nine
+// (+ Yellow/Cyan/Magenta/Gray, render.odin) — a closed-enum extension, so the
+// comparability stamp bumps deliberately (§04). The new members are APPENDED, so
+// the original five keep their ordinals (White=0..Blue=4); write_draw_cmd folds the
+// color as that raw ordinal, so a golden whose draw-list paints only the original
+// five emits byte-identical color bytes and its CONTENT digests (per-tick AND
+// session, the latter seeded from the frozen FRAME_SESSION_SEED, not this version)
+// are UNMOVED under the v5 bump. pong/snake/hunt paint only White; yard paints only
+// White (camera-only secondary commands carry no color) — none emits a new member,
+// so every committed golden digest is byte-unchanged. Only a draw-list that paints
+// one of the four new members produces a different (correct) byte, and no current
+// golden does.
+FRAME_DIGEST_SCHEMA_VERSION :: 5
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode

@@ -19,15 +19,27 @@ package funpack_runtime
 
 // --- The §20 draw-list (the render projection's first-class result) -------
 
-// Draw_Color is the §20 closed palette a draw command paints in. Pong draws
-// everything in White; the enum is the closed taxonomy a Color variant lowers to
-// (an unknown token lowers to White so the projection stays total).
+// Draw_Color is the §20 closed palette a draw command paints in — the nine named
+// members of the spec's render.fun `Color` enum (White..Gray). It is the closed
+// taxonomy a Color variant lowers to; the spec's `Color::Rgb{r,g,b}` escape is NOT
+// a member here (the runtime draw-list carries only the named palette — an exact
+// Rgb value has no Draw_Color slot, so a Color::Rgb refuses the lowering rather
+// than collapsing to a named member). The NAMED members are appended in spec
+// order, so the existing five (White=0..Blue=4) keep their ordinals — the frame
+// digest folds the color as that raw ordinal (frame_digest.odin write_draw_cmd),
+// so a golden whose draw-list paints only the original five is byte-unchanged by
+// the four-member extension. A new member is a deliberate schema-version bump
+// (§04 closed-enum; FRAME_DIGEST_SCHEMA_VERSION).
 Draw_Color :: enum {
 	White,
 	Black,
 	Red,
 	Green,
 	Blue,
+	Yellow,
+	Cyan,
+	Magenta,
+	Gray,
 }
 
 // Draw_Rect is the §20 filled rectangle: a fixed-point `at` and `size` in world
@@ -188,25 +200,29 @@ append_draw_commands :: proc(cmds: ^[dynamic]Draw_Cmd, result: Value) {
 // draw_command_from_record lowers one evaluated Draw::* record into a Draw_Cmd by
 // its declared type. Draw::Rect reads at/size (Vec2) + color; Draw::Text reads
 // at (Vec2) + text (the interpolated String) + color; Draw::Camera reads at (Vec2)
-// + zoom/rotation (Fixed) — the world↔screen transform (§3). An unknown draw type
-// or a missing required field yields ok=false, so only well-formed §20 commands
-// enter the draw-list.
+// + zoom/rotation (Fixed) — the world↔screen transform (§3). An unknown draw type,
+// a missing required field, OR a color naming a member outside the closed §20
+// palette (record_color refuses with ok=false) yields ok=false, so only well-formed
+// §20 commands enter the draw-list — an out-of-palette color drops the command
+// rather than silently mispainting it White.
 draw_command_from_record :: proc(record: Record_Value) -> (cmd: Draw_Cmd, ok: bool) {
 	switch record.type_name {
 	case "Draw::Rect":
 		at, at_ok := record_vec2(record, "at")
 		size, size_ok := record_vec2(record, "size")
-		if !at_ok || !size_ok {
+		color, color_ok := record_color(record, "color")
+		if !at_ok || !size_ok || !color_ok {
 			return nil, false
 		}
-		return Draw_Rect{at = at, size = size, color = record_color(record, "color")}, true
+		return Draw_Rect{at = at, size = size, color = color}, true
 	case "Draw::Text":
 		at, at_ok := record_vec2(record, "at")
 		text, text_ok := record_text(record, "text")
-		if !at_ok || !text_ok {
+		color, color_ok := record_color(record, "color")
+		if !at_ok || !text_ok || !color_ok {
 			return nil, false
 		}
-		return Draw_Text{at = at, text = text, color = record_color(record, "color")}, true
+		return Draw_Text{at = at, text = text, color = color}, true
 	case "Draw::Camera":
 		// at is required (the camera center); zoom/rotation default to absent-safe
 		// values so a partially-built Camera record still lowers — an absent zoom
@@ -268,30 +284,46 @@ record_text :: proc(record: Record_Value, name: string) -> (text: string, ok: bo
 	return str.text, true
 }
 
-// record_color reads a draw command's color into the §20 palette, defaulting to
-// White when the field is absent or not an enum value — pong paints everything
-// White, so the default is the common case. The Color variant's case name maps to
-// the closed palette; an unknown case lowers to White (the projection stays total).
-record_color :: proc(record: Record_Value, name: string) -> Draw_Color {
+// record_color reads a draw command's color into the §20 palette. An ABSENT color
+// field defaults to White — pong paints everything White, so the default is the
+// common case and a missing field is the well-formed "no color stated" shape. A
+// PRESENT field that names a color must name one of the nine closed-palette members
+// (the spec render.fun `Color` enum, White..Gray): a recognized name lowers to its
+// member with ok=true; an unrecognized case_name (a typo, a future palette member,
+// or the spec's `Color::Rgb{...}` escape the named draw-list has no slot for)
+// REFUSES with ok=false — never guessed, the same fail-closed discipline
+// node_kind_from_tag applies to an unknown node tag. The caller drops the malformed
+// command rather than silently mispainting it White (a silent White fallback
+// renders e.g. a Gray ground plane White — the closed-palette violation this
+// refusal exists to prevent). A present-but-not-a-variant field also refuses.
+record_color :: proc(record: Record_Value, name: string) -> (color: Draw_Color, ok: bool) {
 	field, present := record.fields[name]
 	if !present {
-		return .White
+		return .White, true
 	}
 	variant, is_variant := field.(Variant_Value)
 	if !is_variant {
-		return .White
+		return .White, false
 	}
 	switch variant.case_name {
 	case "White":
-		return .White
+		return .White, true
 	case "Black":
-		return .Black
+		return .Black, true
 	case "Red":
-		return .Red
+		return .Red, true
 	case "Green":
-		return .Green
+		return .Green, true
 	case "Blue":
-		return .Blue
+		return .Blue, true
+	case "Yellow":
+		return .Yellow, true
+	case "Cyan":
+		return .Cyan, true
+	case "Magenta":
+		return .Magenta, true
+	case "Gray":
+		return .Gray, true
 	}
-	return .White
+	return .White, false
 }

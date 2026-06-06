@@ -234,10 +234,14 @@ Rgba8 :: struct {
 }
 
 // draw_color_to_rgba lowers a §20 Draw_Color onto its concrete RGBA8 tuple. The
-// switch is TOTAL over the five-variant closed palette (a new variant is a
+// switch is TOTAL over the nine-member closed palette (a new member is a
 // schema-version bump per §04, and would force a compile error here until mapped),
 // so the present boundary never faces an unhandled color. Every color is fully
-// opaque (alpha 255); pong paints everything White, the rest round out the palette.
+// opaque (alpha 255); pong paints everything White. Of the four added members,
+// Yellow/Cyan/Magenta are the canonical full-saturation complements (the spec
+// render.fun pins no RGBA for the named members, only the channel range for the
+// `Rgb` escape) and Gray is the mid-channel 0.5 → 128/255 (krognid's ground
+// plane).
 draw_color_to_rgba :: proc(color: Draw_Color) -> Rgba8 {
 	switch color {
 	case .White:
@@ -250,6 +254,14 @@ draw_color_to_rgba :: proc(color: Draw_Color) -> Rgba8 {
 		return Rgba8{0, 255, 0, 255}
 	case .Blue:
 		return Rgba8{0, 0, 255, 255}
+	case .Yellow:
+		return Rgba8{255, 255, 0, 255}
+	case .Cyan:
+		return Rgba8{0, 255, 255, 255}
+	case .Magenta:
+		return Rgba8{255, 0, 255, 255}
+	case .Gray:
+		return Rgba8{128, 128, 128, 255}
 	}
 	return Rgba8{255, 255, 255, 255}
 }

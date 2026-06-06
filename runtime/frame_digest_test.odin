@@ -309,6 +309,55 @@ test_draw_list_serializes_in_emitted_order :: proc(t: ^testing.T) {
 	testing.expect(t, slices_equal(forward_bytes, again))
 }
 
+// --- v5 palette: ordinal stability + new-member sensitivity ------------------
+
+// test_draw_color_ordinals_are_append_stable pins the byte-stability the golden
+// invariant rests on: the original five palette members keep their raw ordinals
+// (White=0..Blue=4) after the four-member append, because write_draw_cmd folds the
+// color as `u8(c.color)`. A golden whose draw-list paints only these five emits the
+// SAME color byte at v5 as at v4, so its content digest is byte-unmoved — the whole
+// reason the schema bump does not regenerate any golden. The new members take the
+// next ordinals (5..8), append-only.
+@(test)
+test_draw_color_ordinals_are_append_stable :: proc(t: ^testing.T) {
+	testing.expect_value(t, u8(Draw_Color.White), 0)
+	testing.expect_value(t, u8(Draw_Color.Black), 1)
+	testing.expect_value(t, u8(Draw_Color.Red), 2)
+	testing.expect_value(t, u8(Draw_Color.Green), 3)
+	testing.expect_value(t, u8(Draw_Color.Blue), 4)
+	testing.expect_value(t, u8(Draw_Color.Yellow), 5)
+	testing.expect_value(t, u8(Draw_Color.Cyan), 6)
+	testing.expect_value(t, u8(Draw_Color.Magenta), 7)
+	testing.expect_value(t, u8(Draw_Color.Gray), 8)
+}
+
+// test_digest_distinguishes_palette_members pins the digest's color sensitivity
+// over the new members: a Draw_Rect identical except for its color member digests
+// differently for each of the nine members (the folded ordinal byte differs), so a
+// krognid Gray ground plane never digests the same as a White one. Conversely, a
+// White rect at v5 produces the SAME color byte it always did (ordinal 0), so an
+// existing all-White golden is byte-unchanged — asserted by the stable-ordinal
+// test above and reinforced here by White's distinctness from every new member.
+@(test)
+test_digest_distinguishes_palette_members :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	empty_version := World_Version{tick = 0, tables = nil}
+	at := Vec2{to_fixed(8), to_fixed(60)}
+	size := Vec2{to_fixed(4), to_fixed(16)}
+
+	members := []Draw_Color {
+		.White, .Black, .Red, .Green, .Blue, .Yellow, .Cyan, .Magenta, .Gray,
+	}
+	seen := make(map[u64]bool, context.temp_allocator)
+	for color in members {
+		list := Draw_List{cmds = []Draw_Cmd{Draw_Rect{at = at, size = size, color = color}}}
+		d := frame_digest(empty_version, list).digest
+		testing.expectf(t, !seen[d], "palette member %v digest collided", color)
+		seen[d] = true
+	}
+	testing.expect_value(t, len(seen), len(members))
+}
+
 // --- v4 payload / String sensitivity -----------------------------------------
 
 // fd_payload_world hand-builds a one-row world whose row carries a payload
