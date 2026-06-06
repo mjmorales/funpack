@@ -76,6 +76,15 @@ Engine_Kind :: enum {
 	Nav,             // §08 nav read/query handle (Nav.path queries a route)
 	Path,            // §08 route value (a thing-field default; Path.advance walks it)
 	NavError,        // §08 nav query-failure variant
+	// §19/§26 the shared typed asset handles (engine.assets): the typed constant a
+	// generated seam binds (`let coin: MeshHandle = MeshHandle{name: "coin"}`) and
+	// the result of the manifest-checked string constructor (mesh/texture/sound/
+	// atlas). Each is a single-field record over a String `name` — its schema is
+	// surface_engine_record.
+	MeshHandle,      // §26 a baked-mesh handle (mesh("…"); a model bakes to a mesh)
+	TextureHandle,   // §26 a baked-texture handle (texture("…"))
+	SoundHandle,     // §26 a baked-sound handle (sound("…"))
+	AtlasHandle,     // §26 a sprite-atlas handle (atlas("…"); cell/frame accessors)
 }
 
 // User_Type is the nominal handle for a name the source declares

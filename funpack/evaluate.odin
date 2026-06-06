@@ -93,6 +93,12 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		return e.value, true
 	case ^Fixed_Lit_Expr:
 		return e.bits, true
+	case ^String_Lit_Expr:
+		// A string literal evaluates to its raw inner text — the §19 asset name a
+		// handle constructor (sound("coin_sfx")) or a handle literal (SoundHandle{
+		// name: "coin_sfx"}) keys on. Interpolation holes are retained verbatim
+		// (a lowering concern, not evaluation), matching the parse-only `text`.
+		return e.text, true
 	case ^Name_Expr:
 		// §02 §2 Bool literals resolve before the environment, mirroring
 		// name_check — they are keywords, never shadowable bindings.
@@ -335,7 +341,44 @@ eval_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value,
 	if record, declared := ctx.env.records[e.type_name]; declared {
 		return eval_user_record(ctx, env, e, record)
 	}
+	// A §19 typed asset-handle literal (MeshHandle{name: "coin"}, SoundHandle{name:
+	// "coin_sfx"}): the only engine records the evaluator constructs — each named
+	// field evaluates into a tagged Record_Value carrying the handle's type name, so
+	// the typed seam constant compares equal to the string-constructor handle of the
+	// same name (the §19 golden's assets.coin_sfx == sound("coin_sfx")). Reached only
+	// for a handle name (surface_engine_record's handle arms); a non-handle engine
+	// record (Body, Save) never reaches construction in test position.
+	if _, _, is_handle := surface_engine_record(e.type_name); is_handle && is_asset_handle_name(e.type_name) {
+		return eval_asset_handle_literal(ctx, env, e)
+	}
 	return nil, false
+}
+
+// is_asset_handle_name reports whether `name` is one of the four §19/§26 typed
+// asset handle records — the closed set the evaluator constructs as literals.
+// surface_engine_record also schemas Body/Save/etc., which the evaluator does not
+// build in test position, so the handle set is named explicitly here rather than
+// constructing every engine record.
+is_asset_handle_name :: proc(name: string) -> bool {
+	switch name {
+	case "MeshHandle", "TextureHandle", "SoundHandle", "AtlasHandle":
+		return true
+	}
+	return false
+}
+
+// eval_asset_handle_literal builds a typed asset-handle value from its literal:
+// each named field evaluates and the result is a Record_Value tagged with the
+// handle's type name (no variant). A handle's one field is its String `name`, so
+// the value is the handle-typed record the equality compares structurally against
+// the string-constructor handle of the same name.
+eval_asset_handle_literal :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value, ok: bool) {
+	fields := make([]Record_Field_Value, len(e.fields), context.temp_allocator)
+	for field, i in e.fields {
+		v := eval_expr(ctx, env, field.value) or_return
+		fields[i] = Record_Field_Value{name = field.name, value = v}
+	}
+	return Record_Value{type_name = e.type_name, fields = fields}, true
 }
 
 // eval_user_record builds a user thing/data/signal value: every field the
@@ -862,6 +905,14 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_filter(ctx, env, e)
 	case "grid_cells":
 		return eval_grid_cells(ctx, env, e)
+	case "mesh":
+		return eval_asset_constructor(ctx, env, e, "MeshHandle")
+	case "texture":
+		return eval_asset_constructor(ctx, env, e, "TextureHandle")
+	case "sound":
+		return eval_asset_constructor(ctx, env, e, "SoundHandle")
+	case "atlas":
+		return eval_asset_constructor(ctx, env, e, "AtlasHandle")
 	}
 	// A call to a user-declared top-level fn (advance, goal_side, add_goal):
 	// resolve its body off the module and evaluate it against the arguments.
@@ -870,6 +921,29 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_user_fn(ctx, fn, args)
 	}
 	return nil, false
+}
+
+// eval_asset_constructor lowers a §19/§26 manifest-checked string constructor
+// (mesh/texture/sound/atlas): a single String asset name into the same typed
+// handle value the seam constant's literal builds — Record_Value tagged with the
+// handle type, carrying the one `name` field set to the string argument. So
+// sound("coin_sfx") evaluates to the identical handle that SoundHandle{name:
+// "coin_sfx"} (the typed constant assets.coin_sfx) does, and the two compare equal
+// (the §19 golden assertion). The closed-registry kind/name validity is the build
+// gate's (asset_registry.odin); the evaluator builds the value the typecheck-passed
+// reference names.
+eval_asset_constructor :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr, handle_type: string) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	arg := eval_expr(ctx, env, e.args[0]) or_return
+	name, is_string := arg.(string)
+	if !is_string {
+		return nil, false
+	}
+	fields := make([]Record_Field_Value, 1, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "name", value = name}
+	return Record_Value{type_name = handle_type, fields = fields}, true
 }
 
 // eval_args evaluates a call's argument expressions left-to-right into a value
