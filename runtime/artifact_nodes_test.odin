@@ -195,7 +195,8 @@ test_body_fixed_node_decodes_through_kernel :: proc(t: ^testing.T) {
 	if !ok {
 		return
 	}
-	// overlaps' body has `fixed 17179869184` (4.0) — the paddle half-width.
+	// overlaps' body has `fixed 15032385536` (3.5) — the summed x half-extents
+	// of the drawn ball and paddle (§20 drawn-geometry contact rail).
 	overlaps := find_function(program, "overlaps")
 	testing.expect(t, overlaps != nil)
 	node := find_node_of_kind(overlaps.body, .Fixed)
@@ -204,5 +205,5 @@ test_body_fixed_node_decodes_through_kernel :: proc(t: ^testing.T) {
 	}
 	value, decoded := decode_fixed(node.fields[0])
 	testing.expect(t, decoded)
-	testing.expect_value(t, value, to_fixed(4)) // 4.0, bit-exact through the kernel
+	testing.expect_value(t, value, fixed_from_decimal(3, "5")) // 3.5, bit-exact through the kernel
 }

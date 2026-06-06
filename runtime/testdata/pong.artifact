@@ -77,7 +77,7 @@ node field x 1
 node name ball 0
 node field x 1
 node name paddle 0
-node fixed 17179869184 0
+node fixed 15032385536 0
 node binary le 2
 node call 2
 node name abs 0
@@ -86,7 +86,7 @@ node field y 1
 node name ball 0
 node field y 1
 node name paddle 0
-node fixed 68719476736 0
+node fixed 40802189312 0
 function goal_side fn 1 return:Option[Side] 3 span:pong:70
 param at Vec2
 node if_return 2
