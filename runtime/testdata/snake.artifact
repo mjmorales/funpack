@@ -1,4 +1,4 @@
-funpack-artifact 3
+funpack-artifact 4
 [meta 2]
 project snake
 version L5:0.1.0
@@ -606,4 +606,4 @@ bind button P1 Move::Left source:key(Key::Left)
 bind button P1 Move::Right source:key(Key::D)
 bind button P1 Move::Right source:key(Key::Right)
 [entrypoint 1]
-entrypoint main pipeline:Snake tick_hz:8 bindings:bindings
+entrypoint main pipeline:Snake tick_hz:8 logical:160x160 bindings:bindings

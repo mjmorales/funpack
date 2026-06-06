@@ -34,7 +34,12 @@ import "core:strings"
 // first-class 2D source (both components fold into the action's Vec2). The
 // source vocabulary is a closed taxonomy, so growing it bumped 2 → 3
 // (funpack/docs/artifact-format.md §1, §14).
-ARTIFACT_SCHEMA_VERSION :: 3
+//
+// v4 adds the required `logical:WxH` field to the §15 entrypoint record — the
+// fixed logical draw space (§20 §3) in integer world units the present pass
+// letterboxes to. A required field on an existing record is a layout change:
+// 3 → 4 (funpack/docs/artifact-format.md §1, §15).
+ARTIFACT_SCHEMA_VERSION :: 4
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"

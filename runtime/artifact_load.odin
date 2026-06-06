@@ -732,28 +732,54 @@ load_bindings :: proc(
 // --- §15 entrypoint --------------------------------------------------------
 
 // load_entrypoint reads the single `entrypoint NAME pipeline:P tick_hz:HZ
-// bindings:B` record — the runtime wiring (§15). tick_hz is the one fixed tick
-// rate (60 for pong).
+// logical:WxH bindings:B` record — the runtime wiring (§15). tick_hz is the
+// one fixed tick rate (60 for pong); logical is the fixed §20 §3 draw space in
+// integer world units the present pass letterboxes to — both dimensions must
+// be positive, so a degenerate extent is refused at load, never projected.
 load_entrypoint :: proc(section: Artifact_Section) -> (entry: Entrypoint, err: Artifact_Error) {
 	if len(section.records) != 1 {
 		return {}, .Section_Count_Mismatch
 	}
 	f := record_fields(section.records[0])
-	// entrypoint NAME pipeline:PIPELINE tick_hz:HZ bindings:BINDINGS
-	if len(f) < 5 || f[0] != "entrypoint" {
+	// entrypoint NAME pipeline:PIPELINE tick_hz:HZ logical:WxH bindings:BINDINGS
+	if len(f) < 6 || f[0] != "entrypoint" {
 		return {}, .Bad_Field
 	}
 	hz, ok := strconv.parse_int(strings.trim_prefix(f[3], "tick_hz:"))
 	if !ok {
 		return {}, .Bad_Field
 	}
+	logical_w, logical_h, logical_ok := parse_logical_field(strings.trim_prefix(f[4], "logical:"))
+	if !logical_ok {
+		return {}, .Bad_Field
+	}
 	return Entrypoint {
 			name = f[1],
 			pipeline = strings.trim_prefix(f[2], "pipeline:"),
 			tick_hz = hz,
-			bindings = strings.trim_prefix(f[4], "bindings:"),
+			logical_w = logical_w,
+			logical_h = logical_h,
+			bindings = strings.trim_prefix(f[5], "bindings:"),
 		},
 		.None
+}
+
+// parse_logical_field splits a `WxH` logical-extent value into its integer
+// width/height world units (`160x120` → 160, 120). Both dimensions must be
+// positive integers; a missing `x` separator, a non-integer side, or a
+// zero/negative extent rejects (§15 — the present pass never sees a degenerate
+// letterbox space).
+parse_logical_field :: proc(text: string) -> (w: int, h: int, ok: bool) {
+	sep := strings.index_byte(text, 'x')
+	if sep <= 0 || sep >= len(text) - 1 {
+		return 0, 0, false
+	}
+	parsed_w, w_ok := strconv.parse_int(text[:sep])
+	parsed_h, h_ok := strconv.parse_int(text[sep + 1:])
+	if !w_ok || !h_ok || parsed_w <= 0 || parsed_h <= 0 {
+		return 0, 0, false
+	}
+	return parsed_w, parsed_h, true
 }
 
 // --- shared helpers --------------------------------------------------------

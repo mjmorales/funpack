@@ -169,13 +169,18 @@ Binding :: struct {
 	source: string, // the device builder call, e.g. "keys_axis(Key::W,Key::S)"
 }
 
-// Entrypoint is the §15 runtime wiring: pipeline ↔ tick ↔ bindings. tick_hz is
-// the single fixed tick rate (60 for pong); there are no multi-rate ticks.
+// Entrypoint is the §15 runtime wiring: pipeline ↔ tick ↔ logical ↔ bindings.
+// tick_hz is the single fixed tick rate (60 for pong); there are no multi-rate
+// ticks. logical_w/logical_h are the fixed logical draw space (§20 §3) in
+// integer world units — the extent the present pass scales and letterboxes to
+// the window.
 Entrypoint :: struct {
-	name:     string,
-	pipeline: string,
-	tick_hz:  int,
-	bindings: string, // the bindings function name
+	name:      string,
+	pipeline:  string,
+	tick_hz:   int,
+	logical_w: int,
+	logical_h: int,
+	bindings:  string, // the bindings function name
 }
 
 // Project_Meta is the §4 (project.fcfg) identity: name + version. No build clock,

@@ -29,10 +29,11 @@ load_golden :: proc(t: ^testing.T) -> (program: Program, ok: bool) {
 	return loaded, true
 }
 
-// The version gate is exact-match: the golden's stamp is v3, and the loader
+// The version gate is exact-match: the golden's stamp is v4, and the loader
 // builds against exactly that. A wrong stamp or version is refused, never parsed
-// (§1). v3 is the accept case (the binding source-form schema bump); v2 and any
-// future v4 are mismatches the loader refuses before reading any payload.
+// (§1). v4 is the accept case (the entrypoint logical-extent schema bump); v3
+// and any future v5 are mismatches the loader refuses before reading any
+// payload.
 @(test)
 test_load_version_gate :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
@@ -41,14 +42,14 @@ test_load_version_gate :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, program.schema_version, ARTIFACT_SCHEMA_VERSION)
 
-	// A v2 stamp is a mismatch — refused before any payload.
-	old_version := "funpack-artifact 2\n[meta 0]\n"
+	// A v3 stamp is a mismatch — refused before any payload.
+	old_version := "funpack-artifact 3\n[meta 0]\n"
 	_, old_err := load_program(old_version, context.temp_allocator)
 	testing.expect_value(t, old_err, Artifact_Error.Version_Mismatch)
 
-	// A FUTURE version (v4) is equally a mismatch — the gate is exact, not
+	// A FUTURE version (v5) is equally a mismatch — the gate is exact, not
 	// floor-or-ceiling.
-	future_version := "funpack-artifact 4\n[meta 0]\n"
+	future_version := "funpack-artifact 5\n[meta 0]\n"
 	_, future_err := load_program(future_version, context.temp_allocator)
 	testing.expect_value(t, future_err, Artifact_Error.Version_Mismatch)
 
@@ -423,8 +424,9 @@ test_load_bindings :: proc(t: ^testing.T) {
 	testing.expect_value(t, program.bindings[2].source, "keys_axis(Key::Up,Key::Down)")
 }
 
-// The §15 entrypoint wiring: pipeline ↔ tick ↔ bindings, with the single fixed
-// 60hz tick rate.
+// The §15 entrypoint wiring: pipeline ↔ tick ↔ logical ↔ bindings, with the
+// single fixed 60hz tick rate and the §20 §3 logical draw space (pong's
+// 160x120) in integer world units.
 @(test)
 test_load_entrypoint :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
@@ -434,7 +436,28 @@ test_load_entrypoint :: proc(t: ^testing.T) {
 	testing.expect_value(t, program.entrypoint.name, "main")
 	testing.expect_value(t, program.entrypoint.pipeline, "Pong")
 	testing.expect_value(t, program.entrypoint.tick_hz, 60) // the one fixed tick
+	testing.expect_value(t, program.entrypoint.logical_w, 160)
+	testing.expect_value(t, program.entrypoint.logical_h, 120)
 	testing.expect_value(t, program.entrypoint.bindings, "bindings")
+}
+
+// parse_logical_field pins the §15 logical:WxH conversion directly: the WxH
+// split into positive integer world units, and the closed rejections — a zero
+// dimension, a separator-less token, and a non-integer side never produce a
+// degenerate letterbox extent.
+@(test)
+test_parse_logical_field_v4 :: proc(t: ^testing.T) {
+	w, h, ok := parse_logical_field("160x120")
+	testing.expect(t, ok)
+	testing.expect_value(t, w, 160)
+	testing.expect_value(t, h, 120)
+
+	_, _, zero_ok := parse_logical_field("160x0")
+	testing.expect(t, !zero_ok)
+	_, _, no_sep_ok := parse_logical_field("160")
+	testing.expect(t, !no_sep_ok)
+	_, _, junk_ok := parse_logical_field("axb")
+	testing.expect(t, !junk_ok)
 }
 
 // The empty runtime substrate: new_world builds one Thing_Table per declared
