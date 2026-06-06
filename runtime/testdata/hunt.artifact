@@ -1,0 +1,372 @@
+funpack-artifact 2
+[meta 2]
+project hunt
+version L5:0.1.0
+[enums 2]
+enum Drive Axis 1
+variant Move unit
+enum Hunt - 3
+variant Patrol unit
+variant Chase unit
+variant Search unit
+[data 0]
+[signals 0]
+[things 2]
+thing Player false 1 1
+gtag L6:player
+field pos Vec2 -
+thing Hunter false 1 5
+gtag L2:ai
+field pos Vec2 -
+field home Vec2 -
+field ai Hunt =
+field last_seen Vec2 =
+field search_t Fixed =0
+[functions 13]
+function step_to fn 3 return:Vec2 4 span:hunt:40
+param from Vec2
+param to Vec2
+param speed Fixed
+node let delta 1
+node binary sub 2
+node name to 0
+node name from 0
+node let d 1
+node call 2
+node name length 0
+node name delta 0
+node if_return 2
+node binary le 2
+node name d 0
+node name speed 0
+node name to 0
+node return 1
+node binary add 2
+node name from 0
+node binary mul 2
+node name delta 0
+node binary div 2
+node name speed 0
+node name d 0
+function visible fn 2 return:Option[Vec2] 1 span:hunt:49
+param from Vec2
+param players View[Player]
+node return 1
+node match 2 5
+node call 3
+node name first 0
+node name players 0
+node lambda 1 p 1
+node binary le 2
+node call 2
+node name length 0
+node binary sub 2
+node field pos 1
+node name p 0
+node name from 0
+node name SIGHT 0
+node arm variant_binds Option Some 1 p
+node variant Option Some true 1
+node field pos 1
+node name p 0
+node arm bare_variant Option None 0
+node variant Option None false 0
+function patrol fn 2 return:Hunter 1 span:hunt:58
+param self Hunter
+param seen Option[Vec2]
+node return 1
+node match 2 5
+node name seen 0
+node arm variant_binds Option Some 1 p
+node with 2 3
+node name self 0
+node recfield ai 1
+node variant Hunt Chase false 0
+node recfield last_seen 1
+node name p 0
+node arm bare_variant Option None 0
+node with 1 2
+node name self 0
+node recfield pos 1
+node call 4
+node name step_to 0
+node field pos 1
+node name self 0
+node field home 1
+node name self 0
+node name H_SPEED 0
+function chase fn 2 return:Hunter 1 span:hunt:67
+param self Hunter
+param seen Option[Vec2]
+node return 1
+node match 2 5
+node name seen 0
+node arm variant_binds Option Some 1 p
+node with 2 3
+node name self 0
+node recfield pos 1
+node call 4
+node name step_to 0
+node field pos 1
+node name self 0
+node name p 0
+node name H_SPEED 0
+node recfield last_seen 1
+node name p 0
+node arm bare_variant Option None 0
+node with 2 3
+node name self 0
+node recfield ai 1
+node variant Hunt Search false 0
+node recfield search_t 1
+node name SEARCH_TIME 0
+function search fn 3 return:Hunter 1 span:hunt:76
+param self Hunter
+param seen Option[Vec2]
+param dt Fixed
+node return 1
+node match 2 5
+node name seen 0
+node arm variant_binds Option Some 1 p
+node with 2 3
+node name self 0
+node recfield ai 1
+node variant Hunt Chase false 0
+node recfield last_seen 1
+node name p 0
+node arm bare_variant Option None 0
+node call 3
+node name seek 0
+node name self 0
+node name dt 0
+function seek fn 2 return:Hunter 3 span:hunt:85
+param self Hunter
+param dt Fixed
+node let t 1
+node binary sub 2
+node field search_t 1
+node name self 0
+node name dt 0
+node if_return 2
+node binary le 2
+node name t 0
+node fixed 0 0
+node with 2 3
+node name self 0
+node recfield ai 1
+node variant Hunt Patrol false 0
+node recfield search_t 1
+node fixed 0 0
+node return 1
+node with 2 3
+node name self 0
+node recfield pos 1
+node call 4
+node name step_to 0
+node field pos 1
+node name self 0
+node field last_seen 1
+node name self 0
+node name H_SPEED 0
+node recfield search_t 1
+node name t 0
+function hunter_color fn 1 return:Color 1 span:hunt:114
+param ai Hunt
+node return 1
+node match 3 7
+node name ai 0
+node arm bare_variant Hunt Patrol 0
+node variant Color Green false 0
+node arm bare_variant Hunt Chase 0
+node variant Color Red false 0
+node arm bare_variant Hunt Search 0
+node variant Color White false 0
+function SIGHT const 0 return:Fixed 1 span:hunt:16
+node return 1
+node fixed 128849018880 0
+function H_SPEED const 0 return:Fixed 1 span:hunt:18
+node return 1
+node fixed 4294967296 0
+function P_SPEED const 0 return:Fixed 1 span:hunt:20
+node return 1
+node fixed 343597383680 0
+function SEARCH_TIME const 0 return:Fixed 1 span:hunt:22
+node return 1
+node fixed 8589934592 0
+function bindings bindings 0 return:Bindings 1 span:hunt:140
+node return 1
+node call 4
+node field axis 1
+node call 4
+node field axis 1
+node call 1
+node field empty 1
+node name Bindings 0
+node variant PlayerId P1 false 0
+node variant Drive Move false 0
+node call 1
+node name wasd 0
+node variant PlayerId P1 false 0
+node variant Drive Move false 0
+node call 2
+node name stick 0
+node variant Stick Left false 0
+function setup startup 0 return:[Spawn] 1 span:hunt:148
+node return 1
+node list 3 3
+node call 2
+node name Spawn 0
+node record Player 1 1
+node recfield pos 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 343597383680 0
+node recfield y 1
+node fixed 429496729600 0
+node call 2
+node name Spawn 0
+node record Hunter 2 2
+node recfield pos 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 171798691840 0
+node recfield y 1
+node fixed 171798691840 0
+node recfield home 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 171798691840 0
+node recfield y 1
+node fixed 171798691840 0
+node call 2
+node name Spawn 0
+node record Hunter 2 2
+node recfield pos 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 515396075520 0
+node recfield y 1
+node fixed 171798691840 0
+node recfield home 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 515396075520 0
+node recfield y 1
+node fixed 171798691840 0
+[behaviors 4]
+behavior think on:Hunter stage:ai contract:Update 1 3 1 2
+gtag L2:ai
+param self Hunter
+param players View[Player]
+param time Time
+emit Hunter
+node let seen 1
+node call 3
+node name visible 0
+node field pos 1
+node name self 0
+node name players 0
+node return 1
+node match 3 7
+node field ai 1
+node name self 0
+node arm bare_variant Hunt Patrol 0
+node call 3
+node name patrol 0
+node name self 0
+node name seen 0
+node arm bare_variant Hunt Chase 0
+node call 3
+node name chase 0
+node name self 0
+node name seen 0
+node arm bare_variant Hunt Search 0
+node call 4
+node name search 0
+node name self 0
+node name seen 0
+node field dt 1
+node name time 0
+behavior drive on:Player stage:control contract:Update 1 3 1 1
+gtag L6:player
+param self Player
+param input Input
+param time Time
+emit Player
+node return 1
+node with 1 2
+node name self 0
+node recfield pos 1
+node binary add 2
+node field pos 1
+node name self 0
+node binary mul 2
+node binary mul 2
+node call 3
+node field axis 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Drive Move false 0
+node name P_SPEED 0
+node field dt 1
+node name time 0
+behavior draw_hunter on:Hunter stage:render contract:Render 1 1 1 1
+gtag L6:render
+param self Hunter
+emit [Draw]
+node return 1
+node list 1 1
+node record Draw::Rect 3 3
+node recfield at 1
+node field pos 1
+node name self 0
+node recfield size 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 34359738368 0
+node recfield y 1
+node fixed 34359738368 0
+node recfield color 1
+node call 2
+node name hunter_color 0
+node field ai 1
+node name self 0
+behavior draw_player on:Player stage:render contract:Render 1 1 1 1
+gtag L6:render
+param self Player
+emit [Draw]
+node return 1
+node list 1 1
+node record Draw::Rect 3 3
+node recfield at 1
+node field pos 1
+node name self 0
+node recfield size 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 25769803776 0
+node recfield y 1
+node fixed 25769803776 0
+node recfield color 1
+node variant Color White false 0
+[pipeline_flattened 5]
+step 0 stage:startup behavior:setup
+step 1 stage:control behavior:drive
+step 2 stage:ai behavior:think
+step 3 stage:render behavior:draw_player
+step 4 stage:render behavior:draw_hunter
+[signal_routing 0]
+[setup 3]
+spawn Player 1
+set pos =vec2 343597383680 429496729600
+spawn Hunter 2
+set pos =vec2 171798691840 171798691840
+set home =vec2 171798691840 171798691840
+spawn Hunter 2
+set pos =vec2 515396075520 171798691840
+set home =vec2 515396075520 171798691840
+[bindings 2]
+bind axis P1 Drive::Move source:wasd()
+bind axis P1 Drive::Move source:stick(Stick::Left)
+[entrypoint 1]
+entrypoint main pipeline:Hunt tick_hz:60 bindings:bindings
