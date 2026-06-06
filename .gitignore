@@ -14,3 +14,9 @@ runtime/funpack-live
 
 # live sub-task worktrees (claude-prove worktree create)
 .claude/worktrees/
+
+# live-session outputs beside the testdata artifacts (regenerable by playing;
+# committed goldens are *_golden.replay / *_golden.digest and stay tracked)
+runtime/testdata/*.replay
+!runtime/testdata/*_golden.replay
+runtime/testdata/*.saves/
