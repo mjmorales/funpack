@@ -81,6 +81,17 @@ run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline
 // becomes index-aware (stage_typecheck_indexed), and the downstream stages read
 // the Typed_Ast unchanged (their cross-module names are already resolved into it).
 run_module_pipeline :: proc(source: string, index: Module_Index) -> (report: Test_Report, err: Pipeline_Error) {
+	return run_module_pipeline_evaled(source, index, nil)
+}
+
+// run_module_pipeline_evaled is run_module_pipeline plus a project-wide EVAL
+// surface (one Module_Eval per sibling user module), so a test reaching a
+// cross-module const (`assets.coin_sfx`) evaluates it in its owning module's
+// environment. modules = nil reduces it to run_module_pipeline — the cross-module
+// eval arm never fires — so the single-source and per-module typecheck paths are
+// unchanged. Only the evaluate stage becomes eval-surface-aware; every prior stage
+// is identical.
+run_module_pipeline_evaled :: proc(source: string, index: Module_Index, modules: []Module_Eval) -> (report: Test_Report, err: Pipeline_Error) {
 	tokens := stage_lex(source)
 	ast, parse_err := stage_parse(tokens)
 	if parse_err != .None {
@@ -100,7 +111,7 @@ run_module_pipeline :: proc(source: string, index: Module_Index) -> (report: Tes
 	if verdict := stage_flatten(typed); verdict.err != .None {
 		return Test_Report{}, .Closure_Failed
 	}
-	result := stage_evaluate(typed)
+	result := stage_evaluate_indexed(typed, modules)
 	return stage_report(result), .None
 }
 
@@ -155,10 +166,11 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 	}
 
 	index := build_module_index_typed(modules, asts)
+	eval_modules := build_module_eval_surface(modules, asts, index)
 
 	report := Project_Report{}
 	for source, i in sources {
-		module_report, err := run_module_pipeline(source_texts[i], index)
+		module_report, err := run_module_pipeline_evaled(source_texts[i], index, eval_modules)
 		if err != .None {
 			report.module_err = err
 			report.failed_path = source.path
@@ -168,6 +180,38 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 		report.failed += module_report.failed
 	}
 	return report
+}
+
+// build_module_eval_surface resolves each module's (ast, env, bindings) against the
+// project-wide typed index — the EVAL surface a cross-module const reference reads
+// to evaluate a let initializer in its OWNING module's environment. It is the
+// evaluation analogue of build_module_index_typed: the name+type index typed the
+// cross-module reference, this carries the values behind it. A module whose own
+// imports/env do not resolve gets an empty (ast, env, bindings) entry — its own
+// per-module typecheck already failed the project, so the entry is never read. The
+// shared eval_modules slice is back-referenced on every entry so a const RHS can
+// itself reach a further sibling module.
+build_module_eval_surface :: proc(modules: []string, asts: []Ast, index: Module_Index) -> []Module_Eval {
+	entries := make([]Module_Eval, len(asts), context.temp_allocator)
+	for ast, i in asts {
+		entries[i] = Module_Eval{module = modules[i], ast = ast}
+		bindings, bind_err := resolve_imports_indexed(ast, index)
+		if bind_err != .None {
+			continue
+		}
+		env, env_err := resolve_env(ast, bindings, index)
+		if env_err != .None {
+			continue
+		}
+		entries[i].env = env
+		entries[i].bindings = bindings
+	}
+	// Back-reference the shared surface onto every entry so a cross-module const
+	// whose initializer reaches a further sibling resolves through the same slice.
+	for i in 0 ..< len(entries) {
+		entries[i].modules = entries
+	}
+	return entries
 }
 
 stage_report :: proc(result: Eval_Result) -> Test_Report {

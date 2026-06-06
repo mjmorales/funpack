@@ -312,3 +312,114 @@ test_multi_module_cross_module_type_resolves :: proc(t: ^testing.T) {
 		testing.expect_value(t, user.kind, User_Kind.Thing)
 	}
 }
+
+// ── multi-module let-export (the §19 assets seam's typed handle constants) ──
+
+@(test)
+test_module_exports_module_level_let_as_const :: proc(t: ^testing.T) {
+	// A let-emitting seam (the §19 assets seam) exports its module-level `let`
+	// constants as .Const term-position bindings — the cross-module CONST surface a
+	// consumer reaches through `assets.coin_sfx`. collect_module_exports lifts each
+	// let into the export list; the typed index fills its declared type. In-memory,
+	// no spec checkout needed.
+	seam := "import engine.assets.{SoundHandle, MeshHandle}\n" +
+		"let coin: MeshHandle = MeshHandle{name: \"coin\"}\n" +
+		"let coin_sfx: SoundHandle = SoundHandle{name: \"coin_sfx\"}\n"
+	seam_ast, parse_err := stage_parse(stage_lex(seam))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	// The name-only index records the two lets as .Const exports (a behavior would
+	// not export — only types, fns, and lets do).
+	name_index := build_module_index_from_asts({"assets"}, {seam_ast})
+	entry, has_entry := module_index_lookup(name_index, "assets")
+	testing.expect(t, has_entry)
+	coin_sfx_export, exported := module_export_lookup(entry, "coin_sfx")
+	testing.expect(t, exported)
+	testing.expect_value(t, coin_sfx_export.kind, Module_Export_Kind.Const)
+	// The name-only index leaves the let type nil — only the typed index fills it.
+	testing.expect(t, coin_sfx_export.let_type == nil)
+
+	// The typed index fills each .Const export's declared type (the cross-module
+	// CONST surface): coin_sfx grounds to the SoundHandle engine type.
+	typed_index := build_module_index_typed({"assets"}, {seam_ast})
+	typed_entry, _ := module_index_lookup(typed_index, "assets")
+	coin_sfx_typed, _ := module_export_lookup(typed_entry, "coin_sfx")
+	testing.expect_value(t, coin_sfx_typed.kind, Module_Export_Kind.Const)
+	engine_type, is_engine := coin_sfx_typed.let_type.(^Engine_Type)
+	testing.expect(t, is_engine)
+	if is_engine {
+		testing.expect_value(t, engine_type.kind, Engine_Kind.SoundHandle)
+	}
+	// A .Const export binds as a .Value (the term-position value kind), so a
+	// member-group import of it populates Bindings identically to a stdlib value.
+	binding := module_export_binding("assets", coin_sfx_typed)
+	testing.expect_value(t, binding.kind, Decl_Kind.Value)
+	testing.expect_value(t, binding.module, "assets")
+}
+
+@(test)
+test_module_qualified_const_typechecks :: proc(t: ^testing.T) {
+	// Item (2): a module-qualified const reference (`assets.coin_sfx`) grounds to
+	// the let's declared type during typecheck. A consumer whole-module imports the
+	// seam (`import assets`) and references the const in a test; stage_typecheck
+	// (threaded the typed index) types the member access as SoundHandle through the
+	// module_const_type arm — the term-position analogue of module_record_schema.
+	// In-memory, no spec checkout needed.
+	seam := "import engine.assets.{SoundHandle}\n" +
+		"let coin_sfx: SoundHandle = SoundHandle{name: \"coin_sfx\"}\n"
+	seam_ast, _ := stage_parse(stage_lex(seam))
+
+	consumer := "import engine.assets.{SoundHandle, sound}\n" +
+		"import assets\n" +
+		"test \"cross-module const types\" {\n" +
+		"  assert assets.coin_sfx == sound(\"coin_sfx\")\n" +
+		"}\n"
+	consumer_ast, parse_err := stage_parse(stage_lex(consumer))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	index := build_module_index_typed({"assets", "consumer"}, {seam_ast, consumer_ast})
+
+	// The whole-module `import assets` binds the handle to the sibling user module.
+	bindings, bind_err := resolve_imports_indexed(consumer_ast, index)
+	testing.expect_value(t, bind_err, Type_Error.None)
+	handle, bound := bindings.names["assets"]
+	testing.expect(t, bound)
+	testing.expect_value(t, handle.kind, Decl_Kind.Module)
+	testing.expect_value(t, handle.module, "assets")
+
+	// module_const_type resolves the const's declared type through the handle.
+	const_type, found := module_const_type(index, bindings, "assets", "coin_sfx")
+	testing.expect(t, found)
+	engine_type, is_engine := const_type.(^Engine_Type)
+	testing.expect(t, is_engine)
+	if is_engine {
+		testing.expect_value(t, engine_type.kind, Engine_Kind.SoundHandle)
+	}
+
+	// The whole consumer typechecks clean — the `assets.coin_sfx == sound(...)`
+	// equality types (both sides are SoundHandle).
+	_, type_err := stage_typecheck_indexed(consumer_ast, index)
+	testing.expect_value(t, type_err, Type_Error.None)
+}
+
+@(test)
+test_module_qualified_unknown_member_rejected :: proc(t: ^testing.T) {
+	// Negative: an UNKNOWN member of a whole-module user handle is .Unknown_Member —
+	// the term-position analogue of a member-group import's unknown-member reject.
+	// `assets.not_a_const` names no export of the seam, so the closed module surface
+	// rejects it rather than silently typing it. In-memory, no spec checkout needed.
+	seam := "import engine.assets.{SoundHandle}\n" +
+		"let coin_sfx: SoundHandle = SoundHandle{name: \"coin_sfx\"}\n"
+	seam_ast, _ := stage_parse(stage_lex(seam))
+
+	consumer := "import assets\n" +
+		"test \"unknown member rejects\" {\n" +
+		"  assert assets.not_a_const == assets.not_a_const\n" +
+		"}\n"
+	consumer_ast, parse_err := stage_parse(stage_lex(consumer))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	index := build_module_index_typed({"assets", "consumer"}, {seam_ast, consumer_ast})
+	_, type_err := stage_typecheck_indexed(consumer_ast, index)
+	testing.expect_value(t, type_err, Type_Error.Unknown_Member)
+}
