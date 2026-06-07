@@ -2,7 +2,7 @@
 // pass folds a COMMITTED krognid tick into the deterministic keyed track scene the
 // engine reconciles its live voices against. These tests run a HAND-BUILT krognid
 // program (no artifact — the krognid.artifact is the funpack emission side's leaf,
-// team Lore #14 build order) whose `locomotion` behavior body mirrors stroll.fun
+// and the emission golden owns the artifact bytes) whose `locomotion` behavior body mirrors stroll.fun
 // verbatim in §2.7 node form, so the interpreter folds krognid's REAL audio
 // decomposition: the speed gate (`if self.speed == 0.0 { return [] }`) and the
 // keyed stride loop `Audio.track("stride", sound("krognid_step")).pitch(0.6 +

@@ -521,6 +521,14 @@ when #config(FUNPACK_LIVE, false) {
 			return 1
 		}
 
+		// The §22 live audio boundary: open the scene→device reconciler alongside the
+		// render device. FAIL-CLOSED like every other audio open here — a machine with
+		// no audio device (audio_live_open's InitSubSystem fails) runs the session
+		// SILENT, never faulting (audio is an output, never on the determinism path).
+		// The per-frame audio_live_apply below tolerates the empty voice table, so a
+		// silent session still folds and presents identically.
+		live_audio, _ := audio_live_open()
+
 		// Build the determinism seam exactly as live_capture does: the bindings table
 		// over the identity overlay, the injected queue the live poll feeds, the
 		// replay writer pinned to the content-hashed identity, the empty world stepped
@@ -596,6 +604,13 @@ when #config(FUNPACK_LIVE, false) {
 			version, carrier = step_tick_persist(&program, version, snapshot, time, carrier, context.allocator, seeded ? &rng : nil)
 			draw := render_version(&program, version, snapshot, time)
 			present_frame(device.renderer, draw, board, window)
+			// Project the COMMITTED tick's §22 keyed audio scene off the same version
+			// the render projection reads, and reconcile the live voice table against
+			// it (§22 §1 level-triggered start/stop/bend). Like render, this reads the
+			// committed version + this tick's input snapshot + the shared time record
+			// and never feeds back into the sim fold — audio is a present-boundary
+			// output, not a determinism input.
+			audio_live_apply(&live_audio, audio_version(&program, version, snapshot, time))
 			record_tick(&writer, snapshot)
 
 			delete(prev_held)
@@ -616,6 +631,9 @@ when #config(FUNPACK_LIVE, false) {
 			fmt.printfln("wrote replay log %s", out_path)
 		}
 		live_device_close(device)
+		// Tear down the live audio backend alongside the render device: stop every
+		// sounding voice (pause + close each device) and quit SDL's audio subsystem.
+		audio_live_close(&live_audio)
 		return 0
 	}
 

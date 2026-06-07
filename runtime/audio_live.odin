@@ -134,6 +134,14 @@ when #config(FUNPACK_LIVE, false) {
 	// voice, then unpauses it so it sounds. A device that fails to open is skipped
 	// (the voice simply does not register — fail-closed, no fault), so a transient
 	// device error drops one voice rather than crashing the session.
+	//
+	// ONE DEVICE PER VOICE is a DELIBERATE krognid-scoped seam (krognid sounds one
+	// stride voice), NOT the final mixer architecture: a future multi-voice game
+	// mixes all voices into ONE output device, and this reconciler's table would then
+	// hold mixer voice SLOTS (gain/pitch/clip per slot) fed into a single device's
+	// callback, not one SDL device per key. The start/stop/bend reconciliation
+	// lifecycle is unchanged across that seam; only what a table entry owns moves
+	// from an SDL device to a mixer slot.
 	audio_voice_start :: proc(live: ^Live_Audio, track: Audio_Track) {
 		want := live.spec
 		got: sdl.AudioSpec
