@@ -427,6 +427,13 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 // one set, so the contextual classification lives in a single place. `on` is a
 // contextual keyword too but is a behavior-header separator, never a
 // declaration opener, so it is recognized by parse_behavior alone.
+//
+// `query` and `mut` are §2 contextual keywords too and ARE declaration openers in
+// the grammar (a query-declaration; `mut data`, §03 §7) — but neither production
+// exists (no query-decl parser; emit_data hardcodes mut=false), so they are
+// deliberately ABSENT from this set: a word arms a block here only if its declaration
+// parses. query/mut stay ordinary Idents in every position; when the productions land
+// they join this set (test_query_mut_contextual_value_only pins both directions).
 is_decl_opener_keyword :: proc(text: string) -> bool {
 	switch text {
 	case "data", "enum", "thing", "singleton":

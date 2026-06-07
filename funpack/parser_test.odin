@@ -409,6 +409,64 @@ test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
 	testing.expect(t, !decl_ast.things[0].is_singleton)
 }
 
+// fun.ll1.md §2 also lists `query` and `mut` as contextual keywords, but unlike
+// `thing`/`singleton`/`data`/`enum` their DECLARATION productions do not exist (no
+// query-declaration; `mut data` (§03 §7) is unparsed — emit_data hardcodes mut=false).
+// They are therefore NOT in is_decl_opener_keyword: a word arms a block only if its
+// declaration parses. This pins both directions — the value half (value-position
+// legality, since query/mut never were hard keywords) and the absent-declaration half
+// (a module-level `query`/`mut` opener has no production, so it is a clean
+// Unexpected_Token, not a half-parsed declaration). When the productions land, the
+// declaration-position expectations flip with them.
+@(test)
+test_query_mut_contextual_value_only :: proc(t: ^testing.T) {
+	// Value position: `let query = …` / `let mut = …` bind as ordinary snake_case
+	// names; `mut`'s value reads the bare name `query` as a Name_Expr.
+	source := "test \"query and mut bind\" {\n" +
+		"  let query = 1\n" +
+		"  let mut = query\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.tests), 1)
+	body := ast.tests[0].body
+	testing.expect_value(t, len(body), 2)
+	q_let, q_is := body[0].(Let_Node)
+	testing.expect(t, q_is)
+	if q_is {
+		testing.expect_value(t, q_let.name, "query")
+	}
+	m_let, m_is := body[1].(Let_Node)
+	testing.expect(t, m_is)
+	if m_is {
+		testing.expect_value(t, m_let.name, "mut")
+		name_expr, is_name := m_let.value.(^Name_Expr)
+		testing.expect(t, is_name)
+		if is_name {
+			testing.expect_value(t, name_expr.name, "query")
+			testing.expect_value(t, name_expr.class, Ident_Class.Snake_Case)
+		}
+	}
+
+	// Field-name position: both legal as data field names, Idents the field grammar
+	// consumes.
+	field_ast, field_err := stage_parse(stage_lex("data Q { query: Int, mut: Bool }\n"))
+	testing.expect_value(t, field_err, Parse_Error.None)
+	testing.expect_value(t, len(field_ast.datas), 1)
+	testing.expect_value(t, len(field_ast.datas[0].fields), 2)
+	testing.expect_value(t, field_ast.datas[0].fields[0].name, "query")
+	testing.expect_value(t, field_ast.datas[0].fields[1].name, "mut")
+
+	// Declaration position is DEFERRED: a module-level `query`/`mut` opener has no
+	// production (parse_contextual_declaration dispatches only data/enum/thing/
+	// singleton), so each is a clean Unexpected_Token — the guard that keeps the
+	// deferral honest until the productions land.
+	_, q_decl_err := stage_parse(stage_lex("query Recent { since: Int }\n"))
+	testing.expect_value(t, q_decl_err, Parse_Error.Unexpected_Token)
+	_, m_decl_err := stage_parse(stage_lex("mut Board { score: Int }\n"))
+	testing.expect_value(t, m_decl_err, Parse_Error.Unexpected_Token)
+}
+
 @(test)
 test_parse_thing_and_singleton :: proc(t: ^testing.T) {
 	// `thing` and `singleton` share the body grammar; only the is_singleton
