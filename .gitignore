@@ -20,3 +20,4 @@ runtime/funpack-live
 runtime/testdata/*.replay
 !runtime/testdata/*_golden.replay
 runtime/testdata/*.saves/
+.prove-wt-slug.txt
