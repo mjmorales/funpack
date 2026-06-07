@@ -823,9 +823,14 @@ step_tick :: proc(
 // fold itself.
 run_pipeline_fold :: proc(interp: ^Interp, state: ^Tick_State, program: ^Program) {
 	for step in program.pipeline {
-		// Startup ran pre-tick-0; render's [Draw] projection is not produced by this
-		// fold — the executed interior stages are control/collision/scoring.
-		if step.stage == "startup" || step.stage == "render" {
+		// Startup ran pre-tick-0; render's [Draw] projection and audio's [Audio]
+		// keyed-track scene are TERMINAL projections produced post-commit (render.odin
+		// / audio.odin), not interior writes — the executed interior stages are
+		// control/collision/scoring. The level-triggered keyed Audio is the deferred
+		// twin of the one-shot Sound: it is the audio: slot's return, never folded into
+		// tick state here (§22 §2; the is_any_command_list exclusion the funpack side
+		// keys on routes audio: to its own deferred slot).
+		if step.stage == "startup" || step.stage == "render" || step.stage == "audio" {
 			continue
 		}
 		// The §11 §3 `physics:` stage is ENGINE-CLOSED: instead of a user
