@@ -71,32 +71,51 @@ GOLDEN_REPLAY_LOG := #load("testdata/pong_golden.replay", string)
 GOLDEN_EXPECTED_DIGEST := #load("testdata/pong_golden.digest", string)
 
 // GOLDEN_SESSION_TICKS is the scripted session length: long enough that the ball
-// crosses an edge and serves, so the recorded run folds the scoring + serve +
-// signal-route paths, not a straight-line advance — the same non-trivial shape the
-// replay re-fold test exercises.
+// crosses an edge and serves AND meets a paddle inside the contact rail, so the
+// recorded run folds the paddle-bounce + scoring + serve + signal-route paths, not
+// a straight-line advance — the same non-trivial shape the replay re-fold test
+// exercises.
 @(private = "file")
 GOLDEN_SESSION_TICKS :: 600
 
 // GOLDEN_STEER is pong's Steer::Move axis action — ActionId 0, the sole Axis
-// variant in the declaration walk. The scripted session drives the left paddle
-// through it so the committed state evolves tick to tick and the per-tick digests
-// are distinct.
+// variant in the declaration walk. The scripted session drives the RIGHT paddle (P2)
+// through it so the paddle meets the ball inside the §65 overlaps contact rail, the
+// committed state evolves tick to tick, and the per-tick digests are distinct.
 @(private = "file")
 GOLDEN_STEER :: ActionId(0)
 
-// golden_session_inputs builds the scripted input session the golden fixtures are
-// generated from and the live-vs-replay test drives: P1 holds Steer::Move at +1
-// for the first half, then releases it — the left paddle moves then sits while the
-// ball free-runs and serves. The SAME sequence drives the live capture and is
-// recorded for the re-fold, so the two captures must agree; it is also the sole
-// source the committed golden log is regenerated from, so the fixtures stay
-// reproducible from this one definition.
+// GOLDEN_STEER_TICKS is how long P2 holds Steer::Move at +1 (down) before releasing
+// it. With the right paddle spawned at y=60 and the §50 ball cycling through the P2
+// column (x=152) at y≈99 every ~69 ticks, holding down for this many ticks settles
+// the paddle near y≈99 (within the §65 ±9.5 y contact rail) BEFORE the ball first
+// arrives at tick 58, so the ball bounces off the paddle instead of sailing past at
+// |dy|≈40. Steering CONTINUOUSLY would overshoot to the y=120 floor clamp and miss;
+// holding then releasing parks the paddle in the return path. The exact value is
+// determinism-load-bearing: it fixes which committed state the golden digest folds,
+// and pong_probe_test pins the resulting paddle-bounce tick.
 @(private = "file")
+GOLDEN_STEER_TICKS :: 26
+
+// golden_session_inputs builds the scripted input session the golden fixtures are
+// generated from and the live-vs-replay test drives: P2 holds Steer::Move at +1
+// (down) for the first GOLDEN_STEER_TICKS, then releases it — the right paddle
+// drops into the ball's return path and holds, so the ball bounces off it (a
+// paddle_bounce tick the digest folds) AND off the idle left paddle on the rebound,
+// while still crossing an edge to score and serve. The SAME sequence drives the live
+// capture and is recorded for the re-fold, so the two captures must agree; it is
+// also the sole source the committed golden log is regenerated from, so the fixtures
+// stay reproducible from this one definition. (pong_probe_test pins the exact paddle-
+// bounce ticks this session produces — the provable coverage, not assumed.)
+//
+// Package-visible (not file-private) so pong_probe_test drives the EXACT same run
+// the golden harness records — the same shared-session discipline yard_session_inputs
+// follows, so the probe and the golden can never fork on the input script.
 golden_session_inputs :: proc(allocator := context.allocator) -> []Input {
 	inputs := make([]Input, GOLDEN_SESSION_TICKS, allocator)
 	for i in 0 ..< GOLDEN_SESSION_TICKS {
-		if i < GOLDEN_SESSION_TICKS / 2 {
-			inputs[i] = with_value(empty(), .P1, GOLDEN_STEER, to_fixed(1))
+		if i < GOLDEN_STEER_TICKS {
+			inputs[i] = with_value(empty(), .P2, GOLDEN_STEER, to_fixed(1))
 		} else {
 			inputs[i] = empty()
 		}
