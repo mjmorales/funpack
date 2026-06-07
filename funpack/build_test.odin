@@ -164,6 +164,272 @@ test_build_malformed_tree_exits_two :: proc(t: ^testing.T) {
 	testing.expect_value(t, build_err, Build_Error.Malformed_Tree)
 }
 
+// test_build_writes_index_ndjson is the whole-stream acceptance: building the
+// live pong tree writes a .funpack/index.ndjson carrying BOTH §29 §2 record
+// kinds — the `project` record on line 1 and one `decl` record line per
+// declaration after it. It drives the same stage_build → write_build_products
+// path the CLI verb runs, reads the written product back from disk, and asserts
+// the multi-record stream landed (not just the single project record). SKIPs
+// loudly when the sibling pong checkout is absent.
+@(test)
+test_build_writes_index_ndjson :: proc(t: ^testing.T) {
+	root, ok := copy_pong_tree_to_temp()
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	product, build_err := stage_build(root, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.None)
+	if build_err != .None {
+		return
+	}
+	write_err := write_build_products(product, root)
+	testing.expect_value(t, write_err, Build_Write_Error.None)
+
+	// Read the written NDJSON back from disk: it must be the whole stream.
+	written, read_err := os.read_entire_file_from_path(product.index_path, context.temp_allocator)
+	testing.expect(t, read_err == nil)
+	if read_err != nil {
+		return
+	}
+	stream := string(written)
+	// The `project` record leads (its v2 schema_version stamp prefixes line 1),
+	// and the stream carries a `decl` record kind after it (a project-only field
+	// vs a decl-only field both appear) — the multi-record stream, not a lone
+	// project record.
+	testing.expect(t, strings.has_prefix(stream, "{\"schema_version\":2,"))
+	testing.expect(t, strings.contains(stream, "\"pipeline_flattened\":")) // project record
+	testing.expect(t, strings.contains(stream, "\"qualified_name\":")) // a decl record
+	testing.expect(t, strings.contains(stream, "\"dup_class\":")) // a decl-only field
+	// More than one record: a multi-line stream (the project line + decl lines).
+	testing.expect(t, strings.count(stream, "\n") > 1)
+	log.infof("build verb: pong index.ndjson carries the whole project+decl multi-record stream")
+}
+
+// test_build_index_byte_identical_twice proves the LARGER (multi-record) index
+// stream is still byte-identical across two builds (spec §09/§29): building the
+// same pong tree twice yields byte-identical index.ndjson, end to end through the
+// build seam. The stream concatenates the project record then the decl records in
+// fixed order with no map/clock/float, so the bytes carry no datum that varies
+// between builds. The no-checkout twin (test_build_double_build_identical_no_checkout)
+// covers host-independent determinism on the minimal tree.
+@(test)
+test_build_index_byte_identical_twice :: proc(t: ^testing.T) {
+	root, ok := copy_pong_tree_to_temp()
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	first, first_err := stage_build(root, context.temp_allocator)
+	testing.expect_value(t, first_err, Build_Error.None)
+	second, second_err := stage_build(root, context.temp_allocator)
+	testing.expect_value(t, second_err, Build_Error.None)
+	if first_err != .None || second_err != .None {
+		return
+	}
+	// The whole multi-record stream is byte-identical between the two builds.
+	testing.expect(t, first.index == second.index)
+	// It is genuinely the larger stream, not a lone project record (a decl record
+	// kind is present), so the determinism obligation covers the decl lines too.
+	testing.expect(t, strings.contains(first.index, "\"qualified_name\":"))
+	testing.expect(t, strings.count(first.index, "\n") > 1)
+	if first.index == second.index {
+		log.infof(
+			"build identical: double build of pong is byte-identical multi-record index NDJSON (%d bytes, %d records)",
+			len(first.index),
+			strings.count(first.index, "\n"),
+		)
+	}
+}
+
+// test_build_no_partial_product covers the §29 §3 no-partial-product floor with
+// the larger stream in play: a compile error on an otherwise-valid §14 tree fails
+// the checked pipeline, so stage_build returns before the write side and NEITHER
+// product lands — no artifact, no (multi-record) index.ndjson. The build emits
+// both products or none; a failure leaves no partial product set behind.
+@(test)
+test_build_no_partial_product :: proc(t: ^testing.T) {
+	root, ok := write_broken_pong_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, build_err := stage_build(root, context.temp_allocator)
+	// The broken source is rejected by the checked pipeline, so the build refuses
+	// with Compile_Failed and emits nothing — the exit-2 path.
+	testing.expect_value(t, build_err, Build_Error.Compile_Failed)
+
+	// No partial product: neither the artifact nor the index.ndjson is on disk.
+	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
+	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
+	testing.expect(t, !os.exists(artifact_path))
+	testing.expect(t, !os.exists(index_path))
+	log.infof("build no partial product: a compile error writes neither product (the whole-stream build is all-or-nothing)")
+}
+
+// ── multi-module + package build (Gap A + Gap C) ─────────────────────────
+
+// test_build_multi_module_arena is the multi-module-build acceptance: the live
+// arena tree (arena_world schema + the arena seam + arena_game behaviors, copied
+// to a temp root) builds exit 0 (Build_Error.None) and writes BOTH products. The
+// index stream carries decl records from EVERY module — the entrypoint module
+// (arena_game), the schema (arena_world), and the generated seam (arena) — and a
+// multi-module stream module-qualifies each decl by its §15 name (`arena_game.gate_logic`,
+// `arena_world.Player`, `arena.Arena`), so a name two modules both declare
+// disambiguates. It proves the §14-tree multi-module compile entry (one project-
+// wide module index feeding both products) end to end against a real tree. SKIPs
+// loudly when the sibling checkout is absent.
+@(test)
+test_build_multi_module_arena :: proc(t: ^testing.T) {
+	root, ok := copy_spec_tree_to_temp(resolve_arena_dir(), "arena", "FUNPACK_ARENA_DIR")
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	product, build_err := stage_build(root, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.None)
+	if build_err != .None {
+		return
+	}
+	write_err := write_build_products(product, root)
+	testing.expect_value(t, write_err, Build_Write_Error.None)
+
+	// A game writes BOTH products — the runtime artifact (the entrypoint module's,
+	// arena_game) and the multi-module Index Contract NDJSON.
+	testing.expect(t, os.exists(product.artifact_path))
+	testing.expect(t, os.exists(product.index_path))
+	testing.expect(t, strings.has_prefix(product.artifact, ARTIFACT_MAGIC))
+
+	// The index stream carries decl records from every module, EACH §15
+	// module-qualified (the multi-module qualification — a single-module game keeps
+	// bare names; a cross-module stream qualifies). The three modules' decls all
+	// appear, so the index is the whole-project stream, not the entrypoint's alone.
+	stream := product.index
+	testing.expect(t, strings.contains(stream, "\"qualified_name\":\"arena_game."))
+	testing.expect(t, strings.contains(stream, "\"qualified_name\":\"arena_world."))
+	testing.expect(t, strings.contains(stream, "\"qualified_name\":\"arena."))
+	log.infof("build multi-module arena: exit 0, both products written, index carries decl records from all 3 modules (arena_game + arena_world + arena seam)")
+}
+
+// test_index_stream_multi_module_order pins the multi-module DECL-BLOCK order: the
+// ENTRYPOINT module's block (arena_game, the entrypoints.fcfg `use <module>`
+// clause) leads, then the remaining modules in Project.sources order (sorted-by-
+// path via merge_sources — gen/arena.gen.fun ⇒ `arena` before src/arena_world.fun
+// ⇒ `arena_world`). So the first decl-block prefix is arena_game., the next module
+// prefix encountered is arena., then arena_world. — a deterministic permutation
+// off ONE module-index build, pinned EXACTLY so a re-order fails loudly. SKIPs
+// loudly when the sibling is absent.
+@(test)
+test_index_stream_multi_module_order :: proc(t: ^testing.T) {
+	dir := resolve_arena_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP build multi-module order: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling", dir)
+		return
+	}
+	stream, err, compiled := read_index_project(dir, context.temp_allocator)
+	testing.expect_value(t, err, Index_Contract_Error.None)
+	testing.expect(t, compiled)
+	if err != .None || !compiled {
+		return
+	}
+
+	// The module-block order: the FIRST decl is the entrypoint module's
+	// (arena_game), and the modules appear in the pinned order entrypoint → arena →
+	// arena_world (sources order, sorted-by-path, with the entrypoint hoisted).
+	order := module_prefix_order(stream)
+	testing.expect_value(t, len(order), 3)
+	if len(order) != 3 {
+		return
+	}
+	testing.expect_value(t, order[0], "arena_game")
+	testing.expect_value(t, order[1], "arena")
+	testing.expect_value(t, order[2], "arena_world")
+	log.infof("index multi-module order: decl blocks emit entrypoint-first then sorted-by-path remainder (%v)", order)
+}
+
+// test_build_numerics_package_index_only is the §30 §7 package-build acceptance:
+// the live numerics tree (a package — no entrypoints.fcfg, copied to a temp root)
+// builds exit 0 (Build_Error.None) and writes the Index Contract NDJSON ONLY. With
+// no entrypoint there is no runtime artifact to select, so artifact_path stays
+// empty, no artifact lands on disk, and the index is the build's single product —
+// the all-or-nothing write contract is per-project-kind (a package writes its
+// index or nothing). SKIPs loudly when the sibling is absent.
+@(test)
+test_build_numerics_package_index_only :: proc(t: ^testing.T) {
+	root, ok := copy_spec_tree_to_temp(resolve_golden_dir(), "numerics", "FUNPACK_NUMERICS_DIR")
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	product, build_err := stage_build(root, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.None)
+	if build_err != .None {
+		return
+	}
+
+	// A package emits NO runtime artifact: artifact_path is empty (no entrypoint to
+	// select), and the index is the single product.
+	testing.expect_value(t, product.artifact_path, "")
+	testing.expect_value(t, product.artifact, "")
+	testing.expect(t, product.index_path != "")
+	testing.expect(t, strings.has_prefix(product.index, "{\"schema_version\":2,"))
+	// The package's `project` record carries an empty entrypoints list and no
+	// pipeline (no entrypoint ⇒ empty pipeline_flattened) — governance data, §30 §7.
+	testing.expect(t, strings.contains(product.index, "\"entrypoints\":[]"))
+	testing.expect(t, strings.contains(product.index, "\"pipeline_flattened\":[]"))
+
+	write_err := write_build_products(product, root)
+	testing.expect_value(t, write_err, Build_Write_Error.None)
+
+	// On disk: the index landed, NO artifact (the package writes one product).
+	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
+	testing.expect(t, os.exists(product.index_path))
+	testing.expect(t, !os.exists(artifact_path))
+	log.infof("build package numerics: §30 §7 index-only build (exit 0, index.ndjson written, NO runtime artifact)")
+}
+
+// module_prefix_order extracts the distinct §15 module prefixes from the index
+// stream's decl lines in first-seen order — the multi-module decl-block order the
+// order test pins. A decl line's qualified_name is `<module>.<name>`, so the
+// prefix is the substring before the first dot; a bare (single-module) decl has no
+// dot and is skipped. First-seen dedup over the line order recovers the block
+// order without a map reaching the result, so the order is deterministic.
+module_prefix_order :: proc(stream: string) -> []string {
+	order := make([dynamic]string, 0, 4, context.temp_allocator)
+	seen := make(map[string]bool, context.temp_allocator)
+	needle :: "\"qualified_name\":\""
+	rest := stream
+	for {
+		idx := strings.index(rest, needle)
+		if idx < 0 {
+			break
+		}
+		rest = rest[idx + len(needle):]
+		end := strings.index(rest, "\"")
+		if end < 0 {
+			break
+		}
+		qualified := rest[:end]
+		rest = rest[end:]
+		dot := strings.index(qualified, ".")
+		if dot < 0 {
+			continue
+		}
+		prefix := qualified[:dot]
+		if prefix in seen {
+			continue
+		}
+		seen[prefix] = true
+		append(&order, prefix)
+	}
+	return order[:]
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 // copy_pong_tree_to_temp copies the live pong project tree into a fresh temp
@@ -172,16 +438,27 @@ test_build_malformed_tree_exits_two :: proc(t: ^testing.T) {
 // checkout is absent or the copy fails. The copy is recursive over the tree's
 // regular files, recreating the directory structure under the temp root.
 copy_pong_tree_to_temp :: proc() -> (root: string, ok: bool) {
-	src := resolve_pong_dir()
+	return copy_spec_tree_to_temp(resolve_pong_dir(), "pong", "FUNPACK_PONG_DIR")
+}
+
+// copy_spec_tree_to_temp copies a live spec example tree into a fresh temp root so
+// a build test can write derived products without touching the committed checkout
+// — the generic form copy_pong_tree_to_temp and the multi-module/package build
+// tests share. ok = false (with the golden SKIP semantics, naming the env
+// override) when the sibling checkout is absent or the copy fails. The copy is
+// recursive over the tree's regular files, recreating the directory structure
+// under the temp root; the temp-root label keeps concurrent build tests from
+// colliding.
+copy_spec_tree_to_temp :: proc(src: string, label: string, env_name: string) -> (root: string, ok: bool) {
 	if !os.is_dir(src) {
-		log.warnf("SKIP build pong: %s not found — set FUNPACK_PONG_DIR or check out funpack-spec as a sibling", src)
+		log.warnf("SKIP build %s: %s not found — set %s or check out funpack-spec as a sibling", label, src, env_name)
 		return "", false
 	}
-	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-pong")})
+	root = scratch_join({scratch_base(), tprintf_seq(fmt.tprintf("funpack-build-%s", label))})
 	remove_scratch_tree(root)
 	if !copy_tree(src, root) {
 		remove_scratch_tree(root)
-		log.warnf("SKIP build pong: cannot copy pong tree into %s", root)
+		log.warnf("SKIP build %s: cannot copy %s tree into %s", label, label, root)
 		return "", false
 	}
 	return root, true

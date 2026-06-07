@@ -417,17 +417,19 @@ test_golden_assets_pickups_parses :: proc(t: ^testing.T) {
 		return
 	}
 
-	// pickups.fun's declaration inventory: nine imports (prelude, math, core, world,
-	// render, audio, assets, list, and the whole-module `import assets` seam handle),
-	// one thing (Coin), one signal (Taken), three behaviors (advance_spin, on_pickup,
-	// draw_coin), one fn (setup), one pipeline (Pickups), one test. The counts are
-	// pinned to the live source on purpose — when the spec evolves, the counts change
-	// in lockstep; never loosen them to ranges.
-	testing.expect_value(t, len(ast.imports), 9)
+	// pickups.fun's declaration inventory: ten imports (prelude, input, math, core,
+	// world, render, audio, assets, list, and the whole-module `import assets` seam
+	// handle — engine.input is the §14 §4 bindings fn's), one thing (Coin), one signal
+	// (Taken), three behaviors (advance_spin, on_pickup, draw_coin), two fns (the §14
+	// §4 empty bindings fn + setup), one pipeline (Pickups), one test. The counts are
+	// pinned to the live source on purpose — when the spec evolves (the a522568 fix
+	// added the engine.input import and the bindings fn, moving imports 9→10 and fns
+	// 1→2), the counts change in lockstep; never loosen them to ranges.
+	testing.expect_value(t, len(ast.imports), 10)
 	testing.expect_value(t, len(ast.things), 1)
 	testing.expect_value(t, len(ast.signals), 1)
 	testing.expect_value(t, len(ast.behaviors), 3)
-	testing.expect_value(t, len(ast.fns), 1)
+	testing.expect_value(t, len(ast.fns), 2)
 	testing.expect_value(t, len(ast.pipelines), 1)
 	testing.expect_value(t, len(ast.tests), 1)
 	if parse_err == .None {

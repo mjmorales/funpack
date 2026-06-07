@@ -1,6 +1,25 @@
 version: '3'
 
+# warden's Go verbs come from the shared go.yml flatten-include, except
+# `test`: the cross-example acceptance sweep shells out to the funpack CLI
+# over a process boundary (spec §29 — warden never links the compiler), so
+# the binary it runs must be the one built from THIS tree, not whatever
+# `funpack` happens to sit on PATH. `test` is excluded from the flatten and
+# redefined below with a dependency on the funpack binary build, making the
+# gate hermetic: one `odin build` per `task test`, in exchange for killing
+# the stale/absent/version-skewed-binary failure mode.
 includes:
   base:
     taskfile: ../taskfiles/go.yml
     flatten: true
+    excludes: [test]
+  funpack:
+    taskfile: ../funpack
+    dir: ../funpack
+
+tasks:
+  test:
+    desc: Run the package tests against the freshly-built funpack binary
+    deps: [funpack:binary]
+    cmds:
+      - go test ./...

@@ -10,12 +10,12 @@
 // iteration, no float (spec §29 §1). Any change to which fields are emitted
 // is a contract RESHAPE — bump INDEX_SCHEMA_VERSION, never silently drift.
 //
-// This file owns the `project` record ONLY (spec §29 §2 names two record
-// kinds — `project` and per-declaration `decl`; the `decl` records and
-// warden's consumption are out of scope here). It is a DISTINCT surface from
-// the runtime binary artifact (artifact_format.odin): different consumer
-// (`warden`, not the runtime) and different transport (NDJSON, not the
-// length-prefixed byte format).
+// This file owns BOTH §29 §2 record kinds — the per-declaration `decl` record
+// and the whole-project `project` record (warden's decode/consumption side is
+// out of scope here). It is a DISTINCT surface from the runtime binary
+// artifact (artifact_format.odin): different consumer (`warden`, not the
+// runtime) and different transport (NDJSON, not the length-prefixed byte
+// format).
 //
 // AUTHORED fields project from the config tree: `entrypoints` (the
 // entrypoints.fcfg pipeline/tick/bindings wiring, §14 §4), `builds` (the
@@ -39,7 +39,104 @@ import "core:strings"
 // compatibility gate. Any change to the emitted field set is a contract
 // reshape that bumps this; it is independent of the runtime artifact's
 // ARTIFACT_SCHEMA_VERSION (a separate surface with its own version line).
-INDEX_SCHEMA_VERSION :: 1
+//
+// Version 2 adds the §29 §2 per-declaration `decl` record kind alongside the
+// `project` record — a deliberate schema reshape under closed-enum discipline
+// (a new record kind in the closed contract bumps the version, never silent
+// drift). The stamp leads BOTH record kinds, so a v2 stream carries v2 in
+// every line.
+INDEX_SCHEMA_VERSION :: 2
+
+// Index_Decl_Kind is the closed §29 §2 set of source DECLARATION FORMS the
+// per-declaration `decl` record reports — the kind taxonomy of what a
+// declaration IS in the source. It is a DISTINCT taxonomy from surface.odin's
+// Decl_Kind, which is the IMPORT-RESOLUTION binding kind (Module/Type_Name/
+// Func/Value — how a resolved name binds against the stdlib surface). The two
+// must not be conflated: one enumerates source declaration forms, the other
+// enumerates import-binding positions. The form set maps 1:1 onto the parser's
+// declaration collections — Data/Enum/Thing/Signal/Fn/Behavior/Pipeline/Let/
+// Test are the Ast.* collections, and Extern_Fn is the `is_extern` Fn (a
+// body-less §02/§26 native-boundary fn, a distinct kind from a bodied Fn). The
+// set is closed: a new declaration form is a schema-version bump, never a
+// silently-added string.
+Index_Decl_Kind :: enum {
+	Data,      // a `data` record declaration (§03)
+	Enum,      // an `enum` declaration (§03)
+	Thing,     // a `thing` declaration (§06)
+	Signal,    // a `signal` declaration (§04)
+	Fn,        // a bodied free function (§02)
+	Extern_Fn, // a body-less `extern fn` native-boundary fn (§02/§26)
+	Behavior,  // a `behavior` declaration (§06)
+	Pipeline,  // a `pipeline` declaration (§07)
+	Let,       // a module-level `let` value binding (§02)
+	Test,      // a `test` declaration (§29 §1)
+}
+
+// Decl_Record is the closed, exact-match per-declaration `decl` record of the
+// Index Contract (spec §29 §2). Like the `project` record the field set is
+// fixed and ALL fields are mandatory — there are no optional fields, an absent
+// value is the empty list / false / "" never an omitted key. Field declaration
+// order IS the emitted JSON key order (a pure struct marshal), so the
+// schema_version stamp leads. The §29 §2 inline field list, in order:
+//   - qualified_name — the module-qualified declaration name (§15)
+//   - kind           — the source declaration form (closed Index_Decl_Kind)
+//   - file           — the source file path; "" in the single-source frontend
+//                      (the frontend compiles one source, so the path is not
+//                      yet threaded — lore #11)
+//   - span           — the 1-based source line of the declaration keyword, the
+//                      artifact-format §9 line-span convention the lexer and
+//                      Fn_Node/Let_Decl_Node already stamp
+//   - doc            — the attached `@doc` text (§05); "" when undocumented
+//   - gtags          — the attached `@gtag` registry tags (§05), authored order
+//   - stub           — a `@stub` directive flag (§05); the gameplay surface
+//                      does NOT yet parse it (the parser admits only @doc/@gtag,
+//                      see source_has_expose), so it is always false on the
+//                      current tree — mandatory-present, never omitted
+//   - todo           — a `@todo` directive flag (§05); always false for the
+//                      same reason as stub
+//   - debug          — the `@debug` probe names (§05); always [] for the same
+//                      reason — mandatory-present empty list, never omitted
+//   - emits          — the signal names this declaration emits (§04)
+//   - consumes       — the signal names this declaration consumes (§04)
+//   - calls          — the function names this declaration calls
+//   - dup_class      — the normalized-AST duplication-class hash (§29 §1, the
+//                      gates.odin dup_class hash domain)
+//   - mut_data       — the data-type names this declaration mutates (§08)
+// This story ships the SHAPE only — the type plus its NDJSON emitter and the
+// hand-built-record tests. No derivation from the AST and no disk emission yet;
+// those fill this fixed shape in a later story. It is the contract-reshape seam
+// every downstream `decl` story fills and what warden authors its decode path
+// against.
+Decl_Record :: struct {
+	schema_version: int,
+	qualified_name: string,
+	kind:           Index_Decl_Kind,
+	file:           string,
+	span:           int,
+	doc:            string,
+	gtags:          []string,
+	stub:           bool,
+	todo:           bool,
+	debug:          []string,
+	emits:          []string,
+	consumes:       []string,
+	calls:          []string,
+	dup_class:      u64,
+	mut_data:       []string,
+}
+
+// emit_decl_record encodes a `decl` record as one NDJSON line: the compact
+// JSON object followed by a single LF, mirroring emit_project_record's
+// one-object-per-line transport (spec §29 §2). The struct marshals in
+// field-declaration order with enum values as their names (use_enum_names), so
+// the schema_version key leads and the kind enum emits as a readable string. No
+// map is marshaled — every field is a scalar or a slice — so the bytes are
+// deterministic and a double emission of the same record is byte-identical.
+emit_decl_record :: proc(record: Decl_Record, allocator := context.allocator) -> string {
+	bytes, _ := json.marshal(record, {use_enum_names = true}, context.temp_allocator)
+	line := strings.concatenate({string(bytes), "\n"}, allocator)
+	return line
+}
 
 // Entrypoint_Record is one authored entrypoint's lifted wiring (§14 §4): the
 // entrypoint name and the root pipeline ↔ tick ↔ bindings it binds. tick_hz
@@ -587,15 +684,43 @@ fcfg_line_fields :: proc(line: string) -> []string {
 	return fields[:]
 }
 
-// read_index_project reads the §14 project tree and emits the Index Contract
-// `project` record's NDJSON line. It is the end-to-end seam: it reads the
-// project tree, compiles its single source through the lex → parse → typecheck
-// → flatten stages the `project` record's derived fields need, and projects the
-// authored config alongside. A malformed tree or a compile error returns
-// before emission — the `project` record is a fact about a source that
-// compiles, so a source that does not is not indexed here. The flatten input is
-// the typed AST's flattened pipeline; a source with no pipeline flattens to the
-// empty order and the record carries an empty pipeline_flattened.
+// Index_Module is one §14 source module compiled for the Index Contract: its
+// §15 path-derived module name and the typed AST + flattened pipeline BOTH
+// record kinds' derived fields read. The whole-project index builds one of these
+// per source — the `project` record reads the entrypoint module's pair, every
+// module's pair feeds its own `decl` block — so the multi-module stream is a fan
+// of per-module derivations off ONE project-wide module index.
+Index_Module :: struct {
+	module: string,
+	typed:  Typed_Ast,
+	flat:   Flattened_Pipeline,
+}
+
+// read_index_project reads the §14 project tree and emits the WHOLE Index
+// Contract NDJSON stream (spec §29 §2): the `project` record on line 1, then per
+// module a block of `decl` records in the fixed gate_units-style declaration
+// order (derive_decl_records). It is the end-to-end seam over EVERY project
+// source: it builds ONE project-wide module index (build_module_index_typed, the
+// run_project_pipeline precedent) so a multi-module tree (the arena example:
+// arena_world + the arena seam + arena_game) types cross-module, then derives
+// each module's typed AST + flattened pipeline against that one index — the same
+// build feeding both products' source-derived fields. The `project` record reads
+// the ENTRYPOINT module's pair (the `use <module>` clause of entrypoints.fcfg);
+// a package (no entrypoints.fcfg, §30 §7) has no entrypoint, so its `project`
+// record reads the first module's pair (sorted-by-path, the §15 module the
+// `project` record's source-derived fields project from). A malformed tree or
+// ANY module's compile error returns before emission — the records are facts
+// about a tree that compiles, so a tree that does not is not indexed here. The
+// stream is byte-stable (project line, then per-module decl blocks in fixed
+// module order, no map/clock/float), so two reads of the same tree are
+// byte-identical.
+//
+// MODULE-QUALIFICATION (lore #11): a SINGLE-module project's decls stay BARE —
+// the bare module name "" qualifies each decl to its bare name (`Board`), so a
+// single-module game's index bytes are unchanged from the pre-multi-module seam
+// (the green-four byte-identity floor). A MULTI-module project qualifies each
+// decl by its §15 module name (`arena_game.chase`), the §29 §2 module-qualified
+// name, so a cross-module index disambiguates a name two modules both declare.
 read_index_project :: proc(root: string, allocator := context.allocator) -> (ndjson: string, err: Index_Contract_Error, compiled: bool) {
 	identity, project_err := read_project(root)
 	if project_err != .None {
@@ -604,29 +729,173 @@ read_index_project :: proc(root: string, allocator := context.allocator) -> (ndj
 	if len(identity.sources) == 0 {
 		return "", .None, false
 	}
-	source_bytes, read_err := os.read_entire_file_from_path(identity.sources[0].path, context.temp_allocator)
-	if read_err != nil {
-		return "", .None, false
-	}
-	typed, flat, ok := compile_for_index(string(source_bytes))
+	index_modules, ok := compile_index_modules(identity.sources)
 	if !ok {
 		return "", .None, false
 	}
-	record, record_err := build_project_record(root, typed, flat)
+	// A single-module project's one decl block stays bare (lore #11): blank the
+	// module so each decl qualifies to its bare name, keeping the single-module
+	// index bytes byte-identical to the pre-multi-module seam. A multi-module
+	// project keeps each module's §15 name, so its decls qualify cross-module.
+	if len(index_modules) == 1 {
+		index_modules[0].module = ""
+	}
+	// MODULE ORDER: the entrypoint module's decl block leads, then the remaining
+	// modules in Project.sources order (merge_sources' sorted-by-path order). A
+	// package has no entrypoint, so its blocks emit in plain sources order. The
+	// entrypoint module's typed+flat back the `project` record's source-derived
+	// fields (pipeline_flattened, capabilities, gate_results); for a package the
+	// first module's pair backs them (no pipeline ⇒ empty pipeline_flattened).
+	entrypoint := entrypoint_module_name(root)
+	ordered := order_index_modules(index_modules, entrypoint)
+	record_src := ordered[0]
+	record, record_err := build_project_record(root, record_src.typed, record_src.flat)
 	if record_err != .None {
 		return "", record_err, false
 	}
-	return emit_project_record(record, allocator), .None, true
+	return emit_index_stream(record, ordered, allocator), .None, true
 }
 
-// compile_for_index drives a source through the lex → parse → typecheck →
-// flatten stages the `project` record's derived fields read, returning the
-// typed AST and the flattened pipeline. compiled is false on any parse,
-// typecheck, or flatten failure — the gate stage is intentionally not a hard
-// stop here (the gate VERDICTS are a derived field, so a gated source still
-// has a `project` record to emit), but a source that fails to parse, type, or
-// flatten has no derived shape to project. The flatten reads the typed AST, so
-// the routing graph and total order are available for the derived fields.
+// compile_index_modules builds one project-wide module index over EVERY §14
+// source (build_module_index_typed) and derives each module's typed AST +
+// flattened pipeline against it — the single index build the whole-project Index
+// Contract fans both products off. It mirrors run_project_pipeline's two-phase
+// shape: phase 1 reads + parses every source so the index sees the whole export
+// surface; phase 2 types each module index-aware (a cross-module import resolves)
+// and flattens it. ok is false on the first read/parse/typecheck/flatten failure
+// — a tree with any uncompilable module has no derived shape to index, the same
+// all-or-nothing floor the test verb honors (§29 §3). An empty index reduces the
+// per-module typecheck to the single-source path, so a one-module tree types
+// exactly as before.
+compile_index_modules :: proc(sources: []Source) -> (modules: []Index_Module, ok: bool) {
+	module_names := make([]string, len(sources), context.temp_allocator)
+	asts := make([]Ast, len(sources), context.temp_allocator)
+	for source, i in sources {
+		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
+		if read_err != nil {
+			return nil, false
+		}
+		ast, parse_err := stage_parse(stage_lex(string(bytes)))
+		if parse_err != .None {
+			return nil, false
+		}
+		module_names[i] = source.module
+		asts[i] = ast
+	}
+	index := build_module_index_typed(module_names, asts)
+	derived := make([]Index_Module, len(sources), context.temp_allocator)
+	for ast, i in asts {
+		typed, type_err := stage_typecheck_indexed(ast, index)
+		if type_err != .None {
+			return nil, false
+		}
+		verdict := stage_flatten(typed)
+		if verdict.err != .None {
+			return nil, false
+		}
+		derived[i] = Index_Module{module = module_names[i], typed = typed, flat = verdict.flat}
+	}
+	return derived, true
+}
+
+// order_index_modules orders the compiled modules for emission: the entrypoint
+// module first (when `entrypoint` names a module in the set), then the remaining
+// modules in their original Project.sources order (sorted-by-path). This is the
+// pinned module-order rule the multi-module `decl` stream emits in and the
+// `project` record's source-derived fields read off ordered[0]. An empty or
+// unmatched `entrypoint` (a package, §30 §7) leaves the plain sources order, so
+// the package stream's blocks follow the source set verbatim. The reorder is a
+// pure index permutation — no re-sort of the source list, no map — so the order
+// is deterministic for a given tree.
+order_index_modules :: proc(modules: []Index_Module, entrypoint: string) -> []Index_Module {
+	ordered := make([dynamic]Index_Module, 0, len(modules), context.temp_allocator)
+	if entrypoint != "" {
+		for m in modules {
+			if m.module == entrypoint {
+				append(&ordered, m)
+				break
+			}
+		}
+	}
+	for m in modules {
+		if entrypoint != "" && m.module == entrypoint {
+			continue
+		}
+		append(&ordered, m)
+	}
+	return ordered[:]
+}
+
+// entrypoint_module_name reads the §15 module the entrypoints.fcfg `use <module>`
+// clause names (§14 §4) — the module whose pipeline the runtime artifact emits
+// and whose source-derived fields the `project` record reads. An absent
+// entrypoints.fcfg (a package, §30 §7) or one that does not parse returns "" —
+// there is no entrypoint module to privilege, so the multi-module stream emits in
+// plain sources order. It reads only the `use` clause, never the entrypoint
+// blocks, so a malformed block (a value error the grammar catches downstream)
+// does not change the module the stream privileges.
+entrypoint_module_name :: proc(root: string) -> string {
+	path, _ := filepath.join({root, "funpack_configs", "entrypoints.fcfg"}, context.temp_allocator)
+	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	if read_err != nil {
+		return ""
+	}
+	parsed, parse_err := parse_entrypoints_fcfg(string(bytes))
+	if parse_err != .None {
+		return ""
+	}
+	return parsed.use_module
+}
+
+// emit_index_stream concatenates the whole Index Contract NDJSON stream from the
+// compiled modules: the `project` record line first, then per module a block of
+// `decl` record lines in the fixed gate_units-style order (derive_decl_records).
+// The modules emit in the order order_index_modules pinned — entrypoint module
+// first, then the remaining in sources order — and each decl is qualified by its
+// §15 module name (qualify_decl), so a multi-module stream's qualified_names are
+// `<module>.<name>` while a bare module name "" stays the bare decl name. Each
+// record marshals to its own one-object-per-line NDJSON via the shared emitters
+// and the lines join in emission order, so the stream is a byte-stable
+// concatenation — no re-sort, no map, no clock — and a double emission of the
+// same tree is byte-identical. The per-line strings are temp-allocated and the
+// joined result lands in `allocator`, matching emit_project_record's allocation
+// contract.
+emit_index_stream :: proc(
+	record: Project_Record,
+	modules: []Index_Module,
+	allocator := context.allocator,
+) -> string {
+	lines := make([dynamic]string, 0, 1 + total_decl_count(modules), context.temp_allocator)
+	append(&lines, emit_project_record(record, context.temp_allocator))
+	for m in modules {
+		decls := derive_decl_records(m.module, m.typed, m.flat)
+		for decl in decls {
+			append(&lines, emit_decl_record(decl, context.temp_allocator))
+		}
+	}
+	return strings.concatenate(lines[:], allocator)
+}
+
+// total_decl_count sums the declaration count across every compiled module — the
+// exact capacity for the stream's line vector (one project line plus this many
+// decl lines), so the concatenation makes no extra allocation.
+total_decl_count :: proc(modules: []Index_Module) -> int {
+	total := 0
+	for m in modules {
+		total += decl_count(m.typed.ast)
+	}
+	return total
+}
+
+// compile_for_index drives a SINGLE source through the lex → parse → typecheck →
+// flatten stages the `project` record's derived fields read, returning the typed
+// AST and the flattened pipeline. It is the single-source projection (empty
+// module index, bare module name "") the decl-derivation tests drive directly;
+// the whole-project seam uses compile_index_modules so a cross-module import
+// resolves. compiled is false on any parse, typecheck, or flatten failure — the
+// gate stage is intentionally not a hard stop here (the gate VERDICTS are a
+// derived field, so a gated source still has a `project` record to emit), but a
+// source that fails to parse, type, or flatten has no derived shape to project.
 compile_for_index :: proc(source: string) -> (typed: Typed_Ast, flat: Flattened_Pipeline, compiled: bool) {
 	ast, parse_err := stage_parse(stage_lex(source))
 	if parse_err != .None {

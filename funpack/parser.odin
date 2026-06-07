@@ -55,6 +55,7 @@ Test_Node :: struct {
 	name: string,
 	doc:  string, // the @doc directive preceding this test ("" when absent)
 	body: []Statement,
+	line: int,    // 1-based source line of the `test` keyword (artifact-format §9 span provenance)
 }
 
 // Type_Ref is the parse-only syntactic type the declaration grammar
@@ -124,6 +125,7 @@ Data_Node :: struct {
 	fields: []Field_Decl,
 	doc:    string,
 	gtags:  []string,
+	line:   int, // 1-based source line of the `data` keyword (artifact-format §9 span provenance)
 }
 
 Enum_Node :: struct {
@@ -132,6 +134,7 @@ Enum_Node :: struct {
 	variants: []Variant_Decl,
 	doc:      string,
 	gtags:    []string,
+	line:     int, // 1-based source line of the `enum` keyword (artifact-format §9 span provenance)
 }
 
 // Thing_Node carries both `thing` and `singleton` (spec §06 §1–2): a
@@ -144,6 +147,7 @@ Thing_Node :: struct {
 	fields:       []Field_Decl,
 	doc:          string,
 	gtags:        []string,
+	line:         int, // 1-based source line of the `thing`/`singleton` keyword (artifact-format §9 span provenance)
 }
 
 Signal_Node :: struct {
@@ -151,6 +155,7 @@ Signal_Node :: struct {
 	fields: []Field_Decl,
 	doc:    string,
 	gtags:  []string,
+	line:   int, // 1-based source line of the `signal` keyword (artifact-format §9 span provenance)
 }
 
 // Fn_Node is a top-level function or a behavior's reserved `step` entry
@@ -182,6 +187,7 @@ Behavior_Node :: struct {
 	step:   Fn_Node,
 	doc:    string,
 	gtags:  []string,
+	line:   int, // 1-based source line of the `behavior` keyword (artifact-format §9 span provenance)
 }
 
 // Pipeline_Stage is one ordered named stage of a pipeline (spec §07 §1).
@@ -205,6 +211,7 @@ Pipeline_Node :: struct {
 	stages: []Pipeline_Stage,
 	doc:    string,
 	gtags:  []string,
+	line:   int, // 1-based source line of the `pipeline` keyword (artifact-format §9 span provenance)
 }
 
 // Directives carries the @doc / @gtag prefix block attached to a
@@ -458,7 +465,7 @@ parse_import_group :: proc(p: ^Parser) -> (members: []string, err: Parse_Error) 
 }
 
 parse_test :: proc(p: ^Parser) -> (test: Test_Node, err: Parse_Error) {
-	expect(p, .Test) or_return
+	test_tok := expect(p, .Test) or_return
 	name_tok := expect(p, .String_Lit) or_return
 	expect(p, .L_Brace) or_return
 	skip_newlines(p)
@@ -477,7 +484,7 @@ parse_test :: proc(p: ^Parser) -> (test: Test_Node, err: Parse_Error) {
 		skip_newlines(p)
 	}
 	expect(p, .R_Brace) or_return
-	return Test_Node{name = name_tok.text, body = body[:]}, .None
+	return Test_Node{name = name_tok.text, body = body[:], line = test_tok.line}, .None
 }
 
 parse_assert :: proc(p: ^Parser) -> (node: Assert_Node, err: Parse_Error) {
@@ -525,30 +532,30 @@ parse_let_decl :: proc(p: ^Parser) -> (node: Let_Decl_Node, err: Parse_Error) {
 // kind is contextual — a bare UpperCamel name in the post-colon position,
 // never a reserved word.
 parse_data :: proc(p: ^Parser) -> (node: Data_Node, err: Parse_Error) {
-	expect(p, .Data) or_return
+	data_tok := expect(p, .Data) or_return
 	name := expect_type_name(p) or_return
 	kind := parse_optional_kind(p) or_return
 	fields := parse_field_list(p) or_return
-	return Data_Node{name = name, kind = kind, fields = fields}, .None
+	return Data_Node{name = name, kind = kind, fields = fields, line = data_tok.line}, .None
 }
 
 // parse_thing parses `thing Name { … }` and `singleton Name { … }`
 // (spec §06 §1–2); a singleton is told apart only by the is_singleton flag.
 parse_thing :: proc(p: ^Parser) -> (node: Thing_Node, err: Parse_Error) {
 	is_singleton := peek_kind(p) == .Singleton
-	advance(p) or_return // `thing` or `singleton`
+	thing_tok := advance(p) or_return // `thing` or `singleton`
 	name := expect_type_name(p) or_return
 	fields := parse_field_list(p) or_return
-	return Thing_Node{name = name, is_singleton = is_singleton, fields = fields}, .None
+	return Thing_Node{name = name, is_singleton = is_singleton, fields = fields, line = thing_tok.line}, .None
 }
 
 // parse_signal parses `signal Name { field: T }` (spec §03 §6, §06 §5) —
 // a data value the engine routes; its body is a field list like data.
 parse_signal :: proc(p: ^Parser) -> (node: Signal_Node, err: Parse_Error) {
-	expect(p, .Signal) or_return
+	signal_tok := expect(p, .Signal) or_return
 	name := expect_type_name(p) or_return
 	fields := parse_field_list(p) or_return
-	return Signal_Node{name = name, fields = fields}, .None
+	return Signal_Node{name = name, fields = fields, line = signal_tok.line}, .None
 }
 
 // parse_optional_kind reads a `: Kind` ascription after a type name
@@ -598,7 +605,7 @@ parse_field_list :: proc(p: ^Parser) -> (fields: []Field_Decl, err: Parse_Error)
 // `enum Steer: Axis { … }` (§03 §4). Variants are UpperCamel, newline- or
 // comma-separated.
 parse_enum :: proc(p: ^Parser) -> (node: Enum_Node, err: Parse_Error) {
-	expect(p, .Enum) or_return
+	enum_tok := expect(p, .Enum) or_return
 	name := expect_type_name(p) or_return
 	kind := parse_optional_kind(p) or_return
 	expect(p, .L_Brace) or_return
@@ -610,7 +617,7 @@ parse_enum :: proc(p: ^Parser) -> (node: Enum_Node, err: Parse_Error) {
 		skip_field_separators(p)
 	}
 	expect(p, .R_Brace) or_return
-	return Enum_Node{name = name, kind = kind, variants = variants[:]}, .None
+	return Enum_Node{name = name, kind = kind, variants = variants[:], line = enum_tok.line}, .None
 }
 
 // parse_variant parses one enum variant: plain `Left`, tuple-payload
@@ -785,7 +792,7 @@ parse_if_stmt :: proc(p: ^Parser) -> (node: If_Node, err: Parse_Error) {
 // has exactly one, and any other name is rejected here. The target is the
 // `on Thing` UpperCamel type whose blackboard this behavior owns.
 parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
-	expect(p, .Behavior) or_return
+	behavior_tok := expect(p, .Behavior) or_return
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case {
 		return node, .Wrong_Case
@@ -812,7 +819,7 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 	step.name = "step"
 	skip_newlines(p)
 	expect(p, .R_Brace) or_return
-	return Behavior_Node{name = name.text, target = target, step = step}, .None
+	return Behavior_Node{name = name.text, target = target, step = step, line = behavior_tok.line}, .None
 }
 
 // parse_pipeline parses `pipeline Name { stage: value … }` (spec §07 §1).
@@ -820,7 +827,7 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 // either a `[behavior, …]` list or a single bare battery name (`physics:
 // solve`); a leading `[` selects the list form, a bare ident the battery form.
 parse_pipeline :: proc(p: ^Parser) -> (node: Pipeline_Node, err: Parse_Error) {
-	expect(p, .Pipeline) or_return
+	pipeline_tok := expect(p, .Pipeline) or_return
 	name := expect_type_name(p) or_return
 	expect(p, .L_Brace) or_return
 	skip_field_separators(p)
@@ -837,7 +844,7 @@ parse_pipeline :: proc(p: ^Parser) -> (node: Pipeline_Node, err: Parse_Error) {
 		skip_field_separators(p)
 	}
 	expect(p, .R_Brace) or_return
-	return Pipeline_Node{name = name, stages = stages[:]}, .None
+	return Pipeline_Node{name = name, stages = stages[:], line = pipeline_tok.line}, .None
 }
 
 // parse_pipeline_stage parses one stage's value after its `name:` (spec §07
