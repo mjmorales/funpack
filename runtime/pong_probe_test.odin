@@ -15,7 +15,7 @@
 // collision behavior reads the first overlapping paddle (overlaps: |dx|≤3.5 AND
 // |dy|≤9.5) and reflect_x's the ball's velocity, flipping Ball.vel.x from +70 to −70
 // — the ball is hit back toward the left wall instead of scoring through it. Every
-// value here is stable Q32.32 arithmetic (pong is SEEDLESS — no RNG, Lore #9), so a
+// value here is stable Q32.32 arithmetic (pong is SEEDLESS — no RNG), so a
 // shifted bounce tick or a changed reflected velocity is a DETERMINISM regression,
 // not flaky timing. The shared session definition (golden_session_inputs) lives in
 // replay_acceptance_test.odin so the probe and the golden harness drive the exact
@@ -64,12 +64,13 @@ test_pong_scripted_session_bounces_off_paddle_at_exact_tick :: proc(t: ^testing.
 	// The scripted golden session lands the ball on the right paddle at exactly
 	// PONG_FIRST_BOUNCE_TICK: Ball.vel.x flips from +PONG_BALL_VX0 (advancing right)
 	// to −PONG_BALL_VX0 (reflected left), the committed signature of a §65 contact.
-	// All stable Q32.32 arithmetic (pong is SEEDLESS — no RNG/seed, Lore #9), so a
-	// shifted index or a changed reflected velocity is a determinism regression. This
-	// is the proof the golden digest folds a REAL paddle_bounce — the coverage the
-	// pre-rework session never produced (the ball crossed the static paddle column at
-	// |dy|≈40, outside the ±9.5 rail) — and so the digest now provably covers
-	// paddle_bounce, not just ball_move / wall_bounce / score / tally / serve.
+	// All stable Q32.32 arithmetic (pong is SEEDLESS — no RNG/seed), so a shifted
+	// index or a changed reflected velocity is a determinism regression. This is the
+	// proof the golden digest folds a REAL paddle_bounce: the session steers the right
+	// paddle into the §65 ±9.5 contact rail so the ball reflects off it — an idle
+	// paddle the ball crosses at |dy|≈40 (outside the rail) never contacts — so the
+	// digest provably covers paddle_bounce, not just ball_move / wall_bounce / score /
+	// tally / serve.
 	context.allocator = context.temp_allocator
 
 	program, ok := load_golden(t)

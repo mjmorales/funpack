@@ -1321,8 +1321,8 @@ check_match_total :: proc(match: ^Match_Expr, sets: []Closed_Variant_Set) -> Gat
 // pattern type_name (a tuple/wildcard arm names none) and counts how many
 // distinct names resolve to a known closed set; two or more is a mixed-type
 // match the gate cannot soundly count and must defer. Reachable only once
-// CLOSED_VARIANT_SETS grows past today's single-dispatch entries, but the guard
-// is permanent so a future multi-type entry mis-gates nothing.
+// CLOSED_VARIANT_SETS grows past single-dispatch entries, but the guard is
+// permanent so a future multi-type entry mis-gates nothing.
 match_mixes_closed_types :: proc(match: ^Match_Expr, sets: []Closed_Variant_Set) -> bool {
 	first := ""
 	for arm in match.arms {
