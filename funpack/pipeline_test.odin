@@ -1072,3 +1072,179 @@ test_gate_pong_golden_clears_with_declaration_bodies :: proc(t: ^testing.T) {
 	verdict := gate_verdict_of(source)
 	testing.expect_value(t, verdict.err, Gate_Error.None)
 }
+
+// ── Edge 1: dup_class encodes binder COUNTS ────────────────────────────────
+// A unit differing only by an unused trailing binder (a lambda param or a
+// match-arm field-pun) is NOT alpha-equivalent — its binder arity differs — so
+// it must NOT collide on the duplication gate. The canonical form encodes the
+// count; these pin both the distinguished case and the genuine-collision
+// control.
+
+@(test)
+test_gate_dup_class_lambda_param_count_distinguishes :: proc(t: ^testing.T) {
+	// Two lambdas whose bodies bind the SAME slot (`return a`) but differ by one
+	// unused trailing param: `fn(a, x){ a }` vs `fn(a){ a }`. Both bodies
+	// canonicalize the body name to slot 0, so without the param-count tag they
+	// would emit identical bytes and collide. Their parameter arities differ, so
+	// they are NOT duplicates — the count tag (gates.odin canon_expr lambda arm)
+	// separates their dup_class keys.
+	two_param, two_err := test_block_body("assert fold(xs, 0, fn(a, x) { return a }) == 0\n")
+	one_param, one_err := test_block_body("assert fold(xs, 0, fn(a) { return a }) == 0\n")
+	testing.expect_value(t, two_err, Parse_Error.None)
+	testing.expect_value(t, one_err, Parse_Error.None)
+	testing.expect(t, dup_class(two_param) != dup_class(one_param))
+}
+
+@(test)
+test_gate_dup_class_lambda_param_rename_only_still_collides :: proc(t: ^testing.T) {
+	// The collision control: two lambdas of the SAME arity differing only by a
+	// param rename (`fn(a, x){ a }` vs `fn(b, y){ b }`) stay alpha-equivalent —
+	// the count matches and the renamed slot resolves identically — so they still
+	// collide. The count tag distinguishes arity, never penalizes a pure rename.
+	left, left_err := test_block_body("assert fold(xs, 0, fn(a, x) { return a }) == 0\n")
+	right, right_err := test_block_body("assert fold(xs, 0, fn(b, y) { return b }) == 0\n")
+	testing.expect_value(t, left_err, Parse_Error.None)
+	testing.expect_value(t, right_err, Parse_Error.None)
+	testing.expect(t, dup_class(left) == dup_class(right))
+}
+
+@(test)
+test_gate_dup_class_arm_binder_count_distinguishes :: proc(t: ^testing.T) {
+	// Two struct-payload match arms of the SAME variant whose bodies read the
+	// same slot but bind different field SETS: `Shape2::Box{size} => size` (1
+	// binder) vs `Shape2::Box{size, color} => size` (2 binders). canon_pattern
+	// tags both `struct Shape2 Box` (it drops WHICH fields are punned), and both
+	// bodies resolve `size` to slot 0, so without the arm binder-count tag the two
+	// arms would canonicalize identically and the two blocks would collide. Their
+	// binder arities differ — they are NOT duplicates — so the `(binders N)` tag
+	// (gates.odin canon_arm) separates their keys. A `_` arm keeps each match
+	// exhaustiveness-clean (Shape2 is not a closed set anyway).
+	one_binder, one_err := test_block_body(
+		"assert (match shape { Shape2::Box{size} => size, _ => 0 }) == 0\n")
+	two_binder, two_err := test_block_body(
+		"assert (match shape { Shape2::Box{size, color} => size, _ => 0 }) == 0\n")
+	testing.expect_value(t, one_err, Parse_Error.None)
+	testing.expect_value(t, two_err, Parse_Error.None)
+	testing.expect(t, dup_class(one_binder) != dup_class(two_binder))
+}
+
+@(test)
+test_gate_dup_class_arm_binder_rename_only_still_collides :: proc(t: ^testing.T) {
+	// The collision control for arm binders: two variant-binds arms of the same
+	// arity differing only by a payload binder rename (`Option::Some(v) => v` vs
+	// `Option::Some(w) => w`) stay alpha-equivalent — same binder count, renamed
+	// slot resolves identically — so they still collide. The count tag never
+	// splits a pure rename.
+	left, left_err := test_block_body(
+		"assert (match opt { Option::Some(v) => v, Option::None => 0 }) == 0\n")
+	right, right_err := test_block_body(
+		"assert (match opt { Option::Some(w) => w, Option::None => 0 }) == 0\n")
+	testing.expect_value(t, left_err, Parse_Error.None)
+	testing.expect_value(t, right_err, Parse_Error.None)
+	testing.expect(t, dup_class(left) == dup_class(right))
+}
+
+// ── Edge 2: Variant_Expr.has_payload is canonicalized ──────────────────────
+
+@(test)
+test_gate_dup_class_variant_empty_payload_distinguishes :: proc(t: ^testing.T) {
+	// A bare variant `Foo::Bar` (has_payload=false) and an empty-payload tuple
+	// variant `Foo::Bar()` (has_payload=true, payload=[]) are different
+	// constructor forms but both have an empty payload arg list, so without the
+	// has_payload marker they emit identical canonical bytes and collide.
+	// canon_expr now tags the empty payload `(payload)` only when has_payload is
+	// set, so the two are distinct dup_class keys.
+	bare, bare_err := test_block_body("assert Foo::Bar == 0\n")
+	empty_payload, ep_err := test_block_body("assert Foo::Bar() == 0\n")
+	testing.expect_value(t, bare_err, Parse_Error.None)
+	testing.expect_value(t, ep_err, Parse_Error.None)
+	testing.expect(t, dup_class(bare) != dup_class(empty_payload))
+}
+
+@(test)
+test_gate_dup_class_variant_same_form_still_collides :: proc(t: ^testing.T) {
+	// The collision control: two empty-payload variants of the same form
+	// (`Foo::Bar()` vs `Foo::Bar()`) still collide — the has_payload tag fires
+	// identically for both, so canonicalizing it never splits two genuinely
+	// identical constructor forms.
+	left, left_err := test_block_body("assert Foo::Bar() == 0\n")
+	right, right_err := test_block_body("assert Foo::Bar() == 0\n")
+	testing.expect_value(t, left_err, Parse_Error.None)
+	testing.expect_value(t, right_err, Parse_Error.None)
+	testing.expect(t, dup_class(left) == dup_class(right))
+}
+
+// ── Edge 3: mixed-type match coverage — single-type assumption guarded ──────
+
+// first_match_expr lex/parses a single assert-only test block and returns the
+// first Match_Expr in the first assert's expression, so the mixed-type guard
+// fixture can drive check_match_total over a constructed match directly. The
+// assert form is `match … { … } == …`, so the match sits on the binary's lhs.
+first_match_expr :: proc(asserts: string) -> (^Match_Expr, bool) {
+	body, err := test_block_body(asserts)
+	if err != .None || len(body) == 0 {
+		return nil, false
+	}
+	assert_node, is_assert := body[0].(Assert_Node)
+	if !is_assert {
+		return nil, false
+	}
+	binary, is_binary := assert_node.expr.(^Binary_Expr)
+	if !is_binary {
+		return nil, false
+	}
+	m, is_match := binary.lhs.(^Match_Expr)
+	return m, is_match
+}
+
+@(test)
+test_gate_mixed_type_match_is_skipped_not_misgated :: proc(t: ^testing.T) {
+	// THE GUARDED CASE: a match whose variant arms mix two DISTINCT known closed
+	// types — `Option::Some(v)` and `Result::Ok(w)` (both in CLOSED_VARIANT_SETS).
+	// The first-variant-arm heuristic would fix type_name="Option" and demand
+	// Some+None, find None uncovered, and WRONGLY return Non_Exhaustive_Match. The
+	// single-type assumption is guarded: match_mixes_closed_types detects the mix
+	// and check_match_total defers to the typechecker, returning None rather than
+	// mis-gating on a heuristic that cannot resolve the true dispatch type. This
+	// case is unreachable while the closed sets are single-dispatch, but the guard
+	// is permanent so a future multi-type entry cannot silently mis-gate.
+	m, ok := first_match_expr(
+		"assert (match x { Option::Some(v) => 1.0, Result::Ok(w) => 2.0 }) == 0.0\n")
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	sets := closed_variant_sets(Ast{})
+	testing.expect_value(t, check_match_total(m, sets), Gate_Error.None)
+}
+
+@(test)
+test_gate_single_type_non_exhaustive_still_fires :: proc(t: ^testing.T) {
+	// The control opposite the guard: a SINGLE-type non-total match (only
+	// `Option::Some`, no None, no wildcard) is NOT a mixed-type match, so the
+	// guard does not fire and the gate still rejects it as Non_Exhaustive_Match.
+	// The mixed-type guard relaxes only the genuinely-ambiguous case, never the
+	// sound single-type one.
+	m, ok := first_match_expr(
+		"assert (match x { Option::Some(v) => 1.0 }) == 0.0\n")
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	sets := closed_variant_sets(Ast{})
+	testing.expect_value(t, check_match_total(m, sets), Gate_Error.Non_Exhaustive_Match)
+}
+
+@(test)
+test_gate_single_type_exhaustive_clears :: proc(t: ^testing.T) {
+	// The single-type positive: a total Option match (Some + None) is not mixed
+	// and clears the gate — confirming the guard left the happy path untouched.
+	m, ok := first_match_expr(
+		"assert (match x { Option::Some(v) => 1.0, Option::None => 2.0 }) == 0.0\n")
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	sets := closed_variant_sets(Ast{})
+	testing.expect_value(t, check_match_total(m, sets), Gate_Error.None)
+}

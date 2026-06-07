@@ -330,6 +330,85 @@ test_parse_enum_payload_variants :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(e.variants[2].fields), 2)
 }
 
+// fun.ll1.md §2 classifies `thing`/`singleton`/`data`/`enum`/`on` as CONTEXTUAL
+// keywords: a keyword only where it opens a module-level declaration (or, for
+// `on`, separates a behavior header), an ordinary §02 snake_case value name
+// everywhere else. This proves the value-position direction the contextual rule
+// adds — a binding name, an expression-position read, a member access, and a
+// field name — all five words legal as identifiers. The declaration-position
+// direction (keyword still selects the production) is held by
+// test_parse_data_decl_with_fields / test_parse_enum_as_role_kind /
+// test_parse_thing_and_singleton, which parse unchanged.
+@(test)
+test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
+	// A no-ascription `let <word> = …` binding: each contextual keyword is a legal
+	// binding name (the latent restriction this story removes — the hard-keyword
+	// lexer path rejected `let thing = …` before). The let value reads `on`, a
+	// fifth contextual word, as an ordinary Name_Expr.
+	source := "test \"contextual words bind\" {\n" +
+		"  let thing = 1\n" +
+		"  let singleton = 2\n" +
+		"  let data = 3\n" +
+		"  let enum = 4\n" +
+		"  let on = thing\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.tests), 1)
+	body := ast.tests[0].body
+	testing.expect_value(t, len(body), 5)
+	names := [5]string{"thing", "singleton", "data", "enum", "on"}
+	for want, idx in names {
+		let_node, is_let := body[idx].(Let_Node)
+		testing.expect(t, is_let)
+		if is_let {
+			testing.expect_value(t, let_node.name, want)
+		}
+	}
+	// The `on` binding's value is the bare value name `thing` — a Name_Expr, proof
+	// a contextual word reads as an identifier in expression position, not a
+	// keyword.
+	on_let, on_is_let := body[4].(Let_Node)
+	testing.expect(t, on_is_let)
+	if on_is_let {
+		name_expr, is_name := on_let.value.(^Name_Expr)
+		testing.expect(t, is_name)
+		if is_name {
+			testing.expect_value(t, name_expr.name, "thing")
+			testing.expect_value(t, name_expr.class, Ident_Class.Snake_Case)
+		}
+	}
+
+	// A member-access receiver dotted into a contextual word: `s.data` reads the
+	// `data` field, an Ident in member position.
+	member_expr, member_err := parse_expr_text("s.data")
+	testing.expect_value(t, member_err, Parse_Error.None)
+	member, is_member := member_expr.(^Member_Expr)
+	testing.expect(t, is_member)
+	if is_member {
+		testing.expect_value(t, member.member, "data")
+	}
+
+	// A contextual word as a data FIELD name: `enum: Bool` is a legal field, the
+	// word an Ident the field grammar consumes.
+	field_ast, field_err := stage_parse(stage_lex("data Flags { enum: Bool, thing: Int }\n"))
+	testing.expect_value(t, field_err, Parse_Error.None)
+	testing.expect_value(t, len(field_ast.datas), 1)
+	testing.expect_value(t, len(field_ast.datas[0].fields), 2)
+	testing.expect_value(t, field_ast.datas[0].fields[0].name, "enum")
+	testing.expect_value(t, field_ast.datas[0].fields[1].name, "thing")
+
+	// And the declaration-position direction in the SAME test: a `thing` opener
+	// immediately after the field-name `thing` above still selects the thing
+	// production — the word is the keyword only at the start of a module-level
+	// statement.
+	decl_ast, decl_err := stage_parse(stage_lex("thing Paddle { y: Fixed }\n"))
+	testing.expect_value(t, decl_err, Parse_Error.None)
+	testing.expect_value(t, len(decl_ast.things), 1)
+	testing.expect_value(t, decl_ast.things[0].name, "Paddle")
+	testing.expect(t, !decl_ast.things[0].is_singleton)
+}
+
 @(test)
 test_parse_thing_and_singleton :: proc(t: ^testing.T) {
 	// `thing` and `singleton` share the body grammar; only the is_singleton
