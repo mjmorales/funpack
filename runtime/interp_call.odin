@@ -259,6 +259,15 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 		if ctor, is_ctor := eval_engine_constructor(interp, node, env, recv_node.fields[0], method); is_ctor {
 			return ctor, true
 		}
+		// The §22 §2 sustained-audio builder seed `Audio.track(key, clip)` is a
+		// TYPE-NAME static constructor that takes args — intercepted here (before the
+		// `Audio` name is evaluated as a local, which would fail-closed) the same way
+		// the no-arg engine constructors are. The .pitch/.gain/.bus/.at adders chain
+		// off the built record value (the value-receiver arm below).
+		if ctor, is_ctor := eval_audio_constructor(interp, recv_node.fields[0], method, node, env);
+		   is_ctor {
+			return ctor, true
+		}
 	}
 	recv, recv_ok := eval(interp, recv_node, env)
 	if !recv_ok {
@@ -288,7 +297,45 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	if handle, is_handle := recv.(Handle_Value); is_handle {
 		return eval_handle_method(interp, node, env, handle, method)
 	}
+	// The §22 self-first adders chain off a built Audio record value
+	// (Audio.track(k, c).pitch(p).gain(g).bus(b)); a non-Audio receiver or a
+	// non-adder member falls through to ok=false.
+	if record, is_record := recv.(Record_Value); is_record {
+		if bent, is_audio := eval_audio_adder(interp, record, method, node, env); is_audio {
+			return bent, true
+		}
+	}
 	return nil, false
+}
+
+// eval_audio_constructor lowers the §22 §2 sustained-audio seed
+// `Audio.track(key, clip)` reached as a type-name static method — it evaluates the
+// key (a String) and clip (a SoundHandle from sound(name)) args and builds the
+// keyed Audio record at the spec defaults (unity gain/pitch, Music bus, no
+// position) the adders chain onto. is_ctor is false for any (type, member) that is
+// not Audio.track, so a non-constructor `Type.method()` falls through to the
+// value-receiver dispatch. The builder/record shape lives in audio.odin.
+eval_audio_constructor :: proc(
+	interp: ^Interp,
+	type_name, member: string,
+	node: ^Node,
+	env: ^Env,
+) -> (
+	value: Value,
+	is_ctor: bool,
+) {
+	if type_name != "Audio" || member != "track" {
+		return nil, false
+	}
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	key, key_ok := eval(interp, &node.children[1], env)
+	clip, clip_ok := eval(interp, &node.children[2], env)
+	if !key_ok || !clip_ok {
+		return nil, false
+	}
+	return audio_track_value(interp, key, clip), true
 }
 
 // eval_apply_impulse evaluates `body.apply_impulse(j)` — yard's drive intent: a
@@ -522,6 +569,8 @@ eval_named_call :: proc(
 		return builtin_len(interp, node, env)
 	case "grid_cells":
 		return builtin_grid_cells(interp, node, env)
+	case "sound":
+		return builtin_sound(interp, node, env)
 	case "pick":
 		return builtin_pick(interp, node, env)
 	case "Spawn":
