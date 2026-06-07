@@ -61,15 +61,16 @@ import "core:strings"
 // committable Field_Values, no longer flattened/dropped at commit) and gives a
 // String the String tag — under v2 a nested String hit the tag-less no-op,
 // which would have CORRUPTED the stream once payloads carried text.
-// v3 ALSO serializes the Field_Tag.Vec3 COLUMN arm (krognid's `pos: Vec3`) — the
+// v4 serializes the Field_Tag.Vec3 COLUMN arm (krognid's `pos: Vec3`) — the
 // three-Fixed-lane twin of the Vec2 arm, APPENDED at tag ordinal 10 so every
-// existing tag keeps its byte. No version bump: a snapshot with no Vec3 column
-// (every game with a save golden today) is byte-identical, and a Vec3 column is a
-// new tag the codec round-trips, never a layout change to an existing arm. The
+// existing tag keeps its byte. The codec serializes the shared Field_Tag enum, so
+// emitting a new arm IS a codec change: a v3 build (no Vec3 arm) and a v4 build
+// both stamp their own version, and the exact-match gate fires its diagnosable
+// refusal across them instead of silently accepting an incompatible stream. The
 // krognid golden harness uses the replay+digest path, not snapshots; this arm keeps
 // the save codec TOTAL over the extended Field_Value union (the §24 quicksave path
 // would otherwise drop a committed `pos`).
-SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(3)
+SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(4)
 
 // SAVE_SNAPSHOT_MAGIC leads every snapshot so a stray byte stream (a truncated
 // file, an unrelated blob) is rejected before the version check rather than parsed
