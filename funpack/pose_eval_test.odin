@@ -114,6 +114,11 @@ test "blend of disjoint bone sets keeps both bones per bone" {
   assert Pose.blend(Pose.empty().set(Bone::LUpperLeg, rot_x(0.0)), Pose.empty().set(Bone::Torso, up(0.5)), 0.0).get(Bone::LUpperLeg) == rot_x(0.0)
 }
 
+@doc("A bone the base drives but the overlay omits rests at an INTERIOR weight (§16 §7): the absent-bone fallback is the rest transform, identical to blending against an explicitly rest-driven bone — not the degenerate zero transform. Only an interior weight exercises the fallback; the 0/1 endpoints shortcut to an endpoint pose.")
+test "blend rests an absent bone at interior weight" {
+  assert Pose.blend(Pose.empty().set(Bone::LUpperLeg, up(0.4)), Pose.empty().set(Bone::Torso, up(0.5)), 0.5).get(Bone::LUpperLeg) == Pose.blend(Pose.empty().set(Bone::LUpperLeg, up(0.4)), Pose.empty().set(Bone::LUpperLeg, rot_x(0.0)), 0.5).get(Bone::LUpperLeg)
+}
+
 @doc("Layer overlay wins per bone: the overlay's torso replaces the base's torso.")
 test "layer overlay wins on a shared bone" {
   assert Pose.layer(Pose.empty().set(Bone::Torso, up(0.1)), Pose.empty().set(Bone::Torso, up(0.5))).get(Bone::Torso) == up(0.5)
@@ -148,17 +153,17 @@ test "advance_gait records the speed" {
 @(test)
 test_pose_eval_fixture_all_pass :: proc(t: ^testing.T) {
 	// The pose/anim EVALUATION-surface proof: the hand-built fixture compiles
-	// clean through every stage and its twelve inline pose/gait asserts evaluate
+	// clean through every stage and its thirteen inline pose/gait asserts evaluate
 	// to their golden values — pose_walk's zero-crossing rest pose, set/get
 	// round-trip, the undriven-bone rest read, blend at weight 0 / weight 1, a
-	// disjoint-bone-set blend, layer overlay-wins and base-shows-through,
-	// walk_weight's clamp at both ends, and advance_gait's phase/speed
-	// accumulation. All twelve passing exercises Pose_Value/Transform_Value,
-	// eval_pose_set/get/blend/layer, rot_x/up, Bone enum-variant values, and
-	// Transform equality.
+	// disjoint-bone-set blend, the interior-weight absent-bone rest fallback, layer
+	// overlay-wins and base-shows-through, walk_weight's clamp at both ends, and
+	// advance_gait's phase/speed accumulation. All thirteen passing exercises
+	// Pose_Value/Transform_Value, eval_pose_set/get/blend/layer, rot_x/up, Bone
+	// enum-variant values, and Transform equality.
 	report, err := run_test_pipeline(POSE_EVAL_FIXTURE)
 	testing.expect_value(t, err, Pipeline_Error.None)
-	testing.expect_value(t, report.passed, 12)
+	testing.expect_value(t, report.passed, 13)
 	testing.expect_value(t, report.failed, 0)
 	testing.expect_value(t, report.exit_code, 0)
 }

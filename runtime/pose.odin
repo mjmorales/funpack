@@ -276,7 +276,14 @@ eval_pose_get :: proc(pose: Pose_Value, bone: string) -> Value {
 eval_pose_blend :: proc(interp: ^Interp, a, b: Pose_Value, weight: Fixed) -> Value {
 	bones := make([dynamic]Pose_Bone_Transform, 0, len(a.bones) + len(b.bones), interp.allocator)
 	for driven in a.bones {
-		other, _ := pose_bone_transform(b.bones, driven.bone)
+		// b's side falls back to rest (identity) when b omits the bone — the §16 §7
+		// absent-bone rule, matching the b-only loop below (which rests a's side) and
+		// eval_pose_get. Without this, a bone a drives but b omits would blend toward
+		// the zero-value transform (a degenerate {0,0,0,0} quat), not rest.
+		other, found := pose_bone_transform(b.bones, driven.bone)
+		if !found {
+			other = transform_identity()
+		}
 		append(&bones, Pose_Bone_Transform{
 			bone      = driven.bone,
 			transform = transform_blend(driven.transform, other, weight),

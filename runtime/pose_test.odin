@@ -610,6 +610,37 @@ test_pose_blend_and_layer :: proc(t: ^testing.T) {
 	testing.expect(t, values_equal(bu, transform_rot_x(Fixed(0))))
 }
 
+// test_pose_blend_absent_bone_rests_at_interior_weight pins the §16 §7 absent-bone
+// rule at an INTERIOR weight: a bone the base drives (up(0.4)) but the overlay omits
+// (Torso-only) blends toward REST (identity), not the degenerate zero transform — the
+// two diverge only at interior weights (scale 1 vs 0.5), since the 0/1 endpoints
+// shortcut to an endpoint pose. Bit-for-bit with pose_eval_test.odin's funpack mirror.
+@(test)
+test_pose_blend_absent_bone_rests_at_interior_weight :: proc(t: ^testing.T) {
+	program := pose_program()
+	version := pose_version(&program)
+	interp := make_pose_interp(&program, &version, Fixed(0))
+
+	half := fixed_lit(5, 10)
+	drive := fixed_lit(4, 10)
+	blend := n_method(
+		n_method(
+			n_name("Pose"),
+			"blend",
+			n_method(n_pose_empty(), "set", n_variant("Bone", "LUpperLeg"), n_up(n_fixed(drive))),
+			n_method(n_pose_empty(), "set", n_variant("Bone", "Torso"), n_up(n_fixed(fixed_lit(5, 10)))),
+			n_fixed(half),
+		),
+		"get",
+		n_variant("Bone", "LUpperLeg"),
+	)
+	got, ok := eval_in(&interp, &blend)
+	testing.expect(t, ok)
+	// b's side rests, so the result is up(0.4) blended halfway toward identity.
+	want := transform_blend(transform_up(drive), transform_identity(), half)
+	testing.expect(t, values_equal(got, want))
+}
+
 // test_draw_krognid_folds_to_rigged evaluates draw_krognid's body over a HAND-BUILT
 // Krognid row — blend(pose_idle(time.t), pose_walk(self.phase, self.speed),
 // walk_weight(self.speed)) folded into a [Draw3] carrying one Draw3::Rigged record —
