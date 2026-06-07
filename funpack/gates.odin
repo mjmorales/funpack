@@ -753,6 +753,17 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 		strings.write_string(b, e.type_name)
 		strings.write_byte(b, ' ')
 		strings.write_string(b, e.variant)
+		// has_payload is structural and is canonicalized: a bare variant
+		// (`Foo::Bar`, has_payload=false) and an empty-payload tuple-variant
+		// (`Foo::Bar()`, has_payload=true, payload=[]) are different
+		// constructor forms but both have an empty payload loop below, so
+		// without this marker they would emit identical bytes and collide. The
+		// `(payload)` tag fires only when has_payload is set, so a non-empty
+		// payload still distinguishes by its args and a bare variant stays
+		// untagged.
+		if e.has_payload {
+			strings.write_string(b, " (payload)")
+		}
 		for arg in e.payload {
 			strings.write_byte(b, ' ')
 			canon_expr(b, arg, alpha)
@@ -786,7 +797,16 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 		}
 		strings.write_byte(b, ')')
 	case ^Lambda_Expr:
-		strings.write_string(b, "(lambda")
+		// The param COUNT is structural and is written into the canonical form:
+		// two lambdas differing only by an unused trailing param
+		// (`fn(a, x){ a }` vs `fn(a){ a }`) bind the same body slots and so
+		// would otherwise canonicalize identically and collide on the
+		// duplication gate. Their parameter arity differs, so they are NOT
+		// alpha-equivalent — the count tag distinguishes them. Param NAMES stay
+		// alpha-renamed (a rename is not a structural change); only the count is
+		// emitted.
+		strings.write_string(b, "(lambda ")
+		strings.write_int(b, len(e.params))
 		// Params bind only inside the body. They push positional slots
 		// onto the shared frame for the body walk, then pop — so the
 		// lambda's bindings never leak to following statements and a
@@ -878,20 +898,55 @@ canon_name :: proc(b: ^strings.Builder, name: string, alpha: ^[dynamic]string) {
 	strings.write_byte(b, ')')
 }
 
-// canon_arm canonicalizes one match arm: the pattern shape, then the
-// body against a frame extended with the arm's payload binders (which
-// scope only to that arm's body). A tuple pattern's binders come from its
-// sub-patterns, collected in left-to-right position order so a rename
-// canonicalizes away the same way a flat variant binder does.
+// canon_arm canonicalizes one match arm: the pattern shape, the COUNT of
+// binders the pattern introduces, then the body against a frame extended with
+// the arm's payload binders (which scope only to that arm's body). A tuple
+// pattern's binders come from its sub-patterns, collected in left-to-right
+// position order so a rename canonicalizes away the same way a flat variant
+// binder does.
+//
+// The binder count is structural and is written into the canonical form: a
+// `Struct_Binds` tag (canon_pattern) carries only the (type, variant) shape and
+// deliberately drops WHICH fields are punned, so without the count two
+// struct-payload arms of the same variant binding different field SETS
+// (`Shape2::Box{size}` vs `Shape2::Box{size, color}`) would collide on the
+// duplication gate when their bodies reference the same slots. Their binder
+// arities differ, so they are NOT alpha-equivalent — the count tag distinguishes
+// them. Binder NAMES stay alpha-renamed (a rename is not a structural change);
+// only the count is emitted.
 canon_arm :: proc(b: ^strings.Builder, arm: Match_Arm, alpha: ^[dynamic]string) {
 	strings.write_string(b, " (arm ")
 	canon_pattern(b, arm.pattern)
+	strings.write_string(b, " (binders ")
+	strings.write_int(b, pattern_binder_count(arm.pattern))
+	strings.write_byte(b, ')')
 	base := len(alpha)
 	push_pattern_binders(alpha, arm.pattern)
 	strings.write_byte(b, ' ')
 	canon_expr(b, arm.body, alpha)
 	resize(alpha, base)
 	strings.write_byte(b, ')')
+}
+
+// pattern_binder_count counts the binders a pattern introduces, mirroring
+// push_pattern_binders exactly: a struct/bare binder contributes its named
+// binders, and a tuple or variant-binds pattern recurses into its sub-patterns.
+// It is the structural binder ARITY canon_arm encodes so two arms differing only
+// by binder count cannot collide on the duplication gate.
+pattern_binder_count :: proc(pattern: Pattern) -> int {
+	switch pattern.kind {
+	case .Wildcard, .Bare_Variant:
+		return 0
+	case .Struct_Binds, .Bare_Binder:
+		return len(pattern.binders)
+	case .Variant_Binds, .Tuple:
+		count := 0
+		for sub in pattern.elements {
+			count += pattern_binder_count(sub)
+		}
+		return count
+	}
+	return 0
 }
 
 // canon_pattern writes a pattern's canonical shape tag — the structural form
@@ -1211,6 +1266,22 @@ match_walk_expr :: proc(expr: Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 // set appear in some arm. A match whose arms name no known closed set
 // carries no fixed denominator the gate can count against, so it passes
 // here and is left for a later stage.
+//
+// SINGLE-TYPE ASSUMPTION (guarded below): the first-variant-arm heuristic
+// fixes ONE dispatch type from the first variant arm and counts coverage
+// against only that type's closed set. That is sound exactly while every
+// variant arm of the match names the SAME enum type — which holds for every
+// match the gate can prove today, because the resolved scrutinee has one type
+// and a well-formed single-type match's arms all name it. It is NOT sound for a
+// match whose arms mix variant types (arms naming both `Option::Some` and
+// `Result::Ok`): counting coverage against only the first type would silently
+// mis-gate (over- or under-rejecting the other type's arms). This case is
+// unreachable while CLOSED_VARIANT_SETS holds only single-dispatch entries the
+// scrutinee picks one of, but a future multi-type entry must not let it pass
+// silently — so the guard detects a mixed-type match (more than one distinct
+// closed type named across the variant arms) and SKIPS the gate, deferring to
+// stage_typecheck's scrutinee-typed exhaustiveness rather than mis-counting on a
+// pure-AST heuristic that cannot resolve the true dispatch type.
 check_match_total :: proc(match: ^Match_Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 	type_name := ""
 	for arm in match.arms {
@@ -1218,10 +1289,19 @@ check_match_total :: proc(match: ^Match_Expr, sets: []Closed_Variant_Set) -> Gat
 			return .None
 		}
 		// The first variant arm fixes the type the match dispatches on;
-		// every variant arm of a well-formed match names that one type.
+		// every variant arm of a single-type match names that one type.
 		if type_name == "" {
 			type_name = arm.pattern.type_name
 		}
+	}
+	// Guard the single-type assumption: a match mixing distinct KNOWN closed
+	// types violates the first-arm heuristic, so it is left for the
+	// scrutinee-typed typechecker rather than counted here. The mix only
+	// matters when more than one named type is a KNOWN closed set — an arm
+	// naming an unknown/empty type (a tuple arm, an unregistered enum) carries
+	// no denominator and never drove the count anyway.
+	if match_mixes_closed_types(match, sets) {
+		return .None
 	}
 	set, known := closed_variant_set(sets, type_name)
 	if !known {
@@ -1233,6 +1313,32 @@ check_match_total :: proc(match: ^Match_Expr, sets: []Closed_Variant_Set) -> Gat
 		}
 	}
 	return .None
+}
+
+// match_mixes_closed_types reports whether the match's variant arms name more
+// than one DISTINCT known closed type — the condition that breaks the
+// single-type first-arm heuristic in check_match_total. It scans every arm's
+// pattern type_name (a tuple/wildcard arm names none) and counts how many
+// distinct names resolve to a known closed set; two or more is a mixed-type
+// match the gate cannot soundly count and must defer. Reachable only once
+// CLOSED_VARIANT_SETS grows past today's single-dispatch entries, but the guard
+// is permanent so a future multi-type entry mis-gates nothing.
+match_mixes_closed_types :: proc(match: ^Match_Expr, sets: []Closed_Variant_Set) -> bool {
+	first := ""
+	for arm in match.arms {
+		if arm.pattern.type_name == "" {
+			continue
+		}
+		if _, known := closed_variant_set(sets, arm.pattern.type_name); !known {
+			continue
+		}
+		if first == "" {
+			first = arm.pattern.type_name
+		} else if arm.pattern.type_name != first {
+			return true
+		}
+	}
+	return false
 }
 
 // match_covers_variant reports whether some arm pattern names the given
