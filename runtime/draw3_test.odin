@@ -11,7 +11,7 @@
 //     byte-identically (the frame digest is a pure content hash over the full 3D
 //     state), and a single differing Fixed bit (a moved creature, a recolored plane)
 //     changes the digest — the 3D commands are inside the comparison surface;
-//   - 2D GOLDEN STABILITY (asserted in the committed-golden replay tests, criterion 2):
+//   - 2D GOLDEN STABILITY (asserted in full by the committed-golden replay tests):
 //     the v6 Cmd_Tag append leaves a 2D-only draw-list's bytes unmoved — proven here by
 //     a Rect-only draw-list digesting the SAME at v6 as its raw-byte expectation, and
 //     by the appended ordinals taking 3..6 while Rect/Text/Camera keep 0..2.
@@ -576,7 +576,7 @@ test_draw3_digest_deterministic :: proc(t: ^testing.T) {
 	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 6)
 
 	// A 2D-only Rect draw-list still digests through the unchanged Rect=0 tag — a
-	// proxy for the committed 2D goldens staying byte-unmoved (criterion 2 asserts the
+	// proxy for the committed 2D goldens staying byte-unmoved (the committed-replay tests assert the
 	// real goldens). The Rect bytes contain the Rect tag (0) and no 3D tag.
 	rect_list := Draw_List{cmds = []Draw_Cmd{Draw_Rect{at = Vec2{to_fixed(8), to_fixed(60)}, size = Vec2{to_fixed(4), to_fixed(16)}, color = .White}}}
 	rect_bytes := frame_bytes(empty_version, rect_list)

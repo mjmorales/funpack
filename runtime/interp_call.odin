@@ -760,7 +760,7 @@ builtin_up :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 // the typecheck-passed reference names). Without it the artifact-path Rigged fold
 // fail-closes when draw_krognid's krognid_parts() body calls mesh(...). A non-String
 // arg, or the wrong arity, is ok=false (fail-closed). The sibling sound() asset
-// constructor lands the same way when the audio story wires it.
+// constructor (audio.odin builtin_sound) follows the identical shape.
 builtin_mesh :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
