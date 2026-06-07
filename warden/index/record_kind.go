@@ -63,13 +63,15 @@ func (k RecordKind) String() string {
 // classifyRecordKind asserts that disjointness rather than trust it. The
 // consumer NEVER fabricates a `kind` field the producer does not emit.
 //
-// This is a recorded PRODUCER GAP still under adjudication, not a settled
-// design: a per-record `kind` tag on each Index Contract record would make
-// dispatch a tag read instead of a structural inference, and is the cleaner
-// contract. Closing it is the funpack team's call (it reshapes the wire and
-// bumps INDEX_SCHEMA_VERSION). Until then, structural inference on disjoint
-// marker sets is the consumer's contract. Surfaced as a discovery, not papered
-// over.
+// This structural discrimination is the RATIFIED contract (spec §29 §2): the
+// Index Contract is a structural interface with no record-level kind tag, each
+// kind discriminated by its disjoint mandatory field signature, and the producer
+// emits no tag for the consumer to fabricate. A per-record `kind` tag was weighed
+// and rejected — it would add a wire envelope contradicting the "structural
+// interface / no optional fields" doctrine §29 §2 states. Adding a record kind
+// whose signature is not disjoint is a contract reshape behind an
+// INDEX_SCHEMA_VERSION bump, never an optional tag. See decision
+// 2026-06-07-index-contract-structural-discrimination.
 
 // projectMarkerKeys are top-level keys the `project` record carries that the
 // `decl` record cannot. Their presence is the structural signature warden keys
