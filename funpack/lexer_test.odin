@@ -268,23 +268,31 @@ test_lex_match_block_keeps_arm_newlines :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_declaration_keywords :: proc(t: ^testing.T) {
-	// The §06/§07 declaration and expression keywords lex to their own
-	// token kinds, not as bare identifiers.
-	tokens := stage_lex("thing singleton behavior signal data enum pipeline with if")
+	// `behavior`/`signal`/`pipeline` are reserved declaration openers and `with`/
+	// `if` reserved expression keywords — each lexes to its own token kind.
+	// `thing`/`singleton`/`data`/`enum` are CONTEXTUAL keywords (fun.ll1.md §2):
+	// scanned in isolation, with no declaration-opening position to select them,
+	// they lex as plain Idents (see test_lex_contextual_keywords_lex_as_ident).
+	tokens := stage_lex("behavior signal pipeline with if")
 	expect_kinds(t, tokens, []Token_Kind{
-		.Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .With, .If,
+		.Behavior, .Signal, .Pipeline, .With, .If,
 	})
 }
 
 @(test)
-test_lex_on_is_contextual_keyword :: proc(t: ^testing.T) {
-	// `on` is the behavior-header separator (`behavior … on Thing`) yet a valid
-	// §02 snake_case value name elsewhere, so it lexes as an Ident, not a
-	// reserved keyword — a `thing Switch { on: Bool }` field, an `s.on` read, and
-	// a `let on` all bind. The parser recognizes the header separator by text.
-	tokens := stage_lex("on")
-	expect_kinds(t, tokens, []Token_Kind{.Ident})
-	testing.expect_value(t, tokens[0].class, Ident_Class.Snake_Case)
+test_lex_contextual_keywords_lex_as_ident :: proc(t: ^testing.T) {
+	// `on`/`thing`/`singleton`/`data`/`enum` are contextual keywords (fun.ll1.md
+	// §2): each selects a production only where it opens a module-level
+	// declaration (or, for `on`, separates a behavior header), yet is a valid §02
+	// snake_case value name everywhere else — a `let thing = …` binding, a `data`
+	// field, an `s.on` read. The lexer never reserves them: they always tokenize
+	// as Ident, and the parser recognizes the keyword by text in the one position
+	// it is the keyword.
+	tokens := stage_lex("on thing singleton data enum")
+	expect_kinds(t, tokens, []Token_Kind{.Ident, .Ident, .Ident, .Ident, .Ident})
+	for tok in tokens {
+		testing.expect_value(t, tok.class, Ident_Class.Snake_Case)
+	}
 }
 
 @(test)

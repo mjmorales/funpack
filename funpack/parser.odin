@@ -315,21 +315,16 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		append(&out.lets, node)
-	case .Data:
-		node := parse_data(p) or_return
-		node.doc = pending.doc
-		node.gtags = pending.gtags[:]
-		append(&out.datas, node)
-	case .Enum:
-		node := parse_enum(p) or_return
-		node.doc = pending.doc
-		node.gtags = pending.gtags[:]
-		append(&out.enums, node)
-	case .Thing, .Singleton:
-		node := parse_thing(p) or_return
-		node.doc = pending.doc
-		node.gtags = pending.gtags[:]
-		append(&out.things, node)
+	case .Ident:
+		// `data`/`enum`/`thing`/`singleton` are CONTEXTUAL keywords (fun.ll1.md
+		// §2): they lex as Ident, so the keyword is recognized by text here — and
+		// only here, at the declaration-opening position the top-level loop calls
+		// parse_declaration in. One token of lookahead still selects the
+		// production (the surface has no module-level expression statement, so a
+		// leading Ident that is not a decl opener is an error), preserving LL(1).
+		// In value/binding/field position these same words are ordinary Idents the
+		// expression and field grammars consume, never reaching this dispatch.
+		return parse_contextual_declaration(p, out, pending)
 	case .Signal:
 		node := parse_signal(p) or_return
 		node.doc = pending.doc
@@ -363,6 +358,37 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node := parse_test(p) or_return
 		node.doc = pending.doc
 		append(&out.tests, node)
+	case:
+		return .Unexpected_Token
+	}
+	return .None
+}
+
+// parse_contextual_declaration dispatches a `data`/`enum`/`thing`/`singleton`
+// declaration off the leading Ident's TEXT (fun.ll1.md §2: these are contextual
+// keywords, lexed as Ident). It is reached only from parse_declaration, i.e.
+// only at the start of a module-level statement — the one position the word is
+// the keyword. A leading Ident whose text is none of these is not a declaration
+// opener: the surface has no module-level expression statement, so it is an
+// Unexpected_Token (the same verdict the prior hard-keyword dispatch's default
+// gave for a stray leading word).
+parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> Parse_Error {
+	switch p.tokens[p.pos].text {
+	case "data":
+		node := parse_data(p) or_return
+		node.doc = pending.doc
+		node.gtags = pending.gtags[:]
+		append(&out.datas, node)
+	case "enum":
+		node := parse_enum(p) or_return
+		node.doc = pending.doc
+		node.gtags = pending.gtags[:]
+		append(&out.enums, node)
+	case "thing", "singleton":
+		node := parse_thing(p) or_return
+		node.doc = pending.doc
+		node.gtags = pending.gtags[:]
+		append(&out.things, node)
 	case:
 		return .Unexpected_Token
 	}
@@ -532,7 +558,10 @@ parse_let_decl :: proc(p: ^Parser) -> (node: Let_Decl_Node, err: Parse_Error) {
 // kind is contextual — a bare UpperCamel name in the post-colon position,
 // never a reserved word.
 parse_data :: proc(p: ^Parser) -> (node: Data_Node, err: Parse_Error) {
-	data_tok := expect(p, .Data) or_return
+	// `data` is a contextual keyword (Ident); the by-text dispatch in
+	// parse_contextual_declaration already verified the text, so consume the
+	// opener as an Ident here.
+	data_tok := expect(p, .Ident) or_return
 	name := expect_type_name(p) or_return
 	kind := parse_optional_kind(p) or_return
 	fields := parse_field_list(p) or_return
@@ -542,8 +571,11 @@ parse_data :: proc(p: ^Parser) -> (node: Data_Node, err: Parse_Error) {
 // parse_thing parses `thing Name { … }` and `singleton Name { … }`
 // (spec §06 §1–2); a singleton is told apart only by the is_singleton flag.
 parse_thing :: proc(p: ^Parser) -> (node: Thing_Node, err: Parse_Error) {
-	is_singleton := peek_kind(p) == .Singleton
-	thing_tok := advance(p) or_return // `thing` or `singleton`
+	// `thing`/`singleton` are contextual keywords (Idents); the opener's text
+	// (verified by parse_contextual_declaration's dispatch) tells the two forms
+	// apart, recorded in is_singleton.
+	is_singleton := p.tokens[p.pos].text == "singleton"
+	thing_tok := expect(p, .Ident) or_return // `thing` or `singleton`
 	name := expect_type_name(p) or_return
 	fields := parse_field_list(p) or_return
 	return Thing_Node{name = name, is_singleton = is_singleton, fields = fields, line = thing_tok.line}, .None
@@ -605,7 +637,9 @@ parse_field_list :: proc(p: ^Parser) -> (fields: []Field_Decl, err: Parse_Error)
 // `enum Steer: Axis { … }` (§03 §4). Variants are UpperCamel, newline- or
 // comma-separated.
 parse_enum :: proc(p: ^Parser) -> (node: Enum_Node, err: Parse_Error) {
-	enum_tok := expect(p, .Enum) or_return
+	// `enum` is a contextual keyword (Ident); the by-text dispatch already
+	// verified the text, so consume the opener as an Ident here.
+	enum_tok := expect(p, .Ident) or_return
 	name := expect_type_name(p) or_return
 	kind := parse_optional_kind(p) or_return
 	expect(p, .L_Brace) or_return
