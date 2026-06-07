@@ -52,7 +52,23 @@ import "core:strings"
 // against the §8 Settings data projection). A marker row, a new flattened-step
 // occupant kind, an enum KIND value, and widened §6/§8 default forms are layout
 // changes: 4 → 5 (funpack/docs/artifact-format.md §1, §6, §8, §11).
-ARTIFACT_SCHEMA_VERSION :: 5
+//
+// v6 is the krognid MULTI-MODULE format — the first artifact this runtime executes
+// whose [functions] section carries fn records from more than the entrypoint
+// module. The single layout change is the §17 CROSS-MODULE SEAM-FN CARRY: when the
+// entrypoint module imports a fn from a sibling USER module (krognid's `stroll`
+// imports `krognid_skeleton` / `krognid_parts` from the baked rig seam), the
+// emitter appends that imported fn's full record — signature, body node run, and a
+// span keyed to the SEAM module (`span:krognid:8`) — after the entrypoint module's
+// own records, so the Rigged draw body's `krognid_skeleton()` / `krognid_parts()`
+// calls resolve to a self-contained record program_function finds by BARE name (the
+// carried records keep bare names; the span's module, not a §15 qualifier,
+// disambiguates them, since this runtime looks functions up by bare name). NO new
+// §2.7 node KIND rides this bump — the seam bodies and the entrypoint's first
+// anim/Draw3 forms serialize through the existing call/field/variant/record/list/
+// string arms. A widened [functions] population is a layout change: 5 → 6
+// (funpack/docs/artifact-format.md §1, §9).
+ARTIFACT_SCHEMA_VERSION :: 6
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
