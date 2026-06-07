@@ -1072,7 +1072,7 @@ fold_tuple_emit :: proc(
 			state.rng = v
 		case List_Value:
 			queue_commands(interp, state, elem)
-		case i64, Fixed, bool, Vec2, Ref, Record_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value:
+		case i64, Fixed, bool, Vec2, Ref, Record_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Vec3, Transform_Value, Pose_Value, Handle_Value:
 		// A half that is neither the Rng nor a command list is outside the value-arm
 		// `(Rng, [Spawn])` shape — ignored, no state write.
 		}

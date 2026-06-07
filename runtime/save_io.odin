@@ -685,8 +685,9 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		// framing with no value bytes).
 		append(buf, u8(Field_Tag.String))
 		snap_put_string(buf, x.text)
-	case Lambda_Value, Tuple_Value, Rng:
-	// A transient never lands in a committed structural column.
+	case Lambda_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	// A transient never lands in a committed structural column — the §16 §7 anim
+	// values are render-time, composed into a [Draw3] list, never persisted.
 	}
 }
 

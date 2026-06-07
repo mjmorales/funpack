@@ -397,8 +397,10 @@ write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		write_record_column(buf, x)
 	case List_Value:
 		write_list_column(buf, x)
-	case Lambda_Value, Tuple_Value, Rng:
-	// A transient value never lands in a committed structural column.
+	case Lambda_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	// A transient value never lands in a committed structural column — the §16 §7
+	// anim values (Vec3/Transform/Pose/handle) compose inside a render body into a
+	// [Draw3] draw-list, never a blackboard column the digest folds here.
 	}
 }
 

@@ -103,6 +103,10 @@ Value :: union {
 	String_Value, // an interpolated String literal (render [Draw] text only, §20)
 	Tuple_Value, // a positional aggregate `(a, b)` — a draw's (value, next_rng), §04 §1
 	Rng, // a first-class threaded PRNG resource (§26): pick consumes it, a draw returns the advanced one
+	Vec3, // a three-Fixed vector (§10 Num kind in 3D): a world position, a bone translation
+	Transform_Value, // a §16 §7 local bone transform: translation + orientation + scale
+	Pose_Value, // a §16 §7 sparse Bone→Transform map (the engine.anim Pose)
+	Handle_Value, // an opaque engine anim handle (Skeleton/PartSet) — composed through builders, never read by field
 }
 
 // --- The evaluation environment ------------------------------------------
@@ -361,6 +365,18 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return r.y, true
 		}
 		return nil, false
+	case Vec3:
+		// A §10 3D vector reads its x/y/z components by name — the ground-plane
+		// position reads (self.pos.x / self.pos.z) a spatial behavior takes.
+		switch field {
+		case "x":
+			return r.x, true
+		case "y":
+			return r.y, true
+		case "z":
+			return r.z, true
+		}
+		return nil, false
 	case Ref:
 		// A Ref column read followed by a field is the resolve-then-read join: a
 		// dangling Ref has no field, so the read takes the absent arm. Resolved
@@ -375,9 +391,11 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return nil, false
 		}
 		return field_value_to_value(fv), true
-	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
-		// A tuple is positional (read by a tuple pattern, never by name) and an Rng
-		// has no field — neither is a `recv.field` receiver.
+	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+		// A tuple is positional (read by a tuple pattern, never by name), an Rng has
+		// no field, and the §16 §7 anim values are opaque — a Pose reads by .get not
+		// .field, a Transform/Skeleton/PartSet by no field at all. None is a
+		// `recv.field` receiver.
 		return nil, false
 	}
 	return nil, false
@@ -499,8 +517,10 @@ eval_with :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		type_name = "Vec2"
 		merged["x"] = b.x
 		merged["y"] = b.y
-	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
-		// A `with` is a record/Vec2 functional update; a tuple/Rng is not a record.
+	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+		// A `with` is a record/Vec2 functional update; a tuple/Rng/anim value is not
+		// a record (a Vec3/Transform/Pose/handle composes through its builders, never
+		// a field update).
 		return nil, false
 	}
 	for i in 1 ..< len(node.children) {
@@ -579,7 +599,9 @@ eval_unary :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return int_neg(v), true
 		case Vec2:
 			return Vec2{fixed_neg(v.x), fixed_neg(v.y)}, true
-		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+		case Vec3:
+			return Vec3{fixed_neg(v.x), fixed_neg(v.y), fixed_neg(v.z)}, true
+		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
 			return nil, false
 		}
 	case "not":
@@ -814,6 +836,25 @@ values_equal :: proc(a, b: Value) -> bool {
 		// Strings compare by their text.
 		bv, ok := b.(String_Value)
 		return ok && av.text == bv.text
+	case Vec3:
+		// A §10 3D vector compares component-wise by its kernel-stable bits — the
+		// move_krognid/Draw3 `at` position equality folds through here.
+		bv, ok := b.(Vec3)
+		return ok && av.x == bv.x && av.y == bv.y && av.z == bv.z
+	case Transform_Value:
+		// A §16 §7 transform compares by its pos/rot/scale bits — the pose asserts
+		// (Pose.get(...) == rot_x(0.0)) resolve here.
+		bv, ok := b.(Transform_Value)
+		return ok && transforms_equal(av, bv)
+	case Pose_Value:
+		// A §16 §7 pose compares per driven bone — the blend/layer per-bone asserts.
+		bv, ok := b.(Pose_Value)
+		return ok && poses_equal(av, bv)
+	case Handle_Value:
+		// An opaque anim handle compares by kind + factory + builder op log — two
+		// Skeleton/PartSet built the same way are equal (the Rigged record's Eq).
+		bv, ok := b.(Handle_Value)
+		return ok && handles_equal(av, bv)
 	case Lambda_Value, Rng:
 		// A closure has no value identity and an Rng is a threaded resource —
 		// neither is a comparand the §03 Eq surface admits.
@@ -918,9 +959,9 @@ format_value :: proc(interp: ^Interp, v: Value) -> string {
 		return aprint_int(fixed_trunc(x), interp.allocator)
 	case Variant_Value:
 		return strings.clone(x.case_name, interp.allocator)
-	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
-		// A tuple/Rng never reaches a §20 Text hole (render carries no draw); no
-		// display form, render empty.
+	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+		// A tuple/Rng/anim value never reaches a §20 Text hole (render carries no
+		// draw text holes over these); no display form, render empty.
 		return ""
 	}
 	return ""
@@ -950,7 +991,7 @@ as_fixed :: proc(v: Value) -> (f: Fixed, ok: bool) {
 		return n, true
 	case i64:
 		return to_fixed(n), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
 		return Fixed(0), false
 	}
 	return Fixed(0), false
@@ -1056,12 +1097,14 @@ value_to_field_value :: proc(
 		return clone_record_value(x, allocator), true
 	case List_Value:
 		return clone_list_value(x, allocator), true
-	case Lambda_Value, Tuple_Value, Rng:
+	case Lambda_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
 		// A Tuple is split by the tick into its halves before commit and never
 		// lands whole on a row; an Rng is THREADED (carried in Tick_State, written
 		// forward), never persisted as a column; a closure has no value identity.
-		// None is a blackboard column — the commit path treats them as no-column
-		// values.
+		// The §16 §7 anim values (Vec3/Transform/Pose/handle) are render-time — they
+		// compose inside a render body into a [Draw3] draw-list, never a committed
+		// blackboard column (the Draw3 lowering + digest is a separate concern). None
+		// is a blackboard column — the commit path treats them as no-column values.
 		return nil, false
 	}
 	return nil, false
@@ -1105,7 +1148,10 @@ clone_column_value :: proc(v: Value, allocator := context.allocator) -> Value {
 		return clone_list_value(x, allocator)
 	case Variant_Value:
 		return clone_variant_value(x, allocator)
-	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng:
+	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+		// The scalar/Vec/handle arms copy by value (a Pose's bone slice and a
+		// handle's op log live in the eval arena, the same transient lifetime as a
+		// tuple — the §16 §7 anim values are render-time, never a committed column).
 		return v
 	}
 	return v
