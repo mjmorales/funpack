@@ -45,24 +45,11 @@ var goldenCorpus = []string{
 	"yard",
 }
 
-// FunpackSpecDirEnv is the spec-checkout override variable. When set to the
-// funpack-spec root, it short-circuits the conventional sibling-path resolution
-// — the seam an operator (or CI) uses to point the sweep at a checkout that is
-// not the conventional repo sibling, mirroring the per-tree FUNPACK_<NAME>_DIR
-// overrides the Odin golden tests honor, collapsed to one root for the sweep.
-const FunpackSpecDirEnv = "FUNPACK_SPEC_DIR"
-
-// specSiblingRelPath is the conventional funpack-spec checkout location relative
-// to the MAIN repo checkout root: a sibling of the funpack repo. It is resolved
-// against the main checkout (not the cwd, not a worktree root) so the sweep
-// finds the same checkout the Odin golden tests do.
-var specSiblingRelPath = filepath.Join("..", "funpack-spec")
-
 func TestCrossExampleAcceptanceSweep(t *testing.T) {
 	repoRoot := repoRootDir(t)
 	binary := resolveFunpackBinary(t, repoRoot)
 
-	specRoot := resolveSpecRoot(repoRoot)
+	specRoot := resolveSpecRoot(t)
 	if !isDir(specRoot) {
 		// Per-corpus-root LOUD skip, naming the resolved-but-missing path: the
 		// whole corpus is unavailable on this machine, exactly the
@@ -71,7 +58,7 @@ func TestCrossExampleAcceptanceSweep(t *testing.T) {
 		// genuinely-missing individual tree under a present checkout.
 		t.Skipf(
 			"SKIP cross-example sweep: funpack-spec checkout not found at %q — set %s or check out funpack-spec as a sibling of the repo",
-			specRoot, FunpackSpecDirEnv,
+			specRoot, SpecDirEnv,
 		)
 	}
 
@@ -216,74 +203,11 @@ func resolveFunpackBinary(t *testing.T, repoRoot string) string {
 	return binary
 }
 
-// resolveSpecRoot resolves the funpack-spec checkout root: the FUNPACK_SPEC_DIR
-// override when set, else the conventional sibling of the MAIN checkout. The
-// main-checkout anchoring is load-bearing under a worktree: this test compiled
-// inside an orchestrator task worktree (.claude/worktrees/<slug>-task-<id>/)
-// would otherwise resolve the sibling default to
-// .claude/worktrees/funpack-spec, which never exists — the whole sweep would
-// silently SKIP out of every worktree validation run. mainCheckoutRoot strips
-// the worktree infix so the sibling resolves against the real checkout whose
-// siblings exist, mirroring the Odin golden tests' resolve_spec_dir.
-func resolveSpecRoot(repoRoot string) string {
-	if override, ok := os.LookupEnv(FunpackSpecDirEnv); ok && override != "" {
-		return override
-	}
-	return filepath.Join(mainCheckoutRoot(repoRoot), specSiblingRelPath)
-}
-
-// mainCheckoutRoot maps an orchestrator task-worktree root onto the main
-// checkout root: a root under .claude/worktrees/ anchors at the directory
-// holding .claude (the real repo, whose siblings exist); any other root is
-// already the main checkout. It is the Go twin of the Odin golden tests'
-// main_checkout_root, kept in sync by the shared worktree layout convention.
-func mainCheckoutRoot(root string) string {
-	marker := string(filepath.Separator) + ".claude" + string(filepath.Separator) + "worktrees" + string(filepath.Separator)
-	if idx := strings.Index(root, marker); idx >= 0 {
-		return root[:idx]
-	}
-	return root
-}
-
-// copyTree recursively copies src into a fresh temp dir (auto-cleaned by
-// t.TempDir) and returns the copy's root. The build mutates its tree (writing
-// `.funpack/`), and the spec checkout is read-only, so the sweep never builds in
-// place — it builds against this copy, leaving the checkout pristine.
-func copyTree(t *testing.T, src string) string {
-	t.Helper()
-	dst := t.TempDir()
-	walkErr := filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, relErr := filepath.Rel(src, path)
-		if relErr != nil {
-			return relErr
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		// Symlinks are not expected in the example trees; a regular-file copy
-		// preserves the executable bit for any tool the build shells out to.
-		info, infoErr := d.Info()
-		if infoErr != nil {
-			return infoErr
-		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
-		}
-		return os.WriteFile(target, data, info.Mode().Perm())
-	})
-	if walkErr != nil {
-		t.Fatalf("copy tree %s: %v", src, walkErr)
-	}
-	return dst
-}
-
 // isDir reports whether path is an existing directory — the existence test the
 // per-corpus-root skip and the per-example hard-failure both key on.
+// (Spec-root resolution, the worktree-infix strip, and copyTree are shared with
+// the integration round-trip — see integration_test.go's resolveSpecRoot,
+// primaryCheckoutRoot, and copyTree.)
 func isDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()

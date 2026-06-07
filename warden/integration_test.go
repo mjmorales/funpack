@@ -37,7 +37,7 @@ var pongExampleRelPath = filepath.Join("examples", "pong")
 
 func TestIntegrationBuildClassifyReadRoundTrip(t *testing.T) {
 	pongTree := resolvePongTree(t)
-	binary := resolveFunpackBinary(t)
+	binary := resolveFunpackBinaryOrSkip(t)
 
 	// Build against a COPY in a temp dir, never the sibling checkout: funpack
 	// writes its derived .funpack/ under the tree it builds, so building in place
@@ -168,12 +168,15 @@ func repoRootForBinary(t *testing.T) string {
 	return root
 }
 
-// resolveFunpackBinary discovers the funpack binary through warden's production
-// discovery seam — FUNPACK_BIN override, then the in-repo build, then PATH — with
-// the repo root anchored on this tree so the `task funpack:binary` product is
-// found. It t.Skip's loudly when no binary resolves, naming the in-repo path the
-// build verb would have produced, so the unit suites pass without a built binary.
-func resolveFunpackBinary(t *testing.T) string {
+// resolveFunpackBinaryOrSkip discovers the funpack binary through warden's
+// production discovery seam — FUNPACK_BIN override, then the in-repo build, then
+// PATH — with the repo root anchored on this tree so the `task funpack:binary`
+// product is found. It t.Skip's loudly when no binary resolves, naming the
+// in-repo path the build verb would have produced, so the unit suites pass
+// without a built binary. (The sweep's resolveFunpackBinary is the hard-fail
+// counterpart: under `task warden:test` the binary is always built first, so
+// absence there is a setup break, not an environment gap.)
+func resolveFunpackBinaryOrSkip(t *testing.T) string {
 	t.Helper()
 
 	root := repoRootForBinary(t)
