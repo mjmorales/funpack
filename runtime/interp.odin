@@ -667,6 +667,8 @@ eval_arith :: proc(op: string, lhs, rhs: Value) -> (value: Value, ok: bool) {
 		return apply_int_arith(op, l, r)
 	case Vec2:
 		return apply_vec2_arith(op, l, rhs)
+	case Vec3:
+		return apply_vec3_arith(op, l, rhs)
 	}
 	return nil, false
 }
@@ -728,6 +730,40 @@ apply_vec2_arith :: proc(op: string, a: Vec2, rhs: Value) -> (value: Value, ok: 
 			return nil, false
 		}
 		return vec2_scale(a, s), true
+	}
+	return nil, false
+}
+
+// apply_vec3_arith dispatches a §16 §7 3D vector arithmetic op: component-wise
+// add/sub over a Vec3 rhs, scalar mul over a Fixed rhs (the §10 Num-kind surface
+// in 3D). It MIRRORS apply_vec2_arith arm-for-arm — the third lane is the only
+// delta — and matches the funpack evaluator's eval_vec3_binary exactly (the
+// bit-identity obligation between the two products): krognid's move_krognid folds
+// `Vec3{…} * STRIDE.top_speed * time.dt` (Vec3 * Fixed → vec3_scale) and
+// `self.pos + step` (Vec3 + Vec3 → vec3_add). The kernel ops live in vector3.odin
+// (the deliberate copy of funpack/vector.odin), so the math is defined in one
+// place. A Vec3*Vec3 or a Vec3+Fixed is ok=false (the checked AST never emits one);
+// `mod` and `div` are undefined over a vector and fall through to ok=false.
+apply_vec3_arith :: proc(op: string, a: Vec3, rhs: Value) -> (value: Value, ok: bool) {
+	switch op {
+	case "add":
+		b, b_ok := rhs.(Vec3)
+		if !b_ok {
+			return nil, false
+		}
+		return vec3_add(a, b), true
+	case "sub":
+		b, b_ok := rhs.(Vec3)
+		if !b_ok {
+			return nil, false
+		}
+		return vec3_sub(a, b), true
+	case "mul":
+		s, s_ok := as_fixed(rhs)
+		if !s_ok {
+			return nil, false
+		}
+		return vec3_scale(a, s), true
 	}
 	return nil, false
 }
@@ -1062,6 +1098,8 @@ field_value_to_value :: proc(fv: Field_Value) -> Value {
 		return v
 	case Vec2:
 		return v
+	case Vec3:
+		return v
 	case Ref:
 		return v
 	case Record_Value:
@@ -1106,6 +1144,14 @@ value_to_field_value :: proc(
 		return x, true
 	case Vec2:
 		return x, true
+	case Vec3:
+		// A §10 3D vector commits as a Vec3 COLUMN (krognid's `pos: Vec3`, mutated by
+		// move_krognid each tick). This is a thing-FIELD Vec3, distinct from the §16 §7
+		// anim Vec3 values (a bone translation, a draw `at`) that compose render-time
+		// into a [Draw3] draw-list — those never reach a commit because a render body's
+		// result is a draw-list, not a blackboard write. A committed Vec3 column is the
+		// same plain raw-bit lane shape as a Vec2 column.
+		return x, true
 	case Ref:
 		return x, true
 	case Variant_Value:
@@ -1127,14 +1173,17 @@ value_to_field_value :: proc(
 		return clone_record_value(x, allocator), true
 	case List_Value:
 		return clone_list_value(x, allocator), true
-	case Lambda_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
 		// A Tuple is split by the tick into its halves before commit and never
 		// lands whole on a row; an Rng is THREADED (carried in Tick_State, written
 		// forward), never persisted as a column; a closure has no value identity.
-		// The §16 §7 anim values (Vec3/Transform/Pose/handle) are render-time — they
-		// compose inside a render body into a [Draw3] draw-list, never a committed
-		// blackboard column (the Draw3 lowering + digest is a separate concern). None
-		// is a blackboard column — the commit path treats them as no-column values.
+		// The §16 §7 anim VALUES (Transform/Pose/handle) are render-time — they compose
+		// inside a render body into a [Draw3] draw-list, never a committed blackboard
+		// column (the Draw3 lowering + digest is a separate concern). A bare Vec3 is NOT
+		// here: a thing-field Vec3 column (krognid's `pos`) commits via the Vec3 arm
+		// above; the anim Vec3s nested in a Transform/Pose never reach a top-level commit
+		// because a render result is a draw-list. None of these is a blackboard column —
+		// the commit path treats them as no-column values.
 		return nil, false
 	}
 	return nil, false

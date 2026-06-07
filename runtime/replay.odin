@@ -243,13 +243,19 @@ refold_capture :: proc(
 ) -> Frame_Capture {
 	world := new_world(program^, allocator)
 	base := initial_version(world, allocator)
-	time := time_resource(program.entrypoint.tick_hz, allocator)
+	tick_hz := program.entrypoint.tick_hz
 	per_tick := make([dynamic]Frame_Digest, 0, len(snapshots), allocator)
 
+	// Time rebinds per committed tick so `time.t` advances (logical time since
+	// startup) — krognid's pose_idle bob reads it. The SAME derivation feeds the
+	// live capture (krognid_live_capture), so the render digest is bit-identical
+	// across live and re-fold. A control-only game ignores `t`, so this is
+	// byte-identical to the prior single-bind path for pong/snake/hunt/yard.
 	if identity.has_seed {
 		version, rng := run_startup_seeded(program, base, rand_seed(identity.seed), allocator)
 		current := rng
-		for snapshot in snapshots {
+		for snapshot, i in snapshots {
+			time := time_resource_at(tick_hz, i, allocator)
 			version = step_tick(program, version, snapshot, time, allocator, &current)
 			draw := render_version(program, version, snapshot, time, allocator)
 			append(&per_tick, capture_frame(version, draw, allocator))
@@ -258,7 +264,8 @@ refold_capture :: proc(
 	}
 
 	version := run_startup(program, base, allocator)
-	for snapshot in snapshots {
+	for snapshot, i in snapshots {
+		time := time_resource_at(tick_hz, i, allocator)
 		version = step_tick(program, version, snapshot, time, allocator)
 		draw := render_version(program, version, snapshot, time, allocator)
 		append(&per_tick, capture_frame(version, draw, allocator))
@@ -333,21 +340,48 @@ seed_diagnostic :: proc(identity: Replay_Identity, allocator := context.allocato
 	return fmt.aprintf("seed=%d", identity.seed, allocator = allocator)
 }
 
-// time_resource builds the Time resource each driver tick binds to: the one `dt`
-// field at the artifact's fixed tick rate (dt = 1/tick_hz in Q32.32 through the
-// kernel — no float, identical bits every machine, §10). It is the SINGLE dt
-// derivation every driver shares — the replay re-fold, the live SDL session, and
-// the golden-capture harnesses all bind Time through this one proc, so a live
-// run, a re-fold, and a recorded golden step at bit-identical dt and the
-// derivation cannot fork per driver. A non-positive tick rate folds to a zero dt
-// rather than dividing by zero (a malformed entrypoint the loader would have
-// refused).
-time_resource :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
-	fields := make(map[string]Value, allocator)
+// time_dt derives the §04 fixed frame delta from the artifact's fixed tick rate:
+// dt = 1/tick_hz in Q32.32 through the kernel — no float, identical bits every
+// machine (§10). A non-positive tick rate folds to a zero dt rather than dividing
+// by zero (a malformed entrypoint the loader would have refused). The one dt
+// derivation every driver shares, so a live run / re-fold / golden capture cannot
+// fork their delta.
+time_dt :: proc(tick_hz: int) -> Fixed {
 	if tick_hz > 0 {
-		fields["dt"] = fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))
-	} else {
-		fields["dt"] = Fixed(0)
+		return fixed_div(to_fixed(1), to_fixed(i64(tick_hz)))
 	}
+	return Fixed(0)
+}
+
+// time_resource builds the Time resource a driver binds for the SESSION (engine.core
+// `data Time { dt: Fixed, t: Fixed }`): the fixed `dt` (time_dt) and the logical
+// time `t` at the session start, ZERO (spec §04: `t` is logical time since startup,
+// the same zero a `Time.at(dt)` test double seeds). It is the SINGLE Time derivation
+// every driver shares — the replay re-fold (control-only, never reads `t`), the live
+// SDL session, and the golden-capture harnesses all bind Time through here, so the
+// derivation cannot fork per driver. A driver that RENDERS a `time.t`-reading body
+// (krognid's pose_idle bob) rebinds the per-tick `t` through time_resource_at; a
+// control-only path uses this session resource (its t=0 is unread by every control
+// behavior, which reads only `dt`).
+time_resource :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
+	return time_resource_at(tick_hz, 0, allocator)
+}
+
+// time_resource_at builds the Time resource AT a committed tick: `dt` as ever, and
+// `t` = tick * dt — the §04 logical time since startup, accumulated in exact
+// fixed-point (tick * dt, the closed-form sum of a constant dt, so no per-tick
+// rounding drift). The first committed tick (index 0) reads t=0, matching the
+// session-start seed and the `Time.at(dt)` double, and `t` advances one dt per tick
+// thereafter. krognid's draw_krognid reads `time.t` (pose_idle's breathing bob over
+// logical time); the SAME derivation feeds the live capture and the production
+// re-fold, so the `t`-driven idle pose is bit-identical across them (the render
+// digest cannot fork). Control behaviors read only `dt`, so a per-tick `t` never
+// perturbs committed state; a non-`t`-reading render body (pong/snake/hunt/yard)
+// digests byte-identically whether t is 0 or advancing (it never reads the field).
+time_resource_at :: proc(tick_hz: int, tick: int, allocator := context.allocator) -> Record_Value {
+	dt := time_dt(tick_hz)
+	fields := make(map[string]Value, allocator)
+	fields["dt"] = dt
+	fields["t"] = fixed_mul(dt, to_fixed(i64(tick)))
 	return Record_Value{type_name = "Time", fields = fields}
 }
