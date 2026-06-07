@@ -684,15 +684,20 @@ fcfg_line_fields :: proc(line: string) -> []string {
 	return fields[:]
 }
 
-// read_index_project reads the §14 project tree and emits the Index Contract
-// `project` record's NDJSON line. It is the end-to-end seam: it reads the
-// project tree, compiles its single source through the lex → parse → typecheck
-// → flatten stages the `project` record's derived fields need, and projects the
-// authored config alongside. A malformed tree or a compile error returns
-// before emission — the `project` record is a fact about a source that
-// compiles, so a source that does not is not indexed here. The flatten input is
-// the typed AST's flattened pipeline; a source with no pipeline flattens to the
-// empty order and the record carries an empty pipeline_flattened.
+// read_index_project reads the §14 project tree and emits the WHOLE Index
+// Contract NDJSON stream (spec §29 §2): the `project` record on line 1, then one
+// `decl` record per declaration in the fixed gate_units-style declaration order
+// (derive_decl_records). It is the end-to-end seam: it reads the project tree,
+// compiles its single source ONCE through the lex → parse → typecheck → flatten
+// stages BOTH record kinds' derived fields need, and projects the authored
+// config alongside. A malformed tree or a compile error returns before emission
+// — the records are facts about a source that compiles, so a source that does
+// not is not indexed here. The flatten input is the typed AST's flattened
+// pipeline; a source with no pipeline flattens to the empty order and the
+// `project` record carries an empty pipeline_flattened. The stream is byte-stable
+// (project line then decl lines in fixed order, no map/clock/float), so two reads
+// of the same tree are byte-identical. The single-source path derives with the
+// bare module name "" (lore #11), so each decl's qualified_name is its bare name.
 read_index_project :: proc(root: string, allocator := context.allocator) -> (ndjson: string, err: Index_Contract_Error, compiled: bool) {
 	identity, project_err := read_project(root)
 	if project_err != .None {
@@ -713,7 +718,31 @@ read_index_project :: proc(root: string, allocator := context.allocator) -> (ndj
 	if record_err != .None {
 		return "", record_err, false
 	}
-	return emit_project_record(record, allocator), .None, true
+	return emit_index_stream(record, typed, flat, allocator), .None, true
+}
+
+// emit_index_stream concatenates the whole Index Contract NDJSON stream from the
+// one compile's products: the `project` record line first, then one `decl` record
+// line per declaration in the fixed gate_units-style order (derive_decl_records,
+// single-source bare-module path). Each record marshals to its own
+// one-object-per-line NDJSON via the shared emitters and the lines join in
+// emission order, so the stream is a byte-stable concatenation — no re-sort, no
+// map, no clock — and a double emission of the same tree is byte-identical. The
+// per-line strings are temp-allocated and the joined result lands in `allocator`,
+// matching emit_project_record's allocation contract.
+emit_index_stream :: proc(
+	record: Project_Record,
+	typed: Typed_Ast,
+	flat: Flattened_Pipeline,
+	allocator := context.allocator,
+) -> string {
+	decls := derive_decl_records("", typed, flat)
+	lines := make([dynamic]string, 0, 1 + len(decls), context.temp_allocator)
+	append(&lines, emit_project_record(record, context.temp_allocator))
+	for decl in decls {
+		append(&lines, emit_decl_record(decl, context.temp_allocator))
+	}
+	return strings.concatenate(lines[:], allocator)
 }
 
 // compile_for_index drives a source through the lex → parse → typecheck →
