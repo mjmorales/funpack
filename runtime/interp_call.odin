@@ -256,7 +256,7 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	// name node.
 	recv_node := &field_node.children[0]
 	if recv_node.kind == .Name {
-		if ctor, is_ctor := eval_engine_constructor(interp, recv_node.fields[0], method); is_ctor {
+		if ctor, is_ctor := eval_engine_constructor(interp, node, env, recv_node.fields[0], method); is_ctor {
 			return ctor, true
 		}
 	}
@@ -277,6 +277,16 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 		return eval_input_button(interp, node, env, held)
 	case "apply_impulse":
 		return eval_apply_impulse(interp, recv, node, env)
+	}
+	// A §16 §7 value-method on a built anim value: Pose.set/get drive/read a bone
+	// (the receiver is a Pose chained from Pose.empty().set(...)), PartSet
+	// .bind/.mirror chain ops on the opaque handle. Tried after the resource/intent
+	// methods so an Input/Body receiver still resolves first.
+	if pose, is_pose := recv.(Pose_Value); is_pose {
+		return eval_pose_method(interp, node, env, pose, method)
+	}
+	if handle, is_handle := recv.(Handle_Value); is_handle {
+		return eval_handle_method(interp, node, env, handle, method)
 	}
 	return nil, false
 }
@@ -321,20 +331,22 @@ eval_apply_impulse :: proc(interp: ^Interp, recv: Value, node: ^Node, env: ^Env)
 }
 
 // eval_engine_constructor resolves an engine static constructor `Type.method()`
-// to its canonical seed record (yard's `Settings.defaults()` → the factory-default
-// Settings). It is the engine-provided constructor surface §24 names: a behavior
-// reads the default settings record to seed a Menu, never authoring the engine's
-// internal preference layout. is_ctor is false for any (type, method) pair that is
-// not a recognized engine constructor, so a non-constructor `recv.method()` falls
-// through to the value-receiver dispatch.
-eval_engine_constructor :: proc(interp: ^Interp, type_name, method: string) -> (value: Value, is_ctor: bool) {
+// to its canonical seed value: yard's `Settings.defaults()` → the factory-default
+// Settings, the §16 §7 anim builders Pose.empty()/blend()/layer() /
+// Skeleton.humanoid()/empty() / PartSet.empty() → the pose/handle seed values
+// (eval_anim_constructor, which needs the call node + env to evaluate blend/layer's
+// pose args). It is the engine-provided constructor surface the spec names: a
+// behavior reads these seeds, never authoring the engine internals. is_ctor is
+// false for any (type, method) pair that is not a recognized engine constructor, so
+// a non-constructor `recv.method()` falls through to the value-receiver dispatch.
+eval_engine_constructor :: proc(interp: ^Interp, node: ^Node, env: ^Env, type_name, method: string) -> (value: Value, is_ctor: bool) {
 	switch type_name {
 	case "Settings":
 		if method == "defaults" {
 			return settings_defaults(interp), true
 		}
 	}
-	return nil, false
+	return eval_anim_constructor(interp, node, env, type_name, method)
 }
 
 // settings_defaults is the §24 factory-default Settings record `Settings.defaults()`
@@ -488,6 +500,10 @@ eval_named_call :: proc(
 		return builtin_length(interp, node, env)
 	case "sin":
 		return builtin_sin(interp, node, env)
+	case "rot_x":
+		return builtin_rot_x(interp, node, env)
+	case "up":
+		return builtin_up(interp, node, env)
 	case "prepend":
 		return builtin_prepend(interp, node, env)
 	case "init":
@@ -566,7 +582,7 @@ builtin_abs :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return (v < 0 ? fixed_neg(v) : v), true
 	case i64:
 		return (v < 0 ? int_neg(v) : v), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
 		return nil, false
 	}
 	return nil, false
@@ -638,6 +654,48 @@ builtin_sin :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return nil, false
 	}
 	return fixed_sin(angle), true
+}
+
+// builtin_rot_x is the §16 §7 per-bone X-axis rotation builder `rot_x(angle: Fixed)
+// -> Transform`: a fixed-point angle (radians) into a Transform with the identity
+// translation, a quaternion rotating `angle` about the local X axis, and unit scale
+// — the leg/arm swing a pose generator drives a bone with. At angle 0 the quaternion
+// is the identity (sin(0)=0, cos(0)=1), so rot_x(0.0) is the rest transform, the
+// pose_walk zero-crossing the golden asserts. A non-scalar arg is ok=false
+// (fail-closed). transform_rot_x carries the kernel-copied quat math (pose.odin /
+// vector3.odin), so the bits match the funpack evaluator's rot_x bit-for-bit.
+builtin_rot_x :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	angle, is_fixed := as_fixed(arg)
+	if !is_fixed {
+		return nil, false
+	}
+	return transform_rot_x(angle), true
+}
+
+// builtin_up is the §16 §7 per-bone vertical-offset builder `up(d: Fixed) ->
+// Transform`: a fixed-point displacement into a Transform translating by `d` along
+// the local +Y axis, with the identity rotation and unit scale — pose_idle's torso
+// breathing bob. A non-scalar arg is ok=false (fail-closed).
+builtin_up :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	d, is_fixed := as_fixed(arg)
+	if !is_fixed {
+		return nil, false
+	}
+	return transform_up(d), true
 }
 
 // builtin_first is the §08 list combinator `first(list) -> Option[T]`: the head
