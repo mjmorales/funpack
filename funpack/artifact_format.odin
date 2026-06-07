@@ -66,7 +66,29 @@ import "core:strings"
 // the nested `access` sub-record yard reads back). A marker row, a new flattened-step
 // occupant kind, an enum KIND value, and widened §6/§8 default forms are layout
 // changes: 4 → 5 (§1).
-ARTIFACT_SCHEMA_VERSION :: 5
+//
+// Version 6 is the krognid MULTI-MODULE format: the first artifact the runtime
+// executes whose [functions] section carries fn records from MORE than the
+// entrypoint module. The single layout change is the §17 CROSS-MODULE SEAM-FN
+// CARRY — when the entrypoint module (krognid's `stroll`) imports a fn from a
+// sibling USER module (`import krognid.{krognid_skeleton, krognid_parts}` from the
+// baked rig seam), the emitter appends that imported fn's full record — signature,
+// body node run, and a span keyed to the SEAM module (`span:krognid:8`) — into
+// [functions] after the entrypoint module's own records, so the Rigged draw body's
+// `krognid_skeleton()` / `krognid_parts()` calls resolve to a self-contained record
+// the runtime's bare-name program_function lookup finds (the seam bodies would
+// otherwise be absent and the call would return nil). The carried records keep
+// their BARE names — the artifact disambiguates by the span's module, not a §15
+// qualifier, because the runtime resolves functions by bare name (the §15
+// qualification ADR governs the SEPARATE Index Contract decl surface, not the
+// artifact [functions] name token). NO new §2.7 node KIND rides this bump: the seam
+// bodies (`Skeleton.humanoid()`, a `.bind(Slot::…, mesh(…))` builder chain ending in
+// `.mirror(Side::L, Side::R)`) and the entrypoint's first §05/§20 anim/Draw3 forms
+// (`Draw3::Rigged{…}`, `Pose.blend(…)`, the `Audio.track(…).pitch(…)` chain) all
+// serialize through the existing call/field/variant/record/list/string node arms —
+// the body walk was already generic over them. A widened [functions] population
+// (records from imported modules) is a layout change: 5 → 6 (§1).
+ARTIFACT_SCHEMA_VERSION :: 6
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

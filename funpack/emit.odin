@@ -28,11 +28,19 @@ import "core:strings"
 // and the span module name), and the §14 entrypoint wiring ([entrypoint]). Each
 // is itself a pure function of source, so the whole emission is.
 Emit_Input :: struct {
-	ast:        Ast,
-	flat:       Flattened_Pipeline,
-	module:     string, // the §15 path-derived module name carried in [functions] spans
-	project:    Project_Identity,
-	entrypoint: Entrypoint_Config,
+	ast:          Ast,
+	flat:         Flattened_Pipeline,
+	module:       string, // the §15 path-derived module name carried in [functions] spans
+	project:      Project_Identity,
+	entrypoint:   Entrypoint_Config,
+	// imported_fns are the §17 cross-module SEAM fn records the entrypoint module
+	// references — the fns it imports from sibling USER modules (krognid's `stroll`
+	// imports `krognid_skeleton`/`krognid_parts` from the rig seam). Each carries
+	// its OWN seam module in its span, so emit_functions appends them after the
+	// entrypoint module's own records and the Rigged draw body's calls resolve to a
+	// self-contained record the runtime finds by bare name. Empty for a single-
+	// module game (every byte of pong/snake/hunt/yard is unchanged).
+	imported_fns: []Function_Record,
 }
 
 // Emit_Error distinguishes the ways emission can refuse before it writes bytes:
@@ -64,9 +72,9 @@ Emit_Error :: enum {
 // identity, and the entrypoint config text — so two calls on the same inputs are
 // byte-identical. A source that fails any checked-pipeline floor returns the
 // matching Emit_Error and no bytes. It is stage_emit_indexed with the empty index
-// (every user-module import is .Unknown_Module), so a single-module game emits
-// exactly as before; a multi-module game's entrypoint emits through
-// stage_emit_indexed with the project-wide index.
+// and no sibling-module ASTs (every user-module import is .Unknown_Module), so a
+// single-module game emits exactly as before; a multi-module game's entrypoint
+// emits through stage_emit_indexed with the project-wide index.
 stage_emit :: proc(
 	source: string,
 	module: string,
@@ -74,7 +82,7 @@ stage_emit :: proc(
 	entrypoint_fcfg: string,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
-	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, allocator)
+	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, allocator)
 }
 
 // stage_emit_indexed is the source → artifact seam typed against a project-wide
@@ -87,12 +95,20 @@ stage_emit :: proc(
 // config's pipeline/bindings references still validate against THIS module's AST
 // (the entrypoint module declares the pipeline and bindings fn), so a dangling
 // reference is still caught at emission.
+//
+// module_asts maps each sibling §15 module name to its parsed AST — the bodies the
+// §17 cross-module SEAM-FN CARRY reads. After the entrypoint AST checks, the
+// emitter walks its imports, and for each fn imported from a sibling USER module
+// present in this map, carries that fn's full record (signature + body) into
+// [functions] (collect_imported_fn_records). A nil/absent map (the single-source
+// stage_emit) carries nothing, so a one-module game's bytes are unchanged.
 stage_emit_indexed :: proc(
 	source: string,
 	module: string,
 	project: Project_Identity,
 	entrypoint_fcfg: string,
 	index: Module_Index,
+	module_asts: map[string]Ast,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -125,11 +141,12 @@ stage_emit_indexed :: proc(
 		return "", .Entrypoint_Failed
 	}
 	input := Emit_Input {
-		ast        = ast,
-		flat       = verdict.flat,
-		module     = module,
-		project    = project,
-		entrypoint = entrypoint,
+		ast          = ast,
+		flat         = verdict.flat,
+		module       = module,
+		project      = project,
+		entrypoint   = entrypoint,
+		imported_fns = collect_imported_fn_records(ast, module_asts),
 	}
 	return emit_artifact(input, allocator), .None
 }
@@ -150,7 +167,7 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_data(&b, input.ast)
 	emit_signals(&b, input.ast)
 	emit_things(&b, input.ast)
-	emit_functions(&b, input.ast, input.module)
+	emit_functions(&b, input.ast, input.module, input.imported_fns)
 	emit_behaviors(&b, input.ast, input.flat)
 	emit_pipeline_flattened(&b, input.flat)
 	emit_signal_routing(&b, input.flat)
@@ -558,12 +575,21 @@ encode_record_default :: proc(record: ^Record_Expr) -> string {
 // by KIND in the fixed order fn-helpers → const → bindings → startup, each group
 // in source-declaration order — the deterministic order
 // (docs/artifact-format.md §9) the golden fixture and the runtime's positional
-// reader both rely on.
-emit_functions :: proc(b: ^strings.Builder, ast: Ast, module: string) {
-	records := function_records(ast)
-	emit_header(b, "functions", len(records))
+// reader both rely on. The §17 cross-module imported_fns are appended AFTER the
+// entrypoint module's own records (in import-then-member declaration order), so a
+// multi-module game's [functions] is self-contained: the Rigged draw body's seam
+// calls resolve to a carried record. Each carried record carries its OWN seam
+// module in its span (record.module), so the span keys to the seam, not the
+// entrypoint. imported_fns is empty for a single-module game — its bytes are
+// unchanged.
+emit_functions :: proc(b: ^strings.Builder, ast: Ast, module: string, imported_fns: []Function_Record) {
+	records := function_records(ast, module)
+	emit_header(b, "functions", len(records) + len(imported_fns))
 	for record in records {
-		emit_function_record(b, record, module)
+		emit_function_record(b, record)
+	}
+	for record in imported_fns {
+		emit_function_record(b, record)
 	}
 }
 
@@ -572,7 +598,9 @@ emit_functions :: proc(b: ^strings.Builder, ast: Ast, module: string) {
 // bindings head, and the setup head. kind is the artifact KIND token; params is
 // empty for a const; body is the top-level statement subtrees (a const/bindings/
 // setup body is a single `return` statement); line is the source line for the
-// span.
+// span. module is the §15 module the record's span keys to — the entrypoint module
+// for an own record, the SEAM module for a §17 cross-module imported_fns record —
+// so a multi-module game's span points at the originating module.
 Function_Record :: struct {
 	name:        string,
 	kind:        string,
@@ -580,6 +608,7 @@ Function_Record :: struct {
 	return_type: Type_Ref,
 	body:        []Statement,
 	line:        int,
+	module:      string,
 }
 
 // function_records collects the module's fns and module-level `let` constants
@@ -587,10 +616,11 @@ Function_Record :: struct {
 // startup), each group in source-declaration order (docs/artifact-format.md §9).
 // The `bindings`/`setup` fns are ordinary fns whose names select the
 // `bindings`/`startup` KIND, so they sort into their own trailing groups; every
-// other fn is a `fn` helper, the consts come from the separate `let` slice.
-function_records :: proc(ast: Ast) -> []Function_Record {
+// other fn is a `fn` helper, the consts come from the separate `let` slice. Every
+// record's span keys to `module` — the module that DECLARED these decls.
+function_records :: proc(ast: Ast, module: string) -> []Function_Record {
 	records := make([dynamic]Function_Record, 0, len(ast.fns) + len(ast.lets), context.temp_allocator)
-	append_fn_records(&records, ast, "fn")
+	append_fn_records(&records, ast, "fn", module)
 	for decl in ast.lets {
 		append(&records, Function_Record{
 			name        = decl.name,
@@ -599,19 +629,26 @@ function_records :: proc(ast: Ast) -> []Function_Record {
 			return_type = decl.type,
 			body        = const_body(decl),
 			line        = decl.line,
+			module      = module,
 		})
 	}
-	append_fn_records(&records, ast, "bindings")
-	append_fn_records(&records, ast, "startup")
+	append_fn_records(&records, ast, "bindings", module)
+	append_fn_records(&records, ast, "startup", module)
 	return records[:]
 }
 
 // append_fn_records appends the module fns whose KIND matches `kind`, in source-
 // declaration order — the helper-fn, bindings, and startup groups of the
 // [functions] order (docs/artifact-format.md §9). ast.fns is already in source
-// order, so each group's relative order is preserved.
-append_fn_records :: proc(records: ^[dynamic]Function_Record, ast: Ast, kind: string) {
+// order, so each group's relative order is preserved. An `extern fn` is skipped: it
+// carries no body the runtime can interpret (its implementation is the engine's),
+// so it is never an executable [functions] record. Every appended record's span
+// keys to `module`.
+append_fn_records :: proc(records: ^[dynamic]Function_Record, ast: Ast, kind: string, module: string) {
 	for fn in ast.fns {
+		if fn.is_extern {
+			continue
+		}
 		if function_kind(fn.name) != kind {
 			continue
 		}
@@ -622,6 +659,7 @@ append_fn_records :: proc(records: ^[dynamic]Function_Record, ast: Ast, kind: st
 			return_type = fn.return_type,
 			body        = fn.body,
 			line        = fn.line,
+			module      = module,
 		})
 	}
 }
@@ -652,8 +690,10 @@ const_body :: proc(decl: Let_Decl_Node) -> []Statement {
 // emit_function_record writes one [functions] record: the `function` lead line
 // (name, KIND, param_count, return type, body_count, span), then the `param`
 // lines and the body `node` run (§2.7). body_count is the count of top-level
-// statement subtrees, one per source statement line.
-emit_function_record :: proc(b: ^strings.Builder, record: Function_Record, module: string) {
+// statement subtrees, one per source statement line. The span's module is the
+// record's own (record.module) — the entrypoint module for an own record, the seam
+// module for a §17 carried record.
+emit_function_record :: proc(b: ^strings.Builder, record: Function_Record) {
 	strings.write_string(b, "function ")
 	strings.write_string(b, record.name)
 	strings.write_byte(b, ' ')
@@ -665,7 +705,7 @@ emit_function_record :: proc(b: ^strings.Builder, record: Function_Record, modul
 	strings.write_byte(b, ' ')
 	strings.write_int(b, len(record.body))
 	strings.write_string(b, " span:")
-	strings.write_string(b, module)
+	strings.write_string(b, record.module)
 	strings.write_byte(b, ':')
 	strings.write_int(b, record.line)
 	emit_line(b, "")
