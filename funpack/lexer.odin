@@ -30,28 +30,30 @@ Token_Kind :: enum {
 	// declaration keyword rather than riding as a contextual Ident.
 	Extern,
 	Match,
-	// §06/§07 declaration and expression keywords. thing/singleton/signal
-	// are contextual leading keywords in the spec (§06: `let thing = …`
-	// stays legal); on the golden surface they appear only in declaration
-	// position, so they tokenize as reserved openers here. `on` is the
-	// behavior-target preposition, `with` the record-update operator, `if`
-	// the conditional opener (both the early-return statement and the value
-	// expression, spec §02 §5), `else` the required value-expression alternate
-	// arm (`if cond { … } else { … }`); `else` is a reserved keyword (it never
-	// names a value on the golden surface, so reserving it preserves §02
-	// one-name-one-meaning).
-	Thing,
-	Singleton,
+	// §06/§07 declaration and expression keywords. `behavior`/`signal` are
+	// reserved declaration openers (they never name a value on the golden
+	// surface). `with` is the record-update operator, `if` the conditional
+	// opener (both the early-return statement and the value expression, spec §02
+	// §5), `else` the required value-expression alternate arm (`if cond { … }
+	// else { … }`); `else` is a reserved keyword, preserving §02
+	// one-name-one-meaning.
+	//
+	// `thing`/`singleton`/`data`/`enum` (and `on`) are CONTEXTUAL keywords
+	// (fun.ll1.md §2): a keyword only where it opens a module-level declaration,
+	// an ordinary value name everywhere else (`let thing = …`, a field `data:`,
+	// a member `s.enum`). They are NOT token kinds — they lex as Ident, and
+	// parse_declaration dispatches on the leading Ident's TEXT at the
+	// declaration-opening position (the start of a module-level statement), the
+	// one position where one token of lookahead still selects the production.
 	Behavior,
 	Signal,
-	Data,
-	Enum,
 	Pipeline,
 	With,
 	If,
 	Else,
-	// `on` is a contextual keyword (the behavior-header separator), not a token
-	// kind: it lexes as an Ident and parse_behavior recognizes it by text.
+	// `on`, `thing`, `singleton`, `data`, and `enum` are contextual keywords
+	// (see above): they lex as Ident, and the parser recognizes the keyword by
+	// text only in declaration-opening position.
 	// names and literals
 	Ident,
 	Int_Lit,
@@ -150,7 +152,13 @@ stage_lex :: proc(source: string) -> []Token {
 			i = next
 			continue
 		}
-		update_nesting(&nesting, tok.kind, prev_kind)
+		// A declaration-opening contextual keyword (`thing`/`singleton`/`data`/
+		// `enum`) sits at the start of a module-level statement: the previous
+		// emitted token was a statement terminator (or none) and no bracket frame
+		// is open. Only there does it arm the body brace as a block; in value
+		// position (`let thing = …`) it is an ordinary Ident the rule ignores.
+		at_stmt_start := prev_kind == .Newline || prev_kind == .Invalid
+		update_nesting(&nesting, tok, prev_kind, at_stmt_start)
 		append(&tokens, tok)
 		prev_kind = tok.kind
 		i = next
@@ -213,11 +221,20 @@ newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
 	return j < len(source) && source[j] == '.'
 }
 
-update_nesting :: proc(n: ^Nesting, kind: Token_Kind, prev: Token_Kind) {
-	#partial switch kind {
-	case .Match, .If, .Else, .Thing, .Singleton, .Behavior, .Signal, .Data, .Enum, .Pipeline, .Arrow:
+update_nesting :: proc(n: ^Nesting, tok: Token, prev: Token_Kind, at_stmt_start: bool) {
+	// A declaration-opening contextual keyword (`thing`/`singleton`/`data`/
+	// `enum`) arms its body brace as a block exactly like the reserved decl
+	// keywords below — but only in declaration-opening position (top of a
+	// module-level statement, no open bracket frame). In value position it lexes
+	// as a plain Ident the prev==Ident record-brace rule treats normally.
+	if tok.kind == .Ident && len(n.frames) == 0 && at_stmt_start && is_decl_opener_keyword(tok.text) {
+		n.block_pending = true
+		return
+	}
+	#partial switch tok.kind {
+	case .Match, .If, .Else, .Behavior, .Signal, .Pipeline, .Arrow:
 		// `behavior … on Ball {` keeps its body brace a block via the .Behavior
-		// arming above — `on` lexes as an Ident now and need not re-arm here, as
+		// arming above — `on` lexes as an Ident and need not re-arm here, as
 		// nothing consumes block_pending before the body `{`. `.Else` arms the
 		// alternate arm's `{` as a block the same way `.If` arms the consequent's.
 		n.block_pending = true
@@ -378,18 +395,10 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .Extern, text = text}, i
 	case "match":
 		return Token{kind = .Match, text = text}, i
-	case "thing":
-		return Token{kind = .Thing, text = text}, i
-	case "singleton":
-		return Token{kind = .Singleton, text = text}, i
 	case "behavior":
 		return Token{kind = .Behavior, text = text}, i
 	case "signal":
 		return Token{kind = .Signal, text = text}, i
-	case "data":
-		return Token{kind = .Data, text = text}, i
-	case "enum":
-		return Token{kind = .Enum, text = text}, i
 	case "pipeline":
 		return Token{kind = .Pipeline, text = text}, i
 	case "with":
@@ -399,13 +408,31 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 	case "else":
 		return Token{kind = .Else, text = text}, i
 	}
-	// `on` is a CONTEXTUAL keyword, not a reserved one: it is the behavior-header
-	// separator (`behavior gate_logic on Door`) yet a perfectly valid §02
-	// snake_case value name elsewhere — a field (`thing Switch { on: Bool }`), a
-	// member read (`s.on`), a let. Lexing it as an Ident keeps the value-name
-	// namespace whole; parse_behavior recognizes the separator by text, the same
-	// by-text recognition `step` and the .fcfg keywords (`project`/`use`) use.
+	// `on`/`thing`/`singleton`/`data`/`enum` are CONTEXTUAL keywords, not
+	// reserved ones (fun.ll1.md §2): each selects a production only where it
+	// opens a module-level declaration, yet is a perfectly valid §02 value name
+	// elsewhere — a binding (`let thing = …`), a field (`data Cfg { data: Bytes
+	// }`), a member read (`s.on`), an argument. Lexing them as Ident keeps the
+	// value-name namespace whole; the parser recognizes each keyword by text only
+	// in declaration-opening position, the same by-text recognition `step` and
+	// the behavior-header `on` separator use.
 	return Token{kind = .Ident, text = text, class = classify_ident(text)}, i
+}
+
+// is_decl_opener_keyword reports whether a word is one of the contextual
+// declaration-opening keywords (fun.ll1.md §2: `data enum thing singleton`).
+// These lex as Ident; the word is the keyword only when it opens a module-level
+// declaration. Both the lexer (to arm the body brace as a block, not a record
+// literal) and the parser (parse_declaration's by-text dispatch) consult this
+// one set, so the contextual classification lives in a single place. `on` is a
+// contextual keyword too but is a behavior-header separator, never a
+// declaration opener, so it is recognized by parse_behavior alone.
+is_decl_opener_keyword :: proc(text: string) -> bool {
+	switch text {
+	case "data", "enum", "thing", "singleton":
+		return true
+	}
+	return false
 }
 
 classify_ident :: proc(text: string) -> Ident_Class {
