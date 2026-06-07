@@ -353,21 +353,22 @@ expect_draw_list_equal :: proc(t: ^testing.T, got: Draw_List, want: []Draw_Cmd) 
 		return
 	}
 	for cmd, i in want {
-		testing.expect_value(t, got.cmds[i], cmd)
+		testing.expect(t, draw_cmd_equal(got.cmds[i], cmd))
 	}
 }
 
 // draw_lists_equal reports whether two draw-lists are command-identical — same
-// count, same commands in the same order. The Draw_Cmd union compares
-// structurally (a Fixed component compares by raw bits, a text by its bytes), so
-// this is the bit-identical comparison the determinism assertion reads.
+// count, same commands in the same order. It folds through draw_cmd_equal (a Fixed
+// component compares by raw bits, a text by its bytes, a rig by its handles/pose
+// structurally), the bit-identical comparison the determinism assertion reads — the
+// Draw_Cmd union is no longer simply comparable since Draw3_Rigged carries slices.
 @(private = "file")
 draw_lists_equal :: proc(a, b: Draw_List) -> bool {
 	if len(a.cmds) != len(b.cmds) {
 		return false
 	}
 	for cmd, i in a.cmds {
-		if cmd != b.cmds[i] {
+		if !draw_cmd_equal(cmd, b.cmds[i]) {
 			return false
 		}
 	}

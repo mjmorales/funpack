@@ -531,11 +531,15 @@ decode_record_default :: proc(
 	ctor := encoded[:open] // the constructor type name, e.g. "Cell"
 	body := encoded[open + 1:len(encoded) - 1] // the interior "x=10,y=10"
 
-	// Vec2 is the built-in §10 vector — its default collapses to a Vec2 column
-	// (its x/y are Fixed components), the same shape a runtime `Vec2{…}` literal
-	// evaluates to, not a by-name Record_Value. It has no §3 Data_Decl, so its
-	// components decode as Fixed.
+	// Vec2/Vec3 are the built-in §10 vectors — a default collapses to a Vec2/Vec3
+	// COLUMN (its x/y[/z] are Fixed components), the same shape a runtime `Vec2{…}` /
+	// `Vec3{…}` literal evaluates to, not a by-name Record_Value. Neither has a §3
+	// Data_Decl, so its components decode as Fixed. krognid's setup spawns
+	// `pos =Vec3(x=…,y=…,z=…)` (the committed artifact's [setup] batch), so the Vec3
+	// arm is the spawn-column decode that lands `pos` as a first-class Vec3 column —
+	// the SAME collapse path yard's Vec2 pos column took (mirror, third-lane delta).
 	vec2_fields := ctor == "Vec2"
+	vec3_fields := ctor == "Vec3"
 	decl := program_data(program, ctor)
 	fields := make(map[string]Value, allocator)
 	if len(body) > 0 {
@@ -546,7 +550,7 @@ decode_record_default :: proc(
 			}
 			name := pair[:eq]
 			field_enc := pair[eq + 1:]
-			field_type := vec2_fields ? "Fixed" : data_field_type(decl, name)
+			field_type := (vec2_fields || vec3_fields) ? "Fixed" : data_field_type(decl, name)
 			fv, fv_ok := decode_default_to_value(program, field_type, field_enc, allocator)
 			if !fv_ok {
 				return nil, false
@@ -557,6 +561,14 @@ decode_record_default :: proc(
 	if vec2_fields {
 		if v, vec_ok := record_to_vec2(fields); vec_ok {
 			if vec, is_vec := v.(Vec2); is_vec {
+				return vec, true
+			}
+		}
+		return nil, false
+	}
+	if vec3_fields {
+		if v, vec_ok := record_to_vec3(fields); vec_ok {
+			if vec, is_vec := v.(Vec3); is_vec {
 				return vec, true
 			}
 		}
@@ -823,9 +835,14 @@ step_tick :: proc(
 // fold itself.
 run_pipeline_fold :: proc(interp: ^Interp, state: ^Tick_State, program: ^Program) {
 	for step in program.pipeline {
-		// Startup ran pre-tick-0; render's [Draw] projection is not produced by this
-		// fold — the executed interior stages are control/collision/scoring.
-		if step.stage == "startup" || step.stage == "render" {
+		// Startup ran pre-tick-0; render's [Draw] projection and audio's [Audio]
+		// keyed-track scene are TERMINAL projections produced post-commit (render.odin
+		// / audio.odin), not interior writes — the executed interior stages are
+		// control/collision/scoring. The level-triggered keyed Audio is the deferred
+		// twin of the one-shot Sound: it is the audio: slot's return, never folded into
+		// tick state here (§22 §2; the is_any_command_list exclusion the funpack side
+		// keys on routes audio: to its own deferred slot).
+		if step.stage == "startup" || step.stage == "render" || step.stage == "audio" {
 			continue
 		}
 		// The §11 §3 `physics:` stage is ENGINE-CLOSED: instead of a user
@@ -1072,7 +1089,7 @@ fold_tuple_emit :: proc(
 			state.rng = v
 		case List_Value:
 			queue_commands(interp, state, elem)
-		case i64, Fixed, bool, Vec2, Ref, Record_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value:
+		case i64, Fixed, bool, Vec2, Ref, Record_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Vec3, Transform_Value, Pose_Value, Handle_Value:
 		// A half that is neither the Rng nor a command list is outside the value-arm
 		// `(Rng, [Spawn])` shape — ignored, no state write.
 		}

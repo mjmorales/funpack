@@ -24,6 +24,13 @@ FIXED_FRACTION_BITS :: 32
 FIXED_MAX :: Fixed(max(i64))
 FIXED_MIN :: Fixed(min(i64))
 
+// FIXED_ONE is 1.0 in Q32.32 — the unit the trig kernel's fixed_cos reads as
+// its constant term (cos's even polynomial 1 − x²/2 + x⁴/24). Mirrors
+// funpack/vector.odin's FIXED_ONE under the kernel-copy-not-link obligation: the
+// funpack trig kernel sources this constant from its vector module, so the
+// runtime kernel pins the identical bits here next to the other Q32.32 rails.
+FIXED_ONE :: Fixed(i64(1) << FIXED_FRACTION_BITS)
+
 // to_fixed is the explicit Int → Fixed lift (spec §10: never implicit),
 // saturating like every other operation.
 to_fixed :: proc(n: i64) -> Fixed {

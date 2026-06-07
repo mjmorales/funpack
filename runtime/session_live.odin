@@ -521,6 +521,14 @@ when #config(FUNPACK_LIVE, false) {
 			return 1
 		}
 
+		// The §22 live audio boundary: open the scene→device reconciler alongside the
+		// render device. FAIL-CLOSED like every other audio open here — a machine with
+		// no audio device (audio_live_open's InitSubSystem fails) runs the session
+		// SILENT, never faulting (audio is an output, never on the determinism path).
+		// The per-frame audio_live_apply below tolerates the empty voice table, so a
+		// silent session still folds and presents identically.
+		live_audio, _ := audio_live_open()
+
 		// Build the determinism seam exactly as live_capture does: the bindings table
 		// over the identity overlay, the injected queue the live poll feeds, the
 		// replay writer pinned to the content-hashed identity, the empty world stepped
@@ -556,10 +564,11 @@ when #config(FUNPACK_LIVE, false) {
 		} else {
 			version = run_startup(&program, base)
 		}
-		// Time derives through the one shared dt derivation (replay.odin's
-		// time_resource) — bit-identical to what a re-fold of this session binds, so
-		// any digest divergence is the input source, never the clock.
-		time := time_resource(program.entrypoint.tick_hz)
+		// Time rebinds per tick inside the loop (time_resource_at) so `time.t` —
+		// logical time since startup — advances each frame for a `time.t`-reading
+		// render body (krognid's pose_idle bob). The derivation is replay.odin's
+		// shared one, bit-identical to what a re-fold of this session binds, so any
+		// digest divergence is the input source, never the clock.
 
 		// prev_held threads each resolve_tick's held_after into the next so released
 		// edges fire correctly; tick 0 seeds it empty (no button was down before it).
@@ -587,6 +596,10 @@ when #config(FUNPACK_LIVE, false) {
 				break
 			}
 
+			// Logical time AT this committed tick (t = tick_index * dt); control reads
+			// only dt, render's pose_idle reads t.
+			time := time_resource_at(program.entrypoint.tick_hz, tick_index)
+
 			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels)
 			// Thread the persistent Rng through a seeded run so each tick observes the
 			// prior tick's draws (§04 §1); a seedless run threads nothing (rng stays nil).
@@ -596,6 +609,13 @@ when #config(FUNPACK_LIVE, false) {
 			version, carrier = step_tick_persist(&program, version, snapshot, time, carrier, context.allocator, seeded ? &rng : nil)
 			draw := render_version(&program, version, snapshot, time)
 			present_frame(device.renderer, draw, board, window)
+			// Project the COMMITTED tick's §22 keyed audio scene off the same version
+			// the render projection reads, and reconcile the live voice table against
+			// it (§22 §1 level-triggered start/stop/bend). Like render, this reads the
+			// committed version + this tick's input snapshot + the shared time record
+			// and never feeds back into the sim fold — audio is a present-boundary
+			// output, not a determinism input.
+			audio_live_apply(&live_audio, audio_version(&program, version, snapshot, time))
 			record_tick(&writer, snapshot)
 
 			delete(prev_held)
@@ -616,6 +636,9 @@ when #config(FUNPACK_LIVE, false) {
 			fmt.printfln("wrote replay log %s", out_path)
 		}
 		live_device_close(device)
+		// Tear down the live audio backend alongside the render device: stop every
+		// sounding voice (pause + close each device) and quit SDL's audio subsystem.
+		audio_live_close(&live_audio)
 		return 0
 	}
 
@@ -699,10 +722,47 @@ when #config(FUNPACK_LIVE, false) {
 			case Draw_Camera:
 			// The camera is the active world↔screen transform (resolved above), not a
 			// painted primitive — it contributes no pixels of its own.
+			case Draw3_Camera:
+			// DELIBERATE 2D PROJECTION (the present decision): a §20 §1 3D camera is
+			// NOT projected as a true-3D view here — the present flattens the scene to
+			// the existing XZ-top-down pixel grid (X→pixel X, Z→pixel Y), so the 3D
+			// camera's eye/at/fov contribute no transform of their own (the board
+			// geometry already supplies the orthographic frame). It paints nothing.
+			case Draw3_Light:
+			// A directional light has no painted primitive in a flat 2D top-down
+			// projection (no shading pass) — it contributes no pixels. Carried in the
+			// determinism digest, dropped at the present boundary.
+			case Draw3_Plane:
+				// The §20 §1 ground plane projects top-down: its XZ extent fills a
+				// center-anchored rect over the XZ plane (the X/Z lanes of the Vec3 at
+				// become the 2D world position, the Vec2 size is the XZ extent), the
+				// same fill_world_rect the 2D rects use. This is the deliberate 2D
+				// flattening — Y (height) is dropped at the boundary.
+				fill_world_rect(renderer, vec3_xz(c.at), c.size, c.color, camera, board, window)
+			case Draw3_Rigged:
+				// The posed creature projects top-down to a small marker rect at its XZ
+				// position — a deliberate stand-in for the rigged mesh under the flat 2D
+				// projection (a true-3D skinned draw is out of scope; the rig STATE is
+				// fully in the determinism digest, the PRESENT shows only its footprint).
+				fill_world_rect(renderer, vec3_xz(c.at), RIGGED_MARKER_SIZE, .White, camera, board, window)
 			}
 		}
 		sdl.RenderPresent(renderer)
 	}
+
+	// vec3_xz flattens a §20 §1 world Vec3 to the 2D XZ-plane position the top-down
+	// present projects through: X→world x, Z→world y (the ground plane), dropping Y
+	// (height). This is the render-boundary 2D projection of the 3D draw-list; the
+	// dropped Y never re-enters the sim (the result feeds fill_world_rect only).
+	vec3_xz :: proc(v: Vec3) -> Vec2 {
+		return Vec2{x = v.x, y = v.z}
+	}
+
+	// RIGGED_MARKER_SIZE is the fixed world-unit footprint the top-down present paints
+	// for a Draw3_Rigged creature — a small 2x2 world-unit marker at its XZ position.
+	// A present-only constant; the digest folds the full rig, never this marker. The
+	// extent is 2.0 world units on each axis in Q32.32 (2 * FIXED_ONE).
+	RIGGED_MARKER_SIZE :: Vec2{Fixed(2 * i64(FIXED_ONE)), Fixed(2 * i64(FIXED_ONE))}
 
 	// active_camera resolves the §3 camera transform a tick's draw-list presents
 	// through: the LAST Draw_Camera command emitted (a later `view` behavior overrides

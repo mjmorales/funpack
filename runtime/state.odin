@@ -48,7 +48,11 @@ Id :: struct {
 // full Variant_Value so the boxed payload survives the tick boundary, and a
 // String column commits as String_Value (§03: String is an ordinary primitive —
 // only Float is render-only). No float ever (spec §10): a numeric column is a
-// Fixed or an Int over the kernel's raw bits. A Record_Value/List_Value column is
+// Fixed or an Int over the kernel's raw bits, and a Vec2/Vec3 column is two/three
+// such raw-bit lanes (krognid's `pos: Vec3` is the first committed Vec3 column —
+// the §16 §7 anim Vec3 values stay render-time, but a thing FIELD typed Vec3 is an
+// ordinary committed column the tick mutates each step, exactly as Vec2 is). A
+// Record_Value/List_Value column is
 // structural data the tick commits and the read layer lifts back; it never
 // carries a transient value (lambda/tuple/Rng) — those are split or threaded
 // before commit.
@@ -58,6 +62,7 @@ Field_Value :: union {
 	bool, // a Bool column (§03 Bool; snake's `grow`)
 	string, // a UNIT enum variant token, e.g. "Side::Left"
 	Vec2, // a two-Fixed vector column (§10 Num kind)
+	Vec3, // a three-Fixed vector column (§10 Num kind in 3D — krognid's `pos`)
 	Ref, // a weak typed handle to another row (§08 §1)
 	Record_Value, // a composite record column, e.g. snake's `head: Cell`
 	List_Value, // a `[T]` list column, e.g. snake's `body: [Cell]`

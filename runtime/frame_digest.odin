@@ -74,7 +74,30 @@ import "core:slice"
 // so every committed golden digest is byte-unchanged. Only a draw-list that paints
 // one of the four new members produces a different (correct) byte, and no current
 // golden does.
-FRAME_DIGEST_SCHEMA_VERSION :: 5
+// v6 adds the four §20 §1 3D draw-command tags krognid's [Draw3] render bodies
+// introduce (Cmd_Tag.Draw3_Camera/Draw3_Light/Draw3_Plane/Draw3_Rigged): the digest
+// folds the §20 draw-list, so a new Draw_Cmd union arm is a digest-encoding change
+// and bumps this stamp deliberately (§04 closed-enum). The new ordinals are APPENDED
+// after the 2D ordinals (Rect=0/Text=1/Camera=2 keep theirs; the 3D arms take 3..6),
+// so an existing 2D draw-list emits the SAME tag bytes it always did and the new tags
+// never appear in it. pong/snake/hunt emit Rect/Text only; yard adds the 2D Camera —
+// NONE emits a Draw3 command, so their CONTENT byte streams (per-tick AND session,
+// the session seeded from the frozen FRAME_SESSION_SEED, not this version) are
+// byte-unchanged, and the committed pong/snake/hunt/yard golden digests do NOT move
+// under the v6 bump even though the comparability stamp advances. Only a draw-list
+// carrying a 3D command (krognid) produces the new (correct) bytes; the §16 §7 rig
+// fold (the handle op-logs, the per-bone pose transforms, the Vec3 positions) is
+// raw fixed-point throughout — no float (§10).
+// v6 ALSO adds the Field_Tag.Vec3 COLUMN tag (ordinal 10, APPENDED after String=9):
+// krognid's `pos: Vec3` is the first committed Vec3 blackboard COLUMN (move_krognid
+// mutates it each tick), distinct from the v6 Cmd_Tag DRAW arms above (a draw-list
+// command). A committed Vec3 column is part of the world state the digest folds, so
+// the new column arm is part of the v6 encoding. It is byte-stable for every existing
+// golden: pong/snake/hunt/yard carry no Vec3 field, so the tag never appears in their
+// streams and their CONTENT digests (per-tick AND session, the latter seeded from the
+// frozen FRAME_SESSION_SEED) are unmoved. Only krognid's stream carries the Vec3
+// column bytes.
+FRAME_DIGEST_SCHEMA_VERSION :: 6
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
@@ -100,17 +123,32 @@ Field_Tag :: enum u8 {
 	// String is a String column's text (§03 primitive) — length-prefixed bytes,
 	// digest v4 / snapshot v3.
 	String = 9,
+	// Vec3 is a three-Fixed vector column (krognid's `pos: Vec3`) — three raw
+	// Q32.32 lanes, the 3D twin of the Vec2 tag. APPENDED at ordinal 10 so every
+	// existing tag keeps its byte (Int=0..String=9), so a stream with no Vec3 column
+	// (pong/snake/hunt/yard — none has a Vec3 field) is byte-unchanged. It rides the
+	// existing digest v6 / snapshot v3 encodings: v6 already appended the Cmd_Tag 3D
+	// DRAW arms for krognid's draw-list, and the Vec3 COLUMN arm is the committed-state
+	// twin krognid's `pos` field first reaches — both land under the v6 stamp, and no
+	// other golden carries the tag, so no committed golden moves (the append-ordinal
+	// discipline, §04).
+	Vec3 = 10,
 }
 
 // Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
-// Rect, a Text, and a Camera never alias in the stream. Fixed ordinals — a
-// draw-command kind added to the §20 union is a schema bump here too (§04). The
-// ordinals are append-only: Camera takes the next free ordinal so an existing
-// Rect/Text byte stream is unchanged (pong/snake/hunt emit no Camera).
+// Rect, a Text, a Camera, and the four 3D commands never alias in the stream. Fixed
+// ordinals — a draw-command kind added to the §20 union is a schema bump here too
+// (§04). The ordinals are append-only: each new tag takes the next free ordinal so
+// an existing byte stream is unchanged (pong/snake/hunt/yard emit none of the 3D
+// commands, so their digests are unmoved under the v6 append).
 Cmd_Tag :: enum u8 {
-	Rect   = 0, // a Draw_Rect: at, size, color
-	Text   = 1, // a Draw_Text: at, length-prefixed text, color
-	Camera = 2, // a Draw_Camera: at, zoom (Fixed), rotation (Fixed)
+	Rect         = 0, // a Draw_Rect: at, size, color
+	Text         = 1, // a Draw_Text: at, length-prefixed text, color
+	Camera       = 2, // a Draw_Camera: at, zoom (Fixed), rotation (Fixed)
+	Draw3_Camera = 3, // a Draw3_Camera: eye (Vec3), at (Vec3), fov (Fixed)
+	Draw3_Light  = 4, // a Draw3_Light: dir (Vec3), color ordinal
+	Draw3_Plane  = 5, // a Draw3_Plane: at (Vec3), size (Vec2), color ordinal
+	Draw3_Rigged = 6, // a Draw3_Rigged: skeleton/parts handles, pose, at (Vec3)
 }
 
 // Frame_Digest is one committed tick's digest: the tick ordinal it was taken at
@@ -295,6 +333,9 @@ write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	case Vec2:
 		append(buf, u8(Field_Tag.Vec2))
 		write_vec2(buf, v)
+	case Vec3:
+		append(buf, u8(Field_Tag.Vec3))
+		write_vec3(buf, v)
 	case Ref:
 		append(buf, u8(Field_Tag.Ref))
 		write_length_prefixed(buf, v.thing)
@@ -384,6 +425,9 @@ write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	case Vec2:
 		append(buf, u8(Field_Tag.Vec2))
 		write_vec2(buf, x)
+	case Vec3:
+		append(buf, u8(Field_Tag.Vec3))
+		write_vec3(buf, x)
 	case Ref:
 		append(buf, u8(Field_Tag.Ref))
 		write_length_prefixed(buf, x.thing)
@@ -397,8 +441,12 @@ write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		write_record_column(buf, x)
 	case List_Value:
 		write_list_column(buf, x)
-	case Lambda_Value, Tuple_Value, Rng:
-	// A transient value never lands in a committed structural column.
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+	// A transient value never lands in a committed structural column — the §16 §7
+	// anim VALUES (Transform/Pose/handle) compose inside a render body into a [Draw3]
+	// draw-list, never a blackboard column the digest folds here. A Vec3 is NOT here:
+	// a committed Vec3 column (krognid's `pos`, or a Vec3 nested in a record column)
+	// digests through the Vec3 arm above, the same as a Vec2.
 	}
 }
 
@@ -436,9 +484,15 @@ write_draw_list :: proc(buf: ^[dynamic]u8, draw: Draw_List) {
 // its at/size as fixed-point Vec2s and a color ordinal; a Text carries its at, a
 // length-prefixed interpolated string, and a color ordinal; a Camera carries its
 // at, zoom, and rotation as raw fixed-point bits (the §3 world↔screen transform —
-// no color, it is not a painted primitive). Every number is raw Q32.32 little-endian
-// bits, never a float (§10). The Draw_Cmd union has only these three arms, so the
-// switch is total.
+// no color, it is not a painted primitive). The four §20 §1 3D commands carry their
+// full fixed-point state: a Draw3_Camera its eye/at Vec3s + fov; a Draw3_Light its
+// dir Vec3 + color ordinal; a Draw3_Plane its at Vec3 + size Vec2 + color ordinal; a
+// Draw3_Rigged its two opaque handles' op-logs + the per-bone pose transforms + the
+// world position. Every number is raw Q32.32 little-endian bits, never a float (§10).
+// The 3D arms fold the COMPLETE 3D state (the determinism bet is on the lowering, not
+// the present), so two folds of the same committed rig digest identically and any
+// single Fixed bit divergence changes the digest. The Draw_Cmd union has exactly
+// these seven arms, so the switch is total.
 @(private = "file")
 write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 	switch c in cmd {
@@ -457,6 +511,95 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		write_vec2(buf, c.at)
 		put_u64_le(buf, u64(i64(c.zoom)))
 		put_u64_le(buf, u64(i64(c.rotation)))
+	case Draw3_Camera:
+		append(buf, u8(Cmd_Tag.Draw3_Camera))
+		write_vec3(buf, c.eye)
+		write_vec3(buf, c.at)
+		put_u64_le(buf, u64(i64(c.fov)))
+	case Draw3_Light:
+		append(buf, u8(Cmd_Tag.Draw3_Light))
+		write_vec3(buf, c.dir)
+		append(buf, u8(c.color))
+	case Draw3_Plane:
+		append(buf, u8(Cmd_Tag.Draw3_Plane))
+		write_vec3(buf, c.at)
+		write_vec2(buf, c.size)
+		append(buf, u8(c.color))
+	case Draw3_Rigged:
+		append(buf, u8(Cmd_Tag.Draw3_Rigged))
+		write_handle(buf, c.skeleton)
+		write_handle(buf, c.parts)
+		write_pose(buf, c.pose)
+		write_vec3(buf, c.at)
+	}
+}
+
+// write_vec3 writes a Vec3 as its three Fixed components' raw Q32.32 bits in
+// little-endian order, x then y then z — 24 fixed-width bytes, no float, no decimal
+// point. The component order is fixed (the same x,y,z order the lowering reads), so
+// a vector never aliases a permutation of itself.
+@(private = "file")
+write_vec3 :: proc(buf: ^[dynamic]u8, v: Vec3) {
+	put_u64_le(buf, u64(i64(v.x)))
+	put_u64_le(buf, u64(i64(v.y)))
+	put_u64_le(buf, u64(i64(v.z)))
+}
+
+// write_quat writes a Quat as its four Fixed components' raw Q32.32 bits in
+// little-endian order, x,y,z,w — a §16 §7 bone orientation, fully fixed-point.
+@(private = "file")
+write_quat :: proc(buf: ^[dynamic]u8, q: Quat) {
+	put_u64_le(buf, u64(i64(q.x)))
+	put_u64_le(buf, u64(i64(q.y)))
+	put_u64_le(buf, u64(i64(q.z)))
+	put_u64_le(buf, u64(i64(q.w)))
+}
+
+// write_transform writes one §16 §7 bone transform: its pos Vec3, its rot Quat, its
+// scale Vec3 — the full local transform a pose drives a bone with, all raw
+// fixed-point bits. A single differing Q32.32 bit (a leg-swing angle off by one)
+// changes the digest, so the rig pose is inside the comparison surface bit-exactly.
+@(private = "file")
+write_transform :: proc(buf: ^[dynamic]u8, t: Transform_Value) {
+	write_vec3(buf, t.pos)
+	write_quat(buf, t.rot)
+	write_vec3(buf, t.scale)
+}
+
+// write_pose writes a §16 §7 sparse pose: the driven-bone count, then each driven
+// bone's name (length-prefixed) and transform in the pose's INSERT order — the order
+// IS canonical for a pose (the deterministic fold order set/blend/layer built it in,
+// pose.odin), so it is written verbatim, never sorted. Two poses built the same way
+// digest identically; a different driven set, a reordered insertion, or one differing
+// transform bit changes the digest.
+@(private = "file")
+write_pose :: proc(buf: ^[dynamic]u8, pose: Pose_Value) {
+	put_u64_le(buf, u64(len(pose.bones)))
+	for driven in pose.bones {
+		write_length_prefixed(buf, driven.bone)
+		write_transform(buf, driven.transform)
+	}
+}
+
+// write_handle writes an opaque §16 §7 anim handle (a Skeleton or PartSet): its kind
+// and factory (length-prefixed), then its ordered builder op-log — each op's method
+// and its serialized args in order. The op-log order IS canonical (the builder chain
+// applied bind/mirror in that order, pose.odin), so it is written verbatim. Two
+// handles built through the same constructor + builder chain digest identically (the
+// §03 Eq handles_equal folds through); a different op, arg, or order changes the
+// digest. No rig geometry is modeled — the handle is opaque, its identity is its
+// build recipe.
+@(private = "file")
+write_handle :: proc(buf: ^[dynamic]u8, handle: Handle_Value) {
+	write_length_prefixed(buf, handle.kind)
+	write_length_prefixed(buf, handle.factory)
+	put_u64_le(buf, u64(len(handle.ops)))
+	for op in handle.ops {
+		write_length_prefixed(buf, op.method)
+		put_u64_le(buf, u64(len(op.args)))
+		for arg in op.args {
+			write_length_prefixed(buf, arg)
+		}
 	}
 }
 

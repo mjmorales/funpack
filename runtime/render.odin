@@ -74,15 +74,78 @@ Draw_Camera :: struct {
 	rotation: Fixed,
 }
 
+// --- The §20 §1 3D draw commands (engine.render3, the Draw3 command set) ----
+//
+// These are the determinism-path lowering of krognid's [Draw3] render bodies
+// (draw_scene/draw_krognid). They are FULL-FIDELITY 3D records — every Vec3, the
+// fov, the §16 §7 rig (skeleton/parts/pose), the world position — so the frame
+// digest folds the complete 3D draw-list bit-identically (the determinism bet is on
+// the LOWERING, not on how the present chooses to draw it). The PRESENT projection
+// (session_live.odin) deliberately flattens these to the existing 2D pixel grid
+// (the XZ ground plane top-down) — a render-boundary-only choice that never
+// re-enters the sim (the render-is-a-post-commit-projection ADR). A new Draw3 arm
+// is a deliberate schema-version bump (§04 closed-enum; FRAME_DIGEST_SCHEMA_VERSION),
+// and its Cmd_Tag ordinal is APPENDED after the 2D ordinals so the existing
+// pong/snake/hunt/yard digests are byte-unmoved.
+
+// Draw3_Camera is the §20 §1 3D camera: a world-space eye point, a look-at target,
+// and a field of view in Fixed degrees. The 3D twin of Draw_Camera (which carries a
+// 2D at/zoom/rotation) — render3 owns its own camera. All three positions are Fixed
+// off the kernel; no float (§10).
+Draw3_Camera :: struct {
+	eye: Vec3,
+	at:  Vec3,
+	fov: Fixed,
+}
+
+// Draw3_Light is the §20 §1 directional light: a world-space direction and a
+// palette color. The direction is a Vec3 off the kernel; the color is the closed
+// §20 palette (Color::White, …) the named draw-list carries.
+Draw3_Light :: struct {
+	dir:   Vec3,
+	color: Draw_Color,
+}
+
+// Draw3_Plane is the §20 §1 flat ground plane: a world center (Vec3), an XZ extent
+// (Vec2), and a palette color. krognid's draw_scene paints the board's Gray ground
+// plane. Every component is Fixed off the kernel.
+Draw3_Plane :: struct {
+	at:    Vec3,
+	size:  Vec2,
+	color: Draw_Color,
+}
+
+// Draw3_Rigged is the §20 §1 / §16 §7 posed rigged mesh: the opaque Skeleton and
+// PartSet handles, the composed Pose, and the world position (Vec3). It is the
+// render seam krognid's draw_krognid emits — the blended pose of the walking
+// creature. The skeleton/parts are opaque Handle_Values (composed through builders,
+// never read by field); the pose is the sparse Bone→Transform map (pose.odin); `at`
+// is the creature's world position. The digest folds the handles' op logs, the
+// pose's per-bone transforms, and the position — the whole rig state bit-exactly.
+Draw3_Rigged :: struct {
+	skeleton: Handle_Value,
+	parts:    Handle_Value,
+	pose:     Pose_Value,
+	at:       Vec3,
+}
+
 // Draw_Cmd is the closed set of §20 draw commands a render behavior emits. A new
 // command kind is a schema-version bump (the closed-enum discipline §04, and the
 // frame digest folds the draw-list so a new arm bumps FRAME_DIGEST_SCHEMA_VERSION).
-// Pong exercises Rect (paddles, ball) and Text (score); yard adds Camera (the
-// world↔screen view); the union is the draw-list's element type.
+// Pong exercises Rect (paddles, ball) and Text (score); yard adds Camera (the 2D
+// world↔screen view); krognid adds the four §20 §1 3D commands
+// (Draw3_Camera/Light/Plane/Rigged). The 3D arms are APPENDED after the 2D arms;
+// the union is the draw-list's element type, mixing 2D and 3D commands in one
+// flattened draw-list (an artifact emits one OR the other in practice, but the
+// union admits both).
 Draw_Cmd :: union {
 	Draw_Rect,
 	Draw_Text,
 	Draw_Camera,
+	Draw3_Camera,
+	Draw3_Light,
+	Draw3_Plane,
+	Draw3_Rigged,
 }
 
 // Draw_List is the §20 draw-list: the ordered draw commands of one committed
@@ -92,6 +155,51 @@ Draw_Cmd :: union {
 // §10.5). The commands live in the supplied render allocator.
 Draw_List :: struct {
 	cmds: []Draw_Cmd,
+}
+
+// draw_cmd_equal compares two §20 draw commands structurally — the bit-identical
+// equality the determinism assertion reads. The 2D arms (Rect/Text/Camera) and the
+// Draw3_Camera/Light/Plane arms are simply comparable (Fixed by raw bits, text/color
+// by value), but Draw3_Rigged carries SLICE-bearing values (the Handle_Value op-logs
+// and the Pose_Value driven-bone slice), so the whole Draw_Cmd union is no longer
+// simply comparable — `==` is undefined on it. This proc dispatches each arm to its
+// structural comparison (handles_equal / poses_equal for the rig, raw-bit equality
+// for the rest); a kind mismatch is unequal. It is the one comparison the draw-list
+// equality the §20 ground truth folds through.
+draw_cmd_equal :: proc(a, b: Draw_Cmd) -> bool {
+	switch x in a {
+	case Draw_Rect:
+		y, ok := b.(Draw_Rect)
+		return ok && x == y
+	case Draw_Text:
+		y, ok := b.(Draw_Text)
+		return ok && x == y
+	case Draw_Camera:
+		y, ok := b.(Draw_Camera)
+		return ok && x == y
+	case Draw3_Camera:
+		y, ok := b.(Draw3_Camera)
+		return ok && x == y
+	case Draw3_Light:
+		y, ok := b.(Draw3_Light)
+		return ok && x == y
+	case Draw3_Plane:
+		y, ok := b.(Draw3_Plane)
+		return ok && x == y
+	case Draw3_Rigged:
+		y, ok := b.(Draw3_Rigged)
+		if !ok {
+			return false
+		}
+		return(
+			handles_equal(x.skeleton, y.skeleton) &&
+			handles_equal(x.parts, y.parts) &&
+			poses_equal(x.pose, y.pose) &&
+			x.at == y.at \
+		)
+	}
+	// Both nil (an empty union) compares equal; a nil-vs-set mismatch is unequal.
+	return a == nil && b == nil
 }
 
 // --- The render pass ------------------------------------------------------
@@ -235,6 +343,46 @@ draw_command_from_record :: proc(record: Record_Value) -> (cmd: Draw_Cmd, ok: bo
 		zoom := record_fixed(record, "zoom")
 		rotation := record_fixed(record, "rotation")
 		return Draw_Camera{at = at, zoom = zoom, rotation = rotation}, true
+	case "Draw3::Camera":
+		// the §20 §1 3D camera: eye/at world points (Vec3) + fov (Fixed degrees).
+		eye, eye_ok := record_vec3(record, "eye")
+		at, at_ok := record_vec3(record, "at")
+		if !eye_ok || !at_ok {
+			return nil, false
+		}
+		fov := record_fixed(record, "fov")
+		return Draw3_Camera{eye = eye, at = at, fov = fov}, true
+	case "Draw3::Light":
+		// the §20 §1 directional light: dir (Vec3) + a closed-palette color. An
+		// out-of-palette color refuses the lowering (record_color ok=false).
+		dir, dir_ok := record_vec3(record, "dir")
+		color, color_ok := record_color(record, "color")
+		if !dir_ok || !color_ok {
+			return nil, false
+		}
+		return Draw3_Light{dir = dir, color = color}, true
+	case "Draw3::Plane":
+		// the §20 §1 ground plane: at (Vec3 world center) + size (Vec2 XZ extent) +
+		// a closed-palette color (krognid's Gray ground plane).
+		at, at_ok := record_vec3(record, "at")
+		size, size_ok := record_vec2(record, "size")
+		color, color_ok := record_color(record, "color")
+		if !at_ok || !size_ok || !color_ok {
+			return nil, false
+		}
+		return Draw3_Plane{at = at, size = size, color = color}, true
+	case "Draw3::Rigged":
+		// the §20 §1 / §16 §7 posed rigged mesh: opaque Skeleton/PartSet handles +
+		// the composed Pose + the world position (Vec3). The handles/pose ride
+		// through verbatim — the digest folds their op logs / per-bone transforms.
+		skeleton, sk_ok := record_handle(record, "skeleton")
+		parts, pt_ok := record_handle(record, "parts")
+		pose, pose_ok := record_pose(record, "pose")
+		at, at_ok := record_vec3(record, "at")
+		if !sk_ok || !pt_ok || !pose_ok || !at_ok {
+			return nil, false
+		}
+		return Draw3_Rigged{skeleton = skeleton, parts = parts, pose = pose, at = at}, true
 	}
 	return nil, false
 }
@@ -242,7 +390,8 @@ draw_command_from_record :: proc(record: Record_Value) -> (cmd: Draw_Cmd, ok: bo
 // --- draw-record field readers --------------------------------------------
 
 // record_vec2 reads a Vec2 field off a draw-command record — the at/size of a
-// Rect, the at of a Text. ok is false when the field is absent or not a Vec2.
+// Rect, the at of a Text, the XZ size of a Draw3::Plane. ok is false when the field
+// is absent or not a Vec2.
 record_vec2 :: proc(record: Record_Value, name: string) -> (v: Vec2, ok: bool) {
 	field, present := record.fields[name]
 	if !present {
@@ -250,6 +399,75 @@ record_vec2 :: proc(record: Record_Value, name: string) -> (v: Vec2, ok: bool) {
 	}
 	vec, is_vec := field.(Vec2)
 	return vec, is_vec
+}
+
+// record_vec3 reads a Vec3 field off a Draw3 command record — the eye/at of a
+// Draw3::Camera, the dir of a Draw3::Light, the at of a Draw3::Plane / Draw3::Rigged.
+// It accepts BOTH shapes a Vec3 reaches the lowering as: the Vec3 union value
+// (eval_record collapses a `Vec3{x,y,z}` literal to it, and a hand-built fixture
+// passes it directly) AND, defensively, a Record_Value{type_name="Vec3"} with x/y/z
+// Fixed fields (the pre-collapse shape any path that bypasses eval_record's Vec3 arm
+// would carry) — so the reader is robust to either producer. ok is false when the
+// field is absent or is neither shape.
+record_vec3 :: proc(record: Record_Value, name: string) -> (v: Vec3, ok: bool) {
+	field, present := record.fields[name]
+	if !present {
+		return Vec3{}, false
+	}
+	#partial switch f in field {
+	case Vec3:
+		return f, true
+	case Record_Value:
+		if f.type_name != "Vec3" {
+			return Vec3{}, false
+		}
+		x, x_ok := record_value_fixed(f, "x")
+		y, y_ok := record_value_fixed(f, "y")
+		z, z_ok := record_value_fixed(f, "z")
+		if !x_ok || !y_ok || !z_ok {
+			return Vec3{}, false
+		}
+		return Vec3{x = x, y = y, z = z}, true
+	}
+	return Vec3{}, false
+}
+
+// record_value_fixed reads a Fixed-valued field off a record's field map — the x/y/z
+// of a pre-collapse Vec3 Record_Value. ok is false when the field is absent or not a
+// Fixed (a Vec3 component must be a kernel Fixed; never lifted from an Int here, as a
+// Vec3 literal's components are §10 Fixed).
+record_value_fixed :: proc(record: Record_Value, name: string) -> (v: Fixed, ok: bool) {
+	field, present := record.fields[name]
+	if !present {
+		return Fixed(0), false
+	}
+	value, is_fixed := field.(Fixed)
+	return value, is_fixed
+}
+
+// record_handle reads an opaque anim Handle_Value field off a Draw3::Rigged record —
+// the skeleton/parts handles draw_krognid binds. ok is false when the field is
+// absent or not a Handle_Value (the handle composes only through its builders, so a
+// well-formed Rigged carries exactly this arm).
+record_handle :: proc(record: Record_Value, name: string) -> (h: Handle_Value, ok: bool) {
+	field, present := record.fields[name]
+	if !present {
+		return Handle_Value{}, false
+	}
+	handle, is_handle := field.(Handle_Value)
+	return handle, is_handle
+}
+
+// record_pose reads the composed Pose_Value field off a Draw3::Rigged record — the
+// blended pose draw_krognid drives the rig with. ok is false when the field is
+// absent or not a Pose_Value.
+record_pose :: proc(record: Record_Value, name: string) -> (p: Pose_Value, ok: bool) {
+	field, present := record.fields[name]
+	if !present {
+		return Pose_Value{}, false
+	}
+	pose, is_pose := field.(Pose_Value)
+	return pose, is_pose
 }
 
 // record_fixed reads a Fixed field off a draw-command record — the zoom/rotation

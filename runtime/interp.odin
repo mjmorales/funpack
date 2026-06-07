@@ -103,6 +103,10 @@ Value :: union {
 	String_Value, // an interpolated String literal (render [Draw] text only, §20)
 	Tuple_Value, // a positional aggregate `(a, b)` — a draw's (value, next_rng), §04 §1
 	Rng, // a first-class threaded PRNG resource (§26): pick consumes it, a draw returns the advanced one
+	Vec3, // a three-Fixed vector (§10 Num kind in 3D): a world position, a bone translation
+	Transform_Value, // a §16 §7 local bone transform: translation + orientation + scale
+	Pose_Value, // a §16 §7 sparse Bone→Transform map (the engine.anim Pose)
+	Handle_Value, // an opaque engine anim handle (Skeleton/PartSet) — composed through builders, never read by field
 }
 
 // --- The evaluation environment ------------------------------------------
@@ -324,6 +328,18 @@ eval_name :: proc(interp: ^Interp, name: string, env: ^Env) -> (value: Value, ok
 	if fn := program_function(interp.program, name); fn != nil && len(fn.params) == 0 {
 		return eval_const(interp, name)
 	}
+	// The sanctioned lowercase angle constants are the builtin fallback (spec §02:
+	// pi/tau are the only snake_case constant exceptions; §10: the nearest-Fixed
+	// angle constants). Resolved AFTER a module const so a program-declared name
+	// would shadow, mirroring the funpack name-read order. advance_gait wraps its
+	// phase into [0, tau) with `phase % tau`, so tau must read as TAU_FIXED here —
+	// the identical pinned bits the funpack evaluator returns (kernel-copy-not-link).
+	switch name {
+	case "tau":
+		return TAU_FIXED, true
+	case "pi":
+		return PI_FIXED, true
+	}
 	return nil, false
 }
 
@@ -349,6 +365,18 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return r.y, true
 		}
 		return nil, false
+	case Vec3:
+		// A §10 3D vector reads its x/y/z components by name — the ground-plane
+		// position reads (self.pos.x / self.pos.z) a spatial behavior takes.
+		switch field {
+		case "x":
+			return r.x, true
+		case "y":
+			return r.y, true
+		case "z":
+			return r.z, true
+		}
+		return nil, false
 	case Ref:
 		// A Ref column read followed by a field is the resolve-then-read join: a
 		// dangling Ref has no field, so the read takes the absent arm. Resolved
@@ -363,9 +391,11 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return nil, false
 		}
 		return field_value_to_value(fv), true
-	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
-		// A tuple is positional (read by a tuple pattern, never by name) and an Rng
-		// has no field — neither is a `recv.field` receiver.
+	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+		// A tuple is positional (read by a tuple pattern, never by name), an Rng has
+		// no field, and the §16 §7 anim values are opaque — a Pose reads by .get not
+		// .field, a Transform/Skeleton/PartSet by no field at all. None is a
+		// `recv.field` receiver.
 		return nil, false
 	}
 	return nil, false
@@ -425,6 +455,16 @@ eval_record :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	}
 	if type_name == "Vec2" {
 		return record_to_vec2(fields)
+	}
+	// A Vec3 record literal collapses to the Vec3 value (its x/y/z recfields), the
+	// same way a Vec2 literal becomes a Vec2 — so a `Vec3{x, y, z}` from EITHER a
+	// hand-built fixture or the artifact path yields the Vec3 union value, and the
+	// Draw3 lowering reads `at:` as one type. Without this arm a Vec3 literal lands
+	// as a generic Record_Value{type_name="Vec3"}, splitting the at-position reader
+	// into two shapes; collapsing here is the smaller surface (one arm vs defending
+	// every Vec3 reader), mirroring the Vec2 arm above (interp.odin record_to_vec3).
+	if type_name == "Vec3" {
+		return record_to_vec3(fields)
 	}
 	fill_record_defaults(interp, type_name, &fields)
 	return Record_Value{type_name = type_name, fields = fields}, true
@@ -487,8 +527,10 @@ eval_with :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		type_name = "Vec2"
 		merged["x"] = b.x
 		merged["y"] = b.y
-	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
-		// A `with` is a record/Vec2 functional update; a tuple/Rng is not a record.
+	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+		// A `with` is a record/Vec2 functional update; a tuple/Rng/anim value is not
+		// a record (a Vec3/Transform/Pose/handle composes through its builders, never
+		// a field update).
 		return nil, false
 	}
 	for i in 1 ..< len(node.children) {
@@ -567,7 +609,9 @@ eval_unary :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return int_neg(v), true
 		case Vec2:
 			return Vec2{fixed_neg(v.x), fixed_neg(v.y)}, true
-		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+		case Vec3:
+			return Vec3{fixed_neg(v.x), fixed_neg(v.y), fixed_neg(v.z)}, true
+		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
 			return nil, false
 		}
 	case "not":
@@ -623,6 +667,8 @@ eval_arith :: proc(op: string, lhs, rhs: Value) -> (value: Value, ok: bool) {
 		return apply_int_arith(op, l, r)
 	case Vec2:
 		return apply_vec2_arith(op, l, rhs)
+	case Vec3:
+		return apply_vec3_arith(op, l, rhs)
 	}
 	return nil, false
 }
@@ -684,6 +730,40 @@ apply_vec2_arith :: proc(op: string, a: Vec2, rhs: Value) -> (value: Value, ok: 
 			return nil, false
 		}
 		return vec2_scale(a, s), true
+	}
+	return nil, false
+}
+
+// apply_vec3_arith dispatches a §16 §7 3D vector arithmetic op: component-wise
+// add/sub over a Vec3 rhs, scalar mul over a Fixed rhs (the §10 Num-kind surface
+// in 3D). It MIRRORS apply_vec2_arith arm-for-arm — the third lane is the only
+// delta — and matches the funpack evaluator's eval_vec3_binary exactly (the
+// bit-identity obligation between the two products): krognid's move_krognid folds
+// `Vec3{…} * STRIDE.top_speed * time.dt` (Vec3 * Fixed → vec3_scale) and
+// `self.pos + step` (Vec3 + Vec3 → vec3_add). The kernel ops live in vector3.odin
+// (the deliberate copy of funpack/vector.odin), so the math is defined in one
+// place. A Vec3*Vec3 or a Vec3+Fixed is ok=false (the checked AST never emits one);
+// `mod` and `div` are undefined over a vector and fall through to ok=false.
+apply_vec3_arith :: proc(op: string, a: Vec3, rhs: Value) -> (value: Value, ok: bool) {
+	switch op {
+	case "add":
+		b, b_ok := rhs.(Vec3)
+		if !b_ok {
+			return nil, false
+		}
+		return vec3_add(a, b), true
+	case "sub":
+		b, b_ok := rhs.(Vec3)
+		if !b_ok {
+			return nil, false
+		}
+		return vec3_sub(a, b), true
+	case "mul":
+		s, s_ok := as_fixed(rhs)
+		if !s_ok {
+			return nil, false
+		}
+		return vec3_scale(a, s), true
 	}
 	return nil, false
 }
@@ -802,6 +882,25 @@ values_equal :: proc(a, b: Value) -> bool {
 		// Strings compare by their text.
 		bv, ok := b.(String_Value)
 		return ok && av.text == bv.text
+	case Vec3:
+		// A §10 3D vector compares component-wise by its kernel-stable bits — the
+		// move_krognid/Draw3 `at` position equality folds through here.
+		bv, ok := b.(Vec3)
+		return ok && av.x == bv.x && av.y == bv.y && av.z == bv.z
+	case Transform_Value:
+		// A §16 §7 transform compares by its pos/rot/scale bits — the pose asserts
+		// (Pose.get(...) == rot_x(0.0)) resolve here.
+		bv, ok := b.(Transform_Value)
+		return ok && transforms_equal(av, bv)
+	case Pose_Value:
+		// A §16 §7 pose compares per driven bone — the blend/layer per-bone asserts.
+		bv, ok := b.(Pose_Value)
+		return ok && poses_equal(av, bv)
+	case Handle_Value:
+		// An opaque anim handle compares by kind + factory + builder op log — two
+		// Skeleton/PartSet built the same way are equal (the Rigged record's Eq).
+		bv, ok := b.(Handle_Value)
+		return ok && handles_equal(av, bv)
 	case Lambda_Value, Rng:
 		// A closure has no value identity and an Rng is a threaded resource —
 		// neither is a comparand the §03 Eq surface admits.
@@ -906,9 +1005,9 @@ format_value :: proc(interp: ^Interp, v: Value) -> string {
 		return aprint_int(fixed_trunc(x), interp.allocator)
 	case Variant_Value:
 		return strings.clone(x.case_name, interp.allocator)
-	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
-		// A tuple/Rng never reaches a §20 Text hole (render carries no draw); no
-		// display form, render empty.
+	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+		// A tuple/Rng/anim value never reaches a §20 Text hole (render carries no
+		// draw text holes over these); no display form, render empty.
 		return ""
 	}
 	return ""
@@ -938,7 +1037,7 @@ as_fixed :: proc(v: Value) -> (f: Fixed, ok: bool) {
 		return n, true
 	case i64:
 		return to_fixed(n), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
 		return Fixed(0), false
 	}
 	return Fixed(0), false
@@ -961,6 +1060,26 @@ record_to_vec2 :: proc(fields: map[string]Value) -> (v: Value, ok: bool) {
 	return Vec2{x, y}, true
 }
 
+// record_to_vec3 collapses an {x, y, z} field map to the kernel Vec3 value — a Vec3
+// record literal IS a Vec3, so the §16 §7 3D vector arithmetic and the Draw3
+// lowering read one type. ok is false unless all three components are present and
+// numeric (mirrors record_to_vec2; the third lane is the only delta).
+record_to_vec3 :: proc(fields: map[string]Value) -> (v: Value, ok: bool) {
+	xv, x_present := fields["x"]
+	yv, y_present := fields["y"]
+	zv, z_present := fields["z"]
+	if !x_present || !y_present || !z_present {
+		return nil, false
+	}
+	x, x_ok := as_fixed(xv)
+	y, y_ok := as_fixed(yv)
+	z, z_ok := as_fixed(zv)
+	if !x_ok || !y_ok || !z_ok {
+		return nil, false
+	}
+	return Vec3{x = x, y = y, z = z}, true
+}
+
 // field_value_to_value lifts a blackboard Field_Value (state.odin's stored
 // column type) into the interpreter's Value. The two unions overlap on the
 // scalar/Bool/Vec2/Ref and the structural Record/List arms; a stored enum token
@@ -978,6 +1097,8 @@ field_value_to_value :: proc(fv: Field_Value) -> Value {
 	case bool:
 		return v
 	case Vec2:
+		return v
+	case Vec3:
 		return v
 	case Ref:
 		return v
@@ -1023,6 +1144,14 @@ value_to_field_value :: proc(
 		return x, true
 	case Vec2:
 		return x, true
+	case Vec3:
+		// A §10 3D vector commits as a Vec3 COLUMN (krognid's `pos: Vec3`, mutated by
+		// move_krognid each tick). This is a thing-FIELD Vec3, distinct from the §16 §7
+		// anim Vec3 values (a bone translation, a draw `at`) that compose render-time
+		// into a [Draw3] draw-list — those never reach a commit because a render body's
+		// result is a draw-list, not a blackboard write. A committed Vec3 column is the
+		// same plain raw-bit lane shape as a Vec2 column.
+		return x, true
 	case Ref:
 		return x, true
 	case Variant_Value:
@@ -1044,12 +1173,17 @@ value_to_field_value :: proc(
 		return clone_record_value(x, allocator), true
 	case List_Value:
 		return clone_list_value(x, allocator), true
-	case Lambda_Value, Tuple_Value, Rng:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
 		// A Tuple is split by the tick into its halves before commit and never
 		// lands whole on a row; an Rng is THREADED (carried in Tick_State, written
 		// forward), never persisted as a column; a closure has no value identity.
-		// None is a blackboard column — the commit path treats them as no-column
-		// values.
+		// The §16 §7 anim VALUES (Transform/Pose/handle) are render-time — they compose
+		// inside a render body into a [Draw3] draw-list, never a committed blackboard
+		// column (the Draw3 lowering + digest is a separate concern). A bare Vec3 is NOT
+		// here: a thing-field Vec3 column (krognid's `pos`) commits via the Vec3 arm
+		// above; the anim Vec3s nested in a Transform/Pose never reach a top-level commit
+		// because a render result is a draw-list. None of these is a blackboard column —
+		// the commit path treats them as no-column values.
 		return nil, false
 	}
 	return nil, false
@@ -1093,7 +1227,10 @@ clone_column_value :: proc(v: Value, allocator := context.allocator) -> Value {
 		return clone_list_value(x, allocator)
 	case Variant_Value:
 		return clone_variant_value(x, allocator)
-	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng:
+	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+		// The scalar/Vec/handle arms copy by value (a Pose's bone slice and a
+		// handle's op log live in the eval arena, the same transient lifetime as a
+		// tuple — the §16 §7 anim values are render-time, never a committed column).
 		return v
 	}
 	return v

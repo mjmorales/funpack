@@ -149,9 +149,12 @@ has_entrypoints_fcfg :: proc(root: string) -> bool {
 // emitter needs from the §14 tree: the entrypoint source bytes, its module name,
 // the §14 project identity, and the entrypoints.fcfg text. The entrypoint module
 // is the one whose pipeline the artifact wires, so emission's reference
-// validation (§07) resolves the pipeline/bindings names against that module. A
-// read failure or any checked-pipeline floor surfaces as the stage_emit_indexed
-// error, which stage_build maps to Compile_Failed (no artifact).
+// validation (§07) resolves the pipeline/bindings names against that module. It
+// also builds the sibling module→AST map the §17 cross-module SEAM-FN CARRY reads,
+// so the entrypoint's imported seam fns (krognid's `krognid_skeleton`/
+// `krognid_parts`) land in [functions] as self-contained records. A read failure or
+// any checked-pipeline floor surfaces as the stage_emit_indexed error, which
+// stage_build maps to Compile_Failed (no artifact).
 emit_tree_artifact :: proc(root: string, project: Project, allocator := context.allocator) -> (artifact: string, err: Emit_Error) {
 	entrypoint_path, _ := filepath.join({root, "funpack_configs", "entrypoints.fcfg"}, context.temp_allocator)
 	entrypoint_bytes, ep_err := os.read_entire_file_from_path(entrypoint_path, context.temp_allocator)
@@ -173,8 +176,37 @@ emit_tree_artifact :: proc(root: string, project: Project, allocator := context.
 		return "", .Parse_Failed
 	}
 	index := build_project_module_index(project.sources)
+	sibling_asts := build_sibling_module_asts(project.sources, source.module)
 	identity := Project_Identity{name = project.name, version = project.version}
-	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, allocator)
+	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, allocator)
+}
+
+// build_sibling_module_asts parses every source EXCEPT the entrypoint module and
+// returns a §15 module-name → AST map — the sibling-module bodies the §17 seam-fn
+// carry reads (collect_imported_fn_records). The entrypoint module is excluded so
+// the carry never re-emits the entrypoint's own fns (it already walks that AST in
+// emit_functions); only sibling modules (the rig seam) contribute carried records.
+// A source that fails to read or parse contributes no entry — the entrypoint's own
+// typecheck surfaces a real cross-module error precisely, so the map never aborts
+// the build over one sibling's read failure. A single-module game yields an empty
+// map, so the carry adds nothing.
+build_sibling_module_asts :: proc(sources: []Source, entry_module: string) -> map[string]Ast {
+	asts := make(map[string]Ast, len(sources), context.temp_allocator)
+	for s in sources {
+		if s.module == entry_module {
+			continue
+		}
+		bytes, read_err := os.read_entire_file_from_path(s.path, context.temp_allocator)
+		if read_err != nil {
+			continue
+		}
+		ast, parse_err := stage_parse(stage_lex(string(bytes)))
+		if parse_err != .None {
+			continue
+		}
+		asts[s.module] = ast
+	}
+	return asts
 }
 
 // select_entrypoint_source finds the source whose §15 module is the entrypoints.fcfg

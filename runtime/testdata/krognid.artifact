@@ -1,0 +1,501 @@
+funpack-artifact 6
+[meta 2]
+project krognid
+version L5:0.1.0
+[enums 1]
+enum Drive Axis 2
+variant Strafe unit
+variant Forward unit
+[data 2]
+data Stride 2 false
+field cadence Fixed -
+field top_speed Fixed -
+data Board 1 false
+field size Vec2 -
+[signals 0]
+[things 2]
+thing Krognid false 1 5
+gtag L7:spatial
+field player PlayerId -
+field pos Vec3 -
+field intent Vec2 =Vec2(x=0,y=0)
+field phase Fixed =0
+field speed Fixed =0
+thing Field false 1 0
+gtag L5:board
+[functions 9]
+function walk_weight fn 1 return:Fixed 1 span:stroll:43
+param speed Fixed
+node return 1
+node call 4
+node name clamp 0
+node binary mul 2
+node name speed 0
+node fixed 8589934592 0
+node fixed 0 0
+node fixed 4294967296 0
+function pose_idle fn 1 return:Pose 1 span:stroll:49
+param t Fixed
+node return 1
+node call 3
+node field set 1
+node call 1
+node field empty 1
+node name Pose 0
+node variant Bone Torso false 0
+node call 2
+node name up 0
+node binary mul 2
+node call 2
+node name sin 0
+node binary mul 2
+node name t 0
+node fixed 8589934592 0
+node fixed 858993459 0
+function pose_walk fn 2 return:Pose 3 span:stroll:55
+param phase Fixed
+param speed Fixed
+node let s 1
+node binary mul 2
+node call 2
+node name sin 0
+node name phase 0
+node fixed 2147483648 0
+node let bob 1
+node binary mul 2
+node call 2
+node name abs 0
+node call 2
+node name sin 0
+node binary mul 2
+node name phase 0
+node fixed 8589934592 0
+node fixed 1288490189 0
+node return 1
+node call 3
+node field set 1
+node call 3
+node field set 1
+node call 3
+node field set 1
+node call 3
+node field set 1
+node call 3
+node field set 1
+node call 1
+node field empty 1
+node name Pose 0
+node variant Bone LUpperLeg false 0
+node call 2
+node name rot_x 0
+node name s 0
+node variant Bone RUpperLeg false 0
+node call 2
+node name rot_x 0
+node unary neg 1
+node name s 0
+node variant Bone LUpperArm false 0
+node call 2
+node name rot_x 0
+node binary mul 2
+node unary neg 1
+node name s 0
+node fixed 2576980378 0
+node variant Bone RUpperArm false 0
+node call 2
+node name rot_x 0
+node binary mul 2
+node name s 0
+node fixed 2576980378 0
+node variant Bone Torso false 0
+node call 2
+node name up 0
+node name bob 0
+function STRIDE const 0 return:Stride 1 span:stroll:19
+node return 1
+node record Stride 2 2
+node recfield cadence 1
+node fixed 25769803776 0
+node recfield top_speed 1
+node fixed 17179869184 0
+function BOARD const 0 return:Board 1 span:stroll:25
+node return 1
+node record Board 1 1
+node recfield size 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 214748364800 0
+node recfield y 1
+node fixed 214748364800 0
+function bindings bindings 0 return:Bindings 1 span:stroll:132
+node return 1
+node call 4
+node field axis 1
+node call 4
+node field axis 1
+node call 4
+node field axis 1
+node call 4
+node field axis 1
+node call 1
+node field empty 1
+node name Bindings 0
+node variant PlayerId P1 false 0
+node variant Drive Strafe false 0
+node call 3
+node name keys_axis 0
+node variant Key A false 0
+node variant Key D false 0
+node variant PlayerId P1 false 0
+node variant Drive Forward false 0
+node call 3
+node name keys_axis 0
+node variant Key S false 0
+node variant Key W false 0
+node variant PlayerId P1 false 0
+node variant Drive Strafe false 0
+node call 2
+node name stick_x 0
+node variant Stick Left false 0
+node variant PlayerId P1 false 0
+node variant Drive Forward false 0
+node call 2
+node name stick_y 0
+node variant Stick Left false 0
+function setup startup 0 return:[Spawn] 1 span:stroll:142
+node return 1
+node list 2 2
+node call 2
+node name Spawn 0
+node record Krognid 2 2
+node recfield player 1
+node variant PlayerId P1 false 0
+node recfield pos 1
+node record Vec3 3 3
+node recfield x 1
+node fixed 107374182400 0
+node recfield y 1
+node fixed 0 0
+node recfield z 1
+node fixed 107374182400 0
+node call 2
+node name Spawn 0
+node record Field 0 0
+function krognid_skeleton fn 0 return:Skeleton 1 span:krognid:8
+node return 1
+node call 1
+node field humanoid 1
+node name Skeleton 0
+function krognid_parts fn 0 return:PartSet 1 span:krognid:14
+node return 1
+node call 3
+node field mirror 1
+node call 3
+node field bind 1
+node call 3
+node field bind 1
+node call 3
+node field bind 1
+node call 3
+node field bind 1
+node call 3
+node field bind 1
+node call 3
+node field bind 1
+node call 1
+node field empty 1
+node name PartSet 0
+node variant Slot Torso false 0
+node call 2
+node name mesh 0
+node string L13:krognid_torso 0
+node variant Slot Head false 0
+node call 2
+node name mesh 0
+node string L12:krognid_head 0
+node variant Slot LUpperArm false 0
+node call 2
+node name mesh 0
+node string L17:krognid_upper_arm 0
+node variant Slot LLowerArm false 0
+node call 2
+node name mesh 0
+node string L17:krognid_lower_arm 0
+node variant Slot LUpperLeg false 0
+node call 2
+node name mesh 0
+node string L17:krognid_upper_leg 0
+node variant Slot LLowerLeg false 0
+node call 2
+node name mesh 0
+node string L17:krognid_lower_leg 0
+node variant Side L false 0
+node variant Side R false 0
+[behaviors 7]
+behavior read_drive on:Krognid stage:control contract:Update 1 2 1 1
+gtag L5:input
+param self Krognid
+param input Input
+emit Krognid
+node return 1
+node with 1 2
+node name self 0
+node recfield intent 1
+node record Vec2 2 2
+node recfield x 1
+node call 3
+node field value 1
+node name input 0
+node field player 1
+node name self 0
+node variant Drive Strafe false 0
+node recfield y 1
+node call 3
+node field value 1
+node name input 0
+node field player 1
+node name self 0
+node variant Drive Forward false 0
+behavior move_krognid on:Krognid stage:control contract:Update 1 2 1 2
+gtag L7:spatial
+param self Krognid
+param time Time
+emit Krognid
+node let step 1
+node binary mul 2
+node binary mul 2
+node record Vec3 3 3
+node recfield x 1
+node field x 1
+node field intent 1
+node name self 0
+node recfield y 1
+node fixed 0 0
+node recfield z 1
+node field y 1
+node field intent 1
+node name self 0
+node field top_speed 1
+node name STRIDE 0
+node field dt 1
+node name time 0
+node return 1
+node with 1 2
+node name self 0
+node recfield pos 1
+node binary add 2
+node field pos 1
+node name self 0
+node name step 0
+behavior clamp_to_board on:Krognid stage:control contract:Update 1 1 1 1
+gtag L7:spatial
+param self Krognid
+emit Krognid
+node return 1
+node with 1 2
+node name self 0
+node recfield pos 1
+node record Vec3 3 3
+node recfield x 1
+node call 4
+node name clamp 0
+node field x 1
+node field pos 1
+node name self 0
+node fixed 0 0
+node field x 1
+node field size 1
+node name BOARD 0
+node recfield y 1
+node field y 1
+node field pos 1
+node name self 0
+node recfield z 1
+node call 4
+node name clamp 0
+node field z 1
+node field pos 1
+node name self 0
+node fixed 0 0
+node field y 1
+node field size 1
+node name BOARD 0
+behavior advance_gait on:Krognid stage:control contract:Update 1 2 1 2
+gtag L4:gait
+param self Krognid
+param time Time
+emit Krognid
+node let spd 1
+node call 2
+node name length 0
+node field intent 1
+node name self 0
+node return 1
+node with 2 3
+node name self 0
+node recfield phase 1
+node binary mod 2
+node binary add 2
+node field phase 1
+node name self 0
+node binary mul 2
+node binary mul 2
+node name spd 0
+node field cadence 1
+node name STRIDE 0
+node field dt 1
+node name time 0
+node name tau 0
+node recfield speed 1
+node name spd 0
+behavior draw_scene on:Field stage:render contract:Render 1 1 1 1
+gtag L6:render
+param self Field
+emit [Draw3]
+node return 1
+node list 3 3
+node record Draw3::Camera 3 3
+node recfield eye 1
+node record Vec3 3 3
+node recfield x 1
+node fixed 107374182400 0
+node recfield y 1
+node fixed 171798691840 0
+node recfield z 1
+node unary neg 1
+node fixed 128849018880 0
+node recfield at 1
+node record Vec3 3 3
+node recfield x 1
+node fixed 107374182400 0
+node recfield y 1
+node fixed 0 0
+node recfield z 1
+node fixed 107374182400 0
+node recfield fov 1
+node fixed 257698037760 0
+node record Draw3::Light 2 2
+node recfield dir 1
+node record Vec3 3 3
+node recfield x 1
+node unary neg 1
+node fixed 1288490189 0
+node recfield y 1
+node unary neg 1
+node fixed 4294967296 0
+node recfield z 1
+node unary neg 1
+node fixed 858993459 0
+node recfield color 1
+node variant Color White false 0
+node record Draw3::Plane 3 3
+node recfield at 1
+node record Vec3 3 3
+node recfield x 1
+node fixed 107374182400 0
+node recfield y 1
+node fixed 0 0
+node recfield z 1
+node fixed 107374182400 0
+node recfield size 1
+node field size 1
+node name BOARD 0
+node recfield color 1
+node variant Color Gray false 0
+behavior draw_krognid on:Krognid stage:render contract:Render 1 2 1 2
+gtag L6:render
+param self Krognid
+param time Time
+emit [Draw3]
+node let pose 1
+node call 4
+node field blend 1
+node name Pose 0
+node call 2
+node name pose_idle 0
+node field t 1
+node name time 0
+node call 3
+node name pose_walk 0
+node field phase 1
+node name self 0
+node field speed 1
+node name self 0
+node call 2
+node name walk_weight 0
+node field speed 1
+node name self 0
+node return 1
+node list 1 1
+node record Draw3::Rigged 4 4
+node recfield skeleton 1
+node call 1
+node name krognid_skeleton 0
+node recfield parts 1
+node call 1
+node name krognid_parts 0
+node recfield pose 1
+node name pose 0
+node recfield at 1
+node field pos 1
+node name self 0
+behavior locomotion on:Krognid stage:audio contract:Audio 1 1 1 2
+gtag L5:audio
+param self Krognid
+emit [Audio]
+node if_return 2
+node binary eq 2
+node field speed 1
+node name self 0
+node fixed 0 0
+node list 0 0
+node return 1
+node list 1 1
+node call 2
+node field bus 1
+node call 2
+node field gain 1
+node call 2
+node field pitch 1
+node call 3
+node field track 1
+node name Audio 0
+node string L6:stride 0
+node call 2
+node name sound 0
+node string L12:krognid_step 0
+node binary add 2
+node fixed 2576980378 0
+node binary mul 2
+node field speed 1
+node name self 0
+node fixed 858993459 0
+node call 4
+node name clamp 0
+node field speed 1
+node name self 0
+node fixed 0 0
+node fixed 4294967296 0
+node variant Bus Sfx false 0
+[pipeline_flattened 8]
+step 0 stage:startup behavior:setup
+step 1 stage:control behavior:read_drive
+step 2 stage:control behavior:move_krognid
+step 3 stage:control behavior:clamp_to_board
+step 4 stage:control behavior:advance_gait
+step 5 stage:render behavior:draw_scene
+step 6 stage:render behavior:draw_krognid
+step 7 stage:audio behavior:locomotion
+[signal_routing 0]
+[setup 2]
+spawn Krognid 2
+set player =PlayerId::P1
+set pos =Vec3(x=107374182400,y=0,z=107374182400)
+spawn Field 0
+[bindings 4]
+bind axis P1 Drive::Strafe source:keys_axis(Key::A,Key::D)
+bind axis P1 Drive::Forward source:keys_axis(Key::S,Key::W)
+bind axis P1 Drive::Strafe source:stick_x(Stick::Left)
+bind axis P1 Drive::Forward source:stick_y(Stick::Left)
+[entrypoint 1]
+entrypoint main pipeline:Stroll tick_hz:60 logical:160x120 bindings:bindings

@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 5
+funpack-artifact 6
 ```
 
-- `schema_version` is the integer after the space (here `5`).
+- `schema_version` is the integer after the space (here `6`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -66,7 +66,24 @@ funpack-artifact 5
   synthesized §8 Settings data projection, and a Body's inline composite default
   with its `impulse: Vec2 = zero` / `mass: Fixed = 1.0` field defaults applied).
   A marker row, a new flattened-step occupant kind, an enum KIND value, and
-  widened §6/§8 default forms are each a layout change: 4 → 5.
+  widened §6/§8 default forms are each a layout change: 4 → 5. v6 is the **krognid
+  multi-module format** — the first artifact the runtime executes whose
+  [functions] section carries fn records from more than the entrypoint module. The
+  single layout change is the **§17 cross-module seam-fn carry**: when the
+  entrypoint module imports a fn from a sibling USER module (krognid's `stroll`
+  imports `krognid_skeleton` / `krognid_parts` from the baked rig seam), the
+  emitter appends that imported fn's full record — signature, body node run, and a
+  span keyed to the SEAM module (`span:krognid:8`) — into [functions] after the
+  entrypoint module's own records, so the Rigged draw body's `krognid_skeleton()` /
+  `krognid_parts()` calls resolve to a self-contained record the runtime finds by
+  bare name (the seam bodies would otherwise be absent and the call would return
+  nil). The carried records keep their BARE names — the artifact disambiguates by
+  the span's module, not a §15 qualifier, because the runtime resolves functions by
+  bare name (the §15-qualification rule governs the SEPARATE Index Contract decl
+  surface, not the artifact [functions] name token). NO new §2.7 node KIND rides
+  this bump: the seam bodies and the entrypoint's first anim/Draw3 forms serialize
+  through the existing call/field/variant/record/list/string node arms. A widened
+  [functions] population is a layout change: 5 → 6.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -308,7 +325,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 5
+funpack-artifact 6
 [meta 2]
 …
 [enums N]

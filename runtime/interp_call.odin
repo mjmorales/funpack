@@ -256,7 +256,16 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	// name node.
 	recv_node := &field_node.children[0]
 	if recv_node.kind == .Name {
-		if ctor, is_ctor := eval_engine_constructor(interp, recv_node.fields[0], method); is_ctor {
+		if ctor, is_ctor := eval_engine_constructor(interp, node, env, recv_node.fields[0], method); is_ctor {
+			return ctor, true
+		}
+		// The §22 §2 sustained-audio builder seed `Audio.track(key, clip)` is a
+		// TYPE-NAME static constructor that takes args — intercepted here (before the
+		// `Audio` name is evaluated as a local, which would fail-closed) the same way
+		// the no-arg engine constructors are. The .pitch/.gain/.bus/.at adders chain
+		// off the built record value (the value-receiver arm below).
+		if ctor, is_ctor := eval_audio_constructor(interp, recv_node.fields[0], method, node, env);
+		   is_ctor {
 			return ctor, true
 		}
 	}
@@ -278,7 +287,55 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	case "apply_impulse":
 		return eval_apply_impulse(interp, recv, node, env)
 	}
+	// A §16 §7 value-method on a built anim value: Pose.set/get drive/read a bone
+	// (the receiver is a Pose chained from Pose.empty().set(...)), PartSet
+	// .bind/.mirror chain ops on the opaque handle. Tried after the resource/intent
+	// methods so an Input/Body receiver still resolves first.
+	if pose, is_pose := recv.(Pose_Value); is_pose {
+		return eval_pose_method(interp, node, env, pose, method)
+	}
+	if handle, is_handle := recv.(Handle_Value); is_handle {
+		return eval_handle_method(interp, node, env, handle, method)
+	}
+	// The §22 self-first adders chain off a built Audio record value
+	// (Audio.track(k, c).pitch(p).gain(g).bus(b)); a non-Audio receiver or a
+	// non-adder member falls through to ok=false.
+	if record, is_record := recv.(Record_Value); is_record {
+		if bent, is_audio := eval_audio_adder(interp, record, method, node, env); is_audio {
+			return bent, true
+		}
+	}
 	return nil, false
+}
+
+// eval_audio_constructor lowers the §22 §2 sustained-audio seed
+// `Audio.track(key, clip)` reached as a type-name static method — it evaluates the
+// key (a String) and clip (a SoundHandle from sound(name)) args and builds the
+// keyed Audio record at the spec defaults (unity gain/pitch, Music bus, no
+// position) the adders chain onto. is_ctor is false for any (type, member) that is
+// not Audio.track, so a non-constructor `Type.method()` falls through to the
+// value-receiver dispatch. The builder/record shape lives in audio.odin.
+eval_audio_constructor :: proc(
+	interp: ^Interp,
+	type_name, member: string,
+	node: ^Node,
+	env: ^Env,
+) -> (
+	value: Value,
+	is_ctor: bool,
+) {
+	if type_name != "Audio" || member != "track" {
+		return nil, false
+	}
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	key, key_ok := eval(interp, &node.children[1], env)
+	clip, clip_ok := eval(interp, &node.children[2], env)
+	if !key_ok || !clip_ok {
+		return nil, false
+	}
+	return audio_track_value(interp, key, clip), true
 }
 
 // eval_apply_impulse evaluates `body.apply_impulse(j)` — yard's drive intent: a
@@ -321,20 +378,22 @@ eval_apply_impulse :: proc(interp: ^Interp, recv: Value, node: ^Node, env: ^Env)
 }
 
 // eval_engine_constructor resolves an engine static constructor `Type.method()`
-// to its canonical seed record (yard's `Settings.defaults()` → the factory-default
-// Settings). It is the engine-provided constructor surface §24 names: a behavior
-// reads the default settings record to seed a Menu, never authoring the engine's
-// internal preference layout. is_ctor is false for any (type, method) pair that is
-// not a recognized engine constructor, so a non-constructor `recv.method()` falls
-// through to the value-receiver dispatch.
-eval_engine_constructor :: proc(interp: ^Interp, type_name, method: string) -> (value: Value, is_ctor: bool) {
+// to its canonical seed value: yard's `Settings.defaults()` → the factory-default
+// Settings, the §16 §7 anim builders Pose.empty()/blend()/layer() /
+// Skeleton.humanoid()/empty() / PartSet.empty() → the pose/handle seed values
+// (eval_anim_constructor, which needs the call node + env to evaluate blend/layer's
+// pose args). It is the engine-provided constructor surface the spec names: a
+// behavior reads these seeds, never authoring the engine internals. is_ctor is
+// false for any (type, method) pair that is not a recognized engine constructor, so
+// a non-constructor `recv.method()` falls through to the value-receiver dispatch.
+eval_engine_constructor :: proc(interp: ^Interp, node: ^Node, env: ^Env, type_name, method: string) -> (value: Value, is_ctor: bool) {
 	switch type_name {
 	case "Settings":
 		if method == "defaults" {
 			return settings_defaults(interp), true
 		}
 	}
-	return nil, false
+	return eval_anim_constructor(interp, node, env, type_name, method)
 }
 
 // settings_defaults is the §24 factory-default Settings record `Settings.defaults()`
@@ -486,6 +545,14 @@ eval_named_call :: proc(
 		return builtin_fold(interp, node, env)
 	case "length":
 		return builtin_length(interp, node, env)
+	case "sin":
+		return builtin_sin(interp, node, env)
+	case "mesh":
+		return builtin_mesh(interp, node, env)
+	case "rot_x":
+		return builtin_rot_x(interp, node, env)
+	case "up":
+		return builtin_up(interp, node, env)
 	case "prepend":
 		return builtin_prepend(interp, node, env)
 	case "init":
@@ -504,6 +571,8 @@ eval_named_call :: proc(
 		return builtin_len(interp, node, env)
 	case "grid_cells":
 		return builtin_grid_cells(interp, node, env)
+	case "sound":
+		return builtin_sound(interp, node, env)
 	case "pick":
 		return builtin_pick(interp, node, env)
 	case "Spawn":
@@ -564,7 +633,7 @@ builtin_abs :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return (v < 0 ? fixed_neg(v) : v), true
 	case i64:
 		return (v < 0 ? int_neg(v) : v), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
 		return nil, false
 	}
 	return nil, false
@@ -613,6 +682,100 @@ builtin_length :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value
 		return nil, false
 	}
 	return vec2_length(v), true
+}
+
+// builtin_sin is the §10 transcendental `sin(angle: Fixed) -> Fixed`: the
+// fixed_sin polynomial (x − x³/6 + x⁵/120) over the saturating kernel, copied
+// verbatim from the funpack trig kernel so the bits are identical (the
+// determinism bet — pose-driven replay folds the SAME Q32.32 sin the funpack
+// evaluator does). The single arg is coerced through as_fixed (an Int angle
+// lifts to Fixed, matching funpack's eval_fixed_arg), so a Vec2/list/bool arg is
+// ok=false (fail-closed — the sine of a non-scalar is undefined). pose_idle/
+// pose_walk's sin terms and advance_gait's wrapped phase feed this builtin.
+builtin_sin :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	angle, is_fixed := as_fixed(arg)
+	if !is_fixed {
+		return nil, false
+	}
+	return fixed_sin(angle), true
+}
+
+// builtin_rot_x is the §16 §7 per-bone X-axis rotation builder `rot_x(angle: Fixed)
+// -> Transform`: a fixed-point angle (radians) into a Transform with the identity
+// translation, a quaternion rotating `angle` about the local X axis, and unit scale
+// — the leg/arm swing a pose generator drives a bone with. At angle 0 the quaternion
+// is the identity (sin(0)=0, cos(0)=1), so rot_x(0.0) is the rest transform, the
+// pose_walk zero-crossing the golden asserts. A non-scalar arg is ok=false
+// (fail-closed). transform_rot_x carries the kernel-copied quat math (pose.odin /
+// vector3.odin), so the bits match the funpack evaluator's rot_x bit-for-bit.
+builtin_rot_x :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	angle, is_fixed := as_fixed(arg)
+	if !is_fixed {
+		return nil, false
+	}
+	return transform_rot_x(angle), true
+}
+
+// builtin_up is the §16 §7 per-bone vertical-offset builder `up(d: Fixed) ->
+// Transform`: a fixed-point displacement into a Transform translating by `d` along
+// the local +Y axis, with the identity rotation and unit scale — pose_idle's torso
+// breathing bob. A non-scalar arg is ok=false (fail-closed).
+builtin_up :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	d, is_fixed := as_fixed(arg)
+	if !is_fixed {
+		return nil, false
+	}
+	return transform_up(d), true
+}
+
+// builtin_mesh is the §19/§26 asset-handle constructor `mesh(name: String) ->
+// MeshHandle`: a single String asset name lowered into the typed handle value a
+// Model seam constant's literal builds — a Record_Value tagged "MeshHandle" with
+// the one `name` field set to the supplied String. So mesh("krognid_torso")
+// evaluates to the identical handle MeshHandle{name: "krognid_torso"} does, and the
+// PartSet bind reads its name through eval_mesh_name_arg (pose.odin). This MIRRORS
+// funpack/evaluate.odin's eval_asset_constructor (the closed-registry kind/name
+// validity is the build gate's, not this evaluator's — the runtime builds the value
+// the typecheck-passed reference names). Without it the artifact-path Rigged fold
+// fail-closes when draw_krognid's krognid_parts() body calls mesh(...). A non-String
+// arg, or the wrong arity, is ok=false (fail-closed). The sibling sound() asset
+// constructor (audio.odin builtin_sound) follows the identical shape.
+builtin_mesh :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	name, is_string := arg.(String_Value)
+	if !is_string {
+		return nil, false
+	}
+	fields := make(map[string]Value, interp.allocator)
+	fields["name"] = String_Value{text = strings.clone(name.text, interp.allocator)}
+	return Record_Value{type_name = "MeshHandle", fields = fields}, true
 }
 
 // builtin_first is the §08 list combinator `first(list) -> Option[T]`: the head
