@@ -456,6 +456,16 @@ eval_record :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	if type_name == "Vec2" {
 		return record_to_vec2(fields)
 	}
+	// A Vec3 record literal collapses to the Vec3 value (its x/y/z recfields), the
+	// same way a Vec2 literal becomes a Vec2 — so a `Vec3{x, y, z}` from EITHER a
+	// hand-built fixture or the artifact path yields the Vec3 union value, and the
+	// Draw3 lowering reads `at:` as one type. Without this arm a Vec3 literal lands
+	// as a generic Record_Value{type_name="Vec3"}, splitting the at-position reader
+	// into two shapes; collapsing here is the smaller surface (one arm vs defending
+	// every Vec3 reader), mirroring the Vec2 arm above (interp.odin record_to_vec3).
+	if type_name == "Vec3" {
+		return record_to_vec3(fields)
+	}
 	fill_record_defaults(interp, type_name, &fields)
 	return Record_Value{type_name = type_name, fields = fields}, true
 }
@@ -1012,6 +1022,26 @@ record_to_vec2 :: proc(fields: map[string]Value) -> (v: Value, ok: bool) {
 		return nil, false
 	}
 	return Vec2{x, y}, true
+}
+
+// record_to_vec3 collapses an {x, y, z} field map to the kernel Vec3 value — a Vec3
+// record literal IS a Vec3, so the §16 §7 3D vector arithmetic and the Draw3
+// lowering read one type. ok is false unless all three components are present and
+// numeric (mirrors record_to_vec2; the third lane is the only delta).
+record_to_vec3 :: proc(fields: map[string]Value) -> (v: Value, ok: bool) {
+	xv, x_present := fields["x"]
+	yv, y_present := fields["y"]
+	zv, z_present := fields["z"]
+	if !x_present || !y_present || !z_present {
+		return nil, false
+	}
+	x, x_ok := as_fixed(xv)
+	y, y_ok := as_fixed(yv)
+	z, z_ok := as_fixed(zv)
+	if !x_ok || !y_ok || !z_ok {
+		return nil, false
+	}
+	return Vec3{x = x, y = y, z = z}, true
 }
 
 // field_value_to_value lifts a blackboard Field_Value (state.odin's stored
