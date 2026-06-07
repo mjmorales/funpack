@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,8 +70,8 @@ func TestIntegrationBuildClassifyReadRoundTrip(t *testing.T) {
 // resolvePongTree resolves the pong example tree under the funpack-spec checkout
 // by fixed precedence — FUNPACK_SPEC_DIR override, then the conventional sibling
 // of the MAIN checkout (worktree-aware: the sibling is anchored on the primary
-// repo root, NOT this worktree, which lives nested under .claude/worktrees/) —
-// and t.Skip's loudly, naming the resolved-but-missing path, when the tree is
+// checkout root, NOT this worktree nested under .claude/worktrees/) — and
+// t.Skip's loudly, naming the resolved-but-missing path, when the tree is
 // absent. Absence is never a failure: the unit suites must pass in an
 // environment with no spec checkout.
 func resolvePongTree(t *testing.T) string {
@@ -92,10 +91,13 @@ func resolvePongTree(t *testing.T) string {
 
 // resolveSpecRoot resolves the funpack-spec checkout root: the FUNPACK_SPEC_DIR
 // override wins; otherwise the conventional sibling `funpack-spec` of the
-// primary repo checkout. The primary checkout is derived from git's common
-// directory so this resolves correctly from a nested worktree (where the cwd's
-// own parent chain is NOT a sibling of funpack-spec); when git resolution is
-// unavailable it falls back to the sibling of the binary-discovery repo root.
+// PRIMARY (main) checkout. `go test` runs with the cwd pinned to this package
+// dir (warden/), so the repo root is its parent — but inside an orchestrator
+// task worktree that parent lives under <main>/.claude/worktrees/<...>/, whose
+// sibling is NOT funpack-spec. primaryCheckoutRoot strips that infix so the
+// sibling anchors on the real checkout. This mirrors funpack/golden_test.odin's
+// resolve_spec_dir/main_checkout_root convention (no git dependency: resolution
+// is a pure path transform, deterministic and offline).
 func resolveSpecRoot(t *testing.T) string {
 	t.Helper()
 
@@ -103,28 +105,53 @@ func resolveSpecRoot(t *testing.T) string {
 		return override
 	}
 
-	primaryRoot, err := primaryRepoRoot()
-	if err != nil {
-		// No git context: fall back to the sibling of the binary-discovery root.
-		primaryRoot = repoRootForBinary(t)
-	}
-	return filepath.Join(filepath.Dir(primaryRoot), "funpack-spec")
+	return filepath.Join(filepath.Dir(primaryCheckoutRoot(repoRootForBinary(t))), "funpack-spec")
 }
 
-// primaryRepoRoot returns the primary (non-worktree) checkout root, derived from
-// git's common directory so it is stable whether the test runs from the main
-// checkout or a linked worktree nested under it. `git rev-parse --git-common-dir`
-// yields the primary `.git` directory; its parent is the primary checkout root.
-func primaryRepoRoot() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--git-common-dir").Output()
-	if err != nil {
-		return "", err
+// primaryCheckoutRoot maps an orchestrator task-worktree repo root onto the main
+// checkout root: a root containing the `/.claude/worktrees/` infix is truncated
+// at that segment (yielding the directory that holds .claude — the real repo,
+// whose siblings exist on disk); any other root is already the main checkout and
+// is returned unchanged. This is the Go mirror of golden_test.odin's
+// main_checkout_root — it guarantees the conventional `../funpack-spec` sibling
+// resolves to the real checkout's sibling, never <main>/.claude/worktrees/funpack-spec.
+func primaryCheckoutRoot(root string) string {
+	marker := string(filepath.Separator) + ".claude" + string(filepath.Separator) + "worktrees" + string(filepath.Separator)
+	if idx := strings.Index(root, marker); idx >= 0 {
+		return root[:idx]
 	}
-	commonDir, err := filepath.Abs(strings.TrimSpace(string(out)))
-	if err != nil {
-		return "", err
+	return root
+}
+
+// TestPrimaryCheckoutRootStripsWorktreeInfix pins spec-sibling resolution for
+// BOTH context shapes the integration test runs from, mirroring the Odin side's
+// test_main_checkout_root_strips_worktree_infix. The main-checkout case is the
+// one the prior git-derived resolver got wrong (a relative --git-common-dir
+// anchored on the test cwd, silently SKIPping the round-trip from the main
+// checkout); the worktree case is the one that masked it.
+func TestPrimaryCheckoutRootStripsWorktreeInfix(t *testing.T) {
+	main := filepath.Join("/repos", "funpack")
+
+	// A repo root inside an orchestrator task worktree anchors at the main
+	// checkout, so the ../funpack-spec sibling resolves to the real sibling
+	// rather than <main>/.claude/worktrees/funpack-spec (which never exists).
+	worktree := filepath.Join(main, ".claude", "worktrees", "slug-task-3")
+	if got := primaryCheckoutRoot(worktree); got != main {
+		t.Errorf("worktree root: primaryCheckoutRoot(%q) = %q, want %q", worktree, got, main)
 	}
-	return filepath.Dir(commonDir), nil
+
+	// A main-checkout root has no infix and is returned unchanged — this is the
+	// shape `go test` runs under from the primary checkout (cwd parent = repo root).
+	if got := primaryCheckoutRoot(main); got != main {
+		t.Errorf("main-checkout root: primaryCheckoutRoot(%q) = %q, want %q", main, got, main)
+	}
+
+	// A .claude path WITHOUT the /worktrees/ segment is not the infix and must
+	// not be truncated.
+	settings := filepath.Join(main, ".claude", "settings")
+	if got := primaryCheckoutRoot(settings); got != settings {
+		t.Errorf("non-worktree .claude path: primaryCheckoutRoot(%q) = %q, want %q", settings, got, settings)
+	}
 }
 
 // repoRootForBinary resolves the repo root the freshly-built funpack binary sits
@@ -165,6 +192,10 @@ func resolveFunpackBinary(t *testing.T) string {
 // root. It is the hygiene seam that keeps the build off the read-only sibling
 // checkout: the build mutates only the copy (which t.TempDir removes at the end
 // of the test), so funpack-spec is left untouched.
+//
+// Assumes the §14 example trees contain only directories and regular files (no
+// symlinks): a symlink would be copied as its target's bytes via ReadFile, not
+// re-created as a link. The spec's example trees hold none, so this is sound.
 func copyTree(t *testing.T, src string) string {
 	t.Helper()
 
