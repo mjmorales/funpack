@@ -329,29 +329,27 @@ test_krognid_project_reads_and_joins_seam :: proc(t: ^testing.T) {
 // test_krognid_whole_tree_green is the load-bearing acceptance: the live krognid
 // tree compiles end-to-end through run_project_pipeline (bake-emitted seam joined →
 // multi-module typecheck → contracts → flatten clears) and the FUNPACK-EVALUABLE
-// inline asserts pass, PINNED (KROGNID_EVALUABLE_ASSERTS) — the read_drive and
-// locomotion-loop engine-value asserts are the runtime's, per the documented
-// arena/yard split. SKIPs loudly when the sibling is absent.
+// inline asserts pass, PINNED (KROGNID_EVALUABLE_ASSERTS == 5). SKIPs loudly when
+// the sibling is absent.
 //
-// KNOWN SIBLING-SOURCE BLOCKER (surfaced, never worked around): stroll.fun line
-// 160 constructs its test Input with `Input.stub(player, axis, v, axis, v)`. That
-// name is NOT in the §23 §5 ratified closed Input producer vocabulary — every
-// admitted producer is `Input.empty()` + a `.with_value(player, axis, v)` /
-// `.with_axis(player, axis, vec)` chain (stdlib/engine/input.fun; §26 §10 names
-// `Input.empty` as the resource's deterministic constructor), and every other
-// example (yard, snake) uses exactly that form. `Input.stub` is stale source from
-// the spec's initial commit that the subsequent §23 §5 producer ratification did
-// not carry forward, so it does not typecheck. The funpack surface MUST NOT admit
-// `Input.stub` — that would codify a name §23 §5 closes out (the closed-surface
-// floor). The matching §23 §5 producer `with_value(PlayerId, Axis, Fixed)` IS now
-// admitted (surface.odin), so the canonical rewrite —
-// `Input.empty().with_value(P1, Drive::Strafe, 0.0).with_value(P1, Drive::Forward,
-// 1.0)` — compiles cleanly: the krognid tree goes fully green on that ONE sibling
-// source line. Until it lands, the stroll module cannot typecheck, so the whole
-// tree cannot compile; this test detects that one documented blocker and reports it
-// LOUDLY (never a silent pass), the same "loud, never a silent pass" discipline the
-// sibling-absent SKIP uses — and asserts the full green acceptance the instant the
-// source is fixed.
+// CONTRACT: the krognid whole tree — the gen/krognid.gen.fun seam plus the stroll
+// module — types and clears the full pipeline green. stroll.fun seeds its read_drive
+// test Input through the canonical §23 §5 closed producer vocabulary
+// (`Input.empty().with_value(player, axis, v)` — the same form yard and snake use;
+// §26 §10 names `Input.empty` the resource's deterministic constructor), so the
+// stroll module typechecks and the whole tree compiles. The closed-surface floor
+// holds the other way too: the funpack surface admits ONLY the ratified §23 §5
+// producers, so a non-producer name would be a COMPILE ERROR (§29 §3 exit-2), never
+// a counted assertion — this acceptance fails on any compile error rather than
+// tolerating one.
+//
+// Of stroll's inline asserts, the 5 pinned by KROGNID_EVALUABLE_ASSERTS are the pure
+// pose/gait/locomotion equalities the FUNPACK EVALUATOR owns end-to-end. The ONE
+// read_drive assert reads `input.value(player, axis)` against a seeded with_value
+// Input snapshot — ENGINE-VALUE execution the RUNTIME owns, not the funpack
+// evaluator (the same compiler-vs-runtime split the arena and yard goldens draw).
+// So `report.passed` is pinned to the evaluable count, and read_drive's raw fail is
+// expected and runtime-owned, never a regression in this acceptance.
 @(test)
 test_krognid_whole_tree_green :: proc(t: ^testing.T) {
 	dir := resolve_krognid_dir()
