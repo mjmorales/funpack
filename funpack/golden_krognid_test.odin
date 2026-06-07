@@ -368,20 +368,6 @@ test_krognid_whole_tree_green :: proc(t: ^testing.T) {
 
 	report := run_project_pipeline(project.sources)
 
-	// The known sibling-source blocker: stroll.fun's `Input.stub` (line 160) is not
-	// a §23 §5 producer, so the stroll module fails typecheck and the whole tree
-	// cannot compile. Detect that ONE documented case and report it loudly — not a
-	// false pass, not a loosened gate. Any OTHER compile error (or a clean compile)
-	// falls through to the hard green acceptance below.
-	if report.module_err == .Typecheck_Failed &&
-	   krognid_blocked_on_input_stub(project.sources, report.failed_path) {
-		log.warnf(
-			"SKIP krognid whole-tree (BLOCKED on a spec-sibling source defect): %s uses `Input.stub(...)`, which §23 §5's closed Input producer vocabulary excludes (canonical: Input.empty().with_value(...)). Fix the sibling source — the funpack surface must not admit `Input.stub`. The whole-tree green acceptance asserts the instant the source is fixed.",
-			report.failed_path,
-		)
-		return
-	}
-
 	// The whole tree compiles end-to-end: the index built (no read/parse failure)
 	// and every module — the krognid seam and stroll — cleared parse → gates →
 	// typecheck → contracts → flatten/closure (no compile error). A compile error
@@ -411,23 +397,6 @@ test_krognid_whole_tree_green :: proc(t: ^testing.T) {
 		"krognid whole-tree: the full krognid project (gen/krognid.gen.fun seam + stroll) types and clears end-to-end; the %d funpack-evaluable inline asserts pass (the read_drive engine-value assert is the runtime's, per the arena/yard split)",
 		report.passed,
 	)
-}
-
-// krognid_blocked_on_input_stub reports whether the failed module's source uses the
-// non-§23-§5 `Input.stub(` producer — the one documented spec-sibling source
-// defect test_krognid_whole_tree_green tolerates with a loud diagnostic rather than
-// a hard failure. It reads the offending source and looks for the literal call
-// form, so the tolerance is scoped to exactly that defect: any other typecheck
-// failure still fails the green acceptance.
-krognid_blocked_on_input_stub :: proc(sources: []Source, failed_path: string) -> bool {
-	if failed_path == "" {
-		return false
-	}
-	bytes, read_err := os.read_entire_file_from_path(failed_path, context.temp_allocator)
-	if read_err != nil {
-		return false
-	}
-	return strings.contains(string(bytes), "Input.stub(")
 }
 
 // test_resolve_krognid_dir_is_absolute keeps the exemplar resolver honest: the
