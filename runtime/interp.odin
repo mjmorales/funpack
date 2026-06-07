@@ -324,6 +324,18 @@ eval_name :: proc(interp: ^Interp, name: string, env: ^Env) -> (value: Value, ok
 	if fn := program_function(interp.program, name); fn != nil && len(fn.params) == 0 {
 		return eval_const(interp, name)
 	}
+	// The sanctioned lowercase angle constants are the builtin fallback (spec §02:
+	// pi/tau are the only snake_case constant exceptions; §10: the nearest-Fixed
+	// angle constants). Resolved AFTER a module const so a program-declared name
+	// would shadow, mirroring the funpack name-read order. advance_gait wraps its
+	// phase into [0, tau) with `phase % tau`, so tau must read as TAU_FIXED here —
+	// the identical pinned bits the funpack evaluator returns (kernel-copy-not-link).
+	switch name {
+	case "tau":
+		return TAU_FIXED, true
+	case "pi":
+		return PI_FIXED, true
+	}
 	return nil, false
 }
 

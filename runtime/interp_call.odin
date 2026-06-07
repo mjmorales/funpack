@@ -486,6 +486,8 @@ eval_named_call :: proc(
 		return builtin_fold(interp, node, env)
 	case "length":
 		return builtin_length(interp, node, env)
+	case "sin":
+		return builtin_sin(interp, node, env)
 	case "prepend":
 		return builtin_prepend(interp, node, env)
 	case "init":
@@ -613,6 +615,29 @@ builtin_length :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value
 		return nil, false
 	}
 	return vec2_length(v), true
+}
+
+// builtin_sin is the §10 transcendental `sin(angle: Fixed) -> Fixed`: the
+// fixed_sin polynomial (x − x³/6 + x⁵/120) over the saturating kernel, copied
+// verbatim from the funpack trig kernel so the bits are identical (the
+// determinism bet — pose-driven replay folds the SAME Q32.32 sin the funpack
+// evaluator does). The single arg is coerced through as_fixed (an Int angle
+// lifts to Fixed, matching funpack's eval_fixed_arg), so a Vec2/list/bool arg is
+// ok=false (fail-closed — the sine of a non-scalar is undefined). pose_idle/
+// pose_walk's sin terms and advance_gait's wrapped phase feed this builtin.
+builtin_sin :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	angle, is_fixed := as_fixed(arg)
+	if !is_fixed {
+		return nil, false
+	}
+	return fixed_sin(angle), true
 }
 
 // builtin_first is the §08 list combinator `first(list) -> Option[T]`: the head
