@@ -48,9 +48,10 @@ func declLine(qualifiedName, kind string, span int, stub, todo bool) string {
 	)
 }
 
-// recordsFrom decodes a set of NDJSON lines through the spine into the []Record
-// the projection folds over — the same DecodeStream seam warden uses on a live
-// stream, so the test exercises the integrated decode→project path, not a bypass.
+// recordsFrom decodes a set of NDJSON lines per-line through the spine
+// (index.DecodeLine — the same gate-and-dispatch seam DecodeStream applies to
+// each live-stream line) into the []Record the projection folds over, so the
+// test exercises the integrated decode→project path, not a bypass.
 func recordsFrom(t *testing.T, lines ...string) []index.Record {
 	t.Helper()
 	var recs []index.Record

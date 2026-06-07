@@ -178,10 +178,11 @@ func sortEntries[E ~[]Entry](entries E) {
 }
 
 // entryLess is the total ordering the per-declaration views fold to: qualified
-// name first (the stable declaration identity), then file, then span. The key is
-// total over every field that distinguishes two entries, so the sort is a
-// deterministic function of the records alone — no field is left to an
-// implementation-defined tiebreak that arrival order could leak into.
+// name first (the stable declaration identity), then file, then span, then kind.
+// The key covers every Entry field, so the sort is a deterministic function of
+// the records alone — no field is left to an implementation-defined tiebreak
+// that arrival order could leak into, even on a non-conformant stream carrying
+// two decls that differ only in kind.
 func entryLess(a, b Entry) bool {
 	if a.QualifiedName != b.QualifiedName {
 		return a.QualifiedName < b.QualifiedName
@@ -189,5 +190,8 @@ func entryLess(a, b Entry) bool {
 	if a.File != b.File {
 		return a.File < b.File
 	}
-	return a.Span < b.Span
+	if a.Span != b.Span {
+		return a.Span < b.Span
+	}
+	return a.Kind < b.Kind
 }
