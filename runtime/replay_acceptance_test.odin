@@ -42,7 +42,7 @@
 //
 //     task -d runtime test
 //
-// and confirm test_committed_golden_log_reproduces_expected_digest PASSES. That
+// and confirm test_committed_pong_log_reproduces_expected_digest PASSES. That
 // test re-folds the COMMITTED testdata/pong_golden.replay on the build under test
 // and asserts its session digest equals the COMMITTED testdata/pong_golden.digest —
 // so a passing run on the second machine is a bit-identical reproduction of the
@@ -200,7 +200,7 @@ test_live_run_and_refold_have_identical_digests :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_committed_golden_log_reproduces_expected_digest :: proc(t: ^testing.T) {
+test_committed_pong_log_reproduces_expected_digest :: proc(t: ^testing.T) {
 	// The COMMITTED golden replay log, re-folded on the CURRENT build, produces a
 	// session digest exactly equal to the COMMITTED expected digest fixture (§09 §5,
 	// §28). This is the cross-build two-machine proxy: input is the sole recorded

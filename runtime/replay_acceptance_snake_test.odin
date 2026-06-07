@@ -50,7 +50,7 @@
 //
 //     task -d runtime test
 //
-// and confirm test_snake_committed_golden_log_reproduces_expected_digest PASSES.
+// and confirm test_committed_snake_log_reproduces_expected_digest PASSES.
 // That test re-folds the COMMITTED testdata/snake_golden.replay on the build under
 // test, UNDER THE PINNED SEED (seeded_run(SNAKE_GOLDEN_SEED)), and asserts its
 // session digest equals the COMMITTED testdata/snake_golden.digest — so a passing
@@ -261,7 +261,7 @@ test_snake_live_run_and_refold_have_identical_digests :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_snake_committed_golden_log_reproduces_expected_digest :: proc(t: ^testing.T) {
+test_committed_snake_log_reproduces_expected_digest :: proc(t: ^testing.T) {
 	// The COMMITTED snake golden replay log, re-folded on the CURRENT build UNDER THE
 	// PINNED SEED, produces a session digest exactly equal to the COMMITTED expected
 	// digest fixture (§09 §5, §25 §60, §28). This is the seeded cross-build two-machine

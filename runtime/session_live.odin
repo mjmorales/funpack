@@ -717,10 +717,47 @@ when #config(FUNPACK_LIVE, false) {
 			case Draw_Camera:
 			// The camera is the active world↔screen transform (resolved above), not a
 			// painted primitive — it contributes no pixels of its own.
+			case Draw3_Camera:
+			// DELIBERATE 2D PROJECTION (the present decision): a §20 §1 3D camera is
+			// NOT projected as a true-3D view here — the present flattens the scene to
+			// the existing XZ-top-down pixel grid (X→pixel X, Z→pixel Y), so the 3D
+			// camera's eye/at/fov contribute no transform of their own (the board
+			// geometry already supplies the orthographic frame). It paints nothing.
+			case Draw3_Light:
+			// A directional light has no painted primitive in a flat 2D top-down
+			// projection (no shading pass) — it contributes no pixels. Carried in the
+			// determinism digest, dropped at the present boundary.
+			case Draw3_Plane:
+				// The §20 §1 ground plane projects top-down: its XZ extent fills a
+				// center-anchored rect over the XZ plane (the X/Z lanes of the Vec3 at
+				// become the 2D world position, the Vec2 size is the XZ extent), the
+				// same fill_world_rect the 2D rects use. This is the deliberate 2D
+				// flattening — Y (height) is dropped at the boundary.
+				fill_world_rect(renderer, vec3_xz(c.at), c.size, c.color, camera, board, window)
+			case Draw3_Rigged:
+				// The posed creature projects top-down to a small marker rect at its XZ
+				// position — a deliberate stand-in for the rigged mesh under the flat 2D
+				// projection (a true-3D skinned draw is out of scope; the rig STATE is
+				// fully in the determinism digest, the PRESENT shows only its footprint).
+				fill_world_rect(renderer, vec3_xz(c.at), RIGGED_MARKER_SIZE, .White, camera, board, window)
 			}
 		}
 		sdl.RenderPresent(renderer)
 	}
+
+	// vec3_xz flattens a §20 §1 world Vec3 to the 2D XZ-plane position the top-down
+	// present projects through: X→world x, Z→world y (the ground plane), dropping Y
+	// (height). This is the render-boundary 2D projection of the 3D draw-list; the
+	// dropped Y never re-enters the sim (the result feeds fill_world_rect only).
+	vec3_xz :: proc(v: Vec3) -> Vec2 {
+		return Vec2{x = v.x, y = v.z}
+	}
+
+	// RIGGED_MARKER_SIZE is the fixed world-unit footprint the top-down present paints
+	// for a Draw3_Rigged creature — a small 2x2 world-unit marker at its XZ position.
+	// A present-only constant; the digest folds the full rig, never this marker. The
+	// extent is 2.0 world units on each axis in Q32.32 (2 * FIXED_ONE).
+	RIGGED_MARKER_SIZE :: Vec2{Fixed(2 * i64(FIXED_ONE)), Fixed(2 * i64(FIXED_ONE))}
 
 	// active_camera resolves the §3 camera transform a tick's draw-list presents
 	// through: the LAST Draw_Camera command emitted (a later `view` behavior overrides

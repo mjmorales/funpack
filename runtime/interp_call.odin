@@ -547,6 +547,8 @@ eval_named_call :: proc(
 		return builtin_length(interp, node, env)
 	case "sin":
 		return builtin_sin(interp, node, env)
+	case "mesh":
+		return builtin_mesh(interp, node, env)
 	case "rot_x":
 		return builtin_rot_x(interp, node, env)
 	case "up":
@@ -745,6 +747,35 @@ builtin_up :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 		return nil, false
 	}
 	return transform_up(d), true
+}
+
+// builtin_mesh is the §19/§26 asset-handle constructor `mesh(name: String) ->
+// MeshHandle`: a single String asset name lowered into the typed handle value a
+// Model seam constant's literal builds — a Record_Value tagged "MeshHandle" with
+// the one `name` field set to the supplied String. So mesh("krognid_torso")
+// evaluates to the identical handle MeshHandle{name: "krognid_torso"} does, and the
+// PartSet bind reads its name through eval_mesh_name_arg (pose.odin). This MIRRORS
+// funpack/evaluate.odin's eval_asset_constructor (the closed-registry kind/name
+// validity is the build gate's, not this evaluator's — the runtime builds the value
+// the typecheck-passed reference names). Without it the artifact-path Rigged fold
+// fail-closes when draw_krognid's krognid_parts() body calls mesh(...). A non-String
+// arg, or the wrong arity, is ok=false (fail-closed). The sibling sound() asset
+// constructor lands the same way when the audio story wires it.
+builtin_mesh :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	name, is_string := arg.(String_Value)
+	if !is_string {
+		return nil, false
+	}
+	fields := make(map[string]Value, interp.allocator)
+	fields["name"] = String_Value{text = strings.clone(name.text, interp.allocator)}
+	return Record_Value{type_name = "MeshHandle", fields = fields}, true
 }
 
 // builtin_first is the §08 list combinator `first(list) -> Option[T]`: the head
