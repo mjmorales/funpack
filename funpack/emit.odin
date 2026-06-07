@@ -54,21 +54,45 @@ Emit_Error :: enum {
 	Entrypoint_Failed,
 }
 
-// stage_emit is the source → artifact seam: it runs the full checked pipeline
-// (lex → parse → gates → typecheck → contracts → flatten) over one project
-// source, parses the §14 entrypoint config through the one entrypoints
-// production and validates its references against the checked AST, then bundles
-// the checked AST, flattened pipeline, §14 project identity, and selected
-// entrypoint into an Emit_Input and serializes it. Emission is a pure function
-// of the three inputs — the source bytes, the project identity, and the
-// entrypoint config text — so two calls on the same inputs are byte-identical.
-// A source that fails any checked-pipeline floor returns the matching
-// Emit_Error and no bytes.
+// stage_emit is the single-source → artifact seam: it runs the full checked
+// pipeline (lex → parse → gates → typecheck → contracts → flatten) over one
+// project source against an EMPTY module index, parses the §14 entrypoint config
+// through the one entrypoints production and validates its references against the
+// checked AST, then bundles the checked AST, flattened pipeline, §14 project
+// identity, and selected entrypoint into an Emit_Input and serializes it.
+// Emission is a pure function of the three inputs — the source bytes, the project
+// identity, and the entrypoint config text — so two calls on the same inputs are
+// byte-identical. A source that fails any checked-pipeline floor returns the
+// matching Emit_Error and no bytes. It is stage_emit_indexed with the empty index
+// (every user-module import is .Unknown_Module), so a single-module game emits
+// exactly as before; a multi-module game's entrypoint emits through
+// stage_emit_indexed with the project-wide index.
 stage_emit :: proc(
 	source: string,
 	module: string,
 	project: Project_Identity,
 	entrypoint_fcfg: string,
+	allocator := context.allocator,
+) -> (artifact: string, err: Emit_Error) {
+	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, allocator)
+}
+
+// stage_emit_indexed is the source → artifact seam typed against a project-wide
+// module index, so a multi-module game's ENTRYPOINT module (the arena example's
+// arena_game, importing arena_world + the arena seam) types cross-module before
+// it emits. The stage order is identical to the single-source stage_emit — only
+// the typecheck stage becomes index-aware (stage_typecheck_indexed) — and an
+// empty index reduces it to the single-source path (every user-module import is
+// .Unknown_Module), so a one-module game's bytes are unchanged. The entrypoint
+// config's pipeline/bindings references still validate against THIS module's AST
+// (the entrypoint module declares the pipeline and bindings fn), so a dangling
+// reference is still caught at emission.
+stage_emit_indexed :: proc(
+	source: string,
+	module: string,
+	project: Project_Identity,
+	entrypoint_fcfg: string,
+	index: Module_Index,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -78,7 +102,7 @@ stage_emit :: proc(
 	if stage_gates(ast) != .None {
 		return "", .Gate_Failed
 	}
-	typed, type_err := stage_typecheck(ast)
+	typed, type_err := stage_typecheck_indexed(ast, index)
 	if type_err != .None {
 		return "", .Typecheck_Failed
 	}

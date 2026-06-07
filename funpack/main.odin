@@ -22,14 +22,16 @@ main :: proc() {
 }
 
 // run_build_verb builds the §14 project tree at the working directory: it reads
-// the tree, runs the source through the full checked pipeline, and on success
-// writes BOTH the runtime artifact and the Index Contract NDJSON under
-// `.funpack/` (build.odin). Exit codes honor the spec §29 §3 contract: a
-// malformed tree or ANY compile/gate failure is 2 and writes NEITHER product (a
-// compile error is never a counted failure); a host IO failure writing the
-// products is also 2; a clean build that writes both products is 0. The build
-// verb has no assertion-failure tier — that is the test verb's — so it never
-// returns 1.
+// the tree, runs every module through the full checked pipeline against ONE
+// project-wide module index, and on success writes the kind's products under
+// `.funpack/` (build.odin) — a GAME writes BOTH the runtime artifact and the
+// Index Contract NDJSON; a PACKAGE (no entrypoints.fcfg, §30 §7) writes the Index
+// Contract NDJSON ONLY (no entrypoint ⇒ no runtime artifact). Exit codes honor
+// the spec §29 §3 / §30 §7 contract: a malformed tree or ANY compile/gate failure
+// is 2 and writes NO product (a compile error is never a counted failure); a host
+// IO failure writing the products is also 2; a clean build that writes the kind's
+// products is 0. The build verb has no assertion-failure tier — that is the test
+// verb's — so it never returns 1.
 run_build_verb :: proc() -> int {
 	product, build_err := stage_build(".", context.temp_allocator)
 	if build_err != .None {
@@ -40,7 +42,12 @@ run_build_verb :: proc() -> int {
 		fmt.eprintfln("funpack build: %v", write_err)
 		return 2
 	}
-	fmt.printfln("funpack build: wrote %s and %s", product.artifact_path, product.index_path)
+	if product.artifact_path == "" {
+		// A package: the Index Contract is its single product.
+		fmt.printfln("funpack build: wrote %s", product.index_path)
+	} else {
+		fmt.printfln("funpack build: wrote %s and %s", product.artifact_path, product.index_path)
+	}
 	return 0
 }
 

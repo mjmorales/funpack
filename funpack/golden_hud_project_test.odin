@@ -188,14 +188,17 @@ test_golden_hud_whole_tree_evaluates :: proc(t: ^testing.T) {
 // ── (c) hud_demo.fun declaration inventory ────────────────────────────────────
 
 // test_golden_hud_demo_declaration_inventory pins hud_demo.fun's §11/§21/§22
-// structural fingerprint the way golden_yard_test pins yard's: twelve imports (the
-// engine.* surface plus the four generated seam modules), the single App thing, no
-// local enums/lets/signals (the seams own the Screen/AppMsg/HudMsg/… enums now),
-// nine top-level fns (the three projections, the three on_* handlers, route,
-// click_sfx, setup), four behaviors (on_msg, music, tick_clock, view), one Arcade
-// pipeline with its five §11 stages (startup/input/update/ui/audio), and ten inline
-// test blocks. Pinned EXACTLY: a surface drift moves a count in lockstep with the
-// source, so a loosened bound never hides it. SKIPs loudly when the sibling is
+// structural fingerprint the way golden_yard_test pins yard's: thirteen imports
+// (the engine.* surface — now including engine.input for the §14 §4 bindings fn —
+// plus the four generated seam modules), the single App thing, no local
+// enums/lets/signals (the seams own the Screen/AppMsg/HudMsg/… enums now), ten
+// top-level fns (the three projections, the three on_* handlers, route,
+// click_sfx, setup, and the §14 §4 empty bindings fn), four behaviors (on_msg,
+// music, tick_clock, view), one Arcade pipeline with its five §11 stages
+// (startup/input/update/ui/audio), and ten inline test blocks. Pinned EXACTLY: a
+// surface drift moves a count in lockstep with the source (the spec a522568 fix
+// added the engine.input import and the bindings fn, moving imports 12→13 and fns
+// 9→10), so a loosened bound never hides it. SKIPs loudly when the sibling is
 // absent.
 @(test)
 test_golden_hud_demo_declaration_inventory :: proc(t: ^testing.T) {
@@ -225,16 +228,17 @@ test_golden_hud_demo_declaration_inventory :: proc(t: ^testing.T) {
 	ast, parse_err := stage_parse(stage_lex(string(demo_bytes)))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 
-	// The declaration inventory: twelve imports (engine.prelude/math/core/world/
-	// ui/audio/assets/list + the four seam modules hud/pause/settings/screens), the
-	// single App thing, zero local enums/lets/signals (the seams own them now), nine
-	// fns, four behaviors, one pipeline, ten test blocks.
-	testing.expect_value(t, len(ast.imports), 12)
+	// The declaration inventory: thirteen imports (engine.prelude/input/math/core/
+	// world/ui/audio/assets/list + the four seam modules hud/pause/settings/screens),
+	// the single App thing, zero local enums/lets/signals (the seams own them now),
+	// ten fns (incl. the §14 §4 empty bindings fn), four behaviors, one pipeline, ten
+	// test blocks.
+	testing.expect_value(t, len(ast.imports), 13)
 	testing.expect_value(t, len(ast.things), 1)
 	testing.expect_value(t, len(ast.enums), 0)
 	testing.expect_value(t, len(ast.lets), 0)
 	testing.expect_value(t, len(ast.signals), 0)
-	testing.expect_value(t, len(ast.fns), 9)
+	testing.expect_value(t, len(ast.fns), 10)
 	testing.expect_value(t, len(ast.behaviors), 4)
 	testing.expect_value(t, len(ast.pipelines), 1)
 	testing.expect_value(t, len(ast.tests), 10)
@@ -270,5 +274,5 @@ test_golden_hud_demo_declaration_inventory :: proc(t: ^testing.T) {
 			testing.expectf(t, has_stage, "Arcade pipeline missing the %s stage", want)
 		}
 	}
-	log.infof("golden hud project: hud_demo.fun declaration inventory pinned (12 imports, 1 thing, 9 fns, 4 behaviors, 1 pipeline, 10 tests)")
+	log.infof("golden hud project: hud_demo.fun declaration inventory pinned (13 imports, 1 thing, 10 fns, 4 behaviors, 1 pipeline, 10 tests)")
 }
