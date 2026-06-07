@@ -377,9 +377,9 @@ aprint_concat :: proc(parts: ..string) -> string {
 // n_mesh builds a `MeshHandle{name: "<asset>"}` record literal — the value
 // funpack's mesh("<asset>") asset constructor produces (a typed handle carrying the
 // one `name` field). The runtime has no `mesh` builtin (the asset-constructor
-// surface is a separate story), so the parts builder feeds the handle record
-// directly; eval_mesh_name_arg reads its `name` field, the same value the
-// constructor would have built.
+// surface belongs to the artifact-execution path, not this hand-built fixture), so
+// the parts builder feeds the handle record directly; eval_mesh_name_arg reads its
+// `name` field, the same value the constructor would have built.
 @(private = "file")
 n_mesh :: proc(asset: string) -> Node {
 	return n_record("MeshHandle", n_recfield("name", n_string(asset)))

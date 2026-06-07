@@ -14,8 +14,8 @@
 //
 // SOURCING DELTA from the funpack original: funpack/vector.odin also declares
 // FIXED_ONE and Vec2_Value here; this copy DROPS both — runtime/** already pins
-// FIXED_ONE in fixed.odin (under the same kernel-copy obligation, task 1.2's
-// FIXED_ONE coupling) and Vec2 in input.odin, so re-declaring either would be a
+// FIXED_ONE in fixed.odin (under the same kernel-copy obligation, beside the trig
+// kernel that reads it) and Vec2 in input.odin, so re-declaring either would be a
 // duplicate-symbol error. The runtime spells the vector types bare (Vec2, Vec3,
 // Quat), matching input.odin/state.odin, where funpack spells them *_Value.
 package funpack_runtime
