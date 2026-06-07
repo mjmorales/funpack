@@ -88,6 +88,15 @@ import "core:slice"
 // carrying a 3D command (krognid) produces the new (correct) bytes; the §16 §7 rig
 // fold (the handle op-logs, the per-bone pose transforms, the Vec3 positions) is
 // raw fixed-point throughout — no float (§10).
+// v6 ALSO adds the Field_Tag.Vec3 COLUMN tag (ordinal 10, APPENDED after String=9):
+// krognid's `pos: Vec3` is the first committed Vec3 blackboard COLUMN (move_krognid
+// mutates it each tick), distinct from the v6 Cmd_Tag DRAW arms above (a draw-list
+// command). A committed Vec3 column is part of the world state the digest folds, so
+// the new column arm is part of the v6 encoding. It is byte-stable for every existing
+// golden: pong/snake/hunt/yard carry no Vec3 field, so the tag never appears in their
+// streams and their CONTENT digests (per-tick AND session, the latter seeded from the
+// frozen FRAME_SESSION_SEED) are unmoved. Only krognid's stream carries the Vec3
+// column bytes.
 FRAME_DIGEST_SCHEMA_VERSION :: 6
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
@@ -114,6 +123,16 @@ Field_Tag :: enum u8 {
 	// String is a String column's text (§03 primitive) — length-prefixed bytes,
 	// digest v4 / snapshot v3.
 	String = 9,
+	// Vec3 is a three-Fixed vector column (krognid's `pos: Vec3`) — three raw
+	// Q32.32 lanes, the 3D twin of the Vec2 tag. APPENDED at ordinal 10 so every
+	// existing tag keeps its byte (Int=0..String=9), so a stream with no Vec3 column
+	// (pong/snake/hunt/yard — none has a Vec3 field) is byte-unchanged. It rides the
+	// existing digest v6 / snapshot v3 encodings: v6 already appended the Cmd_Tag 3D
+	// DRAW arms for krognid's draw-list, and the Vec3 COLUMN arm is the committed-state
+	// twin krognid's `pos` field first reaches — both land under the v6 stamp, and no
+	// other golden carries the tag, so no committed golden moves (the append-ordinal
+	// discipline, §04).
+	Vec3 = 10,
 }
 
 // Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
@@ -314,6 +333,9 @@ write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	case Vec2:
 		append(buf, u8(Field_Tag.Vec2))
 		write_vec2(buf, v)
+	case Vec3:
+		append(buf, u8(Field_Tag.Vec3))
+		write_vec3(buf, v)
 	case Ref:
 		append(buf, u8(Field_Tag.Ref))
 		write_length_prefixed(buf, v.thing)
@@ -403,6 +425,9 @@ write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	case Vec2:
 		append(buf, u8(Field_Tag.Vec2))
 		write_vec2(buf, x)
+	case Vec3:
+		append(buf, u8(Field_Tag.Vec3))
+		write_vec3(buf, x)
 	case Ref:
 		append(buf, u8(Field_Tag.Ref))
 		write_length_prefixed(buf, x.thing)
@@ -416,10 +441,12 @@ write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		write_record_column(buf, x)
 	case List_Value:
 		write_list_column(buf, x)
-	case Lambda_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
 	// A transient value never lands in a committed structural column — the §16 §7
-	// anim values (Vec3/Transform/Pose/handle) compose inside a render body into a
-	// [Draw3] draw-list, never a blackboard column the digest folds here.
+	// anim VALUES (Transform/Pose/handle) compose inside a render body into a [Draw3]
+	// draw-list, never a blackboard column the digest folds here. A Vec3 is NOT here:
+	// a committed Vec3 column (krognid's `pos`, or a Vec3 nested in a record column)
+	// digests through the Vec3 arm above, the same as a Vec2.
 	}
 }
 

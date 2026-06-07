@@ -61,6 +61,14 @@ import "core:strings"
 // committable Field_Values, no longer flattened/dropped at commit) and gives a
 // String the String tag — under v2 a nested String hit the tag-less no-op,
 // which would have CORRUPTED the stream once payloads carried text.
+// v3 ALSO serializes the Field_Tag.Vec3 COLUMN arm (krognid's `pos: Vec3`) — the
+// three-Fixed-lane twin of the Vec2 arm, APPENDED at tag ordinal 10 so every
+// existing tag keeps its byte. No version bump: a snapshot with no Vec3 column
+// (every game with a save golden today) is byte-identical, and a Vec3 column is a
+// new tag the codec round-trips, never a layout change to an existing arm. The
+// krognid golden harness uses the replay+digest path, not snapshots; this arm keeps
+// the save codec TOTAL over the extended Field_Value union (the §24 quicksave path
+// would otherwise drop a committed `pos`).
 SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(3)
 
 // SAVE_SNAPSHOT_MAGIC leads every snapshot so a stray byte stream (a truncated
@@ -584,6 +592,11 @@ snap_write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 		append(buf, u8(Field_Tag.Vec2))
 		snap_put_u64(buf, u64(i64(v.x)))
 		snap_put_u64(buf, u64(i64(v.y)))
+	case Vec3:
+		append(buf, u8(Field_Tag.Vec3))
+		snap_put_u64(buf, u64(i64(v.x)))
+		snap_put_u64(buf, u64(i64(v.y)))
+		snap_put_u64(buf, u64(i64(v.z)))
 	case Ref:
 		append(buf, u8(Field_Tag.Ref))
 		snap_put_string(buf, v.thing)
@@ -656,6 +669,11 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		append(buf, u8(Field_Tag.Vec2))
 		snap_put_u64(buf, u64(i64(x.x)))
 		snap_put_u64(buf, u64(i64(x.y)))
+	case Vec3:
+		append(buf, u8(Field_Tag.Vec3))
+		snap_put_u64(buf, u64(i64(x.x)))
+		snap_put_u64(buf, u64(i64(x.y)))
+		snap_put_u64(buf, u64(i64(x.z)))
 	case Ref:
 		append(buf, u8(Field_Tag.Ref))
 		snap_put_string(buf, x.thing)
@@ -685,9 +703,11 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		// framing with no value bytes).
 		append(buf, u8(Field_Tag.String))
 		snap_put_string(buf, x.text)
-	case Lambda_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
 	// A transient never lands in a committed structural column — the §16 §7 anim
-	// values are render-time, composed into a [Draw3] list, never persisted.
+	// VALUES (Transform/Pose/handle) are render-time, composed into a [Draw3] list,
+	// never persisted. A Vec3 is NOT here: a committed Vec3 column (a thing's `pos`,
+	// or a Vec3 nested in a record column) serializes through the Vec3 arm above.
 	}
 }
 
@@ -774,6 +794,11 @@ snap_read_field_value :: proc(
 		x := Fixed(i64(snap_get_u64(cur) or_return))
 		y := Fixed(i64(snap_get_u64(cur) or_return))
 		return Vec2{x = x, y = y}, true
+	case .Vec3:
+		x := Fixed(i64(snap_get_u64(cur) or_return))
+		y := Fixed(i64(snap_get_u64(cur) or_return))
+		z := Fixed(i64(snap_get_u64(cur) or_return))
+		return Vec3{x = x, y = y, z = z}, true
 	case .Ref:
 		thing := snap_get_string(cur, allocator) or_return
 		raw := snap_get_u64(cur) or_return
@@ -863,6 +888,11 @@ snap_read_column_value :: proc(
 		x := Fixed(i64(snap_get_u64(cur) or_return))
 		y := Fixed(i64(snap_get_u64(cur) or_return))
 		return Vec2{x = x, y = y}, true
+	case .Vec3:
+		x := Fixed(i64(snap_get_u64(cur) or_return))
+		y := Fixed(i64(snap_get_u64(cur) or_return))
+		z := Fixed(i64(snap_get_u64(cur) or_return))
+		return Vec3{x = x, y = y, z = z}, true
 	case .Ref:
 		thing := snap_get_string(cur, allocator) or_return
 		raw := snap_get_u64(cur) or_return

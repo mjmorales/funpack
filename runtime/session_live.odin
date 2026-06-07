@@ -564,10 +564,11 @@ when #config(FUNPACK_LIVE, false) {
 		} else {
 			version = run_startup(&program, base)
 		}
-		// Time derives through the one shared dt derivation (replay.odin's
-		// time_resource) — bit-identical to what a re-fold of this session binds, so
-		// any digest divergence is the input source, never the clock.
-		time := time_resource(program.entrypoint.tick_hz)
+		// Time rebinds per tick inside the loop (time_resource_at) so `time.t` —
+		// logical time since startup — advances each frame for a `time.t`-reading
+		// render body (krognid's pose_idle bob). The derivation is replay.odin's
+		// shared one, bit-identical to what a re-fold of this session binds, so any
+		// digest divergence is the input source, never the clock.
 
 		// prev_held threads each resolve_tick's held_after into the next so released
 		// edges fire correctly; tick 0 seeds it empty (no button was down before it).
@@ -594,6 +595,10 @@ when #config(FUNPACK_LIVE, false) {
 			if poll_session_events(&queue) {
 				break
 			}
+
+			// Logical time AT this committed tick (t = tick_index * dt); control reads
+			// only dt, render's pose_idle reads t.
+			time := time_resource_at(program.entrypoint.tick_hz, tick_index)
 
 			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels)
 			// Thread the persistent Rng through a seeded run so each tick observes the
