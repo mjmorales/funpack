@@ -9,23 +9,26 @@ doctrine, this repo is the machine that satisfies it.
 
 ## What gets built here
 
-Two first-party binaries over one versioned contract, plus a runtime
+One first-party binary over one versioned contract, plus a runtime
 ([spec §29](https://github.com/mjmorales/funpack-spec/blob/main/spec/29-architecture-governance.md)):
 
 - **`funpack`** — the language toolchain. Parses, typechecks, runs the structural quality
   gates, formats, tests, resolves dependencies, runs the asset pipeline, and emits the
   versioned **Index Contract**. A pure `source → artifact` function: no clock, no database,
   no network, no mutable cross-run state — bit-identical by construction.
-- **`warden`** — the governance binary. Owns the task DB, leases, swarm dispatch, `@todo`
-  expiry, escalation, and provenance. Language- and engine-decoupled: it consumes the Index
-  Contract over a process boundary and never writes source.
-- **the runtime** — executes the artifact. `warden` and the runtime are the two impure
-  consumers of the one pure compiler's output.
+- **`funpack warden`** — the governance *sub-toolchain* and *ethos*, not a separate binary.
+  A pure projection of the index funpack already emitted (`find`/`holes`/`debt`/`graph`),
+  plus the discipline the directives and gates enforce. No clock, no authored state; it
+  reports, the agent edits, recompilation re-projects — it never writes source. General
+  swarm orchestration (a stateful task DB, leases, dispatch) is the operator's agent
+  tooling, deliberately out of the engine's scope.
+- **the runtime** — executes the artifact. It is the one impure consumer of the pure
+  compiler's output.
 
 ```text
-agent → │ funpack (pure: src → artifact + index) │ ──Index Contract──► │ warden (impure: clock, DB, leases) │ ← operator
-        └────────────────────────────────────────┘                     └────────────────────────────────────┘
-                one-way data: source → index → warden.  warden NEVER writes source.
+agent → │ funpack (pure: src → artifact + index; `funpack warden` projects the index) │ ── artifact ──► runtime
+        └──────────────────────────────────────────────────────────────────────────────┘  ← operator
+                one-way data: source → index → projection.  warden NEVER writes source.
 ```
 
 ## The contract with the spec
@@ -50,9 +53,11 @@ conform. This repo carries no doctrine of its own.
 
 - **Determinism** — same source builds the same artifact; same inputs + seed produce
   bit-identical simulation on every machine. Simulation state is fixed-point, never float.
-- **The purity split** — everything impure (clock, DB, network) lives in `warden` or the
-  runtime; `funpack` stays a pure function. The Index Contract is the only coupling:
-  exact-match, all fields mandatory, schema-versioned, NDJSON transport.
+- **The purity split** — everything impure (clock, DB, network) lives in the runtime or
+  the operator's agent tooling; `funpack` stays a pure function — including the
+  `funpack warden` surface, which only projects the index it already emitted. The Index
+  Contract is the structured interface: exact-match, all fields mandatory, schema-versioned,
+  NDJSON transport.
 - **Structured diagnostics** — the compiler is a quality gate emitting fix-criteria
   diagnostics so agent write → check → fix loops converge.
 

@@ -14,7 +14,7 @@ provenance:
 Functional seats modeled on engine/language-product org charts (Unity scripting team,
 Epic engine/tools split, Godot area maintainers, JetBrains-style language team). Every
 seat except the Studio Director is filled by interchangeable agents dispatched under
-prove/warden governance.
+prove governance.
 
 | Name | Role | Responsibilities |
 | ---- | ---- | ---------------- |
@@ -25,7 +25,7 @@ prove/warden governance.
 | backend-seat | Compiler Backend Engineer | Artifact emission, Index Contract (schema-versioned, exact-match NDJSON), bit-identical determinism |
 | runtime-seat | Runtime Engineer | Artifact execution, fixed-point simulation (never float), `engine.*` stdlib surface |
 | tools-seat | Tools & Pipeline Engineer | Dependency resolution, asset pipeline, test runner |
-| governance-seat | Governance Engineer (warden) | Task DB, leases, swarm dispatch, `@todo` expiry, escalation, provenance — never writes source |
+| governance-seat | Governance Engineer (`funpack warden`) | The `funpack warden` pure sub-toolchain — index-query surface (`find`/`holes`/`debt`/`graph`) — and the governance ethos the directives and gates enforce; never writes source |
 | qa-seat | QA / Acceptance Engineer | Nine golden-example acceptance suite, conformance and determinism harness |
 | producer-seat | Producer / TPM | Backlog, dep-graph, milestone tracking via prove scrum |
 | docs-seat | Tech Writer / DevRel | Docs, diagnostics wording, example walkthroughs |

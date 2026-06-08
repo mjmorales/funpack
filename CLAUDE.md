@@ -28,7 +28,6 @@ Role-bound team agents registered in `.claude/agents/`:
 
 - **funpack**: `team-funpack-tech_lead`, `team-funpack-engineer`, `team-funpack-implementer`
 - **runtime**: `team-runtime-tech_lead`, `team-runtime-engineer`, `team-runtime-implementer`
-- **warden**: `team-warden-tech_lead`, `team-warden-engineer`, `team-warden-implementer`
 
 Dispatch and memory protocol:
 

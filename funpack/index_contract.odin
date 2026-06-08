@@ -1,5 +1,6 @@
-// The Index Contract `project` record — funpack's ONE exposed interface
-// (spec §29 §2): the process-boundary data contract `warden` consumes. It is
+// The Index Contract `project` record — funpack's ONE structured interface
+// (spec §29 §2): the data contract the `funpack warden` sub-toolchain consumes
+// as an in-process pure projection. It is
 // a closed, schema-versioned, exact-match structure with ALL fields
 // mandatory and a leading `schema_version` stamp; an under- or over-shaped
 // record is an error, there are no optional fields. The transport is NDJSON —
@@ -11,11 +12,11 @@
 // is a contract RESHAPE — bump INDEX_SCHEMA_VERSION, never silently drift.
 //
 // This file owns BOTH §29 §2 record kinds — the per-declaration `decl` record
-// and the whole-project `project` record (warden's decode/consumption side is
-// out of scope here). It is a DISTINCT surface from the runtime binary
-// artifact (artifact_format.odin): different consumer (`warden`, not the
-// runtime) and different transport (NDJSON, not the length-prefixed byte
-// format).
+// and the whole-project `project` record (the `funpack warden` query/projection
+// side is out of scope here). It is a DISTINCT surface from the runtime binary
+// artifact (artifact_format.odin): different consumer (the `funpack warden`
+// surface, not the runtime) and different transport (NDJSON, not the
+// length-prefixed byte format).
 //
 // AUTHORED fields project from the config tree: `entrypoints` (the
 // entrypoints.fcfg pipeline/tick/bindings wiring, §14 §4), `builds` (the
@@ -34,7 +35,7 @@ import "core:slice"
 import "core:strings"
 
 // INDEX_SCHEMA_VERSION is the leading stamp every Index Contract record
-// carries (spec §29 §2). `warden` exact-matches it and refuses a mismatch
+// carries (spec §29 §2). The `funpack warden` consumer exact-matches it and refuses a mismatch
 // with a fix-it rather than best-effort parsing, so it is the single
 // compatibility gate. Any change to the emitted field set is a contract
 // reshape that bumps this; it is independent of the runtime artifact's
@@ -105,7 +106,7 @@ Index_Decl_Kind :: enum {
 // This story ships the SHAPE only — the type plus its NDJSON emitter and the
 // hand-built-record tests. No derivation from the AST and no disk emission yet;
 // those fill this fixed shape in a later story. It is the contract-reshape seam
-// every downstream `decl` story fills and what warden authors its decode path
+// every downstream `decl` story fills and what the `funpack warden` projection decodes
 // against.
 Decl_Record :: struct {
 	schema_version: int,
@@ -195,7 +196,7 @@ Gate_Family :: enum {
 // Gate_Result is one structural gate's verdict line in the `project` record:
 // the gate family and whether the source cleared it. The whole vector is
 // emitted (every family, passing or not) so the record is exact-match — a
-// `warden` reader keys off the family, never a positional index.
+// `funpack warden` reader keys off the family, never a positional index.
 Gate_Result :: struct {
 	gate:   Gate_Family,
 	passed: bool,

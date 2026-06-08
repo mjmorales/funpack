@@ -17,15 +17,17 @@ It traces to three irreducible roots (spec §01):
 - **R3 — optimize for the next editor, not the author.** Most edits are made by an
   agent that did not write the code. "Clever" is a defect; one obvious way per thing.
 
-## The architecture: two binaries over one contract
+## The architecture: one binary over one contract
 - **funpack** — the pure engine. Source → bit-identical artifact + a versioned Index
-  Contract (NDJSON). It owns the language, the structural quality gates, and the
-  deterministic runtime that executes the artifact. No clock, no IO-as-state.
-- **warden** — the impure governance binary. It owns the task DB, leases, swarm
-  dispatch, and the operator surface. It invokes funpack as a subprocess and depends
-  ONLY on the structured contract — never a library link.
-The process boundary is the engine boundary made physical: it preserves funpack's
-pure-function determinism and lets warden govern any toolchain that emits the contract.
+  Contract (NDJSON). It owns the language, the structural quality gates, the
+  deterministic runtime that executes the artifact, and the **`funpack warden`
+  sub-toolchain** — a pure projection of the index it already emitted (find/holes/debt/
+  graph) — plus the **warden ethos**. No clock, no IO-as-state.
+- **the runtime** — the one impure consumer: it executes the artifact (frame clock,
+  input, render, audio). The engine never depends on it.
+Purity is by construction: the impure, clock-bearing swarm coordination a stateful
+governor would carry is out of the engine's scope, not exiled to a second process.
+`funpack warden` reads the index and projects — never a clock, never authored state.
 
 ## Determinism is the substrate (P1, both tiers mandatory)
 - **Build determinism:** same source → bit-identical artifact.
@@ -36,13 +38,15 @@ Determinism is load-bearing at runtime (lockstep, P2P, shared recordings), not a
 dev-time convenience. Every committed value, frame digest, and replay byte is sacred —
 moving them without cause is a defect.
 
-## Governance is the product
-The language is the showcase; the governance layer is the more broadly valuable
-artifact, and the opinionated contract is its moat (spec §29 §5). Keeping an agent
-swarm on track is a general problem: every swarm failure mode is bound to a mechanical
-backstop — @todo expiry, @stub-under-release ban, leases, the duplication/find reuse
-surface, criterion adjudication — no advisory warnings, no knobs. Because warden
-depends only on the contract, it is toolchain-agnostic.
+## Governance is an ethos, not a second product
+warden is the discipline the language's own mechanisms enforce, turned on the agent
+itself — the @stub-under-release ban, @todo debt indexed and surfaced, the
+duplication/find reuse surface, the @gtag registry, acceptance earned by recompile — no
+advisory warnings, no knobs. It is a thin ethos plus a pure `funpack warden` projection
+over the index, not a separate governance binary and not a general swarm-governance
+substrate (that is the operator's agent tooling — deliberately not the engine's). The
+un-copyable value is the welding: governance earned from a deterministic quality-gate
+compiler, where "done is proven, not asserted."
 
 ## The contract spine
 The Index Contract is the first of five structured contracts; the others are

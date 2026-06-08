@@ -6,15 +6,15 @@ team:
   charter: "Owns swarm governance — task DB, leases, dispatch, escalation, provenance; never writes source"
   lifetime: persistent
   terminates_on_milestone: null
-  status: active
+  status: inactive
   created_at: 2026-06-05T02:40:25.246Z
 scope:
-  read: ["**"]
-  write: ["warden/**"]
+  read: []
+  write: []
 roster:
-  tech_lead: ct-governance-seat-eb4a2187-85db-4acd-987e-5f29e9444791
-  engineer: ct-producer-seat-0e86fed4-9c3d-41ec-8446-7a14169115a6
-  implementer: ct-docs-seat-23f9a0c2-7e15-45c6-9504-deb10e16affc
+  tech_lead: null
+  engineer: null
+  implementer: null
 interface:
   accepts: []
   exposes:
@@ -37,18 +37,18 @@ Owns swarm governance — task DB, leases, dispatch, escalation, provenance; nev
 - Interaction archetype: platform
 - Lifetime: persistent
 - Terminates on milestone: <!-- none -->
-- Status: active
+- Status: inactive
 
 ## Scope
 
-- Read globs: **
-- Write globs: warden/**
+- Read globs: <!-- none -->
+- Write globs: <!-- none -->
 
 ## Roster
 
-- tech_lead: ct-governance-seat-eb4a2187-85db-4acd-987e-5f29e9444791
-- engineer: ct-producer-seat-0e86fed4-9c3d-41ec-8446-7a14169115a6
-- implementer: ct-docs-seat-23f9a0c2-7e15-45c6-9504-deb10e16affc
+- tech_lead: <!-- vacant -->
+- engineer: <!-- vacant -->
+- implementer: <!-- vacant -->
 
 ## Interface
 
