@@ -1,9 +1,9 @@
 version: '3'
 
-# Monorepo build orchestration. Each embedded project (funpack, warden,
-# runtime) owns its Taskfile, which flatten-includes taskfiles/odin.yml
-# for the shared Odin verbs; this root file composes them by namespace
-# and each root verb aggregates the per-project ones. Validators in
+# Monorepo build orchestration. Each embedded project (funpack, runtime)
+# owns its Taskfile, which flatten-includes taskfiles/odin.yml for the
+# shared Odin verbs; this root file composes them by namespace and each
+# root verb aggregates the per-project ones. Validators in
 # .claude/.prove.json pin to the root verbs, so layout changes edit this
 # file only — never the validator config.
 
@@ -11,9 +11,6 @@ includes:
   funpack:
     taskfile: ./funpack
     dir: ./funpack
-  warden:
-    taskfile: ./warden
-    dir: ./warden
   runtime:
     taskfile: ./runtime
     dir: ./runtime
@@ -23,19 +20,16 @@ tasks:
     desc: Type-check every embedded project
     cmds:
       - task: funpack:build
-      - task: warden:build
       - task: runtime:build
 
   lint:
     desc: Vet + strict-style check every embedded project
     cmds:
       - task: funpack:lint
-      - task: warden:lint
       - task: runtime:lint
 
   test:
     desc: Run every embedded project's tests
     cmds:
       - task: funpack:test
-      - task: warden:test
       - task: runtime:test

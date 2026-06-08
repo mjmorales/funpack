@@ -7,7 +7,6 @@
   "scopes": {
     "funpack": "funpack/",
     "runtime": "runtime/",
-    "warden": "warden/",
     "teams": "teams/",
     "contributors": "contributors/",
     "config": ".claude/"
