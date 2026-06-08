@@ -301,13 +301,17 @@ process_persist_commands :: proc(
 		switch command.type_name {
 		case "Save":
 			ok := apply_save(store, committed, persist_slot(command), allocator)
-			append(&outcomes, Persist_Outcome{signal = "Saved", slot = persist_slot(command), ok = ok})
+			// CLONE the slot onto `allocator`: the outcome is delivered NEXT tick, but
+			// persist_slot returns a slice into THIS command's String_Value, which lives
+			// on the eval scratch the live loop frees at tick end. The clone keeps the
+			// slot valid across the boundary (a no-op-cost copy in bounded paths).
+			append(&outcomes, Persist_Outcome{signal = "Saved", slot = strings.clone(persist_slot(command), allocator), ok = ok})
 		case "Restore":
 			version, ok := apply_restore(store, persist_slot(command), allocator)
 			if ok {
 				swap = version
 			}
-			append(&outcomes, Persist_Outcome{signal = "Restored", slot = persist_slot(command), ok = ok})
+			append(&outcomes, Persist_Outcome{signal = "Restored", slot = strings.clone(persist_slot(command), allocator), ok = ok})
 		case "ApplySettings":
 			ok := apply_settings_command(store, command, allocator)
 			append(&outcomes, Persist_Outcome{signal = "SettingsApplied", slot = "", ok = ok})
@@ -464,24 +468,43 @@ step_tick_persist :: proc(
 	carrier: Persist_Carrier,
 	allocator := context.allocator,
 	rng: ^Rng = nil,
+	commit_allocator := context.allocator,
+	reclaim_live := false,
 ) -> (
 	version: World_Version,
 	next_carrier: Persist_Carrier,
 ) {
+	// ALLOCATOR SPLIT (live-loop memory reclamation). `allocator` is the TRANSIENT
+	// eval/working scratch — the live driver passes a per-tick scratch arena it frees
+	// each tick. `commit_allocator` is the PERSISTENT allocator the committed version
+	// (its tables/rows slices, the cloned blackboard maps/columns), the swap version,
+	// and the next-tick outcome signals target — these must survive the scratch reset.
+	// A test/bounded caller leaves commit_allocator == allocator (the default), so the
+	// split is a no-op and the committed bytes are byte-identical (the determinism floor
+	// reads values, not addresses). yard's quicksave/quickload exercises the persist
+	// path under the split.
+	//
 	// A pending swap from a prior Restore is the version this tick folds from — the
 	// restored world becomes the base the next tick reads, "swapped at the boundary".
+	// The swap was deserialized onto `commit_allocator` by the PRIOR tick's
+	// process_persist_commands (see below), so it is an INDEPENDENT version with no
+	// alias into any retired version — the live reclaimer retires `prior` fully on the
+	// swap tick (no surviving alias) and retires the swap version one tick later, like
+	// any base.
 	base := prior
 	if swap, has_swap := carrier.swap.?; has_swap {
 		base = swap
 	}
 
-	state := new_tick_state(base, allocator)
+	state := new_tick_state(base, allocator, commit_allocator)
 	if rng != nil {
 		state.rng = rng^
 	}
 	// Deliver a prior tick's outcomes into THIS tick's mailbox before the fold, so the
 	// menu's on_persist_result/on_settings_applied consume them this tick (the §24 §1
-	// one-tick deferral: the command ran last tick, the outcome arrives now).
+	// one-tick deferral: the command ran last tick, the outcome arrives now). The
+	// outcomes were built on commit_allocator last tick (they cross the tick boundary),
+	// but seeding lifts them into the mailbox on the eval scratch — a same-tick read.
 	seed_outcome_signals(&state, carrier.pending, allocator)
 
 	base_version := base
@@ -491,17 +514,76 @@ step_tick_persist :: proc(
 	if rng != nil {
 		rng^ = state.rng
 	}
-	committed := commit_tick_state(base, &state, allocator)
+	// The committed version's tables/rows slices land on the PERSISTENT commit
+	// allocator (its blackboard maps already do, via write_blackboard/queue_commands),
+	// so the whole committed version survives the eval-scratch reset.
+	committed := commit_tick_state(base, &state, commit_allocator)
 
-	// Process this tick's persist commands over the COMMITTED version: a Save captures
-	// the committed checkpoint; a Restore reads + swaps for next tick; each queues its
-	// outcome for next-tick delivery.
-	effects := process_persist_commands(carrier.store, committed, state.persist_commands[:], allocator)
+	// Process this tick's persist commands over the COMMITTED version. The outcomes and
+	// any restore-swap CROSS the tick boundary (delivered next tick), so they target the
+	// PERSISTENT commit allocator — a swap deserialized onto the eval scratch would be
+	// freed before the next tick reads it. The persist_commands records themselves live
+	// on the eval scratch (read here, same tick, pre-reset).
+	effects := process_persist_commands(carrier.store, committed, state.persist_commands[:], commit_allocator)
+
+	// LIVE GENERATIONAL RECLAMATION (reclaim_live; the unbounded-loop bound). Retire the
+	// now-dead BASE version on the persistent commit allocator, before the live driver
+	// frees the eval scratch. This is the ONLY safe moment and place: `committed` (N+1)
+	// has just sealed, nothing reads `base` (N) afterward (render/audio project N+1), and
+	// state.superseded — the prior maps the commit ABANDONED — is still live (it is freed
+	// here, then its [dynamic] backing dies with the scratch). Bounded callers leave
+	// reclaim_live=false and rely on their wholesale temp-free, so the determinism floor
+	// path is byte-untouched.
+	if reclaim_live {
+		// The prior tick's outcomes were consumed by seed_outcome_signals above; their
+		// array + cloned slot strings (on commit_allocator) are now stale — free them so a
+		// quicksave/quickload session does not leak one outcome set per persist tick.
+		free_persist_outcomes(carrier.pending, commit_allocator)
+
+		// Retire `base` (N or the restored swap): its tables/rows structure plus the maps
+		// the commit abandoned (superseded). Its UNWRITTEN rows' maps are NOT freed here —
+		// they are now aliased solely by `committed` (N+1) and travel forward with it.
+		free_superseded_maps(state.superseded, commit_allocator)
+		free_version_structure(base, commit_allocator)
+
+		// On a RESTORE tick the fold bypassed `prior` (it folded from the swap base), so
+		// `prior` (the committed N) is referenced by nothing now — N+1 aliases the SWAP's
+		// maps, never N's. Free it WHOLLY (structure + every map). A normal tick has
+		// base == prior and already retired it above; the pointer compare distinguishes.
+		if !world_versions_same_identity(base, prior) {
+			free_version_fully(prior, commit_allocator)
+		}
+	}
+
 	return committed, Persist_Carrier {
 			store = carrier.store,
 			pending = effects.outcomes,
 			swap = effects.swap,
 		}
+}
+
+// world_versions_same_identity reports whether two version handles refer to the
+// SAME underlying tables slice — the cheap pointer-identity check the live
+// reclaimer uses to tell a normal tick (base IS prior) from a restore tick (base
+// is the swap, prior is the bypassed committed version). It compares the slice
+// data pointers, NOT the contents (world_versions_equal is the value comparison);
+// an empty/nil tables slice on both is treated as the same identity.
+world_versions_same_identity :: proc(a, b: World_Version) -> bool {
+	return raw_data(a.tables) == raw_data(b.tables)
+}
+
+// free_persist_outcomes frees a consumed outcome set: each outcome's cloned slot
+// string and the outcomes slice backing. The slot was cloned onto `allocator` by
+// process_persist_commands so it would survive the producing tick's scratch reset;
+// once delivered (seed_outcome_signals) it is dead. A "Saved"/"Restored"/
+// "SettingsApplied" signal tag is a static literal and is never freed.
+free_persist_outcomes :: proc(outcomes: []Persist_Outcome, allocator := context.allocator) {
+	for outcome in outcomes {
+		if outcome.slot != "" {
+			delete(outcome.slot, allocator)
+		}
+	}
+	delete(outcomes, allocator)
 }
 
 // seed_outcome_signals injects a prior tick's persist outcomes into the tick

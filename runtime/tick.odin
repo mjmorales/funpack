@@ -86,7 +86,31 @@ Tick_State :: struct {
 	despawns:        [dynamic]Ref,
 	persist_commands: [dynamic]Record_Value, // the §24 Save/Restore/ApplySettings emits this tick
 	rng:             Rng, // the per-tick PRNG state a draw advances, threaded fold-forward
+	// superseded collects the blackboard maps this tick ABANDONED — a row's prior
+	// map replaced by write_blackboard's fresh one, or a despawned row's map. These
+	// are exactly the prior-version (and intermediate same-tick) maps the next
+	// committed version no longer aliases, so the live generational reclaimer
+	// (reclaim.odin) frees them O(delta) once this tick commits. Empty for a tick
+	// that writes/despawns nothing (pure read tick). The live driver consumes it;
+	// the bounded test/re-fold drivers ignore it (their wholesale temp-free covers
+	// the same maps).
+	superseded:      [dynamic]map[string]Field_Value,
+	// allocator is the TRANSIENT eval/working allocator: the working tables' Row
+	// backing, the mailbox routing, the spawn/despawn/persist batches, and every
+	// intermediate value a behavior builds during the fold live here. It is the
+	// tick's scratch — discarded after the tick.
 	allocator:       Runtime_Allocator,
+	// commit_allocator is the PERSISTENT allocator the committed-state allocations
+	// target — the blackboard MAPS and the cloned structural COLUMNS that survive
+	// into the next version (write_blackboard's fresh map, queue_commands' spawn
+	// fields). It is split from `allocator` SOLELY so the live loop can run the
+	// transient eval on a per-tick scratch arena (freed each tick) while the
+	// committed columns persist on the heap the generational reclaimer manages
+	// (reclaim.odin). In every bounded path (step_tick, replay re-fold, tests) the
+	// two are the SAME allocator, so the split is a no-op there and the committed
+	// bytes are byte-identical regardless of the split — the determinism floor reads
+	// values, never addresses.
+	commit_allocator: Runtime_Allocator,
 }
 
 // Pending_Spawn is one queued Spawn command awaiting the tick-boundary batch: the
@@ -192,10 +216,27 @@ build_singleton_blackboard :: proc(
 			continue
 		}
 		if v, ok := decode_default(program, fd, allocator); ok {
-			fields[fd.name] = v
+			fields[fd.name] = own_committed_column(v, allocator)
 		}
 	}
 	return fields
+}
+
+// own_committed_column re-clones a freshly-DECODED startup column into a fully-owned
+// tree on `allocator` (deep_clone_field_value, reclaim.odin), so the committed
+// initial version has the SAME uniform ownership a tick-written column has — the
+// precondition the live generational reclaimer rests on (a committed column is
+// always a freeable owned tree, never a borrowed slice into the artifact bytes).
+// The decode procs otherwise leave nested enum tags as sub-slices of the stored
+// token; without this re-clone a despawn or rewrite of a startup row would bad-free
+// those borrowed slices. The clone is value-identical, so committed bytes and the
+// frame digest are unchanged. A non-column value (none expected from a decode)
+// passes through unchanged.
+own_committed_column :: proc(fv: Field_Value, allocator := context.allocator) -> Field_Value {
+	if owned, ok := deep_clone_field_value(fv, allocator); ok {
+		return owned
+	}
+	return fv
 }
 
 // run_startup_seeded runs an RNG-THREADED setup: it evaluates setup's BODY (the
@@ -230,16 +271,13 @@ run_startup_seeded :: proc(
 	// Evaluate the setup body against the populated-so-far tick tables, threading the
 	// seed Rng. Setup binds only `rng: Rng` (its sole param), draws from it, and
 	// returns `(Rng, [Spawn])`. The tuple split queues the spawns and advances the Rng.
-	tables := new_tick_tables(base, allocator)
-	state := Tick_State {
-		tables           = tables,
-		mailbox          = new_signal_mailbox(allocator),
-		spawns           = make([dynamic]Pending_Spawn, allocator),
-		despawns         = make([dynamic]Ref, allocator),
-		persist_commands = make([dynamic]Record_Value, allocator),
-		rng              = seed,
-		allocator        = allocator,
-	}
+	// Build the working state through new_tick_state so every field (incl. the
+	// superseded list and the commit_allocator) is initialized — a bare struct
+	// literal would leave commit_allocator nil and value_to_field_value would clone
+	// the seeded spawn columns onto a nil allocator (corruption). Startup is a
+	// single bounded fold, so eval and commit share one allocator (no live split).
+	state := new_tick_state(base, allocator, allocator)
+	state.rng = seed
 	base_version := base
 	interp := new_interp(program, &base_version, &state, empty(), Record_Value{}, allocator)
 
@@ -322,7 +360,10 @@ build_spawn_blackboard :: proc(
 	decl := program_thing(program, command.thing)
 
 	for field in command.fields {
-		fields[field.name] = spawn_field_to_value(program, decl, field.name, field, allocator)
+		fields[field.name] = own_committed_column(
+			spawn_field_to_value(program, decl, field.name, field, allocator),
+			allocator,
+		)
 	}
 	// Fill omitted fields from the thing's declared defaults (§06, §13: an omitted
 	// field is not carried in setup; the runtime applies the default).
@@ -333,7 +374,7 @@ build_spawn_blackboard :: proc(
 			}
 			if fd.has_default {
 				if v, ok := decode_default(program, fd, allocator); ok {
-					fields[fd.name] = v
+					fields[fd.name] = own_committed_column(v, allocator)
 				}
 			}
 		}
@@ -806,7 +847,10 @@ step_tick :: proc(
 	allocator := context.allocator,
 	rng: ^Rng = nil,
 ) -> World_Version {
-	state := new_tick_state(prior, allocator)
+	// The plain (bounded) driver runs eval and commit on ONE allocator — the caller's
+	// wholesale temp-free at the end reclaims everything, so there is no scratch/persist
+	// split here (that split exists only in the live loop's step_tick_persist path).
+	state := new_tick_state(prior, allocator, allocator)
 	if rng != nil {
 		state.rng = rng^
 	}
@@ -1224,11 +1268,24 @@ write_blackboard :: proc(
 		if table.rows[i].id != id {
 			continue
 		}
-		next := make(map[string]Field_Value, interp.allocator)
+		// The fresh map AND its cloned columns target the PERSISTENT commit allocator
+		// (not the eval scratch), so the committed row survives the per-tick scratch
+		// reset in the live loop — the determinism floor is unchanged (same bytes,
+		// different heap). In bounded paths commit_allocator == the eval allocator.
+		next := make(map[string]Field_Value, state.commit_allocator)
 		for k, v in record.fields {
-			if fv, ok := value_to_field_value(v, interp.allocator); ok {
+			if fv, ok := value_to_field_value(v, state.commit_allocator); ok {
 				next[k] = fv
 			}
+		}
+		// The map this write REPLACES is no longer reachable from the next committed
+		// version (the row now carries `next`): on the FIRST write of a row this tick
+		// it is the PRIOR version's aliased map, on a later write it is this tick's
+		// earlier intermediate map — both freeable once the tick commits. Collect it
+		// for the live generational reclaimer (reclaim.odin); the bounded drivers
+		// ignore the list. A nil map (a row with no prior blackboard) is skipped.
+		if table.rows[i].fields != nil {
+			append(&state.superseded, table.rows[i].fields)
 		}
 		table.rows[i].fields = next
 		return
@@ -1253,9 +1310,13 @@ queue_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
 		if !is_record {
 			continue
 		}
-		fields := make(map[string]Field_Value, interp.allocator)
+		// A spawned row's blackboard becomes committed state next tick, so its map +
+		// cloned columns target the PERSISTENT commit allocator, surviving the live
+		// loop's per-tick scratch reset (commit_allocator == eval allocator in bounded
+		// paths, so the committed bytes are identical there).
+		fields := make(map[string]Field_Value, state.commit_allocator)
 		for k, v in record.fields {
-			if fv, ok := value_to_field_value(v, interp.allocator); ok {
+			if fv, ok := value_to_field_value(v, state.commit_allocator); ok {
 				fields[k] = fv
 			}
 		}
@@ -1309,7 +1370,13 @@ apply_spawn_batch :: proc(state: ^Tick_State) {
 		if table == nil {
 			continue
 		}
-		remove_row_by_id(table, ref.id)
+		// A despawned row's blackboard map leaves the next committed version entirely,
+		// so collect it for the live reclaimer the same way a rewritten map is
+		// (reclaim.odin frees it O(delta) once the tick commits). remove_row_by_id
+		// returns the dropped map (nil if the Id was already gone).
+		if dropped, removed := remove_row_by_id(table, ref.id); removed && dropped != nil {
+			append(&state.superseded, dropped)
+		}
 	}
 	for spawn in state.spawns {
 		table := find_tick_table(state.tables, spawn.thing)
@@ -1324,14 +1391,19 @@ apply_spawn_batch :: proc(state: ^Tick_State) {
 
 // remove_row_by_id drops the row carrying `id` from a working table, preserving
 // the relative order of the rest (so the table stays Id-ordered without a
-// re-sort). A despawn of an absent Id is a no-op (already gone).
-remove_row_by_id :: proc(table: ^Tick_Table, id: Id) {
+// re-sort). It returns the dropped row's blackboard map (and removed=true) so the
+// caller can hand it to the live reclaimer — the despawned map leaves the next
+// committed version, so it is freeable once the tick commits. A despawn of an
+// absent Id is a no-op (already gone): removed=false, dropped=nil.
+remove_row_by_id :: proc(table: ^Tick_Table, id: Id) -> (dropped: map[string]Field_Value, removed: bool) {
 	for i in 0 ..< len(table.rows) {
 		if table.rows[i].id == id {
+			dropped = table.rows[i].fields
 			ordered_remove(&table.rows, i)
-			return
+			return dropped, true
 		}
 	}
+	return nil, false
 }
 
 // --- Working-table lifecycle ----------------------------------------------
@@ -1339,15 +1411,29 @@ remove_row_by_id :: proc(table: ^Tick_Table, id: Id) {
 // new_tick_state builds the mutable working state for one tick from the prior
 // committed version: a working table per declared thing seeded with the prior
 // rows (copied so an in-place write never mutates the prior version), an empty
-// signal mailbox, and empty spawn/despawn batches.
-new_tick_state :: proc(prior: World_Version, allocator := context.allocator) -> Tick_State {
+// signal mailbox, and empty spawn/despawn batches. `allocator` is the transient
+// eval/working scratch; `commit_allocator` is the persistent allocator the
+// committed blackboard maps/columns target — they are the SAME in every bounded
+// path (only the live loop splits them so it can free the eval scratch each tick
+// while the committed version persists). new_tick_tables seeds the working tables
+// on the eval scratch; the prior rows it copies still carry their committed maps
+// (on the persistent allocator), and commit_tick_tables re-packs the row structs
+// onto the persistent allocator at the boundary — so a committed map is always on
+// `commit_allocator`, never on the freed scratch.
+new_tick_state :: proc(
+	prior: World_Version,
+	allocator := context.allocator,
+	commit_allocator := context.allocator,
+) -> Tick_State {
 	return Tick_State {
 		tables = new_tick_tables(prior, allocator),
 		mailbox = new_signal_mailbox(allocator),
 		spawns = make([dynamic]Pending_Spawn, allocator),
 		despawns = make([dynamic]Ref, allocator),
 		persist_commands = make([dynamic]Record_Value, allocator),
+		superseded = make([dynamic]map[string]Field_Value, allocator),
 		allocator = allocator,
+		commit_allocator = commit_allocator,
 	}
 }
 
@@ -1413,7 +1499,15 @@ commit_tick_tables :: proc(
 			next_id   = table.next_id,
 		}
 	}
-	return commit_version(prior, changed, allocator)
+	version := commit_version(prior, changed, allocator)
+	// The `changed` map is a TRANSIENT keyed view consumed by commit_version (it copies
+	// the retained Version_Tables — including their committed `rows` slices — into the
+	// result's tables slice); the map backing itself is dead now. Free it so the live
+	// loop does not leak one keyed map per tick on the persistent commit allocator (the
+	// retained rows/tables slices are reclaimed via free_version_structure when the
+	// version retires; this map is not part of the version).
+	delete(changed)
+	return version
 }
 
 // find_tick_table returns the working table holding rows of the named thing, or

@@ -138,9 +138,11 @@ run_solve :: proc(interp: ^Interp, state: ^Tick_State) {
 	}
 
 	// Write the solved pos/vel back and CONSUME the impulse (zero it) — the §11 §2
-	// contract: the solver consumes and zeroes the accumulated intent each step.
+	// contract: the solver consumes and zeroes the accumulated intent each step. The
+	// committed columns target state.commit_allocator (handled inside write_body_back),
+	// so a solved body survives the live loop's per-tick scratch reset.
 	for body in bodies {
-		write_body_back(state, body, interp.allocator)
+		write_body_back(state, body)
 	}
 }
 
@@ -474,29 +476,47 @@ route_one_trigger :: proc(state: ^Tick_State, body: Solver_Body) {
 // phantom impulse column to a body that never had one. The body record is cloned
 // into the tick arena so the committed column owns its data independent of the
 // transient gather.
-write_body_back :: proc(state: ^Tick_State, body: Solver_Body, allocator := context.allocator) {
+write_body_back :: proc(state: ^Tick_State, body: Solver_Body) {
 	table := &state.tables[body.table_idx]
 	row := &table.rows[body.row_idx]
 
-	// Copy the existing columns into a fresh map (keys are stable prior-arena
-	// strings, carried by reference exactly as write_blackboard does).
-	next := make(map[string]Field_Value, len(row.fields), allocator)
+	// The committed map and its columns target the PERSISTENT commit allocator (so the
+	// committed row survives the live loop's per-tick scratch reset). Every carried-over
+	// column is DEEP-CLONED into the new map (not shallow-shared with the prior map) so
+	// `next` OWNS its whole column tree and shares NOTHING with the prior version's map —
+	// the precondition the generational reclaimer rests on (the prior map this write
+	// replaces is then fully dead and freeable via the superseded list, with no column
+	// still aliased by N+1). write_blackboard already rebuilds its map from fresh clones;
+	// this aligns the solver's reserved-column write to the same uniform ownership.
+	// Blackboard map KEYS are program-owned (eval records key off parsed AST field
+	// names, which outlive the loop), so they are carried by reference exactly as
+	// write_blackboard carries them — only the VALUES are deep-cloned onto the commit
+	// allocator so `next` owns its whole column tree.
+	commit := state.commit_allocator
+	next := make(map[string]Field_Value, len(row.fields), commit)
 	for k, v in row.fields {
-		next[k] = v
+		next[k] = own_committed_column(v, commit)
 	}
 
 	// The solver owns a Dynamic body's pos/vel; a Static/Kinematic body's reserved
-	// columns are not the solver's to write (it never integrates them).
+	// columns are not the solver's to write (it never integrates them). pos/vel are
+	// scalar Vec2 — owned by value, overwriting the cloned carry-over.
 	if body.kind == .Dynamic {
 		next[SOLVER_POS_FIELD] = body.pos
 		next[SOLVER_VEL_FIELD] = body.vel
 	}
 
 	// Rebuild the Body record with impulse zeroed — the §11 §2 consume-and-zero. A
-	// body with no impulse column is left as-is (no phantom column added).
+	// body with no impulse column is left as-is (no phantom column added). The clone is
+	// on the commit allocator and OVERWRITES the carried-over Body clone (freeing that
+	// transient intermediate so the per-body rebuild does not leak one Body record each
+	// tick on the persistent heap).
 	if body_col, has_body := row.fields[SOLVER_BODY_FIELD]; has_body {
 		if rec, is_record := body_col.(Record_Value); is_record {
-			zeroed := clone_record_value(rec, allocator)
+			if carried, present := next[SOLVER_BODY_FIELD]; present {
+				free_field_value(carried, commit) // drop the carry-over clone we are about to replace
+			}
+			zeroed := clone_record_value(rec, commit)
 			if _, has_impulse := zeroed.fields["impulse"]; has_impulse {
 				zeroed.fields["impulse"] = VEC2_ZERO
 			}
@@ -504,6 +524,14 @@ write_body_back :: proc(state: ^Tick_State, body: Solver_Body, allocator := cont
 		}
 	}
 
+	// The map this write REPLACES is no longer reachable from the next committed version
+	// (the row now carries `next`, which shares nothing with it) — collect it for the
+	// live generational reclaimer, exactly as write_blackboard does. On the first body
+	// write of a row this tick it is the PRIOR version's aliased map; on a later write it
+	// is this tick's earlier intermediate. A nil map is skipped.
+	if row.fields != nil {
+		append(&state.superseded, row.fields)
+	}
 	row.fields = next
 }
 

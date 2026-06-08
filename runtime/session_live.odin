@@ -32,6 +32,7 @@
 package funpack_runtime
 
 import "core:fmt"
+import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -57,6 +58,13 @@ SESSION_LIVE_SDL_ALIVE :: sdl.Event
 // aliases are dead-stripped, so the default binary carries nothing extra.
 SESSION_LIVE_OS_ALIVE :: os.Error
 SESSION_LIVE_FMT_ALIVE :: fmt.Info
+
+// SESSION_LIVE_VIRTUAL_ALIVE keeps core:mem/virtual referenced outside the
+// when-gated driver for the same reason: the live loop's per-tick scratch arena
+// (virtual.Arena, the bounded-memory reclamation seam) compiles out headless, so
+// without an outside reference -vet reads the import as unused. The alias is
+// dead-stripped, so the default binary carries nothing extra.
+SESSION_LIVE_VIRTUAL_ALIVE :: virtual.Arena
 
 // --- replay out-path / save-root derivation (pure, compiled in every build) ---
 
@@ -591,6 +599,38 @@ when #config(FUNPACK_LIVE, false) {
 		start := sdl.GetPerformanceCounter()
 		tick_hz_u64 := u64(program.entrypoint.tick_hz)
 
+		// BOUNDED-MEMORY SEAM (the unbounded-session reclamation). The session loops
+		// forever, so a per-tick allocation that is never freed grows the heap without
+		// bound. Two reclamation mechanisms compose, split by lifetime:
+		//
+		//   - PERSISTENT (context.allocator, `persistent` below): the committed world
+		//     version chain. Each committed version aliases the prior's UNWRITTEN-row
+		//     blackboard maps (structural sharing, state.odin / tick.odin), so it cannot
+		//     be free_all'd — the live generational reclaimer in step_tick_persist
+		//     (reclaim_live=true) retires the now-dead PRIOR version O(delta) once the
+		//     next commits, freeing its tables/rows structure + the maps the tick
+		//     abandoned while keeping the maps the new version still aliases (reclaim.odin).
+		//   - SCRATCH (per-tick arena `scratch` below): every TRANSIENT per-tick value —
+		//     the tick fold's intermediate records/lambda-envs/registry, the working
+		//     tables, the signal mailbox, the input snapshot, the render draw-list and
+		//     audio scene (consumed same-tick at present/audio_live_apply). These never
+		//     alias the committed version, so the whole arena is freed wholesale
+		//     (arena_free_all) at the END of each tick. This is what bounds the dominant
+		//     per-tick allocation, which is interpreter eval garbage, not the version.
+		//
+		// The committed version's maps/columns clone onto `persistent` (step_tick_persist
+		// commit_allocator); only the eval garbage lands on `scratch`. The determinism
+		// floor is untouched: reclamation changes no committed value, digest, or replay
+		// byte — a live-vs-replay capture stays bit-identical (the AC asserts it).
+		persistent := context.allocator
+		scratch: virtual.Arena
+		if arena_err := virtual.arena_init_growing(&scratch); arena_err != nil {
+			fmt.eprintln("error: failed to init the per-tick scratch arena")
+			return 1
+		}
+		defer virtual.arena_destroy(&scratch)
+		scratch_alloc := virtual.arena_allocator(&scratch)
+
 		for tick_index := 0; ; tick_index += 1 {
 			if poll_session_events(&queue) {
 				break
@@ -600,14 +640,30 @@ when #config(FUNPACK_LIVE, false) {
 			// only dt, render's pose_idle reads t.
 			time := time_resource_at(program.entrypoint.tick_hz, tick_index)
 
-			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels)
+			// resolve_tick runs on the PERSISTENT allocator: held_after / levels_after are
+			// THREADED forward (they become next tick's prev_held / prev_levels), so they
+			// must outlive this tick's scratch reset. The snapshot it also returns is
+			// consumed THIS tick (the fold reads it, record_tick serializes it) and is
+			// freed explicitly below — it does not enter the committed version.
+			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels, persistent)
 			// Thread the persistent Rng through a seeded run so each tick observes the
 			// prior tick's draws (§04 §1); a seedless run threads nothing (rng stays nil).
 			// The persist carrier threads alongside it: this tick delivers a PRIOR
 			// tick's Save/Restore outcomes into the mailbox and hands its own emitted
 			// commands to the store for next-tick delivery (§24 §1 one-tick deferral).
-			version, carrier = step_tick_persist(&program, version, snapshot, time, carrier, context.allocator, seeded ? &rng : nil)
-			draw := render_version(&program, version, snapshot, time)
+			//
+			// ALLOCATOR SPLIT: the fold's TRANSIENT eval runs on `scratch_alloc` (freed
+			// at tick end); the committed version clones onto `persistent` (commit_allocator)
+			// and survives. reclaim_live=true retires the now-dead PRIOR version O(delta)
+			// inside the call — render/audio below read only the NEW committed version, so
+			// retiring the prior immediately after the commit is safe.
+			version, carrier = step_tick_persist(&program, version, snapshot, time, carrier, scratch_alloc, seeded ? &rng : nil, persistent, true)
+			// Render and audio project the COMMITTED version onto the per-tick scratch and
+			// are consumed SAME-TICK (present_frame / audio_live_apply), so the arena reset
+			// at the loop's end reclaims the draw-list + audio scene + their interp garbage
+			// (incl. any slice-bearing Draw3_Rigged pose/handle values) — they never alias
+			// the committed version.
+			draw := render_version(&program, version, snapshot, time, scratch_alloc)
 			present_frame(device.renderer, draw, board, window)
 			// Project the COMMITTED tick's §22 keyed audio scene off the same version
 			// the render projection reads, and reconcile the live voice table against
@@ -615,13 +671,25 @@ when #config(FUNPACK_LIVE, false) {
 			// committed version + this tick's input snapshot + the shared time record
 			// and never feeds back into the sim fold — audio is a present-boundary
 			// output, not a determinism input.
-			audio_live_apply(&live_audio, audio_version(&program, version, snapshot, time))
-			record_tick(&writer, snapshot)
+			audio_live_apply(&live_audio, audio_version(&program, version, snapshot, time, scratch_alloc))
+			record_tick(&writer, snapshot, scratch_alloc)
 
+			// The snapshot's two tables are on `persistent` (resolve_tick) and fully
+			// consumed now — free them so a seedless session does not leak one snapshot
+			// per tick on the persistent heap (held_after / levels_after carry forward
+			// instead and are retired via the existing prev_* swap below).
+			delete_input(snapshot)
 			delete(prev_held)
 			prev_held = held_after
 			delete_device_levels(prev_levels)
 			prev_levels = levels_after
+
+			// Reclaim every transient per-tick allocation in one shot — the fold's eval
+			// garbage, the working tables, the mailbox, the draw-list, and the audio scene.
+			// The committed version chain is NOT here (it is on `persistent`, retired
+			// generationally inside step_tick_persist), so this reset is the bound on the
+			// dominant transient allocation and leaves the surviving version untouched.
+			free_all(scratch_alloc)
 
 			pace_to_deadline(start, freq, tick_hz_u64, tick_index)
 		}
