@@ -28,12 +28,12 @@ main :: proc() {
 		}
 		os.exit(run_check_verb(".", mode))
 	case "warden":
-		cmd, cmd_ok := parse_warden_command(os.args[2:])
+		cmd, arg, cmd_ok := parse_warden_command(os.args[2:])
 		if !cmd_ok {
 			print_usage()
 			os.exit(2)
 		}
-		os.exit(run_warden_verb(cmd))
+		os.exit(run_warden_verb(cmd, arg))
 	case:
 		print_usage()
 		os.exit(2)
@@ -69,39 +69,54 @@ Warden_Command :: enum {
 	Pipeline,
 }
 
-// parse_warden_command maps the warden verb's arguments to its Warden_Command,
-// mirroring parse_build_mode — argument text in, enum out, no host state.
-// Exactly one recognized subcommand name is ok; a missing name, an unknown
-// name, or a trailing argument is a usage error (ok = false → usage + exit 2),
-// so a typo never silently runs a different query. Per-command flags belong to
-// the projection stories and will extend this seam, not bypass it.
-parse_warden_command :: proc(args: []string) -> (cmd: Warden_Command, ok: bool) {
-	if len(args) != 1 {
-		return .Find, false
+// parse_warden_command maps the warden verb's arguments to its Warden_Command
+// plus the command's positional argument, mirroring parse_build_mode —
+// argument text in, enum out, no host state. The subcommand name must be a
+// recognized member; a missing name or an unknown name is a usage error
+// (ok = false → usage + exit 2), so a typo never silently runs a different
+// query. Arity is per-command: graph admits one OPTIONAL positional (the
+// incident-edge filter, `funpack warden graph [<qualified_name>]`), every
+// other command stays strict zero-positional — a trailing argument there is
+// the same usage error. Per-command flags extend this seam, not bypass it;
+// arg is "" whenever a command's positional is absent.
+parse_warden_command :: proc(args: []string) -> (cmd: Warden_Command, arg: string, ok: bool) {
+	if len(args) == 0 {
+		return .Find, "", false
 	}
 	switch args[0] {
 	case "find":
-		return .Find, true
+		cmd = .Find
 	case "holes":
-		return .Holes, true
+		cmd = .Holes
 	case "debt":
-		return .Debt, true
+		cmd = .Debt
 	case "graph":
-		return .Graph, true
+		cmd = .Graph
 	case "tags":
-		return .Tags, true
+		cmd = .Tags
 	case "pipeline":
-		return .Pipeline, true
+		cmd = .Pipeline
+	case:
+		return .Find, "", false
 	}
-	return .Find, false
+	switch len(args) {
+	case 1:
+		return cmd, "", true
+	case 2:
+		if cmd == .Graph {
+			return cmd, args[1], true
+		}
+	}
+	return .Find, "", false
 }
 
 // run_warden_verb drives a recognized warden subcommand at the working
 // directory. The body lives in the root-parameterized warden_verb_exit (the
 // project_test_exit_code precedent) so the exit contract is unit-tested
 // against temp roots without the process exit; main always queries ".".
-run_warden_verb :: proc(cmd: Warden_Command) -> int {
-	return warden_verb_exit(".", cmd)
+// arg is the command's parsed positional ("" when absent).
+run_warden_verb :: proc(cmd: Warden_Command, arg: string) -> int {
+	return warden_verb_exit(".", cmd, arg)
 }
 
 // warden_verb_exit is the warden exit contract over one query: EVERY
@@ -113,7 +128,7 @@ run_warden_verb :: proc(cmd: Warden_Command) -> int {
 // A whole-stream decode is exit 0. The warden has NO exit-1 tier — counted
 // assertion failures belong to the test verb (§29 §3) and a refusal is never
 // a counted failure — so the contract is exactly {0, 2}.
-warden_verb_exit :: proc(root: string, cmd: Warden_Command) -> int {
+warden_verb_exit :: proc(root: string, cmd: Warden_Command, arg := "") -> int {
 	index, refusal := read_warden_index(root, context.temp_allocator)
 	if refusal.err != .None {
 		fmt.eprintfln("funpack warden: %s", warden_refusal_message(refusal, context.temp_allocator))
@@ -123,9 +138,11 @@ warden_verb_exit :: proc(root: string, cmd: Warden_Command) -> int {
 	// projection of `index`. Holes and debt ride the shared decl-predicate
 	// core (warden_project.odin); the projected bytes are temp-allocated and
 	// printed before this frame returns, so the temp arena that owns the
-	// decoded index owns the whole projection. The remaining arms are sibling
-	// projections and stay the decoded index's bare success verdict (printing
-	// nothing) until each lands.
+	// decoded index owns the whole projection. Graph emits its own edge-line
+	// shape (warden_graph.odin); arg is the command's parsed positional (""
+	// when absent) — today only graph admits one (its incident-edge filter).
+	// The remaining arms are sibling projections and stay the decoded index's
+	// bare success verdict (printing nothing) until each lands.
 	switch cmd {
 	case .Holes:
 		fmt.print(warden_project_decls(index.decls, warden_holes_predicate, "", context.temp_allocator))
@@ -133,7 +150,9 @@ warden_verb_exit :: proc(root: string, cmd: Warden_Command) -> int {
 	case .Debt:
 		fmt.print(warden_project_decls(index.decls, warden_debt_predicate, "", context.temp_allocator))
 		return 0
-	case .Find, .Graph, .Tags, .Pipeline:
+	case .Graph:
+		return warden_graph_exit(index, arg)
+	case .Find, .Tags, .Pipeline:
 		return 0
 	}
 	return 0
@@ -250,5 +269,5 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|warden <find|holes|debt|graph|tags|pipeline>>")
+	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|warden <find|holes|debt|graph [<qualified_name>]|tags|pipeline>>")
 }
