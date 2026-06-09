@@ -142,7 +142,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		if emit_err != .None {
 			return Build_Product{}, .Compile_Failed
 		}
-		artifact_path = build_product_path(root, ARTIFACT_PRODUCT_NAME)
+		artifact_path = build_product_path(root, ARTIFACT_PRODUCT_NAME, allocator)
 	}
 	index, index_err, compiled := read_index_project(root, allocator)
 	if index_err != .None {
@@ -155,7 +155,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 			artifact      = artifact,
 			index         = index,
 			artifact_path = artifact_path,
-			index_path    = build_product_path(root, INDEX_PRODUCT_NAME),
+			index_path    = build_product_path(root, INDEX_PRODUCT_NAME, allocator),
 		},
 		.None
 }
