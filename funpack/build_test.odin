@@ -31,7 +31,7 @@ test_build_pong_tree_exits_zero_and_writes_both_products :: proc(t: ^testing.T) 
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, context.temp_allocator)
+	product, build_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, build_err, Build_Error.None)
 	if build_err != .None {
 		return
@@ -61,9 +61,9 @@ test_build_pong_double_build_identical :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	first, first_err := stage_build(root, context.temp_allocator)
+	first, first_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, first_err, Build_Error.None)
-	second, second_err := stage_build(root, context.temp_allocator)
+	second, second_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, second_err, Build_Error.None)
 	if first_err != .None || second_err != .None {
 		return
@@ -96,9 +96,9 @@ test_build_double_build_identical_no_checkout :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	first, first_err := stage_build(root, context.temp_allocator)
+	first, first_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, first_err, Build_Error.None)
-	second, second_err := stage_build(root, context.temp_allocator)
+	second, second_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, second_err, Build_Error.None)
 	if first_err != .None || second_err != .None {
 		return
@@ -130,7 +130,7 @@ test_build_compile_error_exits_two_writes_no_artifact :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, context.temp_allocator)
+	_, build_err := stage_build(root, .Dev, context.temp_allocator)
 	// The broken source parses to a malformed program the checked pipeline
 	// rejects, so the build refuses with Compile_Failed and emits nothing.
 	testing.expect_value(t, build_err, Build_Error.Compile_Failed)
@@ -160,7 +160,7 @@ test_build_malformed_tree_exits_two :: proc(t: ^testing.T) {
 	defer remove_scratch_tree(root)
 	// The root has no funpack_configs/ — read_project rejects it, so the build
 	// is a malformed-tree exit-2.
-	_, build_err := stage_build(root, context.temp_allocator)
+	_, build_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, build_err, Build_Error.Malformed_Tree)
 }
 
@@ -179,7 +179,7 @@ test_build_writes_index_ndjson :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, context.temp_allocator)
+	product, build_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, build_err, Build_Error.None)
 	if build_err != .None {
 		return
@@ -222,9 +222,9 @@ test_build_index_byte_identical_twice :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	first, first_err := stage_build(root, context.temp_allocator)
+	first, first_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, first_err, Build_Error.None)
-	second, second_err := stage_build(root, context.temp_allocator)
+	second, second_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, second_err, Build_Error.None)
 	if first_err != .None || second_err != .None {
 		return
@@ -257,7 +257,7 @@ test_build_no_partial_product :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, context.temp_allocator)
+	_, build_err := stage_build(root, .Dev, context.temp_allocator)
 	// The broken source is rejected by the checked pipeline, so the build refuses
 	// with Compile_Failed and emits nothing — the exit-2 path.
 	testing.expect_value(t, build_err, Build_Error.Compile_Failed)
@@ -290,7 +290,7 @@ test_build_multi_module_arena :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, context.temp_allocator)
+	product, build_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, build_err, Build_Error.None)
 	if build_err != .None {
 		return
@@ -366,7 +366,7 @@ test_build_numerics_package_index_only :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, context.temp_allocator)
+	product, build_err := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, build_err, Build_Error.None)
 	if build_err != .None {
 		return
@@ -391,6 +391,117 @@ test_build_numerics_package_index_only :: proc(t: ^testing.T) {
 	testing.expect(t, os.exists(product.index_path))
 	testing.expect(t, !os.exists(artifact_path))
 	log.infof("build package numerics: §30 §7 index-only build (exit 0, index.ndjson written, NO runtime artifact)")
+}
+
+// ── --release hole-ban (§29 §4: you cannot ship a hole) ──────────────────
+
+// test_build_release_holed_tree_exits_two is the release hole-ban acceptance: a
+// §14 tree carrying a §05 typed hole built in Release mode refuses with
+// Holed_Declaration — the exit-2 compile-error outcome (NEVER a counted
+// failure; the build verb has no assertion tier) — and writes NEITHER product.
+@(test)
+test_build_release_holed_tree_exits_two :: proc(t: ^testing.T) {
+	root, ok := write_holed_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, build_err := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.Holed_Declaration)
+
+	// The ban refuses before either emission surface runs, so no product lands.
+	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
+	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
+	testing.expect(t, !os.exists(artifact_path))
+	testing.expect(t, !os.exists(index_path))
+	log.infof("release hole-ban: a holed decl under --release is Holed_Declaration (exit 2, compile error, no product) — a hole cannot ship")
+}
+
+// test_build_dev_holed_tree_exits_zero is the dev half of the §29 §4 contract:
+// the SAME holed tree built in Dev mode (the no-flag default) compiles exit 0
+// and writes both products — a hole is a first-class dev citizen; only release
+// refuses it.
+@(test)
+test_build_dev_holed_tree_exits_zero :: proc(t: ^testing.T) {
+	root, ok := write_holed_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	product, build_err := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.None)
+	if build_err != .None {
+		return
+	}
+	write_err := write_build_products(product, root)
+	testing.expect_value(t, write_err, Build_Write_Error.None)
+	testing.expect(t, os.exists(product.artifact_path))
+	testing.expect(t, os.exists(product.index_path))
+	log.infof("dev holes compile: the same holed tree builds exit 0 in dev mode and writes both products")
+}
+
+// test_build_release_hole_free_tree_matches_dev pins the mode flag's purity: on
+// a hole-free tree, Release succeeds exactly like Dev AND emits byte-identical
+// products — the mode is a pure (AST, mode) gate input, never a datum reaching
+// the emitted bytes, so release-vs-dev differs only in whether a hole refuses.
+@(test)
+test_build_release_hole_free_tree_matches_dev :: proc(t: ^testing.T) {
+	root, ok := write_minimal_valid_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	dev, dev_err := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, dev_err, Build_Error.None)
+	release, release_err := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, release_err, Build_Error.None)
+	if dev_err != .None || release_err != .None {
+		return
+	}
+	testing.expect(t, dev.artifact == release.artifact)
+	testing.expect(t, dev.index == release.index)
+	log.infof("release purity: a hole-free tree builds byte-identical products in dev and release (the mode flag gates, never perturbs)")
+}
+
+// test_release_holed_decl_walk unit-tests the pure-AST finder (gates.odin) the
+// build-seam ban consults: a holed fn is found by its own name, a holed
+// behavior STEP anchors on the behavior's name (never the reserved `step`),
+// and a hole-free AST reports none.
+@(test)
+test_release_holed_decl_walk :: proc(t: ^testing.T) {
+	holed_fn_ast, fn_err := stage_parse(stage_lex("fn speed() -> Fixed @stub(Fixed)\n"))
+	testing.expect_value(t, fn_err, Parse_Error.None)
+	declaration, holed := release_holed_decl(holed_fn_ast)
+	testing.expect(t, holed)
+	testing.expect_value(t, declaration, "speed")
+
+	holed_step_ast, step_err := stage_parse(stage_lex("behavior serve on Ball {\n  fn step(self: Ball) -> Ball @stub(Ball)\n}\n"))
+	testing.expect_value(t, step_err, Parse_Error.None)
+	declaration, holed = release_holed_decl(holed_step_ast)
+	testing.expect(t, holed)
+	testing.expect_value(t, declaration, "serve")
+
+	clean_ast, clean_err := stage_parse(stage_lex("fn whole() -> Fixed {\n  return 1.5\n}\n"))
+	testing.expect_value(t, clean_err, Parse_Error.None)
+	_, holed = release_holed_decl(clean_ast)
+	testing.expect(t, !holed)
+	log.infof("release_holed_decl: finds a holed fn and a holed behavior step (anchored on the behavior name), none on a hole-free AST")
+}
+
+// test_gates_skip_holed_units proves dev mode compiles MULTIPLE holes: a holed
+// fn is body-less (the hole stands in body position), so like an extern fn it
+// is not a unit the structural gates score — two holes must NOT collide on the
+// duplication gate (two empty bodies hash identically), or a second hole would
+// break the dev build the §05 contract promises compiles.
+@(test)
+test_gates_skip_holed_units :: proc(t: ^testing.T) {
+	ast, parse_err := stage_parse(stage_lex("fn first_hole() -> Fixed @stub(Fixed)\nfn second_hole() -> Fixed @stub(Fixed)\n"))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	testing.expect_value(t, stage_gates(ast), Gate_Error.None)
+	log.infof("gates skip holed units: two holes in one module pass the duplication gate (a hole is body-less, not a scored code unit)")
 }
 
 // module_prefix_order extracts the distinct §15 module prefixes from the index
@@ -569,6 +680,39 @@ write_minimal_valid_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	if !ok_writes {
 		remove_scratch_tree(root)
 		log.warnf("SKIP build minimal tree: cannot write files under %s", root)
+		return "", false
+	}
+	return root, true
+}
+
+// HOLED_SOURCE is the minimal compileable module plus one §05 typed hole — the
+// fixture the release hole-ban tests build in both modes: dev compiles it
+// (exit 0, both products), release refuses it (Holed_Declaration, exit 2, no
+// product).
+HOLED_SOURCE :: MINI_SOURCE + "\n@doc(\"A typed hole: dev compiles it, release refuses to ship it.\")\nfn approx_speed() -> Fixed @stub(Fixed)\n"
+
+// write_holed_tree materializes the write_minimal_valid_tree fixture with one
+// §05 typed hole added to its source (HOLED_SOURCE) — a valid §14 tree whose
+// only "defect" is the hole, isolating the release-vs-dev verdict to the
+// hole-ban rather than any tree-shape or compile floor.
+write_holed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
+	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-holed")})
+	remove_scratch_tree(root)
+	configs := scratch_join({root, "funpack_configs"})
+	src_path := scratch_join({root, "src", "mini.fun"})
+	if !ensure_dir(configs) || !ensure_dir(filepath.dir(src_path)) {
+		log.warnf("SKIP build holed tree: cannot create dirs under %s", root)
+		return "", false
+	}
+	ok_writes :=
+		os.write_entire_file(scratch_join({configs, "project.fcfg"}), "project mini {\n  version = \"0.1.0\"\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use mini.{Loop, bindings}\n\nentrypoint main {\n  pipeline = Loop\n  tick = 60hz\n  logical = 160x120\n  bindings = bindings\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "builds.fcfg"}), "build native {\n  platform = desktop\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "tags.fcfg"}), "tags {\n  game\n}\n") == nil &&
+		os.write_entire_file(src_path, HOLED_SOURCE) == nil
+	if !ok_writes {
+		remove_scratch_tree(root)
+		log.warnf("SKIP build holed tree: cannot write files under %s", root)
 		return "", false
 	}
 	return root, true

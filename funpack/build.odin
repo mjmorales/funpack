@@ -61,18 +61,34 @@ Build_Product :: struct {
 	index_path:    string,
 }
 
+// Build_Mode is the closed build-mode set the §29 §4 hole-ban keys on,
+// mirroring the asset pipeline's Bake_Mode (asset_strip.odin). Dev (the CLI
+// default — `funpack build` with no flag) compiles §05 typed holes so the game
+// stays playable mid-edit; Release (`funpack build --release`) refuses to ship
+// a hole — ANY holed declaration is a compile error (exit 2, never a counted
+// failure). The mode is a pure flag threaded through stage_build, so the
+// hole-ban verdict is a pure function of (AST, mode) — no clock, no host
+// nondeterminism (§29 §1). A third mode is a deliberate addition here in
+// lockstep with the spec, never a silently-tolerated fall-through.
+Build_Mode :: enum {
+	Dev,
+	Release,
+}
+
 // Build_Error is closed with one arm per way a build refuses before it writes
 // any product. Malformed_Tree is a §14 project-tree violation (read_project
 // rejected the tree); Compile_Failed is any checked-pipeline floor (parse, gate,
 // typecheck, contract, or flatten — the source does not compile); Index_Failed
-// is an authored-config read failure projecting the `project` record. Every arm
-// maps to the exit-2 outcome — a build that cannot emit both products emits
-// neither.
+// is an authored-config read failure projecting the `project` record;
+// Holed_Declaration is the §29 §4 release hole-ban — a --release build over a
+// tree carrying a §05 typed hole (you cannot ship a hole). Every arm maps to
+// the exit-2 outcome — a build that cannot emit both products emits neither.
 Build_Error :: enum {
 	None,
 	Malformed_Tree,
 	Compile_Failed,
 	Index_Failed,
+	Holed_Declaration,
 }
 
 // stage_build is the build verb's pure seam: it reads the §14 project tree at
@@ -91,13 +107,28 @@ Build_Error :: enum {
 // contract is unchanged: success (0, the kind's products written) and
 // compile/gate/tree error (2, no product); a build never has an assertion tier
 // (exit 1 is the test verb's).
-stage_build :: proc(root: string, allocator := context.allocator) -> (product: Build_Product, err: Build_Error) {
+//
+// MODE (§29 §4): mode is the pure Dev/Release flag the hole-ban keys on. Dev
+// compiles §05 typed holes; Release refuses the whole build when ANY module
+// carries a holed declaration (Holed_Declaration — the same exit-2 compile-error
+// outcome, never a counted failure). The verdict is a pure function of
+// (AST, mode): the same tree builds identically in dev, and in release either
+// emits the same bytes (hole-free) or refuses before any emission.
+stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocator) -> (product: Build_Product, err: Build_Error) {
 	project, project_err := read_project(root)
 	if project_err != .None {
 		return Build_Product{}, .Malformed_Tree
 	}
 	if len(project.sources) == 0 {
 		return Build_Product{}, .Malformed_Tree
+	}
+	if mode == .Release {
+		// The §29 §4 release hole-ban: a hole cannot ship, so a holed declaration
+		// in ANY module refuses the whole build before either emission surface
+		// runs — exit 2, no product, never a counted failure.
+		if _, holed := project_holed_decl(project.sources); holed {
+			return Build_Product{}, .Holed_Declaration
+		}
 	}
 	// A package has no entrypoints.fcfg, so there is no entrypoint module and no
 	// runtime artifact to emit (§30 §7). The Index Contract is the package's
@@ -127,6 +158,31 @@ stage_build :: proc(root: string, allocator := context.allocator) -> (product: B
 			index_path    = build_product_path(root, INDEX_PRODUCT_NAME),
 		},
 		.None
+}
+
+// project_holed_decl walks every §14 source for the first §05 typed-hole
+// declaration — the project-wide form of the pure-AST release_holed_decl
+// (gates.odin) the --release hole-ban consults. Sources walk in Project.sources
+// order (sorted-by-path via read_project) and each AST in declaration order, so
+// a multi-hole project always names the same first offender deterministically.
+// A source that fails to read or parse contributes no verdict here — the
+// checked pipeline downstream surfaces that compile error precisely
+// (Compile_Failed), so the ban never masks a parse failure with a hole verdict.
+project_holed_decl :: proc(sources: []Source) -> (declaration: string, holed: bool) {
+	for source in sources {
+		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
+		if read_err != nil {
+			continue
+		}
+		ast, parse_err := stage_parse(stage_lex(string(bytes)))
+		if parse_err != .None {
+			continue
+		}
+		if name, found := release_holed_decl(ast); found {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // has_entrypoints_fcfg reports whether the §14 tree carries a funpack_configs/
