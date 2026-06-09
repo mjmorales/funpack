@@ -89,25 +89,27 @@ Index_Decl_Kind :: enum {
 //                      Fn_Node/Let_Decl_Node already stamp
 //   - doc            — the attached `@doc` text (§05); "" when undocumented
 //   - gtags          — the attached `@gtag` registry tags (§05), authored order
-//   - stub           — a `@stub` directive flag (§05); the gameplay surface
-//                      does NOT yet parse it (the parser admits only @doc/@gtag,
-//                      see source_has_expose), so it is always false on the
-//                      current tree — mandatory-present, never omitted
-//   - todo           — a `@todo` directive flag (§05); always false for the
-//                      same reason as stub
-//   - debug          — the `@debug` probe names (§05); always [] for the same
-//                      reason — mandatory-present empty list, never omitted
+//   - stub           — the §05 §2 typed-hole flag, AST-derived: true when the
+//                      declaration's body is a `@stub(T)` / `@stub(T, fallback)`
+//                      hole (the parser's Fn_Node.holed, on a fn or a behavior
+//                      step), false for an intact body and for the body-less
+//                      forms — mandatory-present, never omitted
+//   - todo           — a `@todo` directive flag (§05); the parser does not yet
+//                      admit @todo, so it is false on the current tree —
+//                      mandatory-present, never omitted
+//   - debug          — the `@debug` probe names (§05); [] for the same reason
+//                      as todo — mandatory-present empty list, never omitted
 //   - emits          — the signal names this declaration emits (§04)
 //   - consumes       — the signal names this declaration consumes (§04)
 //   - calls          — the function names this declaration calls
 //   - dup_class      — the normalized-AST duplication-class hash (§29 §1, the
 //                      gates.odin dup_class hash domain)
 //   - mut_data       — the data-type names this declaration mutates (§08)
-// This story ships the SHAPE only — the type plus its NDJSON emitter and the
-// hand-built-record tests. No derivation from the AST and no disk emission yet;
-// those fill this fixed shape in a later story. It is the contract-reshape seam
-// every downstream `decl` story fills and what the `funpack warden` projection decodes
-// against.
+// The shape is closed and derivation-filled: derive_decl_records
+// (index_decl.odin) projects every field from the compiled AST, and
+// read_index_project emits the whole stream. Any change to this field set is a
+// contract reshape — bump INDEX_SCHEMA_VERSION — and the shape is what the
+// `funpack warden` projection decodes against.
 Decl_Record :: struct {
 	schema_version: int,
 	qualified_name: string,

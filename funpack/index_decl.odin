@@ -27,9 +27,14 @@
 //     target when its return writes the blackboard (contracts.odin
 //     writes_own_blackboard over write_of_return). [] for a fn/data or a
 //     non-mutating behavior.
-//   - stub/todo/debug — constant empty (false/false/[]): the gameplay surface
-//     parses only @doc/@gtag, never @stub/@todo/@break (source_has_expose
-//     rationale), so these are mandatory-present empties on the current tree.
+//   - stub           — the §05 §2 typed-hole flag the parser records on a
+//     body-bearing fn / behavior-step (Fn_Node.holed): a `@stub(T)` /
+//     `@stub(T, fallback)` body emits true. A body-less decl and a test block
+//     have no body position to hole (FnBody ::= Block | StubExpr is the only
+//     hole production), so they emit false.
+//   - todo/debug     — constant empty (false/[]): the gameplay surface does
+//     not yet parse @todo/@debug, so these are mandatory-present empties on
+//     the current tree.
 //
 // Declaration ORDER is the fixed gate_units-style per-kind walk
 // (data → enum → thing → signal → fn → behavior → pipeline → let → test) so the
@@ -102,10 +107,12 @@ decl_count :: proc(ast: Ast) -> int {
 
 // body_less_decl builds the Decl_Record for a body-less declaration —
 // data/enum/thing/signal/pipeline/let. It carries qualified_name/kind/span/
-// doc/gtags and the always-empty directive (stub/todo/debug) and behavior-scoped
-// (emits/consumes/calls/mut_data) fields: a body-less decl emits no signal,
-// makes no call, mutates no thing, and has dup_class 0 (no body to hash, the
-// gate_units extern-skip rationale).
+// doc/gtags plus the constant directive and behavior-scoped
+// (emits/consumes/calls/mut_data) fields: a body-less decl has no body
+// position to hole (so stub is false, §05 §2), carries no @todo/@debug (the
+// parser does not yet admit them), emits no signal, makes no call, mutates no
+// thing, and has dup_class 0 (no body to hash, the gate_units extern-skip
+// rationale).
 body_less_decl :: proc(
 	module: string,
 	name: string,
@@ -137,8 +144,10 @@ body_less_decl :: proc(
 // fn, Extern_Fn for an `is_extern` native-boundary fn. A bodied fn carries its
 // dup_class (the gate hash over its body) and its calls graph; an extern fn has
 // NO body, so it carries dup_class 0 and empty calls — the same extern-skip the
-// duplication gate applies so two empty bodies never collide. A fn is not a
-// pipeline-slot behavior, so emits/consumes/mut_data stay empty.
+// duplication gate applies so two empty bodies never collide. stub reads the
+// parser's holed flag (§05 §2): a `@stub(T)` / `@stub(T, fallback)` body emits
+// true, an intact (or extern) fn false. A fn is not a pipeline-slot behavior,
+// so emits/consumes/mut_data stay empty.
 fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 	kind := Index_Decl_Kind.Extern_Fn if decl.is_extern else Index_Decl_Kind.Fn
 	dup: u64 = 0
@@ -155,7 +164,7 @@ fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 		span           = decl.line,
 		doc            = decl.doc,
 		gtags          = decl.gtags,
-		stub           = false,
+		stub           = decl.holed,
 		todo           = false,
 		debug          = empty_strings(),
 		emits          = empty_strings(),
@@ -170,9 +179,11 @@ fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 // calls come from its reserved `step` body; its emits/consumes come from the
 // §04 signal routes (the behavior at a producer endpoint emits that signal, at a
 // consumer endpoint consumes it); its mut_data is its `on Thing` target when its
-// step return writes that blackboard (contracts.odin). A behavior off every
-// pipeline has no route endpoints, so its emits/consumes are empty — routes are
-// the authoritative §04 projection the flatten pass already built.
+// step return writes that blackboard (contracts.odin). Its stub reads the step's
+// holed flag (§05 §2) — a behavior whose reserved `step` body is a `@stub` hole
+// is the holed declaration the index reports. A behavior off every pipeline has
+// no route endpoints, so its emits/consumes are empty — routes are the
+// authoritative §04 projection the flatten pass already built.
 behavior_decl_record :: proc(
 	module: string,
 	decl: Behavior_Node,
@@ -187,7 +198,7 @@ behavior_decl_record :: proc(
 		span           = decl.line,
 		doc            = decl.doc,
 		gtags          = decl.gtags,
-		stub           = false,
+		stub           = decl.step.holed,
 		todo           = false,
 		debug          = empty_strings(),
 		emits          = decl_behavior_emits(decl.name, routes),
@@ -200,7 +211,8 @@ behavior_decl_record :: proc(
 
 // test_decl_record builds the Decl_Record for a test block: its dup_class and
 // calls come from its assert/let body. A test occupies no pipeline slot and
-// mutates no thing, so emits/consumes/mut_data stay empty.
+// mutates no thing, so emits/consumes/mut_data stay empty; its body grammar
+// admits no `@stub` hole (only fn bodies do, §05 §2), so stub stays false.
 test_decl_record :: proc(module: string, decl: Test_Node) -> Decl_Record {
 	return Decl_Record {
 		schema_version = INDEX_SCHEMA_VERSION,

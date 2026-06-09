@@ -319,18 +319,20 @@ test_index_contract_pong_double_emission_identical :: proc(t: ^testing.T) {
 // `project` record on line 1, then one `decl` record line per declaration in the
 // fixed gate_units-style order. These pin the live pong + snake decl set against
 // the golden source — representative decls' qualified_name/kind/span/emits/
-// consumes/calls/dup_class/mut_data plus the all-decls stub=false/todo=false/
-// debug=[] invariant — so the contract reshape that added the decl record kind is
-// proven against the real tree, not a hand-shaped stub. SKIP-warn loudly (never
-// silently pass) when the sibling checkout is absent.
+// consumes/calls/dup_class/mut_data plus the all-decls stub=false (neither
+// golden tree carries a @stub hole) / todo=false / debug=[] invariant — so the
+// contract reshape that added the decl record kind is proven against the real
+// tree, not a hand-shaped stub. SKIP-warn loudly (never silently pass) when the
+// sibling checkout is absent.
 
 @(test)
 test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 	// The pong whole-stream NDJSON: line 1 is the `project` record, then one
 	// `decl` line per declaration in fixed order. The decl-line count equals the
 	// derived record count (33 pong decls), every decl line carries the v2
-	// schema_version stamp and the always-empty stub/todo/debug §05 directive
-	// fields, and the representative decls pin their derived projection.
+	// schema_version stamp with stub=false (no pong decl is holed) and the
+	// unparsed todo/debug empties, and the representative decls pin their
+	// derived projection.
 	stream, ok := pong_index_line()
 	if !ok {
 		return
@@ -346,8 +348,9 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(lines[0], "\"pipeline_flattened\":"))
 	for i in 1 ..< len(lines) {
 		decl := lines[i]
-		// Every decl line carries the bumped v2 stamp and the always-empty §05
-		// directive fields, mandatory-present (never omitted) on the current tree.
+		// Every decl line carries the bumped v2 stamp; stub is false on this
+		// hole-free tree and the unparsed todo/debug §05 directive fields stay
+		// their mandatory-present (never omitted) empties.
 		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":2,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
@@ -371,8 +374,9 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	// The snake whole-stream NDJSON: line 1 is the `project` record, then one
 	// `decl` line per declaration (snake: 36 decls). Every decl line carries the
-	// v2 stamp and the always-empty §05 directive fields; the first data decl
-	// (Cell) and its kind are pinned against the golden source.
+	// v2 stamp with stub=false (no snake decl is holed) and the unparsed
+	// todo/debug empties; the first data decl (Cell) and its kind are pinned
+	// against the golden source.
 	dir := resolve_snake_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP index contract snake decl records: %s not found — set FUNPACK_SNAKE_DIR or check out funpack-spec as a sibling", dir)
@@ -420,11 +424,10 @@ stream_has_decl :: proc(lines: []string, name_needle: string, field_needle: stri
 // ── Decl record: NDJSON shape, determinism, exact-match key set ─────────
 // The §29 §2 per-declaration `decl` record. These exercise the hand-built
 // record in-memory (no derivation, no checkout) the way the minimal_project
-// tests do — the story ships the SHAPE, so the tests pin the shape: leading
-// schema_version stamp, one-object-per-line NDJSON with a trailing LF,
-// byte-identical double emission, and the closed exact-match key set INCLUDING
-// the always-empty stub/todo/debug §05 directive fields (mandatory-present, not
-// omitted).
+// tests do — they pin the SHAPE: leading schema_version stamp,
+// one-object-per-line NDJSON with a trailing LF, byte-identical double
+// emission, and the closed exact-match key set INCLUDING the stub/todo/debug
+// §05 directive fields at their empty values (mandatory-present, not omitted).
 
 @(test)
 test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
@@ -467,9 +470,9 @@ test_index_decl_record_exact_key_set :: proc(t: ^testing.T) {
 	// The emitted decl record carries ALL §29 §2 fields exactly — no missing
 	// and no extra (exact-match per spec §29 §2). The expected key set is the
 	// closed inline list the contract fixes, in field-declaration = emitted key
-	// order; the emitted object's top-level keys must equal it. The always-empty
-	// stub/todo/debug §05 directive fields are present too — mandatory, never
-	// omitted, even when false/[].
+	// order; the emitted object's top-level keys must equal it. The stub/todo/
+	// debug §05 directive fields are present too — mandatory, never omitted,
+	// even when false/[].
 	record := minimal_decl_record()
 	line := emit_decl_record(record, context.temp_allocator)
 	body := strings.trim_suffix(line, "\n")
@@ -494,8 +497,8 @@ test_index_decl_record_exact_key_set :: proc(t: ^testing.T) {
 		needle := strings.concatenate({"\"", key, "\":"}, context.temp_allocator)
 		testing.expectf(t, strings.contains(body, needle), "decl record missing field %s", key)
 	}
-	// The always-empty directive fields are present with their empty values
-	// (mandatory-present per exact-match, never omitted on the current tree).
+	// The directive fields are present at their empty values (mandatory-present
+	// per exact-match, never omitted — the hand-built record is not holed).
 	testing.expect(t, strings.contains(body, "\"stub\":false"))
 	testing.expect(t, strings.contains(body, "\"todo\":false"))
 	testing.expect(t, strings.contains(body, "\"debug\":[]"))
@@ -507,9 +510,10 @@ test_index_decl_record_exact_key_set :: proc(t: ^testing.T) {
 
 // minimal_decl_record builds a hand-shaped decl record for the §29 §2 decl
 // shape tests: a populated record exercising every field's emission. The
-// stub/todo/debug §05 directive fields are the always-empty current-tree values
-// (false/false/[]) — mandatory-present, the story does NOT derive them. Each
-// slice field is temp-allocated so the record outlives the constructor's frame.
+// stub/todo/debug §05 directive fields carry their empty values (false/false/[]
+// — the record is not holed and the parser does not yet fill todo/debug) so the
+// shape tests pin mandatory-present empties. Each slice field is temp-allocated
+// so the record outlives the constructor's frame.
 minimal_decl_record :: proc() -> Decl_Record {
 	gtags := make([]string, 1, context.temp_allocator)
 	gtags[0] = "game"
