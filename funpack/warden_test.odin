@@ -13,11 +13,14 @@ package funpack
 import "core:log"
 import "core:testing"
 
-// test_parse_warden_command_totality pins the closed set both ways: all six
-// subcommand names map to their enum member with an empty positional, and
-// every non-command shape — an empty argument list, an unknown name, a
-// trailing argument on a zero-positional command — is ok = false, the path
-// main maps to usage + exit 2. A typo never silently runs a different query.
+// test_parse_warden_command_totality pins the closed set both ways: the five
+// argumentless subcommand names map to their enum member with an empty
+// positional and the zero query, bare `find` is the FILTERLESS usage error
+// (find answers a lookup, never dumps the index — §29 §4; its full filter
+// shape is pinned in test_parse_warden_command_find_query), and every
+// non-command shape — an empty argument list, an unknown name, a trailing
+// argument on a zero-positional command — is ok = false, the path main maps
+// to usage + exit 2. A typo never silently runs a different query.
 @(test)
 test_parse_warden_command_totality :: proc(t: ^testing.T) {
 	names := [Warden_Command]string {
@@ -29,19 +32,24 @@ test_parse_warden_command_totality :: proc(t: ^testing.T) {
 		.Pipeline = "pipeline",
 	}
 	for name, want in names {
-		cmd, arg, ok := parse_warden_command({name})
+		cmd, arg, find, ok := parse_warden_command({name})
+		if want == .Find {
+			testing.expect(t, !ok)
+			continue
+		}
 		testing.expect(t, ok)
 		testing.expect_value(t, cmd, want)
 		testing.expect_value(t, arg, "")
+		testing.expect_value(t, find, Warden_Find_Query{})
 	}
 
-	_, _, ok := parse_warden_command({})
+	_, _, _, ok := parse_warden_command({})
 	testing.expect(t, !ok)
 
-	_, _, ok = parse_warden_command({"fnid"})
+	_, _, _, ok = parse_warden_command({"fnid"})
 	testing.expect(t, !ok)
 
-	_, _, ok = parse_warden_command({"find", "extra"})
+	_, _, _, ok = parse_warden_command({"tags", "extra"})
 	testing.expect(t, !ok)
 }
 
@@ -52,19 +60,67 @@ test_parse_warden_command_totality :: proc(t: ^testing.T) {
 // extending the seam did not loosen the strict commands.
 @(test)
 test_parse_warden_command_graph_positional :: proc(t: ^testing.T) {
-	cmd, arg, ok := parse_warden_command({"graph", "drift.damped"})
+	cmd, arg, _, ok := parse_warden_command({"graph", "drift.damped"})
 	testing.expect(t, ok)
 	testing.expect_value(t, cmd, Warden_Command.Graph)
 	testing.expect_value(t, arg, "drift.damped")
 
-	_, _, ok = parse_warden_command({"graph", "drift.damped", "extra"})
+	_, _, _, ok = parse_warden_command({"graph", "drift.damped", "extra"})
 	testing.expect(t, !ok)
 
-	_, _, ok = parse_warden_command({"holes", "drift.damped"})
+	_, _, _, ok = parse_warden_command({"holes", "drift.damped"})
 	testing.expect(t, !ok)
 
-	_, _, ok = parse_warden_command({"pipeline", "drift.damped"})
+	_, _, _, ok = parse_warden_command({"pipeline", "drift.damped"})
 	testing.expect(t, !ok)
+}
+
+// test_parse_warden_command_find_query pins find's per-command flag
+// extension of the parse seam: a positional name-query, --kind, and --gtag
+// each parse alone and all together; the filterless bare `find` and every
+// malformed shape — an unknown kind name (exact against the closed
+// Index_Decl_Kind member names, never fuzzy or case-folded), a flag with a
+// missing or empty value, a duplicate flag, a second positional, an unknown
+// flag — are ok = false, adjudicated at parse BEFORE any index read so the
+// usage exit 2 holds in any directory. The other commands never admit find's
+// flags through this extension (the strict-arity cases above are untouched).
+@(test)
+test_parse_warden_command_find_query :: proc(t: ^testing.T) {
+	cmd, arg, find, ok := parse_warden_command({"find", "damped"})
+	testing.expect(t, ok)
+	testing.expect_value(t, cmd, Warden_Command.Find)
+	testing.expect_value(t, arg, "")
+	testing.expect_value(t, find, Warden_Find_Query{name = "damped"})
+
+	_, _, find, ok = parse_warden_command({"find", "--kind", "Extern_Fn"})
+	testing.expect(t, ok)
+	testing.expect_value(t, find, Warden_Find_Query{kind = "Extern_Fn"})
+
+	_, _, find, ok = parse_warden_command({"find", "--gtag", "debt"})
+	testing.expect(t, ok)
+	testing.expect_value(t, find, Warden_Find_Query{gtag = "debt"})
+
+	_, _, find, ok = parse_warden_command({"find", "damped", "--kind", "Fn", "--gtag", "physics"})
+	testing.expect(t, ok)
+	testing.expect_value(t, find, Warden_Find_Query{name = "damped", kind = "Fn", gtag = "physics"})
+
+	// The usage tier: each malformed shape refuses at parse.
+	rejected := [][]string {
+		{"find"},                               // filterless — find is not the index dump
+		{"find", "--kind", "fn"},               // kind names are exact, never case-folded
+		{"find", "--kind", "Widget"},           // unknown kind name, never a fuzzy match
+		{"find", "--kind"},                     // missing flag value
+		{"find", "--gtag"},                     // missing flag value
+		{"find", "--gtag", ""},                 // empty flag value
+		{"find", ""},                           // empty name-query (a disguised dump)
+		{"find", "a", "b"},                     // second positional
+		{"find", "--kind", "Fn", "--kind", "Fn"}, // duplicate flag
+		{"find", "--glob", "x"},                // unknown flag
+	}
+	for shape in rejected {
+		_, _, _, shape_ok := parse_warden_command(shape)
+		testing.expect(t, !shape_ok)
+	}
 }
 
 // test_warden_verb_exit_planted_index_zero is the success tier: a

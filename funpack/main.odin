@@ -28,12 +28,12 @@ main :: proc() {
 		}
 		os.exit(run_check_verb(".", mode))
 	case "warden":
-		cmd, arg, cmd_ok := parse_warden_command(os.args[2:])
+		cmd, arg, find, cmd_ok := parse_warden_command(os.args[2:])
 		if !cmd_ok {
 			print_usage()
 			os.exit(2)
 		}
-		os.exit(run_warden_verb(cmd, arg))
+		os.exit(run_warden_verb(cmd, arg, find))
 	case:
 		print_usage()
 		os.exit(2)
@@ -74,14 +74,19 @@ Warden_Command :: enum {
 // argument text in, enum out, no host state. The subcommand name must be a
 // recognized member; a missing name or an unknown name is a usage error
 // (ok = false → usage + exit 2), so a typo never silently runs a different
-// query. Arity is per-command: graph admits one OPTIONAL positional (the
-// incident-edge filter, `funpack warden graph [<qualified_name>]`), every
-// other command stays strict zero-positional — a trailing argument there is
-// the same usage error. Per-command flags extend this seam, not bypass it;
-// arg is "" whenever a command's positional is absent.
-parse_warden_command :: proc(args: []string) -> (cmd: Warden_Command, arg: string, ok: bool) {
+// query. Arity is per-command: find owns the seam's flag extension — its
+// tail tokens parse into the Warden_Find_Query through
+// parse_warden_find_args (warden_find.odin), where the filterless bare
+// `find` and an unknown --kind name are the same ok = false usage tier,
+// adjudicated here at parse before any index read; graph admits one OPTIONAL
+// positional (the incident-edge filter, `funpack warden graph
+// [<qualified_name>]`); every other command stays strict zero-positional — a
+// trailing argument there is the same usage error. Per-command flags extend
+// this seam, not bypass it; arg is "" and find is the zero query whenever a
+// command does not carry them.
+parse_warden_command :: proc(args: []string) -> (cmd: Warden_Command, arg: string, find: Warden_Find_Query, ok: bool) {
 	if len(args) == 0 {
-		return .Find, "", false
+		return .Find, "", {}, false
 	}
 	switch args[0] {
 	case "find":
@@ -97,26 +102,34 @@ parse_warden_command :: proc(args: []string) -> (cmd: Warden_Command, arg: strin
 	case "pipeline":
 		cmd = .Pipeline
 	case:
-		return .Find, "", false
+		return .Find, "", {}, false
+	}
+	if cmd == .Find {
+		find, ok = parse_warden_find_args(args[1:])
+		if !ok {
+			return .Find, "", {}, false
+		}
+		return cmd, "", find, true
 	}
 	switch len(args) {
 	case 1:
-		return cmd, "", true
+		return cmd, "", {}, true
 	case 2:
 		if cmd == .Graph {
-			return cmd, args[1], true
+			return cmd, args[1], {}, true
 		}
 	}
-	return .Find, "", false
+	return .Find, "", {}, false
 }
 
 // run_warden_verb drives a recognized warden subcommand at the working
 // directory. The body lives in the root-parameterized warden_verb_exit (the
 // project_test_exit_code precedent) so the exit contract is unit-tested
 // against temp roots without the process exit; main always queries ".".
-// arg is the command's parsed positional ("" when absent).
-run_warden_verb :: proc(cmd: Warden_Command, arg: string) -> int {
-	return warden_verb_exit(".", cmd, arg)
+// arg is the command's parsed positional ("" when absent); find is find's
+// parsed filter set (the zero query on every other command).
+run_warden_verb :: proc(cmd: Warden_Command, arg: string, find: Warden_Find_Query) -> int {
+	return warden_verb_exit(".", cmd, arg, find)
 }
 
 // warden_verb_exit is the warden exit contract over one query: EVERY
@@ -128,25 +141,27 @@ run_warden_verb :: proc(cmd: Warden_Command, arg: string) -> int {
 // A whole-stream decode is exit 0. The warden has NO exit-1 tier — counted
 // assertion failures belong to the test verb (§29 §3) and a refusal is never
 // a counted failure — so the contract is exactly {0, 2}.
-warden_verb_exit :: proc(root: string, cmd: Warden_Command, arg := "") -> int {
+warden_verb_exit :: proc(root: string, cmd: Warden_Command, arg := "", find := Warden_Find_Query{}) -> int {
 	index, refusal := read_warden_index(root, context.temp_allocator)
 	if refusal.err != .None {
 		fmt.eprintfln("funpack warden: %s", warden_refusal_message(refusal, context.temp_allocator))
 		return 2
 	}
-	// The per-command projection seam: each filled arm prints its pure NDJSON
+	// The per-command projection seam: each arm prints its pure NDJSON
 	// projection of the decoded `index` and exits 0 — an empty projection
-	// prints zero lines and is still success. Holes and debt ride the shared
-	// decl-predicate core (warden_project.odin); graph emits its own edge-line
-	// shape (warden_graph.odin); tags and pipeline re-project the project
-	// record's registry join and recorded flat steps (warden_tags_pipeline.odin).
-	// The projected bytes are temp-allocated and printed before this frame
+	// prints zero lines and is still success. Find, holes, and debt ride the
+	// shared decl-filter core (warden_project.odin — find AND-composes its
+	// parsed filters, warden_find.odin); graph emits its own edge-line shape
+	// (warden_graph.odin); tags and pipeline re-project the project record's
+	// registry join and recorded flat steps (warden_tags_pipeline.odin). The
+	// projected bytes are temp-allocated and printed before this frame
 	// returns, so the temp arena that owns the decoded index owns the whole
 	// projection. arg is the command's parsed positional ("" when absent) —
-	// today only graph admits one (its incident-edge filter). Find is the one
-	// remaining sibling projection and stays the decoded index's bare success
-	// verdict (printing nothing) until it lands.
+	// today only graph admits one (its incident-edge filter); find carries
+	// its parsed filter set instead (the zero query on every other command).
 	switch cmd {
+	case .Find:
+		return warden_find_exit(index, find)
 	case .Holes:
 		fmt.print(warden_project_decls(index.decls, warden_holes_predicate, "", context.temp_allocator))
 		return 0
@@ -160,8 +175,6 @@ warden_verb_exit :: proc(root: string, cmd: Warden_Command, arg := "") -> int {
 		return 0
 	case .Pipeline:
 		fmt.print(warden_pipeline_ndjson(index, context.temp_allocator))
-		return 0
-	case .Find:
 		return 0
 	}
 	return 0
@@ -278,5 +291,5 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|warden <find|holes|debt|graph [<qualified_name>]|tags|pipeline>>")
+	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|warden <find [<name-query>] [--kind <kind>] [--gtag <tag>]|holes|debt|graph [<qualified_name>]|tags|pipeline>>")
 }
