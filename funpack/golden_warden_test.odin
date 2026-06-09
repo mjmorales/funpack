@@ -13,6 +13,18 @@
 // other goldens it resolves the sibling checkout (or FUNPACK_DRIFT_DIR) and
 // SKIPs loudly when it is absent — a skipped golden is a warning, never a
 // pass.
+//
+// The surface-done sweep (the projection epic's leaf): every Warden_Command's
+// projection is asserted byte-deterministic across two full acquisitions of
+// the same written index — the command list derived from the closed enum, so
+// a new member joins the sweep automatically and the exhaustive
+// warden_command_output switch refuses to compile until it is mapped. Drift's
+// project record is faithfully empty on the pipeline axis
+// (pipeline_flattened: [] — its schedule is the empty hole-first pipeline),
+// so a drift-only double-run identity for `warden pipeline` would compare two
+// empty byte streams; the pong example (eleven recorded flat steps, the
+// ten-tag registry) is the non-empty counterpart that makes the
+// project-record-side determinism non-vacuous.
 package funpack
 
 import "core:fmt"
@@ -21,15 +33,15 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-// build_drift_index_root copies the live drift tree into a fresh temp root,
-// dev-builds it, writes both products, and reads the written index bytes back
-// — the built fixture every golden warden case starts from, so each case
+// build_warden_index_root copies a live spec example tree into a fresh temp
+// root, dev-builds it, writes the products, and reads the written index bytes
+// back — the built fixture every golden warden case starts from, so each case
 // exercises the index funpack REALLY wrote, never a hand-built stand-in. ok is
 // false on the golden SKIP (absent checkout) or, test-failing, on any
 // build/write/read failure; a false return owns the scratch-tree cleanup.
-build_drift_index_root :: proc(t: ^testing.T) -> (root: string, stream: string, ok: bool) {
+build_warden_index_root :: proc(t: ^testing.T, src: string, label: string, env_name: string) -> (root: string, stream: string, ok: bool) {
 	copied: bool
-	root, copied = copy_spec_tree_to_temp(resolve_drift_dir(), "drift-warden", "FUNPACK_DRIFT_DIR")
+	root, copied = copy_spec_tree_to_temp(src, label, env_name)
 	if !copied {
 		return "", "", false
 	}
@@ -52,6 +64,77 @@ build_drift_index_root :: proc(t: ^testing.T) -> (root: string, stream: string, 
 		return "", "", false
 	}
 	return root, string(index_bytes), true
+}
+
+// build_drift_index_root is the drift instantiation of build_warden_index_root
+// — the typed-holes governance tree whose two @stub decls are the live data
+// for holes/find/graph/debt and the refusal cases.
+build_drift_index_root :: proc(t: ^testing.T) -> (root: string, stream: string, ok: bool) {
+	return build_warden_index_root(t, resolve_drift_dir(), "drift-warden", "FUNPACK_DRIFT_DIR")
+}
+
+// build_pong_index_root is the pong instantiation of build_warden_index_root —
+// the gameplay tree whose NON-EMPTY project record (eleven flattened steps,
+// ten registered tags) makes the pipeline/tags determinism sweep non-vacuous.
+build_pong_index_root :: proc(t: ^testing.T) -> (root: string, stream: string, ok: bool) {
+	return build_warden_index_root(t, resolve_pong_dir(), "pong-warden", "FUNPACK_PONG_DIR")
+}
+
+// warden_command_output renders one warden subcommand's pure projection of a
+// decoded index — exactly the byte stream warden_verb_exit's matching arm
+// prints before exiting 0. The switch is deliberately exhaustive over the
+// closed Warden_Command enum (no #partial): a new member fails this file's
+// compile until it is mapped here, so the enum-derived determinism sweeps
+// below can never silently under-cover the dispatch. arg/find mirror
+// warden_verb_exit's parameter carry (graph's optional incident filter,
+// find's parsed filter set).
+warden_command_output :: proc(
+	index: Warden_Index,
+	cmd: Warden_Command,
+	arg := "",
+	find := Warden_Find_Query{},
+	allocator := context.allocator,
+) -> string {
+	switch cmd {
+	case .Find:
+		return warden_find_output(index, find, allocator)
+	case .Holes:
+		return warden_project_decls(index.decls, warden_holes_predicate, "", allocator)
+	case .Debt:
+		return warden_project_decls(index.decls, warden_debt_predicate, "", allocator)
+	case .Graph:
+		return warden_graph_output(index, arg, allocator)
+	case .Tags:
+		return warden_tags_ndjson(index, allocator)
+	case .Pipeline:
+		return warden_pipeline_ndjson(index, allocator)
+	}
+	return ""
+}
+
+// expect_six_command_byte_determinism acquires the same written index TWICE —
+// two full read_warden_index decodes of the same bytes, the in-process analog
+// of two CLI invocations — and asserts every Warden_Command's projection is
+// byte-identical across the runs AND that the integrated dispatch exits 0 for
+// each (the whole-stream success tier; an empty projection included). The
+// command list is derived from the closed enum, never written out by hand, so
+// a future seventh command automatically joins the sweep. find_query keeps the
+// find arm a real lookup per fixture (the zero query is find's defensive
+// early-out, which would make its identity vacuous).
+expect_six_command_byte_determinism :: proc(t: ^testing.T, root: string, find_query: Warden_Find_Query) {
+	index_a, refusal_a := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal_a.err, Warden_Read_Error.None)
+	index_b, refusal_b := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal_b.err, Warden_Read_Error.None)
+	if refusal_a.err != .None || refusal_b.err != .None {
+		return
+	}
+	for cmd in Warden_Command {
+		first := warden_command_output(index_a, cmd, "", find_query, context.temp_allocator)
+		second := warden_command_output(index_b, cmd, "", find_query, context.temp_allocator)
+		testing.expect_value(t, second, first)
+		testing.expect_value(t, warden_verb_exit(root, cmd, "", find_query), 0)
+	}
 }
 
 // find_warden_decl finds a decoded decl record by qualified name — the typed
@@ -108,6 +191,138 @@ test_golden_warden_round_trip_typed_decode :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_golden_warden_drift_six_command_byte_determinism :: proc(t: ^testing.T) {
+	// BYTE-DETERMINISM (live drift): two acquisitions of the same written
+	// index project byte-identically on EVERY command — the input stream is
+	// byte-stable, so every projection must be (§29 §1). Non-vacuity pins for
+	// the decl-side commands ride the live data: holes projects exactly the
+	// two stub lines, find `damped` answers one record, graph carries the
+	// damped→drag call edge set, tags carries the one-entry registry. Drift's
+	// pipeline_flattened is faithfully [] (the empty hole-first schedule), so
+	// the pipeline (and tags-at-scale) identity is made non-vacuous by the
+	// pong sweep below — here it pins that the empty projection is stably
+	// empty.
+	root, _, ok := build_drift_index_root(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	expect_six_command_byte_determinism(t, root, Warden_Find_Query{name = "damped"})
+
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
+	if refusal.err != .None {
+		return
+	}
+	testing.expect_value(t, len(ndjson_lines(warden_command_output(index, .Holes, allocator = context.temp_allocator))), 2)
+	testing.expect_value(t, len(ndjson_lines(warden_command_output(index, .Find, find = Warden_Find_Query{name = "damped"}, allocator = context.temp_allocator))), 1)
+	testing.expect(t, warden_command_output(index, .Graph, allocator = context.temp_allocator) != "")
+	testing.expect_value(t, len(ndjson_lines(warden_command_output(index, .Tags, allocator = context.temp_allocator))), 1)
+	testing.expect_value(t, warden_command_output(index, .Pipeline, allocator = context.temp_allocator), "")
+	log.infof("golden warden drift determinism: all six projections are byte-identical across two acquisitions of the written index")
+}
+
+@(test)
+test_golden_warden_pong_six_command_byte_determinism :: proc(t: ^testing.T) {
+	// BYTE-DETERMINISM (live pong — the non-empty project record): pong's
+	// index records the eleven-step §07 §3 depth-first total order and the
+	// ten-tag authored registry, so here `warden pipeline` and `warden tags`
+	// compare REAL bytes across the double run — the identity a drift-only
+	// sweep cannot give (drift's pipeline projection is empty, and an
+	// empty-vs-empty compare proves nothing). The counts are pinned exactly
+	// against the live golden (the index_contract pong project-record counts);
+	// when the spec evolves they change in lockstep — never loosen them.
+	root, _, ok := build_pong_index_root(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	expect_six_command_byte_determinism(t, root, Warden_Find_Query{name = "paddle"})
+
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
+	if refusal.err != .None {
+		return
+	}
+	testing.expect_value(t, len(index.project.pipeline_flattened), 11)
+	testing.expect_value(t, len(index.project.tag_registry), 10)
+	testing.expect_value(t, len(ndjson_lines(warden_command_output(index, .Pipeline, allocator = context.temp_allocator))), 11)
+	testing.expect_value(t, len(ndjson_lines(warden_command_output(index, .Tags, allocator = context.temp_allocator))), 10)
+	testing.expect(t, warden_command_output(index, .Graph, allocator = context.temp_allocator) != "")
+	log.infof("golden warden pong determinism: pipeline (11 steps) and tags (10 tags) project real bytes identically across two acquisitions")
+}
+
+@(test)
+test_golden_warden_holes_projects_producer_lines_byte_identical :: proc(t: ^testing.T) {
+	// LIVE HOLES: `warden holes` over drift is EXACTLY the producer's own
+	// bytes for the two §05 typed holes — drag (the bare @stub(Fixed)) and
+	// launch_speed (the fallback form), in stream order, nothing else. The
+	// expectation is rebuilt positionally from the WRITTEN stream (decls[i] ↔
+	// line i+1, the decode's positional rule), so the assert is byte-identity
+	// against the file funpack wrote — never a re-emission the test computed
+	// for itself.
+	root, stream, ok := build_drift_index_root(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
+	if refusal.err != .None {
+		return
+	}
+	lines := ndjson_lines(stream)
+	testing.expect_value(t, len(lines), len(index.decls) + 1)
+	if len(lines) != len(index.decls) + 1 {
+		return
+	}
+	expected := make([dynamic]string, 0, len(index.decls), context.temp_allocator)
+	stub_names := make([dynamic]string, 0, len(index.decls), context.temp_allocator)
+	for decl, i in index.decls {
+		if decl.stub {
+			append(&expected, strings.concatenate({lines[i + 1], "\n"}, context.temp_allocator))
+			append(&stub_names, decl.qualified_name)
+		}
+	}
+	testing.expect_value(t, len(stub_names), 2)
+	if len(stub_names) == 2 {
+		testing.expect_value(t, stub_names[0], "drag")
+		testing.expect_value(t, stub_names[1], "launch_speed")
+	}
+	holes := warden_command_output(index, .Holes, allocator = context.temp_allocator)
+	testing.expect_value(t, holes, strings.concatenate(expected[:], context.temp_allocator))
+	log.infof("golden warden holes: the projection is byte-identical to the stream's two stub=true producer lines (drag, launch_speed)")
+}
+
+@(test)
+test_golden_warden_debt_empty_projection_is_success :: proc(t: ^testing.T) {
+	// EMPTY-IS-SUCCESS: drift carries no debt — Decl_Record.todo is
+	// mandatory-present constant-false on every record (the parser does not
+	// yet admit @todo; warden_debt_predicate documents the provenance) and no
+	// drift decl attaches the registered `debt` gtag — so `warden debt`
+	// projects ZERO bytes and the integrated dispatch exits 0: an empty answer
+	// is an answer (§29 §1), and the warden has no exit-1 tier to mistake it
+	// for.
+	root, _, ok := build_drift_index_root(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
+	if refusal.err != .None {
+		return
+	}
+	testing.expect_value(t, warden_command_output(index, .Debt, allocator = context.temp_allocator), "")
+	testing.expect_value(t, warden_verb_exit(root, .Debt), 0)
+	log.infof("golden warden debt: the empty drift projection exits 0 — emptiness is success, never a failure tier")
+}
+
+@(test)
 test_golden_warden_missing_index_refuses_naming_build :: proc(t: ^testing.T) {
 	// MISSING-INDEX REFUSAL: the same copied tree WITHOUT a build has no
 	// `.funpack/index.ndjson`, so the acquisition is the Missing_Index refusal
@@ -126,8 +341,12 @@ test_golden_warden_missing_index_refuses_naming_build :: proc(t: ^testing.T) {
 	message := warden_refusal_message(refusal, context.temp_allocator)
 	testing.expect(t, strings.contains(message, "`funpack build`"))
 	testing.expect(t, strings.contains(message, INDEX_PRODUCT_NAME))
-	testing.expect_value(t, warden_verb_exit(root, .Find), 2)
-	log.infof("golden warden missing index: an unbuilt drift tree refuses exit 2 with the `funpack build` fix-it")
+	// The refusal holds on EVERY command (enum-derived, so a new command joins
+	// the sweep automatically): acquisition refuses before any projection arm.
+	for cmd in Warden_Command {
+		testing.expect_value(t, warden_verb_exit(root, cmd), 2)
+	}
+	log.infof("golden warden missing index: an unbuilt drift tree refuses exit 2 on every command with the `funpack build` fix-it")
 }
 
 @(test)
@@ -156,8 +375,12 @@ test_golden_warden_doctored_schema_version_refused :: proc(t: ^testing.T) {
 	testing.expect_value(t, refusal.line, 1)
 	testing.expect_value(t, refusal.decode, Index_Read_Error.Schema_Mismatch)
 	testing.expect(t, strings.contains(warden_refusal_message(refusal, context.temp_allocator), "rebuild the index with this funpack"))
-	testing.expect_value(t, warden_verb_exit(root, .Holes), 2)
-	log.infof("golden warden doctored schema: a bumped schema_version refuses the written index exit 2")
+	// The schema refusal holds on EVERY command (enum-derived): the version
+	// gate fires in the shared acquisition, never per projection arm.
+	for cmd in Warden_Command {
+		testing.expect_value(t, warden_verb_exit(root, cmd), 2)
+	}
+	log.infof("golden warden doctored schema: a bumped schema_version refuses the written index exit 2 on every command")
 }
 
 @(test)
