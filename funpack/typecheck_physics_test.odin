@@ -314,6 +314,27 @@ test_layer_unregistered_without_collisionlayer_enum :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Type_Error.Unregistered_Layer)
 }
 
+@(test)
+test_unregistered_layer_in_stub_fallback_rejected :: proc(t: ^testing.T) {
+	// A holed decl's body is empty, but its @stub(T, fallback) approximation is
+	// still an expression position the §11 §5 registry gate walks — a Body
+	// literal inside a fallback cannot smuggle an unregistered layer past the
+	// gate (the hole exempts the body walk, never the fallback).
+	err := typecheck_phys(
+		"fn make() -> Body @stub(Body, Body{ kind: BodyKind::Static, shape: Shape2::Box{size: Vec2{x: 4.0, y: 4.0}}, layer: Layer::Ghost, mask: [Layer::Player] })\n")
+	testing.expect_value(t, err, Type_Error.Unregistered_Layer)
+}
+
+@(test)
+test_registered_layer_in_stub_fallback_typechecks :: proc(t: ^testing.T) {
+	// The positive half: a fallback Body literal whose layer/mask stay inside
+	// the registered set walks the gate clean and the whole holed decl
+	// typechecks (the fallback also unifies with the hole's declared Body).
+	err := typecheck_phys(
+		"fn make() -> Body @stub(Body, Body{ kind: BodyKind::Static, shape: Shape2::Box{size: Vec2{x: 4.0, y: 4.0}}, layer: Layer::Wall, mask: [Layer::Player] })\n")
+	testing.expect_value(t, err, Type_Error.None)
+}
+
 // -- (C.2) the §11 §4 engine-routed signal-name reservation -------------------
 
 @(test)

@@ -94,11 +94,21 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index) -> (typed: Typed_
 // as the nil unknown, since the enum is the user's, not the closed surface's).
 check_layer_registry :: proc(ast: Ast) -> Type_Error {
 	registry := collision_layer_registry(ast)
+	// A holed decl's body is empty, but its @stub(T, fallback) approximation is
+	// an expression position like any other — a Body literal inside a fallback
+	// is gated here, not exempted by the hole (spec §05 §2 holes are
+	// dev-first-class, §11 §5 has no dev tier).
 	for fn in ast.fns {
 		layer_walk_body(fn.body, registry) or_return
+		if fn.has_fallback {
+			layer_walk_expr(fn.fallback, registry) or_return
+		}
 	}
 	for behavior in ast.behaviors {
 		layer_walk_body(behavior.step.body, registry) or_return
+		if behavior.step.has_fallback {
+			layer_walk_expr(behavior.step.fallback, registry) or_return
+		}
 	}
 	for test in ast.tests {
 		layer_walk_body(test.body, registry) or_return
