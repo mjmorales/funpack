@@ -98,14 +98,82 @@ let MAX: Int = 9
 	testing.expect_value(t, max_let.span, 8)
 
 	// Every decl carries the leading schema_version stamp and the bare name (no
-	// module prefix on the single-source path), and the always-empty directive
-	// fields (stub/todo/debug) the gameplay surface does not parse.
+	// module prefix on the single-source path). stub is false — no decl here is
+	// holed (it derives from Fn_Node.holed, see test_index_decl_stub_from_holes) —
+	// and todo/debug stay the constant empties the parser does not yet fill.
 	testing.expect_value(t, board.schema_version, INDEX_SCHEMA_VERSION)
 	testing.expect_value(t, board.qualified_name, "Board")
 	testing.expect_value(t, board.stub, false)
 	testing.expect_value(t, board.todo, false)
 	testing.expect_value(t, len(board.debug), 0)
 	log.infof("index decl kind/span derivation verified over snippet AST (%d decls)", len(records))
+}
+
+@(test)
+test_index_decl_stub_from_holes :: proc(t: ^testing.T) {
+	// stub derives from the parser's holed flag (§05 §2): a fn whose body is a
+	// @stub(T) hole — and the @stub(T, fallback) form — emits stub=true, and a
+	// behavior whose reserved `step` body is holed marks the behavior; every
+	// intact-bodied and body-less decl emits false. The derivation is proven
+	// over the PARSED (not typechecked) AST: derive_decl_records reads only the
+	// AST nodes, the routes, and the env, so a hand-built Typed_Ast around the
+	// parse plus an empty pipeline isolates the projection from hole typing.
+	source := `data Board { w: Int, h: Int }
+fn holed() -> Int @stub(Int)
+fn approximated() -> Int @stub(Int, 0)
+fn intact() -> Int {
+  return 1
+}
+behavior ghost on Board {
+  fn step(self: Board) -> Board @stub(Board)
+}
+behavior solid on Board {
+  fn step(self: Board) -> Board {
+    return self
+  }
+}
+`
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	records := derive_decl_records("", Typed_Ast{ast = ast}, Flattened_Pipeline{})
+
+	// Both hole forms set stub on a fn; the hole does not change the decl kind.
+	holed, has_holed := find_record(records, "holed")
+	testing.expect(t, has_holed)
+	testing.expect_value(t, holed.stub, true)
+	testing.expect_value(t, holed.kind, Index_Decl_Kind.Fn)
+	approximated, has_approximated := find_record(records, "approximated")
+	testing.expect(t, has_approximated)
+	testing.expect_value(t, approximated.stub, true)
+
+	// An intact-bodied fn stays false — the flag is the hole, never the form.
+	intact, has_intact := find_record(records, "intact")
+	testing.expect(t, has_intact)
+	testing.expect_value(t, intact.stub, false)
+
+	// A holed behavior step marks its behavior; an intact step does not.
+	ghost, has_ghost := find_record(records, "ghost")
+	testing.expect(t, has_ghost)
+	testing.expect_value(t, ghost.stub, true)
+	testing.expect_value(t, ghost.kind, Index_Decl_Kind.Behavior)
+	solid, has_solid := find_record(records, "solid")
+	testing.expect(t, has_solid)
+	testing.expect_value(t, solid.stub, false)
+
+	// A body-less decl has no body position to hole, so it stays false; the
+	// unparsed todo/debug directive fields stay constant-empty on every record,
+	// holed or not.
+	board, has_board := find_record(records, "Board")
+	testing.expect(t, has_board)
+	testing.expect_value(t, board.stub, false)
+	for r in records {
+		testing.expect_value(t, r.todo, false)
+		testing.expect_value(t, len(r.debug), 0)
+	}
+	log.infof("index decl stub derivation verified (holed fn/behavior true, intact and body-less false)")
 }
 
 @(test)
@@ -325,10 +393,11 @@ pipeline Loop {
 @(test)
 test_index_decl_records_pong :: proc(t: ^testing.T) {
 	// Decl-record derivation over the live pong checkout: one record per
-	// declaration in the fixed gate_units-style order, with stub=false / todo=false
-	// / debug=[] on every decl (the always-empty §05 directive fields). The
-	// per-kind counts are pinned against the golden source (33 decls). SKIP-warns
-	// when the sibling pong checkout is absent — never silently passes.
+	// declaration in the fixed gate_units-style order, with stub=false (the pong
+	// tree carries no @stub hole) and todo=false / debug=[] (the unparsed §05
+	// directive fields) on every decl. The per-kind counts are pinned against the
+	// golden source (33 decls). SKIP-warns when the sibling pong checkout is
+	// absent — never silently passes.
 	records, ok := pong_decl_records(t)
 	if !ok {
 		return
@@ -403,9 +472,10 @@ test_index_decl_records_pong :: proc(t: ^testing.T) {
 @(test)
 test_index_decl_records_snake :: proc(t: ^testing.T) {
 	// Decl-record derivation over the live snake checkout: one record per
-	// declaration in the fixed order, with the always-empty directive fields on
-	// every decl. Counts pinned against the golden source (36 decls). SKIP-warns
-	// when the sibling snake checkout is absent.
+	// declaration in the fixed order, with stub=false (no snake decl is holed)
+	// and the unparsed todo/debug empties on every decl. Counts pinned against
+	// the golden source (36 decls). SKIP-warns when the sibling snake checkout
+	// is absent.
 	records, ok := snake_decl_records(t)
 	if !ok {
 		return
