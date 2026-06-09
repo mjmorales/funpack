@@ -119,14 +119,19 @@ warden_verb_exit :: proc(root: string, cmd: Warden_Command) -> int {
 		fmt.eprintfln("funpack warden: %s", warden_refusal_message(refusal, context.temp_allocator))
 		return 2
 	}
-	// The per-command projection seam: the sibling query-projections epic fills
-	// one arm per Warden_Command with its projection of `index` (find/holes/
-	// debt/graph/tags/pipeline output). This spine proves dispatch +
-	// acquisition + decode, so today every recognized command is the decoded
-	// index's success verdict and prints nothing.
-	_ = index
+	// The per-command projection seam: each filled arm prints its pure NDJSON
+	// projection of the decoded `index` and exits 0 — an empty projection
+	// prints zero lines and is still success. The unfilled arms belong to the
+	// sibling projection stories and remain the decoded index's bare success
+	// verdict.
 	switch cmd {
-	case .Find, .Holes, .Debt, .Graph, .Tags, .Pipeline:
+	case .Tags:
+		fmt.print(warden_tags_ndjson(index, context.temp_allocator))
+		return 0
+	case .Pipeline:
+		fmt.print(warden_pipeline_ndjson(index, context.temp_allocator))
+		return 0
+	case .Find, .Holes, .Debt, .Graph:
 		return 0
 	}
 	return 0
