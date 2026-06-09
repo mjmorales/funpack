@@ -20,6 +20,13 @@ main :: proc() {
 			os.exit(2)
 		}
 		os.exit(run_build_verb(mode))
+	case "check":
+		mode, mode_ok := parse_build_mode(os.args[2:])
+		if !mode_ok {
+			print_usage()
+			os.exit(2)
+		}
+		os.exit(run_check_verb(".", mode))
 	case:
 		print_usage()
 		os.exit(2)
@@ -75,6 +82,33 @@ run_build_verb :: proc(mode: Build_Mode) -> int {
 	return 0
 }
 
+// run_check_verb is the §29 §3 verdict-only verb: it adjudicates the §14
+// project tree at `root` through the SAME pure seam the build verb compiles —
+// stage_build, the full checked pipeline against one project-wide module index
+// — and deletes the write half: the computed product bytes are discarded,
+// write_build_products is never called, and NOTHING touches disk (no write, no
+// directory, no deletion on any path — a pre-existing `.funpack/` stays
+// byte-untouched). check recompiles; it never reads the emitted index, so a
+// stale or absent index changes nothing about the verdict (`funpack warden` is
+// the index projection; check is the source adjudication). The exit contract
+// mirrors build's two tiers exactly: ANY Build_Error arm (Malformed_Tree,
+// Compile_Failed, Index_Failed, or Holed_Declaration under --release, §29 §4)
+// is 2; a clean tree is 0 with a one-line verdict naming no product path —
+// none is written. There is deliberately NO exit-1 tier: counted assertion
+// failures belong to the test verb, and a compile error is never a counted
+// failure — check refuses, it does not tally. root is a parameter (unlike
+// run_build_verb's fixed ".") so the side-effect-free verb body is unit-tested
+// end-to-end against temp trees; main always passes ".".
+run_check_verb :: proc(root: string, mode: Build_Mode) -> int {
+	_, check_err := stage_build(root, mode, context.temp_allocator)
+	if check_err != .None {
+		fmt.eprintfln("funpack check: %v", check_err)
+		return 2
+	}
+	fmt.println("funpack check: clean")
+	return 0
+}
+
 // run_test_verb runs every source of the §14 project tree at the working
 // directory through the MULTI-MODULE pipeline: every module types against ONE
 // project-wide index, so a project whose modules import each other (the arena
@@ -126,5 +160,5 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("usage: funpack <test|build [--release]>")
+	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]>")
 }
