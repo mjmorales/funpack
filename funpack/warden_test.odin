@@ -14,10 +14,10 @@ import "core:log"
 import "core:testing"
 
 // test_parse_warden_command_totality pins the closed set both ways: all six
-// subcommand names map to their enum member, and every non-command shape — an
-// empty argument list, an unknown name, a recognized name with a trailing
-// argument — is ok = false, the path main maps to usage + exit 2. A typo
-// never silently runs a different query.
+// subcommand names map to their enum member with an empty positional, and
+// every non-command shape — an empty argument list, an unknown name, a
+// trailing argument on a zero-positional command — is ok = false, the path
+// main maps to usage + exit 2. A typo never silently runs a different query.
 @(test)
 test_parse_warden_command_totality :: proc(t: ^testing.T) {
 	names := [Warden_Command]string {
@@ -29,18 +29,41 @@ test_parse_warden_command_totality :: proc(t: ^testing.T) {
 		.Pipeline = "pipeline",
 	}
 	for name, want in names {
-		cmd, ok := parse_warden_command({name})
+		cmd, arg, ok := parse_warden_command({name})
 		testing.expect(t, ok)
 		testing.expect_value(t, cmd, want)
+		testing.expect_value(t, arg, "")
 	}
 
-	_, ok := parse_warden_command({})
+	_, _, ok := parse_warden_command({})
 	testing.expect(t, !ok)
 
-	_, ok = parse_warden_command({"fnid"})
+	_, _, ok = parse_warden_command({"fnid"})
 	testing.expect(t, !ok)
 
-	_, ok = parse_warden_command({"find", "extra"})
+	_, _, ok = parse_warden_command({"find", "extra"})
+	testing.expect(t, !ok)
+}
+
+// test_parse_warden_command_graph_positional pins graph's per-command arity:
+// graph admits ONE optional positional (the incident-edge filter, carried
+// verbatim), a second positional is the usage error, and the optional arity
+// is graph's alone — a positional on any other command stays ok = false, so
+// extending the seam did not loosen the strict commands.
+@(test)
+test_parse_warden_command_graph_positional :: proc(t: ^testing.T) {
+	cmd, arg, ok := parse_warden_command({"graph", "drift.damped"})
+	testing.expect(t, ok)
+	testing.expect_value(t, cmd, Warden_Command.Graph)
+	testing.expect_value(t, arg, "drift.damped")
+
+	_, _, ok = parse_warden_command({"graph", "drift.damped", "extra"})
+	testing.expect(t, !ok)
+
+	_, _, ok = parse_warden_command({"holes", "drift.damped"})
+	testing.expect(t, !ok)
+
+	_, _, ok = parse_warden_command({"pipeline", "drift.damped"})
 	testing.expect(t, !ok)
 }
 
