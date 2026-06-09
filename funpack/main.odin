@@ -119,14 +119,21 @@ warden_verb_exit :: proc(root: string, cmd: Warden_Command) -> int {
 		fmt.eprintfln("funpack warden: %s", warden_refusal_message(refusal, context.temp_allocator))
 		return 2
 	}
-	// The per-command projection seam: the sibling query-projections epic fills
-	// one arm per Warden_Command with its projection of `index` (find/holes/
-	// debt/graph/tags/pipeline output). This spine proves dispatch +
-	// acquisition + decode, so today every recognized command is the decoded
-	// index's success verdict and prints nothing.
-	_ = index
+	// The per-command projection seam: one arm per Warden_Command with its
+	// projection of `index`. Holes and debt ride the shared decl-predicate
+	// core (warden_project.odin); the projected bytes are temp-allocated and
+	// printed before this frame returns, so the temp arena that owns the
+	// decoded index owns the whole projection. The remaining arms are sibling
+	// projections and stay the decoded index's bare success verdict (printing
+	// nothing) until each lands.
 	switch cmd {
-	case .Find, .Holes, .Debt, .Graph, .Tags, .Pipeline:
+	case .Holes:
+		fmt.print(warden_project_decls(index.decls, warden_holes_predicate, "", context.temp_allocator))
+		return 0
+	case .Debt:
+		fmt.print(warden_project_decls(index.decls, warden_debt_predicate, "", context.temp_allocator))
+		return 0
+	case .Find, .Graph, .Tags, .Pipeline:
 		return 0
 	}
 	return 0
