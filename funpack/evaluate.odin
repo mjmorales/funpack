@@ -335,7 +335,9 @@ const_cycle_key :: proc(module: string, name: string) -> string {
 // (a fn body is a closed scope — it reads only its params and module-level
 // constants), then the statement sequence runs to its `return`. ok = false
 // when the body produces no value (a body with no reachable return is a
-// typecheck-rejected shape that never reaches here).
+// typecheck-rejected shape that never reaches here). A holed decl (spec §05
+// §2) has no statement sequence at all — eval_stub_hole stands in for the
+// body walk, mirroring check_stub_hole on the typing side.
 eval_user_fn :: proc(ctx: Eval_Ctx, fn: Fn_Node, args: []Value) -> (value: Value, ok: bool) {
 	if len(args) != len(fn.params) {
 		return nil, false
@@ -344,7 +346,27 @@ eval_user_fn :: proc(ctx: Eval_Ctx, fn: Fn_Node, args: []Value) -> (value: Value
 	for param, i in fn.params {
 		frame.bindings[param.name] = args[i]
 	}
+	if fn.holed {
+		return eval_stub_hole(ctx, frame, fn)
+	}
 	return eval_statements(ctx, frame, fn.body)
+}
+
+// eval_stub_hole runs a typed hole reached at evaluation time (spec §05 §2,
+// P8: the approximation keeps the game playable). A `@stub(T, fallback)` hole
+// evaluates its fallback expression in the declaration's own environment —
+// the param-seeded frame — so a fallback reading a parameter (`@stub(Ball,
+// b)`) returns the argument; check_stub_hole already typed the fallback
+// against the hole's T in this same scope, so the value is type-sound. A
+// typecheck-only `@stub(T)` has nothing to run: it is dev-anchoring only and
+// never ships (the release gate refuses it), so reaching one is the
+// evaluator's defined fail-closed no-value outcome — the assert reading it
+// fails counted, never a trap.
+eval_stub_hole :: proc(ctx: Eval_Ctx, frame: ^Env, fn: Fn_Node) -> (value: Value, ok: bool) {
+	if fn.has_fallback {
+		return eval_expr(ctx, frame, fn.fallback)
+	}
+	return nil, false
 }
 
 // eval_statements runs a fn-body statement sequence to its return value: a let
