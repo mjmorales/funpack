@@ -328,6 +328,219 @@ test_index_read_wrong_field_type_refused :: proc(t: ^testing.T) {
 	expect_refusal(t, mutate_line(t, decl_line, "\"gtags\":[\"game\",\"render\"]", "\"gtags\":[1]"), .Wrong_Field_Type)
 }
 
+// ── The warden acquisition seam (read_warden_index) ────────────────────
+
+// warden_stream_fixture emits a REAL Index Contract stream through the
+// producer's own seam — compile_for_index + build_project_record +
+// emit_index_stream (the index_contract_test idiom) — over a minimal inline
+// module, plus the scratch §14 root the acquisition tests plant the product
+// under. The expected decls come from the same derive_decl_records call the
+// emitter uses, so the order assertion pins the emission order, not a
+// re-derivation. ok is false (test-failing, never skipping — the fixture is
+// checkout-free) on any compile or scratch-setup failure.
+warden_stream_fixture :: proc(t: ^testing.T) -> (root: string, stream: string, record: Project_Record, decls: []Decl_Record, ok: bool) {
+	source := `data Board { w: Int, h: Int }
+signal Goal { side: Int }
+fn add(a: Int, b: Int) -> Int {
+  return a + b
+}
+`
+	typed, flat, compiled := compile_for_index(source)
+	testing.expect(t, compiled)
+	if !compiled {
+		return "", "", Project_Record{}, nil, false
+	}
+	root = scratch_join({scratch_base(), tprintf_seq("funpack-warden")})
+	remove_scratch_tree(root)
+	if !ensure_dir(scratch_join({root, "funpack_configs"})) {
+		testing.expect(t, false)
+		return "", "", Project_Record{}, nil, false
+	}
+	built, record_err := build_project_record(root, typed, flat)
+	testing.expect_value(t, record_err, Index_Contract_Error.None)
+	if record_err != .None {
+		remove_scratch_tree(root)
+		return "", "", Project_Record{}, nil, false
+	}
+	modules := make([]Index_Module, 1, context.temp_allocator)
+	modules[0] = Index_Module {
+		module = "",
+		typed  = typed,
+		flat   = flat,
+	}
+	return root, emit_index_stream(built, modules, context.temp_allocator), built, derive_decl_records("", typed, flat), true
+}
+
+// write_warden_index_product plants a stream's bytes as the root's
+// `.funpack/index.ndjson` build product — the exact path read_warden_index
+// resolves via build_product_path.
+write_warden_index_product :: proc(t: ^testing.T, root: string, stream: string) -> bool {
+	dir := scratch_join({root, FUNPACK_BUILD_DIR})
+	ok := ensure_dir(dir) && os.write_entire_file(scratch_join({dir, INDEX_PRODUCT_NAME}), transmute([]u8)stream) == nil
+	testing.expect(t, ok)
+	return ok
+}
+
+// expect_warden_refusal asserts a planted stream refuses with exactly the
+// expected whole-stream verdict — arm, offending line, and decoder cause —
+// and that its refusal message names `funpack build` as the fix-it (every
+// arm's fix-it is a rebuild the USER runs; the warden never rebuilds).
+expect_warden_refusal :: proc(t: ^testing.T, root: string, stream: string, want: Warden_Refusal) {
+	if !write_warden_index_product(t, root, stream) {
+		return
+	}
+	_, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, want.err)
+	testing.expect_value(t, refusal.line, want.line)
+	testing.expect_value(t, refusal.decode, want.decode)
+	testing.expect(t, strings.contains(warden_refusal_message(refusal, context.temp_allocator), "`funpack build`"))
+}
+
+@(test)
+test_warden_index_round_trip :: proc(t: ^testing.T) {
+	// The happy path: a really-emitted stream planted under a scratch root's
+	// .funpack/ reads back into a Warden_Index whose project record is
+	// field-equal to the built record and whose decls carry the emission's
+	// exact count, order, and fields.
+	root, stream, record, decls, ok := warden_stream_fixture(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	if !write_warden_index_product(t, root, stream) {
+		return
+	}
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
+	if refusal.err != .None {
+		return
+	}
+	testing.expect_value(t, warden_refusal_message(refusal, context.temp_allocator), "")
+	expect_project_fields_equal(t, index.project, record)
+	testing.expect_value(t, len(index.decls), len(decls))
+	if len(index.decls) != len(decls) {
+		return
+	}
+	for decl, i in index.decls {
+		expect_decl_fields_equal(t, decl, decls[i])
+	}
+}
+
+@(test)
+test_warden_index_missing_index_refused :: proc(t: ^testing.T) {
+	// An absent .funpack/index.ndjson is the Missing_Index refusal whose
+	// message names `funpack build` as the fix-it — the warden NEVER
+	// recompiles in place of the missing product (§29 §1).
+	root, _, _, _, ok := warden_stream_fixture(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	// No product planted: the root has its configs but no .funpack/.
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, Warden_Read_Error.Missing_Index)
+	testing.expect_value(t, refusal.line, 0)
+	testing.expect_value(t, len(index.decls), 0)
+	message := warden_refusal_message(refusal, context.temp_allocator)
+	testing.expect(t, strings.contains(message, "`funpack build`"))
+	testing.expect(t, strings.contains(message, INDEX_PRODUCT_NAME))
+}
+
+@(test)
+test_warden_index_schema_mismatch_refused :: proc(t: ^testing.T) {
+	// Doctored schema_version bytes on the leading line refuse the WHOLE
+	// stream as Schema_Mismatch, and the message carries the mismatch's OWN
+	// fix-it — rebuild with THIS funpack — distinct from the generic arm.
+	root, stream, _, _, ok := warden_stream_fixture(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	doctored := mutate_line(t, stream, "\"schema_version\":2", "\"schema_version\":1")
+	expect_warden_refusal(t, root, doctored, Warden_Refusal{err = .Schema_Mismatch, line = 1, decode = .Schema_Mismatch})
+	if !write_warden_index_product(t, root, doctored) {
+		return
+	}
+	_, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect(t, strings.contains(warden_refusal_message(refusal, context.temp_allocator), "rebuild the index with this funpack"))
+}
+
+@(test)
+test_warden_index_missing_project_record_refused :: proc(t: ^testing.T) {
+	// The project line stripped: the stream now leads with a decl record, so
+	// line 1 is the Missing_Project_Record refusal — the shape gate, not a
+	// best-effort read of the remaining decls.
+	root, stream, _, _, ok := warden_stream_fixture(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	first_lf := strings.index_byte(stream, '\n')
+	testing.expect(t, first_lf >= 0)
+	expect_warden_refusal(t, root, stream[first_lf + 1:], Warden_Refusal{err = .Missing_Project_Record, line = 1})
+}
+
+@(test)
+test_warden_index_duplicate_project_record_refused :: proc(t: ^testing.T) {
+	// The project line appended again at the tail: the stream carries exactly
+	// one leading project record, so the second is the
+	// Duplicate_Project_Record refusal at its own line.
+	root, stream, _, _, ok := warden_stream_fixture(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	first_lf := strings.index_byte(stream, '\n')
+	testing.expect(t, first_lf >= 0)
+	doctored := strings.concatenate({stream, stream[:first_lf + 1]}, context.temp_allocator)
+	dup_line := len(ndjson_lines(stream)) + 1
+	expect_warden_refusal(t, root, doctored, Warden_Refusal{err = .Duplicate_Project_Record, line = dup_line})
+}
+
+@(test)
+test_warden_index_first_error_refusal_never_skips :: proc(t: ^testing.T) {
+	// Two offending lines — an extra-key decl on line 2 and an under-shaped
+	// decl on line 3 — and the refusal is line 2's Unknown_Field: the whole
+	// stream refuses on the FIRST offending line, never skipping it to read
+	// the rest (and never reporting a later error first).
+	root, stream, _, _, ok := warden_stream_fixture(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	lines := ndjson_lines(stream)
+	testing.expect(t, len(lines) >= 3)
+	if len(lines) < 3 {
+		return
+	}
+	doctored := make([dynamic]string, 0, len(lines), context.temp_allocator)
+	for line, i in lines {
+		full := strings.concatenate({line, "\n"}, context.temp_allocator)
+		switch i {
+		case 1:
+			full = inject_top_level_key(t, full)
+		case 2:
+			full = mutate_line(t, full, "\"todo\":false,", "")
+		}
+		append(&doctored, full)
+	}
+	joined := strings.concatenate(doctored[:], context.temp_allocator)
+	expect_warden_refusal(t, root, joined, Warden_Refusal{err = .Record_Refused, line = 2, decode = .Unknown_Field})
+}
+
+@(test)
+test_warden_index_empty_index_refused :: proc(t: ^testing.T) {
+	// A present-but-empty product (and an all-blank one) holds no record, so
+	// the read is the Empty_Index refusal — distinct from the absent-file arm.
+	root, _, _, _, ok := warden_stream_fixture(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+	expect_warden_refusal(t, root, "", Warden_Refusal{err = .Empty_Index})
+	expect_warden_refusal(t, root, "\n\n", Warden_Refusal{err = .Empty_Index})
+}
+
 @(test)
 test_index_read_malformed_line_refused :: proc(t: ^testing.T) {
 	// Not one parseable JSON object: broken syntax, an empty line, a

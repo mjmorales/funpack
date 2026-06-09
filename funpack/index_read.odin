@@ -16,13 +16,21 @@
 // key count equals the struct's field count — no map iteration, so the check
 // is deterministic per §29 §1).
 //
-// This file is the pure bytes→record half of the `funpack warden` consumer
-// (§29 §1): no core:os import, no clock, no write. File acquisition and the
-// whole-stream shape live with the warden verb seam, not here.
+// This file is the `funpack warden` consumer (§29 §1): the pure bytes→record
+// decode plus the acquisition seam read_warden_index, whose single read of the
+// emitted `.funpack/index.ndjson` build product is the file's ONLY impure
+// operation (mirroring read_project's read-then-pure shape) — no clock, no
+// write, and NEVER a recompile. The warden surface is a pure projection of the
+// already-emitted index, so a missing or version-mismatched index is a closed
+// refusal naming `funpack build` as the fix-it; an implicit rebuild would make
+// a read-only query a writer-by-side-effect and bypass that contract.
 package funpack
 
 import "core:encoding/json"
+import "core:fmt"
+import "core:os"
 import "core:reflect"
+import "core:strings"
 
 // Index_Read_Error is closed with one arm per §29 §2 refusal cause — the
 // consumer never best-effort-parses past any of these, and the warden
@@ -45,6 +53,174 @@ Index_Read_Error :: enum {
 Index_Record :: union {
 	Decl_Record,
 	Project_Record,
+}
+
+// ── The warden acquisition seam (§29 §1) ───────────────────────────────
+
+// Warden_Read_Error is the closed refusal surface of the warden's index
+// acquisition — one arm per way the `.funpack/index.ndjson` build product can
+// fail to yield a whole decoded index. Schema_Mismatch is deliberately its own
+// arm (not folded into Record_Refused): its fix-it is distinct — rebuild with
+// THIS funpack — while every other per-line refusal shares the generic rebuild
+// fix-it. Record_Refused delegates the precise cause to the per-line decoder's
+// own closed enum (carried in Warden_Refusal.decode), so no decoder arm is
+// re-mirrored here. A new refusal cause is a new arm, never a reused catch-all.
+Warden_Read_Error :: enum {
+	None,
+	Missing_Index,            // no .funpack/index.ndjson build product at the root
+	Empty_Index,              // the index file holds no record line at all
+	Missing_Project_Record,   // the leading record is a decl — the project record must lead
+	Duplicate_Project_Record, // a second project record after the leading one
+	Schema_Mismatch,          // a record's schema_version stamp differs from this funpack's
+	Record_Refused,           // a line the exact-match decoder refused (decode names the cause)
+}
+
+// Warden_Refusal is the whole-stream refusal verdict (the stage_flatten
+// verdict-struct shape): the closed arm, the 1-based offending stream line for
+// line-scoped arms (0 for Missing_Index / Empty_Index, which have no line),
+// and the per-line decoder's arm behind Schema_Mismatch / Record_Refused.
+// Agents repair from the warden's messages, so the refusal keeps full line and
+// cause fidelity instead of collapsing to the arm alone.
+Warden_Refusal :: struct {
+	err:    Warden_Read_Error,
+	line:   int,
+	decode: Index_Read_Error,
+}
+
+// Warden_Index is the whole decoded index: the stream's single leading
+// `project` record plus every `decl` record in emission order (the fixed
+// entrypoint-module-first, gate_units-style order emit_index_stream pinned —
+// the decode is positional, no re-sort).
+Warden_Index :: struct {
+	project: Project_Record,
+	decls:   []Decl_Record,
+}
+
+// read_warden_index reads the `.funpack/index.ndjson` build product at
+// build_product_path(root) and decodes the WHOLE stream onto a Warden_Index.
+// The file read is this seam's only impure operation; everything downstream is
+// decode_warden_index's pure projection of the index bytes. An absent product
+// is the Missing_Index refusal — the warden NEVER recompiles in its place
+// (§29 §1: the surface is a pure projection of the already-emitted index), so
+// the fix-it names `funpack build` and the query stays a reader. Decoded
+// records are allocated from `allocator` (the decode_index_line contract:
+// free the allocation arena, not individual fields).
+read_warden_index :: proc(root: string, allocator := context.allocator) -> (index: Warden_Index, refusal: Warden_Refusal) {
+	path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
+	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	if read_err != nil {
+		return Warden_Index{}, Warden_Refusal{err = .Missing_Index}
+	}
+	return decode_warden_index(string(bytes), allocator)
+}
+
+// decode_warden_index decodes a whole Index Contract NDJSON stream against the
+// emit_index_stream shape: exactly one `project` record and it leads, every
+// subsequent non-empty line a `decl` record. The decode is whole-stream
+// first-error: the FIRST offending line refuses the entire stream — never
+// line-skipping, so a partially-readable index is never presented as a
+// smaller-but-valid one. An empty interior line is not a record and is
+// tolerated without being skipped AS one (the emitter writes none; the
+// trailing LF is the usual producer shape). The walk is a single forward pass
+// — no map iteration, no clock — so the projection is deterministic (§29 §1).
+decode_warden_index :: proc(stream: string, allocator := context.allocator) -> (index: Warden_Index, refusal: Warden_Refusal) {
+	decls := make([dynamic]Decl_Record, allocator)
+	seen_project := false
+	line_no := 0
+	remaining := stream
+	for line in strings.split_lines_iterator(&remaining) {
+		line_no += 1
+		if line == "" {
+			continue
+		}
+		// decode_index_line's contract is one LF-terminated NDJSON line; the
+		// iterator stripped the LF, so restore it (temp — the record's own
+		// strings are cloned into `allocator` by the parse).
+		full := strings.concatenate({line, "\n"}, context.temp_allocator)
+		record, decode_err := decode_index_line(full, allocator)
+		if decode_err != .None {
+			err := Warden_Read_Error.Record_Refused
+			if decode_err == .Schema_Mismatch {
+				err = .Schema_Mismatch
+			}
+			return Warden_Index{}, Warden_Refusal{err = err, line = line_no, decode = decode_err}
+		}
+		switch decoded in record {
+		case Project_Record:
+			if seen_project {
+				return Warden_Index{}, Warden_Refusal{err = .Duplicate_Project_Record, line = line_no}
+			}
+			seen_project = true
+			index.project = decoded
+		case Decl_Record:
+			if !seen_project {
+				return Warden_Index{}, Warden_Refusal{err = .Missing_Project_Record, line = line_no}
+			}
+			append(&decls, decoded)
+		}
+	}
+	if !seen_project {
+		// No record line at all: an empty (or all-blank) file is Empty_Index —
+		// a decl-first stream already refused above, so this arm is exact.
+		return Warden_Index{}, Warden_Refusal{err = .Empty_Index}
+	}
+	index.decls = decls[:]
+	return index, Warden_Refusal{}
+}
+
+// warden_refusal_message maps a refusal to its fix-it text — the §29 §1
+// refusal surface agents repair from. Every arm's fix-it is `funpack build`
+// (the warden never rebuilds implicitly); Schema_Mismatch carries its OWN
+// phrasing — rebuild with THIS funpack — because the index is well-formed,
+// just stamped by a different funpack, and Record_Refused names the per-line
+// decoder's exact cause so the message says WHY the bytes are not the
+// contract. Pure formatting: bytes in, message out.
+warden_refusal_message :: proc(refusal: Warden_Refusal, allocator := context.allocator) -> string {
+	switch refusal.err {
+	case .None:
+		return ""
+	case .Missing_Index:
+		return fmt.aprintf(
+			"%s/%s is missing — the warden reads the emitted index and never recompiles; run `funpack build` to emit it",
+			FUNPACK_BUILD_DIR,
+			INDEX_PRODUCT_NAME,
+			allocator = allocator,
+		)
+	case .Empty_Index:
+		return fmt.aprintf(
+			"%s/%s holds no record — line 1 must be the `project` record; rebuild the index with `funpack build`",
+			FUNPACK_BUILD_DIR,
+			INDEX_PRODUCT_NAME,
+			allocator = allocator,
+		)
+	case .Missing_Project_Record:
+		return fmt.aprintf(
+			"line %d: the stream must lead with the `project` record but a `decl` record came first; rebuild the index with `funpack build`",
+			refusal.line,
+			allocator = allocator,
+		)
+	case .Duplicate_Project_Record:
+		return fmt.aprintf(
+			"line %d: a second `project` record — the stream carries exactly one, leading; rebuild the index with `funpack build`",
+			refusal.line,
+			allocator = allocator,
+		)
+	case .Schema_Mismatch:
+		return fmt.aprintf(
+			"line %d: the index's schema_version stamp does not match this funpack's v%d — rebuild the index with this funpack: `funpack build`",
+			refusal.line,
+			INDEX_SCHEMA_VERSION,
+			allocator = allocator,
+		)
+	case .Record_Refused:
+		return fmt.aprintf(
+			"line %d: %v — the index is not a well-formed Index Contract stream; rebuild it with `funpack build`",
+			refusal.line,
+			refusal.decode,
+			allocator = allocator,
+		)
+	}
+	return ""
 }
 
 // decode_index_line decodes ONE NDJSON line of the Index Contract stream onto
