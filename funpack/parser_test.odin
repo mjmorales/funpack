@@ -591,6 +591,106 @@ test_parse_behavior_non_step_entry_rejected :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_fn_stub_body :: proc(t: ^testing.T) {
+	// A fn body may BE a typed hole (spec §05 §2; fun.ebnf §7 FnBody ::=
+	// Block | StubExpr): `@stub(T)` records the hole flag and the declared T,
+	// leaves the body empty, and carries no fallback.
+	source := "fn serve(b: Ball) -> Ball @stub(Ball)\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.fns), 1)
+	f := ast.fns[0]
+	testing.expect_value(t, f.name, "serve")
+	testing.expect_value(t, f.holed, true)
+	testing.expect_value(t, f.hole_type.name, "Ball")
+	testing.expect_value(t, f.has_fallback, false)
+	testing.expect_value(t, len(f.body), 0)
+}
+
+@(test)
+test_parse_fn_stub_body_with_fallback :: proc(t: ^testing.T) {
+	// The two-argument form `@stub(T, fallback)` additionally records the
+	// approximation expression (spec §05 §2).
+	source := "fn speed() -> Fixed @stub(Fixed, 1.5)\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	f := ast.fns[0]
+	testing.expect_value(t, f.holed, true)
+	testing.expect_value(t, f.hole_type.name, "Fixed")
+	testing.expect_value(t, f.has_fallback, true)
+	_, fallback_is_fixed := f.fallback.(^Fixed_Lit_Expr)
+	testing.expect(t, fallback_is_fixed)
+}
+
+@(test)
+test_parse_fn_stub_body_generic_hole_type :: proc(t: ^testing.T) {
+	// The declared hole type is a full Type_Ref — a generic application
+	// parses like any `-> R` ascription would.
+	source := "fn pick() -> Option[Side] @stub(Option[Side])\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	f := ast.fns[0]
+	testing.expect_value(t, f.holed, true)
+	testing.expect_value(t, f.hole_type.name, "Option")
+	testing.expect_value(t, len(f.hole_type.args), 1)
+	testing.expect_value(t, f.hole_type.args[0].name, "Side")
+}
+
+@(test)
+test_parse_behavior_step_stub_body :: proc(t: ^testing.T) {
+	// A behavior's reserved `step` entry point may be holed exactly like a fn
+	// (parse_fn_rest is shared): the hole lands on Behavior_Node.step.
+	source := "behavior serve on Ball {\n" +
+		"  fn step(self: Ball) -> Ball @stub(Ball)\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.behaviors), 1)
+	b := ast.behaviors[0]
+	testing.expect_value(t, b.step.name, "step")
+	testing.expect_value(t, b.step.holed, true)
+	testing.expect_value(t, b.step.hole_type.name, "Ball")
+	testing.expect_value(t, b.step.has_fallback, false)
+}
+
+@(test)
+test_parse_stub_as_prefix_directive_rejected :: proc(t: ^testing.T) {
+	// @stub is NOT a leading prefix directive (spec §05: it stands in
+	// body/expression position only) — a declaration-prefixing `@stub` is a
+	// parse error, never silently accepted.
+	source := "@stub(Ball)\nfn serve(b: Ball) -> Ball {\n  return b\n}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
+test_parse_stub_inside_block_rejected :: proc(t: ^testing.T) {
+	// The hole stands FOR the body, never inside one (fun.ebnf §7: FnBody is
+	// Block OR StubExpr) — a `@stub(…)` as a block statement is a parse error.
+	source := "fn serve(b: Ball) -> Ball {\n  @stub(Ball)\n}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
+test_parse_stub_missing_type_rejected :: proc(t: ^testing.T) {
+	// `@stub()` declares no T to typecheck callers against — the hole type is
+	// mandatory (spec §05 §2).
+	source := "fn serve(b: Ball) -> Ball @stub()\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
+test_parse_non_stub_directive_in_body_position_rejected :: proc(t: ^testing.T) {
+	// Only @stub may stand for a body: any other directive after `-> R` is an
+	// Unexpected_Token in parse_stub_body's name check.
+	source := "fn serve(b: Ball) -> Ball @doc(\"not a body\")\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
 test_parse_pipeline_ordered_named_stages :: proc(t: ^testing.T) {
 	// `pipeline Name { stage: [behaviors] … }` (spec §07 §1): stages keep
 	// source order, and each stage value is a behavior-name list.

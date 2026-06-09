@@ -162,19 +162,31 @@ Signal_Node :: struct {
 // point (spec §06 §3). The body is the shared Statement sequence
 // (let/return/if). return_type is the syntactic `-> R` ascription.
 Fn_Node :: struct {
-	name:        string,
-	params:      []Param_Decl,
-	return_type: Type_Ref,
-	body:        []Statement,
-	doc:         string,
-	gtags:       []string,
-	line:        int, // 1-based source line of the `fn` keyword (artifact-format §9 span provenance)
+	name:         string,
+	params:       []Param_Decl,
+	return_type:  Type_Ref,
+	body:         []Statement,
+	doc:          string,
+	gtags:        []string,
+	line:         int, // 1-based source line of the `fn` keyword (artifact-format §9 span provenance)
 	// is_extern marks a §02/§26 `extern fn` — a body-less native-boundary
 	// declaration whose definition lives outside funpack (the §17 seam's
 	// `extern fn arena() -> Arena` accessors). An extern fn carries a signature
 	// (params + return_type) but no body, so the body-typing pass skips it: its
 	// implementation is the engine's, not the source's.
-	is_extern:   bool,
+	is_extern:    bool,
+	// holed marks a §05 §2 typed hole standing in body position
+	// (grammar/fun.ebnf §7: FnBody ::= Block | StubExpr): `fn f(…) -> R
+	// @stub(T)`. A holed fn has an empty body; callers typecheck against the
+	// declared hole_type, the index tracks the hole, and release refuses to
+	// ship it (§29 §4) — those stages key off this flag. fallback is the
+	// optional `@stub(T, fallback)` approximation expression; has_fallback
+	// distinguishes the two-argument form (fallback is meaningless when
+	// has_fallback is false, mirroring Field_Decl.has_default).
+	holed:        bool,
+	hole_type:    Type_Ref,
+	fallback:     Expr,
+	has_fallback: bool,
 }
 
 // Behavior_Node is a pure transition attached to a thing (spec §06 §3):
@@ -435,6 +447,10 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		expect(p, .R_Paren) or_return
 		terminate_statement(p) or_return
 	case:
+		// Only @doc/@gtag prefix a declaration. @stub in particular is NOT a
+		// prefix directive — it stands in body/expression position only
+		// (spec §05: parse_stub_body owns it), so a leading `@stub` is an
+		// Unexpected_Token here, never silently accepted.
 		return .Unexpected_Token
 	}
 	return .None
@@ -736,12 +752,21 @@ parse_extern_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 }
 
 // parse_fn_rest parses everything after a function's name: the parameter
-// list, the `-> R` return type, and the brace-delimited statement body.
-// Shared by top-level fns and the behavior `step` entry point.
+// list, the `-> R` return type, and the body — a brace-delimited statement
+// Block or a `@stub(…)` typed hole (grammar/fun.ebnf §7: FnBody ::= Block |
+// StubExpr; one token of lookahead selects: `{` opens the Block, `@` the
+// hole). Shared by top-level fns and the behavior `step` entry point, so a
+// behavior step may be holed exactly like a fn.
 parse_fn_rest :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 	params := parse_param_list(p) or_return
 	expect(p, .Arrow) or_return
 	return_type := parse_type_ref(p) or_return
+	if peek_kind(p) == .At {
+		node = parse_stub_body(p) or_return
+		node.params = params
+		node.return_type = return_type
+		return node, .None
+	}
 	body := parse_fn_body(p) or_return
 	return Fn_Node{params = params, return_type = return_type, body = body}, .None
 }
@@ -795,6 +820,33 @@ parse_fn_body :: proc(p: ^Parser) -> (body: []Statement, err: Parse_Error) {
 	}
 	expect(p, .R_Brace) or_return
 	return stmts[:], .None
+}
+
+// parse_stub_body parses a `@stub(T)` / `@stub(T, fallback)` typed hole
+// standing in BODY position (spec §05 §2; grammar/fun.ebnf §7), reached from
+// parse_fn_rest when `@` opens the body. It returns a body-less Fn_Node
+// carrying the hole: holed set, hole_type the declared T callers typecheck
+// against, and — for the two-argument form — the fallback approximation
+// expression with has_fallback set. The directive name is contextual (`@`
+// then an Ident, like @doc/@gtag), so a non-stub directive in body position
+// is an Unexpected_Token: nothing but a hole may stand for a body.
+parse_stub_body :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
+	expect(p, .At) or_return
+	name := expect(p, .Ident) or_return
+	if name.text != "stub" {
+		return node, .Unexpected_Token
+	}
+	expect(p, .L_Paren) or_return
+	node.holed = true
+	node.hole_type = parse_type_ref(p) or_return
+	if peek_kind(p) == .Comma {
+		p.pos += 1
+		node.fallback = parse_expression(p) or_return
+		node.has_fallback = true
+	}
+	expect(p, .R_Paren) or_return
+	terminate_statement(p) or_return
+	return node, .None
 }
 
 // parse_return parses `return expr` (spec §02 §6) — the mandatory
