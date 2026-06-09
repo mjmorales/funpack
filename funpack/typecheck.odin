@@ -273,7 +273,8 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast
 // body's expected_return, and types the statement sequence. The index resolves a
 // param/return type naming a sibling user module's type (so a `setup() -> [Spawn]`
 // or a `step(self: Door, switches: View[Switch])` whose element is imported
-// grounds correctly).
+// grounds correctly). A §05 §2 typed hole standing in body position routes to
+// check_stub_hole — there is no statement sequence to walk.
 check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Type_Error {
 	ctx := Check_Ctx {
 		bindings        = bindings,
@@ -285,7 +286,34 @@ check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn
 	for param in fn.params {
 		ctx.scope[param.name] = resolve_type_ref(env, bindings, param.type, index)
 	}
+	if fn.holed {
+		return check_stub_hole(ctx, fn)
+	}
 	return check_statements(ctx, fn.body)
+}
+
+// check_stub_hole types a holed fn/step (spec §05 §2, P8): `@stub(T)` stands
+// where the body would be, so the hole's declared T must unify with the fn's
+// `-> R` ascription — a disagreeing `@stub(T)` is a Type_Mismatch, never
+// silently accepted. That equality is the whole type seam: the signature
+// stays intact (resolve_fn_signature records it body-blind), so every caller
+// already typechecks against T through the unchanged Func_Type (call_check)
+// rather than against the missing body. The `@stub(T, fallback)`
+// approximation expression checks against the hole's T in the param-seeded
+// scope — the decl's own environment — so a fallback that cannot produce T
+// rejects here, before the evaluation stage ever runs it.
+check_stub_hole :: proc(ctx: Check_Ctx, fn: Fn_Node) -> Type_Error {
+	hole := resolve_type_ref(ctx.env, ctx.bindings, fn.hole_type, ctx.index)
+	if !types_compatible(hole, ctx.expected_return) {
+		return .Type_Mismatch
+	}
+	if fn.has_fallback {
+		fallback := expr_check(ctx, fn.fallback) or_return
+		if !types_compatible(fallback, hole) {
+			return .Type_Mismatch
+		}
+	}
+	return .None
 }
 
 // check_statements types a fn-body statement sequence: a let binds its
