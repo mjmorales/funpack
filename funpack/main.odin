@@ -27,6 +27,13 @@ main :: proc() {
 			os.exit(2)
 		}
 		os.exit(run_check_verb(".", mode))
+	case "warden":
+		cmd, cmd_ok := parse_warden_command(os.args[2:])
+		if !cmd_ok {
+			print_usage()
+			os.exit(2)
+		}
+		os.exit(run_warden_verb(cmd))
 	case:
 		print_usage()
 		os.exit(2)
@@ -47,6 +54,82 @@ parse_build_mode :: proc(args: []string) -> (mode: Build_Mode, ok: bool) {
 		return .Release, true
 	}
 	return .Dev, false
+}
+
+// Warden_Command is the closed `funpack warden` subcommand set (§29 §1) — one
+// member per index query the sub-toolchain answers. The set is closed under
+// the usual enum discipline: a new query is a new member plus its
+// parse_warden_command name, never a stringly-dispatched extra.
+Warden_Command :: enum {
+	Find,
+	Holes,
+	Debt,
+	Graph,
+	Tags,
+	Pipeline,
+}
+
+// parse_warden_command maps the warden verb's arguments to its Warden_Command,
+// mirroring parse_build_mode — argument text in, enum out, no host state.
+// Exactly one recognized subcommand name is ok; a missing name, an unknown
+// name, or a trailing argument is a usage error (ok = false → usage + exit 2),
+// so a typo never silently runs a different query. Per-command flags belong to
+// the projection stories and will extend this seam, not bypass it.
+parse_warden_command :: proc(args: []string) -> (cmd: Warden_Command, ok: bool) {
+	if len(args) != 1 {
+		return .Find, false
+	}
+	switch args[0] {
+	case "find":
+		return .Find, true
+	case "holes":
+		return .Holes, true
+	case "debt":
+		return .Debt, true
+	case "graph":
+		return .Graph, true
+	case "tags":
+		return .Tags, true
+	case "pipeline":
+		return .Pipeline, true
+	}
+	return .Find, false
+}
+
+// run_warden_verb drives a recognized warden subcommand at the working
+// directory. The body lives in the root-parameterized warden_verb_exit (the
+// project_test_exit_code precedent) so the exit contract is unit-tested
+// against temp roots without the process exit; main always queries ".".
+run_warden_verb :: proc(cmd: Warden_Command) -> int {
+	return warden_verb_exit(".", cmd)
+}
+
+// warden_verb_exit is the warden exit contract over one query: EVERY
+// subcommand's substrate is the full read_warden_index acquisition + §29 §2
+// exact-match decode of the emitted `.funpack/index.ndjson` — never a mere
+// file-exists probe — so a refused index (missing, schema-mismatched,
+// malformed) is the SAME closed refusal on every command: its
+// warden_refusal_message fix-it eprinted + exit 2, mirroring the usage tier.
+// A whole-stream decode is exit 0. The warden has NO exit-1 tier — counted
+// assertion failures belong to the test verb (§29 §3) and a refusal is never
+// a counted failure — so the contract is exactly {0, 2}.
+warden_verb_exit :: proc(root: string, cmd: Warden_Command) -> int {
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	if refusal.err != .None {
+		fmt.eprintfln("funpack warden: %s", warden_refusal_message(refusal, context.temp_allocator))
+		return 2
+	}
+	// The per-command projection seam: the sibling query-projections epic fills
+	// one arm per Warden_Command with its projection of `index` (find/holes/
+	// debt/graph/tags/pipeline output). This spine proves dispatch +
+	// acquisition + decode, so today every recognized command is the decoded
+	// index's success verdict and prints nothing.
+	_ = index
+	switch cmd {
+	case .Find, .Holes, .Debt, .Graph, .Tags, .Pipeline:
+		return 0
+	}
+	return 0
 }
 
 // run_build_verb builds the §14 project tree at the working directory: it reads
@@ -160,5 +243,5 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]>")
+	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|warden <find|holes|debt|graph|tags|pipeline>>")
 }
