@@ -38,29 +38,57 @@ WARDEN_DEBT_GTAG :: "debt"
 // drives is deterministic (§29 §1).
 Warden_Decl_Predicate :: #type proc(decl: Decl_Record, needle: string) -> bool
 
-// warden_project_decls is the shared filter-and-reproject core: one forward
-// pass over the decoded decl slice, re-emitting each record the predicate
-// matches as its one NDJSON line via emit_decl_record — the producer's own
-// emitter, so the projected bytes round-trip the contract byte-identically
-// (the index_read_test re-emit identity, applied per match). The output is
-// the matching lines concatenated in INPUT order: the slice carries the
-// stream's pinned emission order and a filter pass preserves it, so two runs
-// over the same index are byte-identical with no re-sort and no map
-// iteration. Zero matches concatenate to "" — the empty projection is a
-// success, the caller prints nothing and exits 0. Per-line strings are
-// temp-allocated; the joined result lands in `allocator` (the
-// emit_index_stream allocation contract).
+// Warden_Decl_Filter pairs one predicate with its needle — one test of a
+// multi-filter query. The pair exists so AND-composition stays in the shared
+// core: a parameterized command (`warden find`) builds one filter per
+// provided argument and the core conjoins them in a single pass, instead of
+// growing a second filter loop per command.
+Warden_Decl_Filter :: struct {
+	test:   Warden_Decl_Predicate,
+	needle: string,
+}
+
+// warden_project_decls is the shared filter-and-reproject core over ONE
+// predicate: the single-filter projection of warden_project_decls_all, kept
+// as the direct seam the nullary commands (holes, debt) ride.
 warden_project_decls :: proc(
 	decls: []Decl_Record,
 	predicate: Warden_Decl_Predicate,
 	needle: string,
 	allocator := context.allocator,
 ) -> string {
+	filters := []Warden_Decl_Filter{{test = predicate, needle = needle}}
+	return warden_project_decls_all(decls, filters, allocator)
+}
+
+// warden_project_decls_all is the shared filter-and-reproject core: one
+// forward pass over the decoded decl slice, re-emitting each record EVERY
+// filter matches (AND-composition — the conjunction is the core's, so a
+// multi-filter command never grows its own pass) as its one NDJSON line via
+// emit_decl_record — the producer's own emitter, so the projected bytes
+// round-trip the contract byte-identically (the index_read_test re-emit
+// identity, applied per match). The output is the matching lines concatenated
+// in INPUT order: the slice carries the stream's pinned emission order and a
+// filter pass preserves it, so two runs over the same index are
+// byte-identical with no re-sort and no map iteration. Zero matches
+// concatenate to "" — the empty projection is a success, the caller prints
+// nothing and exits 0. Zero FILTERS match every record (a vacuous
+// conjunction); the filterless-find usage gate lives at the parse tier, not
+// here. Per-line strings are temp-allocated; the joined result lands in
+// `allocator` (the emit_index_stream allocation contract).
+warden_project_decls_all :: proc(
+	decls: []Decl_Record,
+	filters: []Warden_Decl_Filter,
+	allocator := context.allocator,
+) -> string {
 	lines := make([dynamic]string, 0, len(decls), context.temp_allocator)
-	for decl in decls {
-		if predicate(decl, needle) {
-			append(&lines, emit_decl_record(decl, context.temp_allocator))
+	match_loop: for decl in decls {
+		for filter in filters {
+			if !filter.test(decl, filter.needle) {
+				continue match_loop
+			}
 		}
+		append(&lines, emit_decl_record(decl, context.temp_allocator))
 	}
 	return strings.concatenate(lines[:], allocator)
 }
