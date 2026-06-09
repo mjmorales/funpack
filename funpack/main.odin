@@ -14,11 +14,32 @@ main :: proc() {
 	case "test":
 		os.exit(run_test_verb())
 	case "build":
-		os.exit(run_build_verb())
+		mode, mode_ok := parse_build_mode(os.args[2:])
+		if !mode_ok {
+			print_usage()
+			os.exit(2)
+		}
+		os.exit(run_build_verb(mode))
 	case:
 		print_usage()
 		os.exit(2)
 	}
+}
+
+// parse_build_mode maps the build verb's arguments to its Build_Mode: no
+// argument is Dev (the default — holes compile, §05), exactly `--release` is
+// Release (the §29 §4 hole-ban mode). Any other argument is a usage error
+// (ok = false → usage + exit 2), so a misspelled flag never silently builds in
+// the wrong mode. The mode is a pure flag — argument text in, enum out — with
+// no host state read.
+parse_build_mode :: proc(args: []string) -> (mode: Build_Mode, ok: bool) {
+	if len(args) == 0 {
+		return .Dev, true
+	}
+	if len(args) == 1 && args[0] == "--release" {
+		return .Release, true
+	}
+	return .Dev, false
 }
 
 // run_build_verb builds the §14 project tree at the working directory: it reads
@@ -31,9 +52,12 @@ main :: proc() {
 // is 2 and writes NO product (a compile error is never a counted failure); a host
 // IO failure writing the products is also 2; a clean build that writes the kind's
 // products is 0. The build verb has no assertion-failure tier — that is the test
-// verb's — so it never returns 1.
-run_build_verb :: proc() -> int {
-	product, build_err := stage_build(".", context.temp_allocator)
+// verb's — so it never returns 1. mode is the Dev/Release flag (`--release`):
+// under Release a §05 typed hole anywhere in the tree is one more exit-2
+// compile error (Holed_Declaration, §29 §4 — you cannot ship a hole), never a
+// counted failure.
+run_build_verb :: proc(mode: Build_Mode) -> int {
+	product, build_err := stage_build(".", mode, context.temp_allocator)
 	if build_err != .None {
 		fmt.eprintfln("funpack build: %v", build_err)
 		return 2
@@ -102,5 +126,5 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("usage: funpack <test|build>")
+	fmt.eprintln("usage: funpack <test|build [--release]>")
 }

@@ -60,21 +60,51 @@ Gate_Unit :: struct {
 // keeps the §17 seam's two body-less accessors (`extern fn arena_spawns`,
 // `extern fn arena`) from colliding on the duplication gate (two empty bodies
 // hash identically), which would be a false positive since neither carries code.
+// A HOLED fn or behavior step (§05 §2: `@stub(…)` stands in body position) is
+// body-less for the same reason — the hole replaces the statement sequence — so
+// it is skipped on the same grounds: two holes in one module must not collide
+// on the duplication gate (dev mode compiles holes; only release bans them).
 gate_units :: proc(ast: Ast) -> []Gate_Unit {
 	units := make([dynamic]Gate_Unit, 0, len(ast.tests) + len(ast.fns) + len(ast.behaviors), context.temp_allocator)
 	for test in ast.tests {
 		append(&units, Gate_Unit{name = test.name, body = test.body})
 	}
 	for fn in ast.fns {
-		if fn.is_extern {
+		if fn.is_extern || fn.holed {
 			continue
 		}
 		append(&units, Gate_Unit{name = fn.name, body = fn.body})
 	}
 	for behavior in ast.behaviors {
+		if behavior.step.holed {
+			continue
+		}
 		append(&units, Gate_Unit{name = behavior.name, body = behavior.step.body})
 	}
 	return units[:]
+}
+
+// release_holed_decl returns the first §05 typed-hole declaration in one AST —
+// a holed fn or a holed behavior step, in declaration order (fns first, then
+// behaviors, mirroring gate_units' stable order so a multi-hole source always
+// names the same first offender). It is the pure-AST half of the §29 §4
+// release hole-ban ("you cannot ship a hole"): the verdict is a function of
+// the AST alone, and the CALLER (stage_build) supplies the mode — in dev the
+// finder is never consulted, under --release any hit is a compile error. The
+// returned declaration name is the behavior's own name for a holed step (the
+// diagnostic anchor, never the reserved `step`).
+release_holed_decl :: proc(ast: Ast) -> (declaration: string, holed: bool) {
+	for fn in ast.fns {
+		if fn.holed {
+			return fn.name, true
+		}
+	}
+	for behavior in ast.behaviors {
+		if behavior.step.holed {
+			return behavior.name, true
+		}
+	}
+	return "", false
 }
 
 // Gate_Verdict pairs a gate failure with the declaration body it indicts, so
