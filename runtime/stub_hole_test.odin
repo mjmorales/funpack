@@ -1,4 +1,4 @@
-// The §05 §2 typed-hole RUNTIME arms (schema v7): a loaded `stub` body node
+// The §05 §2 typed-hole RUNTIME arms (the v7 `stub` carry): a loaded `stub` node
 // dispatches at tick time exactly like the compiler interpreter's
 // eval_stub_hole (funpack/evaluate.odin) — a `stub fallback` behavior ticks
 // its approximation expression live in the step's param-bound scope (P8: the
@@ -14,12 +14,13 @@ package funpack_runtime
 
 import "core:testing"
 
-// HOLE_ARTIFACT is the minimal v7 holed program: a Counter thing stepped by a
+// HOLE_ARTIFACT is the minimal holed program (the v7 `stub` carry, stamped at
+// the current schema version): a Counter thing stepped by a
 // fallback-holed behavior whose approximation is `self with { n: self.n + 1.0 }`
 // (so every tick advances n by exactly 1.0 in Q32.32), and an Idle thing
 // stepped by a bare typecheck-only hole (so no tick ever writes it). Both
 // behaviors occupy REAL flattened control steps — the pipelined-hole surface.
-HOLE_ARTIFACT :: "funpack-artifact 7\n" +
+HOLE_ARTIFACT :: "funpack-artifact 8\n" +
 	"[meta 2]\n" +
 	"project holes\n" +
 	"version L5:0.1.0\n" +
@@ -88,7 +89,7 @@ run_hole_ticks :: proc(program: ^Program, n: int, allocator := context.allocator
 
 @(test)
 test_load_stub_body_nodes :: proc(t: ^testing.T) {
-	// AC (loader): the v7 `stub` node loads as a first-class body statement —
+	// AC (loader): the v7-carried `stub` node loads as a first-class body statement —
 	// the fallback hole's body is one Stub node with the `fallback` form and
 	// its single approximation-expression child, the bare hole's one Stub
 	// node with the `bare` form and no child.
@@ -120,7 +121,7 @@ test_load_stub_body_nodes :: proc(t: ^testing.T) {
 
 	// An under-shaped fallback stub (a declared child that is absent) is a
 	// fail-closed refusal, never a partial body.
-	truncated := "funpack-artifact 7\n" +
+	truncated := "funpack-artifact 8\n" +
 		"[behaviors 1]\n" +
 		"behavior approx_step on:Counter stage:control contract:Update 0 0 0 1\n" +
 		"node stub fallback 1\n"

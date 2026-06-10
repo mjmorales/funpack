@@ -1397,3 +1397,214 @@ test_parse_variant_in_match_scrutinee_leaves_block_brace :: proc(t: ^testing.T) 
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
 }
+
+// ── §05 §6 @migrate — the schema-evolution directive ─────────────────────────
+// The three closed argument forms (rename / retype / both) on data fields, the
+// decl-level renamed-type form, and the named Malformed_Migrate /
+// Migrate_Wrong_Target verdicts for every deviation — mirroring the @todo
+// window molds: closed shapes, one named diagnostic per malformation class.
+
+@(test)
+test_parse_migrate_rename_field :: proc(t: ^testing.T) {
+	// The rename form on its own line above the field (spec §05 §6 table row
+	// 1): the field carries the prior key; an unprefixed sibling carries none.
+	source := "data Player {\n" +
+		"  @migrate(from: \"old_pos\")\n" +
+		"  pos: Int\n" +
+		"  hp: Int\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	fields := ast.datas[0].fields
+	testing.expect_value(t, len(fields), 2)
+	testing.expect(t, fields[0].has_migrate)
+	testing.expect(t, fields[0].migrate.has_from)
+	testing.expect_value(t, fields[0].migrate.from, "old_pos")
+	testing.expect(t, !fields[0].migrate.has_with)
+	testing.expect_value(t, fields[0].migrate.line, 2)
+	testing.expect(t, !fields[1].has_migrate)
+}
+
+@(test)
+test_parse_migrate_retype_field_inline :: proc(t: ^testing.T) {
+	// The retype form inline before its field (spec §05 §6 table row 2): the
+	// conversion fn's name is carried; no prior key.
+	source := "data Player { @migrate(with: meters_to_units) pos: Fixed }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	field := ast.datas[0].fields[0]
+	testing.expect(t, field.has_migrate)
+	testing.expect(t, !field.migrate.has_from)
+	testing.expect(t, field.migrate.has_with)
+	testing.expect_value(t, field.migrate.with, "meters_to_units")
+}
+
+@(test)
+test_parse_migrate_rename_retype_field :: proc(t: ^testing.T) {
+	// The combined form (spec §05 §6 table row 3): both halves carried, in the
+	// table's fixed from-then-with order.
+	source := "data Player {\n" +
+		"  @migrate(from: \"speed\", with: to_velocity)\n" +
+		"  vel: Fixed\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	field := ast.datas[0].fields[0]
+	testing.expect(t, field.has_migrate)
+	testing.expect_value(t, field.migrate.from, "speed")
+	testing.expect_value(t, field.migrate.with, "to_velocity")
+}
+
+@(test)
+test_parse_migrate_renamed_type_decl :: proc(t: ^testing.T) {
+	// The decl-level form — a renamed TYPE declaration (spec §05 §6 "or a
+	// renamed type declaration"): the data node carries the prior type name,
+	// alongside its other prefix directives.
+	source := "@doc(\"the player\")\n" +
+		"@migrate(from: \"OldPlayer\")\n" +
+		"data Player { hp: Int }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	decl := ast.datas[0]
+	testing.expect_value(t, decl.doc, "the player")
+	testing.expect(t, decl.has_migrate)
+	testing.expect(t, decl.migrate.has_from)
+	testing.expect_value(t, decl.migrate.from, "OldPlayer")
+	testing.expect(t, !decl.migrate.has_with)
+	testing.expect_value(t, decl.migrate.line, 2)
+}
+
+@(test)
+test_parse_migrate_with_before_from_rejected :: proc(t: ^testing.T) {
+	// The combined form is from-then-with — the spec table's one spelling
+	// (the formatter's canonical order); the reversed order matches no form.
+	source := "data Player { @migrate(with: lift, from: \"old\") hp: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
+}
+
+@(test)
+test_parse_migrate_empty_args_rejected :: proc(t: ^testing.T) {
+	// An empty argument list names neither a prior key nor a conversion —
+	// no form, the named verdict.
+	source := "data Player { @migrate() hp: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
+}
+
+@(test)
+test_parse_migrate_missing_args_rejected :: proc(t: ^testing.T) {
+	// A bare @migrate carries nothing to migrate by — the argument list is
+	// mandatory, like a @todo's window.
+	source := "data Player { @migrate hp: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
+}
+
+@(test)
+test_parse_migrate_unquoted_from_rejected :: proc(t: ^testing.T) {
+	// `from:` is the prior name AS A STRING (spec §05 §6) — a bare identifier
+	// is not the form, never a silent quote.
+	source := "data Player { @migrate(from: old_pos) pos: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
+}
+
+@(test)
+test_parse_migrate_empty_from_rejected :: proc(t: ^testing.T) {
+	// An empty prior name names no key to read the old value from.
+	source := "data Player { @migrate(from: \"\") pos: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
+}
+
+@(test)
+test_parse_migrate_unknown_key_rejected :: proc(t: ^testing.T) {
+	// The key vocabulary is closed to `from`/`with` — any other key matches
+	// no form.
+	source := "data Player { @migrate(to: \"new_pos\") pos: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
+}
+
+@(test)
+test_parse_migrate_duplicate_from_rejected :: proc(t: ^testing.T) {
+	// After a rename key only `with:` may follow — a second `from` falls
+	// outside the three closed forms.
+	source := "data Player { @migrate(from: \"a\", from: \"b\") pos: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
+}
+
+@(test)
+test_parse_migrate_wrong_case_convert_rejected :: proc(t: ^testing.T) {
+	// The conversion is a fn — snake_case (spec §02); a wrong-cased name keeps
+	// the parser-wide Wrong_Case verdict rather than the migrate-shape one.
+	source := "data Player { @migrate(with: Lift) pos: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
+}
+
+@(test)
+test_parse_migrate_on_thing_field_rejected :: proc(t: ^testing.T) {
+	// The schema-evolution channel is the name-keyed `data` schema (spec §09
+	// §4): a @migrate inside a thing body is the named wrong-target verdict,
+	// never a silently-accepted directive.
+	source := "thing Ball { @migrate(from: \"p\") pos: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
+}
+
+@(test)
+test_parse_migrate_on_signal_field_rejected :: proc(t: ^testing.T) {
+	// A signal is per-tick, never persisted — its fields admit no migration.
+	source := "signal Goal { @migrate(from: \"s\") side: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
+}
+
+@(test)
+test_parse_migrate_prefix_non_data_decl_rejected :: proc(t: ^testing.T) {
+	// The decl-level form marks a renamed `data` type only — an enum (or any
+	// other declaration) consuming a pending @migrate is the wrong target.
+	source := "@migrate(from: \"OldColor\")\n" +
+		"enum Color { Red, Blue }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
+}
+
+@(test)
+test_parse_migrate_decl_level_retype_rejected :: proc(t: ^testing.T) {
+	// A type declaration admits the RENAME form only (spec §05 §6: "a renamed
+	// type declaration") — there is no decl-level value to convert, so a
+	// `with:` there is the wrong target, not a silently-dropped conversion.
+	source := "@migrate(with: lift)\n" +
+		"data Player { hp: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
+}
+
+@(test)
+test_parse_migrate_dangling_in_body_rejected :: proc(t: ^testing.T) {
+	// A @migrate with no field following it migrates nothing — dangling at the
+	// body's close is the wrong-target verdict.
+	source := "data Player {\n" +
+		"  hp: Int\n" +
+		"  @migrate(from: \"old\")\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
+}
+
+@(test)
+test_parse_migrate_duplicate_before_field_rejected :: proc(t: ^testing.T) {
+	// One @migrate per field: a second before the same field is malformed,
+	// never a silent overwrite.
+	source := "data Player {\n" +
+		"  @migrate(from: \"a\")\n" +
+		"  @migrate(from: \"b\")\n" +
+		"  pos: Int\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
+}

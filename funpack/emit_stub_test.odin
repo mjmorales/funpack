@@ -70,8 +70,9 @@ stub_emit_artifact :: proc(t: ^testing.T) -> (artifact: string, ok: bool) {
 
 @(test)
 test_emit_stub_nodes_carry_holes :: proc(t: ^testing.T) {
-	// AC (artifact carries the hole, schema v7): the emitted bytes stamp the
-	// bumped version, every holed record declares body_count 1, the bare hole
+	// AC (artifact carries the hole, schema v7; stamp tracks the CURRENT
+	// version, v8 since the @migrate carry): the emitted bytes stamp the
+	// current version, every holed record declares body_count 1, the bare hole
 	// is exactly `node stub bare 0`, the fallback holes carry the
 	// approximation expression as the stub's one child, and the whole
 	// document parses well-formed under the funpack reader (every section
@@ -81,7 +82,7 @@ test_emit_stub_nodes_carry_holes :: proc(t: ^testing.T) {
 		return
 	}
 
-	testing.expect(t, strings.has_prefix(artifact, "funpack-artifact 7\n"))
+	testing.expect(t, strings.has_prefix(artifact, "funpack-artifact 8\n"))
 	doc, parse_err := parse_artifact(artifact)
 	testing.expect_value(t, parse_err, Artifact_Parse_Error.None)
 	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)
@@ -234,14 +235,15 @@ test_golden_holed_pong_artifact_carries_pipelined_fallback :: proc(t: ^testing.T
 	// { pos: advance(self.pos, self.vel, time.dt) }` approximation subtree),
 	// the bare fn hole is the one-line `stub bare` body, the holed behavior
 	// occupies a real flattened collision step, and the whole document parses
-	// well-formed under the funpack reader at schema v7.
+	// well-formed under the funpack reader at the current schema version (v8
+	// since the @migrate carry; the stub shapes are unchanged from v7).
 	root, artifact, ok := build_holed_pong_artifact(t)
 	if !ok {
 		return
 	}
 	defer remove_scratch_tree(root)
 
-	testing.expect(t, strings.has_prefix(artifact, "funpack-artifact 7\n"))
+	testing.expect(t, strings.has_prefix(artifact, "funpack-artifact 8\n"))
 	doc, parse_err := parse_artifact(artifact)
 	testing.expect_value(t, parse_err, Artifact_Parse_Error.None)
 	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)

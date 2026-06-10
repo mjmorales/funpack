@@ -40,17 +40,27 @@ Enum_Decl :: struct {
 // Field_Decl is one declared field on a data/signal/thing: its name, its type
 // (a name; a generic is `Ctor[Arg]`), and its default. `has_default` carries
 // whether `default_encoded` is meaningful (the §6 `-` vs `=ENCODED` flag).
+// The migrate halves are the v8 [data] `migrate FROM WITH` carry — the §05 §6
+// rename/retype metadata the schema-diff kernel reads (schema_diff.odin); only
+// a [data] field ever carries them (the artifact emits the line nowhere else),
+// and the has_* flags discriminate absence exactly as has_default does.
 Field_Decl :: struct {
 	name:            string,
 	type:            string,
 	has_default:     bool,
 	default_encoded: string, // the raw `ENCODED` token after `=`, decoded by position
+	migrate_from:    string, // the §05 §6 prior key (v8 `migrate FROM …`); meaningful iff has_from
+	has_from:        bool,
+	migrate_with:    string, // the §05 §6 conversion fn name (v8 `migrate … WITH`); meaningful iff has_with
+	has_with:        bool,
 }
 
 Data_Decl :: struct {
-	name:      string,
-	mutable:   bool, // true for `mut data` (§03 §7)
-	fields:    []Field_Decl,
+	name:       string,
+	mutable:    bool, // true for `mut data` (§03 §7)
+	fields:     []Field_Decl,
+	prior_name: string, // a renamed TYPE declaration's prior name (v8 decl-level `migrate FROM -`); meaningful iff has_prior
+	has_prior:  bool,
 }
 
 Signal_Decl :: struct {
