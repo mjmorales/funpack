@@ -1092,26 +1092,45 @@ parse_fn_body :: proc(p: ^Parser) -> (body: []Statement, err: Parse_Error) {
 // parse_fn_rest when `@` opens the body. It returns a body-less Fn_Node
 // carrying the hole: holed set, hole_type the declared T callers typecheck
 // against, and — for the two-argument form — the fallback approximation
-// expression with has_fallback set. The directive name is contextual (`@`
-// then an Ident, like @doc/@gtag), so a non-stub directive in body position
-// is an Unexpected_Token: nothing but a hole may stand for a body.
+// expression with has_fallback set. The directive core is the shared
+// parse_stub_parts production (the §15 StubExpr expression Atom reads the
+// same one, expr.odin parse_stub_atom), so the two hole positions can never
+// drift; only the statement terminator is body-specific here.
 parse_stub_body :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 	expect(p, .At) or_return
-	name := expect(p, .Ident) or_return
-	if name.text != "stub" {
-		return node, .Unexpected_Token
-	}
-	expect(p, .L_Paren) or_return
+	node.hole_type, node.fallback, node.has_fallback = parse_stub_parts(p) or_return
 	node.holed = true
-	node.hole_type = parse_type_ref(p) or_return
-	if peek_kind(p) == .Comma {
-		p.pos += 1
-		node.fallback = parse_expression(p) or_return
-		node.has_fallback = true
-	}
-	expect(p, .R_Paren) or_return
 	terminate_statement(p) or_return
 	return node, .None
+}
+
+// parse_stub_parts parses the shared `'stub' '(' Type (',' Expr)? ')'` core of
+// a §05 §2 typed hole, with the leading `@` already consumed — the single
+// production BOTH hole positions reach (parse_stub_body for the FnBody form,
+// expr.odin parse_stub_atom for the §15 StubExpr expression Atom), so the two
+// spellings share one grammar. The directive name is contextual (`@` then an
+// Ident, like @doc/@gtag), and only `stub` stands in body or expression
+// position — any other directive here is an Unexpected_Token. The parentheses
+// lift the no-struct-literal context exactly like CallArgs (expr.odin
+// parse_call_args): a record-literal fallback is valid even when the hole
+// stands inside a match scrutinee or an `if` condition.
+parse_stub_parts :: proc(p: ^Parser) -> (hole_type: Type_Ref, fallback: Expr, has_fallback: bool, err: Parse_Error) {
+	name := expect(p, .Ident) or_return
+	if name.text != "stub" {
+		return hole_type, nil, false, .Unexpected_Token
+	}
+	expect(p, .L_Paren) or_return
+	saved := p.no_record_brace
+	p.no_record_brace = false
+	defer p.no_record_brace = saved
+	hole_type = parse_type_ref(p) or_return
+	if peek_kind(p) == .Comma {
+		p.pos += 1
+		fallback = parse_expression(p) or_return
+		has_fallback = true
+	}
+	expect(p, .R_Paren) or_return
+	return hole_type, fallback, has_fallback, .None
 }
 
 // parse_return parses `return expr` (spec §02 §6) — the mandatory

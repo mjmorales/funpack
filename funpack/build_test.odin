@@ -491,6 +491,41 @@ test_release_holed_decl_walk :: proc(t: ^testing.T) {
 	log.infof("release_holed_decl: finds a holed fn and a holed behavior step (anchored on the behavior name), none on a hole-free AST")
 }
 
+// test_release_holed_decl_expression_positions extends the pure-AST finder's
+// proof to §15 StubExpr EXPRESSION-position holes (spec §05 §2: a hole stands
+// in body or expression position; both are release-banned alike): a hole
+// buried inside an INTACT fn body, a top-level `let` initializer, a thing
+// field default, and a test-block assert each name their containing
+// declaration — the finder descends expression trees, never just the FnBody
+// flag.
+@(test)
+test_release_holed_decl_expression_positions :: proc(t: ^testing.T) {
+	expr_fn_ast, fn_err := stage_parse(stage_lex("fn boost(base: Fixed) -> Fixed {\n  return base + @stub(Fixed, 0.5)\n}\n"))
+	testing.expect_value(t, fn_err, Parse_Error.None)
+	declaration, holed := release_holed_decl(expr_fn_ast)
+	testing.expect(t, holed)
+	testing.expect_value(t, declaration, "boost")
+
+	let_ast, let_err := stage_parse(stage_lex("let SPEED: Fixed = @stub(Fixed, 1.5)\n"))
+	testing.expect_value(t, let_err, Parse_Error.None)
+	declaration, holed = release_holed_decl(let_ast)
+	testing.expect(t, holed)
+	testing.expect_value(t, declaration, "SPEED")
+
+	field_ast, field_err := stage_parse(stage_lex("thing Marker {\n  bias: Fixed = @stub(Fixed, 0.0)\n}\n"))
+	testing.expect_value(t, field_err, Parse_Error.None)
+	declaration, holed = release_holed_decl(field_ast)
+	testing.expect(t, holed)
+	testing.expect_value(t, declaration, "Marker")
+
+	test_ast, test_err := stage_parse(stage_lex("test \"holed assert\" {\n  assert @stub(Bool)\n}\n"))
+	testing.expect_value(t, test_err, Parse_Error.None)
+	declaration, holed = release_holed_decl(test_ast)
+	testing.expect(t, holed)
+	testing.expect_value(t, declaration, "holed assert")
+	log.infof("release_holed_decl expression positions: an expression hole in a fn body, a let initializer, a field default, and a test body each name their declaration")
+}
+
 // test_gates_skip_holed_units proves dev mode compiles MULTIPLE holes: a holed
 // fn is body-less (the hole stands in body position), so like an extern fn it
 // is not a unit the structural gates score — two holes must NOT collide on the

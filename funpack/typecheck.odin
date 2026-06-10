@@ -213,6 +213,14 @@ layer_walk_expr :: proc(expr: Expr, registry: []string) -> Type_Error {
 		layer_walk_expr(e.cond, registry) or_return
 		layer_walk_expr(e.then_branch, registry) or_return
 		layer_walk_expr(e.else_branch, registry) or_return
+	case ^Stub_Expr:
+		// An expression-position hole's fallback is an expression position
+		// like any other (the same rule check_layer_registry applies to a
+		// body hole's fallback): a Body literal inside it is gated here, not
+		// exempted by the hole. A bare hole hosts nothing.
+		if e.has_fallback {
+			layer_walk_expr(e.fallback, registry) or_return
+		}
 	}
 	return .None
 }
@@ -442,8 +450,30 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		return tuple_check(ctx, e)
 	case ^If_Expr:
 		return if_check(ctx, e)
+	case ^Stub_Expr:
+		return stub_expr_check(ctx, e)
 	}
 	return nil, .Unsupported_Expr
+}
+
+// stub_expr_check types an expression-position typed hole (spec §05 §2;
+// grammar/fun.ebnf §15: StubExpr is an Atom): the hole ASCRIBES its declared
+// T — the expression's type IS T, so the enclosing expression typechecks
+// against the hole exactly as a caller typechecks against a holed
+// declaration's intact signature (check_stub_hole). The optional fallback
+// approximation checks against the hole's T in the scope at the hole's
+// position — the enclosing declaration's param-seeded scope plus any earlier
+// `let` bindings — mirroring the body-position fallback rule, so an ill-typed
+// fallback is a Type_Mismatch here, before the evaluation stage ever runs it.
+stub_expr_check :: proc(ctx: Check_Ctx, e: ^Stub_Expr) -> (type: Type, err: Type_Error) {
+	hole := resolve_type_ref(ctx.env, ctx.bindings, e.hole_type, ctx.index)
+	if e.has_fallback {
+		fallback := expr_check(ctx, e.fallback) or_return
+		if !types_compatible(fallback, hole) {
+			return nil, .Type_Mismatch
+		}
+	}
+	return hole, .None
 }
 
 // if_check types a value-producing if-expression (spec §02 §5): the condition

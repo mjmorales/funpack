@@ -33,6 +33,7 @@ Expr :: union {
 	^Match_Expr,
 	^Tuple_Expr,
 	^If_Expr,
+	^Stub_Expr,
 }
 
 Int_Lit_Expr :: struct {
@@ -197,6 +198,23 @@ If_Expr :: struct {
 	cond:        Expr,
 	then_branch: Expr,
 	else_branch: Expr,
+}
+
+// Stub_Expr is a §05 §2 typed hole standing in EXPRESSION position
+// (grammar/fun.ebnf §15: StubExpr is an Atom), the expression-side twin of the
+// body-position hole parse_stub_body records on Fn_Node: `1.0 + @stub(Fixed)`,
+// `Vec2{x: @stub(Fixed, 0.5), y: 0.0}`. The hole ASCRIBES its declared T — the
+// enclosing expression typechecks against T (stub_expr_check) — and the
+// optional fallback is the dev approximation that evaluates in the scope at
+// the hole's position (eval_stub_hole, the same funnel the body hole runs
+// through). has_fallback distinguishes the two-argument form; fallback is
+// meaningless when it is false, mirroring Fn_Node.has_fallback. The index
+// registers the containing declaration as stub debt and --release refuses it
+// exactly like a body hole (release_holed_decl descends expression trees).
+Stub_Expr :: struct {
+	hole_type:    Type_Ref,
+	fallback:     Expr,
+	has_fallback: bool,
 }
 
 // With_Expr is the record-update operator `value with { field: v, … }`
@@ -367,10 +385,28 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		return parse_match(p)
 	case .If:
 		return parse_if_expr(p)
+	case .At:
+		return parse_stub_atom(p)
 	case .Ident:
 		return parse_name_atom(p, tok)
 	}
 	return nil, .Unexpected_Token
+}
+
+// parse_stub_atom parses a `@stub(T)` / `@stub(T, fallback)` typed hole in
+// EXPRESSION position (spec §05 §2; grammar/fun.ebnf §15: StubExpr is an
+// Atom), with the leading `@` already consumed by parse_atom. The directive
+// core is the same parse_stub_parts production the body-position hole uses
+// (parser.odin parse_stub_body), so the two positions can never drift — only
+// the carrier differs: an Expr node here, the holed Fn_Node there. A non-stub
+// directive in expression position is an Unexpected_Token (parse_stub_parts'
+// name check): @doc/@gtag/@todo prefix declarations, and no other directive
+// names a value.
+parse_stub_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	hole_type, fallback, has_fallback := parse_stub_parts(p) or_return
+	node := new(Stub_Expr, context.temp_allocator)
+	node^ = Stub_Expr{hole_type = hole_type, fallback = fallback, has_fallback = has_fallback}
+	return node, .None
 }
 
 // parse_paren_atom parses a parenthesized atom after the `(` is consumed: a
