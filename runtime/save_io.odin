@@ -70,7 +70,15 @@ import "core:strings"
 // krognid golden harness uses the replay+digest path, not snapshots; this arm keeps
 // the save codec TOTAL over the extended Field_Value union (the §24 quicksave path
 // would otherwise drop a committed `pos`).
-SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(4)
+// v5 carries the writing build's name-keyed SCHEMAS in the snapshot — every §3
+// data decl and every thing blackboard schema, each field as (name, type
+// spelling) — so a Restore under a CHANGED schema can diff the snapshot's
+// schemas against the loaded artifact's and fold the §09 §4 migration plan over
+// the rows (schema_migrate.odin) instead of refusing or, worse, swapping rows
+// the new world mis-reads. The codec-version gate itself stays exact-match (a
+// v4 slot fails closed under a v5 build, per the stamp discipline); the carried
+// schema is what makes the SCHEMA migration §24 mandates possible at all.
+SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(5)
 
 // SAVE_SNAPSHOT_MAGIC leads every snapshot so a stray byte stream (a truncated
 // file, an unrelated blob) is rejected before the version check rather than parsed
@@ -289,8 +297,11 @@ Persist_Effects :: struct {
 //
 // A command list with no persist command (the common pong/snake/hunt tick) yields
 // empty effects — this path is engaged only by a program that emits §24 commands.
+// `program` is the running build's schema authority: a Save records its schemas
+// into the snapshot (codec v5) and a Restore migrates the slot's rows against it.
 process_persist_commands :: proc(
 	store: ^Save_Store,
+	program: ^Program,
 	committed: World_Version,
 	commands: []Record_Value,
 	allocator := context.allocator,
@@ -300,14 +311,14 @@ process_persist_commands :: proc(
 	for command in commands {
 		switch command.type_name {
 		case "Save":
-			ok := apply_save(store, committed, persist_slot(command), allocator)
+			ok := apply_save(store, program, committed, persist_slot(command), allocator)
 			// CLONE the slot onto `allocator`: the outcome is delivered NEXT tick, but
 			// persist_slot returns a slice into THIS command's String_Value, which lives
 			// on the eval scratch the live loop frees at tick end. The clone keeps the
 			// slot valid across the boundary (a no-op-cost copy in bounded paths).
 			append(&outcomes, Persist_Outcome{signal = "Saved", slot = strings.clone(persist_slot(command), allocator), ok = ok})
 		case "Restore":
-			version, ok := apply_restore(store, persist_slot(command), allocator)
+			version, ok := apply_restore(store, program, persist_slot(command), allocator)
 			if ok {
 				swap = version
 			}
@@ -335,27 +346,35 @@ persist_slot :: proc(command: Record_Value) -> string {
 }
 
 // apply_save serializes the committed version into a content-hash-pinned snapshot
-// and writes it to the slot. Returns the store-write outcome (false → Result::Err),
-// so a disk write failure is the forced error arm the menu fold records (§24).
+// — stamped with the program's schemas (codec v5) — and writes it to the slot.
+// Returns the store-write outcome (false → Result::Err), so a disk write failure
+// is the forced error arm the menu fold records (§24).
 apply_save :: proc(
 	store: ^Save_Store,
+	program: ^Program,
 	committed: World_Version,
 	slot: string,
 	allocator := context.allocator,
 ) -> bool {
-	bytes := serialize_snapshot(committed, allocator)
+	bytes := serialize_snapshot(program, committed, allocator)
 	snapshot := Save_Snapshot{bytes = bytes, content_hash = u64(xxhash.XXH64(bytes))}
 	return store_write_slot(store, slot, snapshot, allocator)
 }
 
-// apply_restore reads a slot, verifies its content hash, and deserializes it back
-// into a World_Version to swap in. ok is false on any of: an absent/unreadable slot
-// (no save was taken), a content-hash mismatch (a corrupt slot — the bytes no
-// longer hash to the recorded pin), or a deserialize failure (a snapshot from a
-// different codec version) — each fails closed to Result::Err so a bad read is
-// never swapped in as a silent partial world (§24 forced-match).
+// apply_restore reads a slot, verifies its content hash, deserializes it, and
+// MIGRATES it to the loaded program's schemas — restoring under a changed schema
+// is the same operation as hot-reload state migration (§24 §1, §09 §4): the
+// snapshot's recorded schemas diff against the program's, and the kernel's plan
+// folds over the rows (schema_migrate.odin). ok is false on any of: an absent/
+// unreadable slot, a content-hash mismatch, a deserialize failure (a snapshot
+// from a different codec version), or a MIGRATION REFUSAL (a kernel verdict like
+// Unknown_Source, an unsettled decl-set delta, a failed conversion) — each fails
+// closed to Result::Err so a bad read is never swapped in as a silent partial
+// world (§24 forced-match). An unchanged schema folds the all-Carry identity
+// plan, so the common same-build restore is value-identical to the saved world.
 apply_restore :: proc(
 	store: ^Save_Store,
+	program: ^Program,
 	slot: string,
 	allocator := context.allocator,
 ) -> (
@@ -371,7 +390,19 @@ apply_restore :: proc(
 	if u64(xxhash.XXH64(snapshot.bytes)) != snapshot.content_hash {
 		return {}, false
 	}
-	return deserialize_snapshot(snapshot.bytes, allocator)
+	saved, old_schemas, parse_ok := deserialize_snapshot(snapshot.bytes, allocator)
+	if !parse_ok {
+		return {}, false
+	}
+	set, compile_refusal := compile_migration(old_schemas, program, allocator)
+	if compile_refusal.kind != .None {
+		return {}, false
+	}
+	migrated, migrate_refusal := migrate_world_version(set, saved, program, allocator)
+	if migrate_refusal.kind != .None {
+		return {}, false
+	}
+	return migrated, true
 }
 
 // apply_settings_command persists a command's `settings` record per-machine. Returns
@@ -524,7 +555,7 @@ step_tick_persist :: proc(
 	// PERSISTENT commit allocator — a swap deserialized onto the eval scratch would be
 	// freed before the next tick reads it. The persist_commands records themselves live
 	// on the eval scratch (read here, same tick, pre-reset).
-	effects := process_persist_commands(carrier.store, committed, state.persist_commands[:], commit_allocator)
+	effects := process_persist_commands(carrier.store, program, committed, state.persist_commands[:], commit_allocator)
 
 	// LIVE GENERATIONAL RECLAMATION (reclaim_live; the unbounded-loop bound). Retire the
 	// now-dead BASE version on the persistent commit allocator, before the live driver
@@ -611,19 +642,33 @@ seed_outcome_signals :: proc(
 // --- The snapshot codec (full World_Version, deterministic bytes) ----------
 
 // serialize_snapshot writes a World_Version into its canonical byte stream: a magic
-// + version header, the tick ordinal, then every table (thing name, singleton flag,
+// + version header, the tick ordinal, the writing program's SCHEMAS (v5 — every
+// data decl and thing blackboard schema as name + per-field name/type-spelling
+// pairs, in declaration order), then every table (thing name, singleton flag,
 // next_id, rows). It carries next_id + singleton — which the frame digest's
 // frame_bytes deliberately OMITS — so a deserialized version is fully SPAWNABLE (a
-// restored world that spawns a thing mints the next correct Id, no collision). The
-// encoding is raw little-endian fixed-point throughout (no float, no map-iteration
-// order: row fields write in sorted name order), so a serialize → deserialize →
-// re-serialize round-trips bit-for-bit and a restored version digests identically
-// to the version that was saved.
-serialize_snapshot :: proc(version: World_Version, allocator := context.allocator) -> []u8 {
+// restored world that spawns a thing mints the next correct Id, no collision); the
+// schema carry is what lets a LATER build's Restore diff and migrate the rows
+// (§24 §1, §09 §4). The encoding is raw little-endian fixed-point throughout (no
+// float, no map-iteration order: schemas write in declaration order, row fields in
+// sorted name order), so a serialize → deserialize → re-serialize round-trips
+// bit-for-bit and a restored version digests identically to the version that was
+// saved.
+serialize_snapshot :: proc(program: ^Program, version: World_Version, allocator := context.allocator) -> []u8 {
 	buf := make([dynamic]u8, allocator)
 	snap_put_u64(&buf, SAVE_SNAPSHOT_MAGIC)
 	snap_put_u64(&buf, SAVE_SNAPSHOT_SCHEMA_VERSION)
 	snap_put_u64(&buf, u64(i64(version.tick)))
+	snap_put_u64(&buf, u64(len(program.data)))
+	for &decl in program.data {
+		snap_put_string(&buf, decl.name)
+		snap_write_field_schema(&buf, decl.fields)
+	}
+	snap_put_u64(&buf, u64(len(program.things)))
+	for &decl in program.things {
+		snap_put_string(&buf, decl.name)
+		snap_write_field_schema(&buf, decl.fields)
+	}
 	snap_put_u64(&buf, u64(len(version.tables)))
 	for table in version.tables {
 		snap_put_string(&buf, table.thing)
@@ -794,7 +839,9 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	}
 }
 
-// deserialize_snapshot parses a snapshot byte stream back into a World_Version. ok
+// deserialize_snapshot parses a snapshot byte stream back into a World_Version
+// plus the SCHEMAS the writing build recorded (v5) — the OLD side of the §09 §4
+// schema diff a Restore under a changed schema feeds to compile_migration. ok
 // is false on a wrong magic, a version this build was not built for, or any
 // truncation/malformed record that runs the cursor past the buffer — so a Restore
 // of a corrupt or foreign snapshot fails closed (Result::Err) rather than swapping a
@@ -805,18 +852,21 @@ deserialize_snapshot :: proc(
 	allocator := context.allocator,
 ) -> (
 	version: World_Version,
+	schemas: Schema_Set,
 	ok: bool,
 ) {
 	cur := Snap_Cursor{data = bytes, pos = 0}
 	magic := snap_get_u64(&cur) or_return
 	if magic != SAVE_SNAPSHOT_MAGIC {
-		return {}, false
+		return {}, {}, false
 	}
 	ver := snap_get_u64(&cur) or_return
 	if ver != SAVE_SNAPSHOT_SCHEMA_VERSION {
-		return {}, false
+		return {}, {}, false
 	}
 	tick := i64(snap_get_u64(&cur) or_return)
+	schemas.data = snap_read_schema_block(&cur, allocator) or_return
+	schemas.things = snap_read_schema_block(&cur, allocator) or_return
 	table_count := snap_get_u64(&cur) or_return
 	tables := make([]Version_Table, int(table_count), allocator)
 	for ti in 0 ..< int(table_count) {
@@ -835,7 +885,45 @@ deserialize_snapshot :: proc(
 			next_id   = next_id,
 		}
 	}
-	return World_Version{tick = int(tick), tables = tables}, true
+	return World_Version{tick = int(tick), tables = tables}, schemas, true
+}
+
+// snap_write_field_schema writes one decl's field schema: the field count, then
+// each field's (name, type spelling) in DECLARATION order — the only two facts
+// the diff kernel reads from the old side (defaults and migrate metadata are
+// new-side facts, so the snapshot never carries them).
+snap_write_field_schema :: proc(buf: ^[dynamic]u8, fields: []Field_Decl) {
+	snap_put_u64(buf, u64(len(fields)))
+	for fd in fields {
+		snap_put_string(buf, fd.name)
+		snap_put_string(buf, fd.type)
+	}
+}
+
+// snap_read_schema_block parses one v5 schema block (data decls or thing
+// schemas) back into Old_Schema records — the inverse of the serialize side's
+// decl walk, in the recorded declaration order.
+snap_read_schema_block :: proc(
+	cur: ^Snap_Cursor,
+	allocator := context.allocator,
+) -> (
+	schemas: []Old_Schema,
+	ok: bool,
+) {
+	count := snap_get_u64(cur) or_return
+	out := make([]Old_Schema, int(count), allocator)
+	for i in 0 ..< int(count) {
+		name := snap_get_string(cur, allocator) or_return
+		field_count := snap_get_u64(cur) or_return
+		fields := make([]Schema_Field, int(field_count), allocator)
+		for j in 0 ..< int(field_count) {
+			field_name := snap_get_string(cur, allocator) or_return
+			field_type := snap_get_string(cur, allocator) or_return
+			fields[j] = Schema_Field{name = field_name, type_spelling = field_type}
+		}
+		out[i] = Old_Schema{name = name, fields = fields}
+	}
+	return out, true
 }
 
 // snap_read_row parses one row: its Id then its sorted-name blackboard columns. The
