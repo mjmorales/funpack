@@ -159,11 +159,16 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		return Build_Product{}, Build_Verdict{err = .Malformed_Tree}
 	}
 	if mode == .Release {
+		// Both refusal walkers scan the sources in the Index Contract's module
+		// order (entrypoint module first, then sorted-by-path remainder) so the
+		// named offender is the first offender in the order the emitted index
+		// lists its decl blocks — never a plain sorted-by-path artifact.
+		scan_sources := order_release_sources(root, project.sources)
 		// The §29 §4 release hole-ban: a hole cannot ship, so a holed declaration
 		// in ANY module refuses the whole build before either emission surface
 		// runs — exit 2, no product, never a counted failure — naming the first
 		// holed declaration so the refusal is actionable.
-		if name, holed := project_holed_decl(project.sources); holed {
+		if name, holed := project_holed_decl(scan_sources); holed {
 			return Build_Product{}, Build_Verdict{err = .Holed_Declaration, offender = name}
 		}
 		// The §05 §5 release debug-directive ban, the hole-ban's sibling tier
@@ -171,7 +176,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		// debug probe on ANY declaration refuses the whole build the same way —
 		// exit 2, no product, never a counted failure — naming the first probed
 		// declaration.
-		if name, probed := project_debug_decl(project.sources); probed {
+		if name, probed := project_debug_decl(scan_sources); probed {
 			return Build_Product{}, Build_Verdict{err = .Debug_Directive, offender = name}
 		}
 	}
@@ -207,12 +212,15 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 
 // project_holed_decl walks every §14 source for the first §05 typed-hole
 // declaration — the project-wide form of the pure-AST release_holed_decl
-// (gates.odin) the --release hole-ban consults. Sources walk in Project.sources
-// order (sorted-by-path via read_project) and each AST in declaration order, so
-// a multi-hole project always names the same first offender deterministically.
-// The returned declaration is §15 module-qualified (qualify_offender — bare on
-// a single-module project, lore #11), matching the Index Contract's
-// qualified_name so the refusal line and the index name the decl identically.
+// (gates.odin) the --release hole-ban consults. Sources walk in the order the
+// caller supplies — stage_build passes the Index Contract's module order
+// (order_release_sources: entrypoint first, then sorted-by-path remainder) —
+// and each AST in declaration order, so a multi-hole project always names the
+// same first offender deterministically, and that offender is the first in
+// index order. The returned declaration is §15 module-qualified
+// (qualify_offender — bare on a single-module project, lore #11), matching the
+// Index Contract's qualified_name so the refusal line and the index name the
+// decl identically.
 // A source that fails to read or parse contributes no verdict here — the
 // checked pipeline downstream surfaces that compile error precisely
 // (Compile_Failed), so the ban never masks a parse failure with a hole verdict.
@@ -236,10 +244,12 @@ project_holed_decl :: proc(sources: []Source) -> (declaration: string, holed: bo
 // project_debug_decl walks every §14 source for the first declaration carrying
 // a §05 §5 debug probe — the project-wide form of the pure-AST
 // release_debug_decl (gates.odin) the --release debug-directive ban consults,
-// mirroring project_holed_decl exactly. Sources walk in Project.sources order
-// (sorted-by-path via read_project) and each AST in the fixed per-kind
-// declaration order, so a multi-probe project always names the same first
-// offender deterministically. The returned declaration is §15 module-qualified
+// mirroring project_holed_decl exactly. Sources walk in the order the caller
+// supplies — stage_build passes the Index Contract's module order
+// (order_release_sources: entrypoint first, then sorted-by-path remainder) —
+// and each AST in the fixed per-kind declaration order, so a multi-probe
+// project always names the same first offender deterministically, and that
+// offender is the first in index order. The returned declaration is §15 module-qualified
 // (qualify_offender — bare on a single-module project, lore #11), matching the
 // Index Contract's qualified_name so the refusal line and the index name the
 // decl identically. A source that fails to read or parse contributes
@@ -275,6 +285,27 @@ qualify_offender :: proc(sources: []Source, source: Source, name: string) -> str
 		module = ""
 	}
 	return qualify_decl(module, name)
+}
+
+// order_release_sources projects the §14 sources into the Index Contract's
+// module order — the entrypoint module's source first, then the remainder in
+// Project.sources order — by applying entrypoint_first_order, the SAME pure
+// index permutation order_index_modules applies to the emitted decl blocks
+// (never a duplicated ordering rule). The release-refusal walkers scan this
+// order so the named offender is the first offender in the order the emitted
+// index lists its declarations. A package (no entrypoints.fcfg ⇒ "" entrypoint,
+// §30 §7) keeps the plain sources order, exactly like its index stream. The
+// permutation is temp-allocated and never mutates Project.sources.
+order_release_sources :: proc(root: string, sources: []Source) -> []Source {
+	names := make([]string, len(sources), context.temp_allocator)
+	for source, i in sources {
+		names[i] = source.module
+	}
+	ordered := make([]Source, len(sources), context.temp_allocator)
+	for src, dst in entrypoint_first_order(names, entrypoint_module_name(root)) {
+		ordered[dst] = sources[src]
+	}
+	return ordered
 }
 
 // has_entrypoints_fcfg reports whether the §14 tree carries a funpack_configs/
