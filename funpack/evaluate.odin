@@ -1341,6 +1341,32 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		body_ctx.query_indexes = indexes
 		return eval_user_fn(body_ctx, fn, args)
 	}
+	// A bare name bound by IMPORT to a sibling user module's fn (§15: the
+	// declaration's module of origin is invisible at the use site — including
+	// a §30 package module's exposed fn called across the package edge). The
+	// arguments are CONSUMER expressions, so they evaluate in the consumer
+	// ctx/env first; the body then runs in a fresh ctx over the OWNING
+	// module's (ast, env, bindings) with the shared visited set — mirroring
+	// eval_module_qualified_const and eval_module_record. An engine.* .Func
+	// binding has no user eval surface, so module_eval_lookup misses it and
+	// the fall-through stays the pre-existing miss arm.
+	if binding, bound := ctx.bindings.names[name.name]; bound && binding.kind == .Func {
+		if owner, found := module_eval_lookup(ctx.modules, binding.module); found {
+			if fn, indexes, declared := find_user_callable(owner.ast, name.name); declared {
+				args := eval_args(ctx, env, e.args) or_return
+				owner_ctx := Eval_Ctx {
+					ast      = owner.ast,
+					env      = owner.env,
+					bindings = owner.bindings,
+					modules  = owner.modules,
+					module   = binding.module,
+					visiting = ctx.visiting,
+				}
+				owner_ctx.query_indexes = indexes
+				return eval_user_fn(owner_ctx, fn, args)
+			}
+		}
+	}
 	return nil, false
 }
 
