@@ -203,7 +203,11 @@ build_module_index_typed :: proc(modules: []string, asts: []Ast, package_roots: 
 	entries := make([dynamic]Module_Entry, 0, len(asts), context.temp_allocator)
 	for ast, i in asts {
 		exports := collect_module_exports(ast)
-		record_schemas, enum_schemas := fill_export_types(&exports, ast, name_index)
+		// The typed fill resolves each module's OWN imports, so a package
+		// module's vantage is its own root — its package-internal imports
+		// resolve through the prefixed entries without crossing the edge.
+		root := package_roots[i] if package_roots != nil else ""
+		record_schemas, enum_schemas := fill_export_types(&exports, ast, name_index, root)
 		append(&entries, Module_Entry {
 			module         = modules[i],
 			package_root   = package_roots[i] if package_roots != nil else "",
@@ -229,16 +233,19 @@ build_module_index_typed :: proc(modules: []string, asts: []Ast, package_roots: 
 // already ran, so a cross-module type a signature/const/field/payload references
 // is visible. A module whose imports or env do not resolve leaves its export
 // signatures and let types nil and its record/enum schema sets empty — that
-// module's own typecheck reports the real error.
+// module's own typecheck reports the real error. importer_root is the module's
+// own §30 package root, threaded so a package module's internal imports
+// resolve from its own vantage.
 fill_export_types :: proc(
 	exports: ^[]Module_Export,
 	ast: Ast,
 	name_index: Module_Index,
+	importer_root := "",
 ) -> (
 	record_schemas: []Module_Record_Schema,
 	enum_schemas: []Module_Enum_Schema,
 ) {
-	bindings, bind_err := resolve_imports_indexed(ast, name_index)
+	bindings, bind_err := resolve_imports_indexed(ast, name_index, importer_root)
 	if bind_err != .None {
 		return nil, nil
 	}
@@ -344,8 +351,11 @@ module_const_type :: proc(index: Module_Index, bindings: Bindings, handle: strin
 // the same predicate the import resolver gates through), meaningful only when
 // exported: a handle-member access is the one route that reaches an export
 // without an importing declaration, so the package edge gates here too (spec
-// §30 §6) — module_member_check raises .Package_Private off it.
-module_member_kind :: proc(index: Module_Index, bindings: Bindings, handle: string, member: string) -> (kind: Module_Export_Kind, exported: bool, handle_known: bool, importable: bool) {
+// §30 §6) — module_member_check raises .Package_Private off it. importer_root
+// is the accessing module's own §30 package root ("" = the consuming
+// project), so a package module reading its OWN sibling's member through a
+// handle never crosses the edge (spec §15 §5).
+module_member_kind :: proc(index: Module_Index, bindings: Bindings, handle: string, member: string, importer_root := "") -> (kind: Module_Export_Kind, exported: bool, handle_known: bool, importable: bool) {
 	binding, bound := bindings.names[handle]
 	if !bound || binding.kind != .Module {
 		return {}, false, false, false
@@ -358,7 +368,7 @@ module_member_kind :: proc(index: Module_Index, bindings: Bindings, handle: stri
 	if !found {
 		return {}, false, true, false
 	}
-	return export.kind, true, true, module_export_importable(entry, export)
+	return export.kind, true, true, module_export_importable(entry, export, importer_root)
 }
 
 // module_record_schema resolves the field schema of a RECORD type an import bound
@@ -480,16 +490,20 @@ module_export_lookup :: proc(entry: Module_Entry, name: string) -> (export: Modu
 	return Module_Export{}, false
 }
 
-// module_export_importable is THE §15 §4 two-boundary visibility rule: a
-// within-project export (package_root == "") is public-by-default — always
-// importable, the exposed flag never consulted — while a package-edge export
-// is importable iff its declaration carries §05 §4 @expose (spec §30 §6;
-// everything else is package-private). Both the import resolver
-// (resolve_user_import) and the whole-module-handle member access
-// (module_member_kind) gate through this one predicate, so the two access
-// routes cannot drift.
-module_export_importable :: proc(entry: Module_Entry, export: Module_Export) -> bool {
-	return entry.package_root == "" || export.exposed
+// module_export_importable is THE §15 §4 two-boundary visibility rule, read
+// from the IMPORTER's vantage: an export whose entry shares the importer's
+// package root is public-by-default — a within-project import (both roots "")
+// and a package module importing its OWN sibling (both roots the package
+// name, spec §15 §5: within the package, no edge is crossed) never consult
+// the exposed flag — while a root mismatch is the §30 §6 package edge, where
+// an export is importable iff its declaration carries §05 §4 @expose
+// (everything else is package-private). importer_root defaults to "" (the
+// consuming project), so every pre-existing call site keeps the consumer
+// vantage. Both the import resolver (resolve_user_import) and the
+// whole-module-handle member access (module_member_kind) gate through this
+// one predicate, so the two access routes cannot drift.
+module_export_importable :: proc(entry: Module_Entry, export: Module_Export, importer_root := "") -> bool {
+	return entry.package_root == importer_root || export.exposed
 }
 
 // module_export_binding maps an export's position to the Binding the resolver
@@ -546,15 +560,19 @@ index_user_type :: proc(index: Module_Index, bindings: Bindings, name: string) -
 // binds to a DIFFERENT in-scope import is .Name_Collision (bind_name enforces
 // the §02 rule). The privacy gate runs AFTER the export lookup so an unknown
 // member of a package module stays the precise .Unknown_Member — privacy is a
-// fact about a declaration that exists. The caller has already confirmed the
-// module is in the index, so this arm never re-checks module existence.
-resolve_user_import :: proc(bindings: ^Bindings, entry: Module_Entry, members: []string) -> Type_Error {
+// fact about a declaration that exists. importer_root is the IMPORTING
+// module's own §30 package root ("" = the consuming project): a package
+// module importing its own sibling shares the entry's root, so the edge gate
+// never fires within a package (spec §15 §5). The caller has already
+// confirmed the module is in the index, so this arm never re-checks module
+// existence.
+resolve_user_import :: proc(bindings: ^Bindings, entry: Module_Entry, members: []string, importer_root := "") -> Type_Error {
 	for member in members {
 		export, exported := module_export_lookup(entry, member)
 		if !exported {
 			return .Unknown_Member
 		}
-		if !module_export_importable(entry, export) {
+		if !module_export_importable(entry, export, importer_root) {
 			return .Package_Private
 		}
 		bind_name(bindings, member, module_export_binding(entry.module, export)) or_return

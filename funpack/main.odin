@@ -245,7 +245,7 @@ run_test_verb :: proc() -> int {
 		fmt.eprintfln("funpack test: %v", project_err)
 		return 2
 	}
-	report := run_project_pipeline(project.sources)
+	report := run_project_pipeline(project_pipeline_sources(project))
 	if report.index_err != .None {
 		fmt.eprintfln("funpack test: %s: %v", report.failed_path, report.index_err)
 		return 2

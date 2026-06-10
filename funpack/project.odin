@@ -33,9 +33,14 @@ RESERVED_ROOT :: "engine"
 // the source root, directory segments dotted and filename as the leaf,
 // with no `module` keyword to declare or drift. The two travel together
 // so identity comes from config and the filesystem, never a hardcode.
+// package_root is "" for the project's own sources (src/ and gen/); a §30
+// path dependency's sources carry their package's project name — the root
+// namespace their module is prefixed under (`hexgrid.layout`) and the edge
+// the §30 §6 expose gate reads.
 Source :: struct {
-	path:   string,
-	module: string,
+	path:         string,
+	module:       string,
+	package_root: string,
 }
 
 Project :: struct {
@@ -52,6 +57,19 @@ Project :: struct {
 	// derived from the filesystem, never declared — there is no features config
 	// (§14 §4) — so it travels with the Project as a fact of the tree.
 	capabilities: Capabilities,
+	// deps is the parsed funpack_configs/deps.fcfg (§30 §3): the declared
+	// dependencies across all four provenance sources. Absent file = zero
+	// deps (deps.fcfg is optional; a stdlib-only game has none).
+	deps:         []Dep,
+	// package_sources is the §30 path-dependency source set: every path dep's
+	// .fun sources, modules prefixed under the dependency's project name
+	// (`hexgrid.layout`) with package_root stamped. Kept distinct from
+	// `sources` so the project's own walks (fmt, emit ordering, the index
+	// contract) are untouched; the test pipeline compiles BOTH sets against
+	// one index (project_pipeline_sources). Registry/url deps are parsed but
+	// not resolved here — vendoring + the content-hash gate are §30 §4,
+	// a downstream story.
+	package_sources: []Source,
 }
 
 // Build_Platform is the closed §14.4/§6 presentation-platform set a build
@@ -146,6 +164,47 @@ Project_Error :: enum {
 	// error. A dedicated arm, never a catch-all — the error names the specific
 	// §17 layering invariant the bake pipeline rests on.
 	Seam_Imports_Behavior,
+	// Malformed_Deps_Fcfg is the §30 §3 deps.fcfg grammar reject: a present
+	// deps.fcfg that violates the `use <name> <source> "…" [hash "…"]`
+	// production — an unknown source kind (the set is closed: version/path/
+	// url), a registry/url dep missing its required hash, a hash on a path
+	// dep (the table grants path deps none), a duplicate dependency name
+	// (one name, one dependency), or any non-grammar construct. A dedicated
+	// arm naming the deps production, never folded into another config's.
+	Malformed_Deps_Fcfg,
+	// Malformed_Package_Tree is a §30 §7 path dependency whose tree is not a
+	// well-formed PACKAGE: a missing/malformed funpack_configs/project.fcfg,
+	// a missing or empty src/, or a present entrypoints.fcfg — a package is
+	// structurally a project WITHOUT an entrypoint (a game runs, a package is
+	// imported), so a tree that runs cannot be depended on as a package.
+	Malformed_Package_Tree,
+	// Dep_Name_Mismatch is a deps.fcfg `use <name>` whose path dependency's
+	// own project.fcfg declares a DIFFERENT project name. The package name is
+	// its root namespace (§30 §7) and project.fcfg's label is the package
+	// identity (§14 §4), so a declaration naming one identity while the tree
+	// carries another is the same label/identity drift class §30 §4 makes a
+	// compile error for hashes — refused, never silently reconciled.
+	Dep_Name_Mismatch,
+	// Package_Imports_Package is the §30 §2 star-graph violation surfaced
+	// STRUCTURALLY: a path dependency's own tree declares dependencies (a
+	// non-empty funpack_configs/deps.fcfg). A package depends only on engine —
+	// it may not depend on another package — so the dependency graph stays a
+	// star with the consuming game as its hub. The import-level twin lives in
+	// Type_Error (a package module's import reaching beyond engine + itself).
+	Package_Imports_Package,
+	// Package_Shadows_Engine_Root is a path dependency whose project name is
+	// (or falls under) the reserved `engine` root: the package name joins
+	// `engine` as a root namespace (§30 §7), and reserved roots are
+	// unshadowable (§15 §7), so a package named like the engine root is
+	// refused before any of its sources are read.
+	Package_Shadows_Engine_Root,
+	// Module_Shadows_Package_Root is the consumer-side half of §30 §7's
+	// reserved-root sentence: the package name joins `engine` as a reserved
+	// root, so a local module named like a declared dependency's root
+	// namespace (a `src/hexgrid.fun` — or anything under `src/hexgrid/` —
+	// beside a `use hexgrid` dep) shadows the dependency and is a compile
+	// error.
+	Module_Shadows_Package_Root,
 }
 
 read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
@@ -193,12 +252,30 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 	if layer_err := check_seam_layering(seam_sources, sources); layer_err != .None {
 		return Project{}, layer_err
 	}
+	// §30: the optional deps.fcfg declares the dependency set; each PATH dep
+	// resolves to a package tree whose sources join the build under the
+	// dependency's project name as root namespace (deps.odin). The shadow
+	// check runs over the COMBINED consumer set (src/ + gen/) so a seam-
+	// derived module shadowing a package root is caught too.
+	deps, deps_err := read_deps_fcfg(configs_dir)
+	if deps_err != .None {
+		return Project{}, deps_err
+	}
+	package_sources, pkg_err := collect_package_sources(root, deps)
+	if pkg_err != .None {
+		return Project{}, pkg_err
+	}
+	if shadow_err := check_package_root_shadowing(sources, deps); shadow_err != .None {
+		return Project{}, shadow_err
+	}
 	return Project {
 			name = identity.name,
 			version = identity.version,
 			sources = sources,
 			builds = builds,
 			capabilities = capabilities,
+			deps = deps,
+			package_sources = package_sources,
 		},
 		.None
 }

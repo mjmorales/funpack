@@ -26,6 +26,7 @@ Type_Error :: enum {
 	Unknown_Module,   // an import naming a module outside the surface
 	Unknown_Member,   // an import naming a member its module lacks
 	Package_Private,  // a package-edge import (or module-handle access) naming a declaration its package does not @expose — across the §30 §6 boundary an item is importable iff @expose'd; within a project this never fires (public-by-default, spec §15 §4)
+	Package_Imports_Package, // a §30 §2 star-graph violation: a PACKAGE module's import names a module beyond engine + its own package — another package's namespace, or a module of the consuming game. A package depends only on engine; the dependency graph is a star with the game as its hub, so the refusal is named, never folded into .Unknown_Module (the module exists — the package just may not reach it)
 	Expose_Closure_Violation, // an @expose'd declaration whose public signature references a non-@expose'd user type (spec §30 §6, §27 §2: an exposed declaration may reference only exposed, primitive, or stdlib types) — the named-both-ends diagnostic rides expose_closure_verdict (expose_closure.odin)
 	Unresolved_Name,  // a free name with no let binding, no user decl, and no import
 	Name_Collision,   // one name, two meanings (spec §02): a user decl colliding with an import or another user decl, or two imports binding one name to different declarations
@@ -72,6 +73,12 @@ Check_Ctx :: struct {
 	// field. Both stay zero for fn/behavior/test sweeps.
 	in_query:        bool,
 	query_indexes:   []Index_Directive,
+	// importer_root is the checked module's own §30 package root ("" = a
+	// consuming-project module), threaded so the whole-module-handle member
+	// route (module_member_check) gates the package edge from the SAME vantage
+	// the import resolver used — a package module reading its own sibling
+	// never crosses the edge (spec §15 §5).
+	importer_root:   string,
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
@@ -86,8 +93,12 @@ stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 // import is .Unknown_Module. It is the multi-module project pipeline's per-module
 // typecheck (the arena example: arena_game types against arena_world + the arena
 // seam), keeping the single-source entry unchanged for every non-importing module.
-stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index) -> (typed: Typed_Ast, err: Type_Error) {
-	bindings := resolve_imports_indexed(ast, index) or_return
+// importer_root is the module's own §30 package root ("" = a consuming-project
+// module): a §30 path-dependency's source types from its own vantage, so its
+// package-internal imports resolve and any reach beyond engine + its own
+// package is the named star-graph refusal (resolve_package_entry).
+stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index, importer_root := "") -> (typed: Typed_Ast, err: Type_Error) {
+	bindings := resolve_imports_indexed(ast, index, importer_root) or_return
 	env := resolve_env(ast, bindings, index) or_return
 	// The §11 §5 layer registry is a pure-AST membership rule (it reads the
 	// CollisionLayer enums' variant sets, not resolved value types), so it runs
@@ -108,8 +119,8 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index) -> (typed: Typed_
 	// the import bindings against the project index), so it runs before body
 	// typing too and surfaces its precise verdict (expose_closure.odin).
 	check_expose_closure(ast, bindings, index) or_return
-	check_bodies(bindings, env, index, ast) or_return
-	check_tests(bindings, env, index, ast) or_return
+	check_bodies(bindings, env, index, ast, importer_root) or_return
+	check_tests(bindings, env, index, ast, importer_root) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
 }
 
@@ -443,7 +454,7 @@ check_layer_value :: proc(expr: Expr, registry: []string) -> Type_Error {
 // The index threads through so a body's param/return type naming a sibling
 // module's type (a behavior step over View[Switch] where Switch is imported)
 // resolves cross-module.
-check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast) -> Type_Error {
+check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "") -> Type_Error {
 	for fn in ast.fns {
 		// An `extern fn` (§26) has no body — its implementation is the engine's,
 		// not the source's — so there is nothing to type. Its signature is still
@@ -452,7 +463,7 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast
 		if fn.is_extern {
 			continue
 		}
-		check_fn_body(bindings, env, index, fn) or_return
+		check_fn_body(bindings, env, index, fn, importer_root) or_return
 	}
 	for query in ast.queries {
 		// A query body types exactly like a fn body — params seed the scope,
@@ -462,10 +473,10 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast
 		// admits no body-position hole on a query, so the synthesized node is
 		// never holed. The query CONTEXT (in_query + the declared requirement
 		// set) rides the ctx so `all[T]` and the spatial combinators resolve.
-		check_query_body(bindings, env, index, query) or_return
+		check_query_body(bindings, env, index, query, importer_root) or_return
 	}
 	for behavior in ast.behaviors {
-		check_fn_body(bindings, env, index, behavior.step) or_return
+		check_fn_body(bindings, env, index, behavior.step, importer_root) or_return
 	}
 	return .None
 }
@@ -492,8 +503,8 @@ query_as_fn :: proc(query: Query_Node) -> Fn_Node {
 // or a `step(self: Door, switches: View[Switch])` whose element is imported
 // grounds correctly). A §05 §2 typed hole standing in body position routes to
 // check_stub_hole — there is no statement sequence to walk.
-check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Type_Error {
-	ctx := fn_body_ctx(bindings, env, index, fn)
+check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node, importer_root := "") -> Type_Error {
+	ctx := fn_body_ctx(bindings, env, index, fn, importer_root)
 	if fn.holed {
 		return check_stub_hole(ctx, fn)
 	}
@@ -505,8 +516,8 @@ check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn
 // the QUERY CONTEXT set: in_query admits the world read `all[T]`, and the
 // declared @index/@spatial requirement set rides query_indexes so the spatial
 // combinators (within/nearest_first) resolve the field they measure.
-check_query_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, query: Query_Node) -> Type_Error {
-	ctx := fn_body_ctx(bindings, env, index, query_as_fn(query))
+check_query_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, query: Query_Node, importer_root := "") -> Type_Error {
+	ctx := fn_body_ctx(bindings, env, index, query_as_fn(query), importer_root)
 	ctx.in_query = true
 	ctx.query_indexes = query.indexes
 	// §08 §3 value-param-only: a query is pure over (version, params) and
@@ -563,13 +574,14 @@ type_outside_value_domain :: proc(t: Type) -> bool {
 // in: the declared parameters as their resolved types in a fresh scope, the
 // declared `-> R` as expected_return, and the import/env/index triple threaded
 // through for cross-module resolution.
-fn_body_ctx :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Check_Ctx {
+fn_body_ctx :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node, importer_root := "") -> Check_Ctx {
 	ctx := Check_Ctx {
 		bindings        = bindings,
 		env             = env,
 		index           = index,
 		scope           = make(Scope, context.temp_allocator),
 		expected_return = resolve_type_ref(env, bindings, fn.return_type, index),
+		importer_root   = importer_root,
 	}
 	for param in fn.params {
 		ctx.scope[param.name] = resolve_type_ref(env, bindings, param.type, index)
@@ -635,9 +647,9 @@ check_statements :: proc(ctx: Check_Ctx, body: []Statement) -> Type_Error {
 // return-form literals reach the same expr_check the bodies use. The index
 // threads through so a test calling a cross-module fn (or constructing a
 // sibling-module type) resolves it.
-check_tests :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast) -> Type_Error {
+check_tests :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "") -> Type_Error {
 	for test in ast.tests {
-		ctx := Check_Ctx{bindings = bindings, env = env, index = index, scope = make(Scope, context.temp_allocator)}
+		ctx := Check_Ctx{bindings = bindings, env = env, index = index, scope = make(Scope, context.temp_allocator), importer_root = importer_root}
 		for stmt in test.body {
 			switch node in stmt {
 			case Let_Node:
@@ -974,7 +986,7 @@ module_member_check :: proc(ctx: Check_Ctx, handle: string, member: string) -> (
 	if _, in_scope := ctx.scope[handle]; in_scope {
 		return nil, false, .None
 	}
-	kind, exported, handle_known, importable := module_member_kind(ctx.index, ctx.bindings, handle, member)
+	kind, exported, handle_known, importable := module_member_kind(ctx.index, ctx.bindings, handle, member, ctx.importer_root)
 	if !handle_known {
 		return nil, false, .None
 	}

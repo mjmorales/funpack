@@ -118,6 +118,7 @@ run_module_pipeline_named :: proc(
 	index: Module_Index,
 	modules: []Module_Eval,
 	module: string,
+	importer_root := "",
 ) -> (
 	report: Test_Report,
 	err: Pipeline_Error,
@@ -131,7 +132,11 @@ run_module_pipeline_named :: proc(
 	if gate_err != .None {
 		return Test_Report{}, .Gate_Failed
 	}
-	typed, type_err := stage_typecheck_indexed(ast, index)
+	// importer_root is the module's own §30 package root ("" = a
+	// consuming-project module), so a path-dependency's source — compiled
+	// through the consumer's pipeline with the same gates (§30 §7) — types
+	// from its own vantage.
+	typed, type_err := stage_typecheck_indexed(ast, index, importer_root)
 	if type_err != .None {
 		return Test_Report{}, .Typecheck_Failed
 	}
@@ -192,6 +197,23 @@ Project_Report :: struct {
 	index_err:     Project_Pipeline_Error,
 }
 
+// project_pipeline_sources is the source set the test verb compiles: the
+// project's own modules (src/ + gen/) followed by its §30 path-dependency
+// modules (package_sources — prefixed, package_root stamped). The dependency
+// rides the consumer's pipeline with the same gates as the consumer's own
+// code (§30 §7), so both sets join ONE walk against ONE index; the project's
+// own sources stay first, keeping their existing deterministic order, with
+// each dep's sources following in declared-dep order.
+project_pipeline_sources :: proc(project: Project) -> []Source {
+	if len(project.package_sources) == 0 {
+		return project.sources
+	}
+	combined := make([]Source, len(project.sources) + len(project.package_sources), context.temp_allocator)
+	copy(combined[:len(project.sources)], project.sources)
+	copy(combined[len(project.sources):], project.package_sources)
+	return combined
+}
+
 // run_project_pipeline runs every source of a §14 project through the pipeline
 // against ONE project-wide module index, so a multi-module project (the arena
 // example: arena_world + the arena seam + arena_game) types end-to-end. It builds
@@ -204,6 +226,7 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 	modules := make([]string, len(sources), context.temp_allocator)
 	asts := make([]Ast, len(sources), context.temp_allocator)
 	source_texts := make([]string, len(sources), context.temp_allocator)
+	package_roots := make([]string, len(sources), context.temp_allocator)
 	for source, i in sources {
 		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
 		if read_err != nil {
@@ -216,17 +239,22 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 		modules[i] = source.module
 		asts[i] = ast
 		source_texts[i] = string(bytes)
+		package_roots[i] = source.package_root
 	}
 
-	index := build_module_index_typed(modules, asts)
-	eval_modules := build_module_eval_surface(modules, asts, index)
+	// The §30 package_roots ride in lockstep with the modules: a path
+	// dependency's sources (read_project's package_sources, prefixed
+	// `<name>.<module>`) stamp their entries' package_root so the §30 §6
+	// expose gate and the §30 §2 star-graph refusal both see the edge.
+	index := build_module_index_typed(modules, asts, package_roots)
+	eval_modules := build_module_eval_surface(modules, asts, index, package_roots)
 
 	report := Project_Report{}
 	for source, i in sources {
 		// The module's own §15 name threads to the evaluator so an intra-module
 		// const cycle in THIS module keys on its module (and a cross-module cycle
 		// shares the same visited set through the eval surface).
-		module_report, err := run_module_pipeline_named(source_texts[i], index, eval_modules, source.module)
+		module_report, err := run_module_pipeline_named(source_texts[i], index, eval_modules, source.module, source.package_root)
 		if err != .None {
 			report.module_err = err
 			report.failed_path = source.path
@@ -247,11 +275,15 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 // per-module typecheck already failed the project, so the entry is never read. The
 // shared eval_modules slice is back-referenced on every entry so a const RHS can
 // itself reach a further sibling module.
-build_module_eval_surface :: proc(modules: []string, asts: []Ast, index: Module_Index) -> []Module_Eval {
+// package_roots (lockstep with modules, nil = all within-project) threads each
+// module's own §30 vantage so a package module's internal imports resolve here
+// exactly as they did in its typecheck.
+build_module_eval_surface :: proc(modules: []string, asts: []Ast, index: Module_Index, package_roots: []string = nil) -> []Module_Eval {
 	entries := make([]Module_Eval, len(asts), context.temp_allocator)
 	for ast, i in asts {
 		entries[i] = Module_Eval{module = modules[i], ast = ast}
-		bindings, bind_err := resolve_imports_indexed(ast, index)
+		root := package_roots[i] if package_roots != nil else ""
+		bindings, bind_err := resolve_imports_indexed(ast, index, root)
 		if bind_err != .None {
 			continue
 		}
