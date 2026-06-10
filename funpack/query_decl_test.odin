@@ -3,8 +3,11 @@
 // their lexical-core §5 FieldPath argument, the named wrong-placement and
 // malformed-path verdicts (the @todo/@migrate mold), the check_index_paths
 // typecheck gate (the path must name a declared thing and one of its fields),
-// query-body typing through the shared check_fn_body window, and the gate /
-// release-ban admission of query bodies. Self-contained sources per test.
+// query-body typing through the shared check_fn_body window, the gate /
+// release-ban admission of query bodies, and query EVALUATION — a test-position
+// query call runs the body through the eval_user_fn funnel (find_user_callable
+// projects the query onto the fn window), unmemoized because the test
+// interpreter defines no tick. Self-contained sources per test.
 package funpack
 
 import "core:strings"
@@ -261,6 +264,74 @@ test_query_body_is_a_gate_unit :: proc(t: ^testing.T) {
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	testing.expect_value(t, stage_gates(ast), Gate_Error.Duplicate_Declaration)
+}
+
+@(test)
+test_query_call_evaluates_over_fixture_view :: proc(t: ^testing.T) {
+	// AC (evaluation): a test-position query call RUNS the query body. Before
+	// the find_user_callable seam the call compiled — call_check admits .Query
+	// at call position — but the evaluator's fn-only lookup missed it, so the
+	// assert failed COUNTED. The query folds a View.of fixture (the §08 read
+	// table materialized as rows) and both asserts pin exact equality on the
+	// folded value, so the report's pass count is the regression tripwire.
+	report, err := run_test_pipeline(
+		"import engine.math.{Fixed, Vec2}\n" +
+		"import engine.world.View\n" +
+		"import engine.list.fold\n" +
+		"thing Enemy { cell: Vec2, hp: Fixed }\n" +
+		"@index(Enemy.cell)\n" +
+		"query total_hp(enemies: View[Enemy]) -> Fixed {\n" +
+		"  return fold(enemies, 0.0, fn(acc, e) { return acc + e.hp })\n" +
+		"}\n" +
+		"test \"query folds the fixture rows\" {\n" +
+		"  let enemies = View.of([Enemy{cell: Vec2{x: 1.0, y: 0.0}, hp: 3.0}, Enemy{cell: Vec2{x: 2.0, y: 0.0}, hp: 4.0}])\n" +
+		"  assert total_hp(enemies) == 7.0\n" +
+		"  assert total_hp(View.of([Enemy{cell: Vec2{x: 5.0, y: 5.0}, hp: 1.0}])) == 1.0\n" +
+		"}\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+	testing.expect_value(t, report.exit_code, 0)
+}
+
+@(test)
+test_query_composes_into_query_evaluation :: proc(t: ^testing.T) {
+	// AC (evaluation): a query call inside another query body evaluates —
+	// spec §08 §3 "its derived read-set composes into callers" — through the
+	// same eval_call arm a test-position call rides, so composition needs no
+	// second path. Exact-equality pin on the composed value.
+	report, err := run_test_pipeline(
+		"query doubled(x: Fixed) -> Fixed {\n" +
+		"  return x * 2.0\n" +
+		"}\n" +
+		"query quadrupled(x: Fixed) -> Fixed {\n" +
+		"  return doubled(doubled(x))\n" +
+		"}\n" +
+		"test \"query composes into a query\" {\n" +
+		"  assert quadrupled(2.0) == 8.0\n" +
+		"}\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_bare_query_name_as_fold_combinator_evaluates :: proc(t: ^testing.T) {
+	// AC (evaluation): a bare query name in fold's combinator slot runs the
+	// query body per element — name_check reads the bare name as a function
+	// value exactly like a fn's (the add_goal form), so apply_combinator must
+	// resolve it too. Exact-equality pin on the left fold.
+	report, err := run_test_pipeline(
+		"import engine.list.fold\n" +
+		"query add_hp(acc: Fixed, x: Fixed) -> Fixed {\n" +
+		"  return acc + x\n" +
+		"}\n" +
+		"test \"bare query name folds\" {\n" +
+		"  assert fold([1.0, 2.0, 3.0], 0.0, add_hp) == 6.0\n" +
+		"}\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
 }
 
 @(test)
