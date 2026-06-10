@@ -1,6 +1,6 @@
 // LL(1) statement-layer parser over the golden-file surface (spec §02,
-// §06, §07): a file-leading @doc as the module doc, per-declaration @doc
-// and @gtag directives, import in its three forms, the §06/§07 declaration
+// §06, §07): a file-leading @doc as the module doc, per-declaration @doc,
+// @gtag, and §05 §5 debug directives, import in its three forms, the §06/§07 declaration
 // layer (data/enum/thing/singleton/signal/behavior/pipeline, module-level
 // let, and top-level fn), and test blocks. Every production opens with a
 // unique keyword, so one token of lookahead selects it. Expressions route
@@ -111,12 +111,13 @@ Param_Decl :: struct {
 // expr`, distinct from the test-body Let_Node in that it always carries an
 // explicit type ascription.
 Let_Decl_Node :: struct {
-	name:  string,
-	type:  Type_Ref,
-	value: Expr,
-	doc:   string,
-	gtags: []string, // @gtag("…") labels attached to this declaration
-	line:  int,       // 1-based source line of the `let` keyword (artifact-format §9 span provenance)
+	name:   string,
+	type:   Type_Ref,
+	value:  Expr,
+	doc:    string,
+	gtags:  []string, // @gtag("…") labels attached to this declaration
+	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	line:   int, // 1-based source line of the `let` keyword (artifact-format §9 span provenance)
 }
 
 Data_Node :: struct {
@@ -125,6 +126,7 @@ Data_Node :: struct {
 	fields: []Field_Decl,
 	doc:    string,
 	gtags:  []string,
+	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	line:   int, // 1-based source line of the `data` keyword (artifact-format §9 span provenance)
 }
 
@@ -134,6 +136,7 @@ Enum_Node :: struct {
 	variants: []Variant_Decl,
 	doc:      string,
 	gtags:    []string,
+	probes:   []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	line:     int, // 1-based source line of the `enum` keyword (artifact-format §9 span provenance)
 }
 
@@ -147,6 +150,7 @@ Thing_Node :: struct {
 	fields:       []Field_Decl,
 	doc:          string,
 	gtags:        []string,
+	probes:       []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	line:         int, // 1-based source line of the `thing`/`singleton` keyword (artifact-format §9 span provenance)
 }
 
@@ -155,6 +159,7 @@ Signal_Node :: struct {
 	fields: []Field_Decl,
 	doc:    string,
 	gtags:  []string,
+	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	line:   int, // 1-based source line of the `signal` keyword (artifact-format §9 span provenance)
 }
 
@@ -168,6 +173,7 @@ Fn_Node :: struct {
 	body:         []Statement,
 	doc:          string,
 	gtags:        []string,
+	probes:       []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	line:         int, // 1-based source line of the `fn` keyword (artifact-format §9 span provenance)
 	// is_extern marks a §02/§26 `extern fn` — a body-less native-boundary
 	// declaration whose definition lives outside funpack (the §17 seam's
@@ -199,6 +205,7 @@ Behavior_Node :: struct {
 	step:   Fn_Node,
 	doc:    string,
 	gtags:  []string,
+	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	line:   int, // 1-based source line of the `behavior` keyword (artifact-format §9 span provenance)
 }
 
@@ -223,23 +230,50 @@ Pipeline_Node :: struct {
 	stages: []Pipeline_Stage,
 	doc:    string,
 	gtags:  []string,
+	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	line:   int, // 1-based source line of the `pipeline` keyword (artifact-format §9 span provenance)
 }
 
-// Directives carries the @doc / @gtag prefix block attached to a
-// declaration (spec §05). It accumulates as leading directives are parsed
+// Debug_Probe_Kind is the closed §05 §5 debug directive family — the
+// observe-class, dev-only probes (spec §28 §4). The set is closed like every
+// directive category (spec §05): adding a member is a spec change, never a
+// parser convenience.
+Debug_Probe_Kind :: enum {
+	Break, // @break(pred) — pause when the predicate holds
+	Log,   // @log(expr) — emit the structured value each step
+	Watch, // @watch(expr) — fire watch_fired when the value changes
+	Trace, // @trace — record the full per-step (in -> out) transition; no argument
+}
+
+// Debug_Probe is one parsed §05 §5 debug directive (@break/@log/@watch/@trace)
+// carried on the declaration it prefixes, like @gtag. The argument is ordinary
+// funpack (a predicate for @break, the value to emit/watch for @log/@watch),
+// never a debugger DSL; @trace carries none, so arg is nil exactly when kind
+// is .Trace. Parse+AST only here: release-forbidding and index registration
+// are downstream stages' jobs, keyed off these nodes.
+Debug_Probe :: struct {
+	kind: Debug_Probe_Kind,
+	arg:  Expr, // the probe's predicate/expression; nil for @trace
+	line: int,  // 1-based source line of the `@` (artifact-format §9 span provenance)
+}
+
+// Directives carries the @doc / @gtag / debug-probe prefix block attached to
+// a declaration (spec §05). It accumulates as leading directives are parsed
 // and is consumed by the declaration that follows them.
 Directives :: struct {
-	doc:   string,
-	gtags: [dynamic]string,
+	doc:    string,
+	gtags:  [dynamic]string,
+	probes: [dynamic]Debug_Probe,
 }
 
 Parse_Error :: enum {
 	None,
 	Unexpected_Token,
 	Unexpected_End,
-	Wrong_Case,   // an identifier whose casing class is wrong for its grammar position (spec §02)
-	Missing_Else, // an if-EXPRESSION with no `else` arm (spec §02 §5): both arms are required in value position, so a missing alternate has no type to unify against — never a silent fallback (grammar/fun.ebnf §15 IfExpr)
+	Wrong_Case,           // an identifier whose casing class is wrong for its grammar position (spec §02)
+	Missing_Else,         // an if-EXPRESSION with no `else` arm (spec §02 §5): both arms are required in value position, so a missing alternate has no type to unify against — never a silent fallback (grammar/fun.ebnf §15 IfExpr)
+	Probe_Missing_Arg,    // a @break/@log/@watch debug probe without its mandatory `(expr)` argument (spec §05 §5: the predicate/expression is the probe's whole content)
+	Probe_Unexpected_Arg, // a @trace carrying an argument — @trace takes none (spec §05 §5; grammar/fun.ebnf §1 DebugDirective)
 }
 
 Parser :: struct {
@@ -268,7 +302,7 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 	}
 	module_doc := ""
 	seen_decl := false
-	pending := Directives{gtags = make([dynamic]string, 0, 4, context.temp_allocator)}
+	pending := empty_directives()
 	skip_newlines(&p)
 	for !at_end(&p) {
 		if peek_kind(&p) == .At {
@@ -279,7 +313,7 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 		parse_declaration(&p, &out, &pending) or_return
 		seen_decl = true
 		// Each declaration consumes its leading directives.
-		pending = Directives{gtags = make([dynamic]string, 0, 4, context.temp_allocator)}
+		pending = empty_directives()
 		skip_newlines(&p)
 	}
 	return Ast {
@@ -296,6 +330,16 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 			tests = out.tests[:],
 		},
 		.None
+}
+
+// empty_directives is the fresh accumulator stage_parse threads between
+// declarations — one constructor so the init and the per-declaration reset
+// cannot drift as the directive family grows.
+empty_directives :: proc() -> Directives {
+	return Directives {
+		gtags = make([dynamic]string, 0, 4, context.temp_allocator),
+		probes = make([dynamic]Debug_Probe, 0, 4, context.temp_allocator),
+	}
 }
 
 // Decl_Sink collects the per-kind declaration slices stage_parse builds.
@@ -326,6 +370,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node := parse_let_decl(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.lets, node)
 	case .Ident:
 		// `data`/`enum`/`thing`/`singleton` are CONTEXTUAL keywords (fun.ll1.md
@@ -341,11 +386,13 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node := parse_signal(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.signals, node)
 	case .Fn:
 		node := parse_fn_decl(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.fns, node)
 	case .Extern:
 		// `extern fn` (§02/§26) is the body-less native-boundary fn the §17 seam
@@ -355,16 +402,19 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node := parse_extern_fn_decl(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.fns, node)
 	case .Behavior:
 		node := parse_behavior(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.behaviors, node)
 	case .Pipeline:
 		node := parse_pipeline(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.pipelines, node)
 	case .Test:
 		node := parse_test(p) or_return
@@ -390,16 +440,19 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node := parse_data(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.datas, node)
 	case "enum":
 		node := parse_enum(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.enums, node)
 	case "thing", "singleton":
 		node := parse_thing(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
 		append(&out.things, node)
 	case:
 		return .Unexpected_Token
@@ -407,18 +460,19 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 	return .None
 }
 
-// parse_directive parses one `@doc("…")` or `@gtag("…", …)` prefix
-// directive (spec §05). The file-leading @doc documents the module
+// parse_directive parses one declaration-prefix directive (spec §05):
+// `@doc("…")`, `@gtag("…", …)`, or a §05 §5 debug probe
+// (@break/@log/@watch/@trace). The file-leading @doc documents the module
 // (spec §15, fun.ll1.md §5B): the first @doc is the module doc only when it
 // is followed by an `import` — imports carry no directives, so a @doc before
 // one cannot be the import's. Blank lines between the file-leading @doc and the
 // first import are insignificant, so skip any run of newlines before testing
 // for the import (the main loop skips them anyway, so advancing here is safe).
 // A first @doc followed instead by @gtag or a declaration keyword is that
-// declaration's doc. @gtag labels accumulate; a declaration consumes the whole
-// accumulated directive set.
+// declaration's doc. @gtag labels and debug probes accumulate; a declaration
+// consumes the whole accumulated directive set.
 parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, seen_decl: bool) -> Parse_Error {
-	expect(p, .At) or_return
+	at_tok := expect(p, .At) or_return
 	name := expect(p, .Ident) or_return
 	switch name.text {
 	case "doc":
@@ -446,11 +500,50 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		}
 		expect(p, .R_Paren) or_return
 		terminate_statement(p) or_return
+	case "break", "log", "watch":
+		// @break(pred) / @log(expr) / @watch(expr) — the §05 §5 observe-class
+		// debug probes. The single argument is ordinary funpack (a predicate
+		// for @break, the value to emit/watch for @log/@watch), never a
+		// debugger DSL, and it is mandatory: a probe with nothing to test or
+		// emit is malformed, reported by the named Probe_Missing_Arg verdict
+		// so an agent repairs the exact shape.
+		if peek_kind(p) != .L_Paren {
+			return .Probe_Missing_Arg
+		}
+		p.pos += 1
+		if peek_kind(p) == .R_Paren {
+			return .Probe_Missing_Arg
+		}
+		arg := parse_expression(p) or_return
+		expect(p, .R_Paren) or_return
+		terminate_statement(p) or_return
+		kind: Debug_Probe_Kind
+		switch name.text {
+		case "break":
+			kind = .Break
+		case "log":
+			kind = .Log
+		case "watch":
+			kind = .Watch
+		}
+		append(&pending.probes, Debug_Probe{kind = kind, arg = arg, line = at_tok.line})
+	case "trace":
+		// @trace takes NO argument (spec §05 §5; grammar/fun.ebnf §1
+		// DebugDirective): it records the declaration's full per-step
+		// (in -> out) transition, so there is no value to name. A
+		// parenthesized argument is malformed — the named
+		// Probe_Unexpected_Arg verdict, never silently consumed.
+		if peek_kind(p) == .L_Paren {
+			return .Probe_Unexpected_Arg
+		}
+		terminate_statement(p) or_return
+		append(&pending.probes, Debug_Probe{kind = .Trace, line = at_tok.line})
 	case:
-		// Only @doc/@gtag prefix a declaration. @stub in particular is NOT a
-		// prefix directive — it stands in body/expression position only
-		// (spec §05: parse_stub_body owns it), so a leading `@stub` is an
-		// Unexpected_Token here, never silently accepted.
+		// Only @doc/@gtag and the §05 §5 debug probes prefix a declaration.
+		// @stub in particular is NOT a prefix directive — it stands in
+		// body/expression position only (spec §05: parse_stub_body owns it),
+		// so a leading `@stub` is an Unexpected_Token here, never silently
+		// accepted.
 		return .Unexpected_Token
 	}
 	return .None

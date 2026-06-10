@@ -810,6 +810,163 @@ test_parse_gtag_directive_retained :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_break_probe_on_behavior :: proc(t: ^testing.T) {
+	// `@break(<pred>)` (spec §05 §5, §28 §4) carries a funpack PREDICATE over
+	// self/signals/resources and rides the declaration it prefixes, like
+	// @gtag. The argument is an ordinary parsed expression — here a Binary_Expr
+	// comparison — and the probe records the directive's source line.
+	source := "@break(self.pos.x > 70.0)\n" +
+		"behavior move on Ball {\n" +
+		"  fn step(self: Ball) -> Ball {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.behaviors[0].probes), 1)
+	probe := ast.behaviors[0].probes[0]
+	testing.expect_value(t, probe.kind, Debug_Probe_Kind.Break)
+	testing.expect_value(t, probe.line, 1)
+	_, is_binary := probe.arg.(^Binary_Expr)
+	testing.expect(t, is_binary)
+}
+
+@(test)
+test_parse_log_probe_on_behavior :: proc(t: ^testing.T) {
+	// `@log(<expr>)` (spec §05 §5, §28 §4) carries the funpack expression
+	// whose value is emitted each step — the `@log(self.head)` shape that
+	// replaces print-debugging. The argument parses as a member access.
+	source := "@log(self.head)\n" +
+		"behavior crawl on Snake {\n" +
+		"  fn step(self: Snake) -> Snake {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.behaviors[0].probes), 1)
+	probe := ast.behaviors[0].probes[0]
+	testing.expect_value(t, probe.kind, Debug_Probe_Kind.Log)
+	_, is_member := probe.arg.(^Member_Expr)
+	testing.expect(t, is_member)
+}
+
+@(test)
+test_parse_watch_probe_on_behavior :: proc(t: ^testing.T) {
+	// `@watch(<expr>)` (spec §05 §5, §28 §4) names the value whose change
+	// fires watch_fired; the argument shape is the same funpack expression
+	// @log takes.
+	source := "@watch(self.score)\n" +
+		"behavior tally on Scoreboard {\n" +
+		"  fn step(self: Scoreboard) -> Scoreboard {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.behaviors[0].probes), 1)
+	probe := ast.behaviors[0].probes[0]
+	testing.expect_value(t, probe.kind, Debug_Probe_Kind.Watch)
+	_, is_member := probe.arg.(^Member_Expr)
+	testing.expect(t, is_member)
+}
+
+@(test)
+test_parse_trace_probe_on_pipeline :: proc(t: ^testing.T) {
+	// `@trace` (spec §05 §5, §28 §4) takes NO argument — it records the full
+	// per-step (in -> out) transition of what it prefixes (a behavior or a
+	// pipeline stage). Parsed bare, its probe carries a nil arg.
+	source := "@trace\n" +
+		"pipeline Game {\n" +
+		"  update: [move]\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.pipelines[0].probes), 1)
+	probe := ast.pipelines[0].probes[0]
+	testing.expect_value(t, probe.kind, Debug_Probe_Kind.Trace)
+	testing.expect(t, probe.arg == nil)
+}
+
+@(test)
+test_parse_probes_accumulate_with_doc_and_gtag :: proc(t: ^testing.T) {
+	// Debug probes accumulate in the same prefix block as @doc/@gtag
+	// (spec §05): the declaration consumes the whole set, probes in source
+	// order, without disturbing the doc or the gtag labels.
+	source := "@doc(\"the ball mover\")\n" +
+		"@gtag(\"ball\")\n" +
+		"@log(self.pos)\n" +
+		"@trace\n" +
+		"behavior move on Ball {\n" +
+		"  fn step(self: Ball) -> Ball {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	b := ast.behaviors[0]
+	testing.expect_value(t, b.doc, "the ball mover")
+	testing.expect_value(t, len(b.gtags), 1)
+	testing.expect_value(t, len(b.probes), 2)
+	testing.expect_value(t, b.probes[0].kind, Debug_Probe_Kind.Log)
+	testing.expect_value(t, b.probes[1].kind, Debug_Probe_Kind.Trace)
+}
+
+@(test)
+test_parse_break_probe_missing_arg_rejected :: proc(t: ^testing.T) {
+	// A bare `@break` with no `(pred)` is malformed (spec §05 §5: the
+	// predicate is mandatory) — the named Probe_Missing_Arg diagnostic, not a
+	// generic Unexpected_Token.
+	source := "@break\n" +
+		"behavior move on Ball {\n" +
+		"  fn step(self: Ball) -> Ball {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Missing_Arg)
+}
+
+@(test)
+test_parse_log_probe_empty_args_rejected :: proc(t: ^testing.T) {
+	// `@log()` with empty parens has no value to emit — Probe_Missing_Arg,
+	// the same named verdict as the parenless form.
+	source := "@log()\n" +
+		"behavior move on Ball {\n" +
+		"  fn step(self: Ball) -> Ball {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Missing_Arg)
+}
+
+@(test)
+test_parse_watch_probe_missing_arg_rejected :: proc(t: ^testing.T) {
+	// A bare `@watch` with no `(expr)` names nothing to watch —
+	// Probe_Missing_Arg.
+	source := "@watch\n" +
+		"data Board { score: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Missing_Arg)
+}
+
+@(test)
+test_parse_trace_probe_with_arg_rejected :: proc(t: ^testing.T) {
+	// `@trace(expr)` is malformed — @trace takes no argument (spec §05 §5;
+	// grammar/fun.ebnf §1 DebugDirective) — and reports the named
+	// Probe_Unexpected_Arg diagnostic.
+	source := "@trace(self.pos)\n" +
+		"behavior move on Ball {\n" +
+		"  fn step(self: Ball) -> Ball {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Unexpected_Arg)
+}
+
+@(test)
 test_parse_list_newline_separated_elements :: proc(t: ^testing.T) {
 	// The pong `setup` shape: a multi-line list whose `Spawn(…)` elements are
 	// separated by newline alone (no commas). Each element is a call.
