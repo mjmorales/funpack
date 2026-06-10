@@ -107,6 +107,59 @@ release_holed_decl :: proc(ast: Ast) -> (declaration: string, holed: bool) {
 	return "", false
 }
 
+// release_debug_decl returns the first declaration carrying a §05 §5 debug
+// probe (@break/@log/@watch/@trace) in one AST — the pure-AST half of the §29
+// §3 release debug-directive ban ("debug residue can neither ship nor rot",
+// §28 §4), the exact sibling of release_holed_decl: the verdict is a function
+// of the AST alone, and the CALLER (stage_build) supplies the mode — in dev
+// the finder is never consulted, under --release any hit is a compile error.
+// Declarations walk in the fixed derive_decl_records per-kind order (data →
+// enum → thing → signal → fn → behavior → pipeline → let), so a multi-probe
+// source always names the same first offender deterministically.
+release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
+	for decl in ast.datas {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	for decl in ast.enums {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	for decl in ast.things {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	for decl in ast.signals {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	for decl in ast.fns {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	for decl in ast.behaviors {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	for decl in ast.pipelines {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	for decl in ast.lets {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	return "", false
+}
+
 // Gate_Verdict pairs a gate failure with the declaration body it indicts, so
 // the diagnostic names the declaration (a fn, a behavior, or a test block) —
 // never a positional test-block index (spec §01 P5: the budget is a

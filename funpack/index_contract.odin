@@ -46,7 +46,16 @@ import "core:strings"
 // (a new record kind in the closed contract bumps the version, never silent
 // drift). The stamp leads BOTH record kinds, so a v2 stream carries v2 in
 // every line.
-INDEX_SCHEMA_VERSION :: 2
+//
+// Version 3 makes the decl record's `debug` field AUTHORITATIVE: it derives
+// from the parsed §05 §5 probes (probe_names, index_decl.odin) instead of the
+// v2 constant-empty stamp. The field SHAPE is unchanged, but the content
+// contract is not — a v2 stream may report `debug: []` over a source that
+// carries probes (the parser admitted probes before the derivation landed), so
+// the §28 §4 task-registration consumer must refuse a pre-derivation stream
+// rather than read its empty as "no probes". A derivation-contract change the
+// consumer can misread is a reshape, so it bumps.
+INDEX_SCHEMA_VERSION :: 3
 
 // Index_Decl_Kind is the closed §29 §2 set of source DECLARATION FORMS the
 // per-declaration `decl` record reports — the kind taxonomy of what a
@@ -97,8 +106,12 @@ Index_Decl_Kind :: enum {
 //   - todo           — a `@todo` directive flag (§05); the parser does not yet
 //                      admit @todo, so it is false on the current tree —
 //                      mandatory-present, never omitted
-//   - debug          — the `@debug` probe names (§05); [] for the same reason
-//                      as todo — mandatory-present empty list, never omitted
+//   - debug          — the §05 §5 debug-probe directive names, AST-derived
+//                      (v3): one lowercase name per parsed probe
+//                      ("break"/"log"/"watch"/"trace") in authored order,
+//                      never deduped (§28 §4: every outstanding probe
+//                      registers); [] on a probe-free decl —
+//                      mandatory-present, never omitted
 //   - emits          — the signal names this declaration emits (§04)
 //   - consumes       — the signal names this declaration consumes (§04)
 //   - calls          — the function names this declaration calls

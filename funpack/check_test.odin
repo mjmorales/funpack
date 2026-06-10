@@ -84,6 +84,25 @@ test_check_holed_tree_dev_zero_release_two :: proc(t: ^testing.T) {
 	log.infof("check hole-ban: the holed tree is exit 0 in dev and exit 2 under --release, with nothing written either way")
 }
 
+// test_check_probed_tree_dev_zero_release_two is the §05 §5 / §28 §4
+// debug-directive ban through the check verb, the hole-ban's sibling tier: the
+// SAME probed tree adjudicates exit 0 in Dev (a probe is a first-class dev
+// citizen) and refuses exit 2 under --release (Debug_Directive — shippability
+// adjudicated without emission), with no `.funpack/` after either verdict.
+@(test)
+test_check_probed_tree_dev_zero_release_two :: proc(t: ^testing.T) {
+	root, ok := write_probed_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	testing.expect_value(t, run_check_verb(root, .Dev), 0)
+	testing.expect_value(t, run_check_verb(root, .Release), 2)
+	testing.expect(t, !os.exists(scratch_join({root, FUNPACK_BUILD_DIR})))
+	log.infof("check debug ban: the probed tree is exit 0 in dev and exit 2 under --release, with nothing written either way")
+}
+
 // test_check_preexisting_funpack_untouched pins the no-write floor against a
 // stale prior build: a `.funpack/` already on disk (with bytes a fresh build
 // would NOT produce) survives a check byte-untouched — check neither
