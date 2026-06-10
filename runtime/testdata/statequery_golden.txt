@@ -1,0 +1,433 @@
+statequery-golden 1
+tick 0 indices 10768078369047918818 spatial:Ball.pos=10703693727572571374 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:0
+tick 1 indices 16758561596795903882 spatial:Ball.pos=9617091633220982925 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:5771188871
+tick 2 indices 9750347897397263878 spatial:Ball.pos=5891339385147737042 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:11542377743
+tick 3 indices 10473110865107070134 spatial:Ball.pos=8238463958079163625 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:17313566615
+tick 4 indices 4555494227551961885 spatial:Ball.pos=570477152378368698 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:23084755487
+tick 5 indices 18110504241717590310 spatial:Ball.pos=3354743774535688101 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:28855944359
+tick 6 indices 15079797701224339605 spatial:Ball.pos=4341925748257163161 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:34627133231
+tick 7 indices 207617126855158941 spatial:Ball.pos=9835532735419776307 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:40398322103
+tick 8 indices 9980876366989494951 spatial:Ball.pos=6770559758555915699 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:46169510975
+tick 9 indices 1072907727544022454 spatial:Ball.pos=12756732643007206522 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:51940699847
+tick 10 indices 3681971525972652407 spatial:Ball.pos=839179337954822235 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:57711888719
+tick 11 indices 17343270773099300036 spatial:Ball.pos=14444209266814165778 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:63483077591
+tick 12 indices 1937659893119907940 spatial:Ball.pos=2180811795525282008 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:69254266463
+tick 13 indices 15018865318450146690 spatial:Ball.pos=7004735569795850259 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:75025455335
+tick 14 indices 17812064327029632868 spatial:Ball.pos=11955430066999206917 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:80796644207
+tick 15 indices 14403401545768034733 spatial:Ball.pos=3989963932782907680 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:86567833079
+tick 16 indices 14012328987824247685 spatial:Ball.pos=7408176182613634246 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:92339021951
+tick 17 indices 871116200361471236 spatial:Ball.pos=13803459458603787470 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:98110210823
+tick 18 indices 13124577452270499792 spatial:Ball.pos=3684494133251395912 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:103881399695
+tick 19 indices 18224573582603339400 spatial:Ball.pos=15277468384964648324 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:109652588567
+tick 20 indices 10527565480326072550 spatial:Ball.pos=16696357233490960734 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:115423777439
+tick 21 indices 10540144056420408779 spatial:Ball.pos=12155838444951090226 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:121194966311
+tick 22 indices 16206398895887708927 spatial:Ball.pos=19172936857315096 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:126966155183
+tick 23 indices 4724739734471850368 spatial:Ball.pos=4120825373355903415 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 24 indices 10690503149308509036 spatial:Ball.pos=15541982413485205198 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 25 indices 12876283754652738529 spatial:Ball.pos=5776877563962255362 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 26 indices 14521430253205654259 spatial:Ball.pos=1225743850164968249 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 27 indices 3290596128288510848 spatial:Ball.pos=2167135818794190689 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 28 indices 12675233341717119039 spatial:Ball.pos=2522586684898685123 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 29 indices 18429594856523361195 spatial:Ball.pos=14815686342366262183 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 30 indices 2080584276921889229 spatial:Ball.pos=4029326880957703150 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 31 indices 17059102185135768 spatial:Ball.pos=12177989496963705881 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 32 indices 12754892145489448549 spatial:Ball.pos=9252554142823375793 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 33 indices 9767048909019862879 spatial:Ball.pos=10233853655837268428 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 34 indices 11136948226703325317 spatial:Ball.pos=7504711867903157819 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 35 indices 6129344491772365260 spatial:Ball.pos=16153745316564245872 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 36 indices 18399048735198453059 spatial:Ball.pos=9826481448461940883 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 37 indices 13447748428914161159 spatial:Ball.pos=6240627059515913536 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 38 indices 14577426940027744886 spatial:Ball.pos=8145032848188681026 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 39 indices 8230355181346434186 spatial:Ball.pos=17089159085018997024 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 40 indices 3037658538811008414 spatial:Ball.pos=14555404115483490898 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 41 indices 10212013638482205766 spatial:Ball.pos=10662205821592335467 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 42 indices 7900955098698792840 spatial:Ball.pos=3573375014601175298 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 43 indices 3831783060407195634 spatial:Ball.pos=372042648366792783 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 44 indices 12036882122947076713 spatial:Ball.pos=537779648970814090 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 45 indices 1377018976106566627 spatial:Ball.pos=1477444429208856812 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 46 indices 3423630576737413741 spatial:Ball.pos=5247163814326980216 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 47 indices 3657675423152714095 spatial:Ball.pos=13467736620758005535 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 48 indices 8563198187868404116 spatial:Ball.pos=3269097456155236190 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 49 indices 7648918848555968418 spatial:Ball.pos=18078446454548271981 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 50 indices 12072348755255239338 spatial:Ball.pos=14870565814493883764 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 51 indices 17607871257515249729 spatial:Ball.pos=9829907908795576354 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 52 indices 13497589971970260401 spatial:Ball.pos=11524638416959769179 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 53 indices 15908609169992306026 spatial:Ball.pos=11905764529451384863 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 54 indices 17898396163984656420 spatial:Ball.pos=9532297405696510717 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 55 indices 5742332138057830576 spatial:Ball.pos=16044236181168025567 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 56 indices 3011240045359744793 spatial:Ball.pos=7931551051847117539 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 57 indices 10694509082997083155 spatial:Ball.pos=707701233577647668 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 58 indices 272881043938411235 spatial:Ball.pos=8536392723808572896 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 59 indices 4324285151776152024 spatial:Ball.pos=1514707187682010536 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 60 indices 11532693157982290285 spatial:Ball.pos=4944516567753013251 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 61 indices 16849232659788436440 spatial:Ball.pos=11286549778063795251 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 62 indices 1414187681994753374 spatial:Ball.pos=3706894599049913027 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 63 indices 14131342337749213605 spatial:Ball.pos=6146203966473212816 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 64 indices 7572485624647179773 spatial:Ball.pos=10444636577696095942 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 65 indices 8827418896698915490 spatial:Ball.pos=10496800380030264152 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 66 indices 17526961022627922453 spatial:Ball.pos=7342647829883928382 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 67 indices 6664567539844149667 spatial:Ball.pos=4470863822384264225 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 68 indices 3816924594849128244 spatial:Ball.pos=5059827991559787405 index:Paddle.side=6097032003797320302
+query balls_within 0
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30
+tick 69 indices 10768078369047918818 spatial:Ball.pos=10703693727572571374 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:0
+tick 70 indices 16758561596795903882 spatial:Ball.pos=9617091633220982925 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:5771188871
+tick 71 indices 9750347897397263878 spatial:Ball.pos=5891339385147737042 index:Paddle.side=6097032003797320302
+query balls_within 1
+query paddles_on 1
+query corridor_half 25769803776
+lookup Paddle.side=Side::Left 0
+spatial Ball.pos<=r30 0:11542377743
