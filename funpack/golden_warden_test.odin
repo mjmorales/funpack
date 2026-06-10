@@ -17,8 +17,10 @@
 // The surface-done sweep (the projection epic's leaf): every Warden_Command's
 // projection is asserted byte-deterministic across two full acquisitions of
 // the same written index — the command list derived from the closed enum, so
-// a new member joins the sweep automatically and the exhaustive
-// warden_command_output switch refuses to compile until it is mapped. Drift's
+// a new member joins the sweep automatically and the exhaustive PRODUCTION
+// renderer (warden_command_output, warden_output.odin — the same switch
+// warden_verb_exit prints through, so the sweep covers the real dispatch,
+// never a test-side mirror) refuses to compile until it is mapped. Drift's
 // project record is faithfully empty on the pipeline axis
 // (pipeline_flattened: [] — its schedule is the empty hole-first pipeline),
 // so a drift-only double-run identity for `warden pipeline` would compare two
@@ -78,38 +80,6 @@ build_drift_index_root :: proc(t: ^testing.T) -> (root: string, stream: string, 
 // ten registered tags) makes the pipeline/tags determinism sweep non-vacuous.
 build_pong_index_root :: proc(t: ^testing.T) -> (root: string, stream: string, ok: bool) {
 	return build_warden_index_root(t, resolve_pong_dir(), "pong-warden", "FUNPACK_PONG_DIR")
-}
-
-// warden_command_output renders one warden subcommand's pure projection of a
-// decoded index — exactly the byte stream warden_verb_exit's matching arm
-// prints before exiting 0. The switch is deliberately exhaustive over the
-// closed Warden_Command enum (no #partial): a new member fails this file's
-// compile until it is mapped here, so the enum-derived determinism sweeps
-// below can never silently under-cover the dispatch. arg/find mirror
-// warden_verb_exit's parameter carry (graph's optional incident filter,
-// find's parsed filter set).
-warden_command_output :: proc(
-	index: Warden_Index,
-	cmd: Warden_Command,
-	arg := "",
-	find := Warden_Find_Query{},
-	allocator := context.allocator,
-) -> string {
-	switch cmd {
-	case .Find:
-		return warden_find_output(index, find, allocator)
-	case .Holes:
-		return warden_project_decls(index.decls, warden_holes_predicate, "", allocator)
-	case .Debt:
-		return warden_project_decls(index.decls, warden_debt_predicate, "", allocator)
-	case .Graph:
-		return warden_graph_output(index, arg, allocator)
-	case .Tags:
-		return warden_tags_ndjson(index, allocator)
-	case .Pipeline:
-		return warden_pipeline_ndjson(index, allocator)
-	}
-	return ""
 }
 
 // expect_six_command_byte_determinism acquires the same written index TWICE —

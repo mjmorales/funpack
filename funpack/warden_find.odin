@@ -18,7 +18,6 @@
 // "nothing to reuse — write it", a successful answer (§29 §1).
 package funpack
 
-import "core:fmt"
 import "core:reflect"
 import "core:slice"
 import "core:strings"
@@ -124,20 +123,13 @@ warden_find_filters :: proc(query: Warden_Find_Query, allocator := context.alloc
 // warden_find_output renders the find query as its NDJSON byte stream through
 // the shared AND-composing core: matching records re-emit byte-identical to
 // their producer lines in the stream's pinned order; zero matches render ""
-// ("nothing to reuse — write it").
+// ("nothing to reuse — write it"). The filterless query never reaches this
+// seam from the CLI (the parse gate refused it as usage); the empty-query
+// early-out mirrors that gate defensively, rendering nothing rather than
+// vacuously dumping every record through the core's zero-filter conjunction.
 warden_find_output :: proc(index: Warden_Index, query: Warden_Find_Query, allocator := context.allocator) -> string {
-	return warden_project_decls_all(index.decls, warden_find_filters(query, context.temp_allocator), allocator)
-}
-
-// warden_find_exit is the find arm of warden_verb_exit: print the projection,
-// exit 0 — zero matches included (the empty answer is success, §29 §1). The
-// filterless query never reaches this arm from the CLI (the parse gate
-// refused it as usage); the empty-query early-out mirrors that gate
-// defensively, printing nothing rather than vacuously dumping every record.
-warden_find_exit :: proc(index: Warden_Index, query: Warden_Find_Query) -> int {
 	if query == (Warden_Find_Query{}) {
-		return 0
+		return ""
 	}
-	fmt.print(warden_find_output(index, query, context.temp_allocator))
-	return 0
+	return warden_project_decls_all(index.decls, warden_find_filters(query, context.temp_allocator), allocator)
 }

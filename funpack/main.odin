@@ -147,36 +147,15 @@ warden_verb_exit :: proc(root: string, cmd: Warden_Command, arg := "", find := W
 		fmt.eprintfln("funpack warden: %s", warden_refusal_message(refusal, context.temp_allocator))
 		return 2
 	}
-	// The per-command projection seam: each arm prints its pure NDJSON
-	// projection of the decoded `index` and exits 0 — an empty projection
-	// prints zero lines and is still success. Find, holes, and debt ride the
-	// shared decl-filter core (warden_project.odin — find AND-composes its
-	// parsed filters, warden_find.odin); graph emits its own edge-line shape
-	// (warden_graph.odin); tags and pipeline re-project the project record's
-	// registry join and recorded flat steps (warden_tags_pipeline.odin). The
-	// projected bytes are temp-allocated and printed before this frame
-	// returns, so the temp arena that owns the decoded index owns the whole
-	// projection. arg is the command's parsed positional ("" when absent) —
-	// today only graph admits one (its incident-edge filter); find carries
-	// its parsed filter set instead (the zero query on every other command).
-	switch cmd {
-	case .Find:
-		return warden_find_exit(index, find)
-	case .Holes:
-		fmt.print(warden_project_decls(index.decls, warden_holes_predicate, "", context.temp_allocator))
-		return 0
-	case .Debt:
-		fmt.print(warden_project_decls(index.decls, warden_debt_predicate, "", context.temp_allocator))
-		return 0
-	case .Graph:
-		return warden_graph_exit(index, arg)
-	case .Tags:
-		fmt.print(warden_tags_ndjson(index, context.temp_allocator))
-		return 0
-	case .Pipeline:
-		fmt.print(warden_pipeline_ndjson(index, context.temp_allocator))
-		return 0
-	}
+	// The projection seam: print the command's pure NDJSON projection of the
+	// decoded `index` through the SINGLE renderer (warden_command_output,
+	// warden_output.odin — the same function the golden determinism sweeps
+	// assert over, so the dispatch cannot drift from what the tests prove)
+	// and exit 0 — an empty projection prints zero lines and is still
+	// success. The projected bytes are temp-allocated and printed before
+	// this frame returns, so the temp arena that owns the decoded index owns
+	// the whole projection.
+	fmt.print(warden_command_output(index, cmd, arg, find, context.temp_allocator))
 	return 0
 }
 
