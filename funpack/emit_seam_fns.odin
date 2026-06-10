@@ -50,13 +50,16 @@ collect_imported_fn_records :: proc(entry_ast: Ast, module_asts: map[string]Ast)
 				continue
 			}
 			append(&records, Function_Record {
-				name        = fn.name,
-				kind        = function_kind(fn.name),
-				params      = fn.params,
-				return_type = fn.return_type,
-				body        = fn.body,
-				line        = fn.line,
-				module      = seam_module,
+				name         = fn.name,
+				kind         = function_kind(fn.name),
+				params       = fn.params,
+				return_type  = fn.return_type,
+				body         = fn.body,
+				line         = fn.line,
+				module       = seam_module,
+				holed        = fn.holed,
+				has_fallback = fn.has_fallback,
+				fallback     = fn.fallback,
 			})
 		}
 	}

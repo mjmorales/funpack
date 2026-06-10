@@ -234,6 +234,18 @@ eval_body :: proc(interp: ^Interp, body: []Node, env: ^Env) -> (value: Value, ok
 			}
 		case .Return:
 			return eval(interp, &stmt.children[0], env)
+		case .Stub:
+			// The §05 §2 typed hole standing as the body's sole statement
+			// (schema v7), mirroring the compiler interpreter's eval_stub_hole:
+			// a `stub fallback` evaluates its approximation expression in the
+			// record's param-bound scope — the P8 surface, the game stays
+			// playable under the hole — and a `stub bare` is the DEFINED
+			// fail-closed no-value outcome (ok=false: the behavior instance
+			// folds nothing, a calling expression fails closed, never a trap).
+			if len(stmt.fields) == 1 && stmt.fields[0] == "fallback" && len(stmt.children) == 1 {
+				return eval(interp, &stmt.children[0], env)
+			}
+			return nil, false
 		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .Arm:
 			// A non-statement node at statement position is a malformed body.
 			return nil, false
@@ -297,9 +309,10 @@ eval :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool
 		return eval_call(interp, node, env)
 	case .Lambda:
 		return eval_lambda(interp, node, env), true
-	case .Recfield, .Arm, .Let, .If_Return, .Return:
-		// These appear only as children of their owning construct, never as a
-		// standalone expression — reaching one here is a malformed body.
+	case .Recfield, .Arm, .Let, .If_Return, .Return, .Stub:
+		// These appear only as children of their owning construct (a `stub`
+		// only as a holed body's sole statement), never as a standalone
+		// expression — reaching one here is a malformed body.
 		return nil, false
 	}
 	return nil, false

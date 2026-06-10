@@ -107,3 +107,55 @@ test_stub_behavior_step_holed_typechecks :: proc(t: ^testing.T) {
 		"}\n")
 	testing.expect_value(t, err, Type_Error.None)
 }
+
+@(test)
+test_stub_expr_hole_ascribes_declared_type :: proc(t: ^testing.T) {
+	// AC (expression hole positive): a §15 StubExpr Atom ASCRIBES its declared
+	// T — `base + @stub(Fixed)` types the hole as Fixed, so the binary and the
+	// enclosing return both ground against it (spec §05 §2: callers typecheck
+	// against T, here the caller is the enclosing expression).
+	err := typecheck_stub("fn boost(base: Fixed) -> Fixed {\n  return base + @stub(Fixed)\n}\n")
+	testing.expect_value(t, err, Type_Error.None)
+}
+
+@(test)
+test_stub_expr_hole_type_flows_to_enclosing_mismatch :: proc(t: ^testing.T) {
+	// AC (expression hole negative): the declared T is what the enclosing
+	// expression sees — a Fixed + @stub(Int) is the ordinary numeric
+	// Type_Mismatch (no Int → Fixed promotion, spec §10), proving the hole's
+	// type genuinely flows rather than wildcarding the operand.
+	err := typecheck_stub("fn boost(base: Fixed) -> Fixed {\n  return base + @stub(Int)\n}\n")
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_stub_expr_hole_disagreeing_with_return_rejected :: proc(t: ^testing.T) {
+	// AC (return-position flow): a hole standing alone as the returned value
+	// checks its T against the declared `-> R` like any other return — an Int
+	// hole under a `-> Fixed` ascription is a Type_Mismatch, never silently
+	// accepted.
+	err := typecheck_stub("fn boost() -> Fixed {\n  return @stub(Int)\n}\n")
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_stub_expr_fallback_wrong_type_rejected :: proc(t: ^testing.T) {
+	// AC (expression fallback negative): the fallback must itself produce the
+	// hole's T — an Int literal over a Fixed expression hole is a
+	// Type_Mismatch, mirroring the body-position fallback rule.
+	err := typecheck_stub("fn boost() -> Fixed {\n  return @stub(Fixed, 1)\n}\n")
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_stub_expr_fallback_checks_in_enclosing_scope :: proc(t: ^testing.T) {
+	// AC (expression fallback environment): the fallback types in the scope at
+	// the hole's position — the param-seeded scope plus earlier lets — so a
+	// fallback reading a `let` binding grounds and unifies with the hole's T.
+	err := typecheck_stub(
+		"fn boost(base: Fixed) -> Fixed {\n" +
+		"  let bias = base * 2.0\n" +
+		"  return @stub(Fixed, bias)\n" +
+		"}\n")
+	testing.expect_value(t, err, Type_Error.None)
+}

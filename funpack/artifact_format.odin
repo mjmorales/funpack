@@ -88,7 +88,23 @@ import "core:strings"
 // serialize through the existing call/field/variant/record/list/string node arms —
 // the body walk was already generic over them. A widened [functions] population
 // (records from imported modules) is a layout change: 5 → 6 (§1).
-ARTIFACT_SCHEMA_VERSION :: 6
+//
+// Version 7 carries the §05 §2 TYPED HOLE through to the runtime — the dev
+// artifact of a holed declaration was hole-blind before this (a holed fn or
+// behavior emitted an empty body and ticked as a no-op live, silently dropping
+// the P8 "the game stays playable" fallback approximation that already ran in
+// the compiler's test interpreter, evaluate.odin eval_stub_hole). The single
+// layout change is one new §2.7 body-node KIND, `stub`, standing as a holed
+// body's sole statement subtree (body_count 1) exactly where the grammar puts
+// the hole (fun.ebnf §7: FnBody ::= Block | StubExpr): `node stub fallback 1`
+// carries the @stub(T, fallback) approximation expression as its one child, and
+// `node stub bare 0` is the typecheck-only @stub(T) the runtime FAILS CLOSED on
+// (the spec's defined no-value outcome — never undefined behavior). The hole's
+// T is NOT carried: the typechecker proves T identical to the record's declared
+// return type, so `return:TYPE` already states it. The node-kind set is closed,
+// so the new kind is a deliberate bump: 6 → 7 (§1). A release artifact never
+// carries a `stub` node — the §29 §4 hole-ban refuses the tree before emission.
+ARTIFACT_SCHEMA_VERSION :: 7
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

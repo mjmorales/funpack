@@ -24,6 +24,41 @@ emit_body :: proc(b: ^strings.Builder, body: []Statement) {
 	}
 }
 
+// executable_body_count is the body_count a function/behavior record declares
+// (docs/artifact-format.md §9, §10): the top-level statement subtrees of an
+// intact body, or 1 for a §05 §2 holed declaration — the hole stands as the
+// body's single `stub` subtree (schema v7), so a holed record is never the
+// empty-body shape an intact record cannot have.
+executable_body_count :: proc(holed: bool, body: []Statement) -> int {
+	if holed {
+		return 1
+	}
+	return len(body)
+}
+
+// emit_executable_body writes a record's body node run: an intact body's
+// statement subtrees, or — for a §05 §2 holed declaration — the single `stub`
+// node standing exactly where the grammar puts the hole (fun.ebnf §7:
+// FnBody ::= Block | StubExpr). The @stub(T, fallback) form carries its
+// approximation expression as the stub's one child, so the runtime evaluates
+// the SAME expression the compiler interpreter runs (evaluate.odin
+// eval_stub_hole) and the game stays playable live (P8); the bare @stub(T)
+// carries nothing — `node stub bare 0` — and the runtime fails closed on it
+// (the spec's defined no-value outcome). The hole's T is not serialized: the
+// typechecker proves it identical to the record's declared return type.
+emit_executable_body :: proc(b: ^strings.Builder, holed: bool, has_fallback: bool, fallback: Expr, body: []Statement) {
+	if !holed {
+		emit_body(b, body)
+		return
+	}
+	if has_fallback {
+		emit_line(b, "node stub fallback 1")
+		emit_expr(b, fallback)
+		return
+	}
+	emit_line(b, "node stub bare 0")
+}
+
 // emit_statement serializes one top-level body statement as a node subtree
 // (docs/artifact-format.md §2.7): a `let n = e` is a `let` node over its value,
 // a `return e` is a `return` node over its value, and an `if cond { return v }`
@@ -106,6 +141,32 @@ emit_expr :: proc(b: ^strings.Builder, expr: Expr) {
 		emit_tuple(b, e)
 	case ^If_Expr:
 		emit_if(b, e)
+	case ^Stub_Expr:
+		emit_stub(b, e)
+	}
+}
+
+// emit_stub serializes a §05 §2 expression-position typed hole as a `stub`
+// node — `node stub TYPE has_fallback child_count`, the declared T spelled
+// like every field/param type (type_ref_string), with the fallback
+// approximation subtree as the single child of the two-argument form
+// (mirroring `variant`'s has_payload + children shape). Like emit_tuple and
+// emit_if, the artifact-format §2.7 ratification of the `stub` node KIND (a
+// closed set, so a new kind is a schema-version bump) lands with the
+// hole-carry seam that first runs a hole live in the runtime; this grammar
+// seam emits the structurally-sound node so the body walk stays total and the
+// build's complete Expr switch is exhaustive. A bare hole has 0 children —
+// its dev semantics is the fail-closed no-value outcome (eval_stub_hole), and
+// it can never reach a RELEASE artifact (the §29 §4 hole-ban refuses the
+// build first).
+emit_stub :: proc(b: ^strings.Builder, e: ^Stub_Expr) {
+	strings.write_string(b, "node stub ")
+	strings.write_string(b, type_ref_string(e.hole_type))
+	strings.write_string(b, e.has_fallback ? " true " : " false ")
+	strings.write_int(b, e.has_fallback ? 1 : 0)
+	emit_line(b, "")
+	if e.has_fallback {
+		emit_expr(b, e.fallback)
 	}
 }
 

@@ -19,7 +19,6 @@
 package funpack
 
 import "core:encoding/json"
-import "core:fmt"
 import "core:strings"
 
 // Warden_Edge_Kind is the CLOSED relation taxonomy of the graph projection —
@@ -98,6 +97,9 @@ emit_warden_edge :: proc(edge: Warden_Edge, allocator := context.allocator) -> s
 // stream: the projected edges in pinned order, one line each, joined in
 // emission order. An empty edge set renders as the empty string — no lines,
 // no placeholder — so the output is exactly the edge set and nothing else.
+// This is graph's arm of the single renderer (warden_command_output): every
+// reachable outcome — an empty edge set, a filter matching nothing — is the
+// success tier (§29 §1: an empty projection is an answer, not a refusal).
 warden_graph_output :: proc(index: Warden_Index, filter: string, allocator := context.allocator) -> string {
 	edges := project_graph_edges(index, filter, context.temp_allocator)
 	lines := make([dynamic]string, 0, len(edges), context.temp_allocator)
@@ -105,14 +107,4 @@ warden_graph_output :: proc(index: Warden_Index, filter: string, allocator := co
 		append(&lines, emit_warden_edge(edge, context.temp_allocator))
 	}
 	return strings.concatenate(lines[:], allocator)
-}
-
-// warden_graph_exit is the graph arm of warden_verb_exit: print the
-// projection, exit 0. The caller already adjudicated acquisition + decode
-// (the shared exit-2 refusal tier), so every reachable outcome here —
-// including an empty edge set and a filter matching nothing — is success
-// (§29 §1: an empty projection is an answer, not a refusal).
-warden_graph_exit :: proc(index: Warden_Index, filter: string) -> int {
-	fmt.print(warden_graph_output(index, filter, context.temp_allocator))
-	return 0
 }

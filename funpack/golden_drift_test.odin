@@ -117,9 +117,9 @@ test_golden_drift_index_carries_stub_for_both_holes :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)
@@ -149,24 +149,29 @@ test_golden_drift_index_carries_stub_for_both_holes :: proc(t: ^testing.T) {
 @(test)
 test_golden_drift_release_build_exits_two :: proc(t: ^testing.T) {
 	// AC (release hole-ban): `funpack build --release` over the drift tree is
-	// the exit-2 compile-error outcome — stage_build refuses with
-	// Holed_Declaration (the error run_build_verb maps to exit 2; the offender
-	// is not named in the message, an enum-boundary follow-up) and writes
-	// NEITHER product. Never a counted failure: build has no exit-1 tier.
+	// the exit-2 compile-error outcome — stage_build refuses with a
+	// Holed_Declaration verdict NAMING the first holed declaration (drag, the
+	// bare @stub(T) hole; drift is single-module so the qualified name is bare,
+	// lore #11) and writes NEITHER product. The refusal line is pinned
+	// byte-for-byte for determinism — stdout/stderr stay advisory (§29 §3, the
+	// machine contract is the exit code), but the NAME in the message is the
+	// deliverable. Never a counted failure: build has no exit-1 tier.
 	root, ok := copy_spec_tree_to_temp(resolve_drift_dir(), "drift", "FUNPACK_DRIFT_DIR")
 	if !ok {
 		return
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, .Release, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.Holed_Declaration)
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Holed_Declaration)
+	testing.expect_value(t, verdict.offender, "drag")
+	testing.expect_value(t, build_refusal_message(verdict, context.temp_allocator), "Holed_Declaration: drag")
 
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
 	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
 	testing.expect(t, !os.exists(artifact_path))
 	testing.expect(t, !os.exists(index_path))
-	log.infof("golden drift release: the hole-ban refuses the tree (Holed_Declaration, exit 2, no product)")
+	log.infof("golden drift release: the hole-ban refuses the tree naming the offender (Holed_Declaration: drag, exit 2, no product)")
 }
 
 @(test)
@@ -180,9 +185,9 @@ test_golden_drift_dev_build_exits_zero_writes_both_products :: proc(t: ^testing.
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)

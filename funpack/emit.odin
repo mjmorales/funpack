@@ -600,15 +600,22 @@ emit_functions :: proc(b: ^strings.Builder, ast: Ast, module: string, imported_f
 // setup body is a single `return` statement); line is the source line for the
 // span. module is the §15 module the record's span keys to — the entrypoint module
 // for an own record, the SEAM module for a §17 cross-module imported_fns record —
-// so a multi-module game's span points at the originating module.
+// so a multi-module game's span points at the originating module. The §05 §2 hole
+// trio (holed/has_fallback/fallback) mirrors Fn_Node: a holed record's body is
+// empty and its artifact body run is the single `stub` node instead
+// (docs/artifact-format.md §2.7, schema v7), so the fallback approximation
+// reaches the runtime and a bare hole fails closed live.
 Function_Record :: struct {
-	name:        string,
-	kind:        string,
-	params:      []Param_Decl,
-	return_type: Type_Ref,
-	body:        []Statement,
-	line:        int,
-	module:      string,
+	name:         string,
+	kind:         string,
+	params:       []Param_Decl,
+	return_type:  Type_Ref,
+	body:         []Statement,
+	line:         int,
+	module:       string,
+	holed:        bool,
+	has_fallback: bool,
+	fallback:     Expr,
 }
 
 // function_records collects the module's fns and module-level `let` constants
@@ -653,13 +660,16 @@ append_fn_records :: proc(records: ^[dynamic]Function_Record, ast: Ast, kind: st
 			continue
 		}
 		append(records, Function_Record{
-			name        = fn.name,
-			kind        = kind,
-			params      = fn.params,
-			return_type = fn.return_type,
-			body        = fn.body,
-			line        = fn.line,
-			module      = module,
+			name         = fn.name,
+			kind         = kind,
+			params       = fn.params,
+			return_type  = fn.return_type,
+			body         = fn.body,
+			line         = fn.line,
+			module       = module,
+			holed        = fn.holed,
+			has_fallback = fn.has_fallback,
+			fallback     = fn.fallback,
 		})
 	}
 }
@@ -690,9 +700,10 @@ const_body :: proc(decl: Let_Decl_Node) -> []Statement {
 // emit_function_record writes one [functions] record: the `function` lead line
 // (name, KIND, param_count, return type, body_count, span), then the `param`
 // lines and the body `node` run (§2.7). body_count is the count of top-level
-// statement subtrees, one per source statement line. The span's module is the
-// record's own (record.module) — the entrypoint module for an own record, the seam
-// module for a §17 carried record.
+// statement subtrees, one per source statement line — a §05 §2 holed record's
+// body is the single `stub` subtree, so its body_count is 1 (schema v7). The
+// span's module is the record's own (record.module) — the entrypoint module for
+// an own record, the seam module for a §17 carried record.
 emit_function_record :: proc(b: ^strings.Builder, record: Function_Record) {
 	strings.write_string(b, "function ")
 	strings.write_string(b, record.name)
@@ -703,7 +714,7 @@ emit_function_record :: proc(b: ^strings.Builder, record: Function_Record) {
 	strings.write_string(b, " return:")
 	strings.write_string(b, type_ref_string(record.return_type))
 	strings.write_byte(b, ' ')
-	strings.write_int(b, len(record.body))
+	strings.write_int(b, executable_body_count(record.holed, record.body))
 	strings.write_string(b, " span:")
 	strings.write_string(b, record.module)
 	strings.write_byte(b, ':')
@@ -712,7 +723,7 @@ emit_function_record :: proc(b: ^strings.Builder, record: Function_Record) {
 	for param in record.params {
 		emit_line(b, "param ", param.name, " ", type_ref_string(param.type))
 	}
-	emit_body(b, record.body)
+	emit_executable_body(b, record.holed, record.has_fallback, record.fallback, record.body)
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -746,7 +757,7 @@ emit_behaviors :: proc(b: ^strings.Builder, ast: Ast, flat: Flattened_Pipeline) 
 		strings.write_byte(b, ' ')
 		strings.write_int(b, len(emits))
 		strings.write_byte(b, ' ')
-		strings.write_int(b, len(decl.step.body))
+		strings.write_int(b, executable_body_count(decl.step.holed, decl.step.body))
 		emit_line(b, "")
 		emit_gtags(b, decl.gtags)
 		for param in decl.step.params {
@@ -755,7 +766,10 @@ emit_behaviors :: proc(b: ^strings.Builder, ast: Ast, flat: Flattened_Pipeline) 
 		for emit in emits {
 			emit_line(b, "emit ", emit)
 		}
-		emit_body(b, decl.step.body)
+		// A §05 §2 holed step carries its hole as the body's single `stub`
+		// subtree (schema v7), so a pipelined hole's fallback approximation is
+		// live in the runtime, not a silent no-op.
+		emit_executable_body(b, decl.step.holed, decl.step.has_fallback, decl.step.fallback, decl.step.body)
 	}
 }
 

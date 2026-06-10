@@ -68,7 +68,22 @@ import "core:strings"
 // anim/Draw3 forms serialize through the existing call/field/variant/record/list/
 // string arms. A widened [functions] population is a layout change: 5 → 6
 // (funpack/docs/artifact-format.md §1, §9).
-ARTIFACT_SCHEMA_VERSION :: 6
+//
+// v7 carries the §05 §2 TYPED HOLE through to this runtime — before it, a holed
+// fn/behavior arrived as an empty body and ticked as a no-op, silently dropping
+// the @stub(T, fallback) approximation the compiler's interpreter already ran
+// (P8: the game stays playable). The single layout change is one new §2.7 body
+// node KIND, `stub`, standing as a holed body's sole statement subtree
+// (body_count 1): `node stub fallback 1` carries the approximation expression as
+// its one child — evaluated in the record's param-bound scope, bit-identical to
+// the compiler interpreter — and `node stub bare 0` is the typecheck-only hole
+// this runtime FAILS CLOSED on (the defined no-value outcome: the instance folds
+// nothing, a calling expression fails closed, never a trap). The hole's T is not
+// carried (it equals the record's declared return type). A closed node-kind set
+// grows only by a deliberate bump: 6 → 7 (funpack/docs/artifact-format.md §1,
+// §2.7). A release artifact never carries the node — the §29 §4 hole-ban refuses
+// the tree before emission.
+ARTIFACT_SCHEMA_VERSION :: 7
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"

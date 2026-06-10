@@ -119,25 +119,23 @@ test_warden_graph_filter_exact_match :: proc(t: ^testing.T) {
 
 	got := warden_graph_output(index, "drift.damp", context.temp_allocator)
 	testing.expect_value(t, got, "")
-	testing.expect_value(t, warden_graph_exit(index, "drift.damp"), 0)
 }
 
-// test_warden_graph_empty_exit_zero pins the empty-graph success tier both
+// test_warden_graph_empty_projection pins the empty-graph success shape both
 // ways an edge set can be empty: a stream with no decl records at all, and a
 // decl whose every relation list is empty-but-present. Each projects zero
-// lines and exits 0 — an empty graph is an answer (§29 §1), not a refusal.
+// lines — an empty graph is an answer (§29 §1), not a refusal; the exit-0
+// mapping over a real root is warden_verb_exit's (warden_test.odin sweeps).
 @(test)
-test_warden_graph_empty_exit_zero :: proc(t: ^testing.T) {
+test_warden_graph_empty_projection :: proc(t: ^testing.T) {
 	no_decls := Warden_Index{}
 	testing.expect_value(t, warden_graph_output(no_decls, "", context.temp_allocator), "")
-	testing.expect_value(t, warden_graph_exit(no_decls, ""), 0)
 
 	decls := []Decl_Record{
 		graph_decl_fixture("Board", {}, {}, {}, {}),
 	}
 	bare := Warden_Index{decls = decls}
 	testing.expect_value(t, warden_graph_output(bare, "", context.temp_allocator), "")
-	testing.expect_value(t, warden_graph_exit(bare, ""), 0)
 }
 
 // test_warden_graph_double_emit_byte_identical pins the §29 §1 determinism

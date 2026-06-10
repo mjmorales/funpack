@@ -223,6 +223,14 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		return eval_if(ctx, env, e)
 	case ^Lambda_Expr:
 		return Lambda_Value{node = e, env = env}, true
+	case ^Stub_Expr:
+		// A §05 §2 expression-position hole evaluates through the same funnel
+		// as a body-position hole: the fallback approximation runs in the
+		// CURRENT frame (the scope at the hole's position), and a bare hole is
+		// the defined fail-closed no-value outcome — ok = false propagates up,
+		// so the assert reading the enclosing expression fails counted, never
+		// a trap.
+		return eval_stub_hole(ctx, env, e.fallback, e.has_fallback)
 	}
 	return nil, false
 }
@@ -347,24 +355,28 @@ eval_user_fn :: proc(ctx: Eval_Ctx, fn: Fn_Node, args: []Value) -> (value: Value
 		frame.bindings[param.name] = args[i]
 	}
 	if fn.holed {
-		return eval_stub_hole(ctx, frame, fn)
+		return eval_stub_hole(ctx, frame, fn.fallback, fn.has_fallback)
 	}
 	return eval_statements(ctx, frame, fn.body)
 }
 
 // eval_stub_hole runs a typed hole reached at evaluation time (spec §05 §2,
-// P8: the approximation keeps the game playable). A `@stub(T, fallback)` hole
-// evaluates its fallback expression in the declaration's own environment —
-// the param-seeded frame — so a fallback reading a parameter (`@stub(Ball,
-// b)`) returns the argument; check_stub_hole already typed the fallback
-// against the hole's T in this same scope, so the value is type-sound. A
-// typecheck-only `@stub(T)` has nothing to run: it is dev-anchoring only and
-// never ships (the release gate refuses it), so reaching one is the
-// evaluator's defined fail-closed no-value outcome — the assert reading it
-// fails counted, never a trap.
-eval_stub_hole :: proc(ctx: Eval_Ctx, frame: ^Env, fn: Fn_Node) -> (value: Value, ok: bool) {
-	if fn.has_fallback {
-		return eval_expr(ctx, frame, fn.fallback)
+// P8: the approximation keeps the game playable) — the single eval-side
+// funnel for BOTH hole positions: a body-position hole reaches it from
+// eval_user_fn, an expression-position StubExpr Atom from eval_expr. A
+// `@stub(T, fallback)` hole evaluates its fallback expression in the frame at
+// the hole's position — the declaration's param-seeded frame for a body hole,
+// the surrounding scope for an expression hole — so a fallback reading a
+// parameter (`@stub(Ball, b)`) returns the argument; the typecheck side
+// (check_stub_hole / stub_expr_check) already typed the fallback against the
+// hole's T in that same scope, so the value is type-sound. A typecheck-only
+// `@stub(T)` has nothing to run: it is dev-anchoring only and never ships
+// (the release gate refuses it), so reaching one is the evaluator's defined
+// fail-closed no-value outcome — the assert (or enclosing expression) reading
+// it fails counted, never a trap.
+eval_stub_hole :: proc(ctx: Eval_Ctx, frame: ^Env, fallback: Expr, has_fallback: bool) -> (value: Value, ok: bool) {
+	if has_fallback {
+		return eval_expr(ctx, frame, fallback)
 	}
 	return nil, false
 }

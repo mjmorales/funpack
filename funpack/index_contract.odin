@@ -103,10 +103,12 @@ Index_Decl_Kind :: enum {
 //   - doc            — the attached `@doc` text (§05); "" when undocumented
 //   - gtags          — the attached `@gtag` registry tags (§05), authored order
 //   - stub           — the §05 §2 typed-hole flag, AST-derived: true when the
-//                      declaration's body is a `@stub(T)` / `@stub(T, fallback)`
-//                      hole (the parser's Fn_Node.holed, on a fn or a behavior
-//                      step), false for an intact body and for the body-less
-//                      forms — mandatory-present, never omitted
+//                      declaration holds a `@stub(T)` / `@stub(T, fallback)`
+//                      hole in body position (the parser's Fn_Node.holed) OR in
+//                      expression position anywhere the shared hole walkers
+//                      descend (fn_holds_stub and friends: bodies, initializers,
+//                      defaults), false only for a hole-free declaration —
+//                      mandatory-present, never omitted
 //   - todo           — the §05 §2 @todo presence flag, AST-derived (v3): true
 //                      exactly when the declaration carries at least one
 //                      `@todo("msg", window)` note (todo_flag); the parsed
@@ -827,25 +829,46 @@ compile_index_modules :: proc(sources: []Source) -> (modules: []Index_Module, ok
 // `project` record's source-derived fields read off ordered[0]. An empty or
 // unmatched `entrypoint` (a package, §30 §7) leaves the plain sources order, so
 // the package stream's blocks follow the source set verbatim. The reorder is a
-// pure index permutation — no re-sort of the source list, no map — so the order
-// is deterministic for a given tree.
+// pure index permutation (entrypoint_first_order) — no re-sort of the source
+// list, no map — so the order is deterministic for a given tree.
 order_index_modules :: proc(modules: []Index_Module, entrypoint: string) -> []Index_Module {
-	ordered := make([dynamic]Index_Module, 0, len(modules), context.temp_allocator)
+	names := make([]string, len(modules), context.temp_allocator)
+	for m, i in modules {
+		names[i] = m.module
+	}
+	ordered := make([]Index_Module, len(modules), context.temp_allocator)
+	for src, dst in entrypoint_first_order(names, entrypoint) {
+		ordered[dst] = modules[src]
+	}
+	return ordered
+}
+
+// entrypoint_first_order is THE single entrypoint-first ordering rule, expressed
+// as a pure index permutation over the §15 module names: the index of the module
+// `entrypoint` names comes first (when it is in the set), then the remaining
+// indices in their original order. An empty or unmatched entrypoint (a package,
+// §30 §7) yields the identity permutation. Both consumers apply this one rule —
+// order_index_modules permutes the compiled modules the `decl` stream emits, and
+// order_release_sources (build.odin) permutes the sources the release-refusal
+// walkers scan — so the refusal's named offender is always the first offender in
+// the emitted index's module order, never a sorted-by-path artifact.
+entrypoint_first_order :: proc(module_names: []string, entrypoint: string) -> []int {
+	order := make([dynamic]int, 0, len(module_names), context.temp_allocator)
 	if entrypoint != "" {
-		for m in modules {
-			if m.module == entrypoint {
-				append(&ordered, m)
+		for name, i in module_names {
+			if name == entrypoint {
+				append(&order, i)
 				break
 			}
 		}
 	}
-	for m in modules {
-		if entrypoint != "" && m.module == entrypoint {
+	for name, i in module_names {
+		if entrypoint != "" && name == entrypoint {
 			continue
 		}
-		append(&ordered, m)
+		append(&order, i)
 	}
-	return ordered[:]
+	return order[:]
 }
 
 // entrypoint_module_name reads the §15 module the entrypoints.fcfg `use <module>`
