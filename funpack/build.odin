@@ -215,9 +215,9 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 // (gates.odin) the --release hole-ban consults. Sources walk in the order the
 // caller supplies — stage_build passes the Index Contract's module order
 // (order_release_sources: entrypoint first, then sorted-by-path remainder) —
-// and each AST in declaration order, so a multi-hole project always names the
-// same first offender deterministically, and that offender is the first in
-// index order. The returned declaration is §15 module-qualified
+// and each AST in its source-ordered declaration sequence, so a multi-hole
+// project always names the same first offender deterministically, and that
+// offender is the first in index order. The returned declaration is §15 module-qualified
 // (qualify_offender — bare on a single-module project, lore #11), matching the
 // Index Contract's qualified_name so the refusal line and the index name the
 // decl identically.
@@ -247,7 +247,7 @@ project_holed_decl :: proc(sources: []Source) -> (declaration: string, holed: bo
 // mirroring project_holed_decl exactly. Sources walk in the order the caller
 // supplies — stage_build passes the Index Contract's module order
 // (order_release_sources: entrypoint first, then sorted-by-path remainder) —
-// and each AST in the fixed per-kind declaration order, so a multi-probe
+// and each AST in its source-ordered declaration sequence, so a multi-probe
 // project always names the same first offender deterministically, and that
 // offender is the first in index order. The returned declaration is §15 module-qualified
 // (qualify_offender — bare on a single-module project, lore #11), matching the

@@ -89,8 +89,8 @@ Warden_Refusal :: struct {
 
 // Warden_Index is the whole decoded index: the stream's single leading
 // `project` record plus every `decl` record in emission order (the fixed
-// entrypoint-module-first, gate_units-style order emit_index_stream pinned —
-// the decode is positional, no re-sort).
+// entrypoint-module-first, source-ordered-declaration order emit_index_stream
+// pinned — the decode is positional, no re-sort).
 Warden_Index :: struct {
 	project: Project_Record,
 	decls:   []Decl_Record,

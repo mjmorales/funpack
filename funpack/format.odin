@@ -10,10 +10,12 @@
 // Canonical-form rules the renderer fixes where §02 under-specifies (each
 // chosen to round-trip and to match the dominant funpack-spec example-corpus
 // spelling):
-//   - Declarations render KIND-GROUPED in Ast field order (module @doc,
-//     imports, lets, datas, enums, things, signals, fns, behaviors, pipelines,
-//     tests). The Ast keeps source order within a kind only, so the projection
-//     of the source-of-truth AST is necessarily kind-grouped.
+//   - Declarations render in SOURCE ORDER (module @doc, imports, then the
+//     Ast's source-ordered declaration sequence): the author's cross-kind
+//     interleaving — a thing beside its behaviors and signals — IS canonical
+//     form, never reordered (ADR
+//     2026-06-10-formatter-canon-source-ordered-declarations, superseding the
+//     interim kind-grouped rendering).
 //   - One blank line between adjacent top-level declarations; the module @doc
 //     and the import block are contiguous.
 //   - Directive block order: @doc, @gtag (ONE directive carrying every label),
@@ -58,43 +60,34 @@ render_canonical :: proc(ast: Ast, allocator := context.allocator) -> string {
 		wrote_header = true
 	}
 	wrote_decl := wrote_header
-	// Declarations render kind-grouped in Ast field order — the Ast keeps
-	// source order within each kind only, so this IS the AST's one projection.
-	for decl in ast.lets {
+	// Declarations render through the Ast's source-ordered sequence — the
+	// author's cross-kind interleaving is the canonical order, so the
+	// projection preserves it (the switch is total over Ast_Decl_Kind: a new
+	// declaration kind is a visible compile gap here).
+	for ref in ast.decls {
 		fmt_decl_separator(&b, &wrote_decl)
-		fmt_let_decl(&b, decl)
-	}
-	for decl in ast.datas {
-		fmt_decl_separator(&b, &wrote_decl)
-		fmt_data(&b, decl)
-	}
-	for decl in ast.enums {
-		fmt_decl_separator(&b, &wrote_decl)
-		fmt_enum(&b, decl)
-	}
-	for decl in ast.things {
-		fmt_decl_separator(&b, &wrote_decl)
-		fmt_thing(&b, decl)
-	}
-	for decl in ast.signals {
-		fmt_decl_separator(&b, &wrote_decl)
-		fmt_signal(&b, decl)
-	}
-	for decl in ast.fns {
-		fmt_decl_separator(&b, &wrote_decl)
-		fmt_fn_decl(&b, decl)
-	}
-	for decl in ast.behaviors {
-		fmt_decl_separator(&b, &wrote_decl)
-		fmt_behavior(&b, decl)
-	}
-	for decl in ast.pipelines {
-		fmt_decl_separator(&b, &wrote_decl)
-		fmt_pipeline(&b, decl)
-	}
-	for decl in ast.tests {
-		fmt_decl_separator(&b, &wrote_decl)
-		fmt_test(&b, decl)
+		switch ref.kind {
+		case .Let:
+			fmt_let_decl(&b, ast.lets[ref.index])
+		case .Data:
+			fmt_data(&b, ast.datas[ref.index])
+		case .Enum:
+			fmt_enum(&b, ast.enums[ref.index])
+		case .Thing:
+			fmt_thing(&b, ast.things[ref.index])
+		case .Signal:
+			fmt_signal(&b, ast.signals[ref.index])
+		case .Fn:
+			fmt_fn_decl(&b, ast.fns[ref.index])
+		case .Query:
+			fmt_query(&b, ast.queries[ref.index])
+		case .Behavior:
+			fmt_behavior(&b, ast.behaviors[ref.index])
+		case .Pipeline:
+			fmt_pipeline(&b, ast.pipelines[ref.index])
+		case .Test:
+			fmt_test(&b, ast.tests[ref.index])
+		}
 	}
 	return strings.to_string(b)
 }
@@ -402,7 +395,7 @@ fmt_fn_decl :: proc(b: ^strings.Builder, decl: Fn_Node) {
 	}
 	strings.write_string(b, "fn ")
 	strings.write_string(b, decl.name)
-	fmt_fn_signature(b, decl)
+	fmt_signature(b, decl.params, decl.return_type)
 	if decl.is_extern {
 		strings.write_string(b, "\n")
 		return
@@ -418,11 +411,11 @@ fmt_fn_decl :: proc(b: ^strings.Builder, decl: Fn_Node) {
 	strings.write_string(b, "}\n")
 }
 
-// fmt_fn_signature writes `(p: T, …) -> R` — the parameter list and return
-// ascription shared by fns, extern fns, and the behavior step.
-fmt_fn_signature :: proc(b: ^strings.Builder, decl: Fn_Node) {
+// fmt_signature writes `(p: T, …) -> R` — the parameter list and return
+// ascription shared by fns, extern fns, queries, and the behavior step.
+fmt_signature :: proc(b: ^strings.Builder, params: []Param_Decl, return_type: Type_Ref) {
 	strings.write_string(b, "(")
-	for param, i in decl.params {
+	for param, i in params {
 		if i > 0 {
 			strings.write_string(b, ", ")
 		}
@@ -431,7 +424,35 @@ fmt_fn_signature :: proc(b: ^strings.Builder, decl: Fn_Node) {
 		fmt_type_ref(b, param.type)
 	}
 	strings.write_string(b, ") -> ")
-	fmt_type_ref(b, decl.return_type)
+	fmt_type_ref(b, return_type)
+}
+
+// fmt_query writes a §08 §3 query declaration: its directive block, then the
+// declared §05 §3 index requirements (one `@index(Thing.field)` /
+// `@spatial(Thing.field)` line each, in slice order, adjacent to the `query`
+// keyword — the spec §08 §3 spelling), then `query name(…) -> R { … }`. The
+// grammar admits no body-position hole on a query (fun.ebnf §7), so the body
+// is always the brace-delimited statement block.
+fmt_query :: proc(b: ^strings.Builder, decl: Query_Node) {
+	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	for index in decl.indexes {
+		switch index.kind {
+		case .Index:
+			strings.write_string(b, "@index(")
+		case .Spatial:
+			strings.write_string(b, "@spatial(")
+		}
+		strings.write_string(b, index.thing)
+		strings.write_string(b, ".")
+		strings.write_string(b, index.field)
+		strings.write_string(b, ")\n")
+	}
+	strings.write_string(b, "query ")
+	strings.write_string(b, decl.name)
+	fmt_signature(b, decl.params, decl.return_type)
+	strings.write_string(b, " {\n")
+	fmt_statements(b, decl.body, 1)
+	strings.write_string(b, "}\n")
 }
 
 // fmt_behavior writes `behavior name on Thing { fn step(…) -> R { … } }`
@@ -445,7 +466,7 @@ fmt_behavior :: proc(b: ^strings.Builder, decl: Behavior_Node) {
 	strings.write_string(b, " {\n")
 	strings.write_string(b, FMT_INDENT)
 	strings.write_string(b, "fn step")
-	fmt_fn_signature(b, decl.step)
+	fmt_signature(b, decl.step.params, decl.step.return_type)
 	if decl.step.holed {
 		strings.write_string(b, " ")
 		fmt_stub(b, decl.step.hole_type, decl.step.fallback, decl.step.has_fallback, 1)

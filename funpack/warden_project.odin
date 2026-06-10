@@ -8,7 +8,7 @@
 // forward pass that re-emits each matching record through the producer's own
 // emit_decl_record (index_contract.odin), so a projected line is
 // BYTE-IDENTICAL to its producer line and the output order is the stream's
-// pinned emission order (entrypoint-module-first, gate_units-style —
+// pinned emission order (entrypoint-module-first, source-ordered decls —
 // read_warden_index decodes positionally and this pass never re-sorts). No
 // map iteration reaches the output, no clock is read, and nothing is written
 // — the projection answers over the contract, never the AST (§29 §4

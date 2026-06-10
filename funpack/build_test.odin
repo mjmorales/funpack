@@ -529,6 +529,28 @@ test_release_holed_decl_expression_positions :: proc(t: ^testing.T) {
 	log.infof("release_holed_decl expression positions: an expression hole in a fn body, a let initializer, a field default, and a test body each name their declaration")
 }
 
+// test_release_walkers_source_order pins BOTH release walkers' first-offender
+// ORDER to the Ast's source-ordered declaration sequence (ADR
+// 2026-06-10-formatter-canon-source-ordered-declarations — the order the index
+// emits): a holed/probed LET preceding a holed/probed DATA in source names the
+// let, even though the retired per-kind walk (data before let) would have
+// named the data.
+@(test)
+test_release_walkers_source_order :: proc(t: ^testing.T) {
+	holed_ast, holed_err := stage_parse(stage_lex("let FIRST: Fixed = @stub(Fixed, 1.5)\ndata Later { bias: Fixed = @stub(Fixed, 0.0) }\n"))
+	testing.expect_value(t, holed_err, Parse_Error.None)
+	declaration, holed := release_holed_decl(holed_ast)
+	testing.expect(t, holed)
+	testing.expect_value(t, declaration, "FIRST")
+
+	probed_ast, probed_err := stage_parse(stage_lex("@log(FIRST)\nlet FIRST: Fixed = 1.5\n@watch(self.bias)\ndata Later { bias: Fixed }\n"))
+	testing.expect_value(t, probed_err, Parse_Error.None)
+	probed_decl, probed := release_debug_decl(probed_ast)
+	testing.expect(t, probed)
+	testing.expect_value(t, probed_decl, "FIRST")
+	log.infof("release walkers source order: a let preceding a data in source is the first offender for both bans (never the per-kind regrouping)")
+}
+
 // test_gates_skip_holed_units proves dev mode compiles MULTIPLE holes: a holed
 // fn is body-less (the hole stands in body position), so like an extern fn it
 // is not a unit the structural gates score — two holes must NOT collide on the

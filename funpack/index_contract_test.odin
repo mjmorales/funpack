@@ -317,7 +317,7 @@ test_index_contract_pong_double_emission_identical :: proc(t: ^testing.T) {
 // ── Whole-stream decl records over the live checkouts ──────────────────
 // The §29 §2 multi-record stream end to end through read_index_project: the
 // `project` record on line 1, then one `decl` record line per declaration in the
-// fixed gate_units-style order. These pin the live pong + snake decl set against
+// module's source-ordered declaration sequence. These pin the live pong + snake decl set against
 // the golden source — representative decls' qualified_name/kind/span/emits/
 // consumes/calls/dup_class/mut_data plus the all-decls stub=false (neither
 // golden tree carries a @stub hole) / todo=false (no @todo note) / debug=[]

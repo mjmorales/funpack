@@ -426,6 +426,7 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 	p := Parser{tokens = tokens}
 	out := Decl_Sink {
 		imports   = make([dynamic]Import_Node, 0, 8, context.temp_allocator),
+		decls     = make([dynamic]Decl_Ref, 0, 32, context.temp_allocator),
 		lets      = make([dynamic]Let_Decl_Node, 0, 4, context.temp_allocator),
 		datas     = make([dynamic]Data_Node, 0, 4, context.temp_allocator),
 		enums     = make([dynamic]Enum_Node, 0, 4, context.temp_allocator),
@@ -456,6 +457,7 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 	return Ast {
 			module_doc = module_doc,
 			imports = out.imports[:],
+			decls = out.decls[:],
 			lets = out.lets[:],
 			datas = out.datas[:],
 			enums = out.enums[:],
@@ -482,11 +484,15 @@ empty_directives :: proc() -> Directives {
 	}
 }
 
-// Decl_Sink collects the per-kind declaration slices stage_parse builds.
-// One sink threaded through parse_declaration keeps the dispatch loop flat
-// and the per-kind append sites obvious.
+// Decl_Sink collects the per-kind declaration slices stage_parse builds,
+// plus the source-ordered Decl_Ref sequence (`decls`) recording the parse
+// order across kinds. One sink threaded through parse_declaration keeps the
+// dispatch loop flat and the per-kind append sites obvious; every kind
+// append is paired with a sink_mark so the sequence and the slices cannot
+// drift.
 Decl_Sink :: struct {
 	imports:   [dynamic]Import_Node,
+	decls:     [dynamic]Decl_Ref,
 	lets:      [dynamic]Let_Decl_Node,
 	datas:     [dynamic]Data_Node,
 	enums:     [dynamic]Enum_Node,
@@ -497,6 +503,38 @@ Decl_Sink :: struct {
 	behaviors: [dynamic]Behavior_Node,
 	pipelines: [dynamic]Pipeline_Node,
 	tests:     [dynamic]Test_Node,
+}
+
+// sink_mark appends the just-appended declaration's Decl_Ref onto the
+// source-ordered sequence: the index is the matching kind slice's last slot,
+// so calling it immediately after the kind append records exactly that
+// declaration. Imports are the module header, not declarations, so no
+// import is ever marked.
+sink_mark :: proc(out: ^Decl_Sink, kind: Ast_Decl_Kind) {
+	index := 0
+	switch kind {
+	case .Let:
+		index = len(out.lets) - 1
+	case .Data:
+		index = len(out.datas) - 1
+	case .Enum:
+		index = len(out.enums) - 1
+	case .Thing:
+		index = len(out.things) - 1
+	case .Signal:
+		index = len(out.signals) - 1
+	case .Fn:
+		index = len(out.fns) - 1
+	case .Query:
+		index = len(out.queries) - 1
+	case .Behavior:
+		index = len(out.behaviors) - 1
+	case .Pipeline:
+		index = len(out.pipelines) - 1
+	case .Test:
+		index = len(out.tests) - 1
+	}
+	append(&out.decls, Decl_Ref{kind = kind, index = index})
 }
 
 // parse_declaration dispatches one top-level declaration off its unique
@@ -538,6 +576,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.lets, node)
+		sink_mark(out, .Let)
 	case .Ident:
 		// `data`/`enum`/`thing`/`singleton` are CONTEXTUAL keywords (fun.ll1.md
 		// §2): they lex as Ident, so the keyword is recognized by text here — and
@@ -555,6 +594,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.signals, node)
+		sink_mark(out, .Signal)
 	case .Fn:
 		node := parse_fn_decl(p) or_return
 		node.doc = pending.doc
@@ -562,6 +602,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.fns, node)
+		sink_mark(out, .Fn)
 	case .Extern:
 		// `extern fn` (§02/§26) is the body-less native-boundary fn the §17 seam
 		// declares (`extern fn arena_spawns() -> [Spawn]`). It joins ast.fns
@@ -573,6 +614,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.fns, node)
+		sink_mark(out, .Fn)
 	case .Behavior:
 		node := parse_behavior(p) or_return
 		node.doc = pending.doc
@@ -580,6 +622,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.behaviors, node)
+		sink_mark(out, .Behavior)
 	case .Pipeline:
 		node := parse_pipeline(p) or_return
 		node.doc = pending.doc
@@ -587,10 +630,12 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.pipelines, node)
+		sink_mark(out, .Pipeline)
 	case .Test:
 		node := parse_test(p) or_return
 		node.doc = pending.doc
 		append(&out.tests, node)
+		sink_mark(out, .Test)
 	case:
 		return .Unexpected_Token
 	}
@@ -619,6 +664,7 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.migrate = pending.migrate
 		node.has_migrate = pending.has_migrate
 		append(&out.datas, node)
+		sink_mark(out, .Data)
 	case "enum":
 		node := parse_enum(p) or_return
 		node.doc = pending.doc
@@ -626,6 +672,7 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.enums, node)
+		sink_mark(out, .Enum)
 	case "thing", "singleton":
 		node := parse_thing(p) or_return
 		node.doc = pending.doc
@@ -633,6 +680,7 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.things, node)
+		sink_mark(out, .Thing)
 	case "query":
 		node := parse_query(p) or_return
 		node.doc = pending.doc
@@ -643,6 +691,7 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		// already verified the target kind, so this is a plain carry.
 		node.indexes = pending.indexes[:]
 		append(&out.queries, node)
+		sink_mark(out, .Query)
 	case:
 		return .Unexpected_Token
 	}
