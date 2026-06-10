@@ -51,8 +51,8 @@ Gate_Unit :: struct {
 }
 
 // gate_units collects every declaration body the gates score, in a fixed
-// order — tests, then top-level fns, then behavior steps. The order is
-// stable so a multi-violation source always reports the same first offender.
+// order — tests, then top-level fns, then queries, then behavior steps. The
+// order is stable so a multi-violation source always reports the same first offender.
 // A behavior step's unit name is the behavior's own name, not the reserved
 // `step`, so the diagnostic anchors on the behavior the author wrote. An
 // `extern fn` (§26) has NO body — its implementation is the engine's, not the
@@ -65,7 +65,7 @@ Gate_Unit :: struct {
 // it is skipped on the same grounds: two holes in one module must not collide
 // on the duplication gate (dev mode compiles holes; only release bans them).
 gate_units :: proc(ast: Ast) -> []Gate_Unit {
-	units := make([dynamic]Gate_Unit, 0, len(ast.tests) + len(ast.fns) + len(ast.behaviors), context.temp_allocator)
+	units := make([dynamic]Gate_Unit, 0, len(ast.tests) + len(ast.fns) + len(ast.queries) + len(ast.behaviors), context.temp_allocator)
 	for test in ast.tests {
 		append(&units, Gate_Unit{name = test.name, body = test.body})
 	}
@@ -74,6 +74,13 @@ gate_units :: proc(ast: Ast) -> []Gate_Unit {
 			continue
 		}
 		append(&units, Gate_Unit{name = fn.name, body = fn.body})
+	}
+	for query in ast.queries {
+		// A query body is a code unit like a fn body — the §01 P5 no-per-site-
+		// waiver rule holds it to the same fixed budgets. The grammar admits no
+		// body-position hole on a query (fun.ebnf §7: QueryDecl takes a Block,
+		// never a StubExpr), so there is no holed-skip arm here.
+		append(&units, Gate_Unit{name = query.name, body = query.body})
 	}
 	for behavior in ast.behaviors {
 		if behavior.step.holed {
@@ -89,8 +96,8 @@ gate_units :: proc(ast: Ast) -> []Gate_Unit {
 // declaration whose expression trees carry a §15 StubExpr expression-position
 // hole (a field default, a fn/step body, a `let` initializer, a test body).
 // Declarations walk in the fixed derive_decl_records per-kind order (data →
-// enum → thing → signal → fn → behavior → let → test; a pipeline carries no
-// expression), mirroring release_debug_decl, so a multi-hole source always
+// enum → thing → signal → fn → query → behavior → let → test; a pipeline carries
+// no expression), mirroring release_debug_decl, so a multi-hole source always
 // names the same first offender deterministically. It is the pure-AST half of
 // the §29 §4 release hole-ban ("you cannot ship a hole"): the verdict is a
 // function of the AST alone, and the CALLER (stage_build) supplies the mode —
@@ -121,6 +128,14 @@ release_holed_decl :: proc(ast: Ast) -> (declaration: string, holed: bool) {
 	for fn in ast.fns {
 		if fn_holds_stub(fn) {
 			return fn.name, true
+		}
+	}
+	for query in ast.queries {
+		// A query admits no body-position hole (fun.ebnf §7), but a §15
+		// StubExpr expression-position hole may stand in any body expression —
+		// the same release ban applies, so the body walk runs here too.
+		if body_holds_stub(query.body) {
+			return query.name, true
 		}
 	}
 	for behavior in ast.behaviors {
@@ -297,8 +312,8 @@ expr_holds_stub :: proc(expr: Expr) -> bool {
 // of the AST alone, and the CALLER (stage_build) supplies the mode — in dev
 // the finder is never consulted, under --release any hit is a compile error.
 // Declarations walk in the fixed derive_decl_records per-kind order (data →
-// enum → thing → signal → fn → behavior → pipeline → let), so a multi-probe
-// source always names the same first offender deterministically.
+// enum → thing → signal → fn → query → behavior → pipeline → let), so a
+// multi-probe source always names the same first offender deterministically.
 release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
 	for decl in ast.datas {
 		if len(decl.probes) > 0 {
@@ -321,6 +336,11 @@ release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
 		}
 	}
 	for decl in ast.fns {
+		if len(decl.probes) > 0 {
+			return decl.name, true
+		}
+	}
+	for decl in ast.queries {
 		if len(decl.probes) > 0 {
 			return decl.name, true
 		}

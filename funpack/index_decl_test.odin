@@ -112,6 +112,66 @@ let MAX: Int = 9
 }
 
 @(test)
+test_index_decl_query_record :: proc(t: ^testing.T) {
+	// A §08 §3 query declaration projects one decl record of kind Query — the
+	// v4 form admission — carrying exactly the §29 §2 enumeration: span/doc/
+	// gtags plus the body-derived calls and dup_class, with emits/consumes/
+	// mut_data constant-empty (a query takes no resources and emits nothing).
+	// Its @index/@spatial requirements project NO field: the enumeration names
+	// none, so the record's field set is the same closed thirteen every decl
+	// carries (the marshal would surface an extra key as a byte diff, and the
+	// exact-match reader as Unknown_Field — see the round-trip below).
+	source := `thing Enemy { cell: Vec2 }
+fn shift(v: Vec2) -> Vec2 {
+  return v
+}
+@doc("Nearest enemy cell to the origin.")
+@spatial(Enemy.cell)
+query nearest_cell(origin: Vec2) -> Vec2 {
+  return shift(origin)
+}
+`
+	typed, flat, ok := compile_snippet(source)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	records := derive_decl_records("", typed, flat)
+	testing.expect_value(t, len(records), 3) // the thing + the fn + the query
+
+	query, has_query := find_record(records, "nearest_cell")
+	testing.expect(t, has_query)
+	if !has_query {
+		return
+	}
+	testing.expect_value(t, query.schema_version, INDEX_SCHEMA_VERSION)
+	testing.expect_value(t, query.kind, Index_Decl_Kind.Query)
+	testing.expect_value(t, query.span, 7) // `query` on line 7
+	testing.expect_value(t, query.doc, "Nearest enemy cell to the origin.")
+	testing.expect_value(t, query.stub, false)
+	testing.expect_value(t, query.todo, false)
+	testing.expect(t, contains_str(query.calls, "shift"))
+	testing.expect(t, query.dup_class != 0)
+	testing.expect_value(t, len(query.emits), 0)
+	testing.expect_value(t, len(query.consumes), 0)
+	testing.expect_value(t, len(query.mut_data), 0)
+
+	// Round-trip the emitted line through the exact-match consumer: a v4
+	// stream's Query kind decodes onto the same closed Decl_Record — proof the
+	// producer emitted no extra index/spatial key (the reader would refuse it
+	// as Unknown_Field) and the kind name lands inside the closed enum.
+	line := emit_decl_record(query, context.temp_allocator)
+	decoded, decode_err := decode_index_line(line, context.temp_allocator)
+	testing.expect_value(t, decode_err, Index_Read_Error.None)
+	decoded_decl, is_decl := decoded.(Decl_Record)
+	testing.expect(t, is_decl)
+	if is_decl {
+		testing.expect_value(t, decoded_decl.kind, Index_Decl_Kind.Query)
+		testing.expect_value(t, decoded_decl.qualified_name, "nearest_cell")
+	}
+}
+
+@(test)
 test_index_decl_stub_from_holes :: proc(t: ^testing.T) {
 	// stub derives from the parser's holed flag (§05 §2): a fn whose body is a
 	// @stub(T) hole — and the @stub(T, fallback) form — emits stub=true, and a

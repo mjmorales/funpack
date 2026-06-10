@@ -59,7 +59,20 @@ import "core:strings"
 // change the consumer can misread is a reshape, so it bumps — once: the two
 // derivations land inside the same v3, so the shipped contract changes a
 // single time carrying the pair.
-INDEX_SCHEMA_VERSION :: 3
+//
+// Version 4 admits the §08 §3 `query` declaration form into the closed
+// Index_Decl_Kind set — one decl record per declaration (§29 §2) now includes
+// `kind: "Query"` records, with the FIELD set unchanged. Extending the closed
+// kind domain is a reshape, not an addition: the decoder's design guarantee is
+// that a reshaped stream refuses on the version gate, never on a confusing
+// field error (decode_index_line), so without the bump a v3-pinned consumer
+// reading a query-bearing stream would hit Unknown_Enum_Value mid-record
+// instead of the Schema_Mismatch fix-it — the misreadable-stream shape the v3
+// precedent bumps for. The query's §05 §3 @index/@spatial requirements are NOT
+// projected: §29 §2's field enumeration names no index/spatial fields, so they
+// stay AST-side (a richer projection is a further reshape, not this
+// derivation's call).
+INDEX_SCHEMA_VERSION :: 4
 
 // Index_Decl_Kind is the closed §29 §2 set of source DECLARATION FORMS the
 // per-declaration `decl` record reports — the kind taxonomy of what a
@@ -68,11 +81,11 @@ INDEX_SCHEMA_VERSION :: 3
 // Func/Value — how a resolved name binds against the stdlib surface). The two
 // must not be conflated: one enumerates source declaration forms, the other
 // enumerates import-binding positions. The form set maps 1:1 onto the parser's
-// declaration collections — Data/Enum/Thing/Signal/Fn/Behavior/Pipeline/Let/
-// Test are the Ast.* collections, and Extern_Fn is the `is_extern` Fn (a
+// declaration collections — Data/Enum/Thing/Signal/Fn/Query/Behavior/Pipeline/
+// Let/Test are the Ast.* collections, and Extern_Fn is the `is_extern` Fn (a
 // body-less §02/§26 native-boundary fn, a distinct kind from a bodied Fn). The
 // set is closed: a new declaration form is a schema-version bump, never a
-// silently-added string.
+// silently-added string (Query landed under the v4 bump).
 Index_Decl_Kind :: enum {
 	Data,      // a `data` record declaration (§03)
 	Enum,      // an `enum` declaration (§03)
@@ -80,6 +93,7 @@ Index_Decl_Kind :: enum {
 	Signal,    // a `signal` declaration (§04)
 	Fn,        // a bodied free function (§02)
 	Extern_Fn, // a body-less `extern fn` native-boundary fn (§02/§26)
+	Query,     // a `query` read-only declaration (§08 §3)
 	Behavior,  // a `behavior` declaration (§06)
 	Pipeline,  // a `pipeline` declaration (§07)
 	Let,       // a module-level `let` value binding (§02)
