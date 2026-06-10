@@ -967,6 +967,187 @@ test_parse_trace_probe_with_arg_rejected :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_todo_all_duration_units :: proc(t: ^testing.T) {
+	// The relative-duration window `<int>` + unit (spec §05 §2, §29 §4)
+	// admits exactly six units — h/d/w/mo/q/y. All six parse, each recording
+	// the count and the unit as written; multiple @todo notes accumulate on
+	// the one declaration they prefix.
+	source := "@todo(\"hours\", 1h)\n" +
+		"@todo(\"days\", 30d)\n" +
+		"@todo(\"weeks\", 2w)\n" +
+		"@todo(\"months\", 3mo)\n" +
+		"@todo(\"quarters\", 1q)\n" +
+		"@todo(\"years\", 1y)\n" +
+		"data Board { score: Int }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	todos := ast.datas[0].todos
+	testing.expect_value(t, len(todos), 6)
+	units := [6]string{"h", "d", "w", "mo", "q", "y"}
+	amounts := [6]i64{1, 30, 2, 3, 1, 1}
+	for unit, idx in units {
+		testing.expect_value(t, todos[idx].window.form, Todo_Window_Form.Duration)
+		testing.expect_value(t, todos[idx].window.unit, unit)
+		testing.expect_value(t, todos[idx].window.amount, amounts[idx])
+	}
+}
+
+@(test)
+test_parse_todo_date_window :: proc(t: ^testing.T) {
+	// The absolute-date window is ISO-8601 `YYYY-MM-DD` (spec §05 §2). The
+	// parser records the three components verbatim — no expiry evaluation:
+	// the build-clock is a recorded input to `funpack build` (spec §29 §4),
+	// not something the parse stage holds.
+	source := "@todo(\"ship the tutorial\", 2026-09-01)\n" +
+		"thing Ball { pos: Vec2 }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	todos := ast.things[0].todos
+	testing.expect_value(t, len(todos), 1)
+	testing.expect_value(t, todos[0].message, "ship the tutorial")
+	testing.expect_value(t, todos[0].window.form, Todo_Window_Form.Date)
+	testing.expect_value(t, todos[0].window.year, i64(2026))
+	testing.expect_value(t, todos[0].window.month, i64(9))
+	testing.expect_value(t, todos[0].window.day, i64(1))
+}
+
+@(test)
+test_parse_todo_build_count_window :: proc(t: ^testing.T) {
+	// The build-count window `<int>builds` (spec §05 §2) shares its leading
+	// Int_Lit with the duration form; the trailing `builds` unit tells them
+	// apart (the §05 disambiguation rule).
+	source := "@todo(\"rebalance\", 50builds)\n" +
+		"fn tick(n: Int) -> Int {\n" +
+		"  return n\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	todos := ast.fns[0].todos
+	testing.expect_value(t, len(todos), 1)
+	testing.expect_value(t, todos[0].window.form, Todo_Window_Form.Build_Count)
+	testing.expect_value(t, todos[0].window.amount, i64(50))
+}
+
+@(test)
+test_parse_todo_task_ref_with_doc_and_gtag :: proc(t: ^testing.T) {
+	// The task-ref window `T-<digits>` — the recommended default (spec §05
+	// §2) — keeps its digits as WRITTEN (zero padding included: the ref
+	// resolves against the operator's task tooling, whose ids are spelled
+	// strings), records the `@` token's source line for provenance, and rides
+	// the same prefix block as @doc/@gtag without disturbing either.
+	source := "@doc(\"the ball\")\n" +
+		"@gtag(\"ball\")\n" +
+		"@todo(\"rebalance drops\", T-0042)\n" +
+		"thing Ball { pos: Vec2 }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	thing := ast.things[0]
+	testing.expect_value(t, thing.doc, "the ball")
+	testing.expect_value(t, len(thing.gtags), 1)
+	testing.expect_value(t, len(thing.todos), 1)
+	todo := thing.todos[0]
+	testing.expect_value(t, todo.message, "rebalance drops")
+	testing.expect_value(t, todo.window.form, Todo_Window_Form.Task_Ref)
+	testing.expect_value(t, todo.window.task, "0042")
+	testing.expect_value(t, todo.line, 3)
+}
+
+@(test)
+test_parse_todo_multiple_accumulate :: proc(t: ^testing.T) {
+	// Multiple @todo notes accumulate like @gtag labels (spec §05): the
+	// declaration consumes the whole set in source order, window forms mixed
+	// freely.
+	source := "@todo(\"first\", 30d)\n" +
+		"@todo(\"second\", T-7)\n" +
+		"behavior move on Ball {\n" +
+		"  fn step(self: Ball) -> Ball {\n" +
+		"    return self\n" +
+		"  }\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	todos := ast.behaviors[0].todos
+	testing.expect_value(t, len(todos), 2)
+	testing.expect_value(t, todos[0].message, "first")
+	testing.expect_value(t, todos[0].window.form, Todo_Window_Form.Duration)
+	testing.expect_value(t, todos[1].message, "second")
+	testing.expect_value(t, todos[1].window.form, Todo_Window_Form.Task_Ref)
+}
+
+@(test)
+test_parse_todo_unknown_unit_rejected :: proc(t: ^testing.T) {
+	// `30x` names no duration unit (the closed set is h/d/w/mo/q/y, spec §05
+	// §2) and is not `builds` — the named Malformed_Todo_Window verdict, not
+	// a generic token error.
+	source := "@todo(\"m\", 30x)\n" +
+		"data Board { score: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Todo_Window)
+}
+
+@(test)
+test_parse_todo_missing_window_rejected :: proc(t: ^testing.T) {
+	// The window is MANDATORY (spec §05 §2: past it the directive is a
+	// compile error — a @todo with no expiry can rot forever). A
+	// message-only @todo is Malformed_Todo_Window.
+	source := "@todo(\"m\")\n" +
+		"data Board { score: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Todo_Window)
+}
+
+@(test)
+test_parse_todo_bad_date_shape_rejected :: proc(t: ^testing.T) {
+	// `2026-9-01` is not the ISO shape — the month is the zero-padded
+	// two-digit spelling, the one obvious spelling (spec §05 §2).
+	source := "@todo(\"m\", 2026-9-01)\n" +
+		"data Board { score: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Todo_Window)
+}
+
+@(test)
+test_parse_todo_month_out_of_range_rejected :: proc(t: ^testing.T) {
+	// Month 13 fails the 1–12 range check. Range is parse-side; calendar
+	// validity (a Feb 30) deliberately is not — that belongs to the window
+	// evaluator (spec §29 §4).
+	source := "@todo(\"m\", 2026-13-01)\n" +
+		"data Board { score: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Todo_Window)
+}
+
+@(test)
+test_parse_todo_bare_count_rejected :: proc(t: ^testing.T) {
+	// A bare `30` names no unit — neither a duration nor a build count
+	// (spec §05 §2: one obvious spelling each), so it matches no form.
+	source := "@todo(\"m\", 30)\n" +
+		"data Board { score: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Todo_Window)
+}
+
+@(test)
+test_parse_todo_lowercase_task_ref_rejected :: proc(t: ^testing.T) {
+	// `t-0042` is no task ref: the form leads with the literal uppercase `T`
+	// (spec §05 §2).
+	source := "@todo(\"m\", t-0042)\n" +
+		"data Board { score: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Todo_Window)
+}
+
+@(test)
+test_parse_todo_quoted_window_rejected :: proc(t: ^testing.T) {
+	// A quoted window `"30d"` is a string, not one of the four bare forms —
+	// Malformed_Todo_Window, never a silent unquote.
+	source := "@todo(\"m\", \"30d\")\n" +
+		"data Board { score: Int }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Malformed_Todo_Window)
+}
+
+@(test)
 test_parse_list_newline_separated_elements :: proc(t: ^testing.T) {
 	// The pong `setup` shape: a multi-line list whose `Spawn(…)` elements are
 	// separated by newline alone (no commas). Each element is a call.
