@@ -27,6 +27,13 @@ main :: proc() {
 			os.exit(2)
 		}
 		os.exit(run_check_verb(".", mode))
+	case "fmt":
+		mode, mode_ok := parse_fmt_mode(os.args[2:])
+		if !mode_ok {
+			print_usage()
+			os.exit(2)
+		}
+		os.exit(run_fmt_verb(mode))
 	case "warden":
 		cmd, arg, find, cmd_ok := parse_warden_command(os.args[2:])
 		if !cmd_ok {
@@ -276,5 +283,5 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|warden <find [<name-query>] [--kind <kind>] [--gtag <tag>]|holes|debt|graph [<qualified_name>]|tags|pipeline>>")
+	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|fmt [--check]|warden <find [<name-query>] [--kind <kind>] [--gtag <tag>]|holes|debt|graph [<qualified_name>]|tags|pipeline>>")
 }
