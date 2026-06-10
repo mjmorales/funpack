@@ -205,9 +205,9 @@ build_holed_pong_artifact :: proc(t: ^testing.T) -> (root: string, artifact: str
 	if !amended {
 		return "", "", false
 	}
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		remove_scratch_tree(root)
 		return "", "", false
 	}
@@ -288,9 +288,9 @@ test_golden_holed_pong_double_build_identical :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	testing.expect_value(t, len(product.artifact), len(first))

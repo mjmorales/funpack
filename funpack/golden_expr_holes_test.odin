@@ -84,9 +84,9 @@ test_golden_expr_holed_pong_dev_build_indexes_stub_debt :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)
@@ -135,8 +135,8 @@ test_golden_expr_holed_pong_release_build_and_check_refuse :: proc(t: ^testing.T
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, .Release, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.Holed_Declaration)
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Holed_Declaration)
 	testing.expect(t, !os.exists(build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)))
 	testing.expect(t, !os.exists(build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)))
 
