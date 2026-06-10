@@ -59,6 +59,11 @@ Debug_Session :: struct {
 	versions:  []World_Version, // versions[i] = the committed version tick i produced
 	rngs:      []Rng, // seeded runs: rngs[i] = Rng entering tick i; rngs[n] = final. Empty when seedless.
 	allocator: Runtime_Allocator,
+	// The control-side branch (§28 §2: control perturbs, so it forks — a new
+	// lineage off a committed snapshot, marked non-warranted; the trunk is never
+	// mutated). At most one live branch; a `branch` command re-forks it.
+	has_branch: bool,
+	branch:     Session_Branch,
 }
 
 // open_debug_session folds a recorded run once through the production seam
@@ -331,6 +336,8 @@ session_request :: proc(
 		return observe_replay_behavior(s, id, args, allocator)
 	case "draw_list":
 		return observe_draw_list(s, id, args, allocator)
+	case "branch", "inject_input", "set", "spawn", "emit", "reload":
+		return control_request(s, id, cmd, args, allocator)
 	}
 	return error_response(id, cmd, "unknown command", allocator)
 }
@@ -810,7 +817,6 @@ write_json_string :: proc(b: ^strings.Builder, s: string) {
 // json_int_field reads one integer field off a parsed request object. Requests
 // are parsed with parse_integers=true, so a JSON integer arrives as i64 — no
 // float ever enters the envelope (§10).
-@(private = "file")
 json_int_field :: proc(object: json.Object, key: string) -> (value: i64, ok: bool) {
 	field, has := object[key]
 	if !has {
@@ -824,7 +830,6 @@ json_int_field :: proc(object: json.Object, key: string) -> (value: i64, ok: boo
 }
 
 // json_string_field reads one string field off a parsed request object.
-@(private = "file")
 json_string_field :: proc(object: json.Object, key: string) -> (value: string, ok: bool) {
 	field, has := object[key]
 	if !has {
