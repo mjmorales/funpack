@@ -102,10 +102,10 @@ test_index_contract_emits_valid_ndjson_with_schema_version :: proc(t: ^testing.T
 	testing.expect(t, strings.has_prefix(body, "{"))
 	testing.expect(t, strings.has_suffix(body, "}"))
 	// schema_version is the leading key (it is the first struct field) and
-	// carries the current INDEX_SCHEMA_VERSION stamp (now 2 — the §29 §2 decl
-	// record kind reshape bumped it from 1).
+	// carries the current INDEX_SCHEMA_VERSION stamp (now 3 — the §05 §5
+	// debug-probe derivation reshape bumped it from 2).
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":2"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":3"))
 }
 
 @(test)
@@ -129,7 +129,7 @@ test_index_contract_pong_project_record_exact_fields :: proc(t: ^testing.T) {
 	// schema_version — with no missing and no extra top-level field
 	// (exact-match per spec §29 §2). The expected key set is the closed list
 	// the contract fixes; the emitted object's keys must equal it. The stream is
-	// now multi-record (project line then decl lines, v2 §29 §2), so the project
+	// multi-record (project line then decl lines, §29 §2), so the project
 	// record is LINE 1 — assert it leads the whole-stream NDJSON.
 	stream, ok := pong_index_line()
 	if !ok {
@@ -329,10 +329,10 @@ test_index_contract_pong_double_emission_identical :: proc(t: ^testing.T) {
 test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 	// The pong whole-stream NDJSON: line 1 is the `project` record, then one
 	// `decl` line per declaration in fixed order. The decl-line count equals the
-	// derived record count (33 pong decls), every decl line carries the v2
-	// schema_version stamp with stub=false (no pong decl is holed) and the
-	// unparsed todo/debug empties, and the representative decls pin their
-	// derived projection.
+	// derived record count (33 pong decls), every decl line carries the v3
+	// schema_version stamp with stub=false (no pong decl is holed), the
+	// unparsed @todo false, and the derived debug [] (no pong decl carries a
+	// probe), and the representative decls pin their derived projection.
 	stream, ok := pong_index_line()
 	if !ok {
 		return
@@ -348,10 +348,10 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(lines[0], "\"pipeline_flattened\":"))
 	for i in 1 ..< len(lines) {
 		decl := lines[i]
-		// Every decl line carries the bumped v2 stamp; stub is false on this
-		// hole-free tree and the unparsed todo/debug §05 directive fields stay
-		// their mandatory-present (never omitted) empties.
-		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":2,"))
+		// Every decl line carries the bumped v3 stamp; stub is false on this
+		// hole-free tree, the unparsed @todo flag stays its mandatory-present
+		// false, and the DERIVED debug field is [] on this probe-free tree.
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":3,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
 		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
@@ -374,9 +374,9 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	// The snake whole-stream NDJSON: line 1 is the `project` record, then one
 	// `decl` line per declaration (snake: 36 decls). Every decl line carries the
-	// v2 stamp with stub=false (no snake decl is holed) and the unparsed
-	// todo/debug empties; the first data decl (Cell) and its kind are pinned
-	// against the golden source.
+	// v3 stamp with stub=false (no snake decl is holed), the unparsed @todo
+	// false, and the derived debug [] (no snake decl carries a probe); the
+	// first data decl (Cell) and its kind are pinned against the golden source.
 	dir := resolve_snake_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP index contract snake decl records: %s not found — set FUNPACK_SNAKE_DIR or check out funpack-spec as a sibling", dir)
@@ -397,7 +397,7 @@ test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(lines[0], "\"pipeline_flattened\":"))
 	for i in 1 ..< len(lines) {
 		decl := lines[i]
-		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":2,"))
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":3,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
 		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
@@ -433,7 +433,7 @@ stream_has_decl :: proc(lines: []string, name_needle: string, field_needle: stri
 test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
 	// A hand-built decl record marshals to exactly one JSON object on one line,
 	// terminated by a single LF, carrying the leading schema_version stamp at
-	// the current INDEX_SCHEMA_VERSION (now 2) — the one-object-per-line NDJSON
+	// the current INDEX_SCHEMA_VERSION (now 3) — the one-object-per-line NDJSON
 	// transport, identical to the project record's.
 	record := minimal_decl_record()
 	line := emit_decl_record(record, context.temp_allocator)
@@ -444,9 +444,9 @@ test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
 	testing.expect(t, strings.has_prefix(body, "{"))
 	testing.expect(t, strings.has_suffix(body, "}"))
 	// schema_version is the leading key (the first struct field) carrying the
-	// current v2 stamp.
+	// current v3 stamp.
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":2"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":3"))
 	// The kind enum emits as its readable name (use_enum_names), never an
 	// ordinal — a Behavior decl reports "Behavior".
 	testing.expect(t, strings.contains(body, "\"kind\":\"Behavior\""))
