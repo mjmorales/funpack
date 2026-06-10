@@ -28,6 +28,7 @@
 // composes the existing stage_emit and read_index_project seams.
 package funpack
 
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 
@@ -95,6 +96,32 @@ Build_Error :: enum {
 	Debug_Directive,
 }
 
+// Build_Verdict is the build seam's refusal verdict: the closed Build_Error arm
+// plus the diagnostic payload the arm carries. offender is the §15
+// module-qualified name of the offending declaration on the two release-refusal
+// arms (Holed_Declaration — the holed decl; Debug_Directive — the probed decl),
+// "" on every other arm. The struct exists so the CLI refusal line can NAME the
+// declaration an agent must repair without stringly-typing the error kind: the
+// arm stays the closed enum, the name rides beside it. The zero value is the
+// clean verdict (err = .None, no offender).
+Build_Verdict :: struct {
+	err:      Build_Error,
+	offender: string,
+}
+
+// build_refusal_message renders one Build_Verdict as the operator-facing
+// refusal line body: the closed arm's name, with the module-qualified offender
+// appended (`Holed_Declaration: drag`) when the arm carries one. Stdout/stderr
+// wording is ADVISORY — the machine contract is exclusively the exit code
+// (spec §29 §3) — but the line is deterministic (a pure function of the
+// verdict) so goldens may pin it byte-for-byte.
+build_refusal_message :: proc(verdict: Build_Verdict, allocator := context.allocator) -> string {
+	if verdict.offender == "" {
+		return fmt.aprintf("%v", verdict.err, allocator = allocator)
+	}
+	return fmt.aprintf("%v: %s", verdict.err, verdict.offender, allocator = allocator)
+}
+
 // stage_build is the build verb's pure seam: it reads the §14 project tree at
 // `root` and projects its emission surfaces — per project kind. A GAME (an
 // entrypoints.fcfg names a pipeline) emits BOTH products: the runtime binary
@@ -107,40 +134,45 @@ Build_Error :: enum {
 // nothing here — the impure write is write_build_products' job — so it is a pure
 // function of the tree contents: two calls on the same tree return byte-identical
 // products. ANY checked-pipeline floor (a compile/gate failure on any module) or
-// a malformed tree returns the matching Build_Error and no product. The exit
-// contract is unchanged: success (0, the kind's products written) and
-// compile/gate/tree error (2, no product); a build never has an assertion tier
-// (exit 1 is the test verb's).
+// a malformed tree returns the matching Build_Verdict (its closed Build_Error
+// arm, plus the module-qualified offender name on the release-refusal arms) and
+// no product. The exit contract is unchanged: success (0, the kind's products
+// written) and compile/gate/tree error (2, no product); a build never has an
+// assertion tier (exit 1 is the test verb's).
 //
 // MODE (§29 §4): mode is the pure Dev/Release flag the release bans key on.
 // Dev compiles §05 typed holes and §05 §5 debug probes; Release refuses the
 // whole build when ANY module carries a holed declaration (Holed_Declaration)
 // or a debug directive (Debug_Directive — @break/@log/@watch/@trace are
 // release-forbidden like @stub, §28 §4) — the same exit-2 compile-error
-// outcome, never a counted failure. The verdict is a pure function of
-// (AST, mode): the same tree builds identically in dev, and in release either
-// emits the same bytes (hole- and probe-free) or refuses before any emission.
-stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocator) -> (product: Build_Product, err: Build_Error) {
+// outcome, never a counted failure, with the verdict naming the offending
+// declaration so the refusal line tells the agent exactly what to repair. The
+// verdict is a pure function of (AST, mode): the same tree builds identically
+// in dev, and in release either emits the same bytes (hole- and probe-free) or
+// refuses before any emission.
+stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocator) -> (product: Build_Product, verdict: Build_Verdict) {
 	project, project_err := read_project(root)
 	if project_err != .None {
-		return Build_Product{}, .Malformed_Tree
+		return Build_Product{}, Build_Verdict{err = .Malformed_Tree}
 	}
 	if len(project.sources) == 0 {
-		return Build_Product{}, .Malformed_Tree
+		return Build_Product{}, Build_Verdict{err = .Malformed_Tree}
 	}
 	if mode == .Release {
 		// The §29 §4 release hole-ban: a hole cannot ship, so a holed declaration
 		// in ANY module refuses the whole build before either emission surface
-		// runs — exit 2, no product, never a counted failure.
-		if _, holed := project_holed_decl(project.sources); holed {
-			return Build_Product{}, .Holed_Declaration
+		// runs — exit 2, no product, never a counted failure — naming the first
+		// holed declaration so the refusal is actionable.
+		if name, holed := project_holed_decl(project.sources); holed {
+			return Build_Product{}, Build_Verdict{err = .Holed_Declaration, offender = name}
 		}
 		// The §05 §5 release debug-directive ban, the hole-ban's sibling tier
 		// (§28 §4: a @break/@log in a --release build is a compile error): a
 		// debug probe on ANY declaration refuses the whole build the same way —
-		// exit 2, no product, never a counted failure.
-		if _, probed := project_debug_decl(project.sources); probed {
-			return Build_Product{}, .Debug_Directive
+		// exit 2, no product, never a counted failure — naming the first probed
+		// declaration.
+		if name, probed := project_debug_decl(project.sources); probed {
+			return Build_Product{}, Build_Verdict{err = .Debug_Directive, offender = name}
 		}
 	}
 	// A package has no entrypoints.fcfg, so there is no entrypoint module and no
@@ -153,16 +185,16 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		emit_err: Emit_Error
 		artifact, emit_err = emit_tree_artifact(root, project, allocator)
 		if emit_err != .None {
-			return Build_Product{}, .Compile_Failed
+			return Build_Product{}, Build_Verdict{err = .Compile_Failed}
 		}
 		artifact_path = build_product_path(root, ARTIFACT_PRODUCT_NAME, allocator)
 	}
 	index, index_err, compiled := read_index_project(root, allocator)
 	if index_err != .None {
-		return Build_Product{}, .Index_Failed
+		return Build_Product{}, Build_Verdict{err = .Index_Failed}
 	}
 	if !compiled {
-		return Build_Product{}, .Compile_Failed
+		return Build_Product{}, Build_Verdict{err = .Compile_Failed}
 	}
 	return Build_Product {
 			artifact      = artifact,
@@ -170,7 +202,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 			artifact_path = artifact_path,
 			index_path    = build_product_path(root, INDEX_PRODUCT_NAME, allocator),
 		},
-		.None
+		Build_Verdict{}
 }
 
 // project_holed_decl walks every §14 source for the first §05 typed-hole
@@ -178,6 +210,9 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 // (gates.odin) the --release hole-ban consults. Sources walk in Project.sources
 // order (sorted-by-path via read_project) and each AST in declaration order, so
 // a multi-hole project always names the same first offender deterministically.
+// The returned declaration is §15 module-qualified (qualify_offender — bare on
+// a single-module project, lore #11), matching the Index Contract's
+// qualified_name so the refusal line and the index name the decl identically.
 // A source that fails to read or parse contributes no verdict here — the
 // checked pipeline downstream surfaces that compile error precisely
 // (Compile_Failed), so the ban never masks a parse failure with a hole verdict.
@@ -192,7 +227,7 @@ project_holed_decl :: proc(sources: []Source) -> (declaration: string, holed: bo
 			continue
 		}
 		if name, found := release_holed_decl(ast); found {
-			return name, true
+			return qualify_offender(sources, source, name), true
 		}
 	}
 	return "", false
@@ -204,7 +239,10 @@ project_holed_decl :: proc(sources: []Source) -> (declaration: string, holed: bo
 // mirroring project_holed_decl exactly. Sources walk in Project.sources order
 // (sorted-by-path via read_project) and each AST in the fixed per-kind
 // declaration order, so a multi-probe project always names the same first
-// offender deterministically. A source that fails to read or parse contributes
+// offender deterministically. The returned declaration is §15 module-qualified
+// (qualify_offender — bare on a single-module project, lore #11), matching the
+// Index Contract's qualified_name so the refusal line and the index name the
+// decl identically. A source that fails to read or parse contributes
 // no verdict here — the checked pipeline downstream surfaces that compile
 // error precisely (Compile_Failed), so the ban never masks a parse failure
 // with a probe verdict.
@@ -219,10 +257,24 @@ project_debug_decl :: proc(sources: []Source) -> (declaration: string, probed: b
 			continue
 		}
 		if name, found := release_debug_decl(ast); found {
-			return name, true
+			return qualify_offender(sources, source, name), true
 		}
 	}
 	return "", false
+}
+
+// qualify_offender builds a release refusal's §15 module-qualified offender
+// name from the source the offending declaration lives in, applying the index's
+// single-module bare rule (lore #11, read_index_project): a one-source project
+// qualifies decls to their bare names, a multi-module project prefixes the §15
+// path-derived module — so the refusal names the decl exactly as the Index
+// Contract's qualified_name would.
+qualify_offender :: proc(sources: []Source, source: Source, name: string) -> string {
+	module := source.module
+	if len(sources) == 1 {
+		module = ""
+	}
+	return qualify_decl(module, name)
 }
 
 // has_entrypoints_fcfg reports whether the §14 tree carries a funpack_configs/

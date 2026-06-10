@@ -102,9 +102,9 @@ build_probed_pong_root :: proc(t: ^testing.T) -> (root: string, stream: string, 
 	if !amended {
 		return "", "", false
 	}
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		remove_scratch_tree(root)
 		return "", "", false
 	}
@@ -175,26 +175,34 @@ test_golden_probed_pong_dev_build_indexes_all_four_probes :: proc(t: ^testing.T)
 test_golden_probed_pong_release_build_and_check_refuse :: proc(t: ^testing.T) {
 	// AC (release ban): the SAME probed tree under --release is the exit-2
 	// compile-error outcome on BOTH adjudicating verbs — stage_build refuses
-	// with Debug_Directive (the error run_build_verb maps to exit 2) writing
-	// NEITHER product, and the check verb adjudicates dev 0 / release 2 with no
-	// `.funpack/` after either verdict. Never a counted failure: neither verb
-	// has an exit-1 tier. Pong is hole-free, so the refusal is the debug ban's
-	// own — not the hole-ban firing first.
+	// with a Debug_Directive verdict NAMING the first probed declaration and
+	// writing NEITHER product, and the check verb adjudicates dev 0 / release 2
+	// with no `.funpack/` after either verdict. The offender is DebugMarker:
+	// release_debug_decl walks the fixed per-kind order (data → enum → thing →
+	// signal → fn → behavior → pipeline → let), so the @watch-probed thing
+	// precedes the probed fn/behavior/let, and single-module pong qualifies it
+	// bare (lore #11). The refusal line is pinned byte-for-byte for determinism
+	// — stdout/stderr stay advisory (§29 §3, the machine contract is the exit
+	// code), but the NAME in the message is the deliverable. Never a counted
+	// failure: neither verb has an exit-1 tier. Pong is hole-free, so the
+	// refusal is the debug ban's own — not the hole-ban firing first.
 	root, ok := amend_probed_pong_root(t)
 	if !ok {
 		return
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, .Release, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.Debug_Directive)
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Debug_Directive)
+	testing.expect_value(t, verdict.offender, "DebugMarker")
+	testing.expect_value(t, build_refusal_message(verdict, context.temp_allocator), "Debug_Directive: DebugMarker")
 	testing.expect(t, !os.exists(build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)))
 	testing.expect(t, !os.exists(build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)))
 
 	testing.expect_value(t, run_check_verb(root, .Dev), 0)
 	testing.expect_value(t, run_check_verb(root, .Release), 2)
 	testing.expect(t, !os.exists(scratch_join({root, FUNPACK_BUILD_DIR})))
-	log.infof("golden probes release: build refuses Debug_Directive with no product and check adjudicates dev 0 / release 2 — debug residue cannot ship")
+	log.infof("golden probes release: build refuses naming the offender (Debug_Directive: DebugMarker) with no product and check adjudicates dev 0 / release 2 — debug residue cannot ship")
 }
 
 @(test)

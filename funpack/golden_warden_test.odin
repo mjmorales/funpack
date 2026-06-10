@@ -47,9 +47,9 @@ build_warden_index_root :: proc(t: ^testing.T, src: string, label: string, env_n
 	if !copied {
 		return "", "", false
 	}
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		remove_scratch_tree(root)
 		return "", "", false
 	}
@@ -340,9 +340,9 @@ test_golden_warden_debt_projects_live_todo_alongside_gtag :: proc(t: ^testing.T)
 	if !append_scratch_tree_file(t, root, "src/drift.fun", addition) {
 		return
 	}
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)
