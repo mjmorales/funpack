@@ -1,11 +1,11 @@
 // Artifact lexical layer — the line frame, the primitive decoders, and the
-// single lead-line section reader (docs/artifact-format.md §2, §16). This is
+// single lead-line section reader (docs/artifact-format.md §2, §17). This is
 // the runtime's OWN zero-import parser: nothing in funpack/** is on the
 // include path, so the recipe here is derived from the format doc alone, not
 // linked from the compiler's emitter. The artifact file is the only coupling
 // between the two products (spec §29, §09).
 //
-// Decoding discipline (§16 step 3): every field is decoded by its POSITION in
+// Decoding discipline (§17 step 3): every field is decoded by its POSITION in
 // the record's documented signature — a Fixed is lexically identical to an Int,
 // so the caller, not the lexer, knows which a token is. The lexer hands back
 // the raw token shaping; the loader (artifact_load.odin) reads positionally.
@@ -99,7 +99,22 @@ import "core:strings"
 // runtime resolves by name and runs the old value through at restore/hot-reload
 // migration time. The sub-record keyword set is closed, so the new keyword is a
 // deliberate bump: 7 → 8 (funpack/docs/artifact-format.md §1, §6).
-ARTIFACT_SCHEMA_VERSION :: 8
+//
+// v9 carries the §08 §3 STATE-QUERY declarations through to this runtime — the
+// first-class `query` declarations and their §05 §3 @index/@spatial index
+// requirements, which this runtime needs to MAINTAIN the declared engine
+// indices over the world database (index.odin) and to evaluate a query call
+// from the artifact alone. Two layout changes ride it: (1) one new section,
+// `[queries Q]`, appended after [entrypoint] — one record per entrypoint-module
+// query in source order, the [functions] record mold extended with the declared
+// requirement lines (`query NAME param_count return:TYPE index_count body_count
+// span:MODULE:LINE`, then `param` lines, `index` lines, and the §2.7 body node
+// run; a query body is a Block by grammar, so never a stub subtree); (2) one
+// new sub-record keyword, `index`, a fixed four-token line `index KIND THING
+// FIELD` (KIND ∈ index|spatial) carrying one declared requirement. A new
+// section and a new sub-record keyword are layout changes: 8 → 9
+// (funpack/docs/artifact-format.md §1, §16).
+ARTIFACT_SCHEMA_VERSION :: 9
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
@@ -107,7 +122,7 @@ ARTIFACT_STAMP :: "funpack-artifact"
 // SUB_RECORD_KEYWORDS is the closed set of sub-record line keywords (§2.1).
 // A lead line is any line whose leading keyword is NOT in this set; a section's
 // record count N is always the lead-line count, never a sum of sub-counts. This
-// is the SINGLE parse discipline for top-level record boundaries (§2.1, §16).
+// is the SINGLE parse discipline for top-level record boundaries (§2.1, §17).
 SUB_RECORD_KEYWORDS :: [?]string {
 	"variant",
 	"field",
@@ -119,6 +134,7 @@ SUB_RECORD_KEYWORDS :: [?]string {
 	"set",
 	"node",
 	"migrate", // a [data] record's §05 §6 rename/retype carry (v8, §6)
+	"index", // a [queries] record's §05 §3 @index/@spatial requirement (v9, §16)
 }
 
 // Artifact_Error is the closed parse-failure enum. Every failure is a refusal
@@ -139,7 +155,7 @@ Artifact_Error :: enum {
 // Artifact_Section is one `[name N]` header plus its N top-level records, each
 // already split into its lead line and the sub-record lines that follow it up
 // to the next lead line (§2.1). Sub-records stay as raw lines — the loader
-// shapes them by the lead line's declared scalar counts (§16 step 3).
+// shapes them by the lead line's declared scalar counts (§17 step 3).
 Artifact_Record :: struct {
 	lead: string, // the lead line (KIND field…)
 	subs: []string, // the sub-record lines belonging to this record
@@ -201,7 +217,7 @@ split_artifact_lines :: proc(content: string, allocator := context.allocator) ->
 }
 
 // parse_artifact reads the version stamp and every section in the §3 fixed
-// order using the single lead-line discipline (§16). It refuses on any shape
+// order using the single lead-line discipline (§17). It refuses on any shape
 // mismatch — a wrong stamp, a wrong version, a header that is not `[name N]`,
 // or a declared N that disagrees with the lead-line count.
 parse_artifact :: proc(
@@ -258,7 +274,7 @@ parse_version_stamp :: proc(line: string) -> (version: int, err: Artifact_Error)
 
 // parse_section reads one `[name N]` header at `lines[start]` plus its N
 // records, splitting the body up to the next `[` header by the lead-line
-// discipline and asserting the lead-line count equals N (§2.1, §16). Returns the
+// discipline and asserting the lead-line count equals N (§2.1, §17). Returns the
 // section and the index of the next header line.
 parse_section :: proc(
 	lines: []string,
@@ -346,7 +362,7 @@ split_records :: proc(
 
 // --- Primitive field decoders (§2.2–§2.6) --------------------------------
 // Each decodes one token by the kind the caller already knows from the
-// record's documented field position (§16 step 3).
+// record's documented field position (§17 step 3).
 
 // decode_int reads a decimal Int field (§2.2): signed, no leading zeros, no `+`.
 decode_int :: proc(token: string) -> (value: i64, ok: bool) {

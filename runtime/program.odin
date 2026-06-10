@@ -1,5 +1,5 @@
 // The in-memory game model the runtime executes over (docs/artifact-format.md
-// §16 step 4). `Program` is the loaded artifact: the enum/data/signal/thing
+// §17 step 4). `Program` is the loaded artifact: the enum/data/signal/thing
 // type descriptors, the function and behavior bodies (serialized checked-AST
 // node forests, §2.7), the one flattened pipeline total order (§11), the signal
 // routing map (§12), the fully-evaluated setup Spawn batch (§13, fixed literals
@@ -98,6 +98,43 @@ Function_Decl :: struct {
 	kind:        Function_Kind,
 	params:      []Param_Decl,
 	return_type: string,
+	span_module: string, // §15 module name — diagnostic provenance only
+	span_line:   int, // 1-based source line — diagnostic provenance only
+	body:        []Node, // body_count top-level statement subtrees, source order
+}
+
+// --- State queries and their index requirements (§16, schema v9) ----------
+
+// Query_Index_Kind is the closed §05 §3 directive vocabulary: an `@index`
+// reverse/key lookup or a `@spatial` radius/nearest structure. The kind decides
+// which engine-maintained shape index.odin builds for the requirement.
+Query_Index_Kind :: enum {
+	Index,
+	Spatial,
+}
+
+// Index_Req is one declared §05 §3 index requirement carried on a query
+// (`index KIND THING FIELD`): the engine-maintained structure over THING's
+// FIELD column the runtime keeps current across committed versions. Several
+// queries may declare the same requirement; the maintainer dedupes to one
+// structure per distinct (kind, thing, field) — an index is a cache, a pure
+// function of state (§08 §3).
+Index_Req :: struct {
+	kind:  Query_Index_Kind,
+	thing: string, // the indexed thing's type name
+	field: string, // the indexed blackboard field on that thing
+}
+
+// Query_Decl is one §08 §3 first-class query declaration: a read-only function
+// pure over (version, params), carried with its declared index requirements and
+// its body node forest so the runtime evaluates a query call from the artifact
+// alone. The body is a Block by grammar (never a stub subtree), and the spec's
+// within-tick memoization rides the tick state, not this descriptor.
+Query_Decl :: struct {
+	name:        string,
+	params:      []Param_Decl,
+	return_type: string,
+	indexes:     []Index_Req, // declared §05 §3 requirements, authored order
 	span_module: string, // §15 module name — diagnostic provenance only
 	span_line:   int, // 1-based source line — diagnostic provenance only
 	body:        []Node, // body_count top-level statement subtrees, source order
@@ -226,6 +263,19 @@ Program :: struct {
 	setup:          []Spawn_Command,
 	bindings:       []Binding,
 	entrypoint:     Entrypoint,
+	queries:        []Query_Decl,
+}
+
+// program_query finds a §16 query declaration by name, or nil. The query call
+// surface (interp_call.odin) and the index maintainer (index.odin) both resolve
+// through this single bare-name lookup, mirroring program_function's contract.
+program_query :: proc(program: ^Program, name: string) -> ^Query_Decl {
+	for &query in program.queries {
+		if query.name == name {
+			return &query
+		}
+	}
+	return nil
 }
 
 // --- The empty runtime substrate (§07 §4) --------------------------------

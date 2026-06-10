@@ -839,6 +839,13 @@ field_is_int :: proc(decl: ^Thing_Decl, name: string) -> bool {
 // step_tick_persist driver (save_io.odin); routing it here makes every persist
 // key a silent no-op. The deliberate plain-path consumer is replay.odin's
 // capture, whose record carries inputs only.
+// Index maintenance (§08 §3): `indices` is the run's maintained engine-index
+// state, carried in/out by pointer exactly as the Rng is. When non-nil, the
+// fold runs against the structures as they stood at tick start (an update is
+// never observable mid-stage — the tick reads the prior version's indices),
+// and the declared structures fold forward at the COMMIT boundary, COW-sharing
+// every table the tick never replaced (index.odin fold_index_state). A nil
+// `indices` (a program declaring no query) folds exactly as before.
 step_tick :: proc(
 	program: ^Program,
 	prior: World_Version,
@@ -846,6 +853,7 @@ step_tick :: proc(
 	time: Record_Value,
 	allocator := context.allocator,
 	rng: ^Rng = nil,
+	indices: ^Index_State = nil,
 ) -> World_Version {
 	// The plain (bounded) driver runs eval and commit on ONE allocator — the caller's
 	// wholesale temp-free at the end reclaims everything, so there is no scratch/persist
@@ -865,7 +873,13 @@ step_tick :: proc(
 	if rng != nil {
 		rng^ = state.rng
 	}
-	return commit_tick_state(prior, &state, allocator)
+	next := commit_tick_state(prior, &state, allocator)
+	// Fold the maintained indices forward at the commit boundary — once, after
+	// every write landed, never mid-stage (§08 §3).
+	if indices != nil {
+		indices^ = fold_index_state(indices^, &prior_version, &next, allocator)
+	}
+	return next
 }
 
 // run_pipeline_fold runs the executed pipeline over the working state: every
