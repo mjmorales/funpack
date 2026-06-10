@@ -409,15 +409,17 @@ test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
 	testing.expect(t, !decl_ast.things[0].is_singleton)
 }
 
-// fun.ll1.md §2 also lists `query` and `mut` as contextual keywords, but unlike
-// `thing`/`singleton`/`data`/`enum` their DECLARATION productions do not exist (no
-// query-declaration; `mut data` (§03 §7) is unparsed — emit_data hardcodes mut=false).
-// They are therefore NOT in is_decl_opener_keyword: a word arms a block only if its
-// declaration parses. This pins both directions — the value half (value-position
-// legality, since query/mut never were hard keywords) and the absent-declaration half
-// (a module-level `query`/`mut` opener has no production, so it is a clean
-// Unexpected_Token, not a half-parsed declaration). When the productions land, the
-// declaration-position expectations flip with them.
+// fun.ll1.md §2 also lists `query` and `mut` as contextual keywords. `query`'s
+// §08 §3 declaration production exists (parse_query), so it is in
+// is_decl_opener_keyword and a module-level `query` opener dispatches to the
+// query production — while staying an ordinary value name everywhere else, like
+// `data`/`thing`. `mut`'s production does NOT exist (`mut data` (§03 §7) is
+// unparsed — emit_data hardcodes mut=false), so it stays OUT of the set: a word
+// arms a block only if its declaration parses. This pins both directions for
+// each word — the value half (value-position legality, since query/mut never
+// were hard keywords) and the declaration half (`query` dispatches its
+// production; `mut` is a clean Unexpected_Token until its production lands and
+// flips its expectation here).
 @(test)
 test_query_mut_contextual_value_only :: proc(t: ^testing.T) {
 	// Value position: `let query = …` / `let mut = …` bind as ordinary snake_case
@@ -457,12 +459,14 @@ test_query_mut_contextual_value_only :: proc(t: ^testing.T) {
 	testing.expect_value(t, field_ast.datas[0].fields[0].name, "query")
 	testing.expect_value(t, field_ast.datas[0].fields[1].name, "mut")
 
-	// Declaration position is DEFERRED: a module-level `query`/`mut` opener has no
-	// production (parse_contextual_declaration dispatches only data/enum/thing/
-	// singleton), so each is a clean Unexpected_Token — the guard that keeps the
-	// deferral honest until the productions land.
+	// Declaration position: a module-level `query` opener now dispatches the
+	// §08 §3 query production — `query Recent { … }` reaches parse_query and
+	// fails on its UpperCamel name (a query name is snake_case), the
+	// production's own verdict, not a generic token error. `mut` stays
+	// DEFERRED: no production, so a clean Unexpected_Token — the guard that
+	// keeps that deferral honest until `mut data` lands.
 	_, q_decl_err := stage_parse(stage_lex("query Recent { since: Int }\n"))
-	testing.expect_value(t, q_decl_err, Parse_Error.Unexpected_Token)
+	testing.expect_value(t, q_decl_err, Parse_Error.Wrong_Case)
 	_, m_decl_err := stage_parse(stage_lex("mut Board { score: Int }\n"))
 	testing.expect_value(t, m_decl_err, Parse_Error.Unexpected_Token)
 }

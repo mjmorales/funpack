@@ -34,6 +34,8 @@ Type_Error :: enum {
 	Migrate_Convert_Unknown, // a @migrate `with:` naming no fn this module declares — the conversion must resolve to a declared pure fn (spec §05 §6)
 	Migrate_Convert_Arity,   // a @migrate conversion that is not a single-parameter fn — the spec's shape is `fn(Old) -> New`, exactly one value in (spec §05 §6)
 	Migrate_Convert_Return,  // a @migrate conversion whose declared return type differs from the migrated field's declared (new) type — `fn(Old) -> New` must land on New (spec §05 §6)
+	Index_Unknown_Thing,     // an @index/@spatial FieldPath whose head names no declared thing/singleton — the §05 §3 index is instance-level, so only a thing (a table of rows) can carry one
+	Index_Unknown_Field,     // an @index/@spatial FieldPath naming a declared thing but a field that thing's schema lacks (spec §05 §3, §08 §3)
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -83,6 +85,10 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index) -> (typed: Typed_
 	// rules (live-name collision, declared-fn shape), so they run before body
 	// typing and surface their precise verdicts.
 	check_migrations(ast) or_return
+	// The §05 §3 @index/@spatial FieldPath rules are pure-AST membership rules
+	// too (the path must name a declared thing and one of its fields), so they
+	// run before body typing and surface their precise verdicts.
+	check_index_paths(ast) or_return
 	check_bodies(bindings, env, index, ast) or_return
 	check_tests(bindings, env, index, ast) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
@@ -179,6 +185,54 @@ check_migrations :: proc(ast: Ast) -> Type_Error {
 		}
 	}
 	return .None
+}
+
+// check_index_paths enforces the §05 §3 @index/@spatial FieldPath rules over
+// every query declaration — pure AST, like the layer registry and the @migrate
+// admissibility checks, since both halves are membership rules the body sweep
+// cannot see. The path head must name a thing the module declares (a thing or
+// singleton — the index is INSTANCE-level, "a deterministic instance-level
+// index over a thing's field", so a data/enum/signal head is the named
+// Index_Unknown_Thing verdict like an undeclared name); the path member must
+// name a field that thing's schema declares (Index_Unknown_Field otherwise).
+// Walks the ordered ast slices only, never an env map, so the verdict is
+// reproducible from source alone.
+check_index_paths :: proc(ast: Ast) -> Type_Error {
+	for query in ast.queries {
+		for directive in query.indexes {
+			thing, declared := thing_by_name(ast, directive.thing)
+			if !declared {
+				return .Index_Unknown_Thing
+			}
+			if !fields_declare(thing.fields, directive.field) {
+				return .Index_Unknown_Field
+			}
+		}
+	}
+	return .None
+}
+
+// thing_by_name looks a declared thing/singleton up by name off the ordered
+// ast.things slice — the §05 §3 index-path head's resolution domain.
+thing_by_name :: proc(ast: Ast, name: string) -> (thing: Thing_Node, declared: bool) {
+	for decl in ast.things {
+		if decl.name == name {
+			return decl, true
+		}
+	}
+	return Thing_Node{}, false
+}
+
+// fields_declare reports whether a field list declares the named field — the
+// §05 §3 index-path member's membership test, a linear scan over the
+// source-ordered fields so the verdict never depends on map order.
+fields_declare :: proc(fields: []Field_Decl, name: string) -> bool {
+	for field in fields {
+		if field.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // type_name_is_live reports whether the module currently declares a type under
@@ -379,10 +433,34 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast
 		}
 		check_fn_body(bindings, env, index, fn) or_return
 	}
+	for query in ast.queries {
+		// A query body types exactly like a fn body — params seed the scope,
+		// the declared `-> R` is the expected return (spec §08 §3: pure over
+		// (version, params)) — so an ill-typed or unknown-field use inside it
+		// surfaces the same named diagnostics a fn body gets. The grammar
+		// admits no body-position hole on a query, so the synthesized node is
+		// never holed.
+		check_fn_body(bindings, env, index, query_as_fn(query)) or_return
+	}
 	for behavior in ast.behaviors {
 		check_fn_body(bindings, env, index, behavior.step) or_return
 	}
 	return .None
+}
+
+// query_as_fn projects a query declaration onto the Fn_Node window
+// check_fn_body types — name, params, declared return, statement body. A
+// query is signature-and-body identical to a fn at the typing seam (the
+// read-only/no-resource constraints are semantic layers above this window),
+// so one body checker serves both and the two can never drift.
+query_as_fn :: proc(query: Query_Node) -> Fn_Node {
+	return Fn_Node {
+		name = query.name,
+		params = query.params,
+		return_type = query.return_type,
+		body = query.body,
+		line = query.line,
+	}
 }
 
 // check_fn_body types one fn/step body: it seeds a scope with the declared
@@ -633,9 +711,10 @@ name_check :: proc(ctx: Check_Ctx, e: ^Name_Expr) -> (type: Type, err: Type_Erro
 		#partial switch term.kind {
 		case .Const:
 			return term.type, .None
-		case .Fn:
+		case .Fn, .Query:
 			// A bare fn name is a function value — its signature, the form
-			// fold's accumulator argument (add_goal) takes.
+			// fold's accumulator argument (add_goal) takes. A query reads the
+			// same way (spec §08 §3: callable, composing into callers).
 			return term.signature, .None
 		case .Behavior:
 			// A behavior is only meaningful through its `.step` receiver.
@@ -1218,10 +1297,12 @@ call_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 		// inference — the placeholder Func carries no signature to check.
 		return nil, .Unsupported_Expr
 	}
-	// A call to a user-declared fn checks its arguments against the recorded
-	// signature (resolve.odin); a behavior is not callable as a bare name.
+	// A call to a user-declared fn or query checks its arguments against the
+	// recorded signature (resolve.odin) — a query call composes into its
+	// caller exactly like a fn call (spec §08 §3); a behavior is not callable
+	// as a bare name.
 	if term, found := env_term_name(ctx.env, name.name); found {
-		if term.kind == .Fn && term.signature != nil {
+		if (term.kind == .Fn || term.kind == .Query) && term.signature != nil {
 			check_args(ctx, e, term.signature.params) or_return
 			return term.signature.result, .None
 		}

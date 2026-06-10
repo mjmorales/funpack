@@ -77,6 +77,7 @@ Term_Schema :: struct {
 Term_Kind :: enum {
 	Const,    // module-level `let NAME: T = expr`
 	Fn,       // top-level `fn name(…) -> R`
+	Query,    // `query name(…) -> R { … }` — the §08 §3 read-only declaration; callable like a fn
 	Behavior, // `behavior name on Thing { fn step(…) … }`, keyed for name.step
 }
 
@@ -184,6 +185,13 @@ collect_term_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type
 		claim_term_name(env, decl.name, bindings) or_return
 		env.terms[decl.name] = Term_Schema{name = decl.name, kind = .Fn}
 	}
+	for decl in ast.queries {
+		// A query is a value-position callable like a fn (spec §08 §3: "its
+		// derived read-set composes into callers"), so it claims a term name
+		// under the same one-name-one-meaning rule.
+		claim_term_name(env, decl.name, bindings) or_return
+		env.terms[decl.name] = Term_Schema{name = decl.name, kind = .Query}
+	}
 	for decl in ast.behaviors {
 		claim_term_name(env, decl.name, bindings) or_return
 		env.terms[decl.name] = Term_Schema {
@@ -281,6 +289,11 @@ resolve_schemas :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings, index: Mod
 		env.terms[decl.name] = term
 	}
 	for decl in ast.fns {
+		term := env.terms[decl.name]
+		term.signature = resolve_fn_signature(env^, bindings, decl.params, decl.return_type, index)
+		env.terms[decl.name] = term
+	}
+	for decl in ast.queries {
 		term := env.terms[decl.name]
 		term.signature = resolve_fn_signature(env^, bindings, decl.params, decl.return_type, index)
 		env.terms[decl.name] = term
