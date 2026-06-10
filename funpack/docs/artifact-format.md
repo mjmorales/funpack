@@ -1,4 +1,4 @@
-# funpack artifact format — v7
+# funpack artifact format — v8
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 7
+funpack-artifact 8
 ```
 
-- `schema_version` is the integer after the space (here `7`).
+- `schema_version` is the integer after the space (here `8`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -98,7 +98,22 @@ funpack-artifact 7
   `return:TYPE`. The node-kind set is closed, so the new kind is a deliberate
   bump: 6 → 7. A **release** artifact never carries a `stub` node — the §29 §4
   hole-ban refuses the tree before emission, so the node is a dev-artifact form
-  only.
+  only. v8 carries the **§05 §6 `@migrate` schema-evolution channel** through to
+  the loader — the rename/retype metadata the name-keyed schema-diff (§09 §4,
+  §24) cannot derive on its own (rename and retype are the two structural breaks
+  it cannot auto-resolve, so without the carry a restore or hot-reload under a
+  renamed/retyped field could only refuse). The single layout change is one new
+  **sub-record keyword**, `migrate` — a fixed three-token line `migrate FROM
+  WITH` appearing in `[data]` records only (§6): following a `field` line it
+  migrates that field (`FROM` the prior key or `-`, `WITH` the pure conversion
+  fn's name or `-`, never both `-`), and between the `data` lead line and the
+  first `field` line it carries a renamed **type** declaration's prior name
+  (rename form only, so `WITH` is always `-` there). The line is emitted only
+  where the source carries the directive, so an artifact of a migration-free
+  source changes by the version stamp alone (the v7 stamp-only restamp
+  precedent). The conversion fn is an ordinary `[functions]` record the loader
+  resolves by name. The sub-record keyword set is closed (§2.1), so the new
+  keyword is a deliberate bump: 7 → 8.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -149,8 +164,8 @@ no field whose value depends on when, where, or on which machine it was emitted.
   unambiguously, then re-derives `N` by counting the **lead** lines (those whose
   keyword is *not* a sub-record keyword). The closed sub-record keyword set is:
   `variant`, `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`,
-  `node`. A declared `N` that disagrees with the lead-line count is an error (an
-  under- or over-shaped section, §29-style exact-match).
+  `node`, `migrate` (v8, §6). A declared `N` that disagrees with the lead-line
+  count is an error (an under- or over-shaped section, §29-style exact-match).
 
   This **lead-line reader is the single parse discipline** for top-level record
   boundaries: a top-level record runs from its lead line up to the next lead line
@@ -349,7 +364,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 7
+funpack-artifact 8
 [meta 2]
 …
 [enums N]
@@ -425,7 +440,9 @@ fields. Every field carries its declared type and its default-presence flag:
 
 ```
 data NAME field_count mut
+migrate FROM -                  # v8, only for a renamed TYPE declaration
 field NAME TYPE DEFAULT
+migrate FROM WITH               # v8, only after a @migrate-prefixed field
 …
 ```
 
@@ -488,6 +505,24 @@ scalar forms, so every pong default is byte-identical to v1's scalar encoding; t
 composite forms are reached by the snake (`Cell`, `Dir`, `[]`) and hunt
 (`Hunt::Patrol`, `Vec2`) goldens, and the engine-type composite/static-builder
 forms by the yard (`Settings.defaults()`, `Option::None`, `Body`) surface.
+
+**Migration carry (v8, §05 §6).** A `migrate` line is the fixed three-token
+sub-record `migrate FROM WITH` carrying a `@migrate` directive's rename/retype
+metadata — the two structural breaks the §09 §4 name-keyed schema-diff cannot
+auto-resolve. `FROM` is the prior key as a bare name token (§2.6) or `-`; `WITH`
+is the pure `fn(Old) -> New` conversion's name or `-`; at least one is present
+(the compiler rejects an empty form upstream). Its **position** selects the
+target: a `migrate` line **immediately following a `field` line** migrates that
+field (`@migrate(from: "old_pos") pos: Vec2` emits `migrate old_pos -`); a
+`migrate` line **between the `data` lead line and the first `field` line** is
+the renamed type declaration's prior name (`@migrate(from: "OldName") data
+NewName` emits `migrate OldName -`) — rename form only, so `WITH` is always `-`
+there. The line is emitted only where the source carries the directive: a
+migration-free `data` record is byte-identical to the v7 shape, and `[signals]`
+/ `[things]` records never carry one (the `data` schema is the evolution
+channel). The conversion fn named by `WITH` is an ordinary `[functions]` record
+(§9) the loader resolves by name and runs the old value through at
+restore/hot-reload migration time (§09 §4, §24).
 
 `Board` is the one pong `data` type; `BOARD` is a module-level `let`, recorded in
 `[functions]` as a `const` (§9) since it is a named value, not a type.
@@ -878,7 +913,8 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
    top-level records using the **single lead-line discipline** (§2.1) — a record
    spans its lead line up to the next lead line. Lead lines are those whose
    leading keyword is *not* in the closed sub-record keyword set (`variant`,
-   `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`, `node`). This
+   `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`, `node`,
+   `migrate`). This
    is the **only** parse discipline; the format does not promise a
    second grammar-only reader that derives `N` from declared sub-counts (it cannot
    be sound where a record carries an uncounted run, e.g. a `const`'s body `node`

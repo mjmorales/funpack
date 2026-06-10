@@ -30,6 +30,10 @@ Type_Error :: enum {
 	Unregistered_Layer, // a Body's layer/mask names a value outside any CollisionLayer-kinded enum's variant set (spec §11 §5)
 	Reserved_Signal_Name, // a user signal declared under an engine-routed name (Trigger/Contact, spec §11 §4) — the runtime routes those names per-instance, so the user signal would silently never broadcast
 	Tuple_Pattern_Arity,  // a tuple match pattern whose positional arity disagrees with its Tuple-typed scrutinee (spec §02 §5) — a 2-binder pattern over a 3-tuple can never bind coherently
+	Migrate_From_Collision, // a @migrate rename whose prior name is still live (spec §05 §6 + the epic's admissibility rule): a `from:` naming a current field of the same data, or — decl-level — a current type declaration; the "old" name being live contradicts the rename
+	Migrate_Convert_Unknown, // a @migrate `with:` naming no fn this module declares — the conversion must resolve to a declared pure fn (spec §05 §6)
+	Migrate_Convert_Arity,   // a @migrate conversion that is not a single-parameter fn — the spec's shape is `fn(Old) -> New`, exactly one value in (spec §05 §6)
+	Migrate_Convert_Return,  // a @migrate conversion whose declared return type differs from the migrated field's declared (new) type — `fn(Old) -> New` must land on New (spec §05 §6)
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -75,6 +79,10 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index) -> (typed: Typed_
 	// Unregistered_Layer diagnostic rather than the generic Type_Mismatch the
 	// later variant check would raise for the same out-of-set reference.
 	check_layer_registry(ast) or_return
+	// The §05 §6 @migrate admissibility rules are likewise pure-AST membership
+	// rules (live-name collision, declared-fn shape), so they run before body
+	// typing and surface their precise verdicts.
+	check_migrations(ast) or_return
 	check_bodies(bindings, env, index, ast) or_return
 	check_tests(bindings, env, index, ast) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
@@ -132,6 +140,97 @@ collision_layer_registry :: proc(ast: Ast) -> []string {
 		}
 	}
 	return names[:]
+}
+
+// check_migrations enforces the §05 §6 @migrate admissibility rules over every
+// data declaration — pure AST, like the layer registry, since both halves are
+// membership rules the body sweep cannot see. A RENAME's prior name must not
+// collide with a live name (a field-level `from:` against the same data's
+// current field set; a decl-level `from:` against the module's declared type
+// names — the symmetric application of the field rule): a "prior" name that is
+// still live contradicts the rename and would make the name-keyed diff
+// (spec §09 §4) ambiguous. A RETYPE's conversion must be admissible per the
+// spec's `fn(Old) -> New` shape: `with:` resolves to a fn this module
+// declares, taking exactly one parameter and returning the migrated field's
+// declared (new) type. Old — the parameter's type — is deliberately NOT
+// checked: the prior schema is not in this compilation, so the parameter type
+// IS the migration's claim about it, verified by the loader's schema-diff at
+// migration time. Walks the ordered ast slices only, never an env map, so the
+// verdict is reproducible from source alone.
+check_migrations :: proc(ast: Ast) -> Type_Error {
+	for decl in ast.datas {
+		if decl.has_migrate && type_name_is_live(ast, decl.migrate.from) {
+			return .Migrate_From_Collision
+		}
+		for field in decl.fields {
+			if !field.has_migrate {
+				continue
+			}
+			if field.migrate.has_from {
+				for other in decl.fields {
+					if other.name == field.migrate.from {
+						return .Migrate_From_Collision
+					}
+				}
+			}
+			if field.migrate.has_with {
+				check_migrate_convert(ast, field) or_return
+			}
+		}
+	}
+	return .None
+}
+
+// type_name_is_live reports whether the module currently declares a type under
+// the given name — the live set a decl-level @migrate rename's prior name must
+// not collide with. The set is the module's own declared types (data, enum,
+// thing/singleton, signal), read off the ordered ast slices.
+type_name_is_live :: proc(ast: Ast, name: string) -> bool {
+	for decl in ast.datas {
+		if decl.name == name {
+			return true
+		}
+	}
+	for decl in ast.enums {
+		if decl.name == name {
+			return true
+		}
+	}
+	for decl in ast.things {
+		if decl.name == name {
+			return true
+		}
+	}
+	for decl in ast.signals {
+		if decl.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// check_migrate_convert verifies one field's @migrate `with:` conversion is
+// admissible (spec §05 §6: a pure `fn(Old) -> New`): it names a fn this
+// module declares (funpack fns are pure by construction, so the declaration
+// is the purity evidence), takes exactly one parameter (the old value in),
+// and returns the field's declared type (New out). Each deviation is its own
+// named verdict so an agent repairs the exact mismatch. The return comparison
+// is on the syntactic Type_Ref spelling — the same canonical rendering the
+// artifact carries — since the surface has no type aliases to see through.
+check_migrate_convert :: proc(ast: Ast, field: Field_Decl) -> Type_Error {
+	for fn in ast.fns {
+		if fn.name != field.migrate.with {
+			continue
+		}
+		if len(fn.params) != 1 {
+			return .Migrate_Convert_Arity
+		}
+		if type_ref_string(fn.return_type) != type_ref_string(field.type) {
+			return .Migrate_Convert_Return
+		}
+		return .None
+	}
+	return .Migrate_Convert_Unknown
 }
 
 // layer_walk_body descends a statement body for Body record literals, recursing

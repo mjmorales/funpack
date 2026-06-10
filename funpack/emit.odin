@@ -277,7 +277,13 @@ emit_data :: proc(b: ^strings.Builder, ast: Ast) {
 		strings.write_byte(b, ' ')
 		strings.write_int(b, len(decl.fields))
 		emit_line(b, " false")
-		emit_fields(b, decl.fields)
+		// A renamed TYPE declaration (decl-level @migrate, rename form only)
+		// carries its `migrate` line between the lead line and the first
+		// `field` line (docs/artifact-format.md §6, schema v8).
+		if decl.has_migrate {
+			emit_line(b, "migrate ", decl.migrate.from, " -")
+		}
+		emit_data_fields(b, decl.fields)
 	}
 	for decl in synthetic {
 		emit_synthetic_data(b, decl)
@@ -409,6 +415,24 @@ emit_things :: proc(b: ^strings.Builder, ast: Ast) {
 emit_fields :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 	for field in fields {
 		emit_line(b, "field ", field.name, " ", type_ref_string(field.type), " ", field_default_token(field))
+	}
+}
+
+// emit_data_fields is emit_fields for a [data] record — the one section whose
+// fields may carry §05 §6 migration metadata (docs/artifact-format.md §6,
+// schema v8). A migrated field's `field` line is followed by its fixed
+// three-token `migrate FROM WITH` line (`-` for the absent half; the parser
+// guarantees at least one present); an unmigrated field emits exactly the
+// shared emit_fields shape, so a migration-free [data] section is
+// byte-identical to the v7 layout.
+emit_data_fields :: proc(b: ^strings.Builder, fields: []Field_Decl) {
+	for field in fields {
+		emit_line(b, "field ", field.name, " ", type_ref_string(field.type), " ", field_default_token(field))
+		if field.has_migrate {
+			from := field.migrate.from if field.migrate.has_from else "-"
+			with := field.migrate.with if field.migrate.has_with else "-"
+			emit_line(b, "migrate ", from, " ", with)
+		}
 	}
 }
 
