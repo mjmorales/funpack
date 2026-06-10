@@ -47,14 +47,18 @@ import "core:strings"
 // drift). The stamp leads BOTH record kinds, so a v2 stream carries v2 in
 // every line.
 //
-// Version 3 makes the decl record's `debug` field AUTHORITATIVE: it derives
-// from the parsed §05 §5 probes (probe_names, index_decl.odin) instead of the
-// v2 constant-empty stamp. The field SHAPE is unchanged, but the content
-// contract is not — a v2 stream may report `debug: []` over a source that
-// carries probes (the parser admitted probes before the derivation landed), so
-// the §28 §4 task-registration consumer must refuse a pre-derivation stream
-// rather than read its empty as "no probes". A derivation-contract change the
-// consumer can misread is a reshape, so it bumps.
+// Version 3 makes the decl record's §05 directive fields AUTHORITATIVE — BOTH
+// `debug` (probe_names over the parsed §05 §5 probes) and `todo` (todo_flag
+// over the parsed §05 §2 notes) derive from the AST (index_decl.odin) instead
+// of the v2 constant-empty stamps. The field SHAPES are unchanged, but the
+// content contract is not — a v2 stream may report `debug: []` / `todo: false`
+// over a source that carries probes or @todo notes (the parser admitted both
+// before the derivations landed), so the §28 §4 task-registration consumer and
+// the §29 §4 `warden debt` surface must refuse a pre-derivation stream rather
+// than read its empties as "no probes" / "no debt". A derivation-contract
+// change the consumer can misread is a reshape, so it bumps — once: the two
+// derivations land inside the same v3, so the shipped contract changes a
+// single time carrying the pair.
 INDEX_SCHEMA_VERSION :: 3
 
 // Index_Decl_Kind is the closed §29 §2 set of source DECLARATION FORMS the
@@ -103,9 +107,11 @@ Index_Decl_Kind :: enum {
 //                      hole (the parser's Fn_Node.holed, on a fn or a behavior
 //                      step), false for an intact body and for the body-less
 //                      forms — mandatory-present, never omitted
-//   - todo           — a `@todo` directive flag (§05); the parser does not yet
-//                      admit @todo, so it is false on the current tree —
-//                      mandatory-present, never omitted
+//   - todo           — the §05 §2 @todo presence flag, AST-derived (v3): true
+//                      exactly when the declaration carries at least one
+//                      `@todo("msg", window)` note (todo_flag); the parsed
+//                      message/window stay AST-side — the record carries the
+//                      flag only — mandatory-present, never omitted
 //   - debug          — the §05 §5 debug-probe directive names, AST-derived
 //                      (v3): one lowercase name per parsed probe
 //                      ("break"/"log"/"watch"/"trace") in authored order,
