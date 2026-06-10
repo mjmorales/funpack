@@ -343,6 +343,8 @@ session_request :: proc(
 		return observe_draw_list(s, id, args, allocator)
 	case "load", "run", "pause", "step", "rewind", "reset", "status":
 		return time_request(s, id, cmd, args, allocator)
+	case "capture_test":
+		return capture_test_request(s, id, args, allocator)
 	case "branch", "inject_input", "set", "spawn", "emit", "reload":
 		return control_request(s, id, cmd, args, allocator)
 	}
