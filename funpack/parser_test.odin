@@ -950,6 +950,103 @@ test_parse_gtag_directive_retained :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_expose_on_fn :: proc(t: ^testing.T) {
+	// `@expose` (spec §05 §4) is a bare prefix directive carried on the
+	// declaration it precedes — the §30 §6 exemplar shape: a @doc'd, @expose'd
+	// fn beside an unmarked package-private sibling. Only the marked fn
+	// records the flag.
+	source := "@doc(\"the package's public API\")\n" +
+		"@expose\n" +
+		"fn axial_to_pixel(cell: Int, size: Fixed) -> Fixed {\n" +
+		"  return size\n" +
+		"}\n" +
+		"\n" +
+		"fn cube_round(x: Fixed) -> Fixed {\n" +
+		"  return x\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.fns), 2)
+	testing.expect_value(t, ast.fns[0].doc, "the package's public API")
+	testing.expect(t, ast.fns[0].exposed)
+	testing.expect(t, !ast.fns[1].exposed)
+}
+
+@(test)
+test_parse_expose_on_every_declaration_form :: proc(t: ^testing.T) {
+	// `@expose` rides the grammar's Annotation* prefix (fun.ebnf §1), so every
+	// importable declaration form carries the flag: thing, data, signal, enum,
+	// let, extern fn, and query alike record exposed = true.
+	source := "@expose\nthing Ball { pos: Vec2 }\n" +
+		"@expose\ndata Hex { q: Int, r: Int }\n" +
+		"@expose\nsignal Hit { side: Int }\n" +
+		"@expose\nenum Side { Left, Right }\n" +
+		"@expose\nlet LIMIT: Int = 3\n" +
+		"@expose\nextern fn arena_count() -> Int\n" +
+		"@expose\nquery hex_count(q: Int) -> Int {\n" +
+		"  return q\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect(t, ast.things[0].exposed)
+	testing.expect(t, ast.datas[0].exposed)
+	testing.expect(t, ast.signals[0].exposed)
+	testing.expect(t, ast.enums[0].exposed)
+	testing.expect(t, ast.lets[0].exposed)
+	testing.expect(t, ast.fns[0].exposed)
+	testing.expect(t, ast.queries[0].exposed)
+}
+
+@(test)
+test_parse_expose_accumulates_with_directive_block :: proc(t: ^testing.T) {
+	// @expose joins the shared prefix block (spec §05): the declaration
+	// consumes the whole accumulated set — doc, gtags, and the exposed flag —
+	// regardless of authored order, and a repeated @expose is idempotent (a
+	// flag, never an accumulating family).
+	source := "@gtag(\"grid\")\n" +
+		"@expose\n" +
+		"@doc(\"axial coords\")\n" +
+		"@expose\n" +
+		"data Hex { q: Int, r: Int }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	d := ast.datas[0]
+	testing.expect_value(t, d.doc, "axial coords")
+	testing.expect_value(t, len(d.gtags), 1)
+	testing.expect(t, d.exposed)
+}
+
+@(test)
+test_parse_expose_does_not_leak_to_next_declaration :: proc(t: ^testing.T) {
+	// A declaration consumes its leading directives whole (stage_parse resets
+	// the accumulator), so an @expose on one declaration never bleeds onto the
+	// next — the package-private default stays the default.
+	source := "@expose\n" +
+		"fn shown() -> Int {\n" +
+		"  return 1\n" +
+		"}\n" +
+		"\n" +
+		"data Hidden { q: Int }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect(t, ast.fns[0].exposed)
+	testing.expect(t, !ast.datas[0].exposed)
+}
+
+@(test)
+test_parse_expose_with_arg_rejected :: proc(t: ^testing.T) {
+	// @expose is bare (lexical-core §5): a parenthesized argument is the named
+	// Expose_Unexpected_Arg verdict — the @trace mold — never silently
+	// consumed.
+	source := "@expose(\"api\")\n" +
+		"fn shown() -> Int {\n" +
+		"  return 1\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Expose_Unexpected_Arg)
+}
+
+@(test)
 test_parse_break_probe_on_behavior :: proc(t: ^testing.T) {
 	// `@break(<pred>)` (spec §05 §5, §28 §4) carries a funpack PREDICATE over
 	// self/signals/resources and rides the declaration it prefixes, like

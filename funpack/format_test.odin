@@ -48,6 +48,16 @@ test_fmt_let_decl_directive_block_order :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fmt_expose_directive_canonical_order :: proc(t: ^testing.T) {
+	// The bare §05 §4 @expose marker renders right after @doc (the §30 §6
+	// exemplar order) and before @gtag; a repeated @expose collapses to one
+	// line (the flag is idempotent), and an unmarked sibling renders none.
+	source := "@expose\n@gtag(\"grid\")\n@expose\n@doc(\"Axial to pixel.\")\nfn axial_to_pixel(size: Fixed) -> Fixed {\n  return size\n}\n\nfn cube_round(x: Fixed) -> Fixed {\n  return x\n}\n"
+	expected := "@doc(\"Axial to pixel.\")\n@expose\n@gtag(\"grid\")\nfn axial_to_pixel(size: Fixed) -> Fixed {\n  return size\n}\n\nfn cube_round(x: Fixed) -> Fixed {\n  return x\n}\n"
+	expect_canonical(t, source, expected)
+}
+
+@(test)
 test_fmt_todo_window_forms :: proc(t: ^testing.T) {
 	// All four §05 §2 window forms keep their one obvious spelling — the
 	// T-ref keeps its zero padding, the date its 4/2/2 shape.
@@ -291,7 +301,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if decl.name != other.name || !type_ref_equiv(decl.type, other.type) || !expr_equiv(decl.value, other.value) {
 			return false
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -300,7 +310,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if decl.name != other.name || decl.kind != other.kind || !field_decls_equiv(decl.fields, other.fields) {
 			return false
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -314,7 +324,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 				return false
 			}
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -323,7 +333,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if decl.name != other.name || decl.is_singleton != other.is_singleton || !field_decls_equiv(decl.fields, other.fields) {
 			return false
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -332,7 +342,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if decl.name != other.name || !field_decls_equiv(decl.fields, other.fields) {
 			return false
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -341,7 +351,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if !fn_node_equiv(decl, other) {
 			return false
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -367,7 +377,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 				return false
 			}
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -376,7 +386,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if decl.name != other.name || decl.target != other.target || !fn_node_equiv(decl.step, other.step) {
 			return false
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -394,7 +404,7 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 				return false
 			}
 		}
-		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
@@ -419,8 +429,8 @@ string_slice_equal :: proc(a, b: []string) -> bool {
 	return true
 }
 
-directives_equiv :: proc(a_doc: string, a_gtags: []string, a_todos: []Todo_Node, a_probes: []Debug_Probe, b_doc: string, b_gtags: []string, b_todos: []Todo_Node, b_probes: []Debug_Probe) -> bool {
-	if a_doc != b_doc || !string_slice_equal(a_gtags, b_gtags) {
+directives_equiv :: proc(a_doc: string, a_exposed: bool, a_gtags: []string, a_todos: []Todo_Node, a_probes: []Debug_Probe, b_doc: string, b_exposed: bool, b_gtags: []string, b_todos: []Todo_Node, b_probes: []Debug_Probe) -> bool {
+	if a_doc != b_doc || a_exposed != b_exposed || !string_slice_equal(a_gtags, b_gtags) {
 		return false
 	}
 	if len(a_todos) != len(b_todos) || len(a_probes) != len(b_probes) {

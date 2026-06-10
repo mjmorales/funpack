@@ -47,6 +47,11 @@
 //     in authored order, never deduped — the §28 §4 task-registration surface
 //     reports EVERY outstanding probe. [] on a probe-free decl and on a test
 //     block (the parser attaches no probes to a test).
+//   - exposed        — the §05 §4 @expose flag the parser records on every
+//     directive-carrying declaration node (node.exposed, v5): true exactly
+//     when the declaration is published into the package/mod external
+//     contract (§30 §6, §27 §2). false on a test block (the parser attaches
+//     no @expose to a test).
 //
 // Declaration ORDER is the Ast's source-ordered declaration sequence (the
 // parser appends one Decl_Ref per declaration in parse order, ADR
@@ -87,16 +92,16 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 		switch ref.kind {
 		case .Data:
 			decl := ast.datas[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
+			append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields), decl.exposed))
 		case .Enum:
 			decl := ast.enums[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, variants_hold_stub(decl.variants)))
+			append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, variants_hold_stub(decl.variants), decl.exposed))
 		case .Thing:
 			decl := ast.things[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
+			append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields), decl.exposed))
 		case .Signal:
 			decl := ast.signals[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
+			append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields), decl.exposed))
 		case .Fn:
 			append(&records, fn_decl_record(module, ast.fns[ref.index]))
 		case .Query:
@@ -107,10 +112,10 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 			// A pipeline declares stage names only — no expression position, so it
 			// can never hole.
 			decl := ast.pipelines[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, false))
+			append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, false, decl.exposed))
 		case .Let:
 			decl := ast.lets[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, expr_holds_stub(decl.value)))
+			append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, expr_holds_stub(decl.value), decl.exposed))
 		case .Test:
 			append(&records, test_decl_record(module, ast.tests[ref.index]))
 		}
@@ -130,7 +135,8 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 // initializer, a field default) may carry a §15 StubExpr expression-position
 // hole, so the caller derives `stub` from the kind's own expression surface
 // (expr_holds_stub / fields_hold_stub / variants_hold_stub, gates.odin — the
-// same walkers the release hole-ban reads).
+// same walkers the release hole-ban reads). exposed is the §05 §4 @expose
+// flag the parser records on the node (v5).
 body_less_decl :: proc(
 	module: string,
 	name: string,
@@ -141,6 +147,7 @@ body_less_decl :: proc(
 	todos: []Todo_Node,
 	probes: []Debug_Probe,
 	stub: bool,
+	exposed: bool,
 ) -> Decl_Record {
 	return Decl_Record {
 		schema_version = INDEX_SCHEMA_VERSION,
@@ -153,6 +160,7 @@ body_less_decl :: proc(
 		stub           = stub,
 		todo           = todo_flag(todos),
 		debug          = probe_names(probes),
+		exposed        = exposed,
 		emits          = empty_strings(),
 		consumes       = empty_strings(),
 		calls          = empty_strings(),
@@ -193,6 +201,7 @@ fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 		stub           = fn_holds_stub(decl),
 		todo           = todo_flag(decl.todos),
 		debug          = probe_names(decl.probes),
+		exposed        = decl.exposed,
 		emits          = empty_strings(),
 		consumes       = empty_strings(),
 		calls          = calls,
@@ -222,6 +231,7 @@ query_decl_record :: proc(module: string, decl: Query_Node) -> Decl_Record {
 		stub           = body_holds_stub(decl.body),
 		todo           = todo_flag(decl.todos),
 		debug          = probe_names(decl.probes),
+		exposed        = decl.exposed,
 		emits          = empty_strings(),
 		consumes       = empty_strings(),
 		calls          = body_calls(decl.body),
@@ -262,6 +272,7 @@ behavior_decl_record :: proc(
 		stub           = fn_holds_stub(decl.step),
 		todo           = todo_flag(decl.todos),
 		debug          = probe_names(decl.probes),
+		exposed        = decl.exposed,
 		emits          = decl_behavior_emits(decl.name, routes),
 		consumes       = decl_behavior_consumes(decl.name, routes),
 		calls          = body_calls(decl.step.body),
@@ -277,7 +288,8 @@ behavior_decl_record :: proc(
 // but a §15 StubExpr expression-position hole may stand in any assert/let
 // expression, so stub derives from the body walk (body_holds_stub, gates.odin
 // — the same walker the release hole-ban reads). The parser attaches no @todo
-// notes and no debug probes to a test block, so todo stays false and debug [].
+// notes, no debug probes, and no @expose to a test block, so todo stays
+// false, debug [], and exposed false.
 test_decl_record :: proc(module: string, decl: Test_Node) -> Decl_Record {
 	return Decl_Record {
 		schema_version = INDEX_SCHEMA_VERSION,
@@ -290,6 +302,7 @@ test_decl_record :: proc(module: string, decl: Test_Node) -> Decl_Record {
 		stub           = body_holds_stub(decl.body),
 		todo           = false,
 		debug          = empty_strings(),
+		exposed        = false,
 		emits          = empty_strings(),
 		consumes       = empty_strings(),
 		calls          = body_calls(decl.body),

@@ -25,6 +25,7 @@ Type_Error :: enum {
 	Unsupported_Expr, // a parsed form outside the typeable domain
 	Unknown_Module,   // an import naming a module outside the surface
 	Unknown_Member,   // an import naming a member its module lacks
+	Package_Private,  // a package-edge import (or module-handle access) naming a declaration its package does not @expose — across the §30 §6 boundary an item is importable iff @expose'd; within a project this never fires (public-by-default, spec §15 §4)
 	Unresolved_Name,  // a free name with no let binding, no user decl, and no import
 	Name_Collision,   // one name, two meanings (spec §02): a user decl colliding with an import or another user decl, or two imports binding one name to different declarations
 	Unregistered_Layer, // a Body's layer/mask names a value outside any CollisionLayer-kinded enum's variant set (spec §11 §5)
@@ -952,7 +953,13 @@ member_check :: proc(ctx: Check_Ctx, e: ^Member_Expr) -> (type: Type, err: Type_
 // but is not a const (a type, a fn) is .Unsupported_Expr (a module-qualified type
 // or fn name is not a value here); a member the module does NOT export is the
 // precise .Unknown_Member reject, closing the handle's member surface exactly as a
-// member-group import closes its member list. handled = false when the receiver is
+// member-group import closes its member list; a member a PACKAGE module exports
+// but does not @expose is .Package_Private (spec §30 §6) — the handle route
+// reaches an export with no importing declaration, so the package edge gates
+// here exactly as resolve_user_import gates the import forms (one predicate,
+// module_export_importable). Privacy fires BEFORE the kind check: a
+// package-private const is refused for its privacy, never re-shaped into
+// .Unsupported_Expr. handled = false when the receiver is
 // not a user-module handle (a local binding, a stdlib type-name, a value receiver),
 // leaving member_check's other arms untouched.
 module_member_check :: proc(ctx: Check_Ctx, handle: string, member: string) -> (type: Type, handled: bool, err: Type_Error) {
@@ -961,12 +968,15 @@ module_member_check :: proc(ctx: Check_Ctx, handle: string, member: string) -> (
 	if _, in_scope := ctx.scope[handle]; in_scope {
 		return nil, false, .None
 	}
-	kind, exported, handle_known := module_member_kind(ctx.index, ctx.bindings, handle, member)
+	kind, exported, handle_known, importable := module_member_kind(ctx.index, ctx.bindings, handle, member)
 	if !handle_known {
 		return nil, false, .None
 	}
 	if !exported {
 		return nil, true, .Unknown_Member
+	}
+	if !importable {
+		return nil, true, .Package_Private
 	}
 	if kind != .Const {
 		// An exported type or fn reached through `handle.NAME` is not a value.

@@ -52,13 +52,18 @@ Module_Export_Kind :: enum {
 // a module-qualified const reference (`assets.coin_sfx` types as SoundHandle).
 // Both the signature and let_type are filled only by build_module_index_typed,
 // which resolves each module's own env; the name-only index
-// (build_module_index_from_asts) leaves them nil.
+// (build_module_index_from_asts) leaves them nil. exposed carries the §05 §4
+// `@expose` marker off the declaration — the package-edge visibility fact:
+// within a project it is recorded but never consulted (public-by-default,
+// spec §15 §4); across a package edge an export is importable iff it is true
+// (spec §30 §6).
 Module_Export :: struct {
 	name:      string,
 	kind:      Module_Export_Kind,
 	user_kind: User_Kind,   // the §06 form of a .Type export; unused for a .Term/.Const
 	signature: ^Func_Type,  // the resolved signature of a .Term fn export; nil otherwise
 	let_type:  Type,        // the resolved declared type of a .Const let export; nil otherwise
+	exposed:   bool,        // the declaration carries §05 §4 @expose — importable across a package edge (spec §30 §6)
 }
 
 // Module_Record_Schema pairs one exported RECORD type's name with its resolved
@@ -93,8 +98,20 @@ Module_Enum_Schema :: struct {
 // record types (the cross-module field surface). The lists are walked by index —
 // never a map — so the resolver's verdict is reproducible from the source set
 // alone.
+//
+// package_root distinguishes the two §15 §4 visibility boundaries: "" is a
+// WITHIN-PROJECT module (public-by-default — the exposed flag is never
+// consulted); a non-empty root names the §30 dependency whose project name is
+// the entry's root namespace (spec §30 §7: `hexgrid.layout` roots at
+// `hexgrid`), and every import resolving through such an entry crosses the
+// package edge — importable iff the export is @expose'd, Package_Private
+// otherwise. Any import that resolves through a prefixed package entry is a
+// cross-edge import by construction: within the package itself modules root
+// UNPREFIXED at the package's own source root (spec §15 §5), so a
+// package-internal import never names the prefixed entry.
 Module_Entry :: struct {
 	module:         string,
+	package_root:   string,
 	exports:        []Module_Export,
 	record_schemas: []Module_Record_Schema,
 	enum_schemas:   []Module_Enum_Schema,
@@ -150,11 +167,18 @@ build_module_index :: proc(sources: []Source) -> (index: Module_Index, err: Modu
 // hand-built stand-in for a not-yet-generated seam module (the arena seam) joins
 // the index alongside the real, file-backed sources. It shares collect_module_exports
 // with build_module_index, so a stand-in entry carries the identical export shape
-// a file-backed entry would.
-build_module_index_from_asts :: proc(modules: []string, asts: []Ast) -> Module_Index {
+// a file-backed entry would. package_roots, when given, runs in lockstep with
+// modules and stamps each entry's §30 package_root ("" = within-project) — the
+// seam the deps.fcfg resolution story constructs package entries through; nil
+// (the default) leaves every entry within-project, the prior behavior.
+build_module_index_from_asts :: proc(modules: []string, asts: []Ast, package_roots: []string = nil) -> Module_Index {
 	entries := make([dynamic]Module_Entry, 0, len(asts), context.temp_allocator)
 	for ast, i in asts {
-		append(&entries, Module_Entry{module = modules[i], exports = collect_module_exports(ast)})
+		append(&entries, Module_Entry {
+			module       = modules[i],
+			package_root = package_roots[i] if package_roots != nil else "",
+			exports      = collect_module_exports(ast),
+		})
 	}
 	return Module_Index{modules = entries[:]}
 }
@@ -171,15 +195,18 @@ build_module_index_from_asts :: proc(modules: []string, asts: []Ast) -> Module_I
 // whole name surface must be visible before any signature resolves. A module that
 // fails to resolve its own imports/env is left with nil-signature exports — the
 // per-module typecheck surfaces the error precisely, so the index never aborts the
-// whole build over one module's resolution failure.
-build_module_index_typed :: proc(modules: []string, asts: []Ast) -> Module_Index {
-	name_index := build_module_index_from_asts(modules, asts)
+// whole build over one module's resolution failure. package_roots, when given,
+// runs in lockstep with modules and stamps each entry's §30 package_root
+// (build_module_index_from_asts's seam); nil leaves every entry within-project.
+build_module_index_typed :: proc(modules: []string, asts: []Ast, package_roots: []string = nil) -> Module_Index {
+	name_index := build_module_index_from_asts(modules, asts, package_roots)
 	entries := make([dynamic]Module_Entry, 0, len(asts), context.temp_allocator)
 	for ast, i in asts {
 		exports := collect_module_exports(ast)
 		record_schemas, enum_schemas := fill_export_types(&exports, ast, name_index)
 		append(&entries, Module_Entry {
 			module         = modules[i],
+			package_root   = package_roots[i] if package_roots != nil else "",
 			exports        = exports,
 			record_schemas = record_schemas,
 			enum_schemas   = enum_schemas,
@@ -313,20 +340,25 @@ module_const_type :: proc(index: Module_Index, bindings: Bindings, handle: strin
 // mistyped member of a user-module handle rather than the generic .Unsupported_Expr
 // — the same closed-surface rejection module_export_lookup enforces for a member
 // group. handle_known reports whether the receiver bound to a user module at all.
-module_member_kind :: proc(index: Module_Index, bindings: Bindings, handle: string, member: string) -> (kind: Module_Export_Kind, exported: bool, handle_known: bool) {
+// importable carries the §15 §4 visibility verdict (module_export_importable —
+// the same predicate the import resolver gates through), meaningful only when
+// exported: a handle-member access is the one route that reaches an export
+// without an importing declaration, so the package edge gates here too (spec
+// §30 §6) — module_member_check raises .Package_Private off it.
+module_member_kind :: proc(index: Module_Index, bindings: Bindings, handle: string, member: string) -> (kind: Module_Export_Kind, exported: bool, handle_known: bool, importable: bool) {
 	binding, bound := bindings.names[handle]
 	if !bound || binding.kind != .Module {
-		return {}, false, false
+		return {}, false, false, false
 	}
 	entry, has_entry := module_index_lookup(index, binding.module)
 	if !has_entry {
-		return {}, false, false
+		return {}, false, false, false
 	}
 	export, found := module_export_lookup(entry, member)
 	if !found {
-		return {}, false, true
+		return {}, false, true, false
 	}
-	return export.kind, true, true
+	return export.kind, true, true, module_export_importable(entry, export)
 }
 
 // module_record_schema resolves the field schema of a RECORD type an import bound
@@ -395,28 +427,30 @@ module_enum_schema :: proc(index: Module_Index, bindings: Bindings, name: string
 // referenced cross-module (`import assets` then `assets.coin_sfx`); behaviors stay
 // unexported — a behavior is reached through its own module's pipeline, not an
 // importable name. The order is source order within each kind, type exports first
-// then fn terms then const terms, so the list walks deterministically.
+// then fn terms then const terms, so the list walks deterministically. Each
+// export carries its declaration's §05 §4 @expose flag — recorded for every
+// module, consulted only across a package edge (spec §30 §6).
 collect_module_exports :: proc(ast: Ast) -> []Module_Export {
 	exports := make([dynamic]Module_Export, 0, 8, context.temp_allocator)
 	for decl in ast.things {
 		// `thing` and `singleton` both occupy the .Thing user kind (parser
 		// folds them into ast.things, distinguished only by is_singleton).
-		append(&exports, Module_Export{name = decl.name, kind = .Type, user_kind = .Thing})
+		append(&exports, Module_Export{name = decl.name, kind = .Type, user_kind = .Thing, exposed = decl.exposed})
 	}
 	for decl in ast.datas {
-		append(&exports, Module_Export{name = decl.name, kind = .Type, user_kind = .Data})
+		append(&exports, Module_Export{name = decl.name, kind = .Type, user_kind = .Data, exposed = decl.exposed})
 	}
 	for decl in ast.signals {
-		append(&exports, Module_Export{name = decl.name, kind = .Type, user_kind = .Signal})
+		append(&exports, Module_Export{name = decl.name, kind = .Type, user_kind = .Signal, exposed = decl.exposed})
 	}
 	for decl in ast.enums {
-		append(&exports, Module_Export{name = decl.name, kind = .Type, user_kind = .Enum})
+		append(&exports, Module_Export{name = decl.name, kind = .Type, user_kind = .Enum, exposed = decl.exposed})
 	}
 	for decl in ast.fns {
-		append(&exports, Module_Export{name = decl.name, kind = .Term})
+		append(&exports, Module_Export{name = decl.name, kind = .Term, exposed = decl.exposed})
 	}
 	for decl in ast.lets {
-		append(&exports, Module_Export{name = decl.name, kind = .Const})
+		append(&exports, Module_Export{name = decl.name, kind = .Const, exposed = decl.exposed})
 	}
 	return exports[:]
 }
@@ -444,6 +478,18 @@ module_export_lookup :: proc(entry: Module_Entry, name: string) -> (export: Modu
 		}
 	}
 	return Module_Export{}, false
+}
+
+// module_export_importable is THE §15 §4 two-boundary visibility rule: a
+// within-project export (package_root == "") is public-by-default — always
+// importable, the exposed flag never consulted — while a package-edge export
+// is importable iff its declaration carries §05 §4 @expose (spec §30 §6;
+// everything else is package-private). Both the import resolver
+// (resolve_user_import) and the whole-module-handle member access
+// (module_member_kind) gate through this one predicate, so the two access
+// routes cannot drift.
+module_export_importable :: proc(entry: Module_Entry, export: Module_Export) -> bool {
+	return entry.package_root == "" || export.exposed
 }
 
 // module_export_binding maps an export's position to the Binding the resolver
@@ -494,15 +540,22 @@ index_user_type :: proc(index: Module_Index, bindings: Bindings, name: string) -
 // export list, binding each into the consuming module's environment. It is the
 // user-module sibling of the stdlib arm (surface_resolve + bind_name): a member
 // the module exports binds to the owning module; a member it does not export is
-// .Unknown_Member; a member whose name already binds to a DIFFERENT in-scope
-// import is .Name_Collision (bind_name enforces the §02 rule). The caller has
-// already confirmed the module is in the index, so this arm never re-checks
-// module existence.
+// .Unknown_Member; a member the module exports but does NOT @expose across a
+// package edge is .Package_Private (spec §30 §6 — importable iff @expose'd; a
+// within-project entry never gates, spec §15 §4); a member whose name already
+// binds to a DIFFERENT in-scope import is .Name_Collision (bind_name enforces
+// the §02 rule). The privacy gate runs AFTER the export lookup so an unknown
+// member of a package module stays the precise .Unknown_Member — privacy is a
+// fact about a declaration that exists. The caller has already confirmed the
+// module is in the index, so this arm never re-checks module existence.
 resolve_user_import :: proc(bindings: ^Bindings, entry: Module_Entry, members: []string) -> Type_Error {
 	for member in members {
 		export, exported := module_export_lookup(entry, member)
 		if !exported {
 			return .Unknown_Member
+		}
+		if !module_export_importable(entry, export) {
+			return .Package_Private
 		}
 		bind_name(bindings, member, module_export_binding(entry.module, export)) or_return
 	}

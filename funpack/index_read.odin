@@ -344,6 +344,10 @@ decode_decl_record :: proc(object: json.Object, allocator := context.allocator) 
 	if err != .None {
 		return
 	}
+	record.exposed, err = index_bool_field(object, "exposed")
+	if err != .None {
+		return
+	}
 	record.emits, err = index_string_list_field(object, "emits", allocator)
 	if err != .None {
 		return

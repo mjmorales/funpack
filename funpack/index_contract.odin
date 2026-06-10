@@ -72,7 +72,16 @@ import "core:strings"
 // projected: §29 §2's field enumeration names no index/spatial fields, so they
 // stay AST-side (a richer projection is a further reshape, not this
 // derivation's call).
-INDEX_SCHEMA_VERSION :: 4
+//
+// Version 5 adds the mandatory `exposed` boolean to the decl record — the §05
+// §4 @expose marker, AST-derived like stub/todo/debug — so the §30 §7 package
+// governance surface (`funpack warden` over an imported dependency's index)
+// and the §30 §6 contract generation read the exposed set off the one
+// structured interface. §29 §2's inline enumeration predates the field;
+// adding one is exactly the contract RESHAPE the same section sanctions
+// behind a version bump (the exact-match field set changes, so a v4-pinned
+// consumer must refuse on the version gate, never on Unknown_Field).
+INDEX_SCHEMA_VERSION :: 5
 
 // Index_Decl_Kind is the closed §29 §2 set of source DECLARATION FORMS the
 // per-declaration `decl` record reports — the kind taxonomy of what a
@@ -134,6 +143,12 @@ Index_Decl_Kind :: enum {
 //                      never deduped (§28 §4: every outstanding probe
 //                      registers); [] on a probe-free decl —
 //                      mandatory-present, never omitted
+//   - exposed        — the §05 §4 @expose flag, AST-derived (v5): true exactly
+//                      when the declaration carries the marker — the
+//                      package/mod external-contract surface (§30 §6, §27 §2)
+//                      — mandatory-present, never omitted (false on every
+//                      unmarked decl, and constant-false on a test block: the
+//                      parser attaches no @expose to a test)
 //   - emits          — the signal names this declaration emits (§04)
 //   - consumes       — the signal names this declaration consumes (§04)
 //   - calls          — the function names this declaration calls
@@ -156,6 +171,7 @@ Decl_Record :: struct {
 	stub:           bool,
 	todo:           bool,
 	debug:          []string,
+	exposed:        bool,
 	emits:          []string,
 	consumes:       []string,
 	calls:          []string,
@@ -477,14 +493,55 @@ any_entrypoint_has_net :: proc(entrypoints: []Entrypoint_Record) -> bool {
 }
 
 // source_has_expose reports whether the source declares an `@expose` directive
-// (§14 §4 / §27: an `@expose` switches on modding). The gameplay surface
-// admits only `@doc`/`@gtag` directives, so no declaration carries an
-// `@expose` and modding is off for pong; the predicate is the §27 seam for
-// when the directive grammar admits it.
+// (§14 §4 / §27: an `@expose` switches on modding). It walks the Ast's
+// source-ordered declaration sequence reading each node's parsed exposed flag
+// (parser.odin) — the switch is total over Ast_Decl_Kind, so a new declaration
+// kind is a visible compile gap here, never a silently-unchecked branch. A
+// test block carries no @expose (the parser attaches none), so its arm reads
+// false by construction.
 source_has_expose :: proc(ast: Ast) -> bool {
-	// `@expose` is not part of the directive grammar the gameplay surface
-	// parses (only `@doc`/`@gtag` attach to a declaration), so no AST node
-	// records an expose flag and this reads false. It is the modding seam.
+	for ref in ast.decls {
+		switch ref.kind {
+		case .Data:
+			if ast.datas[ref.index].exposed {
+				return true
+			}
+		case .Enum:
+			if ast.enums[ref.index].exposed {
+				return true
+			}
+		case .Thing:
+			if ast.things[ref.index].exposed {
+				return true
+			}
+		case .Signal:
+			if ast.signals[ref.index].exposed {
+				return true
+			}
+		case .Fn:
+			if ast.fns[ref.index].exposed {
+				return true
+			}
+		case .Query:
+			if ast.queries[ref.index].exposed {
+				return true
+			}
+		case .Behavior:
+			if ast.behaviors[ref.index].exposed {
+				return true
+			}
+		case .Pipeline:
+			if ast.pipelines[ref.index].exposed {
+				return true
+			}
+		case .Let:
+			if ast.lets[ref.index].exposed {
+				return true
+			}
+		case .Test:
+			// A test block admits no @expose — the parser attaches none.
+		}
+	}
 	return false
 }
 
