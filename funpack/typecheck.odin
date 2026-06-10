@@ -40,6 +40,7 @@ Type_Error :: enum {
 	All_Unknown_Thing,       // an `all[T]` whose T names no declared thing/singleton — the read table is a thing's instance set, so a data/enum/signal (or undeclared) head has no rows to read
 	Spatial_Requirement_Missing,   // a within/nearest_first whose element thing has no @spatial declared on the ENCLOSING query (spec §08 §3: a query needing an index must declare it) — including any use outside a query body, where no requirement can be declared at all
 	Spatial_Requirement_Ambiguous, // a within/nearest_first whose element thing carries SEVERAL @spatial declarations on the enclosing query — the combinator cannot pick which field to measure, so the declaration set must name exactly one
+	Query_Param_Not_Value,         // a query parameter outside the value domain — a View[T], a Ref/Owned handle, a resource (Input/Time/Rng/Bindings/Nav), or a function — spec §08 §3: a query is pure over (version, params), takes ONLY value parameters, and reads the world through `all[T]` alone
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -501,7 +502,54 @@ check_query_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index,
 	ctx := fn_body_ctx(bindings, env, index, query_as_fn(query))
 	ctx.in_query = true
 	ctx.query_indexes = query.indexes
+	// §08 §3 value-param-only: a query is pure over (version, params) and
+	// reads the world through `all[T]` alone, so a world handle (View/Ref), a
+	// resource, or a function in its parameter list is the named diagnostic —
+	// such a parameter would smuggle a read path (or unkeyable content) past
+	// the (version, params) memo identity.
+	for param in query.params {
+		if type_outside_value_domain(ctx.scope[param.name]) {
+			return .Query_Param_Not_Value
+		}
+	}
 	return check_statements(ctx, query.body)
+}
+
+// type_outside_value_domain reports whether a resolved type carries any arm
+// outside the §08 §3 query value domain: the read table View[T], the world
+// handles Ref/Nav, the resources Input/Time/Rng/Bindings, or a function type
+// (unkeyable by the (version, params) memo identity, unreceivable by a
+// compiled signature). Containers (Option/List/Tuple) are walked so a wrapped
+// handle cannot hide; ground scalars, user records/enums/things-as-values,
+// and every other engine VALUE kind (handles like MeshHandle, command records)
+// stay in the domain.
+type_outside_value_domain :: proc(t: Type) -> bool {
+	switch v in t {
+	case Ground_Type:
+		return false
+	case ^Option_Type:
+		return type_outside_value_domain(v.elem)
+	case ^List_Type:
+		return type_outside_value_domain(v.elem)
+	case ^Tuple_Type:
+		for elem in v.elements {
+			if type_outside_value_domain(elem) {
+				return true
+			}
+		}
+		return false
+	case ^Func_Type:
+		return true
+	case ^User_Type:
+		return false
+	case ^Engine_Type:
+		#partial switch v.kind {
+		case .View, .Ref, .Nav, .Input, .Time, .Rng, .Bindings:
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // fn_body_ctx seeds the one body-sweep context both fn and query bodies type
