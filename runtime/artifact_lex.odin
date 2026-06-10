@@ -114,7 +114,14 @@ import "core:strings"
 // FIELD` (KIND ∈ index|spatial) carrying one declared requirement. A new
 // section and a new sub-record keyword are layout changes: 8 → 9
 // (funpack/docs/artifact-format.md §1, §16).
-ARTIFACT_SCHEMA_VERSION :: 9
+//
+// v10 ratifies the §08 §3 world read `all[T]` as a §2.7 node KIND — `node all
+// THING 0`, a leaf carrying the read table's thing type name, evaluating to
+// that thing's rows in stable Id order. The spec-true query takes only value
+// parameters and reads the world inside its body, so the [queries] layout is
+// unchanged while the body forest gains the new kind: 9 → 10
+// (funpack/docs/artifact-format.md §1, §2.7).
+ARTIFACT_SCHEMA_VERSION :: 10
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
