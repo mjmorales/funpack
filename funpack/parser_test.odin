@@ -1612,3 +1612,55 @@ test_parse_migrate_duplicate_before_field_rejected :: proc(t: ^testing.T) {
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
 }
+
+// The Ast's source-ordered declaration sequence: one Decl_Ref per declaration
+// in parse order, each pointing at its per-kind slot — so the author's
+// cross-kind interleaving survives the parse (ADR
+// 2026-06-10-formatter-canon-source-ordered-declarations). Imports are the
+// module header, never a sequence entry.
+@(test)
+test_parse_decl_sequence_source_order :: proc(t: ^testing.T) {
+	source := "import assets\n" +
+		"fn helper() -> Int {\n  return 1\n}\n" +
+		"data Cell { x: Int }\n" +
+		"let SIZE: Int = 8\n" +
+		"thing Board { c: Cell }\n" +
+		"enum Side { Left, Right }\n" +
+		"signal Moved {}\n" +
+		"query cells() -> [Cell] {\n  return []\n}\n" +
+		"behavior hold on Board {\n  fn step(self: Board) -> Board {\n    return self\n  }\n}\n" +
+		"pipeline Loop {\n  update: [hold]\n}\n" +
+		"data Grid { c: Cell }\n" +
+		"test \"t\" {\n  assert SIZE == 8\n}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	expected := [?]Decl_Ref {
+		{kind = .Fn, index = 0},
+		{kind = .Data, index = 0},
+		{kind = .Let, index = 0},
+		{kind = .Thing, index = 0},
+		{kind = .Enum, index = 0},
+		{kind = .Signal, index = 0},
+		{kind = .Query, index = 0},
+		{kind = .Behavior, index = 0},
+		{kind = .Pipeline, index = 0},
+		{kind = .Data, index = 1},
+		{kind = .Test, index = 0},
+	}
+	testing.expect_value(t, len(ast.decls), len(expected))
+	if len(ast.decls) != len(expected) {
+		return
+	}
+	for ref, i in expected {
+		testing.expect_value(t, ast.decls[i], ref)
+	}
+	// The second data declaration's slot resolves to the node it marked.
+	testing.expect_value(t, ast.datas[ast.decls[9].index].name, "Grid")
+	// An extern fn joins ast.fns AND the sequence like a bodied fn.
+	extern_ast, extern_err := stage_parse(stage_lex("data A { x: Int }\nextern fn arena_spawns() -> Int\n"))
+	testing.expect_value(t, extern_err, Parse_Error.None)
+	testing.expect_value(t, len(extern_ast.decls), 2)
+	if len(extern_ast.decls) == 2 {
+		testing.expect_value(t, extern_ast.decls[1], Decl_Ref{kind = .Fn, index = 0})
+	}
+}

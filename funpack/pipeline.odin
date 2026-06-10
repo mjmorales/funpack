@@ -16,12 +16,21 @@ import "core:os"
 // Ast is the parsed module: the file-leading @doc, the imports, the §06/§07
 // top-level declarations the golden pong surface exercises, and the test
 // blocks. The declaration slices are parse-only — no name resolution and
-// no typing live here (those are sibling stages); this struct just carries
-// every top-level node stage_parse recognized, in source order within each
-// kind.
+// no typing live here (those are sibling stages); this struct carries
+// every top-level node stage_parse recognized. Each per-kind slice keeps
+// source order within its kind (the storage every kind-scoped consumer
+// reads), and `decls` is the SOURCE-ORDERED declaration sequence across
+// kinds — the parser appends one Decl_Ref per declaration in parse order,
+// so the author's cross-kind interleaving survives the parse. Every
+// order-observable consumer (render_canonical, the index derivation, the
+// gate walks, the release hole/debug walkers) reads through `decls`, so
+// the formatter, the Index Contract, and the release refusals can never
+// disagree on declaration order (ADR
+// 2026-06-10-formatter-canon-source-ordered-declarations).
 Ast :: struct {
 	module_doc: string,
 	imports:    []Import_Node,
+	decls:      []Decl_Ref,      // source-ordered declaration sequence across kinds
 	lets:       []Let_Decl_Node, // module-level `let NAME: T = expr` constants
 	datas:      []Data_Node,     // `data Name { … }` value records
 	enums:      []Enum_Node,     // `enum Name { … }`, incl. the `Name: Kind` role form
@@ -32,6 +41,32 @@ Ast :: struct {
 	behaviors:  []Behavior_Node, // `behavior name on Thing { fn step(…) … }`
 	pipelines:  []Pipeline_Node, // `pipeline Name { stage: [behaviors] … }`
 	tests:      []Test_Node,
+}
+
+// Ast_Decl_Kind names one top-level declaration kind — the closed tag a Decl_Ref
+// carries to select the Ast per-kind slice its declaration lives in. Imports
+// are the module header, not declarations, so they have no kind here.
+Ast_Decl_Kind :: enum {
+	Let,
+	Data,
+	Enum,
+	Thing,
+	Signal,
+	Fn,
+	Query,
+	Behavior,
+	Pipeline,
+	Test,
+}
+
+// Decl_Ref locates one declaration in the Ast: kind selects the per-kind
+// slice, index the node within it. The Ast's `decls` sequence is a slice of
+// these in parse order — a reference layer over the kind slices, so the
+// nodes themselves are stored once and kind-scoped consumers keep their
+// direct per-kind reads.
+Decl_Ref :: struct {
+	kind:  Ast_Decl_Kind,
+	index: int,
 }
 
 Typed_Ast :: struct {

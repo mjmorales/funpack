@@ -584,12 +584,12 @@ pipeline Loop {
 	log.infof("index decl mut_data derivation verified over the blackboard-write contract")
 }
 
-// ── Live checkout: one record per declaration, fixed order, empty directive fields ──
+// ── Live checkout: one record per declaration, source order, empty directive fields ──
 
 @(test)
 test_index_decl_records_pong :: proc(t: ^testing.T) {
 	// Decl-record derivation over the live pong checkout: one record per
-	// declaration in the fixed gate_units-style order, with stub=false (the pong
+	// declaration in source order, with stub=false (the pong
 	// tree carries no @stub hole), the derived todo=false (no pong decl carries
 	// a §05 §2 @todo note) and the derived debug=[] (no pong decl carries a
 	// §05 §5 probe) on every decl. The per-kind
@@ -612,7 +612,7 @@ test_index_decl_records_pong :: proc(t: ^testing.T) {
 		// now total over every declaration node.
 		testing.expectf(t, r.span >= 1, "decl %s has a non-positive span %d", r.qualified_name, r.span)
 	}
-	// The first derived record is the first data decl (Board) at its keyword line.
+	// The first data decl (Board) at its keyword line.
 	board, has_board := find_record(records, "Board")
 	testing.expect(t, has_board)
 	testing.expect_value(t, board.kind, Index_Decl_Kind.Data)
@@ -663,13 +663,13 @@ test_index_decl_records_pong :: proc(t: ^testing.T) {
 	testing.expect(t, has_paddle_move)
 	testing.expect(t, contains_str(paddle_move.calls, "value"))
 	testing.expect(t, contains_str(paddle_move.calls, "clamp"))
-	log.infof("index decl records over live pong verified (%d decls, fixed order)", len(records))
+	log.infof("index decl records over live pong verified (%d decls, source order)", len(records))
 }
 
 @(test)
 test_index_decl_records_snake :: proc(t: ^testing.T) {
 	// Decl-record derivation over the live snake checkout: one record per
-	// declaration in the fixed order, with stub=false (no snake decl is holed),
+	// declaration in source order, with stub=false (no snake decl is holed),
 	// the derived todo=false (no snake decl carries a @todo note), and the
 	// derived debug=[] (no snake decl carries a probe) on every decl. Counts
 	// pinned against the golden source (36
@@ -694,7 +694,7 @@ test_index_decl_records_snake :: proc(t: ^testing.T) {
 	testing.expect(t, has_cell)
 	testing.expect_value(t, cell.kind, Index_Decl_Kind.Data)
 	testing.expect_value(t, cell.span, 15)
-	log.infof("index decl records over live snake verified (%d decls, fixed order)", len(records))
+	log.infof("index decl records over live snake verified (%d decls, source order)", len(records))
 }
 
 @(test)
@@ -806,4 +806,38 @@ checkout_decl_records :: proc(
 	}
 	// The single-source path derives with the bare module name (lore #11).
 	return derive_decl_records("", typed, flat), true
+}
+
+@(test)
+test_index_decl_records_source_order :: proc(t: ^testing.T) {
+	// Declaration ORDER is the Ast's source-ordered sequence (ADR
+	// 2026-06-10-formatter-canon-source-ordered-declarations): an interleaved
+	// source derives its records in AUTHORED order — never re-grouped by kind —
+	// so the emitted NDJSON mirrors the file an agent greps.
+	source := `fn helper() -> Int {
+  return 1
+}
+data Cell { x: Int }
+let SIZE: Int = 8
+signal Moved {}
+data Grid { c: Cell }
+test "size" {
+  assert SIZE == 8
+}
+`
+	typed, flat, ok := compile_snippet(source)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	records := derive_decl_records("", typed, flat)
+	expected := [?]string{"helper", "Cell", "SIZE", "Moved", "Grid", "size"}
+	testing.expect_value(t, len(records), len(expected))
+	if len(records) != len(expected) {
+		return
+	}
+	for name, i in expected {
+		testing.expect_value(t, records[i].qualified_name, name)
+	}
+	log.infof("index decl records derive in source order (interleaved kinds never re-grouped)")
 }

@@ -1,9 +1,9 @@
 // Per-declaration `decl` record DERIVATION (spec §29 §2): the source-derived
 // half of the Index Contract that fills the fixed Decl_Record shape
 // (index_contract.odin) from the already-compiled Typed_Ast + Flattened_Pipeline.
-// It is a pure projection (spec §29 §1) — fixed gate_units-style declaration
-// order, no map iteration reaching output, no clock, no float — so the emitted
-// NDJSON `decl` stream is byte-identical on every machine.
+// It is a pure projection (spec §29 §1) — the Ast's source-ordered declaration
+// sequence, no map iteration reaching output, no clock, no float — so the
+// emitted NDJSON `decl` stream is byte-identical on every machine.
 //
 // Field-by-field, where each value comes from TODAY:
 //   - qualified_name — the §15 module-qualified name; the module is "" on the
@@ -48,10 +48,12 @@
 //     reports EVERY outstanding probe. [] on a probe-free decl and on a test
 //     block (the parser attaches no probes to a test).
 //
-// Declaration ORDER is the fixed gate_units-style per-kind walk
-// (data → enum → thing → signal → fn → query → behavior → pipeline → let →
-// test) so the vector — and the emitted NDJSON — is stable across runs and
-// machines.
+// Declaration ORDER is the Ast's source-ordered declaration sequence (the
+// parser appends one Decl_Ref per declaration in parse order, ADR
+// 2026-06-10-formatter-canon-source-ordered-declarations), so the vector —
+// and the emitted NDJSON — mirrors the authored source and is stable across
+// runs and machines. The release hole/debug walkers (gates.odin) read the
+// same sequence, so a refusal's first offender always matches index order.
 //
 // A `query` declaration (§08 §3) projects exactly as far as §29 §2's field
 // enumeration admits — qualified_name/kind/span/doc/gtags/stub/todo/debug plus
@@ -66,70 +68,55 @@ import "core:slice"
 import "core:strings"
 
 // derive_decl_records projects every source declaration of a compiled program
-// onto the §29 §2 Decl_Record shape, in the fixed gate_units-style per-kind
-// order, so the derived []Decl_Record is byte-deterministic. The signal routes
-// (flat.routes) supply the per-behavior emits/consumes; the typed env supplies
-// the behavior signatures mut_data reads; the parser nodes supply the rest. The
-// module is the §15 path-derived module name — "" on the single-source path
-// (lore #11), so qualified_name is the bare decl name there. Every field is
-// temp-allocated like build_project_record's derived fields, so the records are
-// pure projections the emitter marshals straight onto NDJSON.
+// onto the §29 §2 Decl_Record shape, in the Ast's source-ordered declaration
+// sequence (one Decl_Ref per declaration in parse order), so the derived
+// []Decl_Record is byte-deterministic and mirrors the authored source. The
+// signal routes (flat.routes) supply the per-behavior emits/consumes; the typed
+// env supplies the behavior signatures mut_data reads; the parser nodes supply
+// the rest. The module is the §15 path-derived module name — "" on the
+// single-source path (lore #11), so qualified_name is the bare decl name there.
+// Every field is temp-allocated like build_project_record's derived fields, so
+// the records are pure projections the emitter marshals straight onto NDJSON.
 derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pipeline) -> []Decl_Record {
 	ast := typed.ast
-	records := make([dynamic]Decl_Record, 0, decl_count(ast), context.temp_allocator)
+	records := make([dynamic]Decl_Record, 0, len(ast.decls), context.temp_allocator)
 
-	for decl in ast.datas {
-		append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
-	}
-	for decl in ast.enums {
-		append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, variants_hold_stub(decl.variants)))
-	}
-	for decl in ast.things {
-		append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
-	}
-	for decl in ast.signals {
-		append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
-	}
-	for decl in ast.fns {
-		append(&records, fn_decl_record(module, decl))
-	}
-	for decl in ast.queries {
-		append(&records, query_decl_record(module, decl))
-	}
-	for decl in ast.behaviors {
-		append(&records, behavior_decl_record(module, decl, typed.env, flat.routes))
-	}
-	for decl in ast.pipelines {
-		// A pipeline declares stage names only — no expression position, so it
-		// can never hole.
-		append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, false))
-	}
-	for decl in ast.lets {
-		append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, expr_holds_stub(decl.value)))
-	}
-	for decl in ast.tests {
-		append(&records, test_decl_record(module, decl))
+	// The switch is total over Ast_Decl_Kind, so a new declaration kind is a
+	// visible compile gap here, never a silently-unindexed branch.
+	for ref in ast.decls {
+		switch ref.kind {
+		case .Data:
+			decl := ast.datas[ref.index]
+			append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
+		case .Enum:
+			decl := ast.enums[ref.index]
+			append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, variants_hold_stub(decl.variants)))
+		case .Thing:
+			decl := ast.things[ref.index]
+			append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
+		case .Signal:
+			decl := ast.signals[ref.index]
+			append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
+		case .Fn:
+			append(&records, fn_decl_record(module, ast.fns[ref.index]))
+		case .Query:
+			append(&records, query_decl_record(module, ast.queries[ref.index]))
+		case .Behavior:
+			append(&records, behavior_decl_record(module, ast.behaviors[ref.index], typed.env, flat.routes))
+		case .Pipeline:
+			// A pipeline declares stage names only — no expression position, so it
+			// can never hole.
+			decl := ast.pipelines[ref.index]
+			append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, false))
+		case .Let:
+			decl := ast.lets[ref.index]
+			append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, expr_holds_stub(decl.value)))
+		case .Test:
+			append(&records, test_decl_record(module, ast.tests[ref.index]))
+		}
 	}
 
 	return records[:]
-}
-
-// decl_count is the total declaration count across every per-kind AST slice —
-// the exact capacity for the records vector, so the projection makes no extra
-// allocations.
-decl_count :: proc(ast: Ast) -> int {
-	return(
-		len(ast.datas) +
-		len(ast.enums) +
-		len(ast.things) +
-		len(ast.signals) +
-		len(ast.fns) +
-		len(ast.queries) +
-		len(ast.behaviors) +
-		len(ast.pipelines) +
-		len(ast.lets) +
-		len(ast.tests) \
-	)
 }
 
 // body_less_decl builds the Decl_Record for a body-less declaration —

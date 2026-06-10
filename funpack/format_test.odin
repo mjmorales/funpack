@@ -212,11 +212,36 @@ test_fmt_separators_normalize :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_fmt_kind_grouped_declaration_order :: proc(t: ^testing.T) {
-	// Interleaved kinds project kind-grouped in Ast field order — the AST
-	// keeps source order within a kind only, and text is its projection.
+test_fmt_source_ordered_declarations :: proc(t: ^testing.T) {
+	// Interleaved kinds project in SOURCE ORDER — the Ast's source-ordered
+	// declaration sequence carries the author's cross-kind interleaving, and
+	// the projection preserves it (ADR
+	// 2026-06-10-formatter-canon-source-ordered-declarations: the formatter
+	// never reorders declarations).
 	source := "fn helper() -> Int {\n  return 1\n}\n\ndata Cell { x: Int }\n\nlet SIZE: Int = 8\n\ndata Grid { size: Cell }\n"
-	expected := "let SIZE: Int = 8\n\ndata Cell { x: Int }\n\ndata Grid { size: Cell }\n\nfn helper() -> Int {\n  return 1\n}\n"
+	expected := source
+	expect_canonical(t, source, expected)
+}
+
+@(test)
+test_fmt_feature_interleaving_preserved :: proc(t: ^testing.T) {
+	// The doctrine-corpus shape the ADR protects: a thing beside its behavior
+	// and signal, a second feature block following — the first format of an
+	// interleaved file is a whitespace-only normalization, never a whole-file
+	// reorder.
+	source := "thing Ball {\n  x: Fixed\n}\n\nbehavior roll on Ball {\n  fn step(self: Ball) -> Ball {\n    return self\n  }\n}\n\nsignal Bounced {}\n\nthing Paddle {\n  y: Fixed\n}\n\nbehavior track on Paddle {\n  fn step(self: Paddle) -> Paddle {\n    return self\n  }\n}\n"
+	expected := source
+	expect_canonical(t, source, expected)
+}
+
+@(test)
+test_fmt_query_declaration :: proc(t: ^testing.T) {
+	// A §08 §3 query declaration renders like a fn with the `query` keyword,
+	// its §05 §3 index requirements as one directive line each (slice order,
+	// adjacent to the keyword — the spec §08 §3 spelling), after the ordinary
+	// @doc/@gtag directive block.
+	source := "@doc(\"Enemies within radius.\")\n@spatial(Enemy.cell)\n@index(Enemy.squad)\nquery enemies_near(origin: Cell, r: Fixed) -> [Enemy] {\n  return nearest_first(within(all[Enemy], origin, r), origin)\n}\n"
+	expected := source
 	expect_canonical(t, source, expected)
 }
 
@@ -231,16 +256,26 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		return false
 	}
 	if len(a.imports) != len(b.imports) ||
+	   len(a.decls) != len(b.decls) ||
 	   len(a.lets) != len(b.lets) ||
 	   len(a.datas) != len(b.datas) ||
 	   len(a.enums) != len(b.enums) ||
 	   len(a.things) != len(b.things) ||
 	   len(a.signals) != len(b.signals) ||
 	   len(a.fns) != len(b.fns) ||
+	   len(a.queries) != len(b.queries) ||
 	   len(a.behaviors) != len(b.behaviors) ||
 	   len(a.pipelines) != len(b.pipelines) ||
 	   len(a.tests) != len(b.tests) {
 		return false
+	}
+	// The source-ordered declaration sequence is AST content (the canonical
+	// declaration order), so equivalence requires the same kinds in the same
+	// order pointing at the same per-kind slots.
+	for ref, i in a.decls {
+		if ref != b.decls[i] {
+			return false
+		}
 	}
 	for imp, i in a.imports {
 		other := b.imports[i]
@@ -305,6 +340,32 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		other := b.fns[i]
 		if !fn_node_equiv(decl, other) {
 			return false
+		}
+		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
+			return false
+		}
+	}
+	for decl, i in a.queries {
+		other := b.queries[i]
+		if decl.name != other.name || !type_ref_equiv(decl.return_type, other.return_type) || !statements_equiv(decl.body, other.body) {
+			return false
+		}
+		if len(decl.params) != len(other.params) {
+			return false
+		}
+		for param, j in decl.params {
+			if param.name != other.params[j].name || !type_ref_equiv(param.type, other.params[j].type) {
+				return false
+			}
+		}
+		if len(decl.indexes) != len(other.indexes) {
+			return false
+		}
+		for index, j in decl.indexes {
+			// The §05 §3 requirement set is AST content modulo the `line` span.
+			if index.kind != other.indexes[j].kind || index.thing != other.indexes[j].thing || index.field != other.indexes[j].field {
+				return false
+			}
 		}
 		if !directives_equiv(decl.doc, decl.gtags, decl.todos, decl.probes, other.doc, other.gtags, other.todos, other.probes) {
 			return false

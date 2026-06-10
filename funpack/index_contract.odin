@@ -736,8 +736,8 @@ Index_Module :: struct {
 
 // read_index_project reads the §14 project tree and emits the WHOLE Index
 // Contract NDJSON stream (spec §29 §2): the `project` record on line 1, then per
-// module a block of `decl` records in the fixed gate_units-style declaration
-// order (derive_decl_records). It is the end-to-end seam over EVERY project
+// module a block of `decl` records in the module's source-ordered declaration
+// sequence (derive_decl_records). It is the end-to-end seam over EVERY project
 // source: it builds ONE project-wide module index (build_module_index_typed, the
 // run_project_pipeline precedent) so a multi-module tree (the arena example:
 // arena_world + the arena seam + arena_game) types cross-module, then derives
@@ -908,7 +908,8 @@ entrypoint_module_name :: proc(root: string) -> string {
 
 // emit_index_stream concatenates the whole Index Contract NDJSON stream from the
 // compiled modules: the `project` record line first, then per module a block of
-// `decl` record lines in the fixed gate_units-style order (derive_decl_records).
+// `decl` record lines in the module's source-ordered declaration sequence
+// (derive_decl_records).
 // The modules emit in the order order_index_modules pinned — entrypoint module
 // first, then the remaining in sources order — and each decl is qualified by its
 // §15 module name (qualify_decl), so a multi-module stream's qualified_names are
@@ -941,7 +942,7 @@ emit_index_stream :: proc(
 total_decl_count :: proc(modules: []Index_Module) -> int {
 	total := 0
 	for m in modules {
-		total += decl_count(m.typed.ast)
+		total += len(m.typed.ast.decls)
 	}
 	return total
 }

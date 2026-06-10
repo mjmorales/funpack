@@ -52,43 +52,50 @@ Gate_Unit :: struct {
 	body: []Statement,
 }
 
-// gate_units collects every declaration body the gates score, in a fixed
-// order — tests, then top-level fns, then queries, then behavior steps. The
-// order is stable so a multi-violation source always reports the same first offender.
-// A behavior step's unit name is the behavior's own name, not the reserved
-// `step`, so the diagnostic anchors on the behavior the author wrote. An
-// `extern fn` (§26) has NO body — its implementation is the engine's, not the
-// source's — so it is not a code unit the structural gates score: skipping it
-// keeps the §17 seam's two body-less accessors (`extern fn arena_spawns`,
-// `extern fn arena`) from colliding on the duplication gate (two empty bodies
-// hash identically), which would be a false positive since neither carries code.
-// A HOLED fn or behavior step (§05 §2: `@stub(…)` stands in body position) is
-// body-less for the same reason — the hole replaces the statement sequence — so
-// it is skipped on the same grounds: two holes in one module must not collide
-// on the duplication gate (dev mode compiles holes; only release bans them).
+// gate_units collects every declaration body the gates score, in the Ast's
+// source-ordered declaration sequence — the same order the index derivation
+// and the release walkers read — so a multi-violation source always reports
+// the same first offender, and that offender matches index order. Only the
+// body-bearing kinds contribute units (test, fn, query, behavior step); the
+// body-less kinds are skipped. A behavior step's unit name is the behavior's
+// own name, not the reserved `step`, so the diagnostic anchors on the
+// behavior the author wrote. An `extern fn` (§26) has NO body — its
+// implementation is the engine's, not the source's — so it is not a code unit
+// the structural gates score: skipping it keeps the §17 seam's two body-less
+// accessors (`extern fn arena_spawns`, `extern fn arena`) from colliding on
+// the duplication gate (two empty bodies hash identically), which would be a
+// false positive since neither carries code. A HOLED fn or behavior step
+// (§05 §2: `@stub(…)` stands in body position) is body-less for the same
+// reason — the hole replaces the statement sequence — so it is skipped on the
+// same grounds: two holes in one module must not collide on the duplication
+// gate (dev mode compiles holes; only release bans them).
 gate_units :: proc(ast: Ast) -> []Gate_Unit {
-	units := make([dynamic]Gate_Unit, 0, len(ast.tests) + len(ast.fns) + len(ast.queries) + len(ast.behaviors), context.temp_allocator)
-	for test in ast.tests {
-		append(&units, Gate_Unit{name = test.name, body = test.body})
-	}
-	for fn in ast.fns {
-		if fn.is_extern || fn.holed {
-			continue
+	units := make([dynamic]Gate_Unit, 0, len(ast.decls), context.temp_allocator)
+	for ref in ast.decls {
+		#partial switch ref.kind {
+		case .Test:
+			test := ast.tests[ref.index]
+			append(&units, Gate_Unit{name = test.name, body = test.body})
+		case .Fn:
+			fn := ast.fns[ref.index]
+			if fn.is_extern || fn.holed {
+				continue
+			}
+			append(&units, Gate_Unit{name = fn.name, body = fn.body})
+		case .Query:
+			// A query body is a code unit like a fn body — the §01 P5 no-per-site-
+			// waiver rule holds it to the same fixed budgets. The grammar admits no
+			// body-position hole on a query (fun.ebnf §7: QueryDecl takes a Block,
+			// never a StubExpr), so there is no holed-skip arm here.
+			query := ast.queries[ref.index]
+			append(&units, Gate_Unit{name = query.name, body = query.body})
+		case .Behavior:
+			behavior := ast.behaviors[ref.index]
+			if behavior.step.holed {
+				continue
+			}
+			append(&units, Gate_Unit{name = behavior.name, body = behavior.step.body})
 		}
-		append(&units, Gate_Unit{name = fn.name, body = fn.body})
-	}
-	for query in ast.queries {
-		// A query body is a code unit like a fn body — the §01 P5 no-per-site-
-		// waiver rule holds it to the same fixed budgets. The grammar admits no
-		// body-position hole on a query (fun.ebnf §7: QueryDecl takes a Block,
-		// never a StubExpr), so there is no holed-skip arm here.
-		append(&units, Gate_Unit{name = query.name, body = query.body})
-	}
-	for behavior in ast.behaviors {
-		if behavior.step.holed {
-			continue
-		}
-		append(&units, Gate_Unit{name = behavior.name, body = behavior.step.body})
 	}
 	return units[:]
 }
@@ -97,62 +104,71 @@ gate_units :: proc(ast: Ast) -> []Gate_Unit {
 // a holed fn or behavior step (the body-position FnBody hole) OR any
 // declaration whose expression trees carry a §15 StubExpr expression-position
 // hole (a field default, a fn/step body, a `let` initializer, a test body).
-// Declarations walk in the fixed derive_decl_records per-kind order (data →
-// enum → thing → signal → fn → query → behavior → let → test; a pipeline carries
-// no expression), mirroring release_debug_decl, so a multi-hole source always
-// names the same first offender deterministically. It is the pure-AST half of
-// the §29 §4 release hole-ban ("you cannot ship a hole"): the verdict is a
-// function of the AST alone, and the CALLER (stage_build) supplies the mode —
-// in dev the finder is never consulted, under --release any hit is a compile
-// error. The returned declaration name is the behavior's own name for a holed
-// step (the diagnostic anchor, never the reserved `step`).
+// Declarations walk in the Ast's source-ordered declaration sequence — the
+// same order derive_decl_records emits and release_debug_decl walks — so a
+// multi-hole source always names the same first offender deterministically,
+// and that offender is the first holed declaration in INDEX order. It is the
+// pure-AST half of the §29 §4 release hole-ban ("you cannot ship a hole"):
+// the verdict is a function of the AST alone, and the CALLER (stage_build)
+// supplies the mode — in dev the finder is never consulted, under --release
+// any hit is a compile error. The returned declaration name is the behavior's
+// own name for a holed step (the diagnostic anchor, never the reserved
+// `step`). The switch is total over Ast_Decl_Kind, so a new declaration kind is a
+// visible compile gap here, never a silently-unwalked hole position.
 release_holed_decl :: proc(ast: Ast) -> (declaration: string, holed: bool) {
-	for decl in ast.datas {
-		if fields_hold_stub(decl.fields) {
-			return decl.name, true
-		}
-	}
-	for decl in ast.enums {
-		if variants_hold_stub(decl.variants) {
-			return decl.name, true
-		}
-	}
-	for decl in ast.things {
-		if fields_hold_stub(decl.fields) {
-			return decl.name, true
-		}
-	}
-	for decl in ast.signals {
-		if fields_hold_stub(decl.fields) {
-			return decl.name, true
-		}
-	}
-	for fn in ast.fns {
-		if fn_holds_stub(fn) {
-			return fn.name, true
-		}
-	}
-	for query in ast.queries {
-		// A query admits no body-position hole (fun.ebnf §7), but a §15
-		// StubExpr expression-position hole may stand in any body expression —
-		// the same release ban applies, so the body walk runs here too.
-		if body_holds_stub(query.body) {
-			return query.name, true
-		}
-	}
-	for behavior in ast.behaviors {
-		if fn_holds_stub(behavior.step) {
-			return behavior.name, true
-		}
-	}
-	for decl in ast.lets {
-		if expr_holds_stub(decl.value) {
-			return decl.name, true
-		}
-	}
-	for decl in ast.tests {
-		if body_holds_stub(decl.body) {
-			return decl.name, true
+	for ref in ast.decls {
+		switch ref.kind {
+		case .Data:
+			decl := ast.datas[ref.index]
+			if fields_hold_stub(decl.fields) {
+				return decl.name, true
+			}
+		case .Enum:
+			decl := ast.enums[ref.index]
+			if variants_hold_stub(decl.variants) {
+				return decl.name, true
+			}
+		case .Thing:
+			decl := ast.things[ref.index]
+			if fields_hold_stub(decl.fields) {
+				return decl.name, true
+			}
+		case .Signal:
+			decl := ast.signals[ref.index]
+			if fields_hold_stub(decl.fields) {
+				return decl.name, true
+			}
+		case .Fn:
+			fn := ast.fns[ref.index]
+			if fn_holds_stub(fn) {
+				return fn.name, true
+			}
+		case .Query:
+			// A query admits no body-position hole (fun.ebnf §7), but a §15
+			// StubExpr expression-position hole may stand in any body expression —
+			// the same release ban applies, so the body walk runs here too.
+			query := ast.queries[ref.index]
+			if body_holds_stub(query.body) {
+				return query.name, true
+			}
+		case .Behavior:
+			behavior := ast.behaviors[ref.index]
+			if fn_holds_stub(behavior.step) {
+				return behavior.name, true
+			}
+		case .Pipeline:
+			// A pipeline declares stage names only — no expression position, so
+			// it can never hole.
+		case .Let:
+			decl := ast.lets[ref.index]
+			if expr_holds_stub(decl.value) {
+				return decl.name, true
+			}
+		case .Test:
+			decl := ast.tests[ref.index]
+			if body_holds_stub(decl.body) {
+				return decl.name, true
+			}
 		}
 	}
 	return "", false
@@ -313,53 +329,62 @@ expr_holds_stub :: proc(expr: Expr) -> bool {
 // §28 §4), the exact sibling of release_holed_decl: the verdict is a function
 // of the AST alone, and the CALLER (stage_build) supplies the mode — in dev
 // the finder is never consulted, under --release any hit is a compile error.
-// Declarations walk in the fixed derive_decl_records per-kind order (data →
-// enum → thing → signal → fn → query → behavior → pipeline → let), so a
-// multi-probe source always names the same first offender deterministically.
+// Declarations walk in the Ast's source-ordered declaration sequence — the
+// same order derive_decl_records emits and release_holed_decl walks — so a
+// multi-probe source always names the same first offender deterministically,
+// and that offender is the first probed declaration in INDEX order. A test
+// block is skipped: the parser attaches no probes to a test (§05 §5), so it
+// has nothing to check.
 release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
-	for decl in ast.datas {
-		if len(decl.probes) > 0 {
-			return decl.name, true
-		}
-	}
-	for decl in ast.enums {
-		if len(decl.probes) > 0 {
-			return decl.name, true
-		}
-	}
-	for decl in ast.things {
-		if len(decl.probes) > 0 {
-			return decl.name, true
-		}
-	}
-	for decl in ast.signals {
-		if len(decl.probes) > 0 {
-			return decl.name, true
-		}
-	}
-	for decl in ast.fns {
-		if len(decl.probes) > 0 {
-			return decl.name, true
-		}
-	}
-	for decl in ast.queries {
-		if len(decl.probes) > 0 {
-			return decl.name, true
-		}
-	}
-	for decl in ast.behaviors {
-		if len(decl.probes) > 0 {
-			return decl.name, true
-		}
-	}
-	for decl in ast.pipelines {
-		if len(decl.probes) > 0 {
-			return decl.name, true
-		}
-	}
-	for decl in ast.lets {
-		if len(decl.probes) > 0 {
-			return decl.name, true
+	for ref in ast.decls {
+		switch ref.kind {
+		case .Data:
+			decl := ast.datas[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Enum:
+			decl := ast.enums[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Thing:
+			decl := ast.things[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Signal:
+			decl := ast.signals[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Fn:
+			decl := ast.fns[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Query:
+			decl := ast.queries[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Behavior:
+			decl := ast.behaviors[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Pipeline:
+			decl := ast.pipelines[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Let:
+			decl := ast.lets[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
+		case .Test:
+			// The parser attaches no probes to a test block — nothing to check.
 		}
 	}
 	return "", false
