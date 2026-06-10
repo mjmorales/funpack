@@ -106,6 +106,32 @@ emit_expr :: proc(b: ^strings.Builder, expr: Expr) {
 		emit_tuple(b, e)
 	case ^If_Expr:
 		emit_if(b, e)
+	case ^Stub_Expr:
+		emit_stub(b, e)
+	}
+}
+
+// emit_stub serializes a §05 §2 expression-position typed hole as a `stub`
+// node — `node stub TYPE has_fallback child_count`, the declared T spelled
+// like every field/param type (type_ref_string), with the fallback
+// approximation subtree as the single child of the two-argument form
+// (mirroring `variant`'s has_payload + children shape). Like emit_tuple and
+// emit_if, the artifact-format §2.7 ratification of the `stub` node KIND (a
+// closed set, so a new kind is a schema-version bump) lands with the
+// hole-carry seam that first runs a hole live in the runtime; this grammar
+// seam emits the structurally-sound node so the body walk stays total and the
+// build's complete Expr switch is exhaustive. A bare hole has 0 children —
+// its dev semantics is the fail-closed no-value outcome (eval_stub_hole), and
+// it can never reach a RELEASE artifact (the §29 §4 hole-ban refuses the
+// build first).
+emit_stub :: proc(b: ^strings.Builder, e: ^Stub_Expr) {
+	strings.write_string(b, "node stub ")
+	strings.write_string(b, type_ref_string(e.hole_type))
+	strings.write_string(b, e.has_fallback ? " true " : " false ")
+	strings.write_int(b, e.has_fallback ? 1 : 0)
+	emit_line(b, "")
+	if e.has_fallback {
+		emit_expr(b, e.fallback)
 	}
 }
 

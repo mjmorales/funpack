@@ -85,26 +85,209 @@ gate_units :: proc(ast: Ast) -> []Gate_Unit {
 }
 
 // release_holed_decl returns the first §05 typed-hole declaration in one AST —
-// a holed fn or a holed behavior step, in declaration order (fns first, then
-// behaviors, mirroring gate_units' stable order so a multi-hole source always
-// names the same first offender). It is the pure-AST half of the §29 §4
-// release hole-ban ("you cannot ship a hole"): the verdict is a function of
-// the AST alone, and the CALLER (stage_build) supplies the mode — in dev the
-// finder is never consulted, under --release any hit is a compile error. The
-// returned declaration name is the behavior's own name for a holed step (the
-// diagnostic anchor, never the reserved `step`).
+// a holed fn or behavior step (the body-position FnBody hole) OR any
+// declaration whose expression trees carry a §15 StubExpr expression-position
+// hole (a field default, a fn/step body, a `let` initializer, a test body).
+// Declarations walk in the fixed derive_decl_records per-kind order (data →
+// enum → thing → signal → fn → behavior → let → test; a pipeline carries no
+// expression), mirroring release_debug_decl, so a multi-hole source always
+// names the same first offender deterministically. It is the pure-AST half of
+// the §29 §4 release hole-ban ("you cannot ship a hole"): the verdict is a
+// function of the AST alone, and the CALLER (stage_build) supplies the mode —
+// in dev the finder is never consulted, under --release any hit is a compile
+// error. The returned declaration name is the behavior's own name for a holed
+// step (the diagnostic anchor, never the reserved `step`).
 release_holed_decl :: proc(ast: Ast) -> (declaration: string, holed: bool) {
+	for decl in ast.datas {
+		if fields_hold_stub(decl.fields) {
+			return decl.name, true
+		}
+	}
+	for decl in ast.enums {
+		if variants_hold_stub(decl.variants) {
+			return decl.name, true
+		}
+	}
+	for decl in ast.things {
+		if fields_hold_stub(decl.fields) {
+			return decl.name, true
+		}
+	}
+	for decl in ast.signals {
+		if fields_hold_stub(decl.fields) {
+			return decl.name, true
+		}
+	}
 	for fn in ast.fns {
-		if fn.holed {
+		if fn_holds_stub(fn) {
 			return fn.name, true
 		}
 	}
 	for behavior in ast.behaviors {
-		if behavior.step.holed {
+		if fn_holds_stub(behavior.step) {
 			return behavior.name, true
 		}
 	}
+	for decl in ast.lets {
+		if expr_holds_stub(decl.value) {
+			return decl.name, true
+		}
+	}
+	for decl in ast.tests {
+		if body_holds_stub(decl.body) {
+			return decl.name, true
+		}
+	}
 	return "", false
+}
+
+// fn_holds_stub reports whether a fn / behavior-step declaration carries a §05
+// typed hole in EITHER position: the body-position FnBody hole the parser
+// records (Fn_Node.holed — its fallback is part of the hole, never a separate
+// verdict) or a §15 StubExpr expression-position hole anywhere in its intact
+// statement body. This is the per-decl verdict the release hole-ban and the
+// §29 §2 `stub` index field both derive from, so the two surfaces can never
+// disagree on what counts as a hole.
+fn_holds_stub :: proc(fn: Fn_Node) -> bool {
+	if fn.holed {
+		return true
+	}
+	return body_holds_stub(fn.body)
+}
+
+// body_holds_stub folds the expression-hole scan over a statement body,
+// descending an `if` guard's condition and its nested block so a hole under
+// an early-return guard (or inside a test's assert) is still found.
+body_holds_stub :: proc(body: []Statement) -> bool {
+	for stmt in body {
+		switch s in stmt {
+		case Let_Node:
+			if expr_holds_stub(s.value) {
+				return true
+			}
+		case Assert_Node:
+			if expr_holds_stub(s.expr) {
+				return true
+			}
+		case Return_Node:
+			if expr_holds_stub(s.value) {
+				return true
+			}
+		case If_Node:
+			if expr_holds_stub(s.cond) || body_holds_stub(s.body) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fields_hold_stub reports whether any field default of a data/thing/signal
+// declaration carries an expression-position hole. A defaulted field is the
+// only expression position those declarations own; default is meaningless
+// when has_default is false (Field_Decl), so only set defaults are scanned.
+fields_hold_stub :: proc(fields: []Field_Decl) -> bool {
+	for field in fields {
+		if field.has_default && expr_holds_stub(field.default) {
+			return true
+		}
+	}
+	return false
+}
+
+// variants_hold_stub reports whether any struct-payload variant field default
+// of an enum declaration carries an expression-position hole — the one
+// expression position an enum declaration owns (a plain or tuple-payload
+// variant carries types only).
+variants_hold_stub :: proc(variants: []Variant_Decl) -> bool {
+	for variant in variants {
+		if fields_hold_stub(variant.fields) {
+			return true
+		}
+	}
+	return false
+}
+
+// expr_holds_stub reports whether an expression tree contains a §05 §2
+// expression-position typed hole (grammar/fun.ebnf §15: StubExpr is an Atom).
+// It mirrors the Expr union arm-for-arm so a new expression form is a visible
+// compile gap here, not a silently-unwalked branch — the same totality the
+// gate walks keep. A Stub_Expr node is itself the verdict (its fallback is
+// part of the hole, never a separate finding).
+expr_holds_stub :: proc(expr: Expr) -> bool {
+	switch e in expr {
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
+		return false
+	case ^Stub_Expr:
+		return true
+	case ^Call_Expr:
+		if expr_holds_stub(e.callee) {
+			return true
+		}
+		for arg in e.args {
+			if expr_holds_stub(arg) {
+				return true
+			}
+		}
+	case ^Member_Expr:
+		return expr_holds_stub(e.receiver)
+	case ^Variant_Expr:
+		for arg in e.payload {
+			if expr_holds_stub(arg) {
+				return true
+			}
+		}
+		for field in e.fields {
+			if expr_holds_stub(field.value) {
+				return true
+			}
+		}
+	case ^Record_Expr:
+		for field in e.fields {
+			if expr_holds_stub(field.value) {
+				return true
+			}
+		}
+	case ^List_Expr:
+		for element in e.elements {
+			if expr_holds_stub(element) {
+				return true
+			}
+		}
+	case ^Lambda_Expr:
+		return expr_holds_stub(e.body)
+	case ^Unary_Expr:
+		return expr_holds_stub(e.operand)
+	case ^Binary_Expr:
+		return expr_holds_stub(e.lhs) || expr_holds_stub(e.rhs)
+	case ^With_Expr:
+		if expr_holds_stub(e.base) {
+			return true
+		}
+		for field in e.fields {
+			if expr_holds_stub(field.value) {
+				return true
+			}
+		}
+	case ^Match_Expr:
+		if expr_holds_stub(e.scrutinee) {
+			return true
+		}
+		for arm in e.arms {
+			if expr_holds_stub(arm.body) {
+				return true
+			}
+		}
+	case ^Tuple_Expr:
+		for element in e.elements {
+			if expr_holds_stub(element) {
+				return true
+			}
+		}
+	case ^If_Expr:
+		return expr_holds_stub(e.cond) || expr_holds_stub(e.then_branch) || expr_holds_stub(e.else_branch)
+	}
+	return false
 }
 
 // release_debug_decl returns the first declaration carrying a §05 §5 debug
@@ -371,6 +554,12 @@ arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 		if err := arity_walk_expr(e.else_branch); err != .None {
 			return err
 		}
+	case ^Stub_Expr:
+		// A §05 §2 expression-position hole hosts a nested lambda only through
+		// its fallback approximation; a bare hole hosts nothing.
+		if e.has_fallback {
+			return arity_walk_expr(e.fallback)
+		}
 	}
 	return .None
 }
@@ -475,6 +664,13 @@ count_short_circuit :: proc(expr: Expr) -> int {
 		count += count_short_circuit(e.cond)
 		count += count_short_circuit(e.then_branch)
 		count += count_short_circuit(e.else_branch)
+	case ^Stub_Expr:
+		// A §05 §2 expression hole's fallback approximation is real dev code,
+		// so a short-circuit buried in it still counts; a bare hole decides
+		// nothing.
+		if e.has_fallback {
+			count += count_short_circuit(e.fallback)
+		}
 	}
 	return count
 }
@@ -957,6 +1153,19 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 		strings.write_byte(b, ' ')
 		canon_expr(b, e.else_branch, alpha)
 		strings.write_byte(b, ')')
+	case ^Stub_Expr:
+		// A §05 §2 expression-position hole canonicalizes by its kind tag, its
+		// declared T (the syntactic spelling — two holes of different type are
+		// structurally different), and its fallback subtree when present, so a
+		// holed expression never collides with intact code and two unlike
+		// holes never collide with each other.
+		strings.write_string(b, "(stub ")
+		strings.write_string(b, type_ref_string(e.hole_type))
+		if e.has_fallback {
+			strings.write_byte(b, ' ')
+			canon_expr(b, e.fallback, alpha)
+		}
+		strings.write_byte(b, ')')
 	case nil:
 		strings.write_string(b, "(nil)")
 	}
@@ -1338,6 +1547,14 @@ match_walk_expr :: proc(expr: Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 			return err
 		}
 		return match_walk_expr(e.else_branch, sets)
+	case ^Stub_Expr:
+		// A match buried in a §05 §2 expression hole's fallback approximation
+		// is still checked for exhaustiveness — the fallback runs in dev, so
+		// it is never exempt from the gate. A bare hole hosts nothing.
+		if e.has_fallback {
+			return match_walk_expr(e.fallback, sets)
+		}
+		return .None
 	}
 	return .None
 }

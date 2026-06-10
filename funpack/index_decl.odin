@@ -27,11 +27,14 @@
 //     target when its return writes the blackboard (contracts.odin
 //     writes_own_blackboard over write_of_return). [] for a fn/data or a
 //     non-mutating behavior.
-//   - stub           — the §05 §2 typed-hole flag the parser records on a
-//     body-bearing fn / behavior-step (Fn_Node.holed): a `@stub(T)` /
-//     `@stub(T, fallback)` body emits true. A body-less decl and a test block
-//     have no body position to hole (FnBody ::= Block | StubExpr is the only
-//     hole production), so they emit false.
+//   - stub           — the §05 §2 typed-hole verdict over BOTH hole positions
+//     (fn_holds_stub, gates.odin — the same per-decl verdict the release
+//     hole-ban reads): the body-position flag the parser records on a
+//     body-bearing fn / behavior-step (Fn_Node.holed) OR a §15 StubExpr
+//     expression-position hole anywhere in the declaration's expression trees
+//     (a fn/step/test body, a `let` initializer, a field default). A decl
+//     with no expression position (an empty data/thing/signal, an enum with
+//     no struct-payload defaults, a pipeline) emits false.
 //   - todo           — the §05 §2 @todo notes the parser records on every
 //     directive-carrying declaration node (node.todos): true exactly when at
 //     least one `@todo("msg", window)` is attached (todo_flag). The record
@@ -67,16 +70,16 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 	records := make([dynamic]Decl_Record, 0, decl_count(ast), context.temp_allocator)
 
 	for decl in ast.datas {
-		append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
+		append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
 	}
 	for decl in ast.enums {
-		append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
+		append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, variants_hold_stub(decl.variants)))
 	}
 	for decl in ast.things {
-		append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
+		append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
 	}
 	for decl in ast.signals {
-		append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
+		append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields)))
 	}
 	for decl in ast.fns {
 		append(&records, fn_decl_record(module, decl))
@@ -85,10 +88,12 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 		append(&records, behavior_decl_record(module, decl, typed.env, flat.routes))
 	}
 	for decl in ast.pipelines {
-		append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
+		// A pipeline declares stage names only — no expression position, so it
+		// can never hole.
+		append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, false))
 	}
 	for decl in ast.lets {
-		append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
+		append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, expr_holds_stub(decl.value)))
 	}
 	for decl in ast.tests {
 		append(&records, test_decl_record(module, decl))
@@ -118,10 +123,14 @@ decl_count :: proc(ast: Ast) -> int {
 // data/enum/thing/signal/pipeline/let. It carries qualified_name/kind/span/
 // doc/gtags, the derived @todo flag (todo_flag over the parser's node.todos,
 // §05 §2) and debug-probe names (probe_names over node.probes, §05 §5), plus
-// the constant directive and behavior-scoped (emits/consumes/calls/mut_data)
-// fields: a body-less decl has no body position to hole (so stub is false,
-// §05 §2), emits no signal, makes no call, mutates no thing, and has
-// dup_class 0 (no body to hash, the gate_units extern-skip rationale).
+// the constant behavior-scoped (emits/consumes/calls/mut_data) fields: a
+// body-less decl emits no signal, makes no call, mutates no thing, and has
+// dup_class 0 (no body to hash, the gate_units extern-skip rationale). It has
+// no BODY position to hole, but its expression positions (a `let`
+// initializer, a field default) may carry a §15 StubExpr expression-position
+// hole, so the caller derives `stub` from the kind's own expression surface
+// (expr_holds_stub / fields_hold_stub / variants_hold_stub, gates.odin — the
+// same walkers the release hole-ban reads).
 body_less_decl :: proc(
 	module: string,
 	name: string,
@@ -131,6 +140,7 @@ body_less_decl :: proc(
 	gtags: []string,
 	todos: []Todo_Node,
 	probes: []Debug_Probe,
+	stub: bool,
 ) -> Decl_Record {
 	return Decl_Record {
 		schema_version = INDEX_SCHEMA_VERSION,
@@ -140,7 +150,7 @@ body_less_decl :: proc(
 		span           = span,
 		doc            = doc,
 		gtags          = gtags,
-		stub           = false,
+		stub           = stub,
 		todo           = todo_flag(todos),
 		debug          = probe_names(probes),
 		emits          = empty_strings(),
@@ -155,9 +165,12 @@ body_less_decl :: proc(
 // fn, Extern_Fn for an `is_extern` native-boundary fn. A bodied fn carries its
 // dup_class (the gate hash over its body) and its calls graph; an extern fn has
 // NO body, so it carries dup_class 0 and empty calls — the same extern-skip the
-// duplication gate applies so two empty bodies never collide. stub reads the
-// parser's holed flag (§05 §2): a `@stub(T)` / `@stub(T, fallback)` body emits
-// true, an intact (or extern) fn false. Its todo flag is the derived §05 §2
+// duplication gate applies so two empty bodies never collide. stub is the
+// per-decl §05 §2 hole verdict over BOTH positions (fn_holds_stub, gates.odin
+// — the same verdict the release hole-ban reads): a `@stub(T)` / `@stub(T,
+// fallback)` body emits true, and so does an intact body carrying a §15
+// StubExpr expression-position hole; an intact, hole-free (or extern) fn
+// emits false. Its todo flag is the derived §05 §2
 // @todo presence (todo_flag over decl.todos) and its debug field is the
 // derived §05 §5 probe-name list (probe_names over decl.probes). A fn is not
 // a pipeline-slot behavior, so emits/consumes/mut_data stay empty.
@@ -177,7 +190,7 @@ fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 		span           = decl.line,
 		doc            = decl.doc,
 		gtags          = decl.gtags,
-		stub           = decl.holed,
+		stub           = fn_holds_stub(decl),
 		todo           = todo_flag(decl.todos),
 		debug          = probe_names(decl.probes),
 		emits          = empty_strings(),
@@ -192,9 +205,11 @@ fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 // calls come from its reserved `step` body; its emits/consumes come from the
 // §04 signal routes (the behavior at a producer endpoint emits that signal, at a
 // consumer endpoint consumes it); its mut_data is its `on Thing` target when its
-// step return writes that blackboard (contracts.odin). Its stub reads the step's
-// holed flag (§05 §2) — a behavior whose reserved `step` body is a `@stub` hole
-// is the holed declaration the index reports. Its todo flag is the derived
+// step return writes that blackboard (contracts.odin). Its stub is the step's
+// per-decl §05 §2 hole verdict over BOTH positions (fn_holds_stub) — a behavior
+// whose reserved `step` body IS a `@stub` hole, or whose intact step body
+// carries an expression-position hole, is the holed declaration the index
+// reports. Its todo flag is the derived
 // §05 §2 @todo presence (todo_flag over decl.todos — the behavior's own
 // notes, not its step's) and its debug field is the derived §05 §5 probe-name
 // list (probe_names over decl.probes — the behavior is the §28 §4 placement
@@ -215,7 +230,7 @@ behavior_decl_record :: proc(
 		span           = decl.line,
 		doc            = decl.doc,
 		gtags          = decl.gtags,
-		stub           = decl.step.holed,
+		stub           = fn_holds_stub(decl.step),
 		todo           = todo_flag(decl.todos),
 		debug          = probe_names(decl.probes),
 		emits          = decl_behavior_emits(decl.name, routes),
@@ -229,9 +244,11 @@ behavior_decl_record :: proc(
 // test_decl_record builds the Decl_Record for a test block: its dup_class and
 // calls come from its assert/let body. A test occupies no pipeline slot and
 // mutates no thing, so emits/consumes/mut_data stay empty; its body grammar
-// admits no `@stub` hole (only fn bodies do, §05 §2), so stub stays false, and
-// the parser attaches no @todo notes and no debug probes to a test block, so
-// todo stays false and debug [].
+// admits no BODY-position `@stub` hole (FnBody is a fn production, §05 §2),
+// but a §15 StubExpr expression-position hole may stand in any assert/let
+// expression, so stub derives from the body walk (body_holds_stub, gates.odin
+// — the same walker the release hole-ban reads). The parser attaches no @todo
+// notes and no debug probes to a test block, so todo stays false and debug [].
 test_decl_record :: proc(module: string, decl: Test_Node) -> Decl_Record {
 	return Decl_Record {
 		schema_version = INDEX_SCHEMA_VERSION,
@@ -241,7 +258,7 @@ test_decl_record :: proc(module: string, decl: Test_Node) -> Decl_Record {
 		span           = decl.line,
 		doc            = decl.doc,
 		gtags          = empty_strings(),
-		stub           = false,
+		stub           = body_holds_stub(decl.body),
 		todo           = false,
 		debug          = empty_strings(),
 		emits          = empty_strings(),
@@ -415,6 +432,13 @@ calls_walk_expr :: proc(expr: Expr, calls: ^[dynamic]string) {
 		calls_walk_expr(e.cond, calls)
 		calls_walk_expr(e.then_branch, calls)
 		calls_walk_expr(e.else_branch, calls)
+	case ^Stub_Expr:
+		// A §05 §2 expression hole's fallback approximation runs in dev, so a
+		// call inside it is a real edge of the §29 §2 calls graph; a bare hole
+		// hosts no call.
+		if e.has_fallback {
+			calls_walk_expr(e.fallback, calls)
+		}
 	}
 }
 

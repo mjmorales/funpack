@@ -691,6 +691,142 @@ test_parse_non_stub_directive_in_body_position_rejected :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_stub_expr_atom_bare :: proc(t: ^testing.T) {
+	// A typed hole may stand in EXPRESSION position (spec §05 §2; fun.ebnf §15:
+	// StubExpr is an Atom): `base + @stub(Fixed)` parses the hole as the
+	// binary's rhs operand, the enclosing fn stays INTACT (holed false, body
+	// present), and the bare form carries no fallback.
+	source := "fn boost(base: Fixed) -> Fixed {\n  return base + @stub(Fixed)\n}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.fns), 1)
+	f := ast.fns[0]
+	testing.expect_value(t, f.holed, false)
+	testing.expect_value(t, len(f.body), 1)
+	ret, is_return := f.body[0].(Return_Node)
+	testing.expect(t, is_return)
+	if !is_return {
+		return
+	}
+	binary, is_binary := ret.value.(^Binary_Expr)
+	testing.expect(t, is_binary)
+	if !is_binary {
+		return
+	}
+	hole, is_stub := binary.rhs.(^Stub_Expr)
+	testing.expect(t, is_stub)
+	if !is_stub {
+		return
+	}
+	testing.expect_value(t, hole.hole_type.name, "Fixed")
+	testing.expect_value(t, hole.has_fallback, false)
+}
+
+@(test)
+test_parse_stub_expr_atom_with_fallback :: proc(t: ^testing.T) {
+	// The two-argument expression form `@stub(T, fallback)` records the
+	// fallback approximation, here as a top-level `let` initializer — any
+	// expression position admits the Atom.
+	source := "let SPEED: Fixed = @stub(Fixed, 1.5)\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.lets), 1)
+	hole, is_stub := ast.lets[0].value.(^Stub_Expr)
+	testing.expect(t, is_stub)
+	if !is_stub {
+		return
+	}
+	testing.expect_value(t, hole.hole_type.name, "Fixed")
+	testing.expect_value(t, hole.has_fallback, true)
+	_, fallback_is_fixed := hole.fallback.(^Fixed_Lit_Expr)
+	testing.expect(t, fallback_is_fixed)
+}
+
+@(test)
+test_parse_stub_expr_atom_nested_positions :: proc(t: ^testing.T) {
+	// The StubExpr Atom rides the Pratt cascade like any other atom: holes
+	// nest inside a record literal's fields (one per field, bare and fallback
+	// forms side by side), proving the production composes rather than being a
+	// top-of-expression special case.
+	source := "fn place() -> Vec2 {\n  return Vec2{x: @stub(Fixed), y: @stub(Fixed, 1.0)}\n}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	ret, is_return := ast.fns[0].body[0].(Return_Node)
+	testing.expect(t, is_return)
+	if !is_return {
+		return
+	}
+	record, is_record := ret.value.(^Record_Expr)
+	testing.expect(t, is_record)
+	if !is_record {
+		return
+	}
+	testing.expect_value(t, len(record.fields), 2)
+	x_hole, x_is_stub := record.fields[0].value.(^Stub_Expr)
+	testing.expect(t, x_is_stub)
+	if x_is_stub {
+		testing.expect_value(t, x_hole.has_fallback, false)
+	}
+	y_hole, y_is_stub := record.fields[1].value.(^Stub_Expr)
+	testing.expect(t, y_is_stub)
+	if y_is_stub {
+		testing.expect_value(t, y_hole.has_fallback, true)
+	}
+}
+
+@(test)
+test_parse_stub_expr_atom_in_call_args :: proc(t: ^testing.T) {
+	// A hole standing as a call argument parses through CallArgs like any
+	// expression — `clamp(@stub(Fixed, 0.5), limit)` carries the hole at
+	// argument position 0.
+	source := "fn capped(limit: Fixed) -> Fixed {\n  return clamp(@stub(Fixed, 0.5), limit)\n}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	ret, is_return := ast.fns[0].body[0].(Return_Node)
+	testing.expect(t, is_return)
+	if !is_return {
+		return
+	}
+	call, is_call := ret.value.(^Call_Expr)
+	testing.expect(t, is_call)
+	if !is_call {
+		return
+	}
+	testing.expect_value(t, len(call.args), 2)
+	_, arg_is_stub := call.args[0].(^Stub_Expr)
+	testing.expect(t, arg_is_stub)
+}
+
+@(test)
+test_parse_non_stub_directive_in_expression_rejected :: proc(t: ^testing.T) {
+	// Only @stub names a value (spec §05: every other directive prefixes a
+	// declaration) — a `@doc(…)` in expression position is an Unexpected_Token
+	// in parse_stub_parts' name check, never silently accepted.
+	source := "fn boost() -> Fixed {\n  return @doc(\"not a value\")\n}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
+test_parse_stub_expr_missing_type_rejected :: proc(t: ^testing.T) {
+	// `@stub()` in expression position declares no T for the hole to ascribe —
+	// the hole type is mandatory in both positions (spec §05 §2).
+	source := "fn boost() -> Fixed {\n  return @stub()\n}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
+test_parse_stub_expr_missing_separator_rejected :: proc(t: ^testing.T) {
+	// The fallback is comma-separated from the declared T (fun.ebnf §15:
+	// StubExpr ::= '@stub' '(' Type (',' Expr)? ')') — two bare tokens inside
+	// the parens are an Unexpected_Token at the missing `)`.
+	source := "fn boost() -> Fixed {\n  return @stub(Fixed 1.0)\n}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
 test_parse_pipeline_ordered_named_stages :: proc(t: ^testing.T) {
 	// `pipeline Name { stage: [behaviors] … }` (spec §07 §1): stages keep
 	// source order, and each stage value is a behavior-name list.
