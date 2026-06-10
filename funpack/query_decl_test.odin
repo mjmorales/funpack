@@ -267,31 +267,81 @@ test_query_body_is_a_gate_unit :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_query_call_evaluates_over_fixture_view :: proc(t: ^testing.T) {
+test_query_call_evaluates_world_read :: proc(t: ^testing.T) {
 	// AC (evaluation): a test-position query call RUNS the query body. Before
 	// the find_user_callable seam the call compiled — call_check admits .Query
 	// at call position — but the evaluator's fn-only lookup missed it, so the
-	// assert failed COUNTED. The query folds a View.of fixture (the §08 read
-	// table materialized as rows) and both asserts pin exact equality on the
-	// folded value, so the report's pass count is the regression tripwire.
+	// assert failed COUNTED. The query reads the world through `all[T]` over
+	// the setup-seeded startup population (the §08 §3 spec-true read shape —
+	// a View[T] parameter on a query is the retired interim form, now the
+	// named Query_Param_Not_Value), and both asserts pin exact equality on
+	// the folded value, so the report's pass count is the regression tripwire.
 	report, err := run_test_pipeline(
 		"import engine.math.{Fixed, Vec2}\n" +
-		"import engine.world.View\n" +
+		"import engine.world.{Spawn}\n" +
 		"import engine.list.fold\n" +
 		"thing Enemy { cell: Vec2, hp: Fixed }\n" +
-		"@index(Enemy.cell)\n" +
-		"query total_hp(enemies: View[Enemy]) -> Fixed {\n" +
-		"  return fold(enemies, 0.0, fn(acc, e) { return acc + e.hp })\n" +
+		"fn setup() -> [Spawn] {\n" +
+		"  return [Spawn(Enemy{cell: Vec2{x: 1.0, y: 0.0}, hp: 3.0}), Spawn(Enemy{cell: Vec2{x: 2.0, y: 0.0}, hp: 4.0})]\n" +
 		"}\n" +
-		"test \"query folds the fixture rows\" {\n" +
-		"  let enemies = View.of([Enemy{cell: Vec2{x: 1.0, y: 0.0}, hp: 3.0}, Enemy{cell: Vec2{x: 2.0, y: 0.0}, hp: 4.0}])\n" +
-		"  assert total_hp(enemies) == 7.0\n" +
-		"  assert total_hp(View.of([Enemy{cell: Vec2{x: 5.0, y: 5.0}, hp: 1.0}])) == 1.0\n" +
+		"@index(Enemy.cell)\n" +
+		"query total_hp() -> Fixed {\n" +
+		"  return fold(all[Enemy], 0.0, fn(acc, e) { return acc + e.hp })\n" +
+		"}\n" +
+		"query scaled_hp(scale: Fixed) -> Fixed {\n" +
+		"  return total_hp() * scale\n" +
+		"}\n" +
+		"test \"query folds the world rows\" {\n" +
+		"  assert total_hp() == 7.0\n" +
+		"  assert scaled_hp(2.0) == 14.0\n" +
 		"}\n")
 	testing.expect_value(t, err, Pipeline_Error.None)
 	testing.expect_value(t, report.passed, 2)
 	testing.expect_value(t, report.failed, 0)
 	testing.expect_value(t, report.exit_code, 0)
+}
+
+@(test)
+test_query_param_not_value_named_verdict :: proc(t: ^testing.T) {
+	// AC (named diagnostic, spec §08 §3 "takes only value parameters"): a
+	// View[T], a Ref[T] (wrapped or bare), and a resource (Time/Rng) are each
+	// the named Query_Param_Not_Value — a query reads the world ONLY through
+	// `all[T]` and the combinators, and its memo identity is (version,
+	// params). (The walk also bans a function-typed param; the surface
+	// parameter grammar does not admit one today, so no fixture spells it.)
+	view_param := typecheck_query(t,
+		"import engine.world.View\n" +
+		"thing Enemy { hp: Fixed }\n" +
+		"query total_hp(enemies: View[Enemy]) -> Fixed {\n" +
+		"  return 0.0\n" +
+		"}\n")
+	testing.expect_value(t, view_param, Type_Error.Query_Param_Not_Value)
+	ref_param := typecheck_query(t,
+		"import engine.world.Ref\n" +
+		"thing Enemy { hp: Fixed }\n" +
+		"query target_hp(target: Ref[Enemy]) -> Fixed {\n" +
+		"  return 0.0\n" +
+		"}\n")
+	testing.expect_value(t, ref_param, Type_Error.Query_Param_Not_Value)
+	wrapped_ref := typecheck_query(t,
+		"import engine.world.Ref\n" +
+		"thing Enemy { hp: Fixed }\n" +
+		"query any_hp(targets: [Ref[Enemy]]) -> Fixed {\n" +
+		"  return 0.0\n" +
+		"}\n")
+	testing.expect_value(t, wrapped_ref, Type_Error.Query_Param_Not_Value)
+	time_param := typecheck_query(t,
+		"import engine.core.Time\n" +
+		"query elapsed(time: Time) -> Fixed {\n" +
+		"  return 0.0\n" +
+		"}\n")
+	testing.expect_value(t, time_param, Type_Error.Query_Param_Not_Value)
+	rng_param := typecheck_query(t,
+		"import engine.rand.Rng\n" +
+		"query roll(rng: Rng) -> Fixed {\n" +
+		"  return 0.0\n" +
+		"}\n")
+	testing.expect_value(t, rng_param, Type_Error.Query_Param_Not_Value)
 }
 
 @(test)

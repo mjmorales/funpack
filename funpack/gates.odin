@@ -37,6 +37,8 @@ Gate_Error :: enum {
 	Arity_Exceeded,         // a parameter list is longer than MAX_PARAM_ARITY
 	Non_Exhaustive_Match,   // a match leaves a variant of its scrutinee unhandled
 	Duplicate_Declaration,  // two declaration units normalize to the same AST hash
+	Query_Missing_Index,    // a query whose body runs a spatial combinator over all[T] without declaring @spatial(T.*) on that query (spec §08 §3: a query needing an index must declare it)
+	Query_Unused_Index,     // a declared @index/@spatial no read in the query's body uses — dead code (spec §08 §3 / §01 P5)
 }
 
 // Gate_Unit is one declaration body the structural gates score: a test
@@ -231,7 +233,7 @@ variants_hold_stub :: proc(variants: []Variant_Decl) -> bool {
 // part of the hole, never a separate finding).
 expr_holds_stub :: proc(expr: Expr) -> bool {
 	switch e in expr {
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^All_Expr:
 		return false
 	case ^Stub_Expr:
 		return true
@@ -414,6 +416,13 @@ gate_verdict :: proc(ast: Ast) -> Gate_Verdict {
 			return Gate_Verdict{err = err, declaration = unit.name}
 		}
 	}
+	// The §08 §3 index-requirement gate pairs each query's declared
+	// @index/@spatial set with its body's derived access pattern
+	// (query_index_gate.odin) — per-query, so it rides the same
+	// first-offender discipline as the per-unit budgets above.
+	if verdict := check_query_index_gate(ast); verdict.err != .None {
+		return verdict
+	}
 	if err := gate_duplication(units); err != .None {
 		return Gate_Verdict{err = err}
 	}
@@ -488,8 +497,8 @@ arity_walk_body :: proc(body: []Statement) -> Gate_Error {
 // bodies).
 arity_walk_expr :: proc(expr: Expr) -> Gate_Error {
 	switch e in expr {
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
-		// Leaf atoms host no sub-expressions.
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^All_Expr:
+		// Leaf atoms host no sub-expressions (`all[T]` carries only its type name).
 	case ^Call_Expr:
 		if err := arity_walk_expr(e.callee); err != .None {
 			return err
@@ -1186,6 +1195,13 @@ canon_expr :: proc(b: ^strings.Builder, expr: Expr, alpha: ^[dynamic]string) {
 			canon_expr(b, e.fallback, alpha)
 		}
 		strings.write_byte(b, ')')
+	case ^All_Expr:
+		// The §08 §3 world read canonicalizes by its kind tag and thing type
+		// name — a FREE name (a type, never a binding), so it keeps its
+		// spelling: two reads of different tables are structurally different.
+		strings.write_string(b, "(all ")
+		strings.write_string(b, e.thing)
+		strings.write_byte(b, ')')
 	case nil:
 		strings.write_string(b, "(nil)")
 	}
@@ -1479,7 +1495,7 @@ match_walk_body :: proc(body: []Statement, sets: []Closed_Variant_Set) -> Gate_E
 // here, not a silently-unwalked branch.
 match_walk_expr :: proc(expr: Expr, sets: []Closed_Variant_Set) -> Gate_Error {
 	switch e in expr {
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^All_Expr:
 		return .None
 	case ^Call_Expr:
 		if err := match_walk_expr(e.callee, sets); err != .None {

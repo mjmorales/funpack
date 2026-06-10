@@ -190,6 +190,12 @@ STDLIB_SURFACE := []Module_Surface{
 			{"is_empty", .Func},
 			{"len", .Func},
 			{"get", .Func},
+			// The §08 §3 spatial combinators ride this [T]-combinator surface
+			// (§26's engine.list owns the `[T]` combinators; their typing rule
+			// is spatial_combinator_check's call-site inference over the
+			// enclosing query's @spatial declaration, not a fixed signature).
+			{"within", .Func},
+			{"nearest_first", .Func},
 		},
 	},
 	{

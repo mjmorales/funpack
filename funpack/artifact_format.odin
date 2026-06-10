@@ -133,7 +133,13 @@ import "core:strings"
 // declared §05 §3 requirement. A query body is a Block by grammar (no
 // body-position hole), so its body run is the plain statement forest. A new
 // section and a new sub-record keyword are layout changes: 8 → 9 (§1).
-ARTIFACT_SCHEMA_VERSION :: 9
+//
+// v10 ratifies the §08 §3 world read `all[T]` as a §2.7 node KIND: `node all
+// THING 0` — a leaf carrying the read table's thing type name, the form a
+// spec-true query body reads the world through (value parameters only; the
+// View-parameter interim shape is retired by the same bump). A new node KIND
+// is a layout change: 9 → 10 (§1).
+ARTIFACT_SCHEMA_VERSION :: 10
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

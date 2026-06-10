@@ -68,7 +68,7 @@ test_index_sub_record_frames_under_lead_line_reader :: proc(t: ^testing.T) {
 	testing.expect(t, is_sub_record_line("index index Enemy cell"))
 	testing.expect(t, is_sub_record_line("index spatial Enemy pos"))
 	doc_text :=
-		"funpack-artifact 9\n" +
+		"funpack-artifact 10\n" +
 		"[queries 2]\n" +
 		"query near 1 return:Vec2 1 1 span:scratch:2\n" +
 		"param origin Vec2\n" +

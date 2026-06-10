@@ -1581,14 +1581,17 @@ find_tick_table :: proc(tables: []Tick_Table, thing: string) -> ^Tick_Table {
 
 // row_to_record lifts a committed/working Row's blackboard into the interpreter's
 // Record_Value so a `self` param (or a View element) reads its fields. Each
-// stored column lifts to its Value arm (an enum token becomes a Variant_Value),
-// and the record carries the thing type so a `with` reconstructs it.
-row_to_record :: proc(interp: ^Interp, row: Row) -> Value {
+// stored column lifts to its Value arm (an enum token becomes a Variant_Value).
+// `thing` tags the record with its table's type name where the caller knows it
+// (a View binding) — the §08 §3 spatial combinators resolve their measured
+// field by that tag; record equality never reads it (values_equal compares
+// fields alone), so a tagged and an untagged row stay value-equal.
+row_to_record :: proc(interp: ^Interp, row: Row, thing := "") -> Value {
 	fields := make(map[string]Value, interp.allocator)
 	for k, v in row.fields {
 		fields[k] = field_value_to_value(v)
 	}
-	return Record_Value{type_name = "", fields = fields}
+	return Record_Value{type_name = thing, fields = fields}
 }
 
 // view_rows_as_list reads a thing's rows as a List_Value of record values — the
@@ -1605,7 +1608,7 @@ view_rows_as_list :: proc(interp: ^Interp, thing: string) -> Value {
 	elements := make([]Value, view_count(view), interp.allocator)
 	for i in 0 ..< view_count(view) {
 		row, _ := view_at(view, i)
-		elements[i] = row_to_record(interp, row)
+		elements[i] = row_to_record(interp, row, thing)
 	}
 	return List_Value{elements = elements}
 }
