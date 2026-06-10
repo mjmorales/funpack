@@ -128,9 +128,10 @@ test_warden_debt_predicate_todo_or_debt_gtag :: proc(t: ^testing.T) {
 	testing.expect(t, !warden_debt_predicate(decls[0], "")) // stubbed but not debt
 	testing.expect(t, !warden_debt_predicate(decls[2], "")) // neither half
 
-	// The todo half: constant-false on every current tree (the parser does
-	// not yet admit @todo), but the predicate reads the contract field as
-	// defined — a decoded todo=true record is debt with no gtag needed.
+	// The todo half: the v3 producer derives the flag from parsed §05 §2
+	// @todo notes (todo_flag, index_decl.odin), and the predicate reads the
+	// contract field as defined — a decoded todo=true record is debt with no
+	// gtag needed.
 	todo_only := decl_record_fixture(.Fn)
 	todo_only.stub = false
 	todo_only.todo = true

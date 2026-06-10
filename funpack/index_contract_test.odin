@@ -320,7 +320,8 @@ test_index_contract_pong_double_emission_identical :: proc(t: ^testing.T) {
 // fixed gate_units-style order. These pin the live pong + snake decl set against
 // the golden source — representative decls' qualified_name/kind/span/emits/
 // consumes/calls/dup_class/mut_data plus the all-decls stub=false (neither
-// golden tree carries a @stub hole) / todo=false / debug=[] invariant — so the
+// golden tree carries a @stub hole) / todo=false (no @todo note) / debug=[]
+// (no probe) invariant — so the
 // contract reshape that added the decl record kind is proven against the real
 // tree, not a hand-shaped stub. SKIP-warn loudly (never silently pass) when the
 // sibling checkout is absent.
@@ -331,8 +332,9 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 	// `decl` line per declaration in fixed order. The decl-line count equals the
 	// derived record count (33 pong decls), every decl line carries the v3
 	// schema_version stamp with stub=false (no pong decl is holed), the
-	// unparsed @todo false, and the derived debug [] (no pong decl carries a
-	// probe), and the representative decls pin their derived projection.
+	// derived todo=false (no pong decl carries a @todo note), and the derived
+	// debug [] (no pong decl carries a probe), and the representative decls
+	// pin their derived projection.
 	stream, ok := pong_index_line()
 	if !ok {
 		return
@@ -349,8 +351,8 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 	for i in 1 ..< len(lines) {
 		decl := lines[i]
 		// Every decl line carries the bumped v3 stamp; stub is false on this
-		// hole-free tree, the unparsed @todo flag stays its mandatory-present
-		// false, and the DERIVED debug field is [] on this probe-free tree.
+		// hole-free tree, the DERIVED todo flag is false on this note-free
+		// tree, and the DERIVED debug field is [] on this probe-free tree.
 		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":3,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
@@ -374,8 +376,9 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	// The snake whole-stream NDJSON: line 1 is the `project` record, then one
 	// `decl` line per declaration (snake: 36 decls). Every decl line carries the
-	// v3 stamp with stub=false (no snake decl is holed), the unparsed @todo
-	// false, and the derived debug [] (no snake decl carries a probe); the
+	// v3 stamp with stub=false (no snake decl is holed), the derived todo=false
+	// (no snake decl carries a @todo note), and the derived debug [] (no snake
+	// decl carries a probe); the
 	// first data decl (Cell) and its kind are pinned against the golden source.
 	dir := resolve_snake_dir()
 	if !os.is_dir(dir) {
@@ -427,7 +430,8 @@ stream_has_decl :: proc(lines: []string, name_needle: string, field_needle: stri
 // tests do — they pin the SHAPE: leading schema_version stamp,
 // one-object-per-line NDJSON with a trailing LF, byte-identical double
 // emission, and the closed exact-match key set INCLUDING the stub/todo/debug
-// §05 directive fields at their empty values (mandatory-present, not omitted).
+// §05 directive fields at their empty values (mandatory-present, not omitted —
+// the hand-built record carries no hole, no @todo note, no probe).
 
 @(test)
 test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
@@ -511,8 +515,8 @@ test_index_decl_record_exact_key_set :: proc(t: ^testing.T) {
 // minimal_decl_record builds a hand-shaped decl record for the §29 §2 decl
 // shape tests: a populated record exercising every field's emission. The
 // stub/todo/debug §05 directive fields carry their empty values (false/false/[]
-// — the record is not holed and the parser does not yet fill todo/debug) so the
-// shape tests pin mandatory-present empties. Each slice field is temp-allocated
+// — the record is not holed, carries no @todo note, and carries no probe) so
+// the shape tests pin mandatory-present empties. Each slice field is temp-allocated
 // so the record outlives the constructor's frame.
 minimal_decl_record :: proc() -> Decl_Record {
 	gtags := make([]string, 1, context.temp_allocator)
