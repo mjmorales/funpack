@@ -1253,9 +1253,11 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 	case "atlas":
 		return eval_asset_constructor(ctx, env, e, "AtlasHandle")
 	}
-	// A call to a user-declared top-level fn (advance, goal_side, add_goal):
-	// resolve its body off the module and evaluate it against the arguments.
-	if fn, declared := find_user_fn(ctx.ast, name.name); declared {
+	// A call to a user-declared top-level fn (advance, goal_side, add_goal) or
+	// a §08 §3 query — call_check admits both kinds at call position, so the
+	// evaluator resolves both: the body comes off the module and runs against
+	// the arguments through the one eval_user_fn funnel.
+	if fn, declared := find_user_callable(ctx.ast, name.name); declared {
 		args := eval_args(ctx, env, e.args) or_return
 		return eval_user_fn(ctx, fn, args)
 	}
@@ -1301,6 +1303,35 @@ find_user_fn :: proc(ast: Ast, name: string) -> (fn: Fn_Node, found: bool) {
 	for decl in ast.fns {
 		if decl.name == name {
 			return decl, true
+		}
+	}
+	return Fn_Node{}, false
+}
+
+// find_user_callable resolves a name the typecheck side admits as a callable
+// term (name_check / call_check, .Fn or .Query): a top-level user fn first,
+// then a §08 §3 query projected onto the same Fn_Node window the typing seam
+// uses (query_as_fn), so the two sides resolve from one projection and can
+// never drift. Both kinds route through eval_user_fn — the single eval
+// funnel; a query body runs exactly like a fn body. Serves call position
+// (eval_call) and the bare-name combinator slot (apply_combinator); UFCS
+// stays on the fn-only find_user_fn, mirroring ufcs_method_check's .Fn-only
+// admission, so a query can never shadow a value method the typechecker
+// resolved.
+//
+// A query evaluates UNMEMOIZED here: §08 §3 within-tick memoization keys on
+// the immutable MVCC version, and the test interpreter defines no tick and
+// no version — a test block evaluates over View.of-style fixture values, so
+// there is no key to memoize on, and a query body is pure over its
+// arguments, so the result is identical either way. The memo is the
+// runtime's concern where the version exists.
+find_user_callable :: proc(ast: Ast, name: string) -> (fn: Fn_Node, found: bool) {
+	if declared_fn, declared := find_user_fn(ast, name); declared {
+		return declared_fn, true
+	}
+	for decl in ast.queries {
+		if decl.name == name {
+			return query_as_fn(decl), true
 		}
 	}
 	return Fn_Node{}, false
@@ -1557,14 +1588,16 @@ some_value :: proc(inner: Value) -> Value {
 
 // apply_combinator applies a fold/first function argument to an argument row:
 // a literal lambda binds its params and evaluates its body, while a bare
-// user-fn name resolves to the fn and runs its body — the two forms a
-// combinator's function slot admits (add_goal by name, a literal predicate).
+// user-fn or query name resolves to the declaration and runs its body — the
+// forms a combinator's function slot admits (add_goal by name, a literal
+// predicate; name_check reads a bare query name as a function value exactly
+// like a fn's, spec §08 §3).
 apply_combinator :: proc(ctx: Eval_Ctx, env: ^Env, arg: Expr, args: []Value) -> (value: Value, ok: bool) {
 	if lambda, is_lambda := arg.(^Lambda_Expr); is_lambda {
 		return apply_lambda(ctx, Lambda_Value{node = lambda, env = env}, args)
 	}
 	if name, is_name := arg.(^Name_Expr); is_name {
-		if fn, declared := find_user_fn(ctx.ast, name.name); declared {
+		if fn, declared := find_user_callable(ctx.ast, name.name); declared {
 			return eval_user_fn(ctx, fn, args)
 		}
 	}

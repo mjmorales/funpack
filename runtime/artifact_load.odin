@@ -1,7 +1,7 @@
 // The loader: walk the section-level Artifact_Doc (artifact_lex.odin) and build
-// the in-memory Program (program.odin) the sim executes over — the §16 step-4
+// the in-memory Program (program.odin) the sim executes over — the §17 step-4
 // model build. Each section maps to its descriptor list; every record is shaped
-// by the lead line's declared scalar counts (§16 step 3), and every body `node`
+// by the lead line's declared scalar counts (§17 step 3), and every body `node`
 // run is rebuilt into a node forest (artifact_nodes.odin).
 //
 // Fixed literals reach the runtime ONLY through decode_fixed → the kernel's
@@ -91,6 +91,8 @@ build_program :: proc(
 			program.bindings = load_bindings(section, allocator) or_return
 		case "entrypoint":
 			program.entrypoint = load_entrypoint(section) or_return
+		case "queries":
+			program.queries = load_queries(section, allocator) or_return
 		case:
 			return {}, .Malformed_Header // an unknown section is a schema mismatch
 		}
@@ -439,6 +441,88 @@ load_functions :: proc(
 			span_module = strings.clone(span_module, allocator),
 			span_line   = span_line,
 			body        = body,
+		}
+	}
+	return out, .None
+}
+
+// --- §16 queries (schema v9) ------------------------------------------------
+
+// load_queries reads each §16 query record: the fn-mold signature lead line,
+// its param sub-records, its `index KIND THING FIELD` requirement sub-records
+// (both shaped by the lead line's declared counts), then its body node run
+// rebuilt into a forest (§16, §2.7). A query body is a Block by grammar, so the
+// forest is the plain statement run — the same parse the [functions] bodies get.
+load_queries :: proc(
+	section: Artifact_Section,
+	allocator := context.allocator,
+) -> (
+	queries: []Query_Decl,
+	err: Artifact_Error,
+) {
+	out := make([]Query_Decl, len(section.records), allocator)
+	for rec, i in section.records {
+		f := record_fields(rec)
+		// query NAME param_count return:TYPE index_count body_count span:MODULE:LINE
+		if len(f) < 7 {
+			return nil, .Bad_Field
+		}
+		param_count, pc_ok := strconv.parse_int(f[2])
+		index_count, ic_ok := strconv.parse_int(f[4])
+		body_count, bc_ok := strconv.parse_int(f[5])
+		if !pc_ok || !ic_ok || !bc_ok {
+			return nil, .Bad_Field
+		}
+		span_module, span_line := parse_span(f[6])
+
+		cursor := 0
+		params := load_params(slice_window(rec.subs, &cursor, param_count), allocator) or_return
+		indexes := load_index_reqs(slice_window(rec.subs, &cursor, index_count), allocator) or_return
+		body := parse_node_forest(rec.subs[cursor:], body_count, allocator) or_return
+
+		out[i] = Query_Decl {
+			name        = strings.clone(f[1], allocator),
+			params      = params,
+			return_type = strings.clone(strings.trim_prefix(f[3], "return:"), allocator),
+			indexes     = indexes,
+			span_module = strings.clone(span_module, allocator),
+			span_line   = span_line,
+			body        = body,
+		}
+	}
+	return out, .None
+}
+
+// load_index_reqs reads a run of `index KIND THING FIELD` sub-records — the
+// declared §05 §3 requirements a query carries (§16). KIND is the closed
+// two-token set; anything else is a refusal, never a best-effort default.
+load_index_reqs :: proc(
+	subs: []string,
+	allocator := context.allocator,
+) -> (
+	reqs: []Index_Req,
+	err: Artifact_Error,
+) {
+	out := make([]Index_Req, len(subs), allocator)
+	for sub, i in subs {
+		sf := strings.fields(sub, context.temp_allocator)
+		// index KIND THING FIELD
+		if len(sf) < 4 || sf[0] != "index" {
+			return nil, .Bad_Field
+		}
+		kind: Query_Index_Kind
+		switch sf[1] {
+		case "index":
+			kind = .Index
+		case "spatial":
+			kind = .Spatial
+		case:
+			return nil, .Bad_Field
+		}
+		out[i] = Index_Req {
+			kind  = kind,
+			thing = strings.clone(sf[2], allocator),
+			field = strings.clone(sf[3], allocator),
 		}
 	}
 	return out, .None
@@ -947,7 +1031,7 @@ params_clone :: proc(
 
 // slice_window returns the next `count` sub-records starting at `cursor^` and
 // advances the cursor past them — the shaping primitive for a record whose
-// sub-records are several declared-count runs back to back (§16 step 3).
+// sub-records are several declared-count runs back to back (§17 step 3).
 slice_window :: proc(subs: []string, cursor: ^int, count: int) -> []string {
 	start := cursor^
 	end := start + count

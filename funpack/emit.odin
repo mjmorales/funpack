@@ -174,6 +174,7 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_setup(&b, input.ast)
 	emit_bindings(&b, input.ast)
 	emit_entrypoint(&b, input.entrypoint)
+	emit_queries(&b, input.ast, input.module)
 
 	return strings.to_string(b)
 }
@@ -1188,4 +1189,59 @@ emit_entrypoint :: proc(b: ^strings.Builder, entrypoint: Entrypoint_Config) {
 	strings.write_byte(b, 'x')
 	strings.write_int(b, entrypoint.logical_h)
 	emit_line(b, " bindings:", entrypoint.bindings)
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// [queries] — §08 §3 state-query declarations with their index requirements
+// (docs/artifact-format.md §16, schema v9)
+// ───────────────────────────────────────────────────────────────────────────
+
+// emit_queries writes one record per entrypoint-module `query` declaration in
+// source order — the [functions] record mold extended with the declared §05 §3
+// @index/@spatial requirement lines, so the runtime can both MAINTAIN the
+// declared engine indices over the world database and evaluate a query call
+// from the artifact alone. A query body is a Block by grammar (fun.ebnf §7:
+// QueryDecl admits no body-position hole), so the body run is the plain §2.7
+// statement forest. Cross-module query carry is deliberately absent: a §17
+// seam carries FNS only, and no spec example imports a query — widening the
+// carry would be its own schema bump.
+emit_queries :: proc(b: ^strings.Builder, ast: Ast, module: string) {
+	emit_header(b, "queries", len(ast.queries))
+	for query in ast.queries {
+		strings.write_string(b, "query ")
+		strings.write_string(b, query.name)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, len(query.params))
+		strings.write_string(b, " return:")
+		strings.write_string(b, type_ref_string(query.return_type))
+		strings.write_byte(b, ' ')
+		strings.write_int(b, len(query.indexes))
+		strings.write_byte(b, ' ')
+		strings.write_int(b, len(query.body))
+		strings.write_string(b, " span:")
+		strings.write_string(b, module)
+		strings.write_byte(b, ':')
+		strings.write_int(b, query.line)
+		emit_line(b, "")
+		for param in query.params {
+			emit_line(b, "param ", param.name, " ", type_ref_string(param.type))
+		}
+		for directive in query.indexes {
+			emit_line(b, "index ", index_directive_tag(directive.kind), " ", directive.thing, " ", directive.field)
+		}
+		emit_body(b, query.body)
+	}
+}
+
+// index_directive_tag renders an Index_Directive_Kind as its artifact KIND
+// token (docs/artifact-format.md §16): the closed two-value set the §05 §3
+// directive vocabulary admits.
+index_directive_tag :: proc(kind: Index_Directive_Kind) -> string {
+	switch kind {
+	case .Index:
+		return "index"
+	case .Spatial:
+		return "spatial"
+	}
+	return "index"
 }

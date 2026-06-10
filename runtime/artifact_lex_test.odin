@@ -1,4 +1,4 @@
-// Lexical-layer proof (docs/artifact-format.md §2, §16): the primitive decoders
+// Lexical-layer proof (docs/artifact-format.md §2, §17): the primitive decoders
 // and the single lead-line section reader. These pin the reader contract the
 // loader is built on — the byte layout is unambiguous because every field is
 // positionally typed and length-explicit and every record count is the lead-line
@@ -58,11 +58,11 @@ test_lead_line_discipline :: proc(t: ^testing.T) {
 }
 
 // A section splits into exactly N records by the lead-line discipline, and a
-// declared N that disagrees with the lead-line count is refused (§2.1, §16).
+// declared N that disagrees with the lead-line count is refused (§2.1, §17).
 @(test)
 test_section_count_exact_match :: proc(t: ^testing.T) {
 	// A minimal two-enum section: 2 lead lines, each with one sub-record.
-	content := "funpack-artifact 8\n[enums 2]\nenum A - 1\nvariant X unit\nenum B - 1\nvariant Y unit\n"
+	content := "funpack-artifact 9\n[enums 2]\nenum A - 1\nvariant X unit\nenum B - 1\nvariant Y unit\n"
 	doc, err := parse_artifact(content, context.temp_allocator)
 	testing.expect_value(t, err, Artifact_Error.None)
 	testing.expect_value(t, len(doc.sections), 1)
@@ -75,7 +75,7 @@ test_section_count_exact_match :: proc(t: ^testing.T) {
 	testing.expect_value(t, doc.sections[0].records[0].subs[0], "variant X unit")
 
 	// A declared N greater than the lead-line count is an under-shaped section.
-	bad := "funpack-artifact 8\n[enums 3]\nenum A - 1\nvariant X unit\n"
+	bad := "funpack-artifact 9\n[enums 3]\nenum A - 1\nvariant X unit\n"
 	_, bad_err := parse_artifact(bad, context.temp_allocator)
 	testing.expect_value(t, bad_err, Artifact_Error.Section_Count_Mismatch)
 }
@@ -84,7 +84,7 @@ test_section_count_exact_match :: proc(t: ^testing.T) {
 // parser always reads a fixed sequence of headers.
 @(test)
 test_empty_section_header :: proc(t: ^testing.T) {
-	content := "funpack-artifact 8\n[signals 0]\n[enums 1]\nenum A - 0\n"
+	content := "funpack-artifact 9\n[signals 0]\n[enums 1]\nenum A - 0\n"
 	doc, err := parse_artifact(content, context.temp_allocator)
 	testing.expect_value(t, err, Artifact_Error.None)
 	testing.expect_value(t, len(doc.sections), 2)

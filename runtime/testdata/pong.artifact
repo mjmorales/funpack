@@ -1,4 +1,4 @@
-funpack-artifact 8
+funpack-artifact 9
 [meta 2]
 project pong
 version L5:0.1.0
@@ -511,3 +511,4 @@ bind axis P2 Steer::Move source:keys_axis(Key::Up,Key::Down)
 bind axis P2 Steer::Move source:stick_y(Stick::Left)
 [entrypoint 1]
 entrypoint main pipeline:Pong tick_hz:60 logical:160x120 bindings:bindings
+[queries 0]

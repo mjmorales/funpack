@@ -212,6 +212,50 @@ Fn_Node :: struct {
 	has_fallback: bool,
 }
 
+// Index_Directive_Kind is the closed §05 §3 data-plane index directive pair —
+// `@index(Thing.field)` for reverse/key lookup, `@spatial(Thing.field)` for
+// the built-in radius/nearest queries. The set is closed like every directive
+// category (spec §05): adding a member is a spec change, never a parser
+// convenience.
+Index_Directive_Kind :: enum {
+	Index,   // @index(Thing.field) — engine-maintained reverse/key lookup
+	Spatial, // @spatial(Thing.field) — deterministic radius/nearest queries
+}
+
+// Index_Directive is one parsed `@index(Thing.field)` / `@spatial(Thing.field)`
+// (spec §05 §3, §08 §3) carried on the query declaration it prefixes — the §08
+// §3 placement ("a query needing an index must declare it"); the spec names no
+// other admitted target, so any other declaration consuming one is the named
+// Index_Wrong_Target verdict. The argument is the lexical-core §5 FieldPath
+// (`UPPER_IDENT '.' LOWER_IDENT`), recorded as written; that the path names a
+// declared thing and one of its fields is the typecheck stage's job
+// (check_index_paths), mirroring @migrate's parse/typecheck split.
+Index_Directive :: struct {
+	kind:  Index_Directive_Kind,
+	thing: string, // the FieldPath head — the indexed thing's type name
+	field: string, // the FieldPath member — the indexed field on that thing
+	line:  int,    // 1-based source line of the `@` (artifact-format §9 span provenance)
+}
+
+// Query_Node is a §08 §3 first-class query declaration: `query name(p: T, …)
+// -> R { … }` — a read-only, pure function over (version, params)
+// (grammar/fun.ebnf §7 QueryDecl). Its body is the ordinary fn statement
+// Block — the grammar admits no body-position `@stub` hole on a query (FnBody
+// is the fn production only). indexes carries the §05 §3 `@index`/`@spatial`
+// declarations prefixing it — the query's declared index requirements.
+Query_Node :: struct {
+	name:        string,
+	params:      []Param_Decl,
+	return_type: Type_Ref,
+	body:        []Statement,
+	doc:         string,
+	gtags:       []string,
+	probes:      []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:       []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	indexes:     []Index_Directive, // §05 §3 @index/@spatial requirements declared on this query
+	line:        int, // 1-based source line of the `query` keyword (artifact-format §9 span provenance)
+}
+
 // Behavior_Node is a pure transition attached to a thing (spec §06 §3):
 // `behavior name on Thing { fn step(…) -> … { … } }`. target is the `on
 // Thing` type name; step is the single reserved entry point (the parser
@@ -345,6 +389,10 @@ Directives :: struct {
 	gtags:       [dynamic]string,
 	probes:      [dynamic]Debug_Probe,
 	todos:       [dynamic]Todo_Node,
+	// indexes accumulates the §05 §3 @index/@spatial directives — only a
+	// `query` declaration may consume them (Index_Wrong_Target otherwise,
+	// spec §08 §3); a query may declare several.
+	indexes:     [dynamic]Index_Directive,
 	migrate:     Migrate_Node,
 	has_migrate: bool,
 }
@@ -360,6 +408,8 @@ Parse_Error :: enum {
 	Malformed_Todo_Window, // a @todo whose mandatory window is missing or matches none of the four §05 §2 forms (unknown unit, mis-shaped/out-of-range ISO date, quoted or lowercase task ref)
 	Malformed_Migrate,     // a @migrate whose argument list matches none of the three closed §05 §6 forms (missing/empty parens, unknown or duplicated key, with-before-from order, unquoted from, empty prior name, trailing junk) — or a second @migrate on one target
 	Migrate_Wrong_Target,  // a well-formed @migrate where the spec admits none (spec §05 §6): prefixing a non-`data` declaration, a field outside a `data` body, a retype (`with:`) form on a type declaration (a type admits the rename form only), or dangling with no field to attach to
+	Malformed_Index_Path,  // an @index/@spatial whose argument is not exactly the lexical-core §5 FieldPath `(Thing.field)` (missing/empty parens, no dot, trailing junk) — the one casing-class deviation (a lowercase head, an UpperCamel field) keeps the parser-wide Wrong_Case verdict
+	Index_Wrong_Target,    // a well-formed @index/@spatial prefixing a declaration the spec does not admit — §08 §3 places the directive on a `query` declaration (the query's declared index requirement), and the spec names no other target
 }
 
 Parser :: struct {
@@ -382,6 +432,7 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 		things    = make([dynamic]Thing_Node, 0, 8, context.temp_allocator),
 		signals   = make([dynamic]Signal_Node, 0, 4, context.temp_allocator),
 		fns       = make([dynamic]Fn_Node, 0, 16, context.temp_allocator),
+		queries   = make([dynamic]Query_Node, 0, 4, context.temp_allocator),
 		behaviors = make([dynamic]Behavior_Node, 0, 16, context.temp_allocator),
 		pipelines = make([dynamic]Pipeline_Node, 0, 2, context.temp_allocator),
 		tests     = make([dynamic]Test_Node, 0, 8, context.temp_allocator),
@@ -411,6 +462,7 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 			things = out.things[:],
 			signals = out.signals[:],
 			fns = out.fns[:],
+			queries = out.queries[:],
 			behaviors = out.behaviors[:],
 			pipelines = out.pipelines[:],
 			tests = out.tests[:],
@@ -426,6 +478,7 @@ empty_directives :: proc() -> Directives {
 		gtags = make([dynamic]string, 0, 4, context.temp_allocator),
 		probes = make([dynamic]Debug_Probe, 0, 4, context.temp_allocator),
 		todos = make([dynamic]Todo_Node, 0, 4, context.temp_allocator),
+		indexes = make([dynamic]Index_Directive, 0, 2, context.temp_allocator),
 	}
 }
 
@@ -440,6 +493,7 @@ Decl_Sink :: struct {
 	things:    [dynamic]Thing_Node,
 	signals:   [dynamic]Signal_Node,
 	fns:       [dynamic]Fn_Node,
+	queries:   [dynamic]Query_Node,
 	behaviors: [dynamic]Behavior_Node,
 	pipelines: [dynamic]Pipeline_Node,
 	tests:     [dynamic]Test_Node,
@@ -461,6 +515,16 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		}
 		if pending.migrate.has_with {
 			return .Migrate_Wrong_Target
+		}
+	}
+	if len(pending.indexes) > 0 {
+		// An @index/@spatial declares a query's index requirement (spec §08 §3)
+		// — the one placement the spec names — so only a `query` declaration may
+		// consume the accumulated directives. Any other declaration following
+		// them is the named Index_Wrong_Target verdict, the @migrate
+		// wrong-target mold.
+		if peek_kind(p) != .Ident || p.tokens[p.pos].text != "query" {
+			return .Index_Wrong_Target
 		}
 	}
 	#partial switch peek_kind(p) {
@@ -533,9 +597,9 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 	return .None
 }
 
-// parse_contextual_declaration dispatches a `data`/`enum`/`thing`/`singleton`
-// declaration off the leading Ident's TEXT (fun.ll1.md §2: these are contextual
-// keywords, lexed as Ident). It is reached only from parse_declaration, i.e.
+// parse_contextual_declaration dispatches a `data`/`enum`/`thing`/`singleton`/
+// `query` declaration off the leading Ident's TEXT (fun.ll1.md §2: these are
+// contextual keywords, lexed as Ident). It is reached only from parse_declaration, i.e.
 // only at the start of a module-level statement — the one position the word is
 // the keyword. A leading Ident whose text is none of these is not a declaration
 // opener: the surface has no module-level expression statement, so it is an
@@ -569,6 +633,16 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
 		append(&out.things, node)
+	case "query":
+		node := parse_query(p) or_return
+		node.doc = pending.doc
+		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
+		// The §05 §3 @index/@spatial requirements land here; parse_declaration
+		// already verified the target kind, so this is a plain carry.
+		node.indexes = pending.indexes[:]
+		append(&out.queries, node)
 	case:
 		return .Unexpected_Token
 	}
@@ -685,12 +759,23 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		}
 		terminate_statement(p) or_return
 		append(&pending.probes, Debug_Probe{kind = .Trace, line = at_tok.line})
+	case "index", "spatial":
+		// @index(Thing.field) / @spatial(Thing.field) — the §05 §3 data-plane
+		// index directives. The mandatory argument is the lexical-core §5
+		// FieldPath; which declaration may consume the accumulated set — a
+		// `query` only (spec §08 §3) — is parse_declaration's check, where the
+		// target is known, mirroring @migrate. Several accumulate: a query may
+		// declare more than one index requirement.
+		kind := Index_Directive_Kind.Index if name.text == "index" else Index_Directive_Kind.Spatial
+		node := parse_index_path(p, kind, at_tok.line) or_return
+		terminate_statement(p) or_return
+		append(&pending.indexes, node)
 	case:
-		// Only @doc/@gtag and the §05 §5 debug probes prefix a declaration.
-		// @stub in particular is NOT a prefix directive — it stands in
-		// body/expression position only (spec §05: parse_stub_body owns it),
-		// so a leading `@stub` is an Unexpected_Token here, never silently
-		// accepted.
+		// Only @doc/@gtag/@todo/@migrate/@index/@spatial and the §05 §5 debug
+		// probes prefix a declaration. @stub in particular is NOT a prefix
+		// directive — it stands in body/expression position only (spec §05:
+		// parse_stub_body owns it), so a leading `@stub` is an
+		// Unexpected_Token here, never silently accepted.
 		return .Unexpected_Token
 	}
 	return .None
@@ -871,6 +956,53 @@ parse_migrate_with :: proc(p: ^Parser, node: ^Migrate_Node) -> Parse_Error {
 	node.with = convert.text
 	node.has_with = true
 	return .None
+}
+
+// parse_index_path parses the mandatory @index/@spatial argument — exactly the
+// lexical-core §5 FieldPath `(Thing.field)` (`'(' UPPER_IDENT '.' LOWER_IDENT
+// ')'`, spec §05 §3, §08 §3). Anything outside that closed shape — no parens,
+// an empty list, a missing dot, trailing junk before `)` — is the named
+// Malformed_Index_Path verdict, so an agent repairs the exact path shape rather
+// than chasing a token error; the casing-class deviations (a lowercase thing
+// head, a non-snake_case field) keep the parser-wide Wrong_Case verdict, the
+// parse_migrate_args precedent. The path is recorded as written — that it
+// names a declared thing and one of its fields is the typecheck stage's
+// check_index_paths.
+parse_index_path :: proc(p: ^Parser, kind: Index_Directive_Kind, line: int) -> (node: Index_Directive, err: Parse_Error) {
+	node.kind = kind
+	node.line = line
+	if peek_kind(p) != .L_Paren {
+		return node, .Malformed_Index_Path
+	}
+	p.pos += 1
+	if peek_kind(p) != .Ident {
+		return node, .Malformed_Index_Path
+	}
+	thing := advance(p) or_return
+	// The path head is the indexed thing's type name — UPPER_IDENT
+	// (lexical-core.ebnf §5 FieldPath).
+	if !is_upper_ident(thing.class) {
+		return node, .Wrong_Case
+	}
+	if peek_kind(p) != .Dot {
+		return node, .Malformed_Index_Path
+	}
+	p.pos += 1
+	if peek_kind(p) != .Ident {
+		return node, .Malformed_Index_Path
+	}
+	field := advance(p) or_return
+	// The path member is a field name — snake_case (spec §02).
+	if field.class != .Snake_Case {
+		return node, .Wrong_Case
+	}
+	if peek_kind(p) != .R_Paren {
+		return node, .Malformed_Index_Path
+	}
+	p.pos += 1
+	node.thing = thing.text
+	node.field = field.text
+	return node, .None
 }
 
 parse_import :: proc(p: ^Parser) -> (node: Import_Node, err: Parse_Error) {
@@ -1208,6 +1340,34 @@ parse_extern_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 			return_type = return_type,
 			line = extern_tok.line,
 			is_extern = true,
+		},
+		.None
+}
+
+// parse_query parses a §08 §3 first-class query declaration: `query name(p: T,
+// …) -> R { … }` (grammar/fun.ebnf §7 QueryDecl). `query` is a contextual
+// keyword (Ident); the by-text dispatch in parse_contextual_declaration already
+// verified the text, so the opener is consumed as an Ident here. The signature
+// grammar is the fn's (snake_case name, typed params, `-> R`); the body is the
+// statement Block ONLY — QueryDecl admits no `@stub` body position (FnBody is
+// the fn production, grammar/fun.ebnf §7), so a `@` where the body brace
+// belongs is an Unexpected_Token, never a silently-admitted hole.
+parse_query :: proc(p: ^Parser) -> (node: Query_Node, err: Parse_Error) {
+	query_tok := expect(p, .Ident) or_return // `query`
+	name := expect(p, .Ident) or_return
+	if name.class != .Snake_Case {
+		return node, .Wrong_Case
+	}
+	params := parse_param_list(p) or_return
+	expect(p, .Arrow) or_return
+	return_type := parse_type_ref(p) or_return
+	body := parse_fn_body(p) or_return
+	return Query_Node {
+			name = name.text,
+			params = params,
+			return_type = return_type,
+			body = body,
+			line = query_tok.line,
 		},
 		.None
 }

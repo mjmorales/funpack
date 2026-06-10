@@ -95,6 +95,17 @@ Tick_State :: struct {
 	// the bounded test/re-fold drivers ignore it (their wholesale temp-free covers
 	// the same maps).
 	superseded:      [dynamic]map[string]Field_Value,
+	// query_memo is the §08 §3 WITHIN-TICK query memoization: evaluated query
+	// results keyed by (query name, canonical argument bytes), living exactly
+	// one tick — the cache is part of the tick state, so the tick boundary
+	// clears it by construction. A query is pure over its arguments (its body
+	// sees only its params plus module consts), so a key hit returns the
+	// identical value the first caller paid for; the hit/miss counters are the
+	// observable the memoization tests pin (a pure cache has no value-level
+	// side effect to assert on).
+	query_memo:        map[string]Value,
+	query_memo_hits:   int,
+	query_memo_misses: int,
 	// allocator is the TRANSIENT eval/working allocator: the working tables' Row
 	// backing, the mailbox routing, the spawn/despawn/persist batches, and every
 	// intermediate value a behavior builds during the fold live here. It is the
@@ -847,6 +858,13 @@ field_is_int :: proc(decl: ^Thing_Decl, name: string) -> bool {
 // step_tick_persist driver (save_io.odin); routing it here makes every persist
 // key a silent no-op. The deliberate plain-path consumer is replay.odin's
 // capture, whose record carries inputs only.
+// Index maintenance (§08 §3): `indices` is the run's maintained engine-index
+// state, carried in/out by pointer exactly as the Rng is. When non-nil, the
+// fold runs against the structures as they stood at tick start (an update is
+// never observable mid-stage — the tick reads the prior version's indices),
+// and the declared structures fold forward at the COMMIT boundary, COW-sharing
+// every table the tick never replaced (index.odin fold_index_state). A nil
+// `indices` (a program declaring no query) folds exactly as before.
 step_tick :: proc(
 	program: ^Program,
 	prior: World_Version,
@@ -854,6 +872,7 @@ step_tick :: proc(
 	time: Record_Value,
 	allocator := context.allocator,
 	rng: ^Rng = nil,
+	indices: ^Index_State = nil,
 	observe: ^Tick_Observe = nil,
 ) -> World_Version {
 	// The plain (bounded) driver runs eval and commit on ONE allocator — the caller's
@@ -877,7 +896,13 @@ step_tick :: proc(
 	if rng != nil {
 		rng^ = state.rng
 	}
-	return commit_tick_state(prior, &state, allocator)
+	next := commit_tick_state(prior, &state, allocator)
+	// Fold the maintained indices forward at the commit boundary — once, after
+	// every write landed, never mid-stage (§08 §3).
+	if indices != nil {
+		indices^ = fold_index_state(indices^, &prior_version, &next, allocator)
+	}
+	return next
 }
 
 // run_pipeline_fold runs the executed pipeline over the working state: every
@@ -1462,6 +1487,7 @@ new_tick_state :: proc(
 		despawns = make([dynamic]Ref, allocator),
 		persist_commands = make([dynamic]Record_Value, allocator),
 		superseded = make([dynamic]map[string]Field_Value, allocator),
+		query_memo = make(map[string]Value, allocator),
 		allocator = allocator,
 		commit_allocator = commit_allocator,
 	}

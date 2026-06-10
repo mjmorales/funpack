@@ -118,7 +118,22 @@ import "core:strings"
 // the v7 stamp-only restamp precedent. The conversion fn is an ordinary
 // [functions] record the loader resolves by name. The sub-record keyword set
 // is closed, so the new keyword is a deliberate bump: 7 → 8 (§1).
-ARTIFACT_SCHEMA_VERSION :: 8
+//
+// Version 9 carries the §08 §3 STATE-QUERY declarations through to the runtime —
+// the first-class `query` declarations and their §05 §3 @index/@spatial index
+// requirements, which the runtime needs to MAINTAIN the declared engine indices
+// over the world database (an artifact-blind runtime could neither build the
+// declared structures nor evaluate a query call). Two layout changes ride it:
+// (1) one new section, `[queries Q]`, appended after [entrypoint] — one record
+// per entrypoint-module `query` declaration in source order, the [functions]
+// record mold (`query NAME param_count return:TYPE index_count body_count
+// span:MODULE:LINE`, then the `param` lines, the `index` requirement lines, and
+// the §2.7 body node run); (2) one new sub-record keyword, `index`, a fixed
+// four-token line `index KIND THING FIELD` (KIND ∈ index|spatial) carrying one
+// declared §05 §3 requirement. A query body is a Block by grammar (no
+// body-position hole), so its body run is the plain statement forest. A new
+// section and a new sub-record keyword are layout changes: 8 → 9 (§1).
+ARTIFACT_SCHEMA_VERSION :: 9
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
@@ -182,6 +197,7 @@ SUB_RECORD_KEYWORDS := []string{
 	"set", // a setup spawn's supplied field (§13)
 	"node", // a body checked-AST node line (§2.7) — every fn/step/const/bindings/setup body is a run of these
 	"migrate", // a [data] record's §05 §6 rename/retype carry (§6, schema v8) — after a `field` line for that field, before any `field` line for the renamed type
+	"index", // a [queries] record's §05 §3 @index/@spatial requirement `index KIND THING FIELD` (§16, schema v9)
 }
 
 // Artifact_Section is one parsed `[name N]` block from an artifact: the
@@ -216,7 +232,7 @@ Artifact_Parse_Error :: enum {
 
 // parse_artifact reads an artifact's bytes into the ordered section model,
 // validating the §1 stamp and every section's declared top-level count
-// against the lead records that follow. It mirrors the runtime's §16
+// against the lead records that follow. It mirrors the runtime's §17
 // parsing recipe (read line 1, then each `[name N]` header and its records)
 // so the golden fixture is checked against the same count-driven discipline
 // the runtime relies on. A section body runs to the next `[` header — the

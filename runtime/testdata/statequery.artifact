@@ -31,7 +31,7 @@ thing Scoreboard false 1 2
 gtag L5:score
 field left Int =0
 field right Int =0
-[functions 10]
+[functions 12]
 function advance fn 3 return:Vec2 1 span:pong:50
 param at Vec2
 param vel Vec2
@@ -147,6 +147,43 @@ node binary add 2
 node field right 1
 node name score 0
 node int 1 0
+function within_flag fn 3 return:Int 3 span:pong:245
+param origin Vec2
+param r Fixed
+param at Vec2
+node let d 1
+node binary sub 2
+node name at 0
+node name origin 0
+node if_return 2
+node binary le 2
+node binary add 2
+node binary mul 2
+node field x 1
+node name d 0
+node field x 1
+node name d 0
+node binary mul 2
+node field y 1
+node name d 0
+node field y 1
+node name d 0
+node binary mul 2
+node name r 0
+node name r 0
+node int 1 0
+node return 1
+node int 0 0
+function side_flag fn 2 return:Int 2 span:pong:252
+param want Side
+param got Side
+node if_return 2
+node binary eq 2
+node name got 0
+node name want 0
+node int 1 0
+node return 1
+node int 0 0
 function BOARD const 0 return:Board 1 span:pong:19
 node return 1
 node record Board 2 2
@@ -511,4 +548,51 @@ bind axis P2 Steer::Move source:keys_axis(Key::Up,Key::Down)
 bind axis P2 Steer::Move source:stick_y(Stick::Left)
 [entrypoint 1]
 entrypoint main pipeline:Pong tick_hz:60 logical:160x120 bindings:bindings
-[queries 0]
+[queries 3]
+query balls_within 3 return:Int 1 1 span:pong:259
+param origin Vec2
+param r Fixed
+param balls View[Ball]
+index spatial Ball pos
+node return 1
+node call 4
+node name fold 0
+node name balls 0
+node int 0 0
+node lambda 2 acc b 1
+node binary add 2
+node name acc 0
+node call 4
+node name within_flag 0
+node name origin 0
+node name r 0
+node field pos 1
+node name b 0
+query paddles_on 2 return:Int 1 1 span:pong:265
+param side Side
+param paddles View[Paddle]
+index index Paddle side
+node return 1
+node call 4
+node name fold 0
+node name paddles 0
+node int 0 0
+node lambda 2 acc p 1
+node binary add 2
+node name acc 0
+node call 3
+node name side_flag 0
+node name side 0
+node field side 1
+node name p 0
+query corridor_half 1 return:Fixed 0 1 span:pong:270
+param r Fixed
+node return 1
+node call 4
+node name clamp 0
+node binary mul 2
+node name r 0
+node fixed 2147483648 0
+node fixed 0 0
+node field h 1
+node name BOARD 0

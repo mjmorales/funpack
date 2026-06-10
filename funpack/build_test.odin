@@ -198,7 +198,7 @@ test_build_writes_index_ndjson :: proc(t: ^testing.T) {
 	// and the stream carries a `decl` record kind after it (a project-only field
 	// vs a decl-only field both appear) — the multi-record stream, not a lone
 	// project record.
-	testing.expect(t, strings.has_prefix(stream, "{\"schema_version\":3,"))
+	testing.expect(t, strings.has_prefix(stream, "{\"schema_version\":4,"))
 	testing.expect(t, strings.contains(stream, "\"pipeline_flattened\":")) // project record
 	testing.expect(t, strings.contains(stream, "\"qualified_name\":")) // a decl record
 	testing.expect(t, strings.contains(stream, "\"dup_class\":")) // a decl-only field
@@ -377,7 +377,7 @@ test_build_numerics_package_index_only :: proc(t: ^testing.T) {
 	testing.expect_value(t, product.artifact_path, "")
 	testing.expect_value(t, product.artifact, "")
 	testing.expect(t, product.index_path != "")
-	testing.expect(t, strings.has_prefix(product.index, "{\"schema_version\":3,"))
+	testing.expect(t, strings.has_prefix(product.index, "{\"schema_version\":4,"))
 	// The package's `project` record carries an empty entrypoints list and no
 	// pipeline (no entrypoint ⇒ empty pipeline_flattened) — governance data, §30 §7.
 	testing.expect(t, strings.contains(product.index, "\"entrypoints\":[]"))

@@ -278,9 +278,9 @@ session_refold_tick :: proc(
 	time := time_resource_at(s.program.entrypoint.tick_hz, tick, allocator)
 	if s.seed.has_seed {
 		rng := s.rngs[tick]
-		return step_tick(s.program, prior, s.snapshots[tick], time, allocator, &rng, observe), true
+		return step_tick(s.program, prior, s.snapshots[tick], time, allocator, &rng, observe = observe), true
 	}
-	return step_tick(s.program, prior, s.snapshots[tick], time, allocator, nil, observe), true
+	return step_tick(s.program, prior, s.snapshots[tick], time, allocator, nil, observe = observe), true
 }
 
 // --- The request fold: one NDJSON line in, one NDJSON line out -------------
