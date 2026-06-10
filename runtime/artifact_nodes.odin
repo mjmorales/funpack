@@ -48,6 +48,10 @@ Node_Kind :: enum {
 	// expression as its one child, `node stub bare 0` carries nothing and is
 	// the defined fail-closed no-value outcome at evaluation time.
 	Stub,
+	// All is the §08 §3 world read `all[T]` (schema v10): `node all THING 0`,
+	// a leaf carrying the read table's thing type name — it evaluates to that
+	// thing's rows in stable Id order, the only world read a query body holds.
+	All,
 }
 
 // Node is one interpreted body node: its kind, its decoded scalar fields kept as
@@ -114,6 +118,11 @@ node_kind_from_tag :: proc(tag: string) -> (kind: Node_Kind, ok: bool) {
 		// the approximation expression — for fallback), so no special handling
 		// beyond this tag mapping (§2.7, schema v7).
 		return .Stub, true
+	case "all":
+		// An `all` node is a leaf read the generic way: its THING scalar
+		// precedes the trailing child count (always 0), so no special handling
+		// beyond this tag mapping (§2.7, schema v10).
+		return .All, true
 	}
 	return .Int, false
 }

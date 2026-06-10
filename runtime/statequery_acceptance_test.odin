@@ -10,20 +10,19 @@
 // Each tick line carries: the index-state digest plus each maintained table's
 // digest (the @index over Paddle.side and the @spatial over Ball.pos — the
 // ball moves every tick, so the spatial postings change tick to tick and the
-// goal/serve reset shows up as a digest step), the three declared queries'
-// results evaluated through the carried bodies (the spatial-radius count, the
-// keyed count, and the pure value-parameter form — exact fixed-point bits),
-// the @index reverse lookup's answer, and the spatial kernel's nearest-first
-// hits over the maintained structure. The run also asserts, every tick, that
-// the transaction-folded index state is value-equal to a from-scratch rebuild
-// of the committed version — maintenance is never a semantic input.
-//
-// NOTE (two distance spellings, both deterministic, deliberately uncoupled):
-// the fixture's balls_within query compares SQUARED distance (d.x²+d.y² ≤ r²,
-// the compilable in-language spelling) while the spatial kernel compares the
-// floor-rounded kernel sqrt (length(d) ≤ r); the two may differ on a boundary
-// hair (a true distance within 2⁻³² above r), so each is pinned on its own
-// line and never asserted against the other.
+// goal/serve reset shows up as a digest step), the four declared queries'
+// results evaluated through the carried v10 bodies — every query a VALUE-
+// parameter read whose world access is the `all[T]` node and the spatial
+// combinators (the §08 §3 spec-true shape; the View-parameter interim form is
+// retired) — the @index reverse lookup's answer, and the spatial kernel's
+// nearest-first hits over the maintained structure. The run also asserts,
+// every tick, that the transaction-folded index state is value-equal to a
+// from-scratch rebuild of the committed version — maintenance is never a
+// semantic input — AND that the carried balls_within body's count equals the
+// maintained-structure kernel's hit count: the query body now measures
+// through the SAME kernel composition (within ≤ r over the declared field),
+// so compiler-emitted evaluation and the engine structure must agree exactly,
+// tick by tick.
 //
 // GOLDEN REGENERATION: FUNPACK_REGEN_GOLDEN=1 task -d runtime test rewrites
 // testdata/statequery_golden.txt from the run, then a normal (recompiled) run
@@ -92,7 +91,7 @@ statequery_capture :: proc(t: ^testing.T) -> (text: string, ok: bool) {
 	if load_err != .None {
 		return "", false
 	}
-	testing.expect_value(t, len(program.queries), 3)
+	testing.expect_value(t, len(program.queries), 4)
 
 	world := new_world(program, context.temp_allocator)
 	base := initial_version(world, context.temp_allocator)
@@ -136,19 +135,28 @@ statequery_capture_tick :: proc(
 	origin := Vec2{to_fixed(80), to_fixed(60)}
 	radius := to_fixed(30)
 
-	// balls_within(center, 30.0, all-Ball rows) — the @spatial-declaring query.
-	within_args := make([]Value, 3, context.temp_allocator)
+	// balls_within(center, 30.0) — the @spatial-declaring query; its body
+	// reads all[Ball] and measures through `within`, the carried v10 form.
+	within_args := make([]Value, 2, context.temp_allocator)
 	within_args[0] = origin
 	within_args[1] = radius
-	within_args[2] = view_rows_as_list(&interp, "Ball")
 	within, within_ok := eval_query_values(&interp, program_query(program, "balls_within"), within_args)
 	testing.expect_value(t, within_ok, true)
 	fmt.sbprintf(b, "query balls_within %d\n", within.(i64))
 
-	// paddles_on(Side::Left, all-Paddle rows) — the @index-declaring query.
-	on_args := make([]Value, 2, context.temp_allocator)
+	// nearest_ball_x(center, 30.0) — the nearest-first pin: the nearest
+	// in-radius ball's pos.x (exact bits), or -1.0 when none is in radius.
+	nearest_args := make([]Value, 2, context.temp_allocator)
+	nearest_args[0] = origin
+	nearest_args[1] = radius
+	nearest, nearest_ok := eval_query_values(&interp, program_query(program, "nearest_ball_x"), nearest_args)
+	testing.expect_value(t, nearest_ok, true)
+	fmt.sbprintf(b, "query nearest_ball_x %d\n", i64(nearest.(Fixed)))
+
+	// paddles_on(Side::Left) — the @index-declaring query; its body reads
+	// all[Paddle], the keyed fold over the world.
+	on_args := make([]Value, 1, context.temp_allocator)
 	on_args[0] = Variant_Value{enum_type = "Side", case_name = "Left"}
-	on_args[1] = view_rows_as_list(&interp, "Paddle")
 	on_left, on_ok := eval_query_values(&interp, program_query(program, "paddles_on"), on_args)
 	testing.expect_value(t, on_ok, true)
 	fmt.sbprintf(b, "query paddles_on %d\n", on_left.(i64))
@@ -170,9 +178,12 @@ statequery_capture_tick :: proc(
 	strings.write_string(b, "\n")
 
 	// The spatial kernel's nearest-first radius answer over the maintained
-	// structure: (Id, exact distance bits) pairs.
+	// structure: (Id, exact distance bits) pairs — and the agreement floor:
+	// the carried balls_within body measured the SAME kernel distance over
+	// the same rows, so its count must equal the structure's hit count.
 	hits, hits_ok := spatial_within(indices, "Ball", "pos", Field_Value(origin), radius, context.temp_allocator)
 	testing.expect_value(t, hits_ok, true)
+	testing.expect_value(t, within.(i64), i64(len(hits)))
 	strings.write_string(b, "spatial Ball.pos<=r30")
 	for hit in hits {
 		fmt.sbprintf(b, " %d:%d", u32(hit.id.raw), i64(hit.distance))

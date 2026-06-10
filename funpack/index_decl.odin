@@ -420,8 +420,9 @@ calls_walk_body :: proc(body: []Statement, calls: ^[dynamic]string) {
 // branch — the same totality the gate walks (gates.odin) keep.
 calls_walk_expr :: proc(expr: Expr, calls: ^[dynamic]string) {
 	switch e in expr {
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr:
-		// Leaf atoms host no call.
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^All_Expr:
+		// Leaf atoms host no call (`all[T]` is a world read, not an edge of the
+		// §29 §2 calls graph).
 	case ^Call_Expr:
 		if name, ok := callee_name(e.callee); ok {
 			append_unique(calls, name)

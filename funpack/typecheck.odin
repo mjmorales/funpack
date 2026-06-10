@@ -36,6 +36,11 @@ Type_Error :: enum {
 	Migrate_Convert_Return,  // a @migrate conversion whose declared return type differs from the migrated field's declared (new) type — `fn(Old) -> New` must land on New (spec §05 §6)
 	Index_Unknown_Thing,     // an @index/@spatial FieldPath whose head names no declared thing/singleton — the §05 §3 index is instance-level, so only a thing (a table of rows) can carry one
 	Index_Unknown_Field,     // an @index/@spatial FieldPath naming a declared thing but a field that thing's schema lacks (spec §05 §3, §08 §3)
+	All_Outside_Query,       // the §08 §3 world read `all[T]` used outside a query body — a query is the read path's only world-reading declaration; a behavior reads through its declared View/signal params, never `all[T]`
+	All_Unknown_Thing,       // an `all[T]` whose T names no declared thing/singleton — the read table is a thing's instance set, so a data/enum/signal (or undeclared) head has no rows to read
+	Spatial_Requirement_Missing,   // a within/nearest_first whose element thing has no @spatial declared on the ENCLOSING query (spec §08 §3: a query needing an index must declare it) — including any use outside a query body, where no requirement can be declared at all
+	Spatial_Requirement_Ambiguous, // a within/nearest_first whose element thing carries SEVERAL @spatial declarations on the enclosing query — the combinator cannot pick which field to measure, so the declaration set must name exactly one
+	Query_Param_Not_Value,         // a query parameter outside the value domain — a View[T], a Ref/Owned handle, a resource (Input/Time/Rng/Bindings/Nav), or a function — spec §08 §3: a query is pure over (version, params), takes ONLY value parameters, and reads the world through `all[T]` alone
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -58,6 +63,13 @@ Check_Ctx :: struct {
 	index:           Module_Index,
 	scope:           Scope,
 	expected_return: Type,
+	// in_query marks the body sweep over a §08 §3 query declaration — the one
+	// context the world read `all[T]` (and the spatial combinators over it)
+	// is admitted in; query_indexes carries that query's declared @index/
+	// @spatial requirements so the spatial combinators resolve their measured
+	// field. Both stay zero for fn/behavior/test sweeps.
+	in_query:        bool,
+	query_indexes:   []Index_Directive,
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
@@ -374,6 +386,8 @@ layer_walk_expr :: proc(expr: Expr, registry: []string) -> Type_Error {
 		if e.has_fallback {
 			layer_walk_expr(e.fallback, registry) or_return
 		}
+	case ^All_Expr:
+		// The §08 §3 world read is a leaf — it hosts no sub-expression.
 	}
 	return .None
 }
@@ -439,8 +453,9 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast
 		// (version, params)) — so an ill-typed or unknown-field use inside it
 		// surfaces the same named diagnostics a fn body gets. The grammar
 		// admits no body-position hole on a query, so the synthesized node is
-		// never holed.
-		check_fn_body(bindings, env, index, query_as_fn(query)) or_return
+		// never holed. The query CONTEXT (in_query + the declared requirement
+		// set) rides the ctx so `all[T]` and the spatial combinators resolve.
+		check_query_body(bindings, env, index, query) or_return
 	}
 	for behavior in ast.behaviors {
 		check_fn_body(bindings, env, index, behavior.step) or_return
@@ -471,6 +486,77 @@ query_as_fn :: proc(query: Query_Node) -> Fn_Node {
 // grounds correctly). A §05 §2 typed hole standing in body position routes to
 // check_stub_hole — there is no statement sequence to walk.
 check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Type_Error {
+	ctx := fn_body_ctx(bindings, env, index, fn)
+	if fn.holed {
+		return check_stub_hole(ctx, fn)
+	}
+	return check_statements(ctx, fn.body)
+}
+
+// check_query_body types one §08 §3 query body through the same param-seeded
+// window a fn body rides (fn_body_ctx over the query_as_fn projection), with
+// the QUERY CONTEXT set: in_query admits the world read `all[T]`, and the
+// declared @index/@spatial requirement set rides query_indexes so the spatial
+// combinators (within/nearest_first) resolve the field they measure.
+check_query_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, query: Query_Node) -> Type_Error {
+	ctx := fn_body_ctx(bindings, env, index, query_as_fn(query))
+	ctx.in_query = true
+	ctx.query_indexes = query.indexes
+	// §08 §3 value-param-only: a query is pure over (version, params) and
+	// reads the world through `all[T]` alone, so a world handle (View/Ref), a
+	// resource, or a function in its parameter list is the named diagnostic —
+	// such a parameter would smuggle a read path (or unkeyable content) past
+	// the (version, params) memo identity.
+	for param in query.params {
+		if type_outside_value_domain(ctx.scope[param.name]) {
+			return .Query_Param_Not_Value
+		}
+	}
+	return check_statements(ctx, query.body)
+}
+
+// type_outside_value_domain reports whether a resolved type carries any arm
+// outside the §08 §3 query value domain: the read table View[T], the world
+// handles Ref/Nav, the resources Input/Time/Rng/Bindings, or a function type
+// (unkeyable by the (version, params) memo identity, unreceivable by a
+// compiled signature). Containers (Option/List/Tuple) are walked so a wrapped
+// handle cannot hide; ground scalars, user records/enums/things-as-values,
+// and every other engine VALUE kind (handles like MeshHandle, command records)
+// stay in the domain.
+type_outside_value_domain :: proc(t: Type) -> bool {
+	switch v in t {
+	case Ground_Type:
+		return false
+	case ^Option_Type:
+		return type_outside_value_domain(v.elem)
+	case ^List_Type:
+		return type_outside_value_domain(v.elem)
+	case ^Tuple_Type:
+		for elem in v.elements {
+			if type_outside_value_domain(elem) {
+				return true
+			}
+		}
+		return false
+	case ^Func_Type:
+		return true
+	case ^User_Type:
+		return false
+	case ^Engine_Type:
+		#partial switch v.kind {
+		case .View, .Ref, .Nav, .Input, .Time, .Rng, .Bindings:
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// fn_body_ctx seeds the one body-sweep context both fn and query bodies type
+// in: the declared parameters as their resolved types in a fresh scope, the
+// declared `-> R` as expected_return, and the import/env/index triple threaded
+// through for cross-module resolution.
+fn_body_ctx :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Check_Ctx {
 	ctx := Check_Ctx {
 		bindings        = bindings,
 		env             = env,
@@ -481,10 +567,7 @@ check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn
 	for param in fn.params {
 		ctx.scope[param.name] = resolve_type_ref(env, bindings, param.type, index)
 	}
-	if fn.holed {
-		return check_stub_hole(ctx, fn)
-	}
-	return check_statements(ctx, fn.body)
+	return ctx
 }
 
 // check_stub_hole types a holed fn/step (spec §05 §2, P8): `@stub(T)` stands
@@ -629,8 +712,28 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		return if_check(ctx, e)
 	case ^Stub_Expr:
 		return stub_expr_check(ctx, e)
+	case ^All_Expr:
+		return all_check(ctx, e)
 	}
 	return nil, .Unsupported_Expr
+}
+
+// all_check types the §08 §3 world read `all[T]`: admitted inside a query
+// body alone (a query is the read path's only world-reading declaration —
+// All_Outside_Query elsewhere), with T a declared thing/singleton (the table
+// of rows; All_Unknown_Thing otherwise). The read yields the §08 §2 read
+// table View[T] in stable Id order, so the whole existing combinator surface
+// (fold/filter/first/map/len and the spatial combinators) composes over it
+// through source_element exactly as over a behavior's View param.
+all_check :: proc(ctx: Check_Ctx, e: ^All_Expr) -> (type: Type, err: Type_Error) {
+	if !ctx.in_query {
+		return nil, .All_Outside_Query
+	}
+	record, declared := ctx.env.records[e.thing]
+	if !declared || record.kind != .Thing {
+		return nil, .All_Unknown_Thing
+	}
+	return engine_type_of(.View, user_type_of(e.thing, .Thing)), .None
 }
 
 // stub_expr_check types an expression-position typed hole (spec §05 §2;
@@ -1360,6 +1463,12 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "first":
 		t, fe := first_check(ctx, e)
 		return t, true, fe
+	case "within":
+		t, we := spatial_combinator_check(ctx, e, true)
+		return t, true, we
+	case "nearest_first":
+		t, ne := spatial_combinator_check(ctx, e, false)
+		return t, true, ne
 	case "or_else":
 		t, oe := or_else_check(ctx, e)
 		return t, true, oe
@@ -1714,6 +1823,95 @@ or_else_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_E
 		return nil, .Type_Mismatch
 	}
 	return fallback, .None
+}
+
+// spatial_combinator_check types the §08 §3 spatial combinators over the
+// runtime kernel's pinned read shape: `within(source, origin, r) -> [T]`
+// (every row whose declared @spatial field lies within the fixed-point radius
+// of origin, source order kept) and `nearest_first(source, origin) -> [T]`
+// (ascending kernel distance, stable — the Id tiebreak rides the source's
+// stable Id order). The source is a View[T]/[T] whose element T is a declared
+// thing; the field MEASURED is the one the ENCLOSING query's @spatial(T.f)
+// declaration names — exactly one must match T (the named missing/ambiguous
+// verdicts otherwise; outside a query no requirement exists, so the missing
+// verdict covers that position too). The origin must carry the declared
+// field's type, and that field must be a kernel-measurable vector (Vec2/Vec3
+// — the §10 distance domain); the radius is Fixed. Whether the declaration
+// itself is required/used is the structural index gate's verdict, upstream —
+// this rule owns the field resolution and the value types.
+spatial_combinator_check :: proc(ctx: Check_Ctx, e: ^Call_Expr, with_radius: bool) -> (type: Type, err: Type_Error) {
+	arity := with_radius ? 3 : 2
+	if len(e.args) != arity {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	elem, elem_ok := source_element(source)
+	if !elem_ok {
+		return nil, .Type_Mismatch
+	}
+	thing, is_user := elem.(^User_Type)
+	if !is_user || thing.kind != .Thing {
+		return nil, .Type_Mismatch
+	}
+	field, resolve_err := spatial_requirement_field(ctx, thing.name)
+	if resolve_err != .None {
+		return nil, resolve_err
+	}
+	field_type, has_field := thing_field_type(ctx.env, thing.name, field)
+	if !has_field || !is_vector_ground(field_type) {
+		// A requirement naming a non-vector field has no kernel distance —
+		// the §10 measure is defined over Vec2/Vec3 lanes alone.
+		return nil, .Type_Mismatch
+	}
+	origin := expr_check(ctx, e.args[1]) or_return
+	if !types_compatible(origin, field_type) {
+		return nil, .Type_Mismatch
+	}
+	if with_radius {
+		radius := expr_check(ctx, e.args[2]) or_return
+		if !is_ground(radius, .Fixed) {
+			return nil, .Type_Mismatch
+		}
+	}
+	return list_of(elem), .None
+}
+
+// spatial_requirement_field resolves which field the enclosing query's
+// @spatial declarations measure for one thing: exactly one declaration must
+// name the thing — zero is the missing-requirement verdict (also every
+// non-query position, which can declare none), several the ambiguous one.
+spatial_requirement_field :: proc(ctx: Check_Ctx, thing: string) -> (field: string, err: Type_Error) {
+	found := false
+	for directive in ctx.query_indexes {
+		if directive.kind != .Spatial || directive.thing != thing {
+			continue
+		}
+		if found {
+			return "", .Spatial_Requirement_Ambiguous
+		}
+		field = directive.field
+		found = true
+	}
+	if !found {
+		return "", .Spatial_Requirement_Missing
+	}
+	return field, .None
+}
+
+// thing_field_type reads one declared field's resolved type off a thing's
+// schema — a linear scan over the source-ordered field list, the
+// determinism-stable lookup the membership checks use.
+thing_field_type :: proc(env: Type_Env, thing: string, field: string) -> (type: Type, ok: bool) {
+	record, declared := env.records[thing]
+	if !declared {
+		return nil, false
+	}
+	for schema_field in record.fields {
+		if schema_field.name == field {
+			return schema_field.type, true
+		}
+	}
+	return nil, false
 }
 
 // source_element reads the element type of a read source — a View[T] read

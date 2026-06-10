@@ -143,6 +143,11 @@ emit_expr :: proc(b: ^strings.Builder, expr: Expr) {
 		emit_if(b, e)
 	case ^Stub_Expr:
 		emit_stub(b, e)
+	case ^All_Expr:
+		// The §08 §3 world read `all[T]` — a leaf node carrying its thing type
+		// name: `node all THING 0` (docs/artifact-format.md §2.7, schema v10 —
+		// a new node KIND is a deliberate version bump, §1).
+		emit_line(b, "node all ", e.thing, " 0")
 	}
 }
 

@@ -34,6 +34,7 @@ Expr :: union {
 	^Tuple_Expr,
 	^If_Expr,
 	^Stub_Expr,
+	^All_Expr,
 }
 
 Int_Lit_Expr :: struct {
@@ -215,6 +216,19 @@ Stub_Expr :: struct {
 	hole_type:    Type_Ref,
 	fallback:     Expr,
 	has_fallback: bool,
+}
+
+// All_Expr is the §08 §3 world read `all[T]` — the whole table of a declared
+// thing's instances as a View[T], in stable Id order. It is the ONLY way a
+// query body reads the world (spec §08 §3: "reads the world via `all[T]` and
+// `Ref` resolution"), so the typechecker admits it inside query bodies alone.
+// Grammar: the fun.ebnf §14 index PostfixOp `'[' Expr ']'` applied to the
+// contextual LOWER_IDENT `all` is this form's only ratified spelling — general
+// value indexing still has no production (the header note above holds) — so
+// the parser claims `all` + `[` as one atom on a single token of lookahead
+// (LL(1) preserved: no other production begins `LOWER_IDENT '['`).
+All_Expr :: struct {
+	thing: string, // the read table's element thing — an UPPER_IDENT type name
 }
 
 // With_Expr is the record-update operator `value with { field: v, … }`
@@ -688,6 +702,12 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 		node^ = Name_Expr{name = tok.text, class = tok.class}
 		return node, .None
 	}
+	// The §08 §3 world read `all[T]`: the contextual name `all` followed by a
+	// bracket is the one-token-lookahead atom (see All_Expr). `all` stays a
+	// legal value name everywhere else — only the immediate `[` selects.
+	if tok.text == "all" && following == .L_Bracket {
+		return parse_all_tail(p)
+	}
 	check_ident_case(tok, following) or_return
 	#partial switch following {
 	case .Colon_Colon:
@@ -724,6 +744,23 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 	}
 	node := new(Name_Expr, context.temp_allocator)
 	node^ = Name_Expr{name = tok.text, class = tok.class}
+	return node, .None
+}
+
+// parse_all_tail parses the `[T]` tail of the §08 §3 world read `all[T]`,
+// with the `all` Ident already consumed by parse_name_atom. T is a thing TYPE
+// name — an UPPER_IDENT (lexical-core.ebnf §2), so a lowercase or mixed-case
+// head is the parser-wide Wrong_Case verdict; whether T names a declared
+// thing is the typechecker's membership rule (all_check), not grammar.
+parse_all_tail :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+	expect(p, .L_Bracket) or_return
+	thing := expect(p, .Ident) or_return
+	if !is_upper_ident(thing.class) {
+		return nil, .Wrong_Case
+	}
+	expect(p, .R_Bracket) or_return
+	node := new(All_Expr, context.temp_allocator)
+	node^ = All_Expr{thing = thing.text}
 	return node, .None
 }
 
