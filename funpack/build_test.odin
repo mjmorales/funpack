@@ -647,6 +647,77 @@ test_build_release_multi_module_offender_qualified :: proc(t: ^testing.T) {
 	log.infof("release offender qualification: a multi-module tree names the module-qualified offender (beta.approx_speed)")
 }
 
+// EPLAST_ALPHA_HOLED is the entrypoint-last fixture's first-by-path module
+// (alpha): a doc-headed fn carrying a §05 expression-position hole — the decoy
+// offender a plain sorted-by-path walk would name first.
+EPLAST_ALPHA_HOLED :: "@doc(\"The alpha module: first by sorted path, NOT the entrypoint.\")\n\n@doc(\"An expression hole the index lists AFTER zeta's.\")\nfn alpha_speed(base: Fixed) -> Fixed {\n  return base + @stub(Fixed, 0.5)\n}\n"
+
+// EPLAST_ZETA_HOLED is the entrypoint-last fixture's entrypoint module (zeta,
+// last by sorted path): the minimal compileable module plus a §05
+// expression-position hole — the offender the index lists FIRST
+// (entrypoint-first module order), so the refusal must name it.
+EPLAST_ZETA_HOLED :: MINI_SOURCE + "\n@doc(\"An expression hole in the entrypoint module — index-first.\")\nfn zeta_speed(base: Fixed) -> Fixed {\n  return base + @stub(Fixed, 0.5)\n}\n"
+
+// test_build_release_holed_offender_walks_index_order pins the refusal walk's
+// ORDER against the Index Contract's: a two-module tree whose ENTRYPOINT module
+// (zeta) sorts LAST by path, with a §05 EXPRESSION-position hole in BOTH
+// modules, refuses naming zeta's hole (`zeta.zeta_speed`) — the entrypoint
+// module's decl block leads the emitted index (order_index_modules), so the
+// refusal's first offender is the first offender in index order, NOT the
+// plain sorted-by-path first (`alpha.alpha_speed`). The same tree's dev index
+// confirms the order the refusal mirrors: zeta's block before alpha's.
+@(test)
+test_build_release_holed_offender_walks_index_order :: proc(t: ^testing.T) {
+	root, ok := write_entrypoint_last_tree(t, "holed", EPLAST_ALPHA_HOLED, EPLAST_ZETA_HOLED)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Holed_Declaration)
+	testing.expect_value(t, verdict.offender, "zeta.zeta_speed")
+
+	// The dev build of the SAME tree emits the index whose module order the
+	// refusal walk mirrors: zeta (entrypoint) leads, alpha follows.
+	product, dev_verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, dev_verdict.err, Build_Error.None)
+	if dev_verdict.err != .None {
+		return
+	}
+	order := module_prefix_order(product.index)
+	testing.expect_value(t, len(order), 2)
+	if len(order) != 2 {
+		return
+	}
+	testing.expect_value(t, order[0], "zeta")
+	testing.expect_value(t, order[1], "alpha")
+	log.infof("release hole-ban walk order: an entrypoint-last tree names the index-first offender (zeta.zeta_speed, never alpha.alpha_speed)")
+}
+
+// test_build_release_probed_offender_walks_index_order is the debug-directive
+// sibling of the holed walk-order pin: the same entrypoint-last two-module
+// shape with a §05 §5 @log probe in BOTH modules (hole-free, so the hole-ban
+// never fires) refuses naming zeta's probed fn (`zeta.zeta_speed`) — the
+// index-first offender — never the sorted-by-path first (`alpha.alpha_speed`).
+// Both project walkers share order_release_sources, so the two refusal arms
+// can never disagree on walk order.
+@(test)
+test_build_release_probed_offender_walks_index_order :: proc(t: ^testing.T) {
+	alpha :: "@doc(\"The alpha module: first by sorted path, NOT the entrypoint.\")\n\n@doc(\"A probed fn the index lists AFTER zeta's.\")\n@log(alpha_speed)\nfn alpha_speed() -> Fixed {\n  return 1.5\n}\n"
+	zeta :: MINI_SOURCE + "\n@doc(\"A probed fn in the entrypoint module — index-first.\")\n@log(zeta_speed)\nfn zeta_speed() -> Fixed {\n  return 1.5\n}\n"
+	root, ok := write_entrypoint_last_tree(t, "probed", alpha, zeta)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Debug_Directive)
+	testing.expect_value(t, verdict.offender, "zeta.zeta_speed")
+	log.infof("release debug-ban walk order: an entrypoint-last tree names the index-first offender (zeta.zeta_speed, never alpha.alpha_speed)")
+}
+
 // test_build_refusal_message_shapes pins build_refusal_message's two line
 // shapes: an offender-less arm renders the closed arm's name alone, and a
 // release-refusal verdict appends the module-qualified offender after a colon.
@@ -934,6 +1005,38 @@ write_probed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	if !ok_writes {
 		remove_scratch_tree(root)
 		log.warnf("SKIP build probed tree: cannot write files under %s", root)
+		return "", false
+	}
+	return root, true
+}
+
+// write_entrypoint_last_tree materializes a TWO-module §14 tree whose
+// ENTRYPOINT module (zeta — src/zeta.fun) sorts LAST by path while the sibling
+// module (alpha — src/alpha.fun) sorts first — the fixture discriminating the
+// release-refusal walk order from plain Project.sources order: the Index
+// Contract lists zeta's decl block first (entrypoint-first,
+// order_index_modules), so with an offender in BOTH modules the refusal must
+// name zeta's, never alpha's. The caller supplies each module's source so the
+// one shape serves both refusal arms (hole and probe).
+write_entrypoint_last_tree :: proc(t: ^testing.T, label: string, alpha_source: string, zeta_source: string) -> (root: string, ok: bool) {
+	root = scratch_join({scratch_base(), tprintf_seq(fmt.tprintf("funpack-build-eplast-%s", label))})
+	remove_scratch_tree(root)
+	configs := scratch_join({root, "funpack_configs"})
+	src_dir := scratch_join({root, "src"})
+	if !ensure_dir(configs) || !ensure_dir(src_dir) {
+		log.warnf("SKIP build entrypoint-last tree (%s): cannot create dirs under %s", label, root)
+		return "", false
+	}
+	ok_writes :=
+		os.write_entire_file(scratch_join({configs, "project.fcfg"}), "project eplast {\n  version = \"0.1.0\"\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use zeta.{Loop, bindings}\n\nentrypoint main {\n  pipeline = Loop\n  tick = 60hz\n  logical = 160x120\n  bindings = bindings\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "builds.fcfg"}), "build native {\n  platform = desktop\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "tags.fcfg"}), "tags {\n  game\n}\n") == nil &&
+		os.write_entire_file(scratch_join({src_dir, "alpha.fun"}), alpha_source) == nil &&
+		os.write_entire_file(scratch_join({src_dir, "zeta.fun"}), zeta_source) == nil
+	if !ok_writes {
+		remove_scratch_tree(root)
+		log.warnf("SKIP build entrypoint-last tree (%s): cannot write files under %s", label, root)
 		return "", false
 	}
 	return root, true
