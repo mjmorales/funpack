@@ -26,6 +26,7 @@ Type_Error :: enum {
 	Unknown_Module,   // an import naming a module outside the surface
 	Unknown_Member,   // an import naming a member its module lacks
 	Package_Private,  // a package-edge import (or module-handle access) naming a declaration its package does not @expose — across the §30 §6 boundary an item is importable iff @expose'd; within a project this never fires (public-by-default, spec §15 §4)
+	Expose_Closure_Violation, // an @expose'd declaration whose public signature references a non-@expose'd user type (spec §30 §6, §27 §2: an exposed declaration may reference only exposed, primitive, or stdlib types) — the named-both-ends diagnostic rides expose_closure_verdict (expose_closure.odin)
 	Unresolved_Name,  // a free name with no let binding, no user decl, and no import
 	Name_Collision,   // one name, two meanings (spec §02): a user decl colliding with an import or another user decl, or two imports binding one name to different declarations
 	Unregistered_Layer, // a Body's layer/mask names a value outside any CollisionLayer-kinded enum's variant set (spec §11 §5)
@@ -102,6 +103,11 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index) -> (typed: Typed_
 	// too (the path must name a declared thing and one of its fields), so they
 	// run before body typing and surface their precise verdicts.
 	check_index_paths(ast) or_return
+	// The §30 §6 / §27 §2 exposure closure is a signature-level membership rule
+	// over the resolved name surface (this module's own type declarations plus
+	// the import bindings against the project index), so it runs before body
+	// typing too and surfaces its precise verdict (expose_closure.odin).
+	check_expose_closure(ast, bindings, index) or_return
 	check_bodies(bindings, env, index, ast) or_return
 	check_tests(bindings, env, index, ast) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
