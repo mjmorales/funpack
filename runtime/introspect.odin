@@ -64,6 +64,11 @@ Debug_Session :: struct {
 	// mutated). At most one live branch; a `branch` command re-forks it.
 	has_branch: bool,
 	branch:     Session_Branch,
+	// The §28 §3 time-travel cursor (introspect_time.odin): the load/run/pause/
+	// step/rewind/reset/status position over the recorded timeline, with its
+	// bounded fixed-cadence snapshot ring. Observe-class — it never writes the
+	// canonical chain.
+	cursor:     Time_Cursor,
 }
 
 // open_debug_session folds a recorded run once through the production seam
@@ -336,6 +341,8 @@ session_request :: proc(
 		return observe_replay_behavior(s, id, args, allocator)
 	case "draw_list":
 		return observe_draw_list(s, id, args, allocator)
+	case "load", "run", "pause", "step", "rewind", "reset", "status":
+		return time_request(s, id, cmd, args, allocator)
 	case "branch", "inject_input", "set", "spawn", "emit", "reload":
 		return control_request(s, id, cmd, args, allocator)
 	}
@@ -760,8 +767,8 @@ observe_draw_list :: proc(
 // ok_response_open writes the success envelope up to the `result` value — the
 // caller writes the result object and the closing brace. Field order is fixed
 // (v, id, ok, cmd, result), so a response line is byte-stable for the session
-// log (§28 §3: a debug session re-runs bit-identically).
-@(private = "file")
+// log (§28 §3: a debug session re-runs bit-identically). Shared by every
+// observe-side command file (introspect.odin / introspect_time.odin).
 ok_response_open :: proc(b: ^strings.Builder, id: i64, cmd: string) {
 	fmt.sbprintf(b, "{{\"v\":%d,\"id\":%d,\"ok\":true,\"cmd\":", INTROSPECT_PROTOCOL_VERSION, id)
 	write_json_string(b, cmd)
