@@ -194,11 +194,11 @@ test_build_writes_index_ndjson :: proc(t: ^testing.T) {
 		return
 	}
 	stream := string(written)
-	// The `project` record leads (its v2 schema_version stamp prefixes line 1),
+	// The `project` record leads (its v3 schema_version stamp prefixes line 1),
 	// and the stream carries a `decl` record kind after it (a project-only field
 	// vs a decl-only field both appear) — the multi-record stream, not a lone
 	// project record.
-	testing.expect(t, strings.has_prefix(stream, "{\"schema_version\":2,"))
+	testing.expect(t, strings.has_prefix(stream, "{\"schema_version\":3,"))
 	testing.expect(t, strings.contains(stream, "\"pipeline_flattened\":")) // project record
 	testing.expect(t, strings.contains(stream, "\"qualified_name\":")) // a decl record
 	testing.expect(t, strings.contains(stream, "\"dup_class\":")) // a decl-only field
@@ -377,7 +377,7 @@ test_build_numerics_package_index_only :: proc(t: ^testing.T) {
 	testing.expect_value(t, product.artifact_path, "")
 	testing.expect_value(t, product.artifact, "")
 	testing.expect(t, product.index_path != "")
-	testing.expect(t, strings.has_prefix(product.index, "{\"schema_version\":2,"))
+	testing.expect(t, strings.has_prefix(product.index, "{\"schema_version\":3,"))
 	// The package's `project` record carries an empty entrypoints list and no
 	// pipeline (no entrypoint ⇒ empty pipeline_flattened) — governance data, §30 §7.
 	testing.expect(t, strings.contains(product.index, "\"entrypoints\":[]"))
@@ -502,6 +502,90 @@ test_gates_skip_holed_units :: proc(t: ^testing.T) {
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	testing.expect_value(t, stage_gates(ast), Gate_Error.None)
 	log.infof("gates skip holed units: two holes in one module pass the duplication gate (a hole is body-less, not a scored code unit)")
+}
+
+// ── --release debug-directive ban (§05 §5 / §28 §4: debug residue cannot ship) ──
+
+// test_build_release_probed_tree_exits_two is the release debug-directive-ban
+// acceptance, the hole-ban's sibling: a §14 tree carrying a §05 §5 debug probe
+// built in Release mode refuses with Debug_Directive — the exit-2
+// compile-error outcome (NEVER a counted failure; the build verb has no
+// assertion tier) — and writes NEITHER product.
+@(test)
+test_build_release_probed_tree_exits_two :: proc(t: ^testing.T) {
+	root, ok := write_probed_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, build_err := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.Debug_Directive)
+
+	// The ban refuses before either emission surface runs, so no product lands.
+	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
+	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
+	testing.expect(t, !os.exists(artifact_path))
+	testing.expect(t, !os.exists(index_path))
+	log.infof("release debug ban: a probed decl under --release is Debug_Directive (exit 2, compile error, no product) — debug residue cannot ship")
+}
+
+// test_build_dev_probed_tree_exits_zero_and_indexes_probe is the dev half of
+// the §05 §5 contract: the SAME probed tree built in Dev mode (the no-flag
+// default) compiles exit 0, writes both products, AND its emitted index
+// derives the probe into the decl's debug field — replacing the
+// mandatory-present empty, so the §28 §4 task-registration surface sees the
+// outstanding probe.
+@(test)
+test_build_dev_probed_tree_exits_zero_and_indexes_probe :: proc(t: ^testing.T) {
+	root, ok := write_probed_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	product, build_err := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.None)
+	if build_err != .None {
+		return
+	}
+	write_err := write_build_products(product, root)
+	testing.expect_value(t, write_err, Build_Write_Error.None)
+	testing.expect(t, os.exists(product.artifact_path))
+	testing.expect(t, os.exists(product.index_path))
+	// The probed behavior's decl line carries the DERIVED debug field — the
+	// @log probe by its directive name — while the probe-free bindings fn stays
+	// the mandatory-present empty.
+	testing.expect(t, strings.contains(product.index, "\"qualified_name\":\"drift\""))
+	testing.expect(t, strings.contains(product.index, "\"debug\":[\"log\"]"))
+	testing.expect(t, strings.contains(product.index, "\"debug\":[]"))
+	log.infof("dev probes compile: the probed tree builds exit 0 in dev mode and the index derives the probe (debug=[\"log\"])")
+}
+
+// test_release_debug_decl_walk unit-tests the pure-AST finder (gates.odin) the
+// build-seam ban consults, mirroring test_release_holed_decl_walk: a probed
+// behavior is found by its own name, a probed fn by its name (the parser
+// admits a probe on every directive-carrying decl; placement is a downstream
+// concern, the ban refuses them all), and a probe-free AST reports none.
+@(test)
+test_release_debug_decl_walk :: proc(t: ^testing.T) {
+	probed_behavior_ast, behavior_err := stage_parse(stage_lex("@trace\nbehavior serve on Ball {\n  fn step(self: Ball) -> Ball {\n    return self\n  }\n}\n"))
+	testing.expect_value(t, behavior_err, Parse_Error.None)
+	declaration, probed := release_debug_decl(probed_behavior_ast)
+	testing.expect(t, probed)
+	testing.expect_value(t, declaration, "serve")
+
+	probed_fn_ast, fn_err := stage_parse(stage_lex("@log(speed)\nfn speed() -> Fixed {\n  return 1.5\n}\n"))
+	testing.expect_value(t, fn_err, Parse_Error.None)
+	declaration, probed = release_debug_decl(probed_fn_ast)
+	testing.expect(t, probed)
+	testing.expect_value(t, declaration, "speed")
+
+	clean_ast, clean_err := stage_parse(stage_lex("fn whole() -> Fixed {\n  return 1.5\n}\n"))
+	testing.expect_value(t, clean_err, Parse_Error.None)
+	_, probed = release_debug_decl(clean_ast)
+	testing.expect(t, !probed)
+	log.infof("release_debug_decl: finds a probed behavior and a probed fn by name, none on a probe-free AST")
 }
 
 // module_prefix_order extracts the distinct §15 module prefixes from the index
@@ -713,6 +797,41 @@ write_holed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	if !ok_writes {
 		remove_scratch_tree(root)
 		log.warnf("SKIP build holed tree: cannot write files under %s", root)
+		return "", false
+	}
+	return root, true
+}
+
+// PROBED_SOURCE is the minimal compileable module plus one §05 §5 debug probe
+// (a @log on a behavior, the §28 §4 placement) — the fixture the release
+// debug-directive-ban tests build in both modes: dev compiles it AND derives
+// the probe into the index's debug field; release refuses it
+// (Debug_Directive, exit 2, no product).
+PROBED_SOURCE :: MINI_SOURCE + "\n@doc(\"A probed thing the debug fixture observes.\")\nthing Ball {\n  pos: Int\n}\n\n@doc(\"A probed behavior: dev compiles and indexes the probe, release refuses to ship it.\")\n@log(self.pos)\nbehavior drift on Ball {\n  fn step(self: Ball) -> Ball {\n    return self\n  }\n}\n"
+
+// write_probed_tree materializes the write_minimal_valid_tree fixture with one
+// §05 §5 debug probe added to its source (PROBED_SOURCE) — a valid §14 tree
+// whose only "defect" is the probe, isolating the release-vs-dev verdict to
+// the debug-directive ban rather than any tree-shape or compile floor
+// (mirroring write_holed_tree).
+write_probed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
+	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-probed")})
+	remove_scratch_tree(root)
+	configs := scratch_join({root, "funpack_configs"})
+	src_path := scratch_join({root, "src", "mini.fun"})
+	if !ensure_dir(configs) || !ensure_dir(filepath.dir(src_path)) {
+		log.warnf("SKIP build probed tree: cannot create dirs under %s", root)
+		return "", false
+	}
+	ok_writes :=
+		os.write_entire_file(scratch_join({configs, "project.fcfg"}), "project mini {\n  version = \"0.1.0\"\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use mini.{Loop, bindings}\n\nentrypoint main {\n  pipeline = Loop\n  tick = 60hz\n  logical = 160x120\n  bindings = bindings\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "builds.fcfg"}), "build native {\n  platform = desktop\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "tags.fcfg"}), "tags {\n  game\n}\n") == nil &&
+		os.write_entire_file(src_path, PROBED_SOURCE) == nil
+	if !ok_writes {
+		remove_scratch_tree(root)
+		log.warnf("SKIP build probed tree: cannot write files under %s", root)
 		return "", false
 	}
 	return root, true

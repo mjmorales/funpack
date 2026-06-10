@@ -32,9 +32,18 @@
 //     `@stub(T, fallback)` body emits true. A body-less decl and a test block
 //     have no body position to hole (FnBody ::= Block | StubExpr is the only
 //     hole production), so they emit false.
-//   - todo/debug     — constant empty (false/[]): the gameplay surface does
-//     not yet parse @todo/@debug, so these are mandatory-present empties on
-//     the current tree.
+//   - todo           — the §05 §2 @todo notes the parser records on every
+//     directive-carrying declaration node (node.todos): true exactly when at
+//     least one `@todo("msg", window)` is attached (todo_flag). The record
+//     carries the FLAG only — the parsed message/window stay AST-side, since
+//     §29 §2 names `todo` without content (a richer projection is a contract
+//     reshape, not this derivation).
+//   - debug          — the §05 §5 debug-probe directive names the parser
+//     records on every directive-carrying declaration node (node.probes):
+//     one lowercase directive name per probe ("break"/"log"/"watch"/"trace")
+//     in authored order, never deduped — the §28 §4 task-registration surface
+//     reports EVERY outstanding probe. [] on a probe-free decl and on a test
+//     block (the parser attaches no probes to a test).
 //
 // Declaration ORDER is the fixed gate_units-style per-kind walk
 // (data → enum → thing → signal → fn → behavior → pipeline → let → test) so the
@@ -58,16 +67,16 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 	records := make([dynamic]Decl_Record, 0, decl_count(ast), context.temp_allocator)
 
 	for decl in ast.datas {
-		append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags))
+		append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
 	}
 	for decl in ast.enums {
-		append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags))
+		append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
 	}
 	for decl in ast.things {
-		append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags))
+		append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
 	}
 	for decl in ast.signals {
-		append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags))
+		append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
 	}
 	for decl in ast.fns {
 		append(&records, fn_decl_record(module, decl))
@@ -76,10 +85,10 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 		append(&records, behavior_decl_record(module, decl, typed.env, flat.routes))
 	}
 	for decl in ast.pipelines {
-		append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags))
+		append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
 	}
 	for decl in ast.lets {
-		append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags))
+		append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes))
 	}
 	for decl in ast.tests {
 		append(&records, test_decl_record(module, decl))
@@ -107,12 +116,12 @@ decl_count :: proc(ast: Ast) -> int {
 
 // body_less_decl builds the Decl_Record for a body-less declaration —
 // data/enum/thing/signal/pipeline/let. It carries qualified_name/kind/span/
-// doc/gtags plus the constant directive and behavior-scoped
-// (emits/consumes/calls/mut_data) fields: a body-less decl has no body
-// position to hole (so stub is false, §05 §2), carries no @todo/@debug (the
-// parser does not yet admit them), emits no signal, makes no call, mutates no
-// thing, and has dup_class 0 (no body to hash, the gate_units extern-skip
-// rationale).
+// doc/gtags, the derived @todo flag (todo_flag over the parser's node.todos,
+// §05 §2) and debug-probe names (probe_names over node.probes, §05 §5), plus
+// the constant directive and behavior-scoped (emits/consumes/calls/mut_data)
+// fields: a body-less decl has no body position to hole (so stub is false,
+// §05 §2), emits no signal, makes no call, mutates no thing, and has
+// dup_class 0 (no body to hash, the gate_units extern-skip rationale).
 body_less_decl :: proc(
 	module: string,
 	name: string,
@@ -120,6 +129,8 @@ body_less_decl :: proc(
 	span: int,
 	doc: string,
 	gtags: []string,
+	todos: []Todo_Node,
+	probes: []Debug_Probe,
 ) -> Decl_Record {
 	return Decl_Record {
 		schema_version = INDEX_SCHEMA_VERSION,
@@ -130,8 +141,8 @@ body_less_decl :: proc(
 		doc            = doc,
 		gtags          = gtags,
 		stub           = false,
-		todo           = false,
-		debug          = empty_strings(),
+		todo           = todo_flag(todos),
+		debug          = probe_names(probes),
 		emits          = empty_strings(),
 		consumes       = empty_strings(),
 		calls          = empty_strings(),
@@ -146,8 +157,10 @@ body_less_decl :: proc(
 // NO body, so it carries dup_class 0 and empty calls — the same extern-skip the
 // duplication gate applies so two empty bodies never collide. stub reads the
 // parser's holed flag (§05 §2): a `@stub(T)` / `@stub(T, fallback)` body emits
-// true, an intact (or extern) fn false. A fn is not a pipeline-slot behavior,
-// so emits/consumes/mut_data stay empty.
+// true, an intact (or extern) fn false. Its todo flag is the derived §05 §2
+// @todo presence (todo_flag over decl.todos) and its debug field is the
+// derived §05 §5 probe-name list (probe_names over decl.probes). A fn is not
+// a pipeline-slot behavior, so emits/consumes/mut_data stay empty.
 fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 	kind := Index_Decl_Kind.Extern_Fn if decl.is_extern else Index_Decl_Kind.Fn
 	dup: u64 = 0
@@ -165,8 +178,8 @@ fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 		doc            = decl.doc,
 		gtags          = decl.gtags,
 		stub           = decl.holed,
-		todo           = false,
-		debug          = empty_strings(),
+		todo           = todo_flag(decl.todos),
+		debug          = probe_names(decl.probes),
 		emits          = empty_strings(),
 		consumes       = empty_strings(),
 		calls          = calls,
@@ -181,9 +194,13 @@ fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 // consumer endpoint consumes it); its mut_data is its `on Thing` target when its
 // step return writes that blackboard (contracts.odin). Its stub reads the step's
 // holed flag (§05 §2) — a behavior whose reserved `step` body is a `@stub` hole
-// is the holed declaration the index reports. A behavior off every pipeline has
-// no route endpoints, so its emits/consumes are empty — routes are the
-// authoritative §04 projection the flatten pass already built.
+// is the holed declaration the index reports. Its todo flag is the derived
+// §05 §2 @todo presence (todo_flag over decl.todos — the behavior's own
+// notes, not its step's) and its debug field is the derived §05 §5 probe-name
+// list (probe_names over decl.probes — the behavior is the §28 §4 placement
+// table's primary probe carrier). A behavior off every
+// pipeline has no route endpoints, so its emits/consumes are empty — routes
+// are the authoritative §04 projection the flatten pass already built.
 behavior_decl_record :: proc(
 	module: string,
 	decl: Behavior_Node,
@@ -199,8 +216,8 @@ behavior_decl_record :: proc(
 		doc            = decl.doc,
 		gtags          = decl.gtags,
 		stub           = decl.step.holed,
-		todo           = false,
-		debug          = empty_strings(),
+		todo           = todo_flag(decl.todos),
+		debug          = probe_names(decl.probes),
 		emits          = decl_behavior_emits(decl.name, routes),
 		consumes       = decl_behavior_consumes(decl.name, routes),
 		calls          = body_calls(decl.step.body),
@@ -212,7 +229,9 @@ behavior_decl_record :: proc(
 // test_decl_record builds the Decl_Record for a test block: its dup_class and
 // calls come from its assert/let body. A test occupies no pipeline slot and
 // mutates no thing, so emits/consumes/mut_data stay empty; its body grammar
-// admits no `@stub` hole (only fn bodies do, §05 §2), so stub stays false.
+// admits no `@stub` hole (only fn bodies do, §05 §2), so stub stays false, and
+// the parser attaches no @todo notes and no debug probes to a test block, so
+// todo stays false and debug [].
 test_decl_record :: proc(module: string, decl: Test_Node) -> Decl_Record {
 	return Decl_Record {
 		schema_version = INDEX_SCHEMA_VERSION,
@@ -433,6 +452,52 @@ append_unique :: proc(list: ^[dynamic]string, name: string) {
 		return
 	}
 	append(list, name)
+}
+
+// todo_flag derives a declaration's `todo` index field from its parsed §05 §2
+// notes (node.todos): true exactly when at least one `@todo("msg", window)`
+// is attached. §29 §2 names `todo` as a presence flag on the decl record, so
+// the derivation reports presence only — the parsed message and expiry window
+// stay on the AST (projecting them into the record is a contract reshape
+// behind a schema-version bump, not this derivation's call).
+todo_flag :: proc(todos: []Todo_Node) -> bool {
+	return len(todos) > 0
+}
+
+// probe_names derives a declaration's `debug` index field from its parsed §05
+// §5 probes: one lowercase directive name per probe in authored order, NEVER
+// deduped — each probe auto-registers via the index (§28 §4: the operator sees
+// every outstanding probe), so a behavior carrying two @log probes reports
+// "log" twice. A probe-free declaration yields the canonical mandatory-present
+// empty list. The order is the parser's accumulation order (source order), so
+// the field is deterministic with no map or sort.
+probe_names :: proc(probes: []Debug_Probe) -> []string {
+	if len(probes) == 0 {
+		return empty_strings()
+	}
+	names := make([]string, len(probes), context.temp_allocator)
+	for probe, i in probes {
+		names[i] = probe_directive_name(probe.kind)
+	}
+	return names
+}
+
+// probe_directive_name maps a closed Debug_Probe_Kind onto its source-authored
+// directive spelling — the lowercase name after the `@` (§05 §5) — so the
+// index reports exactly the token an agent greps the source for. The switch is
+// total over the closed enum; a new probe kind is a visible compile gap here.
+probe_directive_name :: proc(kind: Debug_Probe_Kind) -> string {
+	switch kind {
+	case .Break:
+		return "break"
+	case .Log:
+		return "log"
+	case .Watch:
+		return "watch"
+	case .Trace:
+		return "trace"
+	}
+	return ""
 }
 
 // empty_strings is the canonical mandatory-present empty list (spec §29 §2: an

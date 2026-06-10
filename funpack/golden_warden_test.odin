@@ -299,13 +299,12 @@ test_golden_warden_holes_projects_producer_lines_byte_identical :: proc(t: ^test
 
 @(test)
 test_golden_warden_debt_empty_projection_is_success :: proc(t: ^testing.T) {
-	// EMPTY-IS-SUCCESS: drift carries no debt — Decl_Record.todo is
-	// mandatory-present constant-false on every record (the parser does not
-	// yet admit @todo; warden_debt_predicate documents the provenance) and no
+	// EMPTY-IS-SUCCESS: drift carries no debt — no drift decl authors a §05
+	// §2 @todo note (so every record's AST-derived todo flag is false) and no
 	// drift decl attaches the registered `debt` gtag — so `warden debt`
 	// projects ZERO bytes and the integrated dispatch exits 0: an empty answer
 	// is an answer (§29 §1), and the warden has no exit-1 tier to mistake it
-	// for.
+	// for. The live-todo counterpart below pins the non-empty projection.
 	root, _, ok := build_drift_index_root(t)
 	if !ok {
 		return
@@ -320,6 +319,119 @@ test_golden_warden_debt_empty_projection_is_success :: proc(t: ^testing.T) {
 	testing.expect_value(t, warden_command_output(index, .Debt, allocator = context.temp_allocator), "")
 	testing.expect_value(t, warden_verb_exit(root, .Debt), 0)
 	log.infof("golden warden debt: the empty drift projection exits 0 — emptiness is success, never a failure tier")
+}
+
+// overwrite_scratch_tree_file rewrites one file of a copied scratch tree —
+// the pre-build fixture-amendment seam the live-debt golden uses to register
+// data no committed spec example authors yet. The write happens BEFORE the
+// build, so the index under test is still exactly what funpack wrote (over
+// the amended tree), never doctored product bytes.
+overwrite_scratch_tree_file :: proc(t: ^testing.T, root: string, rel: string, content: string) -> bool {
+	path := scratch_join({root, rel})
+	err := os.write_entire_file(path, transmute([]byte)content)
+	testing.expect(t, err == nil)
+	return err == nil
+}
+
+// append_scratch_tree_file appends source text to one file of a copied
+// scratch tree — overwrite_scratch_tree_file's append form, used to add
+// declarations to a copied .fun source without restating the committed bytes.
+append_scratch_tree_file :: proc(t: ^testing.T, root: string, rel: string, addition: string) -> bool {
+	path := scratch_join({root, rel})
+	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	testing.expect(t, read_err == nil)
+	if read_err != nil {
+		return false
+	}
+	joined := strings.concatenate({string(bytes), addition}, context.temp_allocator)
+	return overwrite_scratch_tree_file(t, root, rel, joined)
+}
+
+@(test)
+test_golden_warden_debt_projects_live_todo_alongside_gtag :: proc(t: ^testing.T) {
+	// LIVE DEBT (@todo alongside @gtag): no committed spec example authors
+	// @todo yet, so the scratch drift copy is amended BEFORE the build — one
+	// fn carrying a §05 §2 @todo note and one carrying the `debt` gtag
+	// (registered by amending the copied tags.fcfg) — and funpack builds the
+	// amended tree for real. `warden debt` then projects EXACTLY the
+	// producer's own bytes for those two decls in stream order: the predicate's
+	// todo half reads the live v3 AST-derived flag alongside the gtag half,
+	// never the v2 constant-false. When a spec example authors @todo, this pin
+	// moves to the pristine tree.
+	root, copied := copy_spec_tree_to_temp(resolve_drift_dir(), "drift-warden-todo", "FUNPACK_DRIFT_DIR")
+	if !copied {
+		return
+	}
+	defer remove_scratch_tree(root)
+	if !overwrite_scratch_tree_file(t, root, "funpack_configs/tags.fcfg", "tags {\n  game\n  debt\n}\n") {
+		return
+	}
+	addition := "\n@todo(\"retire the placeholder drag target\", T-0042)\nfn drag_target() -> Fixed {\n  return 0.5\n}\n\n@gtag(\"debt\")\nfn coast_speed(base: Fixed) -> Fixed {\n  return base * 2.0\n}\n"
+	if !append_scratch_tree_file(t, root, "src/drift.fun", addition) {
+		return
+	}
+	product, build_err := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, build_err, Build_Error.None)
+	if build_err != .None {
+		return
+	}
+	write_err := write_build_products(product, root)
+	testing.expect_value(t, write_err, Build_Write_Error.None)
+	if write_err != .None {
+		return
+	}
+	index_bytes, read_err := os.read_entire_file_from_path(product.index_path, context.temp_allocator)
+	testing.expect(t, read_err == nil)
+	if read_err != nil {
+		return
+	}
+	stream := string(index_bytes)
+
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
+	if refusal.err != .None {
+		return
+	}
+	// The decoded records carry the two live halves separately: drag_target is
+	// todo-only (the AST-derived flag, no gtag needed), coast_speed gtag-only.
+	target, target_found := find_warden_decl(index, "drag_target")
+	testing.expect(t, target_found)
+	if target_found {
+		testing.expect(t, target.todo)
+		testing.expect_value(t, len(target.gtags), 0)
+	}
+	coast, coast_found := find_warden_decl(index, "coast_speed")
+	testing.expect(t, coast_found)
+	if coast_found {
+		testing.expect(t, !coast.todo)
+		testing.expect(t, contains_str(coast.gtags, WARDEN_DEBT_GTAG))
+	}
+	// Positional rebuild from the WRITTEN stream (decls[i] ↔ line i+1, the
+	// decode's positional rule): the debt projection is byte-identical to the
+	// producer's own two debt lines in stream order — the holes golden's
+	// byte-identity, applied to debt.
+	lines := ndjson_lines(stream)
+	testing.expect_value(t, len(lines), len(index.decls) + 1)
+	if len(lines) != len(index.decls) + 1 {
+		return
+	}
+	expected := make([dynamic]string, 0, len(index.decls), context.temp_allocator)
+	debt_names := make([dynamic]string, 0, len(index.decls), context.temp_allocator)
+	for decl, i in index.decls {
+		if warden_debt_predicate(decl, "") {
+			append(&expected, strings.concatenate({lines[i + 1], "\n"}, context.temp_allocator))
+			append(&debt_names, decl.qualified_name)
+		}
+	}
+	testing.expect_value(t, len(debt_names), 2)
+	if len(debt_names) == 2 {
+		testing.expect_value(t, debt_names[0], "drag_target")
+		testing.expect_value(t, debt_names[1], "coast_speed")
+	}
+	debt := warden_command_output(index, .Debt, allocator = context.temp_allocator)
+	testing.expect_value(t, debt, strings.concatenate(expected[:], context.temp_allocator))
+	testing.expect_value(t, warden_verb_exit(root, .Debt), 0)
+	log.infof("golden warden debt: the live @todo and @gtag(debt) decls project byte-identical producer lines (drag_target, coast_speed)")
 }
 
 @(test)

@@ -106,16 +106,14 @@ warden_holes_predicate :: proc(decl: Decl_Record, needle: string) -> bool {
 
 // warden_debt_predicate is `funpack warden debt` (§29 §4): a declaration is
 // debt when its contract `todo` field is true OR its gtags carry the
-// registered `debt` tag. The two halves have distinct provenance: the gtag
-// half is LIVE (authored @gtag(debt) declarations project today), while the
-// todo half is faithfully empty on every current tree — Decl_Record.todo is
-// mandatory-present constant-false because the parser does not yet admit
-// @todo (index_decl.odin stamps it false on every record). The projection
-// reads the contract field AS DEFINED, so when a future parser milestone
-// derives todo from source this predicate is already correct with no edit —
-// no parser work is smuggled in here. The gtag scan is a linear pass over one
-// record's authored-order slice, not a map lookup, so output determinism
-// holds (§29 §1). needle is unused — debt takes no argument.
+// registered `debt` tag. Both halves are LIVE producer data: the gtag half
+// projects authored @gtag("debt") declarations, and the todo half reads the
+// v3 AST-derived presence flag the producer stamps for a `@todo("msg",
+// window)` note (todo_flag, index_decl.odin) — together the review surface
+// for the "leaves debt with no record" failure mode. Both facts were the
+// producer's; the projection only reports them. The gtag scan is a linear
+// pass over one record's authored-order slice, not a map lookup, so output
+// determinism holds (§29 §1). needle is unused — debt takes no argument.
 warden_debt_predicate :: proc(decl: Decl_Record, needle: string) -> bool {
 	_ = needle
 	return decl.todo || slice.contains(decl.gtags, WARDEN_DEBT_GTAG)

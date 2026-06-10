@@ -81,14 +81,18 @@ Build_Mode :: enum {
 // typecheck, contract, or flatten — the source does not compile); Index_Failed
 // is an authored-config read failure projecting the `project` record;
 // Holed_Declaration is the §29 §4 release hole-ban — a --release build over a
-// tree carrying a §05 typed hole (you cannot ship a hole). Every arm maps to
-// the exit-2 outcome — a build that cannot emit both products emits neither.
+// tree carrying a §05 typed hole (you cannot ship a hole); Debug_Directive is
+// its §05 §5 sibling — a --release build over a tree carrying a debug probe
+// (@break/@log/@watch/@trace are dev-only, release-forbidden like @stub, §28
+// §4: debug residue cannot ship). Every arm maps to the exit-2 outcome — a
+// build that cannot emit both products emits neither.
 Build_Error :: enum {
 	None,
 	Malformed_Tree,
 	Compile_Failed,
 	Index_Failed,
 	Holed_Declaration,
+	Debug_Directive,
 }
 
 // stage_build is the build verb's pure seam: it reads the §14 project tree at
@@ -108,12 +112,14 @@ Build_Error :: enum {
 // compile/gate/tree error (2, no product); a build never has an assertion tier
 // (exit 1 is the test verb's).
 //
-// MODE (§29 §4): mode is the pure Dev/Release flag the hole-ban keys on. Dev
-// compiles §05 typed holes; Release refuses the whole build when ANY module
-// carries a holed declaration (Holed_Declaration — the same exit-2 compile-error
-// outcome, never a counted failure). The verdict is a pure function of
+// MODE (§29 §4): mode is the pure Dev/Release flag the release bans key on.
+// Dev compiles §05 typed holes and §05 §5 debug probes; Release refuses the
+// whole build when ANY module carries a holed declaration (Holed_Declaration)
+// or a debug directive (Debug_Directive — @break/@log/@watch/@trace are
+// release-forbidden like @stub, §28 §4) — the same exit-2 compile-error
+// outcome, never a counted failure. The verdict is a pure function of
 // (AST, mode): the same tree builds identically in dev, and in release either
-// emits the same bytes (hole-free) or refuses before any emission.
+// emits the same bytes (hole- and probe-free) or refuses before any emission.
 stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocator) -> (product: Build_Product, err: Build_Error) {
 	project, project_err := read_project(root)
 	if project_err != .None {
@@ -128,6 +134,13 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		// runs — exit 2, no product, never a counted failure.
 		if _, holed := project_holed_decl(project.sources); holed {
 			return Build_Product{}, .Holed_Declaration
+		}
+		// The §05 §5 release debug-directive ban, the hole-ban's sibling tier
+		// (§28 §4: a @break/@log in a --release build is a compile error): a
+		// debug probe on ANY declaration refuses the whole build the same way —
+		// exit 2, no product, never a counted failure.
+		if _, probed := project_debug_decl(project.sources); probed {
+			return Build_Product{}, .Debug_Directive
 		}
 	}
 	// A package has no entrypoints.fcfg, so there is no entrypoint module and no
@@ -179,6 +192,33 @@ project_holed_decl :: proc(sources: []Source) -> (declaration: string, holed: bo
 			continue
 		}
 		if name, found := release_holed_decl(ast); found {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// project_debug_decl walks every §14 source for the first declaration carrying
+// a §05 §5 debug probe — the project-wide form of the pure-AST
+// release_debug_decl (gates.odin) the --release debug-directive ban consults,
+// mirroring project_holed_decl exactly. Sources walk in Project.sources order
+// (sorted-by-path via read_project) and each AST in the fixed per-kind
+// declaration order, so a multi-probe project always names the same first
+// offender deterministically. A source that fails to read or parse contributes
+// no verdict here — the checked pipeline downstream surfaces that compile
+// error precisely (Compile_Failed), so the ban never masks a parse failure
+// with a probe verdict.
+project_debug_decl :: proc(sources: []Source) -> (declaration: string, probed: bool) {
+	for source in sources {
+		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
+		if read_err != nil {
+			continue
+		}
+		ast, parse_err := stage_parse(stage_lex(string(bytes)))
+		if parse_err != .None {
+			continue
+		}
+		if name, found := release_debug_decl(ast); found {
 			return name, true
 		}
 	}

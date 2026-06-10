@@ -100,7 +100,9 @@ let MAX: Int = 9
 	// Every decl carries the leading schema_version stamp and the bare name (no
 	// module prefix on the single-source path). stub is false — no decl here is
 	// holed (it derives from Fn_Node.holed, see test_index_decl_stub_from_holes) —
-	// and todo/debug stay the constant empties the parser does not yet fill.
+	// the DERIVED todo flag is false on this note-free source (see
+	// test_index_decl_todo_from_notes), and the DERIVED debug field is [] on
+	// this probe-free source (see test_index_decl_debug_from_probes).
 	testing.expect_value(t, board.schema_version, INDEX_SCHEMA_VERSION)
 	testing.expect_value(t, board.qualified_name, "Board")
 	testing.expect_value(t, board.stub, false)
@@ -164,8 +166,8 @@ behavior solid on Board {
 	testing.expect_value(t, solid.stub, false)
 
 	// A body-less decl has no body position to hole, so it stays false; the
-	// unparsed todo/debug directive fields stay constant-empty on every record,
-	// holed or not.
+	// derived @todo flag and debug field stay empty on every record of this
+	// note- and probe-free source, holed or not.
 	board, has_board := find_record(records, "Board")
 	testing.expect(t, has_board)
 	testing.expect_value(t, board.stub, false)
@@ -174,6 +176,140 @@ behavior solid on Board {
 		testing.expect_value(t, len(r.debug), 0)
 	}
 	log.infof("index decl stub derivation verified (holed fn/behavior true, intact and body-less false)")
+}
+
+@(test)
+test_index_decl_debug_from_probes :: proc(t: ^testing.T) {
+	// debug derives from the parser's §05 §5 probe accumulator (node.probes):
+	// each probed declaration reports one lowercase directive name per probe in
+	// authored order, NEVER deduped (§28 §4: every outstanding probe registers
+	// via the index), and a probe-free declaration reports []. Proven over the
+	// PARSED AST like the stub derivation — derive_decl_records reads only the
+	// nodes/routes/env, so a hand-built Typed_Ast isolates the projection.
+	source := `data Board { w: Int, h: Int }
+@break(self.w > 70)
+behavior paused on Board {
+  fn step(self: Board) -> Board {
+    return self
+  }
+}
+@log(self.w)
+@log(self.h)
+@watch(self.w)
+@trace
+behavior noisy on Board {
+  fn step(self: Board) -> Board {
+    return self
+  }
+}
+behavior quiet on Board {
+  fn step(self: Board) -> Board {
+    return self
+  }
+}
+`
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	records := derive_decl_records("", Typed_Ast{ast = ast}, Flattened_Pipeline{})
+
+	// A single probe reports its directive name.
+	paused, has_paused := find_record(records, "paused")
+	testing.expect(t, has_paused)
+	testing.expect_value(t, len(paused.debug), 1)
+	if len(paused.debug) == 1 {
+		testing.expect_value(t, paused.debug[0], "break")
+	}
+
+	// A multi-probe block reports every probe in authored order — the repeated
+	// @log stays two entries, never deduped.
+	noisy, has_noisy := find_record(records, "noisy")
+	testing.expect(t, has_noisy)
+	testing.expect_value(t, len(noisy.debug), 4)
+	if len(noisy.debug) == 4 {
+		testing.expect_value(t, noisy.debug[0], "log")
+		testing.expect_value(t, noisy.debug[1], "log")
+		testing.expect_value(t, noisy.debug[2], "watch")
+		testing.expect_value(t, noisy.debug[3], "trace")
+	}
+
+	// A probe-free behavior and a probe-free body-less decl both report the
+	// mandatory-present empty list.
+	quiet, has_quiet := find_record(records, "quiet")
+	testing.expect(t, has_quiet)
+	testing.expect_value(t, len(quiet.debug), 0)
+	board, has_board := find_record(records, "Board")
+	testing.expect(t, has_board)
+	testing.expect_value(t, len(board.debug), 0)
+	log.infof("index decl debug derivation verified (probe names in authored order, no dedupe, [] when probe-free)")
+}
+
+@(test)
+test_index_decl_todo_from_notes :: proc(t: ^testing.T) {
+	// todo derives from the parser's §05 §2 note accumulator (node.todos): a
+	// declaration carrying at least one @todo("msg", window) note reports
+	// true — any of the four window forms, on a body-less decl, a fn, or a
+	// behavior alike — multiple notes still report ONE flag (§29 §2 names
+	// `todo` as presence, the message/window stay AST-side), and a note-free
+	// declaration reports false. Proven over the PARSED AST like the
+	// stub/debug derivations — derive_decl_records reads only the
+	// nodes/routes/env, so a hand-built Typed_Ast isolates the projection.
+	source := `data Board { w: Int, h: Int }
+@todo("shrink the board", 2w)
+data Pending { w: Int }
+@todo("retire the alias", T-0042)
+@todo("fold into Board", 2026-09-01)
+fn alias() -> Int {
+  return 1
+}
+behavior calm on Board {
+  fn step(self: Board) -> Board {
+    return self
+  }
+}
+@todo("rework the step", 50builds)
+behavior restless on Board {
+  fn step(self: Board) -> Board {
+    return self
+  }
+}
+`
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	records := derive_decl_records("", Typed_Ast{ast = ast}, Flattened_Pipeline{})
+
+	// A single note on a body-less decl flips the flag — the derivation is
+	// shared with the bodied kinds via body_less_decl's todos carry.
+	pending, has_pending := find_record(records, "Pending")
+	testing.expect(t, has_pending)
+	testing.expect_value(t, pending.todo, true)
+
+	// Multiple accumulated notes still report one presence flag, and the note
+	// never changes the decl kind or marks a hole.
+	alias, has_alias := find_record(records, "alias")
+	testing.expect(t, has_alias)
+	testing.expect_value(t, alias.todo, true)
+	testing.expect_value(t, alias.kind, Index_Decl_Kind.Fn)
+	testing.expect_value(t, alias.stub, false)
+
+	// A noted behavior reports its OWN notes (decl.todos, not its step's).
+	restless, has_restless := find_record(records, "restless")
+	testing.expect(t, has_restless)
+	testing.expect_value(t, restless.todo, true)
+
+	// A note-free decl of every shape stays false.
+	board, has_board := find_record(records, "Board")
+	testing.expect(t, has_board)
+	testing.expect_value(t, board.todo, false)
+	calm, has_calm := find_record(records, "calm")
+	testing.expect(t, has_calm)
+	testing.expect_value(t, calm.todo, false)
+	log.infof("index decl todo derivation verified (note presence true across kinds, one flag for many notes, false when note-free)")
 }
 
 @(test)
@@ -388,16 +524,17 @@ pipeline Loop {
 	log.infof("index decl mut_data derivation verified over the blackboard-write contract")
 }
 
-// ── Live checkout: one record per declaration, fixed order, constant directives ──
+// ── Live checkout: one record per declaration, fixed order, empty directive fields ──
 
 @(test)
 test_index_decl_records_pong :: proc(t: ^testing.T) {
 	// Decl-record derivation over the live pong checkout: one record per
 	// declaration in the fixed gate_units-style order, with stub=false (the pong
-	// tree carries no @stub hole) and todo=false / debug=[] (the unparsed §05
-	// directive fields) on every decl. The per-kind counts are pinned against the
-	// golden source (33 decls). SKIP-warns when the sibling pong checkout is
-	// absent — never silently passes.
+	// tree carries no @stub hole), the derived todo=false (no pong decl carries
+	// a §05 §2 @todo note) and the derived debug=[] (no pong decl carries a
+	// §05 §5 probe) on every decl. The per-kind
+	// counts are pinned against the golden source (33 decls). SKIP-warns when
+	// the sibling pong checkout is absent — never silently passes.
 	records, ok := pong_decl_records(t)
 	if !ok {
 		return
@@ -472,10 +609,11 @@ test_index_decl_records_pong :: proc(t: ^testing.T) {
 @(test)
 test_index_decl_records_snake :: proc(t: ^testing.T) {
 	// Decl-record derivation over the live snake checkout: one record per
-	// declaration in the fixed order, with stub=false (no snake decl is holed)
-	// and the unparsed todo/debug empties on every decl. Counts pinned against
-	// the golden source (36 decls). SKIP-warns when the sibling snake checkout
-	// is absent.
+	// declaration in the fixed order, with stub=false (no snake decl is holed),
+	// the derived todo=false (no snake decl carries a @todo note), and the
+	// derived debug=[] (no snake decl carries a probe) on every decl. Counts
+	// pinned against the golden source (36
+	// decls). SKIP-warns when the sibling snake checkout is absent.
 	records, ok := snake_decl_records(t)
 	if !ok {
 		return
