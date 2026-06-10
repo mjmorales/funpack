@@ -1,6 +1,6 @@
 // LL(1) statement-layer parser over the golden-file surface (spec §02,
 // §06, §07): a file-leading @doc as the module doc, per-declaration @doc,
-// @gtag, and §05 §5 debug directives, import in its three forms, the §06/§07 declaration
+// @gtag, @todo, and §05 §5 debug directives, import in its three forms, the §06/§07 declaration
 // layer (data/enum/thing/singleton/signal/behavior/pipeline, module-level
 // let, and top-level fn), and test blocks. Every production opens with a
 // unique keyword, so one token of lookahead selects it. Expressions route
@@ -117,6 +117,7 @@ Let_Decl_Node :: struct {
 	doc:    string,
 	gtags:  []string, // @gtag("…") labels attached to this declaration
 	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	line:   int, // 1-based source line of the `let` keyword (artifact-format §9 span provenance)
 }
 
@@ -127,6 +128,7 @@ Data_Node :: struct {
 	doc:    string,
 	gtags:  []string,
 	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	line:   int, // 1-based source line of the `data` keyword (artifact-format §9 span provenance)
 }
 
@@ -137,6 +139,7 @@ Enum_Node :: struct {
 	doc:      string,
 	gtags:    []string,
 	probes:   []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:    []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	line:     int, // 1-based source line of the `enum` keyword (artifact-format §9 span provenance)
 }
 
@@ -151,6 +154,7 @@ Thing_Node :: struct {
 	doc:          string,
 	gtags:        []string,
 	probes:       []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:        []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	line:         int, // 1-based source line of the `thing`/`singleton` keyword (artifact-format §9 span provenance)
 }
 
@@ -160,6 +164,7 @@ Signal_Node :: struct {
 	doc:    string,
 	gtags:  []string,
 	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	line:   int, // 1-based source line of the `signal` keyword (artifact-format §9 span provenance)
 }
 
@@ -174,6 +179,7 @@ Fn_Node :: struct {
 	doc:          string,
 	gtags:        []string,
 	probes:       []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:        []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	line:         int, // 1-based source line of the `fn` keyword (artifact-format §9 span provenance)
 	// is_extern marks a §02/§26 `extern fn` — a body-less native-boundary
 	// declaration whose definition lives outside funpack (the §17 seam's
@@ -206,6 +212,7 @@ Behavior_Node :: struct {
 	doc:    string,
 	gtags:  []string,
 	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	line:   int, // 1-based source line of the `behavior` keyword (artifact-format §9 span provenance)
 }
 
@@ -231,6 +238,7 @@ Pipeline_Node :: struct {
 	doc:    string,
 	gtags:  []string,
 	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	line:   int, // 1-based source line of the `pipeline` keyword (artifact-format §9 span provenance)
 }
 
@@ -257,13 +265,53 @@ Debug_Probe :: struct {
 	line: int,  // 1-based source line of the `@` (artifact-format §9 span provenance)
 }
 
-// Directives carries the @doc / @gtag / debug-probe prefix block attached to
-// a declaration (spec §05). It accumulates as leading directives are parsed
-// and is consumed by the declaration that follows them.
+// Todo_Window_Form is the closed §05 §2 expiry-window family of @todo —
+// four forms, one obvious spelling each (spec §29 §4). The set is closed
+// like every directive category (spec §05): adding a form is a spec change,
+// never a parser convenience.
+Todo_Window_Form :: enum {
+	Duration,    // `<int>` + unit h/d/w/mo/q/y — that long after the introducing build
+	Date,        // ISO-8601 YYYY-MM-DD — expires on that date
+	Build_Count, // `<int>builds` — after that many builds
+	Task_Ref,    // `T-<digits>` — when the task closes; the recommended default
+}
+
+// Todo_Window is one parsed @todo expiry window, recorded VERBATIM as
+// written: the parser tags the form and keeps the spelled components, and
+// never evaluates expiry — the build-clock that dates a window is a recorded
+// input to `funpack build` (spec §29 §1/§4), an argument the parse stage does
+// not have. Only the form-tagged fields are meaningful; the rest are zero.
+// Date components are ISO shape-checked only (4/2/2 digit spellings, month
+// 1–12, day 1–31): calendar validity (a Feb 30) is deliberately NOT a parse
+// concern — the window evaluator owns the calendar.
+Todo_Window :: struct {
+	form:   Todo_Window_Form,
+	amount: i64,    // Duration / Build_Count: the leading count
+	unit:   string, // Duration: the trailing unit as written (h/d/w/mo/q/y)
+	year:   i64,    // Date: the YYYY component
+	month:  i64,    // Date: the MM component (1–12)
+	day:    i64,    // Date: the DD component (1–31)
+	task:   string, // Task_Ref: the digits as written — zero padding kept ("0042")
+}
+
+// Todo_Node is one parsed `@todo("msg", window)` (spec §05 §2) — the only
+// legal temporal note — carried on the declaration it prefixes, like @gtag.
+// Parse+AST only here: index recording (spec §29 §2) and window-expiry
+// evaluation are downstream stages' jobs, keyed off these nodes.
+Todo_Node :: struct {
+	message: string,
+	window:  Todo_Window,
+	line:    int, // 1-based source line of the `@` (artifact-format §9 span provenance)
+}
+
+// Directives carries the @doc / @gtag / @todo / debug-probe prefix block
+// attached to a declaration (spec §05). It accumulates as leading directives
+// are parsed and is consumed by the declaration that follows them.
 Directives :: struct {
 	doc:    string,
 	gtags:  [dynamic]string,
 	probes: [dynamic]Debug_Probe,
+	todos:  [dynamic]Todo_Node,
 }
 
 Parse_Error :: enum {
@@ -274,6 +322,7 @@ Parse_Error :: enum {
 	Missing_Else,         // an if-EXPRESSION with no `else` arm (spec §02 §5): both arms are required in value position, so a missing alternate has no type to unify against — never a silent fallback (grammar/fun.ebnf §15 IfExpr)
 	Probe_Missing_Arg,    // a @break/@log/@watch debug probe without its mandatory `(expr)` argument (spec §05 §5: the predicate/expression is the probe's whole content)
 	Probe_Unexpected_Arg, // a @trace carrying an argument — @trace takes none (spec §05 §5; grammar/fun.ebnf §1 DebugDirective)
+	Malformed_Todo_Window, // a @todo whose mandatory window is missing or matches none of the four §05 §2 forms (unknown unit, mis-shaped/out-of-range ISO date, quoted or lowercase task ref)
 }
 
 Parser :: struct {
@@ -339,6 +388,7 @@ empty_directives :: proc() -> Directives {
 	return Directives {
 		gtags = make([dynamic]string, 0, 4, context.temp_allocator),
 		probes = make([dynamic]Debug_Probe, 0, 4, context.temp_allocator),
+		todos = make([dynamic]Todo_Node, 0, 4, context.temp_allocator),
 	}
 }
 
@@ -371,6 +421,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.lets, node)
 	case .Ident:
 		// `data`/`enum`/`thing`/`singleton` are CONTEXTUAL keywords (fun.ll1.md
@@ -387,12 +438,14 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.signals, node)
 	case .Fn:
 		node := parse_fn_decl(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.fns, node)
 	case .Extern:
 		// `extern fn` (§02/§26) is the body-less native-boundary fn the §17 seam
@@ -403,18 +456,21 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.fns, node)
 	case .Behavior:
 		node := parse_behavior(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.behaviors, node)
 	case .Pipeline:
 		node := parse_pipeline(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.pipelines, node)
 	case .Test:
 		node := parse_test(p) or_return
@@ -441,18 +497,21 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.datas, node)
 	case "enum":
 		node := parse_enum(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.enums, node)
 	case "thing", "singleton":
 		node := parse_thing(p) or_return
 		node.doc = pending.doc
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
 		append(&out.things, node)
 	case:
 		return .Unexpected_Token
@@ -461,16 +520,16 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 }
 
 // parse_directive parses one declaration-prefix directive (spec §05):
-// `@doc("…")`, `@gtag("…", …)`, or a §05 §5 debug probe
-// (@break/@log/@watch/@trace). The file-leading @doc documents the module
+// `@doc("…")`, `@gtag("…", …)`, `@todo("msg", window)`, or a §05 §5 debug
+// probe (@break/@log/@watch/@trace). The file-leading @doc documents the module
 // (spec §15, fun.ll1.md §5B): the first @doc is the module doc only when it
 // is followed by an `import` — imports carry no directives, so a @doc before
 // one cannot be the import's. Blank lines between the file-leading @doc and the
 // first import are insignificant, so skip any run of newlines before testing
 // for the import (the main loop skips them anyway, so advancing here is safe).
 // A first @doc followed instead by @gtag or a declaration keyword is that
-// declaration's doc. @gtag labels and debug probes accumulate; a declaration
-// consumes the whole accumulated directive set.
+// declaration's doc. @gtag labels, @todo notes, and debug probes accumulate;
+// a declaration consumes the whole accumulated directive set.
 parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, seen_decl: bool) -> Parse_Error {
 	at_tok := expect(p, .At) or_return
 	name := expect(p, .Ident) or_return
@@ -500,6 +559,23 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		}
 		expect(p, .R_Paren) or_return
 		terminate_statement(p) or_return
+	case "todo":
+		// @todo("msg", window) — the only legal temporal note (spec §05 §2).
+		// The window is MANDATORY: a @todo with no expiry can rot forever, so
+		// its absence is the named Malformed_Todo_Window verdict, never a
+		// generic token error. Trailing junk AFTER a well-formed window stays
+		// the generic Unexpected_Token — the named diagnostic covers window
+		// malformation only.
+		expect(p, .L_Paren) or_return
+		msg := expect(p, .String_Lit) or_return
+		if peek_kind(p) != .Comma {
+			return .Malformed_Todo_Window
+		}
+		p.pos += 1
+		window := parse_todo_window(p) or_return
+		expect(p, .R_Paren) or_return
+		terminate_statement(p) or_return
+		append(&pending.todos, Todo_Node{message = msg.text, window = window, line = at_tok.line})
 	case "break", "log", "watch":
 		// @break(pred) / @log(expr) / @watch(expr) — the §05 §5 observe-class
 		// debug probes. The single argument is ordinary funpack (a predicate
@@ -547,6 +623,102 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		return .Unexpected_Token
 	}
 	return .None
+}
+
+// parse_todo_window parses the mandatory @todo expiry window — one of the
+// four closed §05 §2 forms, selected LL(1) off the opening token plus one
+// lookahead (spec §05: the forms are mutually unambiguous — a date carries
+// two `-`, a task ref leads with `T-`, and a duration and a build count
+// differ by their trailing unit). The lexer splits the spellings naturally:
+// `30d` is Int_Lit + adjacent Ident, `2026-09-01` is Int_Lit/Minus/Int_Lit/
+// Minus/Int_Lit, `T-0042` is Ident/Minus/Int_Lit. Anything outside the four
+// forms — a bare count with no unit, an unknown unit, a quoted window, a
+// lowercase task ref — is the named Malformed_Todo_Window verdict, so an
+// agent repairs the exact window shape rather than chasing a token error.
+parse_todo_window :: proc(p: ^Parser) -> (window: Todo_Window, err: Parse_Error) {
+	#partial switch peek_kind(p) {
+	case .Int_Lit:
+		lead := advance(p) or_return
+		if peek_kind(p) == .Minus {
+			// Two `-` follow only in the date form; the date helper owns the
+			// ISO shape from here.
+			return parse_todo_date(p, lead)
+		}
+		if peek_kind(p) != .Ident {
+			// A bare `<int>` names no unit — neither a duration nor a build
+			// count (spec §05 §2: one obvious spelling each).
+			return window, .Malformed_Todo_Window
+		}
+		unit := advance(p) or_return
+		switch unit.text {
+		case "h", "d", "w", "mo", "q", "y":
+			return Todo_Window{form = .Duration, amount = lead.int_value, unit = unit.text}, .None
+		case "builds":
+			return Todo_Window{form = .Build_Count, amount = lead.int_value}, .None
+		case:
+			return window, .Malformed_Todo_Window
+		}
+	case .Ident:
+		// Task ref `T-<digits>` — the recommended default. The lead is the
+		// literal uppercase `T`: a lowercase `t-0042` matches no form.
+		lead := advance(p) or_return
+		if lead.text != "T" || peek_kind(p) != .Minus {
+			return window, .Malformed_Todo_Window
+		}
+		p.pos += 1
+		if peek_kind(p) != .Int_Lit {
+			return window, .Malformed_Todo_Window
+		}
+		digits := advance(p) or_return
+		// The digits are kept as WRITTEN — `T-0042` keeps its zero padding —
+		// because a T-ref resolves against the operator's task tooling
+		// (spec §05 §2), whose ids are spelled strings, not numbers.
+		return Todo_Window{form = .Task_Ref, task = digits.text}, .None
+	case:
+		// A quoted window (`@todo("msg", "30d")`), a fixed-point literal, or
+		// any other opener matches none of the four forms.
+		return window, .Malformed_Todo_Window
+	}
+}
+
+// parse_todo_date parses the ISO-8601 `YYYY-MM-DD` window after its year
+// Int_Lit and the peeked first `-` (spec §05 §2). Enforcement is ISO SHAPE
+// only, off the token texts the lexer kept verbatim: 4/2/2 digit spellings
+// (so `2026-9-01` is malformed — the zero-padded two-digit month is the one
+// obvious spelling) plus month 1–12 / day 1–31 range checks. Calendar
+// validity (a Feb 30) is deliberately NOT checked at parse: the window is
+// evaluated as a pure function of (source, clock) downstream (spec §29 §4),
+// and the calendar belongs to that evaluator.
+parse_todo_date :: proc(p: ^Parser, year_tok: Token) -> (window: Todo_Window, err: Parse_Error) {
+	if len(year_tok.text) != 4 {
+		return window, .Malformed_Todo_Window
+	}
+	p.pos += 1 // the first `-` (the caller peeked it)
+	if peek_kind(p) != .Int_Lit {
+		return window, .Malformed_Todo_Window
+	}
+	month_tok := advance(p) or_return
+	if len(month_tok.text) != 2 || month_tok.int_value < 1 || month_tok.int_value > 12 {
+		return window, .Malformed_Todo_Window
+	}
+	if peek_kind(p) != .Minus {
+		return window, .Malformed_Todo_Window
+	}
+	p.pos += 1
+	if peek_kind(p) != .Int_Lit {
+		return window, .Malformed_Todo_Window
+	}
+	day_tok := advance(p) or_return
+	if len(day_tok.text) != 2 || day_tok.int_value < 1 || day_tok.int_value > 31 {
+		return window, .Malformed_Todo_Window
+	}
+	return Todo_Window {
+			form = .Date,
+			year = year_tok.int_value,
+			month = month_tok.int_value,
+			day = day_tok.int_value,
+		},
+		.None
 }
 
 parse_import :: proc(p: ^Parser) -> (node: Import_Node, err: Parse_Error) {
