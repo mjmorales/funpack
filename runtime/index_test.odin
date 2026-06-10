@@ -13,8 +13,8 @@ import "core:testing"
 
 // index_blackboard builds one row's by-name blackboard for the fixtures — the
 // state_test mold, allocated on the test temp allocator so the leak checker
-// stays clean.
-@(private = "file")
+// stays clean. Package-visible: the query-evaluation fixtures
+// (query_eval_test.odin) build their committed versions through the same mold.
 index_blackboard :: proc(pairs: ..struct {
 		name:  string,
 		value: Field_Value,

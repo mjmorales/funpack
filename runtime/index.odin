@@ -254,6 +254,90 @@ index_lookup :: proc(
 	return out[:], true
 }
 
+// --- Spatial queries over a maintained @spatial structure (§08 §3) ---------
+
+// Spatial_Hit is one radius-query answer: the row and its kernel-exact distance
+// from the probe origin — the (distance, Id) pair the nearest-first order sorts
+// by.
+Spatial_Hit :: struct {
+	id:       Id,
+	distance: Fixed,
+}
+
+// spatial_within is the §08 §3 deterministic radius query over a maintained
+// @spatial structure: every posting whose vector key lies within `radius` of
+// `origin` (fixed-point bounds — distance through the kernel's vec2_length/
+// vec3_length, compared `<= radius`, no float ever), returned NEAREST-FIRST
+// with the stable Id as the tiebreak — the `within` + `nearest_first` composed
+// read the spec's exemplar query body folds. The probe origin's arm picks the
+// dimension: a Vec2 origin reads Vec2 keys, a Vec3 origin Vec3 keys. The
+// absent arm covers an undeclared requirement, an unsupported table, a
+// non-vector origin, and a posting whose key arm mismatches the origin — a
+// distance the kernel does not define is a refusal, never a coerced 0.
+spatial_within :: proc(
+	state: ^Index_State,
+	thing: string,
+	field: string,
+	origin: Field_Value,
+	radius: Fixed,
+	allocator := context.allocator,
+) -> (
+	hits: []Spatial_Hit,
+	ok: bool,
+) {
+	table := index_find_table(state, .Spatial, thing, field)
+	if table == nil || !table.supported {
+		return nil, false
+	}
+	out := make([dynamic]Spatial_Hit, 0, len(table.entries), allocator)
+	for entry in table.entries {
+		distance, measurable := spatial_distance(origin, entry.key)
+		if !measurable {
+			return nil, false
+		}
+		if distance <= radius {
+			append(&out, Spatial_Hit{id = entry.id, distance = distance})
+		}
+	}
+	slice.sort_by(out[:], spatial_hit_less)
+	return out[:], true
+}
+
+// spatial_hit_less is the nearest-first order: ascending distance, the stable
+// Id as the tiebreak — two equidistant rows answer in Id order, the §08 §3
+// Id-tiebroken determinism rule.
+spatial_hit_less :: proc(a, b: Spatial_Hit) -> bool {
+	if a.distance != b.distance {
+		return a.distance < b.distance
+	}
+	return a.id.raw < b.id.raw
+}
+
+// spatial_distance measures origin → key through the fixed-point kernel:
+// vec2_length / vec3_length over the component difference (bit-exact on
+// perfect squares, floor-rounded otherwise — deterministic on every machine,
+// §10.5). ok is false on any arm mismatch: only a like-dimensioned vector pair
+// has a defined distance.
+spatial_distance :: proc(origin: Field_Value, key: Field_Value) -> (distance: Fixed, ok: bool) {
+	switch from in origin {
+	case Vec2:
+		at, is_vec2 := key.(Vec2)
+		if !is_vec2 {
+			return 0, false
+		}
+		return vec2_length(vec2_sub(at, from)), true
+	case Vec3:
+		at, is_vec3 := key.(Vec3)
+		if !is_vec3 {
+			return 0, false
+		}
+		return vec3_length(vec3_sub(at, from)), true
+	case i64, Fixed, bool, string, Ref, Record_Value, List_Value, Variant_Value, String_Value:
+		return 0, false
+	}
+	return 0, false
+}
+
 // --- The order-preserving canonical key encoding ---------------------------
 
 // index_key_bytes encodes a committed key column into bytes whose
