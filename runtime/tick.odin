@@ -122,6 +122,14 @@ Tick_State :: struct {
 	// bytes are byte-identical regardless of the split — the determinism floor reads
 	// values, never addresses.
 	commit_allocator: Runtime_Allocator,
+	// observe is the §28 OBSERVE-class introspection tap (introspect.odin). When
+	// non-nil, the fold COPIES each behavior step's bound env/result and each
+	// routed signal into the capture buffers as it folds — a pure read of values
+	// the fold already computed, never a write into tick state, so an observed
+	// fold commits bit-identical state to an unobserved one (the §28 §2
+	// non-perturbation warranty; the introspect digest-pin test holds it). nil
+	// (every production driver) costs one pointer compare per tap site.
+	observe:          ^Tick_Observe,
 }
 
 // Pending_Spawn is one queued Spawn command awaiting the tick-boundary batch: the
@@ -865,6 +873,7 @@ step_tick :: proc(
 	allocator := context.allocator,
 	rng: ^Rng = nil,
 	indices: ^Index_State = nil,
+	observe: ^Tick_Observe = nil,
 ) -> World_Version {
 	// The plain (bounded) driver runs eval and commit on ONE allocator — the caller's
 	// wholesale temp-free at the end reclaims everything, so there is no scratch/persist
@@ -873,6 +882,9 @@ step_tick :: proc(
 	if rng != nil {
 		state.rng = rng^
 	}
+	// The §28 observe tap rides the SAME fold every driver runs — set here, read at
+	// the capture sites (behavior step / signal route), never written by the fold.
+	state.observe = observe
 	prior_version := prior
 	interp := new_interp(program, &prior_version, &state, input, time, allocator)
 
@@ -959,6 +971,14 @@ run_behavior_over_instances :: proc(
 		self_row := table.rows[i]
 		env := bind_behavior_env(interp, state, step, behavior, self_row)
 		result, ok := eval_behavior_body(interp, behavior.body, &env)
+		// The §28 observe tap captures the step's (in → out) BEFORE the fold lands
+		// the result: self_row.fields still aliases the pre-eval working map (a
+		// blackboard write REPLACES the map, never mutates it), and the bound env
+		// is the behavior's declared reads. A pure copy-out — the fold below is
+		// unchanged whether the tap fired or not.
+		if state.observe != nil {
+			observe_behavior_step(state.observe, step, behavior, self_row, env, result, ok)
+		}
 		if !ok {
 			continue
 		}
@@ -1215,6 +1235,11 @@ route_signals :: proc(state: ^Tick_State, signal_type: string, result: Value) {
 	if !is_list || len(list.elements) == 0 {
 		return
 	}
+	// §28 observe tap: capture the routed broadcast AFTER the empty-list filter, so
+	// the capture records exactly the signals consumers will read this tick.
+	if state.observe != nil {
+		observe_broadcast_signals(state.observe, signal_type, list.elements)
+	}
 	existing := state.mailbox.by_type[signal_type]
 	combined := make([]Value, len(existing) + len(list.elements), state.allocator)
 	copy(combined, existing)
@@ -1229,6 +1254,11 @@ route_signals :: proc(state: ^Tick_State, signal_type: string, result: Value) {
 // ("routed by the engine to each participating instance"), so the consumer needs
 // no self.id filter.
 route_instance_signal :: proc(state: ^Tick_State, signal_type: string, target: Id, signal: Value) {
+	// §28 observe tap: capture the per-instance route with its target Id, so a
+	// signals query sees the engine-routed Contact/Trigger deliveries too.
+	if state.observe != nil {
+		observe_instance_signal(state.observe, signal_type, target, signal)
+	}
 	per_type, has := state.mailbox.by_instance[signal_type]
 	if !has {
 		per_type = make(map[Id][]Value, state.allocator)
