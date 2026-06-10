@@ -31,9 +31,9 @@ test_build_pong_tree_exits_zero_and_writes_both_products :: proc(t: ^testing.T) 
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)
@@ -61,11 +61,11 @@ test_build_pong_double_build_identical :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	first, first_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, first_err, Build_Error.None)
-	second, second_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, second_err, Build_Error.None)
-	if first_err != .None || second_err != .None {
+	first, first_verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, first_verdict.err, Build_Error.None)
+	second, second_verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, second_verdict.err, Build_Error.None)
+	if first_verdict.err != .None || second_verdict.err != .None {
 		return
 	}
 	testing.expect(t, first.artifact == second.artifact)
@@ -96,11 +96,11 @@ test_build_double_build_identical_no_checkout :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	first, first_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, first_err, Build_Error.None)
-	second, second_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, second_err, Build_Error.None)
-	if first_err != .None || second_err != .None {
+	first, first_verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, first_verdict.err, Build_Error.None)
+	second, second_verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, second_verdict.err, Build_Error.None)
+	if first_verdict.err != .None || second_verdict.err != .None {
 		return
 	}
 	testing.expect(t, first.artifact == second.artifact)
@@ -130,10 +130,10 @@ test_build_compile_error_exits_two_writes_no_artifact :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, .Dev, context.temp_allocator)
+	_, verdict := stage_build(root, .Dev, context.temp_allocator)
 	// The broken source parses to a malformed program the checked pipeline
 	// rejects, so the build refuses with Compile_Failed and emits nothing.
-	testing.expect_value(t, build_err, Build_Error.Compile_Failed)
+	testing.expect_value(t, verdict.err, Build_Error.Compile_Failed)
 
 	// No artifact and no index were written: stage_build returns before the
 	// write side, so the derived `.funpack/` products are absent.
@@ -160,8 +160,8 @@ test_build_malformed_tree_exits_two :: proc(t: ^testing.T) {
 	defer remove_scratch_tree(root)
 	// The root has no funpack_configs/ — read_project rejects it, so the build
 	// is a malformed-tree exit-2.
-	_, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.Malformed_Tree)
+	_, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Malformed_Tree)
 }
 
 // test_build_writes_index_ndjson is the whole-stream acceptance: building the
@@ -179,9 +179,9 @@ test_build_writes_index_ndjson :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)
@@ -222,11 +222,11 @@ test_build_index_byte_identical_twice :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	first, first_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, first_err, Build_Error.None)
-	second, second_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, second_err, Build_Error.None)
-	if first_err != .None || second_err != .None {
+	first, first_verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, first_verdict.err, Build_Error.None)
+	second, second_verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, second_verdict.err, Build_Error.None)
+	if first_verdict.err != .None || second_verdict.err != .None {
 		return
 	}
 	// The whole multi-record stream is byte-identical between the two builds.
@@ -257,10 +257,10 @@ test_build_no_partial_product :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, .Dev, context.temp_allocator)
+	_, verdict := stage_build(root, .Dev, context.temp_allocator)
 	// The broken source is rejected by the checked pipeline, so the build refuses
 	// with Compile_Failed and emits nothing — the exit-2 path.
-	testing.expect_value(t, build_err, Build_Error.Compile_Failed)
+	testing.expect_value(t, verdict.err, Build_Error.Compile_Failed)
 
 	// No partial product: neither the artifact nor the index.ndjson is on disk.
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
@@ -290,9 +290,9 @@ test_build_multi_module_arena :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)
@@ -366,9 +366,9 @@ test_build_numerics_package_index_only :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 
@@ -396,9 +396,11 @@ test_build_numerics_package_index_only :: proc(t: ^testing.T) {
 // ── --release hole-ban (§29 §4: you cannot ship a hole) ──────────────────
 
 // test_build_release_holed_tree_exits_two is the release hole-ban acceptance: a
-// §14 tree carrying a §05 typed hole built in Release mode refuses with
-// Holed_Declaration — the exit-2 compile-error outcome (NEVER a counted
-// failure; the build verb has no assertion tier) — and writes NEITHER product.
+// §14 tree carrying a §05 typed hole built in Release mode refuses with a
+// Holed_Declaration verdict NAMING the holed declaration (approx_speed; bare —
+// the fixture is single-module, lore #11) — the exit-2 compile-error outcome
+// (NEVER a counted failure; the build verb has no assertion tier) — and writes
+// NEITHER product.
 @(test)
 test_build_release_holed_tree_exits_two :: proc(t: ^testing.T) {
 	root, ok := write_holed_tree(t)
@@ -407,8 +409,9 @@ test_build_release_holed_tree_exits_two :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, .Release, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.Holed_Declaration)
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Holed_Declaration)
+	testing.expect_value(t, verdict.offender, "approx_speed")
 
 	// The ban refuses before either emission surface runs, so no product lands.
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
@@ -430,9 +433,9 @@ test_build_dev_holed_tree_exits_zero :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)
@@ -454,11 +457,11 @@ test_build_release_hole_free_tree_matches_dev :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	dev, dev_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, dev_err, Build_Error.None)
-	release, release_err := stage_build(root, .Release, context.temp_allocator)
-	testing.expect_value(t, release_err, Build_Error.None)
-	if dev_err != .None || release_err != .None {
+	dev, dev_verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, dev_verdict.err, Build_Error.None)
+	release, release_verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, release_verdict.err, Build_Error.None)
+	if dev_verdict.err != .None || release_verdict.err != .None {
 		return
 	}
 	testing.expect(t, dev.artifact == release.artifact)
@@ -508,9 +511,10 @@ test_gates_skip_holed_units :: proc(t: ^testing.T) {
 
 // test_build_release_probed_tree_exits_two is the release debug-directive-ban
 // acceptance, the hole-ban's sibling: a §14 tree carrying a §05 §5 debug probe
-// built in Release mode refuses with Debug_Directive — the exit-2
-// compile-error outcome (NEVER a counted failure; the build verb has no
-// assertion tier) — and writes NEITHER product.
+// built in Release mode refuses with a Debug_Directive verdict NAMING the
+// probed declaration (drift, the @log-probed behavior; bare — the fixture is
+// single-module, lore #11) — the exit-2 compile-error outcome (NEVER a counted
+// failure; the build verb has no assertion tier) — and writes NEITHER product.
 @(test)
 test_build_release_probed_tree_exits_two :: proc(t: ^testing.T) {
 	root, ok := write_probed_tree(t)
@@ -519,8 +523,9 @@ test_build_release_probed_tree_exits_two :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, build_err := stage_build(root, .Release, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.Debug_Directive)
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Debug_Directive)
+	testing.expect_value(t, verdict.offender, "drift")
 
 	// The ban refuses before either emission surface runs, so no product lands.
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
@@ -544,9 +549,9 @@ test_build_dev_probed_tree_exits_zero_and_indexes_probe :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	product, build_err := stage_build(root, .Dev, context.temp_allocator)
-	testing.expect_value(t, build_err, Build_Error.None)
-	if build_err != .None {
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
 		return
 	}
 	write_err := write_build_products(product, root)
@@ -586,6 +591,37 @@ test_release_debug_decl_walk :: proc(t: ^testing.T) {
 	_, probed = release_debug_decl(clean_ast)
 	testing.expect(t, !probed)
 	log.infof("release_debug_decl: finds a probed behavior and a probed fn by name, none on a probe-free AST")
+}
+
+// test_build_release_multi_module_offender_qualified pins the offender's §15
+// qualification on the multi-module path: a two-module tree whose hole lives in
+// the beta module refuses with the MODULE-QUALIFIED offender
+// (`beta.approx_speed`), matching the Index Contract's qualified_name — the
+// single-module bare rule (lore #11) applies only to one-source projects.
+@(test)
+test_build_release_multi_module_offender_qualified :: proc(t: ^testing.T) {
+	root, ok := write_two_module_holed_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Holed_Declaration)
+	testing.expect_value(t, verdict.offender, "beta.approx_speed")
+	log.infof("release offender qualification: a multi-module tree names the module-qualified offender (beta.approx_speed)")
+}
+
+// test_build_refusal_message_shapes pins build_refusal_message's two line
+// shapes: an offender-less arm renders the closed arm's name alone, and a
+// release-refusal verdict appends the module-qualified offender after a colon.
+// The line is advisory wording (§29 §3 — the machine contract is the exit
+// code) but deterministic, so the goldens pin it byte-for-byte.
+@(test)
+test_build_refusal_message_shapes :: proc(t: ^testing.T) {
+	testing.expect_value(t, build_refusal_message(Build_Verdict{err = .Malformed_Tree}, context.temp_allocator), "Malformed_Tree")
+	testing.expect_value(t, build_refusal_message(Build_Verdict{err = .Holed_Declaration, offender = "drag"}, context.temp_allocator), "Holed_Declaration: drag")
+	testing.expect_value(t, build_refusal_message(Build_Verdict{err = .Debug_Directive, offender = "beta.DebugMarker"}, context.temp_allocator), "Debug_Directive: beta.DebugMarker")
 }
 
 // module_prefix_order extracts the distinct §15 module prefixes from the index
@@ -797,6 +833,37 @@ write_holed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	if !ok_writes {
 		remove_scratch_tree(root)
 		log.warnf("SKIP build holed tree: cannot write files under %s", root)
+		return "", false
+	}
+	return root, true
+}
+
+// write_two_module_holed_tree materializes a TWO-module §14 tree whose §05
+// typed hole lives in the second-by-path module (src/beta.fun) — the fixture
+// the offender-qualification test builds: with more than one source the
+// release refusal must name the offender module-qualified (beta.approx_speed),
+// never bare. src/alpha.fun is the clean entrypoint module; the refusal fires
+// before emission, so only read_project + parse must succeed on the tree.
+write_two_module_holed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
+	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-twomod-holed")})
+	remove_scratch_tree(root)
+	configs := scratch_join({root, "funpack_configs"})
+	src_dir := scratch_join({root, "src"})
+	if !ensure_dir(configs) || !ensure_dir(src_dir) {
+		log.warnf("SKIP build two-module holed tree: cannot create dirs under %s", root)
+		return "", false
+	}
+	holed_beta :: "@doc(\"The beta module: carries the typed hole the release refusal must qualify.\")\n\n@doc(\"A typed hole in a sibling module.\")\nfn approx_speed() -> Fixed @stub(Fixed)\n"
+	ok_writes :=
+		os.write_entire_file(scratch_join({configs, "project.fcfg"}), "project twomod {\n  version = \"0.1.0\"\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use alpha.{Loop, bindings}\n\nentrypoint main {\n  pipeline = Loop\n  tick = 60hz\n  logical = 160x120\n  bindings = bindings\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "builds.fcfg"}), "build native {\n  platform = desktop\n}\n") == nil &&
+		os.write_entire_file(scratch_join({configs, "tags.fcfg"}), "tags {\n  game\n}\n") == nil &&
+		os.write_entire_file(scratch_join({src_dir, "alpha.fun"}), MINI_SOURCE) == nil &&
+		os.write_entire_file(scratch_join({src_dir, "beta.fun"}), holed_beta) == nil
+	if !ok_writes {
+		remove_scratch_tree(root)
+		log.warnf("SKIP build two-module holed tree: cannot write files under %s", root)
 		return "", false
 	}
 	return root, true

@@ -193,11 +193,14 @@ warden_verb_exit :: proc(root: string, cmd: Warden_Command, arg := "", find := W
 // verb's — so it never returns 1. mode is the Dev/Release flag (`--release`):
 // under Release a §05 typed hole anywhere in the tree is one more exit-2
 // compile error (Holed_Declaration, §29 §4 — you cannot ship a hole), never a
-// counted failure.
+// counted failure. A refusal eprints build_refusal_message's deterministic
+// line — the closed arm plus the module-qualified offender on the release
+// arms — but the wording is advisory: the machine contract is exclusively the
+// exit code (§29 §3).
 run_build_verb :: proc(mode: Build_Mode) -> int {
-	product, build_err := stage_build(".", mode, context.temp_allocator)
-	if build_err != .None {
-		fmt.eprintfln("funpack build: %v", build_err)
+	product, verdict := stage_build(".", mode, context.temp_allocator)
+	if verdict.err != .None {
+		fmt.eprintfln("funpack build: %s", build_refusal_message(verdict, context.temp_allocator))
 		return 2
 	}
 	if write_err := write_build_products(product, "."); write_err != .None {
@@ -225,15 +228,18 @@ run_build_verb :: proc(mode: Build_Mode) -> int {
 // mirrors build's two tiers exactly: ANY Build_Error arm (Malformed_Tree,
 // Compile_Failed, Index_Failed, or Holed_Declaration under --release, §29 §4)
 // is 2; a clean tree is 0 with a one-line verdict naming no product path —
-// none is written. There is deliberately NO exit-1 tier: counted assertion
+// none is written. A refusal eprints the same build_refusal_message line the
+// build verb prints (the closed arm plus the module-qualified offender on the
+// release arms; advisory wording, §29 §3 — the machine contract is the exit
+// code). There is deliberately NO exit-1 tier: counted assertion
 // failures belong to the test verb, and a compile error is never a counted
 // failure — check refuses, it does not tally. root is a parameter (unlike
 // run_build_verb's fixed ".") so the side-effect-free verb body is unit-tested
 // end-to-end against temp trees; main always passes ".".
 run_check_verb :: proc(root: string, mode: Build_Mode) -> int {
-	_, check_err := stage_build(root, mode, context.temp_allocator)
-	if check_err != .None {
-		fmt.eprintfln("funpack check: %v", check_err)
+	_, verdict := stage_build(root, mode, context.temp_allocator)
+	if verdict.err != .None {
+		fmt.eprintfln("funpack check: %s", build_refusal_message(verdict, context.temp_allocator))
 		return 2
 	}
 	fmt.println("funpack check: clean")
