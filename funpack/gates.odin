@@ -37,6 +37,8 @@ Gate_Error :: enum {
 	Arity_Exceeded,         // a parameter list is longer than MAX_PARAM_ARITY
 	Non_Exhaustive_Match,   // a match leaves a variant of its scrutinee unhandled
 	Duplicate_Declaration,  // two declaration units normalize to the same AST hash
+	Query_Missing_Index,    // a query whose body runs a spatial combinator over all[T] without declaring @spatial(T.*) on that query (spec §08 §3: a query needing an index must declare it)
+	Query_Unused_Index,     // a declared @index/@spatial no read in the query's body uses — dead code (spec §08 §3 / §01 P5)
 }
 
 // Gate_Unit is one declaration body the structural gates score: a test
@@ -413,6 +415,13 @@ gate_verdict :: proc(ast: Ast) -> Gate_Verdict {
 		if err := check_match_exhaustiveness_unit(unit, sets); err != .None {
 			return Gate_Verdict{err = err, declaration = unit.name}
 		}
+	}
+	// The §08 §3 index-requirement gate pairs each query's declared
+	// @index/@spatial set with its body's derived access pattern
+	// (query_index_gate.odin) — per-query, so it rides the same
+	// first-offender discipline as the per-unit budgets above.
+	if verdict := check_query_index_gate(ast); verdict.err != .None {
+		return verdict
 	}
 	if err := gate_duplication(units); err != .None {
 		return Gate_Verdict{err = err}
