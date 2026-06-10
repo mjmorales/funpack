@@ -66,9 +66,10 @@ Project :: struct {
 	// (`hexgrid.layout`) with package_root stamped. Kept distinct from
 	// `sources` so the project's own walks (fmt, emit ordering, the index
 	// contract) are untouched; the test pipeline compiles BOTH sets against
-	// one index (project_pipeline_sources). Registry/url deps are parsed but
-	// not resolved here — vendoring + the content-hash gate are §30 §4,
-	// a downstream story.
+	// one index (project_pipeline_sources). Registry/url deps are pin-verified
+	// over their vendored trees at read time (verify_vendored_deps, §30 §4)
+	// but their sources are not resolved into this set yet — that lands
+	// later behind the same pin gate.
 	package_sources: []Source,
 }
 
@@ -205,6 +206,21 @@ Project_Error :: enum {
 	// beside a `use hexgrid` dep) shadows the dependency and is a compile
 	// error.
 	Module_Shadows_Package_Root,
+	// Missing_Vendored_Package is a declared registry/url dependency whose
+	// pinned vendored tree is absent (no packages/<name>/, §30 §4) or
+	// unreadable. Builds never touch the network — hermetic, §30 §4 — so a
+	// pin with nothing on disk to verify refuses naming the missing vendored
+	// tree, never fetches; vendoring is a separate authored act the author
+	// commits and reviews.
+	Missing_Vendored_Package,
+	// Package_Hash_Mismatch is the §30 §4 pin gate's refusal: re-hashing a
+	// registry/url dep's vendored packages/<name>/ tree at project-read time
+	// produced a hash that is not byte-equal to the declared pin — local
+	// tampering or an unreviewed source change. Exact match or refusal, no
+	// partial acceptance (the Index Contract discipline, §29 §2); the
+	// verify_vendored_deps fix-it carries the actual hash so the author can
+	// review the vendored diff and re-pin deliberately (§30 §5).
+	Package_Hash_Mismatch,
 }
 
 read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
@@ -260,6 +276,14 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 	deps, deps_err := read_deps_fcfg(configs_dir)
 	if deps_err != .None {
 		return Project{}, deps_err
+	}
+	// §30 §4: every registry/url pin verifies over its committed vendored
+	// tree BEFORE any package source joins the build, so check/build/test
+	// all gate alike at project-read time. The closed arm is the machine
+	// contract; the fix-it riding beside it is advisory and dropped here
+	// (path deps are skipped inside — §30 §3 grants them no hash).
+	if verify_err, _ := verify_vendored_deps(root, deps); verify_err != .None {
+		return Project{}, verify_err
 	}
 	package_sources, pkg_err := collect_package_sources(root, deps)
 	if pkg_err != .None {

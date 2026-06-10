@@ -16,13 +16,22 @@
 // a full funpack project tree WITHOUT an entrypoint — whose src/ modules
 // enter the consumer's module index keyed `<project-name>.<module>` with
 // package_root stamped, so the §30 §6 expose gate and the §30 §2 star-graph
-// refusal both see the edge. Registry/url deps are parsed but not resolved:
-// vendoring into packages/<name>/ and the content-hash verification gate are
-// §30 §4, a downstream story — the Dep record carries the pin for it.
+// refusal both see the edge. Registry/url deps carry the §30 §4 pin contract
+// this file VERIFIES (the bottom section): the declared content hash is
+// re-computed over the committed packages/<name>/ vendored tree every
+// project read, an inexact match or an absent tree is a named refusal, and
+// nothing here can fetch — the resolver reads the filesystem only (core:os),
+// no network primitive is linked, so builds are hermetic by construction.
+// Joining a verified registry/url tree's sources to the build (the way path
+// deps join) lands later behind this same pin gate.
 package funpack
 
+import "core:crypto/sha2"
+import "core:encoding/hex"
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 // Dep_Source is the closed §30 §3 provenance-source set a `use` declaration
@@ -201,8 +210,10 @@ cfg_skip_doc_deps :: proc(p: ^Cfg_Parser) -> Project_Error {
 //     package is structurally a project WITHOUT an entrypoint (§30 §7);
 //   - a deps.fcfg declaring any dependency is the §30 §2 star-graph
 //     violation (Package_Imports_Package): a package depends only on engine.
-// Registry/url deps are skipped — vendoring + the hash gate are §30 §4
-// (downstream); their declarations ride Project.deps untouched.
+// Registry/url deps are skipped HERE — their vendored trees are verified
+// against the declared pin by verify_vendored_deps (the §30 §4 gate
+// read_project runs before this resolution); joining their sources to the
+// build lands later behind that same gate.
 collect_package_sources :: proc(root: string, deps: []Dep) -> (sources: []Source, err: Project_Error) {
 	collected := make([dynamic]Source, 0, 4, context.temp_allocator)
 	for dep in deps {
@@ -322,4 +333,157 @@ check_package_root_shadowing :: proc(sources: []Source, deps: []Dep) -> Project_
 		}
 	}
 	return .None
+}
+
+// ── §30 §4 content-hash pins + vendored verification ─────────────────────
+
+// VENDOR_DIR is the §30 §4 vendored-tree root: a registry/url dependency's
+// source is fetched once into packages/<name>/, committed, and reviewed in
+// PRs — no opaque node_modules. The pin gate below re-hashes that committed
+// tree every project read, so local tampering is caught at the same gate a
+// compromised fetch would be.
+VENDOR_DIR :: "packages"
+
+// vendored_package_dir is where §30 §4 puts a declared dependency's vendored
+// tree: packages/<name>/ under the consumer root, the same directory a path
+// dep conventionally lives in — one place to review either provenance.
+vendored_package_dir :: proc(root: string, dep_name: string) -> string {
+	dir, _ := filepath.join({root, VENDOR_DIR, dep_name}, context.temp_allocator)
+	return dir
+}
+
+// verify_vendored_deps is the §30 §4 pin gate read_project runs over every
+// declared dependency before any package source joins the build: each
+// registry/url dep's vendored tree at packages/<name>/ is re-hashed
+// (hash_vendored_tree) and compared against the declared pin under the
+// exact-match discipline — byte-equal or refused, no partial acceptance,
+// the same all-or-nothing the Index Contract reader applies (§29 §2). A
+// path dep is never verified: §30 §3 grants it no hash column — you vouch
+// for the tree directly — so the loop skips it without touching the disk.
+//
+// The two refusal arms, each with its fix-it riding beside the closed enum
+// (the named-offender discipline — the arm is the machine contract, the
+// fix-it is the advisory line an agent repairs from):
+//   - Missing_Vendored_Package: the pinned dep has no vendored tree (or one
+//     that cannot be read back for hashing). Builds never touch the network
+//     (§30 §4 hermetic) — fetching is `funpack add`'s job, never the
+//     build's — so the refusal names the missing packages/<name>/ tree
+//     instead of reaching out.
+//   - Package_Hash_Mismatch: the re-hashed tree differs from the pin. The
+//     fix-it carries the ACTUAL hash so the author can review the vendored
+//     diff and re-pin deliberately (§30 §5 — every change to dependency
+//     code is a human-reviewed diff, never a silent upgrade or downgrade).
+verify_vendored_deps :: proc(root: string, deps: []Dep) -> (err: Project_Error, fix_it: string) {
+	for dep in deps {
+		if dep.source == .Path {
+			continue
+		}
+		dep_dir := vendored_package_dir(root, dep.name)
+		if !os.is_dir(dep_dir) {
+			return .Missing_Vendored_Package, fmt.tprintf(
+				"%s: pinned dependency has no vendored tree at %s/%s/ — builds never fetch (§30 §4); vendor the source and commit it",
+				dep.name,
+				VENDOR_DIR,
+				dep.name,
+			)
+		}
+		actual, hash_ok := hash_vendored_tree(dep_dir)
+		if !hash_ok {
+			return .Missing_Vendored_Package, fmt.tprintf(
+				"%s: vendored tree at %s/%s/ cannot be read back for hash verification",
+				dep.name,
+				VENDOR_DIR,
+				dep.name,
+			)
+		}
+		if actual != dep.hash {
+			return .Package_Hash_Mismatch, fmt.tprintf(
+				"%s: vendored tree at %s/%s/ hashes %s but the declared pin is %s — review the vendored diff, then re-pin the declared hash deliberately",
+				dep.name,
+				VENDOR_DIR,
+				dep.name,
+				actual,
+				dep.hash,
+			)
+		}
+	}
+	return .None, ""
+}
+
+// Vendored_File pairs one vendored regular file's slash-normalized
+// root-relative path (the name the hash covers — identical on every
+// platform) with the on-disk path its bytes are read from.
+Vendored_File :: struct {
+	rel:  string,
+	path: string,
+}
+
+// hash_vendored_tree computes the §30 §4 content hash of a vendored tree as
+// the canonical `sha256:<hex>` string the deps.fcfg pin declares. §30 is
+// silent on the exact recipe, so it is pinned HERE as the normative one:
+//
+//   SHA-256 over [ file count, then per file in rel-path-sorted order:
+//                  slash-normalized relative path, file bytes ]
+//
+// with every field length-prefixed (asset_hash.odin's hash_field framing, so
+// the stream is injective — a path/content boundary can never be forged by
+// rearranging bytes) and the count folded first (zero files and one empty
+// file differ). Determinism: the walk order is discarded and the files are
+// sorted by their slash-normalized relative path — not the platform path —
+// so the same tree bytes hash identically on every filesystem and OS; no
+// clock, no metadata (permissions/mtimes are host noise, content is the
+// contract). EVERY regular file under the root is covered with no exclusion
+// list — what is in the tree is what is pinned, the exact-match discipline
+// with nothing to special-case. ok = false when a file cannot be read back
+// (the tree is unverifiable, the caller's missing-tree class), never a
+// partial hash.
+hash_vendored_tree :: proc(dep_dir: string) -> (hash: string, ok: bool) {
+	// The walker resolves the root through realpath, so relativize against
+	// the same realpath form (filepath.abs) — the collect_sources idiom for
+	// the symlinked temp-root case.
+	abs_dir, abs_err := filepath.abs(dep_dir, context.temp_allocator)
+	if abs_err != nil {
+		abs_dir = dep_dir
+	}
+	files := make([dynamic]Vendored_File, 0, 8, context.temp_allocator)
+	walker := os.walker_create(dep_dir)
+	defer os.walker_destroy(&walker)
+	for info in os.walker_walk(&walker) {
+		if info.type != .Regular {
+			continue
+		}
+		rel, rel_err := filepath.rel(abs_dir, info.fullpath, context.temp_allocator)
+		if rel_err != .None {
+			return "", false
+		}
+		segments := strings.split(rel, filepath.SEPARATOR_STRING, context.temp_allocator)
+		append(
+			&files,
+			Vendored_File {
+				rel = strings.join(segments, "/", context.temp_allocator),
+				path = strings.clone(info.fullpath, context.temp_allocator),
+			},
+		)
+	}
+	// Sort by the slash-normalized relative path, not the native one: '/'
+	// and '\' order differently against the bytes between them, so only the
+	// normalized name gives one cross-platform total order.
+	slice.sort_by(files[:], proc(a, b: Vendored_File) -> bool {
+		return a.rel < b.rel
+	})
+	ctx: sha2.Context_256
+	sha2.init_256(&ctx)
+	hash_u64(&ctx, u64(len(files)))
+	for file in files {
+		bytes, read_err := os.read_entire_file_from_path(file.path, context.temp_allocator)
+		if read_err != nil {
+			return "", false
+		}
+		hash_field(&ctx, transmute([]byte)file.rel)
+		hash_field(&ctx, bytes)
+	}
+	digest: [32]byte
+	sha2.final(&ctx, digest[:])
+	hex_digest := hex.encode(digest[:], context.temp_allocator)
+	return strings.concatenate({HASH_PREFIX, string(hex_digest)}, context.temp_allocator), true
 }
