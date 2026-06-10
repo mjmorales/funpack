@@ -75,12 +75,17 @@ Type_Ref :: struct {
 // Field_Decl is one `name: Type` (or `name: Type = default`) entry in a
 // data/thing/singleton/signal body. has_default distinguishes a defaulted
 // field (spec §03 §1) from a required one; default is meaningless when
-// has_default is false.
+// has_default is false. migrate is the field's §05 §6 @migrate prefix —
+// rename/retype evolution metadata only a `data` field may carry (the parser
+// rejects it elsewhere); meaningless when has_migrate is false, mirroring
+// has_default.
 Field_Decl :: struct {
 	name:        string,
 	type:        Type_Ref,
 	default:     Expr,
 	has_default: bool,
+	migrate:     Migrate_Node,
+	has_migrate: bool,
 }
 
 // Variant_Decl is one enum variant (spec §03 §2): plain (`Left`),
@@ -129,7 +134,13 @@ Data_Node :: struct {
 	gtags:  []string,
 	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
-	line:   int, // 1-based source line of the `data` keyword (artifact-format §9 span provenance)
+	// migrate is the §05 §6 declaration-level @migrate — a RENAMED TYPE
+	// declaration (`@migrate(from: "OldName") data NewName { … }`). Rename
+	// form only by construction (the parser rejects a decl-level `with:` as
+	// Migrate_Wrong_Target); meaningless when has_migrate is false.
+	migrate:     Migrate_Node,
+	has_migrate: bool,
+	line:        int, // 1-based source line of the `data` keyword (artifact-format §9 span provenance)
 }
 
 Enum_Node :: struct {
@@ -294,6 +305,25 @@ Todo_Window :: struct {
 	task:   string, // Task_Ref: the digits as written — zero padding kept ("0042")
 }
 
+// Migrate_Node is one parsed `@migrate(…)` (spec §05 §6) — the dedicated
+// breaking-change channel for schema evolution, covering the two structural
+// breaks the name-keyed schema-diff cannot auto-resolve (spec §09 §4): a
+// RENAME names the prior key (`from: "old_name"`), a RETYPE names a pure
+// conversion fn (`with: convert`), and the combined form carries both. It
+// prefixes the renamed/retyped data FIELD, or — rename form only — a renamed
+// `data` type declaration. The form set is closed: at least one of
+// has_from/has_with is true by construction (an empty `@migrate()` is the
+// named Malformed_Migrate verdict). Parse+AST only here: collision and
+// conversion admissibility are the typecheck stage's job (check_migrations),
+// and the loader-driving carry is the artifact emitter's.
+Migrate_Node :: struct {
+	from:     string, // the prior field/type name as written; meaningful iff has_from
+	with:     string, // the pure `fn(Old) -> New` conversion's name; meaningful iff has_with
+	has_from: bool,
+	has_with: bool,
+	line:     int, // 1-based source line of the `@` (artifact-format §9 span provenance)
+}
+
 // Todo_Node is one parsed `@todo("msg", window)` (spec §05 §2) — the only
 // legal temporal note — carried on the declaration it prefixes, like @gtag.
 // Parse+AST only here: index recording (spec §29 §2) and window-expiry
@@ -304,14 +334,19 @@ Todo_Node :: struct {
 	line:    int, // 1-based source line of the `@` (artifact-format §9 span provenance)
 }
 
-// Directives carries the @doc / @gtag / @todo / debug-probe prefix block
-// attached to a declaration (spec §05). It accumulates as leading directives
-// are parsed and is consumed by the declaration that follows them.
+// Directives carries the @doc / @gtag / @todo / @migrate / debug-probe prefix
+// block attached to a declaration (spec §05). It accumulates as leading
+// directives are parsed and is consumed by the declaration that follows them.
+// migrate is the §05 §6 declaration-level form — a renamed TYPE declaration —
+// which only a `data` declaration may consume (Migrate_Wrong_Target
+// otherwise); at most one accumulates (a second is Malformed_Migrate).
 Directives :: struct {
-	doc:    string,
-	gtags:  [dynamic]string,
-	probes: [dynamic]Debug_Probe,
-	todos:  [dynamic]Todo_Node,
+	doc:         string,
+	gtags:       [dynamic]string,
+	probes:      [dynamic]Debug_Probe,
+	todos:       [dynamic]Todo_Node,
+	migrate:     Migrate_Node,
+	has_migrate: bool,
 }
 
 Parse_Error :: enum {
@@ -323,6 +358,8 @@ Parse_Error :: enum {
 	Probe_Missing_Arg,    // a @break/@log/@watch debug probe without its mandatory `(expr)` argument (spec §05 §5: the predicate/expression is the probe's whole content)
 	Probe_Unexpected_Arg, // a @trace carrying an argument — @trace takes none (spec §05 §5; grammar/fun.ebnf §1 DebugDirective)
 	Malformed_Todo_Window, // a @todo whose mandatory window is missing or matches none of the four §05 §2 forms (unknown unit, mis-shaped/out-of-range ISO date, quoted or lowercase task ref)
+	Malformed_Migrate,     // a @migrate whose argument list matches none of the three closed §05 §6 forms (missing/empty parens, unknown or duplicated key, with-before-from order, unquoted from, empty prior name, trailing junk) — or a second @migrate on one target
+	Migrate_Wrong_Target,  // a well-formed @migrate where the spec admits none (spec §05 §6): prefixing a non-`data` declaration, a field outside a `data` body, a retype (`with:`) form on a type declaration (a type admits the rename form only), or dangling with no field to attach to
 }
 
 Parser :: struct {
@@ -412,6 +449,20 @@ Decl_Sink :: struct {
 // opening keyword (LL(1), spec §02 §7) and appends it to the matching sink
 // slice, attaching the accumulated leading @doc / @gtag directives.
 parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> Parse_Error {
+	if pending.has_migrate {
+		// A declaration-level @migrate marks a RENAMED TYPE declaration
+		// (spec §05 §6), and the schema-evolution channel is the name-keyed
+		// `data` schema (spec §09 §4) — so only a `data` declaration may
+		// consume it, and only in the rename form (a type declaration has no
+		// value to convert, so `with:` has no admitted decl-level reading).
+		// Both deviations are the named Migrate_Wrong_Target verdict.
+		if peek_kind(p) != .Ident || p.tokens[p.pos].text != "data" {
+			return .Migrate_Wrong_Target
+		}
+		if pending.migrate.has_with {
+			return .Migrate_Wrong_Target
+		}
+	}
 	#partial switch peek_kind(p) {
 	case .Import:
 		node := parse_import(p) or_return
@@ -498,6 +549,11 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		// The decl-level @migrate (a renamed type, spec §05 §6) lands here;
+		// parse_declaration already verified the target kind and the
+		// rename-only form, so this is a plain carry.
+		node.migrate = pending.migrate
+		node.has_migrate = pending.has_migrate
 		append(&out.datas, node)
 	case "enum":
 		node := parse_enum(p) or_return
@@ -603,6 +659,21 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 			kind = .Watch
 		}
 		append(&pending.probes, Debug_Probe{kind = kind, arg = arg, line = at_tok.line})
+	case "migrate":
+		// @migrate(from: "…") prefixing a declaration marks a RENAMED TYPE
+		// declaration (spec §05 §6). The closed argument shape is shared with
+		// the field-level form (parse_migrate_args); which targets may consume
+		// it — and that a type declaration admits the rename form only — is
+		// parse_declaration's check, where the target is known. At most one
+		// accumulates: a second @migrate before one declaration is the named
+		// Malformed_Migrate verdict, never a silent overwrite.
+		if pending.has_migrate {
+			return .Malformed_Migrate
+		}
+		node := parse_migrate_args(p, at_tok.line) or_return
+		terminate_statement(p) or_return
+		pending.migrate = node
+		pending.has_migrate = true
 	case "trace":
 		// @trace takes NO argument (spec §05 §5; grammar/fun.ebnf §1
 		// DebugDirective): it records the declaration's full per-step
@@ -719,6 +790,87 @@ parse_todo_date :: proc(p: ^Parser, year_tok: Token) -> (window: Todo_Window, er
 			day = day_tok.int_value,
 		},
 		.None
+}
+
+// parse_migrate_args parses the mandatory @migrate argument list — one of the
+// three closed §05 §6 forms, selected LL(1) off the first key token:
+// `(from: "old_name")` (rename), `(with: convert)` (retype), or
+// `(from: "old_name", with: convert)` (both, in exactly that order — the spec
+// table's spelling, which the formatter canonicalizes to). `from:` is the
+// prior name as a String (spec §05 §6) and must be non-empty; `with:` is a
+// bare snake_case fn name (the table's `convert` spelling — a named pure
+// `fn(Old) -> New`, never a lambda). Anything outside the closed shape — no
+// parens, an empty list, an unknown or duplicated key, `with` before `from`,
+// an unquoted prior name, trailing junk before `)` — is the named
+// Malformed_Migrate verdict, so an agent repairs the exact form rather than
+// chasing a token error; the one casing-class deviation (a non-snake_case
+// convert name) keeps the parser-wide Wrong_Case verdict.
+parse_migrate_args :: proc(p: ^Parser, line: int) -> (node: Migrate_Node, err: Parse_Error) {
+	node.line = line
+	if peek_kind(p) != .L_Paren {
+		return node, .Malformed_Migrate
+	}
+	p.pos += 1
+	if peek_kind(p) == .Ident && p.tokens[p.pos].text == "from" {
+		p.pos += 1
+		if peek_kind(p) != .Colon {
+			return node, .Malformed_Migrate
+		}
+		p.pos += 1
+		if peek_kind(p) != .String_Lit {
+			return node, .Malformed_Migrate
+		}
+		from := advance(p) or_return
+		if from.text == "" {
+			return node, .Malformed_Migrate
+		}
+		node.from = from.text
+		node.has_from = true
+		if peek_kind(p) == .Comma {
+			p.pos += 1
+			// Only `with:` may follow a rename key — a second `from`, or any
+			// other token, falls outside the three closed forms.
+			if peek_kind(p) != .With {
+				return node, .Malformed_Migrate
+			}
+			parse_migrate_with(p, &node) or_return
+		}
+	} else if peek_kind(p) == .With {
+		parse_migrate_with(p, &node) or_return
+	} else {
+		// An empty list, an unknown key, or a non-key opener matches no form.
+		return node, .Malformed_Migrate
+	}
+	if peek_kind(p) != .R_Paren {
+		return node, .Malformed_Migrate
+	}
+	p.pos += 1
+	return node, .None
+}
+
+// parse_migrate_with parses the `with: convert` key of a @migrate argument
+// list, from the peeked `with` keyword (a reserved token, so the key is
+// .With, never an Ident). convert is a bare snake_case fn name — the §05 §6
+// pure `fn(Old) -> New` the loader runs the old value through; its
+// admissibility (declared, unary, returning the field's type) is the
+// typecheck stage's check_migrations.
+parse_migrate_with :: proc(p: ^Parser, node: ^Migrate_Node) -> Parse_Error {
+	p.pos += 1 // the `with` keyword (the caller peeked it)
+	if peek_kind(p) != .Colon {
+		return .Malformed_Migrate
+	}
+	p.pos += 1
+	if peek_kind(p) != .Ident {
+		return .Malformed_Migrate
+	}
+	convert := advance(p) or_return
+	// A fn name is snake_case (spec §02) — the parser-wide casing verdict.
+	if convert.class != .Snake_Case {
+		return .Wrong_Case
+	}
+	node.with = convert.text
+	node.has_with = true
+	return .None
 }
 
 parse_import :: proc(p: ^Parser) -> (node: Import_Node, err: Parse_Error) {
@@ -845,7 +997,9 @@ parse_data :: proc(p: ^Parser) -> (node: Data_Node, err: Parse_Error) {
 	data_tok := expect(p, .Ident) or_return
 	name := expect_type_name(p) or_return
 	kind := parse_optional_kind(p) or_return
-	fields := parse_field_list(p) or_return
+	// A data body is the one field list whose fields may carry a §05 §6
+	// @migrate prefix — the name-keyed schema is the evolution channel.
+	fields := parse_field_list(p, allow_migrate = true) or_return
 	return Data_Node{name = name, kind = kind, fields = fields, line = data_tok.line}, .None
 }
 
@@ -887,12 +1041,46 @@ parse_optional_kind :: proc(p: ^Parser) -> (kind: string, err: Parse_Error) {
 // data/thing/singleton/signal declarations (spec §03 §1). Fields are
 // newline- or comma-separated (the body is a block, so the lexer kept the
 // newlines); a defaulted field carries `= expr` (spec §03 §1: a defaulted
-// field may be omitted from a literal).
-parse_field_list :: proc(p: ^Parser) -> (fields: []Field_Decl, err: Parse_Error) {
+// field may be omitted from a literal). allow_migrate is true only for a
+// `data` body: a field there may carry a §05 §6 @migrate prefix (on its own
+// line or inline before the field), consumed by the field that follows it —
+// elsewhere a @migrate is the named Migrate_Wrong_Target verdict (the
+// schema-evolution channel is the name-keyed `data` schema, spec §09 §4), as
+// is one left dangling with no field to attach to.
+parse_field_list :: proc(p: ^Parser, allow_migrate := false) -> (fields: []Field_Decl, err: Parse_Error) {
 	expect(p, .L_Brace) or_return
 	skip_field_separators(p)
 	list := make([dynamic]Field_Decl, 0, 8, context.temp_allocator)
-	for peek_kind(p) == .Ident {
+	pending_migrate := Migrate_Node{}
+	has_pending_migrate := false
+	for {
+		if peek_kind(p) == .At {
+			at_tok := advance(p) or_return
+			directive := expect(p, .Ident) or_return
+			if directive.text != "migrate" {
+				// @migrate is the one directive a field admits here (spec §05
+				// §6); any other @-form in a field body stays the generic
+				// token error.
+				return nil, .Unexpected_Token
+			}
+			if !allow_migrate {
+				return nil, .Migrate_Wrong_Target
+			}
+			if has_pending_migrate {
+				// A second @migrate before one field — never a silent
+				// overwrite.
+				return nil, .Malformed_Migrate
+			}
+			pending_migrate = parse_migrate_args(p, at_tok.line) or_return
+			has_pending_migrate = true
+			// The directive may sit on its own line above its field; commas
+			// stay field separators, so only newlines are skipped here.
+			skip_newlines(p)
+			continue
+		}
+		if peek_kind(p) != .Ident {
+			break
+		}
 		fname := advance(p) or_return
 		// Field names are value names — snake_case (spec §02).
 		if fname.class != .Snake_Case {
@@ -906,8 +1094,16 @@ parse_field_list :: proc(p: ^Parser) -> (fields: []Field_Decl, err: Parse_Error)
 			field.default = parse_expression(p) or_return
 			field.has_default = true
 		}
+		field.migrate = pending_migrate
+		field.has_migrate = has_pending_migrate
+		pending_migrate = Migrate_Node{}
+		has_pending_migrate = false
 		append(&list, field)
 		skip_field_separators(p)
+	}
+	if has_pending_migrate {
+		// A @migrate with no field following it migrates nothing.
+		return nil, .Migrate_Wrong_Target
 	}
 	expect(p, .R_Brace) or_return
 	return list[:], .None

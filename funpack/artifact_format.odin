@@ -104,7 +104,21 @@ import "core:strings"
 // return type, so `return:TYPE` already states it. The node-kind set is closed,
 // so the new kind is a deliberate bump: 6 → 7 (§1). A release artifact never
 // carries a `stub` node — the §29 §4 hole-ban refuses the tree before emission.
-ARTIFACT_SCHEMA_VERSION :: 7
+//
+// Version 8 carries the §05 §6 @migrate SCHEMA-EVOLUTION channel through to the
+// loader — the rename/retype metadata the name-keyed schema-diff (spec §09 §4,
+// §24) cannot derive on its own. The single layout change is one new sub-record
+// keyword, `migrate`, a fixed three-token line `migrate FROM WITH` appearing in
+// [data] records only: after a `field` line it migrates that field (FROM the
+// prior key or `-`, WITH the pure conversion fn's name or `-`, never both `-`),
+// and between the `data` lead line and the first `field` line it is the renamed
+// TYPE declaration's prior name (rename form only, so WITH is always `-`
+// there). The line is emitted only where the source carries the directive, so
+// an artifact of a migration-free source changes by the version stamp alone —
+// the v7 stamp-only restamp precedent. The conversion fn is an ordinary
+// [functions] record the loader resolves by name. The sub-record keyword set
+// is closed, so the new keyword is a deliberate bump: 7 → 8 (§1).
+ARTIFACT_SCHEMA_VERSION :: 8
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
@@ -167,6 +181,7 @@ SUB_RECORD_KEYWORDS := []string{
 	"consumer", // a signal route's consumer (§12)
 	"set", // a setup spawn's supplied field (§13)
 	"node", // a body checked-AST node line (§2.7) — every fn/step/const/bindings/setup body is a run of these
+	"migrate", // a [data] record's §05 §6 rename/retype carry (§6, schema v8) — after a `field` line for that field, before any `field` line for the renamed type
 }
 
 // Artifact_Section is one parsed `[name N]` block from an artifact: the
