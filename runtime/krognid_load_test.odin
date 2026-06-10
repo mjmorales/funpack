@@ -19,9 +19,10 @@ import "core:testing"
 // source on the path, exactly as the pong golden does (artifact_load_test.odin).
 KROGNID_ARTIFACT := #load("testdata/krognid.artifact", string)
 
-// test_load_krognid_artifact_parses is the coupled v6 loader acceptance: the
-// committed krognid artifact loads with no error, carries the current
-// ARTIFACT_SCHEMA_VERSION (6, the exact-match version gate), and the §17 seam-fn
+// test_load_krognid_artifact_parses is the coupled multi-module loader
+// acceptance (the v6 carry): the committed krognid artifact loads with no
+// error, carries the current ARTIFACT_SCHEMA_VERSION (the exact-match version
+// gate, so the committed copy restamps with every bump), and the §17 seam-fn
 // carry is present — krognid_skeleton and krognid_parts (imported from the seam
 // module) sit in [functions] alongside the entrypoint module's own fns, so the
 // Rigged draw body's calls resolve to a self-contained record by bare name.

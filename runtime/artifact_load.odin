@@ -180,7 +180,10 @@ enum_kind_from_tag :: proc(tag: string) -> Enum_Kind {
 // --- §6 data / §7 signals --------------------------------------------------
 
 // load_data reads each `data NAME field_count mut` record plus its field
-// sub-records (§6).
+// sub-records (§6), including the v8 `migrate FROM WITH` carry: a migrate line
+// between the lead line and the first field is the renamed TYPE declaration's
+// prior name (rename form only — a WITH there is a malformed artifact), and a
+// migrate line after a field migrates that field (load_data_field_decls).
 load_data :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -199,14 +202,85 @@ load_data :: proc(
 		if !ok {
 			return nil, .Bad_Field
 		}
-		fields := load_field_decls(rec.subs, allocator) or_return
-		out[i] = Data_Decl {
+		decl := Data_Decl {
 			name    = strings.clone(f[1], allocator),
 			mutable = mutable,
-			fields  = fields,
 		}
+		subs := rec.subs
+		if len(subs) > 0 && line_keyword(subs[0]) == "migrate" {
+			from, with, mig_ok := parse_migrate_line(subs[0])
+			// The decl-level carry is the rename form only (§05 §6: a type
+			// declaration admits no `with:`), so a WITH half here is refused.
+			if !mig_ok || with != "" || from == "" {
+				return nil, .Bad_Field
+			}
+			decl.prior_name = strings.clone(from, allocator)
+			decl.has_prior = true
+			subs = subs[1:]
+		}
+		decl.fields = load_data_field_decls(subs, allocator) or_return
+		out[i] = decl
 	}
 	return out, .None
+}
+
+// parse_migrate_line decodes the fixed three-token v8 `migrate FROM WITH` line
+// (§6): each half is a bare name token or `-` for absent, and at least one is
+// present (the compiler rejects an empty form upstream, so a both-`-` line is a
+// malformed artifact). The returned halves are "" when absent.
+parse_migrate_line :: proc(line: string) -> (from: string, with: string, ok: bool) {
+	sf := strings.fields(line, context.temp_allocator)
+	if len(sf) != 3 || sf[0] != "migrate" {
+		return "", "", false
+	}
+	from = sf[1] == "-" ? "" : sf[1]
+	with = sf[2] == "-" ? "" : sf[2]
+	if from == "" && with == "" {
+		return "", "", false
+	}
+	return from, with, true
+}
+
+// load_data_field_decls reads a [data] record's field run — the same `field
+// NAME TYPE DEFAULT` grammar load_field_decls reads — admitting the v8
+// `migrate FROM WITH` line immediately after a field, which attaches that
+// field's §05 §6 rename/retype halves. A migrate line with no preceding field
+// is a stray sub-record and refuses. Only [data] takes this path: [signals]
+// and [things] never carry a migrate line (the data schema is the evolution
+// channel), so they keep the strict load_field_decls.
+load_data_field_decls :: proc(
+	subs: []string,
+	allocator := context.allocator,
+) -> (
+	fields: []Field_Decl,
+	err: Artifact_Error,
+) {
+	out := make([dynamic]Field_Decl, 0, len(subs), allocator)
+	for sub in subs {
+		if line_keyword(sub) == "migrate" {
+			if len(out) == 0 {
+				return nil, .Bad_Field // a field-level migrate needs a field to attach to
+			}
+			from, with, ok := parse_migrate_line(sub)
+			if !ok {
+				return nil, .Bad_Field
+			}
+			decl := &out[len(out) - 1]
+			if from != "" {
+				decl.migrate_from = strings.clone(from, allocator)
+				decl.has_from = true
+			}
+			if with != "" {
+				decl.migrate_with = strings.clone(with, allocator)
+				decl.has_with = true
+			}
+			continue
+		}
+		one := [1]string{sub}
+		decoded := load_field_decls(one[:], allocator) or_return
+		append(&out, decoded[0])
+	}
+	return out[:], .None
 }
 
 // load_signals reads each `signal NAME field_count` record plus its field

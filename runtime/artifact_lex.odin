@@ -83,7 +83,23 @@ import "core:strings"
 // grows only by a deliberate bump: 6 → 7 (funpack/docs/artifact-format.md §1,
 // §2.7). A release artifact never carries the node — the §29 §4 hole-ban refuses
 // the tree before emission.
-ARTIFACT_SCHEMA_VERSION :: 7
+//
+// v8 carries the §05 §6 @migrate SCHEMA-EVOLUTION channel through to this
+// runtime — the rename/retype metadata the name-keyed schema-diff (spec §09 §4,
+// §24; schema_diff.odin, this runtime's own kernel copy) cannot derive on its
+// own. The single layout change is one new sub-record keyword, `migrate`, a
+// fixed three-token line `migrate FROM WITH` appearing in [data] records only:
+// after a `field` line it migrates that field (FROM the prior key or `-`, WITH
+// the pure conversion fn's name or `-`, never both `-`), and between the `data`
+// lead line and the first `field` line it is the renamed TYPE declaration's
+// prior name (rename form only, so WITH is always `-` there). The line is
+// emitted only where the source carries the directive, so an artifact of a
+// migration-free source changes by the version stamp alone — the v7 stamp-only
+// restamp precedent. The conversion fn is an ordinary [functions] record this
+// runtime resolves by name and runs the old value through at restore/hot-reload
+// migration time. The sub-record keyword set is closed, so the new keyword is a
+// deliberate bump: 7 → 8 (funpack/docs/artifact-format.md §1, §6).
+ARTIFACT_SCHEMA_VERSION :: 8
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
@@ -102,6 +118,7 @@ SUB_RECORD_KEYWORDS :: [?]string {
 	"consumer",
 	"set",
 	"node",
+	"migrate", // a [data] record's §05 §6 rename/retype carry (v8, §6)
 }
 
 // Artifact_Error is the closed parse-failure enum. Every failure is a refusal

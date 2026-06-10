@@ -73,8 +73,8 @@ test_save_snapshot_round_trips_committed_version :: proc(t: ^testing.T) {
 	program := persist_program()
 	committed := persist_startup(&program)
 
-	bytes := serialize_snapshot(committed)
-	restored, ok := deserialize_snapshot(bytes)
+	bytes := serialize_snapshot(&program, committed)
+	restored, _, ok := deserialize_snapshot(bytes)
 	if !testing.expect(t, ok) {
 		return
 	}
@@ -101,12 +101,12 @@ test_snapshot_codec_is_a_fixed_point :: proc(t: ^testing.T) {
 	program := persist_program()
 	committed := persist_startup(&program)
 
-	first := serialize_snapshot(committed)
-	restored, ok := deserialize_snapshot(first)
+	first := serialize_snapshot(&program, committed)
+	restored, _, ok := deserialize_snapshot(first)
 	if !testing.expect(t, ok) {
 		return
 	}
-	second := serialize_snapshot(restored)
+	second := serialize_snapshot(&program, restored)
 
 	testing.expect_value(t, len(second), len(first))
 	for b, i in first {
@@ -164,8 +164,11 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	tables[0] = Version_Table{thing = "Wall", singleton = false, rows = rows, next_id = 2}
 	committed := World_Version{tick = 7, tables = tables}
 
-	bytes := serialize_snapshot(committed)
-	restored, ok := deserialize_snapshot(bytes)
+	// The codec round-trip needs no schema authority — an empty program writes
+	// empty v5 schema blocks, and the hand-built rows round-trip regardless.
+	bare_program := Program{}
+	bytes := serialize_snapshot(&bare_program, committed)
+	restored, _, ok := deserialize_snapshot(bytes)
 	if !testing.expect(t, ok) {
 		return
 	}
@@ -410,14 +413,14 @@ test_restore_rejects_content_hash_mismatch :: proc(t: ^testing.T) {
 	committed := persist_startup(&program)
 
 	// Save a real snapshot, then poison its recorded hash so the bytes no longer match.
-	testing.expect(t, apply_save(&store, committed, PERSIST_SLOT))
+	testing.expect(t, apply_save(&store, &program, committed, PERSIST_SLOT))
 	snapshot, read_ok := store_read_slot(&store, PERSIST_SLOT)
 	testing.expect(t, read_ok)
 	snapshot.content_hash = snapshot.content_hash ~ 0xDEAD_BEEF
 	store_write_slot(&store, PERSIST_SLOT, snapshot)
 
 	// The restore refuses the corrupt slot — the pin failed, so no version is returned.
-	_, restore_ok := apply_restore(&store, PERSIST_SLOT)
+	_, restore_ok := apply_restore(&store, &program, PERSIST_SLOT)
 	testing.expect(t, !restore_ok)
 }
 
