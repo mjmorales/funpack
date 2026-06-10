@@ -1,4 +1,4 @@
-# funpack artifact format — v5
+# funpack artifact format — v7
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 6
+funpack-artifact 7
 ```
 
-- `schema_version` is the integer after the space (here `6`).
+- `schema_version` is the integer after the space (here `7`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -83,7 +83,22 @@ funpack-artifact 6
   surface, not the artifact [functions] name token). NO new §2.7 node KIND rides
   this bump: the seam bodies and the entrypoint's first anim/Draw3 forms serialize
   through the existing call/field/variant/record/list/string node arms. A widened
-  [functions] population is a layout change: 5 → 6.
+  [functions] population is a layout change: 5 → 6. v7 carries the **§05 §2 typed
+  hole** through to the runtime. A dev artifact of a holed declaration was
+  hole-blind before this: a `@stub(T, fallback)` fn or behavior emitted an empty
+  body and ticked as a no-op live, silently dropping the fallback approximation
+  the compiler's test interpreter already runs (P8 — "the game stays playable").
+  The single layout change is one new §2.7 node KIND, `stub`, standing as a holed
+  body's **sole statement subtree** (`body_count` 1), exactly where the grammar
+  puts the hole (`FnBody ::= Block | StubExpr`): `node stub fallback 1` carries
+  the fallback approximation expression as its one child, and `node stub bare 0`
+  is the typecheck-only `@stub(T)` the runtime **fails closed** on (the spec's
+  defined no-value outcome — never undefined behavior). The hole's `T` is not
+  carried: the typechecker proves it identical to the record's declared
+  `return:TYPE`. The node-kind set is closed, so the new kind is a deliberate
+  bump: 6 → 7. A **release** artifact never carries a `stub` node — the §29 §4
+  hole-ban refuses the tree before emission, so the node is a dev-artifact form
+  only.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -269,6 +284,7 @@ subtree shape:
 | `let` | `name:name` | 1 = the bound value expr | `let n = e` |
 | `if_return` | (none) | 2 = condition, returned value | early-return `if cond { return v }` |
 | `return` | (none) | 1 = the returned value expr | `return e` |
+| `stub` (v7) | `form:name` (`bare` or `fallback`) | `fallback`: 1 = the approximation expr; `bare`: 0 | a §05 §2 typed hole standing for the whole body: `@stub(T, fallback)` / `@stub(T)` |
 
 - `binary` `op` is the closed glyph set, by name: `add` `sub` `mul` `div` `mod`
   `eq` `ne` `lt` `le` `gt` `ge` `and` `or`. `unary` `op` is `neg` or `not`.
@@ -296,6 +312,14 @@ subtree shape:
   `return`), so the owning record declares a `body_count` of top-level statement
   subtrees and the run is those subtrees back-to-back (§9, §10). A `const`
   initializer and the `setup`/`bindings` bodies are a single top-level statement.
+- A **holed** declaration (v7) has no statement sequence at all — the `stub`
+  node IS its body, the single top-level subtree (`body_count` 1). A runtime
+  evaluating `stub fallback` evaluates the child expression in the record's
+  param-bound scope (the same environment an intact body's statements read), so
+  the approximation is bit-identical to the compiler interpreter's dev
+  evaluation; evaluating `stub bare` is the **defined fail-closed no-value
+  outcome** — the behavior instance folds nothing this tick, a calling
+  expression fails closed — never a trap or undefined behavior.
 
 Example — `goal_side`'s body (`if at.x < 0.0 { return Option::Some(Side::Right) }`
 then `if at.x > BOARD.w { … }` then `return Option::None`) serializes to three
@@ -325,7 +349,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 6
+funpack-artifact 7
 [meta 2]
 …
 [enums N]
@@ -560,6 +584,10 @@ node …
   initializer and the `bindings`/`setup` bodies are a single top-level `return`
   subtree, so their `body_count` is `1`. The body `node` run follows the `param`
   lines and is exactly those statement subtrees back-to-back, in source order.
+  A §05 §2 **holed** fn (v7, dev artifact only) carries the single `stub`
+  subtree as its body — `node stub fallback 1` plus the approximation expression
+  for `@stub(T, fallback)`, `node stub bare 0` for the typecheck-only
+  `@stub(T)` — so its `body_count` is `1` (§2.7).
 - `span:MODULE:LINE` is the §15 module name and 1-based source line, kept as
   **diagnostic provenance** — never a filesystem path (§2 purity) and never the
   sole body representation. A runtime executes the carried `node` tree; the span
@@ -624,7 +652,11 @@ node …
   order — the runtime interprets it as the behavior's per-tick transition, with no
   `funpack` source on its path. `wall_bounce`'s body, for instance, is two
   statements (`if self.pos.y <= 0.0 or … { return self with { vel: … } }`, then
-  `return self`), so its `body_count` is `2`.
+  `return self`), so its `body_count` is `2`. A §05 §2 **holed** step (v7, dev
+  artifact only) carries the single `stub` subtree as its body (`body_count` 1):
+  a `stub fallback` step ticks its approximation expression live (the P8
+  playability surface), a `stub bare` step fails closed — the instance folds
+  nothing that tick, a defined no-value outcome, never a trap.
 
 A behavior with no `param` beyond `self` and no `emit` beyond its blackboard is
 dead code (§06 §6 Update "must write or emit *something*") — that is an upstream

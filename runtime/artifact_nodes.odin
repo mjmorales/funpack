@@ -43,6 +43,11 @@ Node_Kind :: enum {
 	Let,
 	If_Return,
 	Return,
+	// Stub is the §05 §2 typed hole standing as a holed body's sole statement
+	// subtree (schema v7): `node stub fallback 1` carries the approximation
+	// expression as its one child, `node stub bare 0` carries nothing and is
+	// the defined fail-closed no-value outcome at evaluation time.
+	Stub,
 }
 
 // Node is one interpreted body node: its kind, its decoded scalar fields kept as
@@ -103,6 +108,12 @@ node_kind_from_tag :: proc(tag: string) -> (kind: Node_Kind, ok: bool) {
 		return .If_Return, true
 	case "return":
 		return .Return, true
+	case "stub":
+		// A `stub` node is count-driven the generic way: its FORM scalar
+		// (`bare`/`fallback`) precedes the trailing child count (0 for bare, 1 —
+		// the approximation expression — for fallback), so no special handling
+		// beyond this tag mapping (§2.7, schema v7).
+		return .Stub, true
 	}
 	return .Int, false
 }

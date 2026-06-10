@@ -231,7 +231,7 @@ eval_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		return eval_method_call(interp, node, env)
 	case .Name:
 		return eval_named_call(interp, callee.fields[0], node, env)
-	case .Int, .Fixed, .String, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Call, .Lambda, .Unary, .Binary, .Match, .Arm, .Let, .If_Return, .Return:
+	case .Int, .Fixed, .String, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Call, .Lambda, .Unary, .Binary, .Match, .Arm, .Let, .If_Return, .Return, .Stub:
 		return nil, false
 	}
 	return nil, false
