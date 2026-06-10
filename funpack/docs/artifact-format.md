@@ -1,4 +1,4 @@
-# funpack artifact format — v8
+# funpack artifact format — v9
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 8
+funpack-artifact 9
 ```
 
-- `schema_version` is the integer after the space (here `8`).
+- `schema_version` is the integer after the space (here `9`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -113,7 +113,19 @@ funpack-artifact 8
   source changes by the version stamp alone (the v7 stamp-only restamp
   precedent). The conversion fn is an ordinary `[functions]` record the loader
   resolves by name. The sub-record keyword set is closed (§2.1), so the new
-  keyword is a deliberate bump: 7 → 8.
+  keyword is a deliberate bump: 7 → 8. v9 carries the **§08 §3 state-query
+  declarations** through to the runtime — the first-class `query` declarations
+  and their §05 §3 `@index`/`@spatial` index requirements, which the runtime
+  needs to **maintain** the declared engine indices over the world database and
+  to evaluate a query call from the artifact alone. Two layout changes ride it:
+  (a) one new section, `[queries Q]` (§16), appended after `[entrypoint]` — one
+  record per entrypoint-module `query` declaration in source order, the
+  `[functions]` record mold extended with the declared requirement lines; (b)
+  one new **sub-record keyword**, `index` — a fixed four-token line `index KIND
+  THING FIELD` (`KIND` ∈ `index` | `spatial`) carrying one declared §05 §3
+  requirement. A query body is a Block by grammar (no body-position hole), so
+  its body run is the plain §2.7 statement forest. A new section and a new
+  sub-record keyword are layout changes: 8 → 9.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -364,7 +376,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 8
+funpack-artifact 9
 [meta 2]
 …
 [enums N]
@@ -388,6 +400,8 @@ funpack-artifact 8
 [bindings N]
 …
 [entrypoint 1]
+…
+[queries N]
 …
 ```
 
@@ -902,7 +916,47 @@ schema version (§1).
 
 ---
 
-## 16. Parsing recipe (runtime, zero funpack imports)
+## 16. `[queries]` — state-query declarations with their index requirements (§08 §3, §05 §3)
+
+One record per entrypoint-module `query` declaration, in **source-declaration
+order** (v9). A `query` is the §08 §3 read-only declaration form — pure over
+`(version, params)`, within-tick memoized — and its prefixed `@index`/`@spatial`
+directives are the engine-maintained index structures the runtime must build
+and keep current over the world database. The record is the `[functions]` mold
+(§9) extended with the requirement lines:
+
+```
+query NAME param_count return:TYPE index_count body_count span:MODULE:LINE
+param NAME TYPE
+…
+index KIND THING FIELD
+…
+node …
+…
+```
+
+- `param_count`, `return:TYPE`, `body_count`, and `span:MODULE:LINE` read
+  exactly as a `[functions]` record's (§9); the body `node` run follows the
+  `param` and `index` lines. A query body is a Block by grammar
+  (`QueryDecl` admits no body-position `@stub`), so the run is always the plain
+  §2.7 statement forest — never a `stub` subtree.
+- `index_count` is the number of `index` lines — the §05 §3 requirements the
+  query declared. Zero is legal (an index-free query).
+- `index KIND THING FIELD` is one declared requirement: `KIND` is the closed
+  two-value directive set `index` (engine-maintained reverse/key lookup) or
+  `spatial` (deterministic radius/nearest structure); `THING` is the declared
+  thing the index ranges over; `FIELD` is the indexed field on that thing. The
+  typechecker proved the path (`check_index_paths`), so a reader takes the
+  tokens as resolved names.
+- Several queries may declare the same `(KIND, THING, FIELD)` requirement; the
+  runtime maintains ONE structure per distinct requirement (§08 §3: an index is
+  a cache — a pure function of state).
+- Cross-module query carry is deliberately absent (the §17 seam carries fns
+  only); widening it is a schema bump.
+
+---
+
+## 17. Parsing recipe (runtime, zero funpack imports)
 
 A runtime parses an artifact thus, reading top-to-bottom, never seeking:
 
@@ -914,7 +968,7 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
    spans its lead line up to the next lead line. Lead lines are those whose
    leading keyword is *not* in the closed sub-record keyword set (`variant`,
    `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`, `node`,
-   `migrate`). This
+   `migrate`, `index`). This
    is the **only** parse discipline; the format does not promise a
    second grammar-only reader that derives `N` from declared sub-counts (it cannot
    be sound where a record carries an uncounted run, e.g. a `const`'s body `node`
@@ -928,8 +982,9 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
    a pre-order tree, consuming exactly each node's declared `child_count`.
 4. Build the in-memory game model (enums, data/signal/thing schemas, function
    bodies, behaviors with their step bodies, the flattened pipeline, the routing
-   map, the spawn batch, the binding table, the entrypoint) and interpret the
-   carried checked-AST nodes per the §09 canonical semantics.
+   map, the spawn batch, the binding table, the entrypoint, the query
+   declarations with their index requirements) and interpret the carried
+   checked-AST nodes per the §09 canonical semantics.
 
 Because every section's `N` is the lead-line count, every record shapes its
 sub-records by declared scalar counts, every body `node` declares its `child_count`,

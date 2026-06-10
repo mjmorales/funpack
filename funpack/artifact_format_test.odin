@@ -66,7 +66,7 @@ test_encoder_output_matches_format_spec :: proc(t: ^testing.T) {
 // The golden fixture exists, is non-empty, and parses against the written
 // layout: line 1 is the v1 stamp, and every `[name N]` header is backed by
 // exactly N body lines (the count-driven, total parse the runtime relies
-// on, docs/artifact-format.md §16).
+// on, docs/artifact-format.md §17).
 @(test)
 test_golden_artifact_parses_against_format :: proc(t: ^testing.T) {
 	content, ok := read_golden_artifact()
@@ -114,6 +114,7 @@ test_golden_artifact_section_counts :: proc(t: ^testing.T) {
 		"setup",
 		"bindings",
 		"entrypoint",
+		"queries",
 	}
 	testing.expect_value(t, len(doc.sections), len(expected_order))
 	for name, i in expected_order {
@@ -134,6 +135,7 @@ test_golden_artifact_section_counts :: proc(t: ^testing.T) {
 	expect_section_count(t, doc, "setup", 4) // 2 paddles + ball + scoreboard
 	expect_section_count(t, doc, "bindings", 4) // P1/P2 keys+stick
 	expect_section_count(t, doc, "entrypoint", 1) // main
+	expect_section_count(t, doc, "queries", 0) // pong declares no query (v9 constant tail)
 }
 
 expect_section_count :: proc(t: ^testing.T, doc: Artifact_Doc, name: string, want: int) {
@@ -307,7 +309,7 @@ test_golden_artifact_bodies_are_well_formed :: proc(t: ^testing.T) {
 // skip_lead_run advances past exactly `count` consecutive sub-record lines
 // whose keyword is `keyword`, asserting the shape the record's scalar count
 // declares. It is the test-side mirror of the runtime shaping each record's
-// sub-records by its declared counts (§16 step 3).
+// sub-records by its declared counts (§17 step 3).
 skip_lead_run :: proc(lines: []string, start: int, keyword: string, count: int) -> int {
 	prefix := strings.concatenate({keyword, " "}, context.temp_allocator)
 	i := start
