@@ -143,6 +143,15 @@ emit_expr :: proc(b: ^strings.Builder, expr: Expr) {
 		emit_if(b, e)
 	case ^Stub_Expr:
 		emit_stub(b, e)
+	case ^All_Expr:
+		// The §08 §3 world read `all[T]` — a leaf node carrying its thing type
+		// name: `node all THING 0`. Like the `stub` node, the artifact-format
+		// §2.7 ratification of the `all` KIND (a closed set, so a new kind is a
+		// schema-version bump) lands with the fixture seam that first carries a
+		// world-reading query to the runtime; this grammar seam emits the
+		// structurally-sound node so the build's complete Expr switch stays
+		// exhaustive.
+		emit_line(b, "node all ", e.thing, " 0")
 	}
 }
 

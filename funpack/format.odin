@@ -725,6 +725,11 @@ fmt_expr :: proc(b: ^strings.Builder, expr: Expr, indent: int) {
 		fmt_if_expr(b, e, indent)
 	case ^Stub_Expr:
 		fmt_stub(b, e.hole_type, e.fallback, e.has_fallback, indent)
+	case ^All_Expr:
+		// The §08 §3 world read renders as its one canonical spelling.
+		strings.write_string(b, "all[")
+		strings.write_string(b, e.thing)
+		strings.write_string(b, "]")
 	}
 }
 
@@ -838,7 +843,7 @@ fmt_spine_exposes_brace :: proc(expr: Expr) -> bool {
 	case ^Call_Expr:
 		// Arguments parse inside parentheses (lifted); the callee stays exposed.
 		return fmt_spine_exposes_brace(e.callee)
-	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^List_Expr, ^Tuple_Expr, ^Stub_Expr:
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^List_Expr, ^Tuple_Expr, ^Stub_Expr, ^All_Expr:
 		return false
 	}
 	return false

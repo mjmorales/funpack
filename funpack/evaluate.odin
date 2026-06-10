@@ -231,6 +231,73 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		// so the assert reading the enclosing expression fails counted, never
 		// a trap.
 		return eval_stub_hole(ctx, env, e.fallback, e.has_fallback)
+	case ^All_Expr:
+		return eval_all(ctx, e)
+	}
+	return nil, false
+}
+
+// eval_all materializes the §08 §3 world read `all[T]` in the TEST
+// interpreter: the world here is the module's startup population — the
+// setup() spawn batch (resolve_setup_spawns, the same §13 batch the runtime
+// seeds its version 0 from) — so a query body reads exactly the rows the
+// runtime's tick 0 would hold, and the two interpreters agree on the read. A
+// module with no setup() (or one spawning no T) reads the empty table. Rows
+// materialize in SPAWN ORDER, which IS stable Id order (the deterministic
+// spawn counter assigns Ids in batch order), so fold/first and the
+// nearest-first tiebreak over this list match the runtime's Id-ordered View.
+// The result is a List_Value — the same materialized shape a View.of fixture
+// and the runtime's View param binding take — so every list combinator
+// composes over it unchanged.
+eval_all :: proc(ctx: Eval_Ctx, e: ^All_Expr) -> (value: Value, ok: bool) {
+	thing, declared := thing_by_name(ctx.ast, e.thing)
+	if !declared {
+		return nil, false
+	}
+	spawns := resolve_setup_spawns(ctx.ast)
+	rows := make([dynamic]Value, 0, len(spawns), context.temp_allocator)
+	for spawn in spawns {
+		if spawn.type_name != e.thing {
+			continue
+		}
+		row := eval_spawn_row(ctx, thing, spawn) or_return
+		append(&rows, row)
+	}
+	return List_Value{elements = rows[:]}, true
+}
+
+// eval_spawn_row lifts one resolved setup spawn into the Record_Value a
+// query's world read iterates: every declared field of the thing's schema, in
+// SCHEMA ORDER, valued by the spawn's authored expression when present and by
+// the field's declared default otherwise — the same overlay the runtime's
+// row decoder applies, so a row reads identically on both sides. A field the
+// spawn omits with no declared default fails closed (ok = false) — a partial
+// row is never a defined read.
+eval_spawn_row :: proc(ctx: Eval_Ctx, thing: Thing_Node, spawn: Resolved_Spawn) -> (value: Value, ok: bool) {
+	frame := new_env(nil)
+	fields := make([]Record_Field_Value, len(thing.fields), context.temp_allocator)
+	for field, i in thing.fields {
+		source, authored := spawn_field_expr(spawn, field.name)
+		if !authored {
+			if !field.has_default {
+				return nil, false
+			}
+			source = field.default
+		}
+		field_value := eval_expr(ctx, frame, source) or_return
+		fields[i] = Record_Field_Value{name = field.name, value = field_value}
+	}
+	return Record_Value{type_name = thing.name, fields = fields}, true
+}
+
+// spawn_field_expr reads one authored field expression off a resolved spawn —
+// a linear scan over the source-ordered field list, the determinism-stable
+// lookup every schema overlay here uses.
+spawn_field_expr :: proc(spawn: Resolved_Spawn, name: string) -> (expr: Expr, authored: bool) {
+	for field in spawn.fields {
+		if field.name == name {
+			return field.value, true
+		}
 	}
 	return nil, false
 }

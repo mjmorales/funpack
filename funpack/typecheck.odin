@@ -36,6 +36,8 @@ Type_Error :: enum {
 	Migrate_Convert_Return,  // a @migrate conversion whose declared return type differs from the migrated field's declared (new) type — `fn(Old) -> New` must land on New (spec §05 §6)
 	Index_Unknown_Thing,     // an @index/@spatial FieldPath whose head names no declared thing/singleton — the §05 §3 index is instance-level, so only a thing (a table of rows) can carry one
 	Index_Unknown_Field,     // an @index/@spatial FieldPath naming a declared thing but a field that thing's schema lacks (spec §05 §3, §08 §3)
+	All_Outside_Query,       // the §08 §3 world read `all[T]` used outside a query body — a query is the read path's only world-reading declaration; a behavior reads through its declared View/signal params, never `all[T]`
+	All_Unknown_Thing,       // an `all[T]` whose T names no declared thing/singleton — the read table is a thing's instance set, so a data/enum/signal (or undeclared) head has no rows to read
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -58,6 +60,13 @@ Check_Ctx :: struct {
 	index:           Module_Index,
 	scope:           Scope,
 	expected_return: Type,
+	// in_query marks the body sweep over a §08 §3 query declaration — the one
+	// context the world read `all[T]` (and the spatial combinators over it)
+	// is admitted in; query_indexes carries that query's declared @index/
+	// @spatial requirements so the spatial combinators resolve their measured
+	// field. Both stay zero for fn/behavior/test sweeps.
+	in_query:        bool,
+	query_indexes:   []Index_Directive,
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
@@ -374,6 +383,8 @@ layer_walk_expr :: proc(expr: Expr, registry: []string) -> Type_Error {
 		if e.has_fallback {
 			layer_walk_expr(e.fallback, registry) or_return
 		}
+	case ^All_Expr:
+		// The §08 §3 world read is a leaf — it hosts no sub-expression.
 	}
 	return .None
 }
@@ -439,8 +450,9 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast
 		// (version, params)) — so an ill-typed or unknown-field use inside it
 		// surfaces the same named diagnostics a fn body gets. The grammar
 		// admits no body-position hole on a query, so the synthesized node is
-		// never holed.
-		check_fn_body(bindings, env, index, query_as_fn(query)) or_return
+		// never holed. The query CONTEXT (in_query + the declared requirement
+		// set) rides the ctx so `all[T]` and the spatial combinators resolve.
+		check_query_body(bindings, env, index, query) or_return
 	}
 	for behavior in ast.behaviors {
 		check_fn_body(bindings, env, index, behavior.step) or_return
@@ -471,6 +483,30 @@ query_as_fn :: proc(query: Query_Node) -> Fn_Node {
 // grounds correctly). A §05 §2 typed hole standing in body position routes to
 // check_stub_hole — there is no statement sequence to walk.
 check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Type_Error {
+	ctx := fn_body_ctx(bindings, env, index, fn)
+	if fn.holed {
+		return check_stub_hole(ctx, fn)
+	}
+	return check_statements(ctx, fn.body)
+}
+
+// check_query_body types one §08 §3 query body through the same param-seeded
+// window a fn body rides (fn_body_ctx over the query_as_fn projection), with
+// the QUERY CONTEXT set: in_query admits the world read `all[T]`, and the
+// declared @index/@spatial requirement set rides query_indexes so the spatial
+// combinators (within/nearest_first) resolve the field they measure.
+check_query_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, query: Query_Node) -> Type_Error {
+	ctx := fn_body_ctx(bindings, env, index, query_as_fn(query))
+	ctx.in_query = true
+	ctx.query_indexes = query.indexes
+	return check_statements(ctx, query.body)
+}
+
+// fn_body_ctx seeds the one body-sweep context both fn and query bodies type
+// in: the declared parameters as their resolved types in a fresh scope, the
+// declared `-> R` as expected_return, and the import/env/index triple threaded
+// through for cross-module resolution.
+fn_body_ctx :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node) -> Check_Ctx {
 	ctx := Check_Ctx {
 		bindings        = bindings,
 		env             = env,
@@ -481,10 +517,7 @@ check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn
 	for param in fn.params {
 		ctx.scope[param.name] = resolve_type_ref(env, bindings, param.type, index)
 	}
-	if fn.holed {
-		return check_stub_hole(ctx, fn)
-	}
-	return check_statements(ctx, fn.body)
+	return ctx
 }
 
 // check_stub_hole types a holed fn/step (spec §05 §2, P8): `@stub(T)` stands
@@ -629,8 +662,28 @@ expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) 
 		return if_check(ctx, e)
 	case ^Stub_Expr:
 		return stub_expr_check(ctx, e)
+	case ^All_Expr:
+		return all_check(ctx, e)
 	}
 	return nil, .Unsupported_Expr
+}
+
+// all_check types the §08 §3 world read `all[T]`: admitted inside a query
+// body alone (a query is the read path's only world-reading declaration —
+// All_Outside_Query elsewhere), with T a declared thing/singleton (the table
+// of rows; All_Unknown_Thing otherwise). The read yields the §08 §2 read
+// table View[T] in stable Id order, so the whole existing combinator surface
+// (fold/filter/first/map/len and the spatial combinators) composes over it
+// through source_element exactly as over a behavior's View param.
+all_check :: proc(ctx: Check_Ctx, e: ^All_Expr) -> (type: Type, err: Type_Error) {
+	if !ctx.in_query {
+		return nil, .All_Outside_Query
+	}
+	record, declared := ctx.env.records[e.thing]
+	if !declared || record.kind != .Thing {
+		return nil, .All_Unknown_Thing
+	}
+	return engine_type_of(.View, user_type_of(e.thing, .Thing)), .None
 }
 
 // stub_expr_check types an expression-position typed hole (spec §05 §2;
