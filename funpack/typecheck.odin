@@ -38,6 +38,8 @@ Type_Error :: enum {
 	Index_Unknown_Field,     // an @index/@spatial FieldPath naming a declared thing but a field that thing's schema lacks (spec §05 §3, §08 §3)
 	All_Outside_Query,       // the §08 §3 world read `all[T]` used outside a query body — a query is the read path's only world-reading declaration; a behavior reads through its declared View/signal params, never `all[T]`
 	All_Unknown_Thing,       // an `all[T]` whose T names no declared thing/singleton — the read table is a thing's instance set, so a data/enum/signal (or undeclared) head has no rows to read
+	Spatial_Requirement_Missing,   // a within/nearest_first whose element thing has no @spatial declared on the ENCLOSING query (spec §08 §3: a query needing an index must declare it) — including any use outside a query body, where no requirement can be declared at all
+	Spatial_Requirement_Ambiguous, // a within/nearest_first whose element thing carries SEVERAL @spatial declarations on the enclosing query — the combinator cannot pick which field to measure, so the declaration set must name exactly one
 }
 
 // Scope maps a body's or test block's bound names to their checked types —
@@ -1413,6 +1415,12 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "first":
 		t, fe := first_check(ctx, e)
 		return t, true, fe
+	case "within":
+		t, we := spatial_combinator_check(ctx, e, true)
+		return t, true, we
+	case "nearest_first":
+		t, ne := spatial_combinator_check(ctx, e, false)
+		return t, true, ne
 	case "or_else":
 		t, oe := or_else_check(ctx, e)
 		return t, true, oe
@@ -1767,6 +1775,95 @@ or_else_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_E
 		return nil, .Type_Mismatch
 	}
 	return fallback, .None
+}
+
+// spatial_combinator_check types the §08 §3 spatial combinators over the
+// runtime kernel's pinned read shape: `within(source, origin, r) -> [T]`
+// (every row whose declared @spatial field lies within the fixed-point radius
+// of origin, source order kept) and `nearest_first(source, origin) -> [T]`
+// (ascending kernel distance, stable — the Id tiebreak rides the source's
+// stable Id order). The source is a View[T]/[T] whose element T is a declared
+// thing; the field MEASURED is the one the ENCLOSING query's @spatial(T.f)
+// declaration names — exactly one must match T (the named missing/ambiguous
+// verdicts otherwise; outside a query no requirement exists, so the missing
+// verdict covers that position too). The origin must carry the declared
+// field's type, and that field must be a kernel-measurable vector (Vec2/Vec3
+// — the §10 distance domain); the radius is Fixed. Whether the declaration
+// itself is required/used is the structural index gate's verdict, upstream —
+// this rule owns the field resolution and the value types.
+spatial_combinator_check :: proc(ctx: Check_Ctx, e: ^Call_Expr, with_radius: bool) -> (type: Type, err: Type_Error) {
+	arity := with_radius ? 3 : 2
+	if len(e.args) != arity {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	elem, elem_ok := source_element(source)
+	if !elem_ok {
+		return nil, .Type_Mismatch
+	}
+	thing, is_user := elem.(^User_Type)
+	if !is_user || thing.kind != .Thing {
+		return nil, .Type_Mismatch
+	}
+	field, resolve_err := spatial_requirement_field(ctx, thing.name)
+	if resolve_err != .None {
+		return nil, resolve_err
+	}
+	field_type, has_field := thing_field_type(ctx.env, thing.name, field)
+	if !has_field || !is_vector_ground(field_type) {
+		// A requirement naming a non-vector field has no kernel distance —
+		// the §10 measure is defined over Vec2/Vec3 lanes alone.
+		return nil, .Type_Mismatch
+	}
+	origin := expr_check(ctx, e.args[1]) or_return
+	if !types_compatible(origin, field_type) {
+		return nil, .Type_Mismatch
+	}
+	if with_radius {
+		radius := expr_check(ctx, e.args[2]) or_return
+		if !is_ground(radius, .Fixed) {
+			return nil, .Type_Mismatch
+		}
+	}
+	return list_of(elem), .None
+}
+
+// spatial_requirement_field resolves which field the enclosing query's
+// @spatial declarations measure for one thing: exactly one declaration must
+// name the thing — zero is the missing-requirement verdict (also every
+// non-query position, which can declare none), several the ambiguous one.
+spatial_requirement_field :: proc(ctx: Check_Ctx, thing: string) -> (field: string, err: Type_Error) {
+	found := false
+	for directive in ctx.query_indexes {
+		if directive.kind != .Spatial || directive.thing != thing {
+			continue
+		}
+		if found {
+			return "", .Spatial_Requirement_Ambiguous
+		}
+		field = directive.field
+		found = true
+	}
+	if !found {
+		return "", .Spatial_Requirement_Missing
+	}
+	return field, .None
+}
+
+// thing_field_type reads one declared field's resolved type off a thing's
+// schema — a linear scan over the source-ordered field list, the
+// determinism-stable lookup the membership checks use.
+thing_field_type :: proc(env: Type_Env, thing: string, field: string) -> (type: Type, ok: bool) {
+	record, declared := env.records[thing]
+	if !declared {
+		return nil, false
+	}
+	for schema_field in record.fields {
+		if schema_field.name == field {
+			return schema_field.type, true
+		}
+	}
+	return nil, false
 }
 
 // source_element reads the element type of a read source — a View[T] read

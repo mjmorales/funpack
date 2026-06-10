@@ -15,6 +15,7 @@
 // those forms resolve; the numeric kernel forms ignore it.
 package funpack
 
+import "core:slice"
 import "core:strings"
 
 // Env is a chained binding frame. Lookups walk toward the root; only
@@ -47,12 +48,18 @@ Env :: struct {
 // its key on entry and trips the guard on revisit, failing closed (ok = false)
 // instead of recursing to a stack overflow (spec §10 totality).
 Eval_Ctx :: struct {
-	ast:      Ast,
-	env:      Type_Env,
-	bindings: Bindings,
-	modules:  []Module_Eval,
-	module:   string,
-	visiting: ^Const_Visit,
+	ast:           Ast,
+	env:           Type_Env,
+	bindings:      Bindings,
+	modules:       []Module_Eval,
+	module:        string,
+	visiting:      ^Const_Visit,
+	// query_indexes is the ENCLOSING §08 §3 query's declared @index/@spatial
+	// requirement set — set by the eval_user_fn dispatch when the callable is
+	// a query (find_user_callable carries it), cleared for every fn/behavior
+	// frame — so the spatial combinators resolve the field they measure from
+	// the declaration that admitted them (spatial_combinator_check's rule).
+	query_indexes: []Index_Directive,
 }
 
 // Const_Visit is the const-resolution visited set: the module-qualified names
@@ -1293,6 +1300,10 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_fold(ctx, env, e)
 	case "first":
 		return eval_first(ctx, env, e)
+	case "within":
+		return eval_within(ctx, env, e)
+	case "nearest_first":
+		return eval_nearest_first(ctx, env, e)
 	case "prepend":
 		return eval_prepend(ctx, env, e)
 	case "init":
@@ -1324,9 +1335,11 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 	// a §08 §3 query — call_check admits both kinds at call position, so the
 	// evaluator resolves both: the body comes off the module and runs against
 	// the arguments through the one eval_user_fn funnel.
-	if fn, declared := find_user_callable(ctx.ast, name.name); declared {
+	if fn, indexes, declared := find_user_callable(ctx.ast, name.name); declared {
 		args := eval_args(ctx, env, e.args) or_return
-		return eval_user_fn(ctx, fn, args)
+		body_ctx := ctx
+		body_ctx.query_indexes = indexes
+		return eval_user_fn(body_ctx, fn, args)
 	}
 	return nil, false
 }
@@ -1392,16 +1405,132 @@ find_user_fn :: proc(ast: Ast, name: string) -> (fn: Fn_Node, found: bool) {
 // there is no key to memoize on, and a query body is pure over its
 // arguments, so the result is identical either way. The memo is the
 // runtime's concern where the version exists.
-find_user_callable :: proc(ast: Ast, name: string) -> (fn: Fn_Node, found: bool) {
+find_user_callable :: proc(ast: Ast, name: string) -> (fn: Fn_Node, indexes: []Index_Directive, found: bool) {
 	if declared_fn, declared := find_user_fn(ast, name); declared {
-		return declared_fn, true
+		return declared_fn, nil, true
 	}
 	for decl in ast.queries {
 		if decl.name == name {
-			return query_as_fn(decl), true
+			// The query's declared requirement set rides along so the caller
+			// seeds the body's Eval_Ctx with it — the spatial combinators
+			// resolve their measured field from the ENCLOSING query alone.
+			return query_as_fn(decl), decl.indexes, true
 		}
 	}
-	return Fn_Node{}, false
+	return Fn_Node{}, nil, false
+}
+
+// eval_within lowers the §08 §3 radius read `within(source, origin, r) ->
+// [T]`: every row whose declared @spatial field lies within the fixed-point
+// radius of origin — distance through the SAME kernel composition the
+// runtime's maintained-structure read pins (spatial_within: vec2_length/
+// vec3_length over the component difference, compared `<= r`, no float ever)
+// — in SOURCE order (stable Id order for a world read). The measured field
+// resolves from the enclosing query's @spatial declaration; a row outside
+// the kernel's distance domain (a field/origin arm mismatch) fails closed,
+// never a coerced 0 — mirroring the runtime kernel's refusal arm.
+eval_within :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 3) or_return
+	origin := eval_expr(ctx, env, e.args[1]) or_return
+	radius_value := eval_expr(ctx, env, e.args[2]) or_return
+	radius, is_fixed := radius_value.(Fixed)
+	if !is_fixed {
+		return nil, false
+	}
+	out := make([dynamic]Value, 0, len(elements), context.temp_allocator)
+	for element in elements {
+		distance := spatial_element_distance(ctx, element, origin) or_return
+		if distance <= radius {
+			append(&out, element)
+		}
+	}
+	return List_Value{elements = out[:]}, true
+}
+
+// eval_nearest_first lowers the §08 §3 nearest-first order
+// `nearest_first(source, origin) -> [T]`: ascending kernel distance with the
+// STABLE Id tiebreak — a stable sort over a source in stable Id order keeps
+// equidistant rows in Id order, exactly the runtime kernel's pinned
+// (distance, Id) answer (spatial_hit_less). Distances are measured once per
+// row through the same kernel composition eval_within uses.
+eval_nearest_first :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	origin := eval_expr(ctx, env, e.args[1]) or_return
+	keyed := make([]Spatial_Keyed_Row, len(elements), context.temp_allocator)
+	for element, i in elements {
+		distance := spatial_element_distance(ctx, element, origin) or_return
+		keyed[i] = Spatial_Keyed_Row{row = element, distance = distance}
+	}
+	slice.stable_sort_by(keyed, spatial_keyed_row_less)
+	out := make([]Value, len(keyed), context.temp_allocator)
+	for entry, i in keyed {
+		out[i] = entry.row
+	}
+	return List_Value{elements = out}, true
+}
+
+// Spatial_Keyed_Row pairs one source row with its kernel distance — the sort
+// key eval_nearest_first orders by.
+Spatial_Keyed_Row :: struct {
+	row:      Value,
+	distance: Fixed,
+}
+
+// spatial_keyed_row_less is the nearest-first order's comparator: ascending
+// distance ONLY — the stable sort preserves source (Id) order between equal
+// distances, which IS the §08 §3 Id tiebreak.
+spatial_keyed_row_less :: proc(a, b: Spatial_Keyed_Row) -> bool {
+	return a.distance < b.distance
+}
+
+// spatial_element_distance measures one row's declared @spatial field against
+// the probe origin through the fixed-point kernel — vec2_length/vec3_length
+// over the component difference (bit-exact on perfect squares, floor-rounded
+// otherwise), the runtime's spatial_distance composition exactly. The field
+// resolves from the enclosing query's requirement set; ok is false for a row
+// outside the measurable domain (no declaration, a missing field, or an arm
+// mismatch between origin and field) — fail closed, mirroring the kernel.
+spatial_element_distance :: proc(ctx: Eval_Ctx, element: Value, origin: Value) -> (distance: Fixed, ok: bool) {
+	record, is_record := element.(Record_Value)
+	if !is_record {
+		return 0, false
+	}
+	field := spatial_field_for(ctx, record.type_name) or_return
+	at := record_field_value(record.fields, field) or_return
+	#partial switch from in origin {
+	case Vec2_Value:
+		at2, is_vec2 := at.(Vec2_Value)
+		if !is_vec2 {
+			return 0, false
+		}
+		return vec2_length(vec2_sub(at2, from)), true
+	case Vec3_Value:
+		at3, is_vec3 := at.(Vec3_Value)
+		if !is_vec3 {
+			return 0, false
+		}
+		return vec3_length(vec3_sub(at3, from)), true
+	}
+	return 0, false
+}
+
+// spatial_field_for resolves which field the enclosing query's @spatial
+// declarations measure for one thing — the eval twin of the typecheck's
+// spatial_requirement_field, demanding exactly one match (zero or several
+// fail closed; the typing rule already named those verdicts upstream).
+spatial_field_for :: proc(ctx: Eval_Ctx, thing: string) -> (field: string, ok: bool) {
+	found := false
+	for directive in ctx.query_indexes {
+		if directive.kind != .Spatial || directive.thing != thing {
+			continue
+		}
+		if found {
+			return "", false
+		}
+		field = directive.field
+		found = true
+	}
+	return field, found
 }
 
 // eval_fold reduces strictly left-to-right: acc = combinator(acc, element)
@@ -1664,8 +1793,10 @@ apply_combinator :: proc(ctx: Eval_Ctx, env: ^Env, arg: Expr, args: []Value) -> 
 		return apply_lambda(ctx, Lambda_Value{node = lambda, env = env}, args)
 	}
 	if name, is_name := arg.(^Name_Expr); is_name {
-		if fn, declared := find_user_callable(ctx.ast, name.name); declared {
-			return eval_user_fn(ctx, fn, args)
+		if fn, indexes, declared := find_user_callable(ctx.ast, name.name); declared {
+			body_ctx := ctx
+			body_ctx.query_indexes = indexes
+			return eval_user_fn(body_ctx, fn, args)
 		}
 	}
 	return nil, false
