@@ -526,15 +526,20 @@ resolve_imports :: proc(ast: Ast) -> (bindings: Bindings, err: Type_Error) {
 // stdlib partition and a user module resolves as stdlib (the closed surface
 // wins — a user module cannot shadow engine.*, §15.7). An empty index reduces
 // this to the single-source resolve_imports: every user-module import is
-// .Unknown_Module.
-resolve_imports_indexed :: proc(ast: Ast, index: Module_Index) -> (bindings: Bindings, err: Type_Error) {
+// .Unknown_Module. importer_root is the importing module's own §30 package
+// root: "" (the default — every consumer-project module) resolves the index
+// by raw module name, while a PACKAGE module (a non-empty root) resolves its
+// user-module imports from its own vantage — package-internal names map onto
+// the consumer index's prefixed entries, and any import reaching outside the
+// package + engine is the §30 §2 star-graph refusal (resolve_package_entry).
+resolve_imports_indexed :: proc(ast: Ast, index: Module_Index, importer_root := "") -> (bindings: Bindings, err: Type_Error) {
 	bindings.names = make(map[string]Binding, context.temp_allocator)
 	prelude, _ := surface_module("engine.prelude")
 	for decl in prelude.decls {
 		bindings.names[decl.name] = Binding{module = prelude.path, kind = decl.kind}
 	}
 	for node in ast.imports {
-		resolve_import(&bindings, node, index) or_return
+		resolve_import(&bindings, node, index, importer_root) or_return
 	}
 	return bindings, .None
 }
@@ -545,7 +550,10 @@ resolve_imports_indexed :: proc(ast: Ast, index: Module_Index) -> (bindings: Bin
 // the module the leading segments name) — and within each form tries the stdlib
 // surface first and the project-wide user-module index second. A path that is
 // neither a stdlib partition nor a user module in the index is .Unknown_Module.
-resolve_import :: proc(bindings: ^Bindings, node: Import_Node, index: Module_Index) -> Type_Error {
+// importer_root threads the importing module's §30 package root into every
+// user-module lookup (resolve_package_entry), so a package module resolves its
+// own siblings and is refused anything beyond engine + itself (§30 §2).
+resolve_import :: proc(bindings: ^Bindings, node: Import_Node, index: Module_Index, importer_root := "") -> Type_Error {
 	if node.members != nil {
 		path := join_path(node.segments)
 		if module, found := surface_module(path); found {
@@ -558,8 +566,9 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node, index: Module_Ind
 			}
 			return .None
 		}
-		if entry, found := module_index_lookup(index, path); found {
-			return resolve_user_import(bindings, entry, node.members)
+		entry, found := resolve_package_entry(index, path, importer_root) or_return
+		if found {
+			return resolve_user_import(bindings, entry, node.members, importer_root)
 		}
 		return .Unknown_Module
 	}
@@ -578,7 +587,7 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node, index: Module_Ind
 	// whole-module arm above. Tried before the dotted single-member arm so a
 	// bare `import assets` (one segment) is a whole-module handle, not a missing
 	// dotted member.
-	if entry, found := module_index_lookup(index, whole_path); found {
+	if entry, found := resolve_package_entry(index, whole_path, importer_root) or_return; found {
 		handle := node.segments[len(node.segments) - 1]
 		return bind_name(bindings, handle, Binding{module = entry.module, kind = .Module})
 	}
@@ -595,10 +604,46 @@ resolve_import :: proc(bindings: ^Bindings, node: Import_Node, index: Module_Ind
 		}
 		return bind_name(bindings, member, binding)
 	}
-	if entry, found := module_index_lookup(index, prefix_path); found {
-		return resolve_user_import(bindings, entry, {member})
+	entry, found := resolve_package_entry(index, prefix_path, importer_root) or_return
+	if found {
+		return resolve_user_import(bindings, entry, {member}, importer_root)
 	}
 	return .Unknown_Module
+}
+
+// resolve_package_entry is the importer-vantage user-module lookup behind every
+// user arm of resolve_import. From the CONSUMING project ("" — the default
+// vantage), it is a plain index lookup: every consumer module and every §30 §7
+// prefixed package entry is nameable, and the §30 §6 expose gate downstream
+// decides importability. From INSIDE a package (a non-empty importer_root R),
+// §15 §5 fixes the namespace: the package's own modules root UNPREFIXED at its
+// source root, so an import path P names the consumer index's prefixed entry
+// `R.P` — tried first, and resolving it stays within the package (no edge). A
+// path that instead names some OTHER entry of the index — another package's
+// prefixed namespace, or a module of the consuming game — is the §30 §2
+// star-graph refusal, the NAMED .Package_Imports_Package verdict: a package
+// depends only on engine; it may not depend on another package (and the hub's
+// modules are not in its namespace either). A raw path landing back inside the
+// importer's OWN prefixed namespace (`import R.x` from within R) names a module
+// that does not exist from the inside vantage — §15 §5: the project name is not
+// a namespace prefix within the project — so it stays .Unknown_Module, never a
+// star verdict against itself.
+resolve_package_entry :: proc(index: Module_Index, path: string, importer_root: string) -> (entry: Module_Entry, found: bool, err: Type_Error) {
+	if importer_root == "" {
+		entry, found = module_index_lookup(index, path)
+		return entry, found, .None
+	}
+	prefixed := strings.concatenate({importer_root, ".", path}, context.temp_allocator)
+	if own, has_own := module_index_lookup(index, prefixed); has_own {
+		return own, true, .None
+	}
+	if outside, has_outside := module_index_lookup(index, path); has_outside {
+		if outside.package_root == importer_root {
+			return Module_Entry{}, false, .Unknown_Module
+		}
+		return Module_Entry{}, false, .Package_Imports_Package
+	}
+	return Module_Entry{}, false, .None
 }
 
 join_path :: proc(segments: []string) -> string {
