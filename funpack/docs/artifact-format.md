@@ -1,4 +1,4 @@
-# funpack artifact format — v9
+# funpack artifact format — v10
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 9
+funpack-artifact 10
 ```
 
-- `schema_version` is the integer after the space (here `9`).
+- `schema_version` is the integer after the space (here `10`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -125,7 +125,15 @@ funpack-artifact 9
   THING FIELD` (`KIND` ∈ `index` | `spatial`) carrying one declared §05 §3
   requirement. A query body is a Block by grammar (no body-position hole), so
   its body run is the plain §2.7 statement forest. A new section and a new
-  sub-record keyword are layout changes: 8 → 9.
+  sub-record keyword are layout changes: 8 → 9. v10 ratifies the **§08 §3 world
+  read `all[T]`** as a §2.7 node KIND: `node all THING 0` — a leaf carrying the
+  read table's thing type name, evaluating to that thing's instance rows in
+  stable `Id` order (the runtime reads its current version; the compiler's test
+  interpreter the setup-seeded startup population). It is the form a spec-true
+  query body reads the world through — a query takes **only value parameters**
+  (the View-parameter interim shape is retired by the same bump), so the
+  `[queries]` carry (§16) is unchanged in layout while every world read moves
+  inside the body. A new node KIND is a layout change: 9 → 10.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -312,6 +320,7 @@ subtree shape:
 | `if_return` | (none) | 2 = condition, returned value | early-return `if cond { return v }` |
 | `return` | (none) | 1 = the returned value expr | `return e` |
 | `stub` (v7) | `form:name` (`bare` or `fallback`) | `fallback`: 1 = the approximation expr; `bare`: 0 | a §05 §2 typed hole standing for the whole body: `@stub(T, fallback)` / `@stub(T)` |
+| `all` (v10) | `thing:name` | 0 | the §08 §3 world read `all[Ball]` — the thing's instance rows in stable `Id` order |
 
 - `binary` `op` is the closed glyph set, by name: `add` `sub` `mul` `div` `mod`
   `eq` `ne` `lt` `le` `gt` `ge` `and` `or`. `unary` `op` is `neg` or `not`.

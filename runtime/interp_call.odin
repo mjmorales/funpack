@@ -231,7 +231,7 @@ eval_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		return eval_method_call(interp, node, env)
 	case .Name:
 		return eval_named_call(interp, callee.fields[0], node, env)
-	case .Int, .Fixed, .String, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Call, .Lambda, .Unary, .Binary, .Match, .Arm, .Let, .If_Return, .Return, .Stub:
+	case .Int, .Fixed, .String, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Call, .Lambda, .Unary, .Binary, .Match, .Arm, .Let, .If_Return, .Return, .Stub, .All:
 		return nil, false
 	}
 	return nil, false
@@ -543,6 +543,10 @@ eval_named_call :: proc(
 		return builtin_first(interp, node, env)
 	case "fold":
 		return builtin_fold(interp, node, env)
+	case "within":
+		return builtin_within(interp, node, env)
+	case "nearest_first":
+		return builtin_nearest_first(interp, node, env)
 	case "length":
 		return builtin_length(interp, node, env)
 	case "sin":

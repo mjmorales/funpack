@@ -141,13 +141,18 @@ Env :: struct {
 // is nil (a pure read-layer evaluation with no fold in flight) the read falls
 // back to `version`, the committed snapshot.
 Interp :: struct {
-	program:   ^Program,
-	version:   ^World_Version, // the committed version a read falls back to when no tick is in flight
-	tick:      ^Tick_State, // the in-flight working tables a mid-tick cross-thing read observes; nil off a fold
-	input:     Input, // the §23 action snapshot a behavior queries
-	time:      Record_Value, // the Time resource: { dt: Fixed }
-	registry:  Action_Registry, // the §23 action registry, minted ONCE per program (interp_call.odin reads it)
-	allocator: Runtime_Allocator,
+	program:       ^Program,
+	version:       ^World_Version, // the committed version a read falls back to when no tick is in flight
+	tick:          ^Tick_State, // the in-flight working tables a mid-tick cross-thing read observes; nil off a fold
+	input:         Input, // the §23 action snapshot a behavior queries
+	time:          Record_Value, // the Time resource: { dt: Fixed }
+	registry:      Action_Registry, // the §23 action registry, minted ONCE per program (interp_call.odin reads it)
+	allocator:     Runtime_Allocator,
+	// query_indexes is the ENCLOSING §08 §3 query's declared requirement set —
+	// set (and restored) by eval_query_values around a query body so the
+	// spatial combinators (within/nearest_first) resolve the field they
+	// measure from the declaration that admitted them; nil everywhere else.
+	query_indexes: []Index_Req,
 }
 
 // new_interp builds the read-only context a tick fold (or a render pass) threads,
@@ -246,7 +251,7 @@ eval_body :: proc(interp: ^Interp, body: []Node, env: ^Env) -> (value: Value, ok
 				return eval(interp, &stmt.children[0], env)
 			}
 			return nil, false
-		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .Arm:
+		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .Arm, .All:
 			// A non-statement node at statement position is a malformed body.
 			return nil, false
 		}
@@ -309,6 +314,13 @@ eval :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool
 		return eval_call(interp, node, env)
 	case .Lambda:
 		return eval_lambda(interp, node, env), true
+	case .All:
+		// The §08 §3 world read `all[T]` (schema v10): the thing's rows as a
+		// List_Value in stable Id order — the tick's WORKING rows mid-fold,
+		// the committed version off one — through the SAME view binding a
+		// behavior's View[T] param reads, so a query observes exactly the §08
+		// mid-tick read-consistency rule (population fixed, columns folding).
+		return view_rows_as_list(interp, node.fields[0]), true
 	case .Recfield, .Arm, .Let, .If_Return, .Return, .Stub:
 		// These appear only as children of their owning construct (a `stub`
 		// only as a holed body's sole statement), never as a standalone

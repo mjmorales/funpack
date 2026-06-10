@@ -598,6 +598,9 @@ expr_equiv :: proc(a, b: Expr) -> bool {
 			type_ref_equiv(node.hole_type, other.hole_type) &&
 			node.has_fallback == other.has_fallback &&
 			(!node.has_fallback || expr_equiv(node.fallback, other.fallback))
+	case ^All_Expr:
+		other, ok := b.(^All_Expr)
+		return ok && node.thing == other.thing
 	}
 	return false
 }
