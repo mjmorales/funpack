@@ -103,10 +103,12 @@ Index_Decl_Kind :: enum {
 //   - doc            — the attached `@doc` text (§05); "" when undocumented
 //   - gtags          — the attached `@gtag` registry tags (§05), authored order
 //   - stub           — the §05 §2 typed-hole flag, AST-derived: true when the
-//                      declaration's body is a `@stub(T)` / `@stub(T, fallback)`
-//                      hole (the parser's Fn_Node.holed, on a fn or a behavior
-//                      step), false for an intact body and for the body-less
-//                      forms — mandatory-present, never omitted
+//                      declaration holds a `@stub(T)` / `@stub(T, fallback)`
+//                      hole in body position (the parser's Fn_Node.holed) OR in
+//                      expression position anywhere the shared hole walkers
+//                      descend (fn_holds_stub and friends: bodies, initializers,
+//                      defaults), false only for a hole-free declaration —
+//                      mandatory-present, never omitted
 //   - todo           — the §05 §2 @todo presence flag, AST-derived (v3): true
 //                      exactly when the declaration carries at least one
 //                      `@todo("msg", window)` note (todo_flag); the parsed
