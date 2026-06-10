@@ -313,6 +313,158 @@ test_multi_module_cross_module_type_resolves :: proc(t: ^testing.T) {
 	}
 }
 
+// ── the §30 §6 package edge: importable iff @expose'd ───────────────────────
+//
+// One visibility primitive, two boundaries (spec §15 §4): within a project an
+// export is public-by-default (the within-project fixtures above never consult
+// the exposed flag), while an entry whose package_root names a §30 dependency
+// gates every import through module_export_importable — importable iff the
+// declaration carries @expose, the named .Package_Private verdict otherwise.
+// The fixtures construct package entries through the build_module_index_*
+// package_roots seam (the deps.fcfg resolution story's construction path),
+// keyed by their §30 §7 prefixed module names (`hexgrid.layout` — the project
+// name as root namespace). All in-memory, no spec checkout needed.
+
+// hexgrid_layout_ast parses the §30 §6 exemplar package module: an @expose'd
+// public fn beside a package-private helper, plus an @expose'd type and an
+// unmarked const, so every access route has a marked and an unmarked target.
+hexgrid_layout_ast :: proc(t: ^testing.T) -> Ast {
+	source := "@expose\ndata Hex { q: Int, r: Int }\n" +
+		"data Cube { x: Int, y: Int, z: Int }\n" +
+		"@doc(\"Axial to pixel. The package's public API.\")\n" +
+		"@expose\n" +
+		"fn axial_to_pixel(q: Int, size: Fixed) -> Fixed {\n" +
+		"  return size\n" +
+		"}\n" +
+		"@doc(\"Internal rounding helper.\")\n" +
+		"fn cube_round(x: Fixed) -> Fixed {\n" +
+		"  return x\n" +
+		"}\n" +
+		"@expose\nlet ORIGIN: Int = 0\n" +
+		"let SCALE: Int = 2\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	return ast
+}
+
+// hexgrid_index builds the consumer-side index carrying the hexgrid package
+// module under its §30 §7 prefixed name with package_root stamped — the
+// package-edge entry every fixture below resolves against.
+hexgrid_index :: proc(t: ^testing.T) -> Module_Index {
+	return build_module_index_typed({"hexgrid.layout"}, {hexgrid_layout_ast(t)}, {"hexgrid"})
+}
+
+@(test)
+test_package_edge_exposed_member_resolves :: proc(t: ^testing.T) {
+	// AC: a package-edge member-group import naming only @expose'd
+	// declarations resolves clean — the §30 §6 happy path
+	// (`import hexgrid.layout.{axial_to_pixel}   // ok`) — and each member
+	// binds to the OWNING prefixed module with the right kind.
+	consumer := "import hexgrid.layout.{Hex, axial_to_pixel, ORIGIN}\n"
+	consumer_ast, parse_err := stage_parse(stage_lex(consumer))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+
+	bindings, err := resolve_imports_indexed(consumer_ast, hexgrid_index(t))
+	testing.expect_value(t, err, Type_Error.None)
+	hex_binding, has_hex := bindings.names["Hex"]
+	testing.expect(t, has_hex)
+	testing.expect_value(t, hex_binding.module, "hexgrid.layout")
+	testing.expect_value(t, hex_binding.kind, Decl_Kind.Type_Name)
+	fn_binding, has_fn := bindings.names["axial_to_pixel"]
+	testing.expect(t, has_fn)
+	testing.expect_value(t, fn_binding.kind, Decl_Kind.Func)
+}
+
+@(test)
+test_package_edge_private_member_rejected :: proc(t: ^testing.T) {
+	// AC: a package-edge import of a non-@expose'd declaration is the NAMED
+	// .Package_Private verdict (spec §30 §6: `import hexgrid.layout.{cube_round}
+	// // compile error: cube_round is package-private`) — never the
+	// .Unknown_Member an absent name gives: the declaration exists, it is
+	// just not part of the contract. All three unmarked kinds refuse alike.
+	index := hexgrid_index(t)
+	private_imports := []string {
+		"import hexgrid.layout.{cube_round}\n",
+		"import hexgrid.layout.{Cube}\n",
+		"import hexgrid.layout.{SCALE}\n",
+	}
+	for source in private_imports {
+		consumer_ast, parse_err := stage_parse(stage_lex(source))
+		testing.expect_value(t, parse_err, Parse_Error.None)
+		_, err := resolve_imports_indexed(consumer_ast, index)
+		testing.expect_value(t, err, Type_Error.Package_Private)
+	}
+
+	// A genuinely absent name stays the precise .Unknown_Member — privacy is
+	// a fact about a declaration that exists, never a blur over both.
+	unknown_ast, unknown_parse := stage_parse(stage_lex("import hexgrid.layout.{Goblin}\n"))
+	testing.expect_value(t, unknown_parse, Parse_Error.None)
+	_, unknown_err := resolve_imports_indexed(unknown_ast, index)
+	testing.expect_value(t, unknown_err, Type_Error.Unknown_Member)
+}
+
+@(test)
+test_package_edge_dotted_member_gated :: proc(t: ^testing.T) {
+	// The dotted single-member form crosses the same edge through the same
+	// gate: an @expose'd member resolves, a package-private one is
+	// .Package_Private — the member-group and dotted arms share
+	// resolve_user_import, so the two import spellings cannot drift.
+	index := hexgrid_index(t)
+	ok_ast, ok_parse := stage_parse(stage_lex("import hexgrid.layout.axial_to_pixel\n"))
+	testing.expect_value(t, ok_parse, Parse_Error.None)
+	_, ok_err := resolve_imports_indexed(ok_ast, index)
+	testing.expect_value(t, ok_err, Type_Error.None)
+
+	private_ast, private_parse := stage_parse(stage_lex("import hexgrid.layout.cube_round\n"))
+	testing.expect_value(t, private_parse, Parse_Error.None)
+	_, private_err := resolve_imports_indexed(private_ast, index)
+	testing.expect_value(t, private_err, Type_Error.Package_Private)
+}
+
+@(test)
+test_package_edge_module_handle_member_gated :: proc(t: ^testing.T) {
+	// The whole-module-handle route (`import hexgrid.layout`, then
+	// `layout.MEMBER`) reaches an export with no importing declaration, so
+	// the edge gates at member access (module_member_check): the @expose'd
+	// const types clean, the unmarked const is .Package_Private — the same
+	// module_export_importable verdict the import forms give, so the handle
+	// route is never a bypass.
+	index := hexgrid_index(t)
+	ok_consumer := "import hexgrid.layout\n" +
+		"test \"exposed const reachable\" {\n" +
+		"  assert layout.ORIGIN == layout.ORIGIN\n" +
+		"}\n"
+	ok_ast, ok_parse := stage_parse(stage_lex(ok_consumer))
+	testing.expect_value(t, ok_parse, Parse_Error.None)
+	_, ok_err := stage_typecheck_indexed(ok_ast, index)
+	testing.expect_value(t, ok_err, Type_Error.None)
+
+	private_consumer := "import hexgrid.layout\n" +
+		"test \"private const refused\" {\n" +
+		"  assert layout.SCALE == layout.SCALE\n" +
+		"}\n"
+	private_ast, private_parse := stage_parse(stage_lex(private_consumer))
+	testing.expect_value(t, private_parse, Parse_Error.None)
+	_, private_err := stage_typecheck_indexed(private_ast, index)
+	testing.expect_value(t, private_err, Type_Error.Package_Private)
+}
+
+@(test)
+test_within_project_unexposed_member_still_public :: proc(t: ^testing.T) {
+	// AC (unchanged corpus behavior): WITHIN a project the exposed flag is
+	// never consulted — the same unmarked declarations that are
+	// package-private across the edge resolve clean from a sibling module
+	// (spec §15 §4 public-by-default; no `pub`, no markers). The identical
+	// AST resolves under a within-project entry ("" package_root), pinning
+	// that the gate keys off the edge, not the flag.
+	index := build_module_index_typed({"layout"}, {hexgrid_layout_ast(t)})
+	consumer := "import layout.{cube_round, Cube, SCALE}\n"
+	consumer_ast, parse_err := stage_parse(stage_lex(consumer))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := resolve_imports_indexed(consumer_ast, index)
+	testing.expect_value(t, err, Type_Error.None)
+}
+
 // ── multi-module let-export (the §19 assets seam's typed handle constants) ──
 
 @(test)

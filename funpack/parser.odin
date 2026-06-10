@@ -116,14 +116,15 @@ Param_Decl :: struct {
 // expr`, distinct from the test-body Let_Node in that it always carries an
 // explicit type ascription.
 Let_Decl_Node :: struct {
-	name:   string,
-	type:   Type_Ref,
-	value:  Expr,
-	doc:    string,
-	gtags:  []string, // @gtag("…") labels attached to this declaration
-	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
-	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
-	line:   int, // 1-based source line of the `let` keyword (artifact-format §9 span provenance)
+	name:    string,
+	type:    Type_Ref,
+	value:   Expr,
+	doc:     string,
+	gtags:   []string, // @gtag("…") labels attached to this declaration
+	probes:  []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:   []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	exposed: bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
+	line:    int, // 1-based source line of the `let` keyword (artifact-format §9 span provenance)
 }
 
 Data_Node :: struct {
@@ -140,6 +141,7 @@ Data_Node :: struct {
 	// Migrate_Wrong_Target); meaningless when has_migrate is false.
 	migrate:     Migrate_Node,
 	has_migrate: bool,
+	exposed:     bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
 	line:        int, // 1-based source line of the `data` keyword (artifact-format §9 span provenance)
 }
 
@@ -151,6 +153,7 @@ Enum_Node :: struct {
 	gtags:    []string,
 	probes:   []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	todos:    []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	exposed:  bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
 	line:     int, // 1-based source line of the `enum` keyword (artifact-format §9 span provenance)
 }
 
@@ -166,17 +169,19 @@ Thing_Node :: struct {
 	gtags:        []string,
 	probes:       []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	todos:        []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	exposed:      bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
 	line:         int, // 1-based source line of the `thing`/`singleton` keyword (artifact-format §9 span provenance)
 }
 
 Signal_Node :: struct {
-	name:   string,
-	fields: []Field_Decl,
-	doc:    string,
-	gtags:  []string,
-	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
-	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
-	line:   int, // 1-based source line of the `signal` keyword (artifact-format §9 span provenance)
+	name:    string,
+	fields:  []Field_Decl,
+	doc:     string,
+	gtags:   []string,
+	probes:  []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:   []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	exposed: bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
+	line:    int, // 1-based source line of the `signal` keyword (artifact-format §9 span provenance)
 }
 
 // Fn_Node is a top-level function or a behavior's reserved `step` entry
@@ -191,6 +196,7 @@ Fn_Node :: struct {
 	gtags:        []string,
 	probes:       []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	todos:        []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	exposed:      bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
 	line:         int, // 1-based source line of the `fn` keyword (artifact-format §9 span provenance)
 	// is_extern marks a §02/§26 `extern fn` — a body-less native-boundary
 	// declaration whose definition lives outside funpack (the §17 seam's
@@ -253,6 +259,7 @@ Query_Node :: struct {
 	probes:      []Debug_Probe, // §05 §5 debug directives attached to this declaration
 	todos:       []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
 	indexes:     []Index_Directive, // §05 §3 @index/@spatial requirements declared on this query
+	exposed:     bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
 	line:        int, // 1-based source line of the `query` keyword (artifact-format §9 span provenance)
 }
 
@@ -261,14 +268,15 @@ Query_Node :: struct {
 // Thing` type name; step is the single reserved entry point (the parser
 // enforces the name `step`).
 Behavior_Node :: struct {
-	name:   string,
-	target: string,
-	step:   Fn_Node,
-	doc:    string,
-	gtags:  []string,
-	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
-	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
-	line:   int, // 1-based source line of the `behavior` keyword (artifact-format §9 span provenance)
+	name:    string,
+	target:  string,
+	step:    Fn_Node,
+	doc:     string,
+	gtags:   []string,
+	probes:  []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:   []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	exposed: bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
+	line:    int, // 1-based source line of the `behavior` keyword (artifact-format §9 span provenance)
 }
 
 // Pipeline_Stage is one ordered named stage of a pipeline (spec §07 §1).
@@ -288,13 +296,14 @@ Pipeline_Stage :: struct {
 }
 
 Pipeline_Node :: struct {
-	name:   string,
-	stages: []Pipeline_Stage,
-	doc:    string,
-	gtags:  []string,
-	probes: []Debug_Probe, // §05 §5 debug directives attached to this declaration
-	todos:  []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
-	line:   int, // 1-based source line of the `pipeline` keyword (artifact-format §9 span provenance)
+	name:    string,
+	stages:  []Pipeline_Stage,
+	doc:     string,
+	gtags:   []string,
+	probes:  []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:   []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	exposed: bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
+	line:    int, // 1-based source line of the `pipeline` keyword (artifact-format §9 span provenance)
 }
 
 // Debug_Probe_Kind is the closed §05 §5 debug directive family — the
@@ -378,14 +387,19 @@ Todo_Node :: struct {
 	line:    int, // 1-based source line of the `@` (artifact-format §9 span provenance)
 }
 
-// Directives carries the @doc / @gtag / @todo / @migrate / debug-probe prefix
-// block attached to a declaration (spec §05). It accumulates as leading
-// directives are parsed and is consumed by the declaration that follows them.
-// migrate is the §05 §6 declaration-level form — a renamed TYPE declaration —
-// which only a `data` declaration may consume (Migrate_Wrong_Target
-// otherwise); at most one accumulates (a second is Malformed_Migrate).
+// Directives carries the @doc / @expose / @gtag / @todo / @migrate /
+// debug-probe prefix block attached to a declaration (spec §05). It
+// accumulates as leading directives are parsed and is consumed by the
+// declaration that follows them. migrate is the §05 §6 declaration-level form
+// — a renamed TYPE declaration — which only a `data` declaration may consume
+// (Migrate_Wrong_Target otherwise); at most one accumulates (a second is
+// Malformed_Migrate). exposed is the §05 §4 `@expose` marker — bare by
+// grammar (lexical-core §5), idempotent under repetition (a flag, not an
+// accumulating family) — publishing the declaration into the package/mod
+// external contract (spec §30 §6, §27 §2).
 Directives :: struct {
 	doc:         string,
+	exposed:     bool,
 	gtags:       [dynamic]string,
 	probes:      [dynamic]Debug_Probe,
 	todos:       [dynamic]Todo_Node,
@@ -410,6 +424,7 @@ Parse_Error :: enum {
 	Migrate_Wrong_Target,  // a well-formed @migrate where the spec admits none (spec §05 §6): prefixing a non-`data` declaration, a field outside a `data` body, a retype (`with:`) form on a type declaration (a type admits the rename form only), or dangling with no field to attach to
 	Malformed_Index_Path,  // an @index/@spatial whose argument is not exactly the lexical-core §5 FieldPath `(Thing.field)` (missing/empty parens, no dot, trailing junk) — the one casing-class deviation (a lowercase head, an UpperCamel field) keeps the parser-wide Wrong_Case verdict
 	Index_Wrong_Target,    // a well-formed @index/@spatial prefixing a declaration the spec does not admit — §08 §3 places the directive on a `query` declaration (the query's declared index requirement), and the spec names no other target
+	Expose_Unexpected_Arg, // an @expose carrying an argument — @expose is bare (lexical-core §5; spec §05 §4: it publishes the declaration it prefixes, there is no value to name), the @trace mold
 }
 
 Parser :: struct {
@@ -575,6 +590,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		append(&out.lets, node)
 		sink_mark(out, .Let)
 	case .Ident:
@@ -593,6 +609,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		append(&out.signals, node)
 		sink_mark(out, .Signal)
 	case .Fn:
@@ -601,6 +618,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		append(&out.fns, node)
 		sink_mark(out, .Fn)
 	case .Extern:
@@ -613,6 +631,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		append(&out.fns, node)
 		sink_mark(out, .Fn)
 	case .Behavior:
@@ -621,6 +640,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		append(&out.behaviors, node)
 		sink_mark(out, .Behavior)
 	case .Pipeline:
@@ -629,6 +649,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		append(&out.pipelines, node)
 		sink_mark(out, .Pipeline)
 	case .Test:
@@ -663,6 +684,7 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		// rename-only form, so this is a plain carry.
 		node.migrate = pending.migrate
 		node.has_migrate = pending.has_migrate
+		node.exposed = pending.exposed
 		append(&out.datas, node)
 		sink_mark(out, .Data)
 	case "enum":
@@ -671,6 +693,7 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		append(&out.enums, node)
 		sink_mark(out, .Enum)
 	case "thing", "singleton":
@@ -679,6 +702,7 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		append(&out.things, node)
 		sink_mark(out, .Thing)
 	case "query":
@@ -687,6 +711,7 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 		node.gtags = pending.gtags[:]
 		node.probes = pending.probes[:]
 		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
 		// The §05 §3 @index/@spatial requirements land here; parse_declaration
 		// already verified the target kind, so this is a plain carry.
 		node.indexes = pending.indexes[:]
@@ -699,8 +724,8 @@ parse_contextual_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Dire
 }
 
 // parse_directive parses one declaration-prefix directive (spec §05):
-// `@doc("…")`, `@gtag("…", …)`, `@todo("msg", window)`, or a §05 §5 debug
-// probe (@break/@log/@watch/@trace). The file-leading @doc documents the module
+// `@doc("…")`, `@expose`, `@gtag("…", …)`, `@todo("msg", window)`, or a §05
+// §5 debug probe (@break/@log/@watch/@trace). The file-leading @doc documents the module
 // (spec §15, fun.ll1.md §5B): the first @doc is the module doc only when it
 // is followed by an `import` — imports carry no directives, so a @doc before
 // one cannot be the import's. Blank lines between the file-leading @doc and the
@@ -808,6 +833,19 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		}
 		terminate_statement(p) or_return
 		append(&pending.probes, Debug_Probe{kind = .Trace, line = at_tok.line})
+	case "expose":
+		// @expose is bare (lexical-core §5; spec §05 §4): it publishes the
+		// declaration it prefixes into the external contract — packages (§30
+		// §6) and mods (§27 §2) — so there is no value to name. A
+		// parenthesized argument is malformed, the named
+		// Expose_Unexpected_Arg verdict (the @trace mold). The flag is
+		// idempotent: a repeated @expose sets it again, never an error — it
+		// marks a fact, not an accumulating family.
+		if peek_kind(p) == .L_Paren {
+			return .Expose_Unexpected_Arg
+		}
+		terminate_statement(p) or_return
+		pending.exposed = true
 	case "index", "spatial":
 		// @index(Thing.field) / @spatial(Thing.field) — the §05 §3 data-plane
 		// index directives. The mandatory argument is the lexical-core §5
@@ -820,10 +858,10 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		terminate_statement(p) or_return
 		append(&pending.indexes, node)
 	case:
-		// Only @doc/@gtag/@todo/@migrate/@index/@spatial and the §05 §5 debug
-		// probes prefix a declaration. @stub in particular is NOT a prefix
-		// directive — it stands in body/expression position only (spec §05:
-		// parse_stub_body owns it), so a leading `@stub` is an
+		// Only @doc/@expose/@gtag/@todo/@migrate/@index/@spatial and the §05
+		// §5 debug probes prefix a declaration. @stub in particular is NOT a
+		// prefix directive — it stands in body/expression position only
+		// (spec §05: parse_stub_body owns it), so a leading `@stub` is an
 		// Unexpected_Token here, never silently accepted.
 		return .Unexpected_Token
 	}

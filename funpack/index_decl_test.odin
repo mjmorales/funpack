@@ -112,13 +112,75 @@ let MAX: Int = 9
 }
 
 @(test)
+test_index_decl_exposed_from_directive :: proc(t: ^testing.T) {
+	// The v5 `exposed` field derives from the parsed §05 §4 @expose marker
+	// (node.exposed): the marked fn and data report true, every unmarked
+	// sibling — including the test block, which admits no @expose — reports
+	// the mandatory-present false. The emitted line carries the flag as JSON
+	// and round-trips the exact-match consumer, so the AST fact reaches the
+	// §30 §7 governance surface byte-faithfully.
+	source := `@expose
+data Hex { q: Int, r: Int }
+data Cube { x: Int, y: Int }
+@doc("The package's public API.")
+@expose
+fn axial_to_pixel(q: Int) -> Int {
+  return q
+}
+fn cube_round(x: Int) -> Int {
+  return x
+}
+test "round-trips" {
+  assert cube_round(1) == 1
+}
+`
+	typed, flat, ok := compile_snippet(source)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	records := derive_decl_records("", typed, flat)
+
+	hex, has_hex := find_record(records, "Hex")
+	testing.expect(t, has_hex)
+	testing.expect_value(t, hex.exposed, true)
+
+	cube, has_cube := find_record(records, "Cube")
+	testing.expect(t, has_cube)
+	testing.expect_value(t, cube.exposed, false)
+
+	api_fn, has_api := find_record(records, "axial_to_pixel")
+	testing.expect(t, has_api)
+	testing.expect_value(t, api_fn.exposed, true)
+	testing.expect_value(t, api_fn.doc, "The package's public API.")
+
+	helper, has_helper := find_record(records, "cube_round")
+	testing.expect(t, has_helper)
+	testing.expect_value(t, helper.exposed, false)
+
+	block, has_block := find_record(records, "round-trips")
+	testing.expect(t, has_block)
+	testing.expect_value(t, block.exposed, false)
+
+	// The emitted NDJSON carries the flag and survives the exact-match decode.
+	line := emit_decl_record(api_fn, context.temp_allocator)
+	decoded, decode_err := decode_index_line(line, context.temp_allocator)
+	testing.expect_value(t, decode_err, Index_Read_Error.None)
+	if decl, is_decl := decoded.(Decl_Record); is_decl {
+		testing.expect_value(t, decl.exposed, true)
+	} else {
+		testing.expect(t, is_decl)
+	}
+}
+
+@(test)
 test_index_decl_query_record :: proc(t: ^testing.T) {
 	// A §08 §3 query declaration projects one decl record of kind Query — the
 	// v4 form admission — carrying exactly the §29 §2 enumeration: span/doc/
 	// gtags plus the body-derived calls and dup_class, with emits/consumes/
 	// mut_data constant-empty (a query takes no resources and emits nothing).
 	// Its @index/@spatial requirements project NO field: the enumeration names
-	// none, so the record's field set is the same closed thirteen every decl
+	// none, so the record's field set is the same closed set every decl
 	// carries (the marshal would surface an extra key as a byte diff, and the
 	// exact-match reader as Unknown_Field — see the round-trip below).
 	source := `thing Enemy { cell: Vec2 }

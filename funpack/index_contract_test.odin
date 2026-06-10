@@ -102,10 +102,10 @@ test_index_contract_emits_valid_ndjson_with_schema_version :: proc(t: ^testing.T
 	testing.expect(t, strings.has_prefix(body, "{"))
 	testing.expect(t, strings.has_suffix(body, "}"))
 	// schema_version is the leading key (it is the first struct field) and
-	// carries the current INDEX_SCHEMA_VERSION stamp (now 3 — the §05 §5
-	// debug-probe derivation reshape bumped it from 2).
+	// carries the current INDEX_SCHEMA_VERSION stamp (now 5 — the §05 §4
+	// exposed-flag reshape bumped it from 4).
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":4"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":5"))
 }
 
 @(test)
@@ -298,6 +298,26 @@ test_index_contract_snake_project_record :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_index_contract_modding_capability_from_expose :: proc(t: ^testing.T) {
+	// The §14 §4 Modding battery derives from the parsed §05 §4 @expose marker:
+	// source_has_expose reads the Ast's source-ordered declaration sequence, so
+	// one marked declaration anywhere (here a fn) switches modding on, and an
+	// unmarked source — the pong/snake corpus shape — leaves it off.
+	exposed_source := "data Hex { q: Int }\n" +
+		"@expose\n" +
+		"fn axial(q: Int) -> Int {\n" +
+		"  return q\n" +
+		"}\n"
+	exposed_ast, exposed_err := stage_parse(stage_lex(exposed_source))
+	testing.expect_value(t, exposed_err, Parse_Error.None)
+	testing.expect(t, source_has_expose(exposed_ast))
+
+	plain_ast, plain_err := stage_parse(stage_lex("data Hex { q: Int }\n"))
+	testing.expect_value(t, plain_err, Parse_Error.None)
+	testing.expect(t, !source_has_expose(plain_ast))
+}
+
+@(test)
 test_index_contract_pong_double_emission_identical :: proc(t: ^testing.T) {
 	// Emitting the pong project record twice from the same source yields
 	// byte-identical NDJSON — the deterministic whole-stream obligation, end
@@ -353,7 +373,7 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 		// Every decl line carries the bumped v3 stamp; stub is false on this
 		// hole-free tree, the DERIVED todo flag is false on this note-free
 		// tree, and the DERIVED debug field is [] on this probe-free tree.
-		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":4,"))
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":5,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
 		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
@@ -400,7 +420,7 @@ test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(lines[0], "\"pipeline_flattened\":"))
 	for i in 1 ..< len(lines) {
 		decl := lines[i]
-		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":4,"))
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":5,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
 		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
@@ -437,7 +457,7 @@ stream_has_decl :: proc(lines: []string, name_needle: string, field_needle: stri
 test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
 	// A hand-built decl record marshals to exactly one JSON object on one line,
 	// terminated by a single LF, carrying the leading schema_version stamp at
-	// the current INDEX_SCHEMA_VERSION (now 3) — the one-object-per-line NDJSON
+	// the current INDEX_SCHEMA_VERSION (now 5) — the one-object-per-line NDJSON
 	// transport, identical to the project record's.
 	record := minimal_decl_record()
 	line := emit_decl_record(record, context.temp_allocator)
@@ -450,7 +470,7 @@ test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
 	// schema_version is the leading key (the first struct field) carrying the
 	// current v3 stamp.
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":4"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":5"))
 	// The kind enum emits as its readable name (use_enum_names), never an
 	// ordinal — a Behavior decl reports "Behavior".
 	testing.expect(t, strings.contains(body, "\"kind\":\"Behavior\""))
@@ -491,6 +511,7 @@ test_index_decl_record_exact_key_set :: proc(t: ^testing.T) {
 		"stub",
 		"todo",
 		"debug",
+		"exposed",
 		"emits",
 		"consumes",
 		"calls",
@@ -502,10 +523,12 @@ test_index_decl_record_exact_key_set :: proc(t: ^testing.T) {
 		testing.expectf(t, strings.contains(body, needle), "decl record missing field %s", key)
 	}
 	// The directive fields are present at their empty values (mandatory-present
-	// per exact-match, never omitted — the hand-built record is not holed).
+	// per exact-match, never omitted — the hand-built record is not holed,
+	// not @todo'd, not probed, and not @expose'd).
 	testing.expect(t, strings.contains(body, "\"stub\":false"))
 	testing.expect(t, strings.contains(body, "\"todo\":false"))
 	testing.expect(t, strings.contains(body, "\"debug\":[]"))
+	testing.expect(t, strings.contains(body, "\"exposed\":false"))
 	// No extra top-level field: the object's top-level key count equals the
 	// expected set's size (nested-key-safe via top_level_key_count).
 	testing.expect_value(t, top_level_key_count(body), len(expected_keys))
@@ -540,6 +563,7 @@ minimal_decl_record :: proc() -> Decl_Record {
 		stub           = false,
 		todo           = false,
 		debug          = make([]string, 0, context.temp_allocator),
+		exposed        = false,
 		emits          = emits,
 		consumes       = consumes,
 		calls          = calls,

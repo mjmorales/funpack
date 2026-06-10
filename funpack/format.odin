@@ -18,8 +18,9 @@
 //     interim kind-grouped rendering).
 //   - One blank line between adjacent top-level declarations; the module @doc
 //     and the import block are contiguous.
-//   - Directive block order: @doc, @gtag (ONE directive carrying every label),
-//     @todo notes, then debug probes, families in slice order.
+//   - Directive block order: @doc, the bare @expose marker, @gtag (ONE
+//     directive carrying every label), @todo notes, then debug probes,
+//     families in slice order.
 //   - data/enum/signal bodies are single-line (`data Board { w: Fixed, h:
 //     Fixed }`); thing/singleton bodies are multiline with the type column
 //     aligned to the longest field name; pipeline stages are multiline with
@@ -137,12 +138,17 @@ fmt_import :: proc(b: ^strings.Builder, imp: Import_Node) {
 // ── directives ───────────────────────────────────────────────────────────
 
 // fmt_directives writes a declaration's leading directive block in canonical
-// order: @doc, ONE @gtag carrying every label, the @todo notes, then the
-// debug probes — families in slice order. The parser accumulates each family
-// independently, so this fixed order re-parses to the same Directives.
-fmt_directives :: proc(b: ^strings.Builder, doc: string, gtags: []string, todos: []Todo_Node, probes: []Debug_Probe) {
+// order: @doc, the bare @expose marker (the spec §30 §6 exemplar order — the
+// doc line leads, the contract marker follows), ONE @gtag carrying every
+// label, the @todo notes, then the debug probes — families in slice order.
+// The parser accumulates each family independently, so this fixed order
+// re-parses to the same Directives.
+fmt_directives :: proc(b: ^strings.Builder, doc: string, exposed: bool, gtags: []string, todos: []Todo_Node, probes: []Debug_Probe) {
 	if doc != "" {
 		fmt_doc_line(b, doc)
+	}
+	if exposed {
+		strings.write_string(b, "@expose\n")
 	}
 	if len(gtags) > 0 {
 		strings.write_string(b, "@gtag(")
@@ -235,7 +241,7 @@ fmt_zero_padded :: proc(b: ^strings.Builder, value: i64, width: int) {
 
 // fmt_let_decl writes a module-level constant: `let NAME: T = expr`.
 fmt_let_decl :: proc(b: ^strings.Builder, decl: Let_Decl_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "let ")
 	strings.write_string(b, decl.name)
 	strings.write_string(b, ": ")
@@ -248,7 +254,7 @@ fmt_let_decl :: proc(b: ^strings.Builder, decl: Let_Decl_Node) {
 // fmt_data writes `data Name { f: T, g: U }` single-line (the dominant corpus
 // spelling for data), with the optional `: Kind` ascription.
 fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "data ")
 	strings.write_string(b, decl.name)
 	if decl.kind != "" {
@@ -262,7 +268,7 @@ fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
 // fmt_enum writes `enum Name { A, B(T), C{f: T} }` single-line, with the
 // optional enum-as-role `: Kind` ascription.
 fmt_enum :: proc(b: ^strings.Builder, decl: Enum_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "enum ")
 	strings.write_string(b, decl.name)
 	if decl.kind != "" {
@@ -317,7 +323,7 @@ fmt_variant_decl :: proc(b: ^strings.Builder, variant: Variant_Decl) {
 // column aligned to the longest field name — the dominant corpus spelling for
 // entity declarations (pong's Paddle, snake's Snake).
 fmt_thing :: proc(b: ^strings.Builder, decl: Thing_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "singleton " if decl.is_singleton else "thing ")
 	strings.write_string(b, decl.name)
 	strings.write_string(b, " {\n")
@@ -328,7 +334,7 @@ fmt_thing :: proc(b: ^strings.Builder, decl: Thing_Node) {
 // fmt_signal writes `signal Name { f: T }` single-line, `signal Name {}` for
 // the field-less form (snake's Died).
 fmt_signal :: proc(b: ^strings.Builder, decl: Signal_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "signal ")
 	strings.write_string(b, decl.name)
 	fmt_field_list_inline(b, decl.fields)
@@ -389,7 +395,7 @@ fmt_fields_aligned :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 // signature line, a holed `fn name(…) -> R @stub(…)` line, or the
 // brace-delimited statement body.
 fmt_fn_decl :: proc(b: ^strings.Builder, decl: Fn_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	if decl.is_extern {
 		strings.write_string(b, "extern ")
 	}
@@ -434,7 +440,7 @@ fmt_signature :: proc(b: ^strings.Builder, params: []Param_Decl, return_type: Ty
 // grammar admits no body-position hole on a query (fun.ebnf §7), so the body
 // is always the brace-delimited statement block.
 fmt_query :: proc(b: ^strings.Builder, decl: Query_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	for index in decl.indexes {
 		switch index.kind {
 		case .Index:
@@ -458,7 +464,7 @@ fmt_query :: proc(b: ^strings.Builder, decl: Query_Node) {
 // fmt_behavior writes `behavior name on Thing { fn step(…) -> R { … } }`
 // multiline; a holed step renders its `@stub(…)` body on the signature line.
 fmt_behavior :: proc(b: ^strings.Builder, decl: Behavior_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "behavior ")
 	strings.write_string(b, decl.name)
 	strings.write_string(b, " on ")
@@ -484,7 +490,7 @@ fmt_behavior :: proc(b: ^strings.Builder, decl: Behavior_Node) {
 // column aligned to the longest stage name (the corpus spelling); an empty
 // pipeline keeps its `{\n}` body (drift's Drift).
 fmt_pipeline :: proc(b: ^strings.Builder, decl: Pipeline_Node) {
-	fmt_directives(b, decl.doc, decl.gtags, decl.todos, decl.probes)
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "pipeline ")
 	strings.write_string(b, decl.name)
 	strings.write_string(b, " {\n")

@@ -49,6 +49,7 @@ decl_record_fixture :: proc(kind: Index_Decl_Kind) -> Decl_Record {
 		stub           = true,
 		todo           = false,
 		debug          = debug,
+		exposed        = true, // a populated v5 record: the §05 §4 @expose flag round-trips
 		emits          = emits,
 		consumes       = consumes,
 		calls          = calls,
@@ -81,6 +82,7 @@ expect_decl_fields_equal :: proc(t: ^testing.T, got: Decl_Record, want: Decl_Rec
 	testing.expect_value(t, got.stub, want.stub)
 	testing.expect_value(t, got.todo, want.todo)
 	testing.expect(t, slice.equal(got.debug, want.debug))
+	testing.expect_value(t, got.exposed, want.exposed)
 	testing.expect(t, slice.equal(got.emits, want.emits))
 	testing.expect(t, slice.equal(got.consumes, want.consumes))
 	testing.expect(t, slice.equal(got.calls, want.calls))
@@ -251,11 +253,11 @@ test_index_read_schema_mismatch_refused :: proc(t: ^testing.T) {
 	// A non-current schema_version is Schema_Mismatch on BOTH record kinds —
 	// below and above the current stamp alike, never best-effort parsed.
 	decl_line := emit_decl_record(decl_record_fixture(.Fn), context.temp_allocator)
-	expect_refusal(t, mutate_line(t, decl_line, "\"schema_version\":4", "\"schema_version\":1"), .Schema_Mismatch)
+	expect_refusal(t, mutate_line(t, decl_line, "\"schema_version\":5", "\"schema_version\":1"), .Schema_Mismatch)
 	project_line := emit_project_record(minimal_project_record(), context.temp_allocator)
-	expect_refusal(t, mutate_line(t, project_line, "\"schema_version\":4", "\"schema_version\":999"), .Schema_Mismatch)
+	expect_refusal(t, mutate_line(t, project_line, "\"schema_version\":5", "\"schema_version\":999"), .Schema_Mismatch)
 	// A line with no stamp at all is under-shaped before it is mismatched.
-	expect_refusal(t, mutate_line(t, decl_line, "\"schema_version\":4,", ""), .Missing_Field)
+	expect_refusal(t, mutate_line(t, decl_line, "\"schema_version\":5,", ""), .Missing_Field)
 }
 
 @(test)
@@ -268,13 +270,13 @@ test_index_read_missing_key_refused :: proc(t: ^testing.T) {
 	// A project record missing its capabilities field.
 	expect_refusal(
 		t,
-		"{\"schema_version\":4,\"entrypoints\":[],\"builds\":[],\"tag_registry\":[],\"pipeline_flattened\":[],\"gate_results\":[]}\n",
+		"{\"schema_version\":5,\"entrypoints\":[],\"builds\":[],\"tag_registry\":[],\"pipeline_flattened\":[],\"gate_results\":[]}\n",
 		.Missing_Field,
 	)
 	// A nested gate result missing its passed field.
 	expect_refusal(
 		t,
-		"{\"schema_version\":4,\"entrypoints\":[],\"builds\":[],\"tag_registry\":[],\"capabilities\":[],\"pipeline_flattened\":[],\"gate_results\":[{\"gate\":\"Cyclomatic\"}]}\n",
+		"{\"schema_version\":5,\"entrypoints\":[],\"builds\":[],\"tag_registry\":[],\"capabilities\":[],\"pipeline_flattened\":[],\"gate_results\":[{\"gate\":\"Cyclomatic\"}]}\n",
 		.Missing_Field,
 	)
 }
@@ -301,9 +303,9 @@ test_index_read_unknown_record_shape_refused :: proc(t: ^testing.T) {
 	// Structural discrimination (§29 §2): a line carrying NEITHER disjoint
 	// marker set has no kind to decode as, and a chimera carrying BOTH is
 	// ambiguous — each is Unknown_Record_Shape, never a guessed kind.
-	expect_refusal(t, "{\"schema_version\":4}\n", .Unknown_Record_Shape)
-	expect_refusal(t, "{\"schema_version\":4,\"name\":\"native\",\"platform\":\"desktop\"}\n", .Unknown_Record_Shape)
-	expect_refusal(t, "{\"schema_version\":4,\"qualified_name\":\"Board\",\"gate_results\":[]}\n", .Unknown_Record_Shape)
+	expect_refusal(t, "{\"schema_version\":5}\n", .Unknown_Record_Shape)
+	expect_refusal(t, "{\"schema_version\":5,\"name\":\"native\",\"platform\":\"desktop\"}\n", .Unknown_Record_Shape)
+	expect_refusal(t, "{\"schema_version\":5,\"qualified_name\":\"Board\",\"gate_results\":[]}\n", .Unknown_Record_Shape)
 }
 
 @(test)
@@ -456,7 +458,7 @@ test_warden_index_schema_mismatch_refused :: proc(t: ^testing.T) {
 		return
 	}
 	defer remove_scratch_tree(root)
-	doctored := mutate_line(t, stream, "\"schema_version\":4", "\"schema_version\":1")
+	doctored := mutate_line(t, stream, "\"schema_version\":5", "\"schema_version\":1")
 	expect_warden_refusal(t, root, doctored, Warden_Refusal{err = .Schema_Mismatch, line = 1, decode = .Schema_Mismatch})
 	if !write_warden_index_product(t, root, doctored) {
 		return
@@ -551,5 +553,5 @@ test_index_read_malformed_line_refused :: proc(t: ^testing.T) {
 	expect_refusal(t, "", .Malformed_Json)
 	expect_refusal(t, "[1,2]\n", .Malformed_Json)
 	expect_refusal(t, "42\n", .Malformed_Json)
-	expect_refusal(t, "{\"schema_version\":4}{\"schema_version\":4}\n", .Malformed_Json)
+	expect_refusal(t, "{\"schema_version\":5}{\"schema_version\":5}\n", .Malformed_Json)
 }
