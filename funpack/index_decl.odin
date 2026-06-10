@@ -49,8 +49,17 @@
 //     block (the parser attaches no probes to a test).
 //
 // Declaration ORDER is the fixed gate_units-style per-kind walk
-// (data → enum → thing → signal → fn → behavior → pipeline → let → test) so the
-// vector — and the emitted NDJSON — is stable across runs and machines.
+// (data → enum → thing → signal → fn → query → behavior → pipeline → let →
+// test) so the vector — and the emitted NDJSON — is stable across runs and
+// machines.
+//
+// A `query` declaration (§08 §3) projects exactly as far as §29 §2's field
+// enumeration admits — qualified_name/kind/span/doc/gtags/stub/todo/debug plus
+// the body-derived calls/dup_class; a query takes no resources and emits
+// nothing, so emits/consumes/mut_data are constant-empty. Its §05 §3
+// @index/@spatial requirements are NOT projected: the enumeration names no
+// index/spatial fields, so they stay AST-side (a richer projection is a
+// contract reshape, not this derivation).
 package funpack
 
 import "core:slice"
@@ -84,6 +93,9 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 	for decl in ast.fns {
 		append(&records, fn_decl_record(module, decl))
 	}
+	for decl in ast.queries {
+		append(&records, query_decl_record(module, decl))
+	}
 	for decl in ast.behaviors {
 		append(&records, behavior_decl_record(module, decl, typed.env, flat.routes))
 	}
@@ -112,6 +124,7 @@ decl_count :: proc(ast: Ast) -> int {
 		len(ast.things) +
 		len(ast.signals) +
 		len(ast.fns) +
+		len(ast.queries) +
 		len(ast.behaviors) +
 		len(ast.pipelines) +
 		len(ast.lets) +
@@ -197,6 +210,35 @@ fn_decl_record :: proc(module: string, decl: Fn_Node) -> Decl_Record {
 		consumes       = empty_strings(),
 		calls          = calls,
 		dup_class      = dup,
+		mut_data       = empty_strings(),
+	}
+}
+
+// query_decl_record builds the Decl_Record for a §08 §3 query declaration —
+// kind Query, projected exactly as far as the §29 §2 enumeration admits. Its
+// dup_class and calls come from its statement body like a bodied fn's; stub is
+// the expression-position hole walk only (body_holds_stub — QueryDecl admits
+// no body-position hole by grammar, fun.ebnf §7); todo/debug are the parsed
+// §05 directive derivations every decl carries. A query is read-only and pure
+// over (version, params) — it takes no resources and emits nothing (§08 §3) —
+// so emits/consumes/mut_data are constant-empty. Its §05 §3 @index/@spatial
+// requirements are deliberately NOT projected (no §29 §2 field names them).
+query_decl_record :: proc(module: string, decl: Query_Node) -> Decl_Record {
+	return Decl_Record {
+		schema_version = INDEX_SCHEMA_VERSION,
+		qualified_name = qualify_decl(module, decl.name),
+		kind           = .Query,
+		file           = "",
+		span           = decl.line,
+		doc            = decl.doc,
+		gtags          = decl.gtags,
+		stub           = body_holds_stub(decl.body),
+		todo           = todo_flag(decl.todos),
+		debug          = probe_names(decl.probes),
+		emits          = empty_strings(),
+		consumes       = empty_strings(),
+		calls          = body_calls(decl.body),
+		dup_class      = dup_class(decl.body),
 		mut_data       = empty_strings(),
 	}
 }

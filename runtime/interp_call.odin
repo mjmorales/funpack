@@ -580,6 +580,13 @@ eval_named_call :: proc(
 	case "Despawn":
 		return builtin_despawn(interp, node, env)
 	}
+	// A §16 query: the §08 §3 read-only declaration form — bound like a §9
+	// helper, but the result is within-tick memoized (query_eval.odin). The
+	// typechecker holds queries and fns in one name space (one name, one
+	// meaning), so the two lookups can never both match.
+	if query := program_query(interp.program, name); query != nil {
+		return eval_query_call(interp, query, node, env)
+	}
 	// A user §9 helper: bind its args to its params and fold its body.
 	if fn := program_function(interp.program, name); fn != nil {
 		return eval_user_call(interp, fn, node, env)

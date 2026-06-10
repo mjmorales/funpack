@@ -28,6 +28,7 @@ Ast :: struct {
 	things:     []Thing_Node,    // `thing`/`singleton Name { … }` entities
 	signals:    []Signal_Node,   // `signal Name { … }` message values
 	fns:        []Fn_Node,       // top-level `fn name(…) -> R { … }`
+	queries:    []Query_Node,    // `query name(…) -> R { … }` §08 §3 read-only declarations
 	behaviors:  []Behavior_Node, // `behavior name on Thing { fn step(…) … }`
 	pipelines:  []Pipeline_Node, // `pipeline Name { stage: [behaviors] … }`
 	tests:      []Test_Node,

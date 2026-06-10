@@ -105,7 +105,7 @@ test_index_contract_emits_valid_ndjson_with_schema_version :: proc(t: ^testing.T
 	// carries the current INDEX_SCHEMA_VERSION stamp (now 3 — the §05 §5
 	// debug-probe derivation reshape bumped it from 2).
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":3"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":4"))
 }
 
 @(test)
@@ -353,7 +353,7 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 		// Every decl line carries the bumped v3 stamp; stub is false on this
 		// hole-free tree, the DERIVED todo flag is false on this note-free
 		// tree, and the DERIVED debug field is [] on this probe-free tree.
-		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":3,"))
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":4,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
 		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
@@ -400,7 +400,7 @@ test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(lines[0], "\"pipeline_flattened\":"))
 	for i in 1 ..< len(lines) {
 		decl := lines[i]
-		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":3,"))
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":4,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
 		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
@@ -450,7 +450,7 @@ test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
 	// schema_version is the leading key (the first struct field) carrying the
 	// current v3 stamp.
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":3"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":4"))
 	// The kind enum emits as its readable name (use_enum_names), never an
 	// ordinal — a Behavior decl reports "Behavior".
 	testing.expect(t, strings.contains(body, "\"kind\":\"Behavior\""))

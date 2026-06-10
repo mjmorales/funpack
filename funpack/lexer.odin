@@ -38,7 +38,7 @@ Token_Kind :: enum {
 	// else { … }`); `else` is a reserved keyword, preserving §02
 	// one-name-one-meaning.
 	//
-	// `thing`/`singleton`/`data`/`enum` (and `on`) are CONTEXTUAL keywords
+	// `thing`/`singleton`/`data`/`enum`/`query` (and `on`) are CONTEXTUAL keywords
 	// (fun.ll1.md §2): a keyword only where it opens a module-level declaration,
 	// an ordinary value name everywhere else (`let thing = …`, a field `data:`,
 	// a member `s.enum`). They are NOT token kinds — they lex as Ident, and
@@ -153,7 +153,7 @@ stage_lex :: proc(source: string) -> []Token {
 			continue
 		}
 		// A declaration-opening contextual keyword (`thing`/`singleton`/`data`/
-		// `enum`) sits at the start of a module-level statement: the previous
+		// `enum`/`query`) sits at the start of a module-level statement: the previous
 		// emitted token was a statement terminator (or none) and no bracket frame
 		// is open. Only there does it arm the body brace as a block; in value
 		// position (`let thing = …`) it is an ordinary Ident the rule ignores.
@@ -223,7 +223,7 @@ newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
 
 update_nesting :: proc(n: ^Nesting, tok: Token, prev: Token_Kind, at_stmt_start: bool) {
 	// A declaration-opening contextual keyword (`thing`/`singleton`/`data`/
-	// `enum`) arms its body brace as a block exactly like the reserved decl
+	// `enum`/`query`) arms its body brace as a block exactly like the reserved decl
 	// keywords below — but only in declaration-opening position (top of a
 	// module-level statement, no open bracket frame). In value position it lexes
 	// as a plain Ident the prev==Ident record-brace rule treats normally.
@@ -408,7 +408,7 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 	case "else":
 		return Token{kind = .Else, text = text}, i
 	}
-	// `on`/`thing`/`singleton`/`data`/`enum` are CONTEXTUAL keywords, not
+	// `on`/`thing`/`singleton`/`data`/`enum`/`query` are CONTEXTUAL keywords, not
 	// reserved ones (fun.ll1.md §2): each selects a production only where it
 	// opens a module-level declaration, yet is a perfectly valid §02 value name
 	// elsewhere — a binding (`let thing = …`), a field (`data Cfg { data: Bytes
@@ -420,23 +420,24 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 }
 
 // is_decl_opener_keyword reports whether a word is one of the contextual
-// declaration-opening keywords (fun.ll1.md §2: `data enum thing singleton`).
-// These lex as Ident; the word is the keyword only when it opens a module-level
-// declaration. Both the lexer (to arm the body brace as a block, not a record
-// literal) and the parser (parse_declaration's by-text dispatch) consult this
-// one set, so the contextual classification lives in a single place. `on` is a
-// contextual keyword too but is a behavior-header separator, never a
-// declaration opener, so it is recognized by parse_behavior alone.
+// declaration-opening keywords (fun.ll1.md §2: `data enum thing singleton
+// query`). These lex as Ident; the word is the keyword only when it opens a
+// module-level declaration. Both the lexer (to arm the body brace as a block,
+// not a record literal) and the parser (parse_declaration's by-text dispatch)
+// consult this one set, so the contextual classification lives in a single
+// place. `on` is a contextual keyword too but is a behavior-header separator,
+// never a declaration opener, so it is recognized by parse_behavior alone.
 //
-// `query` and `mut` are §2 contextual keywords too and ARE declaration openers in
-// the grammar (a query-declaration; `mut data`, §03 §7) — but neither production
-// exists (no query-decl parser; emit_data hardcodes mut=false), so they are
-// deliberately ABSENT from this set: a word arms a block here only if its declaration
-// parses. query/mut stay ordinary Idents in every position; when the productions land
-// they join this set (test_query_mut_contextual_value_only pins both directions).
+// `mut` is a §2 contextual keyword too and IS a declaration opener in the
+// grammar (`mut data`, §03 §7) — but its production does not exist (emit_data
+// hardcodes mut=false), so it is deliberately ABSENT from this set: a word arms
+// a block here only if its declaration parses. `mut` stays an ordinary Ident in
+// every position; when the production lands it joins this set
+// (test_query_mut_contextual_value_only pins both directions). `query` joined
+// when its §08 §3 declaration production landed (parse_query).
 is_decl_opener_keyword :: proc(text: string) -> bool {
 	switch text {
-	case "data", "enum", "thing", "singleton":
+	case "data", "enum", "thing", "singleton", "query":
 		return true
 	}
 	return false

@@ -173,7 +173,7 @@ test_warden_verb_exit_schema_mismatch_two :: proc(t: ^testing.T) {
 		return
 	}
 	defer remove_scratch_tree(root)
-	doctored := mutate_line(t, stream, "\"schema_version\":3", "\"schema_version\":1")
+	doctored := mutate_line(t, stream, "\"schema_version\":4", "\"schema_version\":1")
 	if !write_warden_index_product(t, root, doctored) {
 		return
 	}
