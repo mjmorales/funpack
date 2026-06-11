@@ -16,6 +16,8 @@
 // View.of over multi-row state.
 package funpack_runtime
 
+import "core:encoding/json"
+import "core:os"
 import "core:strings"
 import "core:testing"
 
@@ -173,4 +175,70 @@ test_capture_test_refusals :: proc(t: ^testing.T) {
 		testing.expect(t, strings.contains(response, `"ok":false`), "a refused capture must answer ok:false")
 		testing.expect(t, strings.contains(response, entry.fragment), entry.fragment)
 	}
+}
+
+// ── the committed-copy seam for the cross-product guard ──────────────────
+
+// expect_capture_matches_file pins one live capture export against its
+// committed copy under testdata/: the response's result.test payload must be
+// byte-equal to the file. The committed copies are the funpack compiler's
+// cross-product guard input (its guard test parses and runs those bytes), so
+// this pin keeps the live exporter and the committed seam from drifting apart
+// silently — the krognid committed-copy discipline applied to the §28 §5
+// export contract.
+@(private = "file")
+expect_capture_matches_file :: proc(t: ^testing.T, s: ^Debug_Session, request: string, path: string) {
+	response := session_request(s, request)
+	parsed, parse_err := json.parse_string(response, allocator = context.temp_allocator)
+	testing.expectf(t, parse_err == nil, "capture response must parse as JSON: %s", path)
+	if parse_err != nil {
+		return
+	}
+	root, is_object := parsed.(json.Object)
+	testing.expect(t, is_object)
+	if !is_object {
+		return
+	}
+	result, has_result := root["result"].(json.Object)
+	testing.expectf(t, has_result, "capture response must carry a result: %s", path)
+	if !has_result {
+		return
+	}
+	exported, is_string := result["test"].(json.String)
+	testing.expect(t, is_string)
+	file_bytes, file_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	testing.expectf(t, file_err == nil, "committed capture copy must read: %s", path)
+	if file_err != nil {
+		return
+	}
+	testing.expect_value(t, exported, string(file_bytes))
+}
+
+@(test)
+test_capture_export_committed_copies_lockstep :: proc(t: ^testing.T) {
+	s := capture_snake_session(t)
+	expect_capture_matches_file(
+		t,
+		&s,
+		`{"id":1,"cmd":"capture_test","args":{"tick":9,"behavior":"detect_eat"}}`,
+		"testdata/capture_snake_eat.fun",
+	)
+	expect_capture_matches_file(
+		t,
+		&s,
+		`{"id":2,"cmd":"capture_test","args":{"tick":6,"behavior":"turn"}}`,
+		"testdata/capture_snake_turn.fun",
+	)
+
+	program := new(Program, context.allocator)
+	loaded, err := load_program(GOLDEN_ARTIFACT, context.allocator)
+	testing.expect(t, err == .None, "golden pong artifact must load")
+	program^ = loaded
+	pong := open_debug_session(program, golden_session_inputs(context.allocator), NO_SEED, context.allocator)
+	expect_capture_matches_file(
+		t,
+		&pong,
+		`{"id":3,"cmd":"capture_test","args":{"tick":3,"behavior":"paddle_bounce"}}`,
+		"testdata/capture_pong_paddle_bounce.fun",
+	)
 }
