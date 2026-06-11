@@ -38,6 +38,15 @@ vec2_scale :: proc(v: Vec2_Value, s: Fixed) -> Vec2_Value {
 	return Vec2_Value{x = fixed_mul(v.x, s), y = fixed_mul(v.y, s)}
 }
 
+// vec2_div divides each component by a Fixed scalar through the SAME §10
+// round-toward-zero fixed_div kernel vec2_scale uses for mul — the
+// `(delta * speed) / d` form step_to takes after the multiply-before-divide
+// reorder. Per-lane bit-exact: each component is an independent fixed_div, so
+// `(10,0) / 10.0 == (1.0, 0)` and the zero-scalar saturation is fixed_div's.
+vec2_div :: proc(v: Vec2_Value, s: Fixed) -> Vec2_Value {
+	return Vec2_Value{x = fixed_div(v.x, s), y = fixed_div(v.y, s)}
+}
+
 vec3_add :: proc(a, b: Vec3_Value) -> Vec3_Value {
 	return Vec3_Value{x = fixed_add(a.x, b.x), y = fixed_add(a.y, b.y), z = fixed_add(a.z, b.z)}
 }

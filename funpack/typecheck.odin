@@ -2381,6 +2381,9 @@ variant_check :: proc(ctx: Check_Ctx, e: ^Variant_Expr) -> (type: Type, err: Typ
 		if e.type_name == "Option" {
 			return option_variant_check(ctx, e)
 		}
+		if e.type_name == "Result" {
+			return result_variant_check(ctx, e)
+		}
 		if engine, found := surface_enum_variant(e.type_name, e.variant); found {
 			if e.has_payload {
 				return nil, .Unsupported_Expr
@@ -2463,6 +2466,27 @@ option_variant_check :: proc(ctx: Check_Ctx, e: ^Variant_Expr) -> (type: Type, e
 			return nil, .Unsupported_Expr
 		}
 		return option_of(nil), .None
+	}
+	return nil, .Unsupported_Expr
+}
+
+// result_variant_check types a §26 prelude Result construction
+// (`enum Result[T, E] { Ok(T), Err(E) }`): Ok/Err each carry exactly one payload
+// (the chase's `Result::Ok(fresh)` / `Result::Err(NavError::Unreachable)`). The
+// payload checks (so a malformed inner expr still fails), but its type does not
+// constrain the result — Result carries no payload ground on this surface
+// (engine_type_of(.Result)), exactly as the engine-returned `path()`/`save()`
+// Result a match destructures Ok/Err with wildcard payloads. A wrong arity is
+// .Unsupported_Expr (a bare Result::Ok or a multi-payload form is never the
+// spec's single-payload variant).
+result_variant_check :: proc(ctx: Check_Ctx, e: ^Variant_Expr) -> (type: Type, err: Type_Error) {
+	switch e.variant {
+	case "Ok", "Err":
+		if !e.has_payload || len(e.payload) != 1 {
+			return nil, .Unsupported_Expr
+		}
+		expr_check(ctx, e.payload[0]) or_return
+		return engine_type_of(.Result), .None
 	}
 	return nil, .Unsupported_Expr
 }

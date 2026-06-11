@@ -17,16 +17,17 @@
 //        whose [tilemaps] section carries the terrain layer WITH its anchor
 //        lead line, plus the index NDJSON; double-build is byte-identical.
 //
-//   WARREN — compiles through the same pipeline MINUS the engine.nav QUERY
-//   surface (the navigation milestone's — deliberately NOT admitted here):
+//   WARREN — compiles end-to-end through the same pipeline INCLUDING the §12
+//   engine.nav QUERY surface (the navigation milestone admitted it):
 //     4. SEAM BYTE MATCH — gen/warren.gen.fun and gen/assets.gen.fun, same
 //        contract as the dungeon's.
-//     5. THE PRECISE NAV PIN — warren_world and the warren seam typecheck
-//        clean, and warren_game refuses at EXACTLY the first §12 graph query
-//        (`nav.los`, an unadmitted method on the Nav receiver →
-//        Unsupported_Expr). The navigation milestone flips exactly this pin to
-//        .None; stage_build refuses the whole tree (Compile_Failed, exit-2
-//        class, no product) until it does.
+//     5. NAV ADMITTED + GREEN — warren_world, the warren seam, AND warren_game
+//        all typecheck clean: the §12 graph queries (`nav.los/reachable/`
+//        `nearest/path` and `Path.advance`) are admitted in surface.odin and
+//        funpack-evaluated through Nav.of, so the chase AI's inline asserts run
+//        GREEN at their EXACT pinned count (the golden-count discipline — never
+//        a range), and stage_build emits both products. This is the warren
+//        pin FLIPPED — the navigation milestone's acceptance.
 //
 // All tests resolve the sibling funpack-spec checkout and SKIP LOUDLY when it
 // is absent — a skipped golden is a warning, never a pass.
@@ -35,7 +36,6 @@ package funpack
 import "core:log"
 import "core:os"
 import "core:path/filepath"
-import "core:strings"
 import "core:testing"
 
 // ── Authored seam docs (bake metadata, verbatim in the committed files) ──────
@@ -278,16 +278,22 @@ test_golden_warren_assets_seam_byte_matches :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
-	// AC (the nav pin): everything in the warren tree EXCEPT the §12 graph
-	// queries compiles — warren_world (Path-defaulted things) and the warren
-	// seam (maze TilemapHandle + the four Refs) both clear typecheck against
-	// the project index — and warren_game refuses at EXACTLY the first
-	// unadmitted Nav query (`nav.los(self.pos, goal)` in `stalk`): an unknown
-	// method on the Nav engine receiver is Unsupported_Expr, the same closed-
-	// table verdict the tilemap fixture pins for `map.warp`. The NAVIGATION
-	// MILESTONE flips exactly this expectation to Type_Error.None when it
-	// admits los/nearest/reachable — nothing else in this tree stands between
-	// warren and green.
+	// AC (the nav pin, FLIPPED): the whole warren tree now compiles end-to-end —
+	// warren_world (Path-defaulted things), the warren seam (maze TilemapHandle +
+	// the four Refs), AND warren_game all clear typecheck against the project
+	// index. The §12 graph queries that USED to refuse at `nav.los` are admitted
+	// in surface.odin (los/reachable → Bool, nearest → Option[Vec2], path →
+	// Result) and funpack-evaluated through Nav.of (Nav_Value, the nav-method and
+	// Path.advance evaluators), so the chase AI's inline asserts run GREEN.
+	//
+	// The 21 warren_game inline asserts evaluate in the funpack interpreter —
+	// three per `routed`/`drifted`/`replan_due`/`follow` test (12), one for
+	// `step_to` and one for `open_burrow` and one for the arrived-rabbit hide (3),
+	// two each for `nearest_rabbit`/`stalk dashes`/`bolt runs` (6) = 21. The
+	// non-behavior modules (warren_world, the gen seams) carry no asserts, so the
+	// project-wide sum is exactly 21. A regression that drops one, or a source
+	// edit that adds one, moves this number in lockstep — never loosen it to a
+	// range.
 	dir := resolve_warren_example_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP golden warren nav pin: %s not found — set FUNPACK_WARREN_DIR or check out funpack-spec as a sibling of the repo", dir)
@@ -299,53 +305,41 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 		return
 	}
 
-	// The project index types every module's exports; the two non-behavior
-	// modules clear their whole pipeline against it.
 	sources := project_pipeline_sources(project)
-	index := build_project_module_index(sources)
-	for module in ([]string{"warren_world", "warren"}) {
-		source, has_module := find_source_module(sources, module)
-		testing.expect(t, has_module)
-		if !has_module {
-			continue
-		}
-		bytes, file_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
-		testing.expect(t, file_err == nil)
-		if file_err != nil {
-			continue
-		}
-		ast, parse_err := stage_parse(stage_lex(string(bytes)))
-		testing.expect_value(t, parse_err, Parse_Error.None)
-		_, type_err := stage_typecheck_indexed(ast, index)
-		testing.expect_value(t, type_err, Type_Error.None)
-	}
-
-	// The behavior module refuses at the nav query — THE pin.
-	game, has_game := find_source_module(sources, "warren_game")
+	_, has_world := find_source_module(sources, "warren_world")
+	_, has_seam := find_source_module(sources, "warren")
+	_, has_game := find_source_module(sources, "warren_game")
+	testing.expect(t, has_world)
+	testing.expect(t, has_seam)
 	testing.expect(t, has_game)
-	if !has_game {
-		return
-	}
-	game_bytes, game_err := os.read_entire_file_from_path(game.path, context.temp_allocator)
-	testing.expect(t, game_err == nil)
-	if game_err != nil {
-		return
-	}
-	game_ast, game_parse := stage_parse(stage_lex(string(game_bytes)))
-	testing.expect_value(t, game_parse, Parse_Error.None)
-	_, nav_refusal := stage_typecheck_indexed(game_ast, index)
-	testing.expect_value(t, nav_refusal, Type_Error.Unsupported_Expr)
 
-	// And the whole-project walk surfaces the same refusal as the §29 §3
-	// exit-2 compile-error class on warren_game — never a counted failure.
+	// The whole-project walk now passes: every module compiles (module_err
+	// .None), and the warren_game chase asserts run green at their exact count.
 	report := run_project_pipeline(sources)
 	testing.expect_value(t, report.index_err, Project_Pipeline_Error.None)
-	testing.expect_value(t, report.module_err, Pipeline_Error.Typecheck_Failed)
-	testing.expect(t, strings.has_suffix(report.failed_path, "warren_game.fun"))
+	testing.expect_value(t, report.module_err, Pipeline_Error.None)
+	if report.module_err != .None {
+		log.errorf("golden warren nav pin: %s did not compile (%v)", report.failed_path, report.module_err)
+		return
+	}
+	testing.expect_value(t, report.passed, 21)
+	testing.expect_value(t, report.failed, 0)
 
-	// The build verb honors it: no product until the navigation milestone
-	// admits the surface.
-	_, verdict := stage_build(dir, .Dev, context.temp_allocator)
-	testing.expect_value(t, verdict.err, Build_Error.Compile_Failed)
-	log.infof("golden warren nav pin: warren_world + the warren seam compile; warren_game refuses at the unadmitted nav query (Unsupported_Expr) — the navigation milestone flips exactly this pin")
+	// The build verb emits both products now that the nav surface is admitted:
+	// warren is a game (entrypoints.fcfg names WarrenGame), so stage_build emits
+	// the runtime artifact AND the Index Contract NDJSON — no schema bump (the
+	// admission is typecheck/eval only; the v13 nav-section bake is a separate
+	// story), so the artifact still carries the v12 schema.
+	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
+		log.errorf("golden warren build: refused (%s)", build_refusal_message(verdict, context.temp_allocator))
+		return
+	}
+	testing.expect(t, len(product.artifact) > 0)
+	testing.expect(t, len(product.index) > 0)
+	doc, art_parse := parse_artifact(product.artifact)
+	testing.expect_value(t, art_parse, Artifact_Parse_Error.None)
+	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)
+	log.infof("golden warren nav pin FLIPPED: the full warren project compiles end-to-end; %d funpack-evaluable chase asserts pass and both build products emit", report.passed)
 }

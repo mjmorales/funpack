@@ -24,6 +24,23 @@ Value :: union {
 	Transform_Value,
 	Pose_Value,
 	Tilemap_Value,
+	Nav_Value,
+}
+
+// Nav_Value is the §12 test-position navigation handle Nav.of(route) seeds —
+// the fixture stand-in a behavior test passes where a baked nav graph would be
+// (the View.of/TilemapHandle.of mold). It carries the supplied route as the
+// Path record value (type_name "Path", fields steps/cost) the five nav queries
+// answer over: path() replays the route, los()/reachable() read true, nearest()
+// snaps to identity — exactly the @doc-pinned fixture semantics, all pure. The
+// failed/err fields carry the Nav.fail twin's failure (a path() on a failed Nav
+// yields Result::Err(err)); Nav.of always builds a non-failed handle, so they
+// sit at the zero value here until the §12 Nav.fail builder (a later story)
+// seeds them — the shape is final so the twin lands without a value reshape.
+Nav_Value :: struct {
+	route:  Record_Value, // the Path route Nav.of was built from (steps/cost)
+	failed: bool,         // the Nav.fail twin: path() yields Result::Err
+	err:    string,       // the NavError variant Nav.fail's path() wraps
 }
 
 // Transform_Value is a §16 §7 local bone transform: translation, orientation,
@@ -243,6 +260,12 @@ value_equal :: proc(a, b: Value) -> bool {
 	case Tilemap_Value:
 		// A fixture tile layer has no value-equality in the surface either (no
 		// test compares two layers); always false, the Input_Value discipline.
+		return false
+	case Nav_Value:
+		// A fixture nav handle has no value-equality in the surface (no test
+		// compares two Navs); always false, the Input_Value/Tilemap_Value
+		// discipline — the route it carries is read through path(), never by
+		// comparing handles.
 		return false
 	case Time_Value:
 		bv, ok := b.(Time_Value)

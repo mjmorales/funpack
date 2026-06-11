@@ -588,6 +588,16 @@ eval_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value,
 		}
 		return v, true
 	}
+	// §12 a Path route literal (Path{steps: [...], cost: ...}): the one engine
+	// RECORD the evaluator constructs in test position beyond the §19 asset
+	// handles, because the warren chase builds routes directly (NO_ROUTE, the
+	// Nav.of fixture routes, the Ferret/Rabbit `path` defaults). Each named field
+	// evaluates into a plain Record_Value tagged "Path" — the same shape Nav.of
+	// carries and Path.advance threads — so route equality and field reads
+	// (route.steps, route.cost) all read it structurally.
+	if e.type_name == "Path" {
+		return eval_asset_handle_literal(ctx, env, e)
+	}
 	if record, declared := ctx.env.records[e.type_name]; declared {
 		return eval_user_record(ctx, env, e, record)
 	}
@@ -1066,9 +1076,11 @@ eval_logical :: proc(op: string, lhs, rhs: Value) -> (value: Value, ok: bool) {
 	return nil, false
 }
 
-// eval_vec2_binary lowers Vec2 arithmetic: Vec2 ± Vec2 component-wise, and
-// Vec2 * Fixed component scaling — the `at + vel*dt` form the pong advance
-// helper takes (spec §10).
+// eval_vec2_binary lowers Vec2 arithmetic: Vec2 ± Vec2 component-wise, Vec2 *
+// Fixed component scaling (the `at + vel*dt` form the pong advance helper
+// takes), and Vec2 / Fixed component division (the `delta * speed / d` form
+// step_to takes — §10 multiply-before-divide for exact motion) — both scalar
+// arms lower through the same round-toward-zero Fixed kernel.
 eval_vec2_binary :: proc(op: Token_Kind, l: Vec2_Value, rhs: Value) -> (value: Value, ok: bool) {
 	if r, is_vec := rhs.(Vec2_Value); is_vec {
 		#partial switch op {
@@ -1079,8 +1091,13 @@ eval_vec2_binary :: proc(op: Token_Kind, l: Vec2_Value, rhs: Value) -> (value: V
 		}
 		return nil, false
 	}
-	if s, is_fixed := rhs.(Fixed); is_fixed && op == .Star {
-		return vec2_scale(l, s), true
+	if s, is_fixed := rhs.(Fixed); is_fixed {
+		#partial switch op {
+		case .Star:
+			return vec2_scale(l, s), true
+		case .Slash:
+			return vec2_div(l, s), true
+		}
 	}
 	return nil, false
 }
@@ -2050,6 +2067,17 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 		if audio, is_audio := eval_audio_adder(ctx, env, record, callee.member, args); is_audio {
 			return audio, true
 		}
+		// §12 Path.advance(pos, arrive): a path-follower steps one waypoint along a
+		// Path record value (route.advance in follow/run_for). It returns the
+		// (next waypoint as Option[Vec2], remaining Path) pair the chase folds over.
+		if record.type_name == "Path" && callee.member == "advance" {
+			return eval_path_advance(ctx, env, record, args)
+		}
+	}
+	// §12 a query on a fixture Nav handle (the Nav.of value: nav.path(from, to),
+	// nav.los(from, to), nav.reachable(from, to), nav.nearest(point)).
+	if nav, is_nav := receiver.(Nav_Value); is_nav {
+		return eval_nav_method(ctx, env, nav, callee.member, args)
 	}
 	// A method call on a value receiver: the §23 §2 Input queries (an inline test
 	// seeds the snapshot via Input.empty().with_pressed(…) and reads it via
@@ -2252,6 +2280,24 @@ eval_resource_builder :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: strin
 	case "TilemapHandle":
 		if member == "of" && len(args) == 2 {
 			return eval_tilemap_fixture(ctx, env, args)
+		}
+	case "Nav":
+		// §12 Nav.of(route): the fixture nav handle an inline test seeds where a
+		// baked nav graph would be (the View.of/TilemapHandle.of mold). The route
+		// is a Path record value the five queries replay — path() returns it,
+		// los/reachable read true, nearest snaps to identity. A non-Path argument
+		// is fail-closed (typecheck admits only Path here, so it never reaches a
+		// passing program). Nav.of always builds a non-failed handle.
+		if member == "of" && len(args) == 1 {
+			route_value, route_ok := eval_expr(ctx, env, args[0])
+			if !route_ok {
+				return nil, false
+			}
+			route, is_path := route_value.(Record_Value)
+			if !is_path || route.type_name != "Path" {
+				return nil, false
+			}
+			return Nav_Value{route = route}, true
 		}
 	case "Input":
 		if member == "empty" && len(args) == 0 {
@@ -2468,6 +2514,124 @@ eval_tilemap_method :: proc(ctx: Eval_Ctx, env: ^Env, tilemap: Tilemap_Value, me
 		}, true
 	}
 	return nil, false
+}
+
+// eval_nav_method lowers a §12 query on a fixture Nav handle (the Nav.of value):
+// path(from, to) replays the supplied route as Result::Ok(route) — or
+// Result::Err(err) on a failed Nav.fail twin; los(from, to)/reachable(from, to)
+// read true (the fixture's segment is always clear and its endpoints always
+// reachable — the @doc-pinned stand-in semantics); nearest(point) snaps to the
+// identity Option::Some(point) (the fixture snap is the identity — an off-nav
+// point maps to itself). All pure and total, so a chase behavior tests as a
+// plain fold. ok is false on a wrong arity so the typecheck-rejected forms never
+// reach a passing program.
+eval_nav_method :: proc(ctx: Eval_Ctx, env: ^Env, nav: Nav_Value, member: string, args: []Expr) -> (value: Value, ok: bool) {
+	switch member {
+	case "path":
+		// path(from, to) ignores its endpoints on the fixture — the supplied route
+		// is replayed verbatim (the deterministic stand-in a baked graph stands in
+		// for). A failed Nav (the Nav.fail twin) yields Result::Err(err) instead.
+		if len(args) != 2 {
+			return nil, false
+		}
+		if nav.failed {
+			boxed := new(Value, context.temp_allocator)
+			boxed^ = Enum_Value{type_name = "NavError", variant = nav.err}
+			return Enum_Value{type_name = "Result", variant = "Err", payload = boxed}, true
+		}
+		boxed := new(Value, context.temp_allocator)
+		boxed^ = nav.route
+		return Enum_Value{type_name = "Result", variant = "Ok", payload = boxed}, true
+	case "los", "reachable":
+		// The cheap yes/no checks read true on the fixture — the segment is
+		// unobstructed and the endpoints reachable, the stand-in's pinned answer.
+		if len(args) != 2 {
+			return nil, false
+		}
+		return true, true
+	case "nearest":
+		// The fixture snap is the identity: an arbitrary point maps to itself as
+		// the nearest on-nav point (Option::Some(point)).
+		if len(args) != 1 {
+			return nil, false
+		}
+		point := eval_expr(ctx, env, args[0]) or_return
+		return some_value(point), true
+	}
+	return nil, false
+}
+
+// eval_path_advance lowers §12 Path.advance(pos, arrive): the path-follower
+// reads the next waypoint to steer toward and the remaining route. Leading
+// waypoints already within `arrive` of `pos` are consumed (the follower has
+// reached them), then the first remaining step is the next waypoint
+// (Option::Some) and the rest is the remaining Path; an exhausted route yields
+// (Option::None, the empty route) — the arrival signal a chase folds to a hide.
+// Returns the (Option[Vec2], Path) pair as a Tuple_Value, matched exhaustively
+// by follow/run_for. ok is false on a wrong arity or a malformed Path.
+eval_path_advance :: proc(ctx: Eval_Ctx, env: ^Env, route: Record_Value, args: []Expr) -> (value: Value, ok: bool) {
+	if len(args) != 2 {
+		return nil, false
+	}
+	pos_value := eval_expr(ctx, env, args[0]) or_return
+	pos, pos_is_vec := pos_value.(Vec2_Value)
+	if !pos_is_vec {
+		return nil, false
+	}
+	arrive_value := eval_expr(ctx, env, args[1]) or_return
+	arrive, arrive_is_fixed := arrive_value.(Fixed)
+	if !arrive_is_fixed {
+		return nil, false
+	}
+	steps_value, has_steps := record_field_value(route.fields, "steps")
+	if !has_steps {
+		return nil, false
+	}
+	steps, steps_is_list := steps_value.(List_Value)
+	if !steps_is_list {
+		return nil, false
+	}
+	// Drop the leading waypoints the follower has already reached (within the
+	// arrival radius of pos), so the next waypoint is the first one still ahead.
+	next := 0
+	for next < len(steps.elements) {
+		wp, wp_is_vec := steps.elements[next].(Vec2_Value)
+		if !wp_is_vec {
+			return nil, false
+		}
+		if vec2_length(vec2_sub(wp, pos)) <= arrive {
+			next += 1
+			continue
+		}
+		break
+	}
+	remaining := path_record(steps.elements[next:], route)
+	if next >= len(steps.elements) {
+		// The route is exhausted — every waypoint reached. None signals arrival.
+		return tuple2(Option_Value{is_some = false}, remaining), true
+	}
+	return tuple2(some_value(steps.elements[next]), remaining), true
+}
+
+// path_record rebuilds a Path record value carrying the given remaining steps
+// and the source route's cost — the trimmed route advance threads forward. The
+// cost is carried verbatim (the fixture's cost is the whole route's cost; a
+// follower reads waypoints, never the residual cost).
+path_record :: proc(steps: []Value, source: Record_Value) -> Record_Value {
+	fields := make([]Record_Field_Value, 2, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "steps", value = List_Value{elements = steps}}
+	cost, _ := record_field_value(source.fields, "cost")
+	fields[1] = Record_Field_Value{name = "cost", value = cost}
+	return Record_Value{type_name = "Path", fields = fields}
+}
+
+// tuple2 boxes a two-value pair as a Tuple_Value — the (Option[Vec2], Path) pair
+// Path.advance returns, destructured by a follow/run_for match.
+tuple2 :: proc(a, b: Value) -> Value {
+	elements := make([]Value, 2, context.temp_allocator)
+	elements[0] = a
+	elements[1] = b
+	return Tuple_Value{elements = elements}
 }
 
 // tilemap_cell_coords reads a cell-record value's Int x/y grid coordinates and

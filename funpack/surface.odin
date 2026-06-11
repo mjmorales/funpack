@@ -961,6 +961,15 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 		case "Static", "Dynamic", "Kinematic":
 			return engine_type_of(.BodyKind), true
 		}
+	case "NavError":
+		// §12 the nav query-failure variants (`enum NavError { Unreachable, OffNav }`):
+		// the value a failed path() wraps as Result::Err, matched exhaustively by the
+		// chase's `routed` (Result::Err(NavError::Unreachable)). Both are nullary, so
+		// a NavError value is the bare engine variant the match destructures.
+		switch variant {
+		case "Unreachable", "OffNav":
+			return engine_type_of(.NavError), true
+		}
 	}
 	return nil, false
 }
@@ -1185,12 +1194,22 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 			return func_of({Ground_Type.Bool}, engine_type_of(.View, receiver.elem)), true
 		}
 	case .Nav:
-		// §08: the chase AI queries a route off the Nav handle. path(from, to)
-		// returns a Result[Path] (the route, or a NavError when no path exists);
-		// Result carries no payload ground on this surface, so the result is the
-		// bare Result engine value matched Ok/Err downstream.
-		if member == "path" {
+		// §12: the chase AI queries the baked nav graph off the injected Nav
+		// handle. path(from, to) returns a Result[Path] (the route, or a NavError
+		// when no path exists); Result carries no payload ground on this surface,
+		// so the result is the bare Result engine value matched Ok/Err downstream.
+		// los/reachable are the cheap yes/no segment and reachability checks; both
+		// take a (from, to) Vec2 pair and read Bool. nearest(point) snaps an
+		// arbitrary point onto walkable space, returning Option[Vec2] (None when
+		// the nav is empty). These four are the §12 query surface the warren chase
+		// drives — admitting them flips the warren pin from Unsupported_Expr.
+		switch member {
+		case "path":
 			return func_of({Ground_Type.Vec2, Ground_Type.Vec2}, engine_type_of(.Result)), true
+		case "los", "reachable":
+			return func_of({Ground_Type.Vec2, Ground_Type.Vec2}, Ground_Type.Bool), true
+		case "nearest":
+			return func_of({Ground_Type.Vec2}, option_of(Ground_Type.Vec2)), true
 		}
 	case .TilemapHandle:
 		// §18 §4 the four layer queries off the handle receiver — the dungeon's
