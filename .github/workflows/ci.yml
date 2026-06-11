@@ -31,9 +31,27 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           release: dev-2026-05
+      - name: Prepare Odin flake retry wrapper
+        # The pinned Odin dev-2026-05 typechecker crashes nondeterministically
+        # (check_type.cpp:598 'tuple != nullptr', Queue($T=string), exit 133)
+        # before any test runs; identical trees pass on re-run. The wrapper
+        # retries ONCE on exit 133 only — every other exit code propagates
+        # unretried, so real build/lint/test failures never get a second shot.
+        # Remove when the pin moves past the upstream typechecker fix.
+        run: |
+          cat > "$RUNNER_TEMP/retry-odin.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          "$@"
+          code=$?
+          if [ "$code" -ne 133 ]; then exit "$code"; fi
+          echo "::warning::odin exited 133 (known dev-2026-05 typechecker flake) - retrying once"
+          exec "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/retry-odin.sh"
       - name: Build (type-check)
-        run: task funpack:build runtime:build
+        run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:build runtime:build'
       - name: Lint (vet + strict style)
-        run: task funpack:lint runtime:lint runtime:lint-live
+        run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:lint runtime:lint runtime:lint-live'
       - name: Test
-        run: task funpack:test runtime:test
+        run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:test runtime:test'
