@@ -824,7 +824,11 @@ read_index_project :: proc(root: string, allocator := context.allocator) -> (ndj
 	if len(identity.sources) == 0 {
 		return "", .None, false
 	}
-	index_modules, ok := compile_index_modules(identity.sources)
+	// §30 §7: the index walk consumes the COMBINED source set (own +
+	// package_sources), so a dep's decls project into the Index Contract
+	// under their package-prefixed module names — the same qualified_name
+	// rule any multi-module project's decls follow.
+	index_modules, ok := compile_index_modules(project_pipeline_sources(identity))
 	if !ok {
 		return "", .None, false
 	}
@@ -865,6 +869,7 @@ read_index_project :: proc(root: string, allocator := context.allocator) -> (ndj
 compile_index_modules :: proc(sources: []Source) -> (modules: []Index_Module, ok: bool) {
 	module_names := make([]string, len(sources), context.temp_allocator)
 	asts := make([]Ast, len(sources), context.temp_allocator)
+	package_roots := make([]string, len(sources), context.temp_allocator)
 	for source, i in sources {
 		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
 		if read_err != nil {
@@ -876,11 +881,15 @@ compile_index_modules :: proc(sources: []Source) -> (modules: []Index_Module, ok
 		}
 		module_names[i] = source.module
 		asts[i] = ast
+		// Lockstep §30 package_roots (the run_project_pipeline discipline):
+		// the index gates a dep's exports through the expose edge, and each
+		// module's typecheck below runs from its OWN §30 §7 vantage.
+		package_roots[i] = source.package_root
 	}
-	index := build_module_index_typed(module_names, asts)
+	index := build_module_index_typed(module_names, asts, package_roots)
 	derived := make([]Index_Module, len(sources), context.temp_allocator)
 	for ast, i in asts {
-		typed, type_err := stage_typecheck_indexed(ast, index)
+		typed, type_err := stage_typecheck_indexed(ast, index, sources[i].package_root)
 		if type_err != .None {
 			return nil, false
 		}

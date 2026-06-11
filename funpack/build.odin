@@ -161,12 +161,19 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 	if len(project.sources) == 0 {
 		return Build_Product{}, Build_Verdict{err = .Malformed_Tree}
 	}
+	// §30 §7: a path dependency is compiled through the consumer's pipeline
+	// with the same gates as its own code, so every build/check walk below
+	// consumes the COMBINED source set (own + package_sources, the test
+	// verb's project_pipeline_sources discipline) — a dep-importing game
+	// checks and builds, and the dep's decls reach the emitted index under
+	// their package-prefixed module names.
+	sources := project_pipeline_sources(project)
 	if mode == .Release {
 		// Both refusal walkers scan the sources in the Index Contract's module
 		// order (entrypoint module first, then sorted-by-path remainder) so the
 		// named offender is the first offender in the order the emitted index
 		// lists its decl blocks — never a plain sorted-by-path artifact.
-		scan_sources := order_release_sources(root, project.sources)
+		scan_sources := order_release_sources(root, sources)
 		// The §29 §4 release hole-ban: a hole cannot ship, so a holed declaration
 		// in ANY module refuses the whole build before either emission surface
 		// runs — exit 2, no product, never a counted failure — naming the first
@@ -191,7 +198,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 	artifact_path := ""
 	if is_game {
 		emit_err: Emit_Error
-		artifact, emit_err = emit_tree_artifact(root, project, allocator)
+		artifact, emit_err = emit_tree_artifact(root, project, sources, allocator)
 		if emit_err != .None {
 			return Build_Product{}, Build_Verdict{err = .Compile_Failed}
 		}
@@ -337,14 +344,14 @@ has_entrypoints_fcfg :: proc(root: string) -> bool {
 // `krognid_parts`) land in [functions] as self-contained records. A read failure or
 // any checked-pipeline floor surfaces as the stage_emit_indexed error, which
 // stage_build maps to Compile_Failed (no artifact).
-emit_tree_artifact :: proc(root: string, project: Project, allocator := context.allocator) -> (artifact: string, err: Emit_Error) {
+emit_tree_artifact :: proc(root: string, project: Project, sources: []Source, allocator := context.allocator) -> (artifact: string, err: Emit_Error) {
 	entrypoint_path, _ := filepath.join({root, "funpack_configs", "entrypoints.fcfg"}, context.temp_allocator)
 	entrypoint_bytes, ep_err := os.read_entire_file_from_path(entrypoint_path, context.temp_allocator)
 	if ep_err != nil {
 		return "", .Entrypoint_Failed
 	}
 	entry_module := entrypoint_module_name(root)
-	source, found := select_entrypoint_source(project.sources, entry_module)
+	source, found := select_entrypoint_source(sources, entry_module)
 	if !found {
 		// No source provides the entrypoint module: either entrypoints.fcfg does
 		// not parse (entry_module is "") or its `use <module>` clause names a
@@ -357,8 +364,8 @@ emit_tree_artifact :: proc(root: string, project: Project, allocator := context.
 	if read_err != nil {
 		return "", .Parse_Failed
 	}
-	index := build_project_module_index(project.sources)
-	sibling_asts := build_sibling_module_asts(project.sources, source.module)
+	index := build_project_module_index(sources)
+	sibling_asts := build_sibling_module_asts(sources, source.module)
 	identity := Project_Identity{name = project.name, version = project.version}
 	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, allocator)
 }
@@ -421,8 +428,14 @@ select_entrypoint_source :: proc(sources: []Source, module: string) -> (source: 
 build_project_module_index :: proc(sources: []Source) -> Module_Index {
 	modules := make([]string, len(sources), context.temp_allocator)
 	asts := make([]Ast, len(sources), context.temp_allocator)
+	package_roots := make([]string, len(sources), context.temp_allocator)
 	for source, i in sources {
 		modules[i] = source.module
+		// The §30 package_roots ride in lockstep with the modules (the
+		// run_project_pipeline discipline) so a dep module's exports gate
+		// through the §30 §6 expose edge and its own imports resolve from
+		// its own vantage.
+		package_roots[i] = source.package_root
 		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
 		if read_err != nil {
 			continue
@@ -433,7 +446,7 @@ build_project_module_index :: proc(sources: []Source) -> Module_Index {
 		}
 		asts[i] = ast
 	}
-	return build_module_index_typed(modules, asts)
+	return build_module_index_typed(modules, asts, package_roots)
 }
 
 // build_product_path joins the project root, the `.funpack/` derived directory,

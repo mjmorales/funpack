@@ -243,6 +243,50 @@ test_path_dep_fn_in_combinator_slot :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_path_dep_checks_builds_and_indexes :: proc(t: ^testing.T) {
+	// AC for the §30 §7 combined-set discipline on the build/check/index
+	// walks: a dep-importing tree compiles through stage_build — the same
+	// pure seam funpack check adjudicates — instead of refusing with the
+	// consumer's import unresolved, and BOTH sides' decls project into the
+	// Index Contract: the consumer's under its own module, the dependency's
+	// under the package-prefixed qualified_name.
+	consumer := "import hexgrid.layout.{axial_to_pixel}\n" +
+		"fn double_pixel(q: Int) -> Int {\n" +
+		"  return axial_to_pixel(q) + axial_to_pixel(q)\n" +
+		"}\n"
+	root, ok := write_dep_scratch_tree(t, consumer, "hexgrid", "hexgrid", HEXGRID_LAYOUT_FUN)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	product, verdict := stage_build(root, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	testing.expect(t, strings.contains(product.index, `"qualified_name":"game.double_pixel"`))
+	testing.expect(t, strings.contains(product.index, `"qualified_name":"hexgrid.layout.axial_to_pixel"`))
+	testing.expect_value(t, run_check_verb(root, .Dev), 0)
+}
+
+@(test)
+test_path_dep_hole_refuses_release_build :: proc(t: ^testing.T) {
+	// The release bans scan the COMBINED set: a typed hole in the DEP refuses
+	// the consumer's --release build naming the dep's module-qualified
+	// declaration — dep code ships in your product, so it rides your floors
+	// (§29 §4, §30 §7).
+	holed_dep := "@expose\n" +
+		"fn axial_to_pixel(q: Int) -> Int @stub(Int)\n"
+	root, ok := write_dep_scratch_tree(t, "@doc(\"consumer\")\n", "hexgrid", "hexgrid", holed_dep)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	_, verdict := stage_build(root, .Release, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.Holed_Declaration)
+	testing.expect(t, strings.contains(verdict.offender, "hexgrid.layout"))
+}
+
+@(test)
 test_path_dep_private_member_fails_project_walk :: proc(t: ^testing.T) {
 	// The §30 §6 edge holds through the full tree walk: the consumer
 	// importing the dependency's package-private helper is a compile error

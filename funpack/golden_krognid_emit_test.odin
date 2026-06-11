@@ -45,7 +45,7 @@ krognid_emit :: proc(t: ^testing.T) -> (artifact: string, ok: bool) {
 		log.warnf("SKIP krognid emit golden: krognid tree at %s did not read (%v)", dir, read_err)
 		return "", false
 	}
-	emitted, emit_err := emit_tree_artifact(dir, project, context.temp_allocator)
+	emitted, emit_err := emit_tree_artifact(dir, project, project_pipeline_sources(project), context.temp_allocator)
 	testing.expect_value(t, emit_err, Emit_Error.None)
 	if emit_err != .None {
 		return "", false
