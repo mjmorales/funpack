@@ -294,6 +294,46 @@ extern type Anchors
 }
 
 @(test)
+test_index_decl_generic_header_stays_ast_side :: proc(t: ^testing.T) {
+	// A §03 §3 generic declaration header changes NOTHING in the Index
+	// Contract projection: §29 §2's field enumeration names no type-param
+	// field, so `enum Option[T]` / `data Ref[T]` / `extern type View[T]`
+	// project under their existing kinds with the BARE declared name as
+	// qualified_name — the parameters stay AST-side (a richer projection is a
+	// contract reshape behind a schema bump, the §05 §3 @index/@spatial
+	// precedent), and the schema version does not move.
+	source := `enum Option[T] { Some(T), None }
+data Ref[T] { id: Id }
+extern type View[T]
+`
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	records := derive_decl_records("", Typed_Ast{ast = ast}, Flattened_Pipeline{})
+	testing.expect_value(t, len(records), 3)
+
+	option, has_option := find_record(records, "Option")
+	testing.expect(t, has_option)
+	if has_option {
+		testing.expect_value(t, option.kind, Index_Decl_Kind.Enum)
+		testing.expect_value(t, option.schema_version, INDEX_SCHEMA_VERSION)
+	}
+	ref, has_ref := find_record(records, "Ref")
+	testing.expect(t, has_ref)
+	if has_ref {
+		testing.expect_value(t, ref.kind, Index_Decl_Kind.Data)
+	}
+	view, has_view := find_record(records, "View")
+	testing.expect(t, has_view)
+	if has_view {
+		testing.expect_value(t, view.kind, Index_Decl_Kind.Extern_Type)
+	}
+	log.infof("index decl generic-header records verified (bare names, schema v%d unchanged)", INDEX_SCHEMA_VERSION)
+}
+
+@(test)
 test_index_decl_stub_from_holes :: proc(t: ^testing.T) {
 	// stub derives from the parser's holed flag (§05 §2): a fn whose body is a
 	// @stub(T) hole — and the @stub(T, fallback) form — emits stub=true, and a

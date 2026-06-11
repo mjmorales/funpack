@@ -130,6 +130,15 @@ Let_Decl_Node :: struct {
 Data_Node :: struct {
 	name:   string,
 	kind:   string, // the `Name: Kind` ascription (§03 §4); "" when absent
+	// type_params is the §03 §3 generic declaration header (`data Ref[T]`,
+	// fun.ebnf §4 TypeParams) — the declared type-parameter names in source
+	// order; nil when the declaration has none. Each name is a binder the body's
+	// field types reference as ordinary Type_Refs (`data Ref[T] { id: Id }`,
+	// `data Choice[T] { value: T }`); resolving those references against the
+	// binder is a downstream stage's job. Generics exist only on engine/stdlib
+	// containers (§03 §3: user code authors no generics); that gate is likewise
+	// downstream, not the parser's — the same split `extern` keeps.
+	type_params: []string,
 	fields: []Field_Decl,
 	doc:    string,
 	gtags:  []string,
@@ -148,6 +157,10 @@ Data_Node :: struct {
 Enum_Node :: struct {
 	name:     string,
 	kind:     string, // the enum-as-role kind (`enum Steer: Axis`); "" when absent
+	// type_params is the §03 §3 generic declaration header (`enum Option[T]`,
+	// `enum Result[T, E]` — fun.ebnf §4 TypeParams); nil when absent. See
+	// Data_Node.type_params for the binder-scope and engine-only-gate split.
+	type_params: []string,
 	variants: []Variant_Decl,
 	doc:      string,
 	gtags:    []string,
@@ -229,6 +242,12 @@ Fn_Node :: struct {
 // `extern fn` keeps.
 Extern_Type_Node :: struct {
 	name:    string,
+	// type_params is the §03 §3 generic declaration header (`extern type
+	// View[T]` — fun.ebnf §8: ExternType ::= 'type' UPPER_IDENT TypeParams?);
+	// nil when absent. The opaque type stays body-less either way — the header
+	// only declares the container's parameters (§26 §2 View/Theme). See
+	// Data_Node.type_params for the binder-scope and engine-only-gate split.
+	type_params: []string,
 	doc:     string,
 	gtags:   []string,
 	probes:  []Debug_Probe, // §05 §5 debug directives attached to this declaration
@@ -445,6 +464,7 @@ Parse_Error :: enum {
 	Index_Wrong_Target,    // a well-formed @index/@spatial prefixing a declaration the spec does not admit — §08 §3 places the directive on a `query` declaration (the query's declared index requirement), and the spec names no other target
 	Expose_Unexpected_Arg, // an @expose carrying an argument — @expose is bare (lexical-core §5; spec §05 §4: it publishes the declaration it prefixes, there is no value to name), the @trace mold
 	Malformed_Extern,      // an `extern` prefixing neither `fn` nor `type` — the §02 §7 extern family is closed (fun.ebnf §8: ExternDecl ::= 'extern' (ExternFn | ExternType)), so a stray `extern data …` is a named malformed-extern verdict, never a generic token error
+	Malformed_Type_Params, // a §03 §3 generic declaration header whose `[…]` matches none of the TypeParams forms (fun.ebnf §4: '[' UPPER_IDENT (',' UPPER_IDENT)* ']') — empty brackets, a non-identifier parameter, a trailing comma, or a missing `]` between parameters; the one casing-class deviation (a lowercase parameter name) keeps the parser-wide Wrong_Case verdict, the Malformed_Index_Path mold
 }
 
 Parser :: struct {
@@ -1220,8 +1240,10 @@ parse_let_decl :: proc(p: ^Parser) -> (node: Let_Decl_Node, err: Parse_Error) {
 }
 
 // parse_data parses `data Name { field: T = default … }` (spec §03 §1),
-// with the optional `data Name: Kind { … }` kind ascription (§03 §4). The
-// kind is contextual — a bare UpperCamel name in the post-colon position,
+// with the optional §03 §3 generic header (`data Ref[T] { … }`) and the
+// optional `data Name: Kind { … }` kind ascription (§03 §4), in the fun.ebnf
+// §4 order (DataDecl ::= 'data' UPPER_IDENT TypeParams? KindAsc? RecordBody).
+// The kind is contextual — a bare UpperCamel name in the post-colon position,
 // never a reserved word.
 parse_data :: proc(p: ^Parser) -> (node: Data_Node, err: Parse_Error) {
 	// `data` is a contextual keyword (Ident); the by-text dispatch in
@@ -1229,11 +1251,12 @@ parse_data :: proc(p: ^Parser) -> (node: Data_Node, err: Parse_Error) {
 	// opener as an Ident here.
 	data_tok := expect(p, .Ident) or_return
 	name := expect_type_name(p) or_return
+	type_params := parse_type_params(p) or_return
 	kind := parse_optional_kind(p) or_return
 	// A data body is the one field list whose fields may carry a §05 §6
 	// @migrate prefix — the name-keyed schema is the evolution channel.
 	fields := parse_field_list(p, allow_migrate = true) or_return
-	return Data_Node{name = name, kind = kind, fields = fields, line = data_tok.line}, .None
+	return Data_Node{name = name, kind = kind, type_params = type_params, fields = fields, line = data_tok.line}, .None
 }
 
 // parse_thing parses `thing Name { … }` and `singleton Name { … }`
@@ -1256,6 +1279,50 @@ parse_signal :: proc(p: ^Parser) -> (node: Signal_Node, err: Parse_Error) {
 	name := expect_type_name(p) or_return
 	fields := parse_field_list(p) or_return
 	return Signal_Node{name = name, fields = fields, line = signal_tok.line}, .None
+}
+
+// parse_type_params reads the optional §03 §3 generic declaration header
+// `[T]` / `[T, E]` after a declared type name (fun.ebnf §4: TypeParams ::=
+// '[' UPPER_IDENT (',' UPPER_IDENT)* ']'; LL(1) on the one `[` token —
+// fun.ll1.md: `[` ⇒ params, else skip). Only the engine-container decl kinds
+// the grammar names admit the header — data, enum, and extern type — so this
+// is called from exactly those three productions; every other decl kind keeps
+// rejecting a post-name `[` through its own next expectation. A mis-shaped
+// header — empty brackets, a non-identifier parameter, a trailing comma, a
+// missing `]` — is the named Malformed_Type_Params verdict; a lowercase
+// parameter name keeps the parser-wide Wrong_Case verdict. Returns nil when
+// the next token is not `[`.
+parse_type_params :: proc(p: ^Parser) -> (params: []string, err: Parse_Error) {
+	if peek_kind(p) != .L_Bracket {
+		return nil, .None
+	}
+	p.pos += 1
+	list := make([dynamic]string, 0, 2, context.temp_allocator)
+	for {
+		if peek_kind(p) != .Ident {
+			// Empty `[]`, a trailing comma, or a non-identifier parameter — the
+			// grammar requires at least one UPPER_IDENT after `[` and after
+			// every comma.
+			return nil, .Malformed_Type_Params
+		}
+		tok := advance(p) or_return
+		if !is_upper_ident(tok.class) {
+			return nil, .Wrong_Case
+		}
+		append(&list, tok.text)
+		if peek_kind(p) == .Comma {
+			p.pos += 1
+			continue
+		}
+		break
+	}
+	if peek_kind(p) != .R_Bracket {
+		// `[T U]` — parameters are comma-separated, and nothing else stands
+		// between the last parameter and the closer.
+		return nil, .Malformed_Type_Params
+	}
+	p.pos += 1
+	return list[:], .None
 }
 
 // parse_optional_kind reads a `: Kind` ascription after a type name
@@ -1343,14 +1410,17 @@ parse_field_list :: proc(p: ^Parser, allow_migrate := false) -> (fields: []Field
 }
 
 // parse_enum parses `enum Name { Variant, Variant(T), Variant{ f: T } }`
-// (spec §03 §2), with the optional enum-as-role kind ascription
-// `enum Steer: Axis { … }` (§03 §4). Variants are UpperCamel, newline- or
+// (spec §03 §2), with the optional §03 §3 generic header (`enum Option[T]
+// { … }`) and the optional enum-as-role kind ascription `enum Steer: Axis
+// { … }` (§03 §4), in the fun.ebnf §4 order (EnumDecl ::= 'enum' UPPER_IDENT
+// TypeParams? KindAsc? '{' … '}'). Variants are UpperCamel, newline- or
 // comma-separated.
 parse_enum :: proc(p: ^Parser) -> (node: Enum_Node, err: Parse_Error) {
 	// `enum` is a contextual keyword (Ident); the by-text dispatch already
 	// verified the text, so consume the opener as an Ident here.
 	enum_tok := expect(p, .Ident) or_return
 	name := expect_type_name(p) or_return
+	type_params := parse_type_params(p) or_return
 	kind := parse_optional_kind(p) or_return
 	expect(p, .L_Brace) or_return
 	skip_field_separators(p)
@@ -1361,7 +1431,7 @@ parse_enum :: proc(p: ^Parser) -> (node: Enum_Node, err: Parse_Error) {
 		skip_field_separators(p)
 	}
 	expect(p, .R_Brace) or_return
-	return Enum_Node{name = name, kind = kind, variants = variants[:], line = enum_tok.line}, .None
+	return Enum_Node{name = name, kind = kind, type_params = type_params, variants = variants[:], line = enum_tok.line}, .None
 }
 
 // parse_variant parses one enum variant: plain `Left`, tuple-payload
@@ -1488,17 +1558,16 @@ parse_extern_fn_decl :: proc(p: ^Parser, extern_line: int) -> (node: Fn_Node, er
 // parse_extern_type_decl parses the `type Name` remainder of an `extern type`
 // declaration (spec §02 §7, §26 §2) — parse_extern_declaration has already
 // consumed the `extern` keyword, whose line is the declaration's span anchor.
-// The UPPER_IDENT name IS the whole declaration: an opaque type carries no
-// funpack-visible fields and no body (§26 §2), so the name is followed by the
-// statement terminator. A generic header (`extern type View[T]`, fun.ebnf §8
-// TypeParams) is the §03 §3 generic-declaration-header story, not admitted
-// here yet — a `[` after the name stays the generic token error until that
-// story lands.
+// The UPPER_IDENT name plus the optional §03 §3 generic header (`extern type
+// View[T]`, fun.ebnf §8: ExternType ::= 'type' UPPER_IDENT TypeParams?) IS
+// the whole declaration: an opaque type carries no funpack-visible fields and
+// no body (§26 §2), so the header is followed by the statement terminator.
 parse_extern_type_decl :: proc(p: ^Parser, extern_line: int) -> (node: Extern_Type_Node, err: Parse_Error) {
 	expect(p, .Type) or_return
 	name := expect_type_name(p) or_return
+	type_params := parse_type_params(p) or_return
 	terminate_statement(p) or_return
-	return Extern_Type_Node{name = name, line = extern_line}, .None
+	return Extern_Type_Node{name = name, type_params = type_params, line = extern_line}, .None
 }
 
 // parse_query parses a §08 §3 first-class query declaration: `query name(p: T,

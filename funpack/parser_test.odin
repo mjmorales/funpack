@@ -1835,11 +1835,149 @@ test_parse_extern_type_trailing_junk_rejected :: proc(t: ^testing.T) {
 	// Trailing junk after a well-formed `extern type Name` header stays the
 	// generic Unexpected_Token (the named diagnostics cover the malformed
 	// family and the casing deviation): an opaque type has no body, so a brace
-	// where the terminator belongs is rejected, and the generic header form
-	// (`extern type View[T]`) is the §03 §3 generic-declaration story, not yet
-	// admitted.
+	// where the terminator belongs is rejected — with or without the §03 §3
+	// generic header in between.
 	_, brace_err := stage_parse(stage_lex("extern type Sketch { x: Int }\n"))
 	testing.expect_value(t, brace_err, Parse_Error.Unexpected_Token)
-	_, generic_err := stage_parse(stage_lex("extern type View[T]\n"))
-	testing.expect_value(t, generic_err, Parse_Error.Unexpected_Token)
+	_, generic_brace_err := stage_parse(stage_lex("extern type View[T] { x: Int }\n"))
+	testing.expect_value(t, generic_brace_err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
+test_parse_generic_data_header :: proc(t: ^testing.T) {
+	// The §03 §3 generic declaration header on a data declaration (fun.ebnf §4:
+	// DataDecl ::= 'data' UPPER_IDENT TypeParams? KindAsc? RecordBody): the
+	// declared parameter names land on the node in source order, and the body's
+	// field types reference the binder as ordinary Type_Refs (the stdlib
+	// world.fun `data Ref[T] { id: Id }` / ui.fun `data Choice[T] { value: T }`
+	// shapes).
+	source := "data Ref[T] { id: Id }\ndata Choice[T] { label: String, value: T }\ndata Pair[K, V] { k: K, v: V }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.datas), 3)
+	if len(ast.datas) != 3 {
+		return
+	}
+	testing.expect_value(t, ast.datas[0].name, "Ref")
+	testing.expect_value(t, len(ast.datas[0].type_params), 1)
+	if len(ast.datas[0].type_params) == 1 {
+		testing.expect_value(t, ast.datas[0].type_params[0], "T")
+	}
+	// The binder is usable in the body's field types: `value: T` parses as the
+	// plain named Type_Ref "T".
+	testing.expect_value(t, len(ast.datas[1].fields), 2)
+	if len(ast.datas[1].fields) == 2 {
+		testing.expect_value(t, ast.datas[1].fields[1].type.name, "T")
+	}
+	testing.expect_value(t, len(ast.datas[2].type_params), 2)
+	if len(ast.datas[2].type_params) == 2 {
+		testing.expect_value(t, ast.datas[2].type_params[0], "K")
+		testing.expect_value(t, ast.datas[2].type_params[1], "V")
+	}
+}
+
+@(test)
+test_parse_generic_enum_header :: proc(t: ^testing.T) {
+	// The §03 §3 generic declaration header on an enum (fun.ebnf §4: EnumDecl
+	// ::= 'enum' UPPER_IDENT TypeParams? KindAsc? '{' … '}') — the prelude's
+	// two engine containers, with the binder referenced in variant payloads.
+	source := "enum Option[T] { Some(T), None }\nenum Result[T, E] { Ok(T), Err(E) }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.enums), 2)
+	if len(ast.enums) != 2 {
+		return
+	}
+	testing.expect_value(t, ast.enums[0].name, "Option")
+	testing.expect_value(t, len(ast.enums[0].type_params), 1)
+	if len(ast.enums[0].type_params) == 1 {
+		testing.expect_value(t, ast.enums[0].type_params[0], "T")
+	}
+	testing.expect_value(t, len(ast.enums[0].variants), 2)
+	if len(ast.enums[0].variants) == 2 {
+		// Some(T)'s tuple payload references the binder as a plain Type_Ref.
+		testing.expect_value(t, len(ast.enums[0].variants[0].tuple), 1)
+		if len(ast.enums[0].variants[0].tuple) == 1 {
+			testing.expect_value(t, ast.enums[0].variants[0].tuple[0].name, "T")
+		}
+	}
+	testing.expect_value(t, len(ast.enums[1].type_params), 2)
+	if len(ast.enums[1].type_params) == 2 {
+		testing.expect_value(t, ast.enums[1].type_params[0], "T")
+		testing.expect_value(t, ast.enums[1].type_params[1], "E")
+	}
+}
+
+@(test)
+test_parse_generic_extern_type_header :: proc(t: ^testing.T) {
+	// The §03 §3 generic header on an extern type (fun.ebnf §8: ExternType ::=
+	// 'type' UPPER_IDENT TypeParams?) — the stdlib `extern type View[T]` /
+	// `extern type View[Msg]` shapes the wave-1 reject fixture deliberately
+	// pinned as Unexpected_Token until this story admitted them.
+	source := "extern type View[T]\nextern type Widget[Msg]\nextern type Theme\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.extern_types), 3)
+	if len(ast.extern_types) != 3 {
+		return
+	}
+	testing.expect_value(t, ast.extern_types[0].name, "View")
+	testing.expect_value(t, len(ast.extern_types[0].type_params), 1)
+	if len(ast.extern_types[0].type_params) == 1 {
+		testing.expect_value(t, ast.extern_types[0].type_params[0], "T")
+	}
+	testing.expect_value(t, len(ast.extern_types[1].type_params), 1)
+	if len(ast.extern_types[1].type_params) == 1 {
+		testing.expect_value(t, ast.extern_types[1].type_params[0], "Msg")
+	}
+	// The bare form keeps its nil header.
+	testing.expect_value(t, len(ast.extern_types[2].type_params), 0)
+}
+
+@(test)
+test_parse_generic_header_then_kind_order :: proc(t: ^testing.T) {
+	// The fun.ebnf §4 declaration order is TypeParams? KindAsc? — the header
+	// binds tight to the name, the kind ascription follows it.
+	ast, err := stage_parse(stage_lex("data Vel[T]: Num { x: T }\n"))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.datas), 1)
+	if len(ast.datas) != 1 {
+		return
+	}
+	testing.expect_value(t, len(ast.datas[0].type_params), 1)
+	testing.expect_value(t, ast.datas[0].kind, "Num")
+}
+
+@(test)
+test_parse_generic_header_closed_decl_kinds :: proc(t: ^testing.T) {
+	// Only the engine-container decl kinds the grammar names admit a generic
+	// header — data, enum, extern type (fun.ebnf §4/§8). Every other declared
+	// type form (ThingDecl, SignalDecl — fun.ebnf §5) has no TypeParams slot,
+	// so a post-name `[` keeps that production's generic token error.
+	_, thing_err := stage_parse(stage_lex("thing Foo[T] { x: Int }\n"))
+	testing.expect_value(t, thing_err, Parse_Error.Unexpected_Token)
+	_, signal_err := stage_parse(stage_lex("signal Hit[T] { amount: T }\n"))
+	testing.expect_value(t, signal_err, Parse_Error.Unexpected_Token)
+}
+
+@(test)
+test_parse_malformed_type_params_rejected :: proc(t: ^testing.T) {
+	// A mis-shaped §03 §3 header is the named Malformed_Type_Params verdict
+	// (fun.ebnf §4: TypeParams ::= '[' UPPER_IDENT (',' UPPER_IDENT)* ']'):
+	// empty brackets, a trailing comma, a missing comma between parameters, a
+	// non-identifier parameter, or a never-closed header. The one casing-class
+	// deviation — a lowercase parameter name — keeps the parser-wide Wrong_Case
+	// verdict (the Malformed_Index_Path split).
+	_, empty_err := stage_parse(stage_lex("enum Option[] { None }\n"))
+	testing.expect_value(t, empty_err, Parse_Error.Malformed_Type_Params)
+	_, trailing_err := stage_parse(stage_lex("data Ref[T,] { id: Id }\n"))
+	testing.expect_value(t, trailing_err, Parse_Error.Malformed_Type_Params)
+	_, missing_comma_err := stage_parse(stage_lex("data Pair[K V] { k: K }\n"))
+	testing.expect_value(t, missing_comma_err, Parse_Error.Malformed_Type_Params)
+	_, number_err := stage_parse(stage_lex("extern type View[1]\n"))
+	testing.expect_value(t, number_err, Parse_Error.Malformed_Type_Params)
+	_, unclosed_err := stage_parse(stage_lex("extern type View[T\n"))
+	testing.expect_value(t, unclosed_err, Parse_Error.Malformed_Type_Params)
+	_, case_err := stage_parse(stage_lex("enum Option[t] { None }\n"))
+	testing.expect_value(t, case_err, Parse_Error.Wrong_Case)
 }

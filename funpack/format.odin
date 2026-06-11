@@ -278,7 +278,8 @@ fmt_let_decl :: proc(b: ^strings.Builder, decl: Let_Decl_Node) {
 }
 
 // fmt_data writes `data Name { f: T, g: U }` single-line (the dominant corpus
-// spelling for data), with the optional `: Kind` ascription.
+// spelling for data), with the optional §03 §3 generic header and the
+// optional `: Kind` ascription, in the fun.ebnf §4 declaration order.
 fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	if decl.has_migrate {
@@ -290,6 +291,7 @@ fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
 	}
 	strings.write_string(b, "data ")
 	strings.write_string(b, decl.name)
+	fmt_type_params(b, decl.type_params)
 	if decl.kind != "" {
 		strings.write_string(b, ": ")
 		strings.write_string(b, decl.kind)
@@ -299,11 +301,13 @@ fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
 }
 
 // fmt_enum writes `enum Name { A, B(T), C{f: T} }` single-line, with the
-// optional enum-as-role `: Kind` ascription.
+// optional §03 §3 generic header and the optional enum-as-role `: Kind`
+// ascription, in the fun.ebnf §4 declaration order.
 fmt_enum :: proc(b: ^strings.Builder, decl: Enum_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "enum ")
 	strings.write_string(b, decl.name)
+	fmt_type_params(b, decl.type_params)
 	if decl.kind != "" {
 		strings.write_string(b, ": ")
 		strings.write_string(b, decl.kind)
@@ -457,15 +461,34 @@ fmt_fn_decl :: proc(b: ^strings.Builder, decl: Fn_Node) {
 	strings.write_string(b, "}\n")
 }
 
-// fmt_extern_type writes `extern type Name` after the shared directive block —
-// the whole declaration is the one keyword-pair line (§26 §2: an opaque type
-// carries no funpack-visible fields and no body, so there is nothing else to
-// project).
+// fmt_extern_type writes `extern type Name` after the shared directive block,
+// with the optional §03 §3 generic header (`extern type View[T]`) — the whole
+// declaration is the one header line (§26 §2: an opaque type carries no
+// funpack-visible fields and no body, so there is nothing else to project).
 fmt_extern_type :: proc(b: ^strings.Builder, decl: Extern_Type_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "extern type ")
 	strings.write_string(b, decl.name)
+	fmt_type_params(b, decl.type_params)
 	strings.write_string(b, "\n")
+}
+
+// fmt_type_params writes the §03 §3 generic declaration header `[T]` /
+// `[T, E]` tight against the declared name, comma-space separated — the
+// spelling fmt_type_ref gives a generic application, so a header and a use
+// project identically. Writes nothing when the declaration has none.
+fmt_type_params :: proc(b: ^strings.Builder, params: []string) {
+	if len(params) == 0 {
+		return
+	}
+	strings.write_string(b, "[")
+	for param, i in params {
+		if i > 0 {
+			strings.write_string(b, ", ")
+		}
+		strings.write_string(b, param)
+	}
+	strings.write_string(b, "]")
 }
 
 // fmt_signature writes `(p: T, …) -> R` — the parameter list and return

@@ -103,6 +103,18 @@ test_fmt_extern_type :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fmt_generic_declaration_headers :: proc(t: ^testing.T) {
+	// The §03 §3 generic declaration headers on the three admitting decl kinds
+	// (data / enum / extern type, fun.ebnf §4/§8) render tight against the
+	// declared name with comma-space separation — the same spelling
+	// fmt_type_ref gives a generic application — and round-trip canonically.
+	// A tight authored comma (`[T,E]`) canonicalizes to the spaced form.
+	source := "enum Option[T] { Some(T), None }\n\nenum Result[T,E] { Ok(T), Err(E) }\n\ndata Ref[T] { id: Id }\n\ndata Pair[K, V] { k: K, v: V }\n\n@doc(\"a view subtree\")\nextern type View[Msg]\n"
+	expected := "enum Option[T] { Some(T), None }\n\nenum Result[T, E] { Ok(T), Err(E) }\n\ndata Ref[T] { id: Id }\n\ndata Pair[K, V] { k: K, v: V }\n\n@doc(\"a view subtree\")\nextern type View[Msg]\n"
+	expect_canonical(t, source, expected)
+}
+
+@(test)
 test_fmt_behavior_and_holed_step :: proc(t: ^testing.T) {
 	source := "behavior paddle_move on Paddle {\n  fn step(self: Paddle, input: Input, time: Time) -> Paddle {\n    let dir = input.value(self.player, Steer::Move)\n    return self with { y: clamp(self.y + dir * self.speed * time.dt, 0.0, BOARD.h) }\n  }\n}\n\nbehavior idle on Ball {\n  fn step(self: Ball) -> Ball @stub(Ball)\n}\n"
 	expected := source
@@ -350,6 +362,10 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if decl.name != other.name || decl.kind != other.kind || !field_decls_equiv(decl.fields, other.fields) {
 			return false
 		}
+		// The §03 §3 generic header's parameter names are AST content.
+		if !string_slice_equal(decl.type_params, other.type_params) {
+			return false
+		}
 		if !migrate_equiv(decl.migrate, decl.has_migrate, other.migrate, other.has_migrate) {
 			return false
 		}
@@ -360,6 +376,10 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 	for decl, i in a.enums {
 		other := b.enums[i]
 		if decl.name != other.name || decl.kind != other.kind || len(decl.variants) != len(other.variants) {
+			return false
+		}
+		// The §03 §3 generic header's parameter names are AST content.
+		if !string_slice_equal(decl.type_params, other.type_params) {
 			return false
 		}
 		for variant, j in decl.variants {
@@ -458,10 +478,11 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		}
 	}
 	for decl, i in a.extern_types {
-		// An opaque type is its name plus the shared directive surface (§26 §2)
-		// — there is no field or body content to compare.
+		// An opaque type is its name, its §03 §3 generic header, and the shared
+		// directive surface (§26 §2) — there is no field or body content to
+		// compare.
 		other := b.extern_types[i]
-		if decl.name != other.name {
+		if decl.name != other.name || !string_slice_equal(decl.type_params, other.type_params) {
 			return false
 		}
 		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
