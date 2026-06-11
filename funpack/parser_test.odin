@@ -2192,13 +2192,12 @@ test_parse_malformed_fn_type_rejected :: proc(t: ^testing.T) {
 @(test)
 test_parse_fn_keyword_param_name_rejected :: proc(t: ^testing.T) {
 	// `fn` stays a RESERVED keyword in value-name position (fun.ll1.md §2;
-	// fun.ebnf §7: Param ::= LOWER_IDENT ':' Type admits no keyword) — so the
-	// stdlib grid.fun spelling `fn: fn(Int, Int) -> Cell` is FAIL-CLOSED: the
-	// fn-type production does not smuggle the keyword into the identifier
-	// namespace. This pins the deliberate reading of the grid.fun/grammar
-	// contradiction (grid.fun names a parameter with a reserved keyword; §18
-	// itself calls that 3-arg mapper form non-idiomatic) — resolving it is a
-	// spec-side change, not a parser carve-out.
+	// fun.ebnf §7: Param ::= LOWER_IDENT ':' Type admits no keyword) — so a
+	// `fn: fn(Int, Int) -> Cell` parameter is FAIL-CLOSED: the fn-type
+	// production does not smuggle the keyword into the identifier namespace.
+	// A spec file carrying this spelling is fixed spec-side (grid.fun's
+	// parameter is named `builder`), never by a parser carve-out; this pin
+	// keeps the keyword reserved.
 	_, err := stage_parse(stage_lex("extern fn grid_cells(w: Int, h: Int, fn: fn(Int, Int) -> Cell) -> [Cell]\n"))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
 }

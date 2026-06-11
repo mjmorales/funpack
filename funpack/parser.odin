@@ -1990,9 +1990,9 @@ parse_tuple_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 // missing `)`/comma between parameters, a missing `->` — is the named
 // Malformed_Fn_Type verdict (the Malformed_Type_Params mold); an element
 // type's own errors keep their verdicts. NOTE: `fn` stays a RESERVED keyword
-// everywhere else (fun.ll1.md §2) — a parameter NAMED `fn` (stdlib grid.fun's
-// `fn: fn(Int, Int) -> Cell`) is still rejected by parse_param_list, since
-// Param ::= LOWER_IDENT ':' Type admits no keyword in name position.
+// everywhere else (fun.ll1.md §2) — a parameter NAMED `fn` is rejected by
+// parse_param_list, since Param ::= LOWER_IDENT ':' Type admits no keyword
+// in name position.
 parse_fn_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 	expect(p, .Fn) or_return
 	if peek_kind(p) != .L_Paren {
