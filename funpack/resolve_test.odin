@@ -192,3 +192,76 @@ stage_typecheck_source :: proc(source: string) -> (typed: Typed_Ast, err: Type_E
 	}
 	return stage_typecheck(ast)
 }
+
+@(test)
+test_fn_typed_param_signature_resolves_and_checks_lambda :: proc(t: ^testing.T) {
+	// A declared fn-typed parameter (spec §02 §3: `f: fn(Int) -> Int`)
+	// resolves to a real Func_Type row (resolve_type_ref's "fn" arm), and a
+	// literal lambda argument checks against it through the combinator
+	// inference mold (check_args → combinator_check): the lambda's parameter
+	// infers as Int and its body must yield the declared Int result. The
+	// whole call then types as the extern's declared result.
+	source := "extern fn apply(x: Int, f: fn(Int) -> Int) -> Int\n" +
+		"test \"x\" {\n\tassert apply(1, fn(n) { return n + 1 }) == 2\n}\n"
+	_, err := stage_typecheck_source(source)
+	testing.expect_value(t, err, Type_Error.None)
+}
+
+@(test)
+test_fn_typed_param_rejects_wrong_lambda :: proc(t: ^testing.T) {
+	// The declared row is enforced, not advisory: a lambda whose body yields
+	// Bool against a declared `fn(Int) -> Int`, and a lambda of the wrong
+	// arity, both reject as Type_Mismatch — the same verdicts the stdlib
+	// combinators give their function arguments.
+	wrong_result := "extern fn apply(x: Int, f: fn(Int) -> Int) -> Int\n" +
+		"test \"x\" {\n\tassert apply(1, fn(n) { return n == 1 }) == 2\n}\n"
+	_, result_err := stage_typecheck_source(wrong_result)
+	testing.expect_value(t, result_err, Type_Error.Type_Mismatch)
+	wrong_arity := "extern fn apply(x: Int, f: fn(Int) -> Int) -> Int\n" +
+		"test \"x\" {\n\tassert apply(1, fn(a, b) { return a }) == 2\n}\n"
+	_, arity_err := stage_typecheck_source(wrong_arity)
+	testing.expect_value(t, arity_err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_fn_typed_param_accepts_bare_fn_value :: proc(t: ^testing.T) {
+	// A bare user-fn name argument types as its recorded signature (the
+	// function-value form fold's accumulator already takes), so it checks
+	// structurally against the declared fn-typed parameter: a matching
+	// signature is admitted, a result-mismatched one rejects.
+	matching := "extern fn apply(x: Int, f: fn(Int) -> Int) -> Int\n" +
+		"fn helper(n: Int) -> Int {\n\treturn n\n}\n" +
+		"test \"x\" {\n\tassert apply(1, helper) == 1\n}\n"
+	_, match_err := stage_typecheck_source(matching)
+	testing.expect_value(t, match_err, Type_Error.None)
+	mismatched := "extern fn apply(x: Int, f: fn(Int) -> Int) -> Int\n" +
+		"fn is_one(n: Int) -> Bool {\n\treturn n == 1\n}\n" +
+		"test \"x\" {\n\tassert apply(1, is_one) == 1\n}\n"
+	_, mismatch_err := stage_typecheck_source(mismatched)
+	testing.expect_value(t, mismatch_err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_fn_typed_param_invocation_stays_fail_closed :: proc(t: ^testing.T) {
+	// The DEPTH decision pinned: a fn-typed parameter's SIGNATURE resolves and
+	// call sites check lambda arguments against it, but INVOKING the bound fn
+	// value inside the body stays the fail-closed Unsupported_Expr arm
+	// (call_check) — a first-class fn value has no runtime representation, and
+	// funpack does not grammar-include what it cannot run. Lifting this is the
+	// first-class-fn-values story.
+	source := "fn twice(x: Int, f: fn(Int) -> Int) -> Int {\n\treturn f(x)\n}\n"
+	_, err := stage_typecheck_source(source)
+	testing.expect_value(t, err, Type_Error.Unsupported_Expr)
+}
+
+@(test)
+test_fn_typed_query_param_rejected_by_value_domain :: proc(t: ^testing.T) {
+	// The §08 §3 query value-param-only gate already names ^Func_Type as
+	// outside the value domain (type_outside_value_domain); now that a
+	// fn-typed parameter PARSES and resolves to a real Func_Type, a query
+	// declaring one lands that named verdict — the resolve arm feeds the
+	// existing gate, no new diagnostic.
+	source := "query bad(pred: fn(Int) -> Bool) -> Int {\n\treturn 1\n}\n"
+	_, err := stage_typecheck_source(source)
+	testing.expect_value(t, err, Type_Error.Query_Param_Not_Value)
+}

@@ -115,6 +115,19 @@ test_fmt_generic_declaration_headers :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fmt_fn_typed_parameters :: proc(t: ^testing.T) {
+	// The §02 §3 function type (fun.ebnf §11 FnType) renders comma-space
+	// separated with the spaced `-> R` — the same spelling fmt_signature gives
+	// a declared signature — wherever a Type stands: a parameter annotation
+	// (the stdlib list.fun combinator signatures), a zero-parameter form, a
+	// generic argument, and a return position. A tight authored spelling
+	// (`fn(A,T)->A`) canonicalizes to the spaced form and round-trips.
+	source := "extern fn find(self: [T], pred: fn(T) -> Bool) -> Option[T]\n\nextern fn fold(self: [T], init: A, step: fn(A,T)->A) -> A\n\nextern fn thunk(supplier: fn() -> Int) -> Int\n\nextern fn pick(opts: Option[fn(T) -> Bool]) -> Bool\n\nextern fn make() -> fn(Int) -> Int\n"
+	expected := "extern fn find(self: [T], pred: fn(T) -> Bool) -> Option[T]\n\nextern fn fold(self: [T], init: A, step: fn(A, T) -> A) -> A\n\nextern fn thunk(supplier: fn() -> Int) -> Int\n\nextern fn pick(opts: Option[fn(T) -> Bool]) -> Bool\n\nextern fn make() -> fn(Int) -> Int\n"
+	expect_canonical(t, source, expected)
+}
+
+@(test)
 test_fmt_behavior_and_holed_step :: proc(t: ^testing.T) {
 	source := "behavior paddle_move on Paddle {\n  fn step(self: Paddle, input: Input, time: Time) -> Paddle {\n    let dir = input.value(self.player, Steer::Move)\n    return self with { y: clamp(self.y + dir * self.speed * time.dt, 0.0, BOARD.h) }\n  }\n}\n\nbehavior idle on Ball {\n  fn step(self: Ball) -> Ball @stub(Ball)\n}\n"
 	expected := source

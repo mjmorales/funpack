@@ -520,8 +520,9 @@ binary_op_name :: proc(op: Token) -> string {
 
 // type_ref_string renders a syntactic Type_Ref to its SPACE-FREE artifact
 // spelling (docs/artifact-format.md §2.6, §6, §9): a bare name (`Fixed`), a list
-// `[T]`, a tuple `(T,U)`, or a generic application `Ctor[Arg,…]` (`View[Paddle]`,
-// `Option[Side]`). Every form is one whitespace-free token because the §9
+// `[T]`, a tuple `(T,U)`, a function type `fn(T)->Bool`, or a generic
+// application `Ctor[Arg,…]` (`View[Paddle]`, `Option[Side]`). Every form is one
+// whitespace-free token because the §9
 // `function NAME KIND param_count return:TYPE body_count …` record (and the §6
 // `field` line) is whitespace-DELIMITED and reads TYPE at one position — an
 // interior space would split the token and shift every later field. So the tuple
@@ -533,6 +534,25 @@ type_ref_string :: proc(ref: Type_Ref) -> string {
 			return strings.concatenate({"[", type_ref_string(ref.args[0]), "]"}, context.temp_allocator)
 		}
 		return "[]"
+	}
+	if ref.name == "fn" && len(ref.args) > 0 {
+		// A function type's parameters comma-join with NO interior space and the
+		// result follows a TIGHT `->` (`fn(Int,Int)->Cell`), so the whole §02 §3
+		// FnType stays one whitespace-free artifact token like the tuple below.
+		// The last Type_Ref arg is always the result (parser.odin
+		// parse_fn_type_ref); a parser-built "fn" head always carries it, so the
+		// arity guard only mirrors the "[]" head's defensiveness above.
+		b := strings.builder_make(context.temp_allocator)
+		strings.write_string(&b, "fn(")
+		for arg, i in ref.args[:len(ref.args)-1] {
+			if i > 0 {
+				strings.write_byte(&b, ',')
+			}
+			strings.write_string(&b, type_ref_string(arg))
+		}
+		strings.write_string(&b, ")->")
+		strings.write_string(&b, type_ref_string(ref.args[len(ref.args)-1]))
+		return strings.to_string(b)
 	}
 	if ref.name == "()" {
 		// A tuple type is the §04 §1 return pair `(T,U,…)` — its positional element

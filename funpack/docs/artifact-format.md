@@ -471,7 +471,9 @@ migrate FROM WITH               # v8, only after a @migrate-prefixed field
 
 - `mut` is `true` when the type was declared `mut data` (§03 §7), else `false`.
 - `field` records carry: the field `NAME`, its `TYPE` (a name; a generic is
-  written `Ctor[Arg]`, e.g. `Ref[Switch]`, `[Goal]` for a list), and `DEFAULT`.
+  written `Ctor[Arg]`, e.g. `Ref[Switch]`, `[Goal]` for a list; a §02 §3
+  function type is space-free with a tight arrow, `fn(Int)->Bool`), and
+  `DEFAULT`.
 - `DEFAULT` is `-` when the field has no default (it must be supplied at every
   literal), or `=ENCODED` where `ENCODED` is the default value in this format's
   primitive encoding. A defaulted field may be omitted from a literal (§03 §1), so

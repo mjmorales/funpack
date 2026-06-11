@@ -683,13 +683,27 @@ fmt_write_indent :: proc(b: ^strings.Builder, indent: int) {
 // ── types ────────────────────────────────────────────────────────────────
 
 // fmt_type_ref writes a syntactic type: bare `Fixed`, generic `View[Paddle]`,
-// list `[Goal]` (the "[]" head), or tuple `(Rng, [Spawn])` (the "()" head).
+// list `[Goal]` (the "[]" head), tuple `(Rng, [Spawn])` (the "()" head), or
+// function type `fn(T) -> Bool` (the "fn" head, whose last arg is the result).
 fmt_type_ref :: proc(b: ^strings.Builder, type: Type_Ref) {
 	switch type.name {
 	case "[]":
 		strings.write_string(b, "[")
 		fmt_type_ref(b, type.args[0])
 		strings.write_string(b, "]")
+	case "fn":
+		// The §02 §3 FnType: comma-space separated parameters, then the
+		// spaced `-> R` — the same spelling fmt_signature gives a declared
+		// signature, so a declared and a parameter-position fn project alike.
+		strings.write_string(b, "fn(")
+		for arg, i in type.args[:len(type.args)-1] {
+			if i > 0 {
+				strings.write_string(b, ", ")
+			}
+			fmt_type_ref(b, arg)
+		}
+		strings.write_string(b, ") -> ")
+		fmt_type_ref(b, type.args[len(type.args)-1])
 	case "()":
 		strings.write_string(b, "(")
 		for arg, i in type.args {

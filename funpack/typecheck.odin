@@ -1434,8 +1434,14 @@ call_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 		return nil, .Unsupported_Expr
 	}
 	if _, let_bound := ctx.scope[name.name]; let_bound {
-		// Calling a let/param-bound lambda value waits on combinator
-		// inference — the placeholder Func carries no signature to check.
+		// Calling a let/param-bound fn value stays fail-closed even when the
+		// binding carries a REAL declared signature (a §02 §3 fn-typed
+		// parameter now resolves to a Func_Type with a row): admitting the
+		// call would type-admit an invocation the evaluator cannot run — a
+		// first-class fn value has no runtime representation — violating
+		// "funpack does not grammar-include what it cannot run". Pinned by
+		// fixture; lifting it is the first-class-fn-values story, not a
+		// signature-resolution concern.
 		return nil, .Unsupported_Expr
 	}
 	// A call to a user-declared fn or query checks its arguments against the
@@ -2062,6 +2068,20 @@ check_args :: proc(ctx: Check_Ctx, e: ^Call_Expr, signature: []Type) -> Type_Err
 		return .Type_Mismatch
 	}
 	for want, i in signature {
+		// A declared fn-typed parameter (spec §02 §3: `pred: fn(T) -> Bool`)
+		// checks a literal lambda argument through the combinator inference
+		// mold: the lambda's parameters infer from the declared row and its
+		// body must yield the declared result — exactly how the stdlib
+		// combinators check theirs (combinator_check). Only a REAL declared
+		// signature routes here (nil params is the opaque placeholder, which
+		// has no row to infer from); a non-lambda argument keeps the
+		// structural judgment below.
+		if func, is_func := want.(^Func_Type); is_func && func.params != nil {
+			if _, is_lambda := e.args[i].(^Lambda_Expr); is_lambda {
+				combinator_check(ctx, e.args[i], func.params, func.result) or_return
+				continue
+			}
+		}
 		got := expr_check(ctx, e.args[i]) or_return
 		if !types_compatible(got, want) {
 			return .Type_Mismatch

@@ -370,6 +370,24 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref, index
 		}
 		return nil
 	}
+	// A function type `fn(P, …) -> R` is the head "fn" whose args are the
+	// parameter types followed by the result (parser.odin parse_fn_type_ref:
+	// the LAST arg is always the result). It resolves to the checker's
+	// Func_Type, so a declared fn-typed parameter (`pred: fn(T) -> Bool`,
+	// spec §02 §3) carries a real signature the call-site lambda check reads
+	// (typecheck.odin check_args). An unresolvable position — a stdlib type
+	// variable like T — stays nil and unifies, like every other ref.
+	if ref.name == "fn" {
+		if len(ref.args) == 0 {
+			return nil
+		}
+		param_count := len(ref.args) - 1
+		params := make([]Type, param_count, context.temp_allocator)
+		for arg, i in ref.args[:param_count] {
+			params[i] = resolve_type_ref(env, bindings, arg, index)
+		}
+		return func_of(params, resolve_type_ref(env, bindings, ref.args[param_count], index))
+	}
 	// A tuple type `(T, U, …)` is the head "()" with its positional element
 	// types as args (spec §04 §1: the `(value, next_rng)` return pair). Each
 	// position resolves like any other ref; the tuple node carries them in order.

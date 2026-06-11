@@ -242,10 +242,11 @@ variants_unexposed_ref :: proc(
 }
 
 // type_ref_unexposed walks one syntactic Type_Ref — head first, then its
-// generic/list/tuple arguments in order — for the first name that resolves to
-// a non-@expose'd user type. The structural heads "[]" (list) and "()" (tuple)
-// and the zero-value "" head carry no name to check; their element types still
-// walk, so `[Cube]` and `(Rng, Cube)` reach an unexposed Cube.
+// generic/list/tuple/fn arguments in order — for the first name that resolves
+// to a non-@expose'd user type. The structural heads "[]" (list), "()"
+// (tuple), and "fn" (function type) and the zero-value "" head carry no name
+// to check; their element types still walk, so `[Cube]`, `(Rng, Cube)`, and
+// `fn(Cube) -> Bool` reach an unexposed Cube.
 type_ref_unexposed :: proc(
 	ref: Type_Ref,
 	local: map[string]bool,
@@ -255,7 +256,7 @@ type_ref_unexposed :: proc(
 	type_name: string,
 	open: bool,
 ) {
-	if ref.name != "" && ref.name != "[]" && ref.name != "()" {
+	if ref.name != "" && ref.name != "[]" && ref.name != "()" && ref.name != "fn" {
 		if name_unexposed_user_type(ref.name, local, bindings, index) {
 			return ref.name, true
 		}

@@ -1981,3 +1981,103 @@ test_parse_malformed_type_params_rejected :: proc(t: ^testing.T) {
 	_, case_err := stage_parse(stage_lex("enum Option[t] { None }\n"))
 	testing.expect_value(t, case_err, Parse_Error.Wrong_Case)
 }
+
+@(test)
+test_parse_fn_type_param :: proc(t: ^testing.T) {
+	// The §02 §3 function type in parameter position (fun.ebnf §11: FnType ::=
+	// 'fn' '(' (Type (',' Type)*)? ')' '->' Type) — the stdlib list.fun
+	// combinator signatures. The head is "fn"; the args are the parameter
+	// types followed by the result (the LAST arg is always the result).
+	source := "extern fn find(self: [T], pred: fn(T) -> Bool) -> Option[T]\nextern fn fold(self: [T], init: A, step: fn(A, T) -> A) -> A\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.fns), 2)
+	if len(ast.fns) != 2 {
+		return
+	}
+	pred := ast.fns[0].params[1].type
+	testing.expect_value(t, pred.name, "fn")
+	testing.expect_value(t, len(pred.args), 2)
+	if len(pred.args) == 2 {
+		testing.expect_value(t, pred.args[0].name, "T")
+		testing.expect_value(t, pred.args[1].name, "Bool")
+	}
+	step := ast.fns[1].params[2].type
+	testing.expect_value(t, step.name, "fn")
+	testing.expect_value(t, len(step.args), 3)
+	if len(step.args) == 3 {
+		testing.expect_value(t, step.args[0].name, "A")
+		testing.expect_value(t, step.args[1].name, "T")
+		testing.expect_value(t, step.args[2].name, "A")
+	}
+}
+
+@(test)
+test_parse_fn_type_general_type_position :: proc(t: ^testing.T) {
+	// The grammar admits FnType wherever a Type stands (fun.ll1.md §3:
+	// FIRST(Type) = { Ʉ, '[', fn }), not just in parameter position: a
+	// zero-parameter form, a return position, a generic argument, a list
+	// element, and a nested fn-typed result all parse.
+	source := "extern fn thunk(supplier: fn() -> Int) -> Int\nextern fn make() -> fn(Int) -> Int\nextern fn pick(opts: Option[fn(T) -> Bool]) -> Bool\nextern fn many(steps: [fn(Int) -> Int]) -> Int\nextern fn curry(f: fn(Int) -> fn(Int) -> Int) -> Int\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.fns), 5)
+	if len(ast.fns) != 5 {
+		return
+	}
+	// fn() -> Int: a zero-parameter function type carries exactly one arg —
+	// its result.
+	thunk := ast.fns[0].params[0].type
+	testing.expect_value(t, thunk.name, "fn")
+	testing.expect_value(t, len(thunk.args), 1)
+	// Return position.
+	testing.expect_value(t, ast.fns[1].return_type.name, "fn")
+	// Generic argument and list element keep their heads; the fn rides inside.
+	testing.expect_value(t, ast.fns[2].params[0].type.name, "Option")
+	testing.expect_value(t, ast.fns[2].params[0].type.args[0].name, "fn")
+	testing.expect_value(t, ast.fns[3].params[0].type.name, "[]")
+	testing.expect_value(t, ast.fns[3].params[0].type.args[0].name, "fn")
+	// A nested fn-typed result: the outer "fn"'s last arg is itself "fn".
+	curry := ast.fns[4].params[0].type
+	testing.expect_value(t, curry.name, "fn")
+	testing.expect_value(t, len(curry.args), 2)
+	if len(curry.args) == 2 {
+		testing.expect_value(t, curry.args[1].name, "fn")
+	}
+}
+
+@(test)
+test_parse_malformed_fn_type_rejected :: proc(t: ^testing.T) {
+	// A mis-shaped §02 §3 function type is the named Malformed_Fn_Type verdict
+	// (fun.ebnf §11; the Malformed_Type_Params mold): a missing `(` after
+	// `fn`, a missing `->` before the result, a trailing comma, a missing
+	// comma between parameters, and a never-closed parameter list. An element
+	// type's OWN errors keep their verdicts — a lowercase parameter type stays
+	// the parser-wide Wrong_Case.
+	_, no_parens_err := stage_parse(stage_lex("extern fn f(g: fn Int -> Int) -> Int\n"))
+	testing.expect_value(t, no_parens_err, Parse_Error.Malformed_Fn_Type)
+	_, no_arrow_err := stage_parse(stage_lex("extern fn f(g: fn(Int) Int) -> Int\n"))
+	testing.expect_value(t, no_arrow_err, Parse_Error.Malformed_Fn_Type)
+	_, trailing_err := stage_parse(stage_lex("extern fn f(g: fn(Int,) -> Int) -> Int\n"))
+	testing.expect_value(t, trailing_err, Parse_Error.Malformed_Fn_Type)
+	_, missing_comma_err := stage_parse(stage_lex("extern fn f(g: fn(Int Int) -> Int) -> Int\n"))
+	testing.expect_value(t, missing_comma_err, Parse_Error.Malformed_Fn_Type)
+	_, unclosed_err := stage_parse(stage_lex("extern fn f(g: fn(Int -> Int) -> Int\n"))
+	testing.expect_value(t, unclosed_err, Parse_Error.Malformed_Fn_Type)
+	_, case_err := stage_parse(stage_lex("extern fn f(g: fn(int) -> Int) -> Int\n"))
+	testing.expect_value(t, case_err, Parse_Error.Wrong_Case)
+}
+
+@(test)
+test_parse_fn_keyword_param_name_rejected :: proc(t: ^testing.T) {
+	// `fn` stays a RESERVED keyword in value-name position (fun.ll1.md §2;
+	// fun.ebnf §7: Param ::= LOWER_IDENT ':' Type admits no keyword) — so the
+	// stdlib grid.fun spelling `fn: fn(Int, Int) -> Cell` is FAIL-CLOSED: the
+	// fn-type production does not smuggle the keyword into the identifier
+	// namespace. This pins the deliberate reading of the grid.fun/grammar
+	// contradiction (grid.fun names a parameter with a reserved keyword; §18
+	// itself calls that 3-arg mapper form non-idiomatic) — resolving it is a
+	// spec-side change, not a parser carve-out.
+	_, err := stage_parse(stage_lex("extern fn grid_cells(w: Int, h: Int, fn: fn(Int, Int) -> Cell) -> [Cell]\n"))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}

@@ -60,16 +60,20 @@ Test_Node :: struct {
 
 // Type_Ref is the parse-only syntactic type the declaration grammar
 // records: a bare name (`Fixed`, `Side`), a generic application
-// (`View[Paddle]`, `Option[Side]`), a list (`[Goal]`, `[Spawn]`), or a tuple
-// (`(Rng, [Spawn])` — the §04 §1 `(value, next_rng)` return pair). It is
-// purely structural — no resolution to the checker's semantic Type
-// (type.odin) happens here; that is the resolve stage's job. A list is
-// modeled as the head "[]" with one argument and a tuple as the head "()"
-// with its positional element types as args, so every parameterized form
-// shares one node shape.
+// (`View[Paddle]`, `Option[Side]`), a list (`[Goal]`, `[Spawn]`), a tuple
+// (`(Rng, [Spawn])` — the §04 §1 `(value, next_rng)` return pair), or a
+// function type (`fn(T) -> Bool` — the §02 §3 FnType a combinator parameter
+// declares). It is purely structural — no resolution to the checker's
+// semantic Type (type.odin) happens here; that is the resolve stage's job. A
+// list is modeled as the head "[]" with one argument, a tuple as the head
+// "()" with its positional element types as args, and a function type as the
+// head "fn" whose args are the parameter types followed by the result — the
+// LAST arg is always the result, so `fn() -> R` has exactly one arg. Every
+// parameterized form thus shares one node shape; the sentinel heads can
+// never collide with a declared name (type names are UPPER_IDENT).
 Type_Ref :: struct {
-	name: string,     // the head name; "[]" for a list `[T]`, "()" for a tuple `(T, …)`
-	args: []Type_Ref, // generic / list / tuple element arguments; empty for a bare name
+	name: string,     // the head name; "[]" list, "()" tuple, "fn" function type
+	args: []Type_Ref, // generic / list / tuple / fn arguments; empty for a bare name
 }
 
 // Field_Decl is one `name: Type` (or `name: Type = default`) entry in a
@@ -465,6 +469,7 @@ Parse_Error :: enum {
 	Expose_Unexpected_Arg, // an @expose carrying an argument — @expose is bare (lexical-core §5; spec §05 §4: it publishes the declaration it prefixes, there is no value to name), the @trace mold
 	Malformed_Extern,      // an `extern` prefixing neither `fn` nor `type` — the §02 §7 extern family is closed (fun.ebnf §8: ExternDecl ::= 'extern' (ExternFn | ExternType)), so a stray `extern data …` is a named malformed-extern verdict, never a generic token error
 	Malformed_Type_Params, // a §03 §3 generic declaration header whose `[…]` matches none of the TypeParams forms (fun.ebnf §4: '[' UPPER_IDENT (',' UPPER_IDENT)* ']') — empty brackets, a non-identifier parameter, a trailing comma, or a missing `]` between parameters; the one casing-class deviation (a lowercase parameter name) keeps the parser-wide Wrong_Case verdict, the Malformed_Index_Path mold
+	Malformed_Fn_Type,     // a §02 §3 function type whose shape matches none of the FnType form (fun.ebnf §11: 'fn' '(' (Type (',' Type)*)? ')' '->' Type) — a missing `(` after `fn`, a trailing comma or non-type parameter, a missing `)`/comma between parameters, or a missing `->` before the result; an element type's OWN errors keep their verdicts (a lowercase name stays Wrong_Case), the Malformed_Type_Params mold
 }
 
 Parser :: struct {
@@ -1841,10 +1846,13 @@ parse_behavior_list :: proc(p: ^Parser) -> (names: []string, err: Parse_Error) {
 
 // parse_type_ref parses a syntactic type (spec §02 §3): a bare name
 // (`Fixed`), a generic application (`View[Paddle]`, `Option[Side]`), a list
-// (`[Goal]`), or a tuple (`(Rng, [Spawn])` — the §04 §1 return pair). A list
-// is recorded as the head "[]" with one argument and a tuple as the head "()"
-// with its positional element types as args, so every parameterized form
-// shares one node shape. This is parse-only — no resolution to a checker Type.
+// (`[Goal]`), a tuple (`(Rng, [Spawn])` — the §04 §1 return pair), or a
+// function type (`fn(T) -> Bool`). A list is recorded as the head "[]" with
+// one argument, a tuple as the head "()" with its positional element types as
+// args, and a function type as the head "fn" with its parameter types then
+// its result as args, so every parameterized form shares one node shape. The
+// selecting token is single and disjoint (fun.ll1.md §3: FIRST(Type) = { Ʉ,
+// '[', fn }). This is parse-only — no resolution to a checker Type.
 parse_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 	if peek_kind(p) == .L_Bracket {
 		// List type `[T]` — the head is "[]" with the element as its arg.
@@ -1857,6 +1865,9 @@ parse_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 	}
 	if peek_kind(p) == .L_Paren {
 		return parse_tuple_type_ref(p)
+	}
+	if peek_kind(p) == .Fn {
+		return parse_fn_type_ref(p)
 	}
 	name := expect(p, .Ident) or_return
 	// Type names are UPPER_IDENT (spec §02; lexical-core.ebnf §2); the
@@ -1904,6 +1915,75 @@ parse_tuple_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 	}
 	expect(p, .R_Paren) or_return
 	return Type_Ref{name = "()", args = args[:]}, .None
+}
+
+// parse_fn_type_ref parses a function type `fn(T, …) -> R` after the `fn` is
+// the peeked head (spec §02 §3; fun.ebnf §11: FnType ::= 'fn' '(' (Type (','
+// Type)*)? ')' '->' Type — the type a combinator parameter declares, `pred:
+// fn(T) -> Bool`). It is recorded as the head "fn" whose args are the
+// parameter types followed by the result — the LAST arg is always the result,
+// so a zero-parameter `fn() -> R` carries exactly one arg — mirroring the
+// list/tuple sentinel heads so a function type stays one node shape. A
+// mis-shaped form — a missing `(`, a trailing comma or non-type parameter, a
+// missing `)`/comma between parameters, a missing `->` — is the named
+// Malformed_Fn_Type verdict (the Malformed_Type_Params mold); an element
+// type's own errors keep their verdicts. NOTE: `fn` stays a RESERVED keyword
+// everywhere else (fun.ll1.md §2) — a parameter NAMED `fn` (stdlib grid.fun's
+// `fn: fn(Int, Int) -> Cell`) is still rejected by parse_param_list, since
+// Param ::= LOWER_IDENT ':' Type admits no keyword in name position.
+parse_fn_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
+	expect(p, .Fn) or_return
+	if peek_kind(p) != .L_Paren {
+		// `fn T -> R` / a bare `fn` — the parameter parens are mandatory.
+		return type, .Malformed_Fn_Type
+	}
+	p.pos += 1
+	args := make([dynamic]Type_Ref, 0, 4, context.temp_allocator)
+	if peek_kind(p) != .R_Paren {
+		for {
+			if !type_ref_ahead(p) {
+				// A trailing comma (`fn(T,) -> R`) or a non-type token where a
+				// parameter type belongs — the grammar requires a Type after `(`
+				// and after every comma.
+				return type, .Malformed_Fn_Type
+			}
+			arg := parse_type_ref(p) or_return
+			append(&args, arg)
+			if peek_kind(p) == .Comma {
+				p.pos += 1
+				continue
+			}
+			break
+		}
+	}
+	if peek_kind(p) != .R_Paren {
+		// `fn(T U) -> R` / `fn(T -> R` — parameters are comma-separated and
+		// nothing else stands between the last parameter and the closer.
+		return type, .Malformed_Fn_Type
+	}
+	p.pos += 1
+	if peek_kind(p) != .Arrow {
+		// `fn(T) Bool` — the result arrow is mandatory (a function type always
+		// names its result).
+		return type, .Malformed_Fn_Type
+	}
+	p.pos += 1
+	result := parse_type_ref(p) or_return
+	append(&args, result)
+	return Type_Ref{name = "fn", args = args[:]}, .None
+}
+
+// type_ref_ahead reports whether the next token can open a syntactic type —
+// FIRST(Type) plus the tuple `(` parse_type_ref also admits (fun.ll1.md §3:
+// FIRST(ReturnType) = { Ʉ, '[', fn, '(' }). Used by parse_fn_type_ref to give
+// a mis-placed parameter the named Malformed_Fn_Type verdict instead of the
+// generic token error parse_type_ref would raise.
+type_ref_ahead :: proc(p: ^Parser) -> bool {
+	#partial switch peek_kind(p) {
+	case .Ident, .L_Bracket, .L_Paren, .Fn:
+		return true
+	}
+	return false
 }
 
 // expect_type_name consumes an UpperCamel type name — the declared name of
