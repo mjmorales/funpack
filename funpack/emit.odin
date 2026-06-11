@@ -49,6 +49,13 @@ Emit_Input :: struct {
 	// game, which moves by the version stamp plus the constant `[tilemaps 0]`
 	// tail alone.
 	tilemaps:     []Baked_Tile_Layer,
+	// nav_graphs are the §12 §1 nav graphs the [nav] section carries
+	// (docs/artifact-format.md §18, schema v13) — one flat walkable-cell graph
+	// per baked tile layer (bake_tree_nav_graphs), in the SAME slice order as
+	// tilemaps, so the [nav] section mirrors [tilemaps]. The build verb derives
+	// them from the same baked layers; empty for a level-less game (the constant
+	// `[nav 0]` tail).
+	nav_graphs:   []Baked_Nav_Graph,
 }
 
 // Emit_Error distinguishes the ways emission can refuse before it writes bytes:
@@ -90,7 +97,7 @@ stage_emit :: proc(
 	entrypoint_fcfg: string,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
-	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, nil, allocator)
+	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, nil, nil, allocator)
 }
 
 // stage_emit_indexed is the source → artifact seam typed against a project-wide
@@ -113,9 +120,10 @@ stage_emit :: proc(
 //
 // tilemaps are the tree's §18 §3 baked tile layers (the levels/*.flvl bake the
 // build verb runs — bake_tree_tile_layers) threaded through to the artifact's
-// [tilemaps] section. Like every other input they are a pure function of the
-// tree, so emission stays pure; nil is the level-less default (the constant
-// `[tilemaps 0]` tail).
+// [tilemaps] section. nav_graphs are the §12 §1 nav graphs derived from those
+// same layers (bake_tree_nav_graphs) threaded through to the [nav] section. Like
+// every other input they are a pure function of the tree, so emission stays pure;
+// nil is the level-less default (the constant `[tilemaps 0]` / `[nav 0]` tails).
 stage_emit_indexed :: proc(
 	source: string,
 	module: string,
@@ -124,6 +132,7 @@ stage_emit_indexed :: proc(
 	index: Module_Index,
 	module_asts: map[string]Ast,
 	tilemaps: []Baked_Tile_Layer = nil,
+	nav_graphs: []Baked_Nav_Graph = nil,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -163,6 +172,7 @@ stage_emit_indexed :: proc(
 		entrypoint   = entrypoint,
 		imported_fns = collect_imported_fn_records(ast, module_asts),
 		tilemaps     = tilemaps,
+		nav_graphs   = nav_graphs,
 	}
 	return emit_artifact(input, allocator), .None
 }
@@ -192,6 +202,7 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_entrypoint(&b, input.entrypoint)
 	emit_queries(&b, input.ast, input.module)
 	emit_tilemaps(&b, input.tilemaps)
+	emit_navs(&b, input.nav_graphs)
 
 	return strings.to_string(b)
 }
@@ -1310,6 +1321,43 @@ emit_tilemaps :: proc(b: ^strings.Builder, layers: []Baked_Tile_Layer) {
 					strings.write_int(b, cell)
 				}
 			}
+			emit_line(b, "")
+		}
+	}
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// [nav] — the §12 §1 nav graphs (docs/artifact-format.md §18, schema v13)
+// ───────────────────────────────────────────────────────────────────────────
+
+// emit_navs writes one record per derived nav graph in the same slice order as
+// [tilemaps] (schema v13): the lead line `nav NAME NODE_COUNT EDGE_COUNT` — NO
+// grid metadata, because §12 §5 forbids exposing the Cell index, so the artifact
+// leaks no col/row — then NODE_COUNT `navnode FIXED_X FIXED_Y` lines (each a
+// walkable cell's world-space CENTER as two raw Q32.32 Fixed, the v12 anchor
+// encoding, in ROW-MAJOR order so the line position IS the node index), then
+// EDGE_COUNT `navedge A B` lines (the 4-neighbor orthogonal adjacencies, deduped
+// to right/down with `A < B` canonical, in ascending (A, B) order). Every walk is
+// slice-order over the baked model, so two emissions are byte-identical. A
+// level-less game has no graphs, so this writes the constant `[nav 0]` tail.
+emit_navs :: proc(b: ^strings.Builder, graphs: []Baked_Nav_Graph) {
+	emit_header(b, "nav", len(graphs))
+	for graph in graphs {
+		strings.write_string(b, "nav ")
+		strings.write_string(b, graph.name)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, len(graph.nodes))
+		strings.write_byte(b, ' ')
+		strings.write_int(b, len(graph.edges))
+		emit_line(b, "")
+		for node in graph.nodes {
+			emit_line(b, "navnode ", encode_fixed(node.x, context.temp_allocator), " ", encode_fixed(node.y, context.temp_allocator))
+		}
+		for edge in graph.edges {
+			strings.write_string(b, "navedge ")
+			strings.write_int(b, edge.a)
+			strings.write_byte(b, ' ')
+			strings.write_int(b, edge.b)
 			emit_line(b, "")
 		}
 	}

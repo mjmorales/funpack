@@ -211,11 +211,12 @@ test_golden_dungeon_project_compiles_and_inline_tests_pass :: proc(t: ^testing.T
 @(test)
 test_golden_dungeon_build_carries_tile_layer_in_both_products :: proc(t: ^testing.T) {
 	// AC (both products): stage_build over the live dungeon tree emits BOTH
-	// products — the v12 artifact whose [tilemaps] section carries the terrain
+	// products — the v13 artifact whose [tilemaps] section carries the terrain
 	// layer with its anchor lead line (`tilemap terrain 16 16 9 0
 	// 618475290624 4`: cell 16, 16×9, anchored at the level bounds' top-left
-	// (0, 144·2^32), four palette entries), and the Index Contract NDJSON.
-	// Emission is deterministic: two builds of the same tree are
+	// (0, 144·2^32), four palette entries) and whose [nav] section carries the
+	// §12 §1 nav graph derived from that same layer, and the Index Contract
+	// NDJSON. Emission is deterministic: two builds of the same tree are
 	// byte-identical (§29).
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
@@ -239,6 +240,17 @@ test_golden_dungeon_build_carries_tile_layer_in_both_products :: proc(t: ^testin
 	testing.expect(t, artifact_has_line(product.artifact, "tilemap terrain 16 16 9 0 618475290624 4"))
 	testing.expect(t, artifact_has_line(product.artifact, "tile wall true"))
 	testing.expect(t, artifact_has_line(product.artifact, "tile rubble true"))
+
+	// The v13 [nav] section carries the §12 §1 nav graph derived from the same
+	// terrain layer: one flat graph (count == 1), keyed 1:1 to the tilemap. The
+	// 16×9 terrain has 91 walkable cells (NOT '#' wall and NOT '%' rubble — both
+	// baked solid; water/floor/marker/void cells are walkable) and 155 4-neighbor
+	// orthogonal adjacencies (right+down deduped) — computed from dungeon.flvl, not
+	// guessed. The lead line carries NO grid metadata (§12 §5 hides the Cell index).
+	nav_section, nav_found := artifact_find_section(doc, "nav")
+	testing.expect(t, nav_found)
+	testing.expect_value(t, nav_section.count, 1)
+	testing.expect(t, artifact_has_line(product.artifact, "nav terrain 91 155"))
 
 	second, second_verdict := stage_build(dir, .Dev, context.temp_allocator)
 	testing.expect_value(t, second_verdict.err, Build_Error.None)
@@ -327,9 +339,9 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 
 	// The build verb emits both products now that the nav surface is admitted:
 	// warren is a game (entrypoints.fcfg names WarrenGame), so stage_build emits
-	// the runtime artifact AND the Index Contract NDJSON — no schema bump (the
-	// admission is typecheck/eval only; the v13 nav-section bake is a separate
-	// story), so the artifact still carries the v12 schema.
+	// the runtime artifact AND the Index Contract NDJSON, at the v13 schema (the
+	// nav-section bake lands here): the artifact carries ARTIFACT_SCHEMA_VERSION,
+	// which the bump auto-follows.
 	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
 	testing.expect_value(t, verdict.err, Build_Error.None)
 	if verdict.err != .None {
@@ -341,5 +353,18 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 	doc, art_parse := parse_artifact(product.artifact)
 	testing.expect_value(t, art_parse, Artifact_Parse_Error.None)
 	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)
-	log.infof("golden warren nav pin FLIPPED: the full warren project compiles end-to-end; %d funpack-evaluable chase asserts pass and both build products emit", report.passed)
+
+	// The v13 [nav] section carries the §12 §1 nav graph baked from the maze
+	// layer's solids — "the picture IS the topology" (warren.flvl §1). The 16×12
+	// maze has 112 solid '#' walls, leaving 80 walkable cells (floor + the four
+	// markers R/F/O/S, which sit on the floor), so NODE_COUNT == 80, and the
+	// 4-neighbor orthogonal adjacencies between them number 80 (right+down
+	// deduped) — computed from warren.flvl, never guessed. One flat graph
+	// (count == 1), keyed to the `maze` tilemap, lead line carrying NO grid
+	// metadata (§12 §5 hides the Cell index).
+	nav_section, nav_found := artifact_find_section(doc, "nav")
+	testing.expect(t, nav_found)
+	testing.expect_value(t, nav_section.count, 1)
+	testing.expect(t, artifact_has_line(product.artifact, "nav maze 80 80"))
+	log.infof("golden warren nav pin FLIPPED: the full warren project compiles end-to-end; %d funpack-evaluable chase asserts pass, both build products emit, and the [nav] section carries the 80-node maze graph", report.passed)
 }
