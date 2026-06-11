@@ -813,9 +813,44 @@ when #config(FUNPACK_LIVE, false) {
 				// projection (a true-3D skinned draw is out of scope; the rig STATE is
 				// fully in the determinism digest, the PRESENT shows only its footprint).
 				fill_world_rect(renderer, vec3_xz(c.at), RIGGED_MARKER_SIZE, .White, camera, board, window)
+			case Draw_Tilemap:
+				// The §18 §3 batched layer paints per-CELL only here, at the present
+				// boundary (the sim-side draw-LIST carries the one batched command —
+				// the §18 §3 batching is about commands, never pixels). A deliberate
+				// untextured stand-in: solid tiles fill Gray (walls read as mass),
+				// passable tiles stay unpainted (floor reads as background) — the
+				// atlas-textured tile draw is a later asset story; the layer's full
+				// CONTENT is already in the determinism digest.
+				present_tile_layer(renderer, c.layer, camera, board, window)
 			}
 		}
 		sdl.RenderPresent(renderer)
+	}
+
+	// present_tile_layer fills one world rect per SOLID tile of a batched §18 §3
+	// layer — the untextured present stand-in. Cell centers come from the same
+	// tilemap_center_of kernel the §18 §4 queries answer with, so the painted
+	// terrain sits exactly where collision says it is; the extent is the layer's
+	// cell size on both axes. Walks rows then columns (row-major, the decoded
+	// table's order); present-boundary only, nothing re-enters the sim.
+	present_tile_layer :: proc(
+		renderer: ^sdl.Renderer,
+		layer: Tile_Layer,
+		camera: Camera_View,
+		board: Vec2,
+		window: Window_Px,
+	) {
+		cell_extent := Vec2{to_fixed(layer.cell_size), to_fixed(layer.cell_size)}
+		walk := layer
+		for row in 0 ..< layer.rows {
+			for col in 0 ..< layer.cols {
+				if !tilemap_solid_at(&walk, col, row) {
+					continue
+				}
+				at := tilemap_center_of(&walk, i64(col), i64(row))
+				fill_world_rect(renderer, at, cell_extent, .Gray, camera, board, window)
+			}
+		}
 	}
 
 	// vec3_xz flattens a §20 §1 world Vec3 to the 2D XZ-plane position the top-down

@@ -1160,5 +1160,18 @@ render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 		strings.write_string(b, ",pose=")
 		render_pose_text(b, c.pose)
 		fmt.sbprintf(b, ",at=Vec3(x=%d,y=%d,z=%d))", i64(c.at.x), i64(c.at.y), i64(c.at.z))
+	case Draw_Tilemap:
+		// The batched §18 §3 layer dumps as its identity + geometry — the cell
+		// content is the artifact's static table (and the digest's full fold),
+		// so the line stays a readable item, not an inlined grid.
+		fmt.sbprintf(
+			b,
+			"Tilemap(name=L%d:%s,cell=%d,cols=%d,rows=%d)",
+			len(c.layer.name),
+			c.layer.name,
+			c.layer.cell_size,
+			c.layer.cols,
+			c.layer.rows,
+		)
 	}
 }

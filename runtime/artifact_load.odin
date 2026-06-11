@@ -94,15 +94,7 @@ build_program :: proc(
 		case "queries":
 			program.queries = load_queries(section, allocator) or_return
 		case "tilemaps":
-			// The v11 §18 §3 tile-layer carry. Decoding the layers into the
-			// Program (batched render, grid collision, the tile queries) is
-			// the tilemap-runtime story's; until that decode lands this
-			// runtime FAILS CLOSED on a tile-bearing artifact — refusing is
-			// honest, silently dropping authored terrain is not. The empty
-			// section every level-less game emits loads clean.
-			if len(section.records) != 0 {
-				return {}, .Malformed_Header // tile-layer decode not yet implemented — refuse, never ignore
-			}
+			program.tilemaps = load_tilemaps(section, allocator) or_return
 		case:
 			return {}, .Malformed_Header // an unknown section is a schema mismatch
 		}
@@ -533,6 +525,141 @@ load_index_reqs :: proc(
 			kind  = kind,
 			thing = strings.clone(sf[2], allocator),
 			field = strings.clone(sf[3], allocator),
+		}
+	}
+	return out, .None
+}
+
+// --- §17 tilemaps (schema v11) ----------------------------------------------
+
+// load_tilemaps reads each §17 tile-layer record: the lead line `tilemap NAME
+// CELL_SIZE COLS ROWS PALETTE_COUNT`, then exactly PALETTE_COUNT `tile NAME
+// SOLID` palette lines (legend order, each carrying its §18 §2 baked collision
+// verdict), then exactly ROWS `row …` lines of COLS cells — a decimal palette
+// index into THIS record's palette or `-` for a tile-less cell. Every shape
+// violation is the fail-closed .Bad_Field refusal the section molds share: a
+// non-positive dimension or cell size, a sub-record run that does not split
+// exactly into the declared palette+row counts, a malformed palette line, a
+// row of the wrong arity, or a cell index outside the palette — never a
+// best-effort partial layer.
+//
+// ANCHOR DERIVATION (the grid→world mapping, §17): the doc anchors the grid's
+// top-left at (bounds_min.x, bounds_max.y), but the v11 record does not carry
+// the level bounds, so the loader derives the anchor as (0, rows*cell_size) —
+// the grid's own extent anchored at the world origin. This is bit-identical to
+// the bake's marker/cell() mapping exactly when the grid spans the level
+// bounds from (0, 0), which every tilemap-carrying example satisfies; a level
+// whose bounds anchor elsewhere cannot be represented faithfully until the
+// format carries the anchor (a funpack-side format decision — see the
+// Tile_Layer.top_left doc).
+load_tilemaps :: proc(
+	section: Artifact_Section,
+	allocator := context.allocator,
+) -> (
+	tilemaps: []Tile_Layer,
+	err: Artifact_Error,
+) {
+	out := make([]Tile_Layer, len(section.records), allocator)
+	for rec, i in section.records {
+		f := record_fields(rec)
+		// tilemap NAME CELL_SIZE COLS ROWS PALETTE_COUNT
+		if len(f) != 6 || f[0] != "tilemap" {
+			return nil, .Bad_Field
+		}
+		cell_size, cs_ok := strconv.parse_i64(f[2])
+		cols, c_ok := strconv.parse_int(f[3])
+		rows, r_ok := strconv.parse_int(f[4])
+		palette_count, p_ok := strconv.parse_int(f[5])
+		if !cs_ok || !c_ok || !r_ok || !p_ok {
+			return nil, .Bad_Field
+		}
+		// A degenerate grid or cell size never reaches a query — the §18 §5
+		// bake gates reject it upstream, so its arrival here is a malformed
+		// artifact, refused (cell_of divides by the cell size; the anchor
+		// multiplies rows by it).
+		if cell_size <= 0 || cols <= 0 || rows <= 0 || palette_count < 0 {
+			return nil, .Bad_Field
+		}
+		// The sub-record run splits exactly: PALETTE_COUNT tile lines, then
+		// ROWS row lines (§17) — an under- or over-shaped record is refused.
+		if len(rec.subs) != palette_count + rows {
+			return nil, .Bad_Field
+		}
+		palette := load_tile_palette(rec.subs[:palette_count], allocator) or_return
+		cells := load_tile_rows(rec.subs[palette_count:], cols, palette_count, allocator) or_return
+		out[i] = Tile_Layer {
+			name      = strings.clone(f[1], allocator),
+			cell_size = cell_size,
+			cols      = cols,
+			rows      = rows,
+			top_left  = Vec2{x = to_fixed(0), y = to_fixed(int_mul(i64(rows), cell_size))},
+			palette   = palette,
+			cells     = cells,
+		}
+	}
+	return out, .None
+}
+
+// load_tile_palette reads a run of `tile NAME SOLID` sub-records (§17) — the
+// layer's legend-order tile types, each with its baked §18 §2 collision
+// verdict. The line is exactly three tokens; SOLID is the §2.5 bare bool.
+load_tile_palette :: proc(
+	subs: []string,
+	allocator := context.allocator,
+) -> (
+	palette: []Tile_Def,
+	err: Artifact_Error,
+) {
+	out := make([]Tile_Def, len(subs), allocator)
+	for sub, i in subs {
+		sf := strings.fields(sub, context.temp_allocator)
+		if len(sf) != 3 || sf[0] != "tile" {
+			return nil, .Bad_Field
+		}
+		solid, ok := decode_bool(sf[2])
+		if !ok {
+			return nil, .Bad_Field
+		}
+		out[i] = Tile_Def {
+			name  = strings.clone(sf[1], allocator),
+			solid = solid,
+		}
+	}
+	return out, .None
+}
+
+// load_tile_rows reads the layer's `row C0 … C{COLS-1}` lines into the
+// row-major cell slice (§17): each line carries exactly COLS cells — a decimal
+// palette index in [0, palette_count) or `-` for a tile-less cell
+// (TILE_CELL_EMPTY). A wrong arity, a non-numeric cell, or an index outside
+// the palette refuses — the render and collision paths index the palette
+// unconditionally, so the gate lives here, once.
+load_tile_rows :: proc(
+	subs: []string,
+	cols: int,
+	palette_count: int,
+	allocator := context.allocator,
+) -> (
+	cells: []int,
+	err: Artifact_Error,
+) {
+	out := make([]int, len(subs) * cols, allocator)
+	for sub, r in subs {
+		sf := strings.fields(sub, context.temp_allocator)
+		if len(sf) != cols + 1 || sf[0] != "row" {
+			return nil, .Bad_Field
+		}
+		for c in 0 ..< cols {
+			token := sf[c + 1]
+			if token == "-" {
+				out[r * cols + c] = TILE_CELL_EMPTY
+				continue
+			}
+			index, ok := strconv.parse_int(token)
+			if !ok || index < 0 || index >= palette_count {
+				return nil, .Bad_Field
+			}
+			out[r * cols + c] = index
 		}
 	}
 	return out, .None

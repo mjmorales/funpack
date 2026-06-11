@@ -129,12 +129,27 @@ Draw3_Rigged :: struct {
 	at:       Vec3,
 }
 
+// Draw_Tilemap is the §18 §3 BATCHED tile-layer command: ONE draw command per
+// baked layer carrying the whole decoded layer — never per-tile Draw::Sprite
+// rows (§18 §3's normative batching). It is ENGINE-EMITTED, not behavior-
+// emitted: the tile layer is static environment the artifact carries, so
+// render_version prepends one Draw_Tilemap per program layer (declaration
+// order, beneath every behavior draw) before the render behaviors run. The
+// carried Tile_Layer's slices alias the program's decoded tables (the program
+// outlives every tick), so the command is a view, not a copy; the digest folds
+// the layer's full content (name, geometry, anchor, palette, cells) so the
+// drawn terrain is inside the comparison surface bit-exactly.
+Draw_Tilemap :: struct {
+	layer: Tile_Layer,
+}
+
 // Draw_Cmd is the closed set of §20 draw commands a render behavior emits. A new
 // command kind is a schema-version bump (the closed-enum discipline §04, and the
 // frame digest folds the draw-list so a new arm bumps FRAME_DIGEST_SCHEMA_VERSION).
 // Pong exercises Rect (paddles, ball) and Text (score); yard adds Camera (the 2D
 // world↔screen view); krognid adds the four §20 §1 3D commands
-// (Draw3_Camera/Light/Plane/Rigged). The 3D arms are APPENDED after the 2D arms;
+// (Draw3_Camera/Light/Plane/Rigged); the dungeon's terrain adds the engine-emitted
+// batched Draw_Tilemap (§18 §3). New arms are APPENDED after the existing arms;
 // the union is the draw-list's element type, mixing 2D and 3D commands in one
 // flattened draw-list (an artifact emits one OR the other in practice, but the
 // union admits both).
@@ -146,6 +161,7 @@ Draw_Cmd :: union {
 	Draw3_Light,
 	Draw3_Plane,
 	Draw3_Rigged,
+	Draw_Tilemap,
 }
 
 // Draw_List is the §20 draw-list: the ordered draw commands of one committed
@@ -197,6 +213,11 @@ draw_cmd_equal :: proc(a, b: Draw_Cmd) -> bool {
 			poses_equal(x.pose, y.pose) &&
 			x.at == y.at \
 		)
+	case Draw_Tilemap:
+		// The batched layer carries slices (palette, cells), so the arm
+		// compares structurally — tile_layers_equal walks both element-wise.
+		y, ok := b.(Draw_Tilemap)
+		return ok && tile_layers_equal(x.layer, y.layer)
 	}
 	// Both nil (an empty union) compares equal; a nil-vs-set mismatch is unequal.
 	return a == nil && b == nil
@@ -223,6 +244,14 @@ render_version :: proc(
 	interp := new_interp(program, &committed, nil, input, time, allocator)
 
 	cmds := make([dynamic]Draw_Cmd, allocator)
+	// The §18 §3 baked tile layers lead the draw-list: one BATCHED Draw_Tilemap
+	// per program layer in artifact declaration order (deterministic — a slice
+	// walk over decoded tables), BENEATH every behavior-emitted command (the
+	// terrain is the environment entities draw over). Engine-emitted: no render
+	// behavior authors these, and never per-tile commands (§18 §3).
+	for &layer in program.tilemaps {
+		append(&cmds, Draw_Tilemap{layer = layer})
+	}
 	for step in program.pipeline {
 		if step.stage != "render" {
 			continue
