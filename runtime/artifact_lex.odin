@@ -159,10 +159,9 @@ import "core:strings"
 // Fixed, §2.3 — centers not indices, in ROW-MAJOR order so line position IS the
 // node index), then EDGE_COUNT `navedge A B` sub-records (two decimal node
 // indices, `A < B` canonical, the 4-neighbor orthogonal adjacencies). (2) two
-// new sub-record keywords, `navnode` and `navedge`. This runtime ADMITS the
-// framing and CONSUMES-AND-DISCARDS the section (it does NOT yet build a Nav
-// resource — the nav-resource path story owns real loading); the arm exists
-// only so the loader does not choke on the new section. A new section and new
+// new sub-record keywords, `navnode` and `navedge`. The loader DECODES the
+// section into a Nav_Graph (centers + ascending adjacency) that path() searches
+// — see load_navs in nav.odin. A new section and new
 // sub-record keywords are layout changes: 12 → 13 (funpack/artifact_format.odin
 // v13, §1, §12). Level-less artifacts move by the stamp plus the constant
 // `[nav 0]` tail (the level-less `[tilemaps 0]` precedent).

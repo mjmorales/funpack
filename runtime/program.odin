@@ -265,6 +265,12 @@ Program :: struct {
 	entrypoint:     Entrypoint,
 	queries:        []Query_Decl,
 	tilemaps:       []Tile_Layer, // the §18 §3 baked tile layers (v12 [tilemaps], tilemap.odin)
+	// navs is the §12 baked nav graphs (v13 [nav], nav.odin). It is bake-static
+	// for path() — read straight from the Program, NOT folded per tick onto the
+	// World_Version COW chain like tilemaps. §12 §1's SetTile-driven nav
+	// re-derivation (dynamic terrain) is a separate story and would add the
+	// per-version table this field deliberately omits.
+	navs:           []Nav_Graph,
 }
 
 // program_query finds a §16 query declaration by name, or nil. The query call

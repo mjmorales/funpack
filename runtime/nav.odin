@@ -1,0 +1,475 @@
+// The §12 baked navigation graph and its single pure query `path(from, to)`:
+// the walkable-cell topology a tilemap's solids imply, BAKED on the funpack side
+// (the picture IS the topology, §12 §1) and carried in the artifact's [nav]
+// section (docs/artifact-format.md §12, schema v13). The runtime CONSUMES this
+// graph and path-finds over it; it never authors the graph (runtime CONSUMES the
+// format, funpack DEFINES it — Lore #9). The query is reached through a level
+// seam's `NavHandle{name}` record receiver (`nav.path(from, to)`), the
+// apply_impulse / TilemapHandle method-dispatch mold (interp_call.odin →
+// eval_nav_method here).
+//
+// The graph is BAKE-STATIC for path(): unlike tile state (committed world state
+// that folds SetTile each tick), the nav graph is decoded once into the Program
+// and read straight from there — there is no World_Version COW chain for nav.
+// §12 §1's "SetTile re-derives the affected nav incrementally" is DYNAMIC TERRAIN,
+// a separate concern; this file leaves that seam un-built (path() reads
+// program.navs, not a per-version table).
+//
+// Determinism (§10.5, the tilemap.odin invariant): path() is a pure function of
+// (graph, from, to). The search is a uniform-cost BFS over the flat 4-neighbor
+// graph — edges are unweighted and uniform, so Dijkstra/A* collapse to BFS with
+// f=g and NO heuristic (a heuristic would be a §12 §4-forbidden runtime knob).
+// The frontier is a FIFO array, neighbors are enqueued in ascending node-index
+// order (adj[i] is sorted ascending at load), and first-visit-wins — no PRNG, no
+// map iteration, arrays and indexed scans only, so the route is bit-identical on
+// every machine (§12 §2 "fixed tie-break: lowest f, then stable cell order").
+package funpack_runtime
+
+import "core:strconv"
+import "core:strings"
+
+// NAV_NO_NODE marks "no node" in the BFS predecessor/visited arrays and the
+// endpoint→node resolution — an endpoint Vec2 that matches no walkable center.
+NAV_NO_NODE :: -1
+
+// Nav_Graph is one decoded [nav] record (§12): the graph name (the NavHandle
+// constant name, 1:1 with its tilemap), the walkable-cell CENTERS in node-index
+// order (line position IS the node index, §12 §5 — centers, never the raw Cell
+// index), and the per-node adjacency lists built from the undirected `navedge`
+// pairs. `centers[i]` is node i's world-space cell center as raw Q32.32 Vec2
+// bits; `adj[i]` is node i's neighbor node indices, SORTED ASCENDING so the BFS
+// tie-break is bit-stable regardless of the edge emission order.
+Nav_Graph :: struct {
+	name:    string,
+	centers: []Vec2, // node-index-ordered walkable cell centers (raw Q32.32)
+	adj:     [][]int, // per-node neighbor indices, ascending (the 4-neighbor graph)
+}
+
+// program_nav finds a decoded nav graph by its NavHandle name, or nil — the
+// bare-name lookup the handle-method dispatch resolves a `NavHandle{name}`
+// receiver through (mirroring program_tilemap / program_function). The graph is
+// bake-static, so there is no version_nav twin: path() reads the Program's
+// pristine decode directly.
+program_nav :: proc(program: ^Program, name: string) -> ^Nav_Graph {
+	for &graph in program.navs {
+		if graph.name == name {
+			return &graph
+		}
+	}
+	return nil
+}
+
+// nav_graphs_equal compares two decoded graphs structurally — the loader
+// determinism assertion (same artifact ⇒ same graph). Centers compare by raw
+// Vec2 bits; adjacency compares element-wise (order included, so the ascending
+// sort is part of the equality).
+nav_graphs_equal :: proc(a, b: Nav_Graph) -> bool {
+	if a.name != b.name || len(a.centers) != len(b.centers) || len(a.adj) != len(b.adj) {
+		return false
+	}
+	for center, i in a.centers {
+		if center != b.centers[i] {
+			return false
+		}
+	}
+	for neighbors, i in a.adj {
+		if len(neighbors) != len(b.adj[i]) {
+			return false
+		}
+		for n, j in neighbors {
+			if n != b.adj[i][j] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// --- the §12 §2 path() search (pure, fixed-point, total) -------------------
+
+// nav_node_of resolves an endpoint Vec2 to its walkable node index by EXACT
+// center match — raw Q32.32 Vec2-bits equality against the graph's centers (the
+// tilemap.odin anchor-compare discipline), scanned in ascending node order so
+// the first match is the stable one. path() does NOT snap: a Vec2 that is not a
+// walkable cell center maps to NAV_NO_NODE → the caller raises OffNav (snapping
+// off-nav targets onto walkable space is nearest()'s job, §12 §3 — a separate
+// query surface). NAV_NO_NODE for an empty graph (no centers to match).
+nav_node_of :: proc(graph: ^Nav_Graph, point: Vec2) -> int {
+	for center, i in graph.centers {
+		if center == point {
+			return i
+		}
+	}
+	return NAV_NO_NODE
+}
+
+// nav_path searches the flat 4-neighbor graph for a route from node `from` to
+// node `to` — the uniform-cost BFS that backs path(). Returns the node-index
+// route (inclusive of both endpoints) on success, or ok=false when `to` is
+// unreachable from `from` within the graph's connected component.
+//
+// FIFO frontier as a plain array (a head cursor walks it — no map, no PRNG);
+// neighbors are pushed in adj[i] ascending-index order; first-visit-wins (a node
+// already discovered is never re-enqueued). The predecessor array reconstructs
+// the route by walking back from `to`, then reversing — so the route is a pure
+// function of (graph, from, to), bit-identical on replay (§12 §2).
+nav_path :: proc(
+	graph: ^Nav_Graph,
+	from, to: int,
+	allocator := context.allocator,
+) -> (
+	route: []int,
+	ok: bool,
+) {
+	count := len(graph.centers)
+	// from == to is the degenerate single-node route (no edges traversed).
+	if from == to {
+		single := make([]int, 1, allocator)
+		single[0] = from
+		return single, true
+	}
+	pred := make([]int, count, context.temp_allocator)
+	for i in 0 ..< count {
+		pred[i] = NAV_NO_NODE
+	}
+	visited := make([]bool, count, context.temp_allocator)
+	frontier := make([dynamic]int, context.temp_allocator)
+	append(&frontier, from)
+	visited[from] = true
+	reached := false
+	for head := 0; head < len(frontier); head += 1 {
+		node := frontier[head]
+		if node == to {
+			reached = true
+			break
+		}
+		for neighbor in graph.adj[node] {
+			if visited[neighbor] {
+				continue
+			}
+			visited[neighbor] = true
+			pred[neighbor] = node
+			append(&frontier, neighbor)
+		}
+	}
+	if !reached && !visited[to] {
+		return nil, false
+	}
+	// Reconstruct from `to` back to `from` via predecessors, then reverse into
+	// start→goal order.
+	length := 0
+	for node := to; node != NAV_NO_NODE; node = pred[node] {
+		length += 1
+		if node == from {
+			break
+		}
+	}
+	out := make([]int, length, allocator)
+	node := to
+	for i := length - 1; i >= 0; i -= 1 {
+		out[i] = node
+		node = pred[node]
+	}
+	return out, true
+}
+
+// nav_route_cost is the §12 §2 fixed-point route cost: the Q32.32 sum of the
+// per-edge center-to-center distances along the chosen route, accumulated
+// through the kernel (fixed_add over vec2_length(center_b - center_a)). The
+// [nav] format deliberately omits cell_size (§12 §5), so cost is NEVER
+// hop-count × cell_size — it derives from the centers, the only metric the graph
+// carries. An empty/single-node route has zero cost.
+nav_route_cost :: proc(graph: ^Nav_Graph, route: []int) -> Fixed {
+	cost := Fixed(0)
+	for i in 1 ..< len(route) {
+		segment := vec2_sub(graph.centers[route[i]], graph.centers[route[i - 1]])
+		cost = fixed_add(cost, vec2_length(segment))
+	}
+	return cost
+}
+
+// --- the NavHandle method dispatch (the behavior-call surface) -------------
+
+// eval_nav_method lowers the §12 path() query reached as a value-method on a
+// level seam's `NavHandle{name}` record receiver — warren's
+// `nav.path(self.pos, goal)` calling convention (the TilemapHandle /
+// apply_impulse mold). ONLY `case "path":` is implemented here; advance / los /
+// reachable / nearest are a separate query surface (not yet built), so a member
+// outside this arm falls through (is_nav_method=false) to the next receiver arm.
+//
+// path() evaluates its two Vec2 args, resolves each to a walkable node by exact
+// center match, and returns a Result[Path, NavError] Variant:
+//   - an off-nav endpoint (no exact center match) → Err(NavError::OffNav),
+//     checked BEFORE the search;
+//   - both endpoints valid but disconnected → Err(NavError::Unreachable);
+//   - a route → Ok(Path{ steps: [Vec2], cost: Fixed }).
+// A malformed receiver (unknown graph, non-Vec2 arg) or wrong call arity fails
+// closed (ok=false), never a guessed route.
+eval_nav_method :: proc(
+	interp: ^Interp,
+	node: ^Node,
+	env: ^Env,
+	handle: Record_Value,
+	method: string,
+) -> (
+	value: Value,
+	ok: bool,
+	is_nav_method: bool,
+) {
+	switch method {
+	case "path":
+	case:
+		return nil, false, false
+	}
+	graph := nav_of_handle(interp, handle)
+	// path(self, from, to): the call node is `field(from, to)` — receiver-method
+	// field plus two argument children, so three children total.
+	if graph == nil || len(node.children) != 3 {
+		return nil, false, true
+	}
+	from_val, from_ok := eval(interp, &node.children[1], env)
+	if !from_ok {
+		return nil, false, true
+	}
+	to_val, to_ok := eval(interp, &node.children[2], env)
+	if !to_ok {
+		return nil, false, true
+	}
+	from_vec, from_is_vec := from_val.(Vec2)
+	to_vec, to_is_vec := to_val.(Vec2)
+	if !from_is_vec || !to_is_vec {
+		return nil, false, true
+	}
+	return nav_path_result(interp, graph, from_vec, to_vec), true, true
+}
+
+// nav_path_result runs path() over a resolved graph and boxes the
+// Result[Path, NavError]: OffNav for an endpoint that matches no walkable center
+// (checked first), Unreachable when both endpoints are valid but BFS exhausts the
+// reachable component without reaching `to`, else Ok(Path) with the route's cell
+// centers as `steps` and the per-edge distance sum as `cost`.
+nav_path_result :: proc(interp: ^Interp, graph: ^Nav_Graph, from, to: Vec2) -> Value {
+	from_node := nav_node_of(graph, from)
+	to_node := nav_node_of(graph, to)
+	if from_node == NAV_NO_NODE || to_node == NAV_NO_NODE {
+		return nav_err_value(interp, "OffNav")
+	}
+	route, found := nav_path(graph, from_node, to_node, interp.allocator)
+	if !found {
+		return nav_err_value(interp, "Unreachable")
+	}
+	steps := make([]Value, len(route), interp.allocator)
+	for n, i in route {
+		steps[i] = graph.centers[n]
+	}
+	cost := nav_route_cost(graph, route)
+	fields := make(map[string]Value, interp.allocator)
+	fields["steps"] = List_Value{elements = steps}
+	fields["cost"] = cost
+	path := Record_Value{type_name = "Path", fields = fields}
+	return nav_ok_value(interp, path)
+}
+
+// nav_ok_value boxes a Path as Result::Ok(path) — the success arm of path()
+// (the some_value mold: payload arena-allocated so the variant outlives the call).
+nav_ok_value :: proc(interp: ^Interp, path: Record_Value) -> Value {
+	boxed := new(Value, interp.allocator)
+	boxed^ = path
+	return Variant_Value{enum_type = "Result", case_name = "Ok", payload = boxed}
+}
+
+// nav_err_value boxes a NavError as Result::Err(NavError::CASE) — the failure
+// arm of path(). `case_name` is "Unreachable" or "OffNav" (the §12 enum
+// NavError); the NavError is itself a unit Variant (no payload), boxed under the
+// Result Err.
+nav_err_value :: proc(interp: ^Interp, case_name: string) -> Value {
+	err := new(Value, interp.allocator)
+	err^ = Variant_Value{enum_type = "NavError", case_name = case_name}
+	return Variant_Value{enum_type = "Result", case_name = "Err", payload = err}
+}
+
+// nav_marker returns the value a behavior's `nav: Nav` param binds to — the
+// receiver `nav.path(...)` dispatches on. A `NavHandle` record with NO `name`
+// field is the §12 DEFAULT (the one resource, no name): nav_of_handle resolves
+// it to the single baked layer. A named layer (the §12 escape hatch) would carry
+// a `name` String, but the default param binds the unnamed marker (the
+// input_marker mold — the value only marks the receiver, the graph is read at
+// the call). The marker widens no Value arm: it is a Record_Value.
+nav_marker :: proc(interp: ^Interp) -> Value {
+	fields := make(map[string]Value, interp.allocator)
+	return Record_Value{type_name = "NavHandle", fields = fields}
+}
+
+// nav_of_handle resolves a NavHandle record receiver to its decoded graph
+// (program_nav — the bake-static decode, no version table). A handle carrying a
+// `name` String keys that layer by name (the §12 escape hatch); a handle with NO
+// name field is the §12 DEFAULT and resolves to the single baked layer (the lone
+// nav graph, no name to address). nil when a named layer is unknown, when the
+// default is taken but the program carries no nav graph, or when more than one
+// graph exists with no name to disambiguate — the caller fails closed.
+nav_of_handle :: proc(interp: ^Interp, handle: Record_Value) -> ^Nav_Graph {
+	name, has_name := nav_handle_name(handle)
+	if has_name {
+		return program_nav(interp.program, name)
+	}
+	// The default: the one baked layer (§12 — the default is the one resource,
+	// no name). Exactly one graph resolves; zero or many fails closed.
+	if len(interp.program.navs) != 1 {
+		return nil
+	}
+	return &interp.program.navs[0]
+}
+
+// nav_handle_name reads the `name` String field off a `NavHandle{name}` record
+// value (the tilemap_handle_name mold). ok=false on a missing or non-String
+// field — a malformed handle fails closed, never a guessed graph.
+nav_handle_name :: proc(handle: Record_Value) -> (name: string, ok: bool) {
+	field, present := handle.fields["name"]
+	if !present {
+		return "", false
+	}
+	text, is_string := field.(String_Value)
+	if !is_string {
+		return "", false
+	}
+	return text.text, true
+}
+
+// --- the §12 [nav] loader (schema v13) -------------------------------------
+
+// load_navs reads each §12 nav record into a Nav_Graph: the lead line `nav NAME
+// NODE_COUNT EDGE_COUNT` (NO grid metadata — §12 §5 forbids leaking the raw Cell
+// index, so no cols/rows/cell_size), then exactly NODE_COUNT `navnode FIXED_X
+// FIXED_Y` sub-records (each a walkable cell's world-space CENTER as two raw
+// Q32.32 Fixed, in row-major order so line position IS the node index), then
+// exactly EDGE_COUNT `navedge A B` sub-records (two decimal node indices, the
+// 4-neighbor orthogonal adjacencies). Each undirected edge appends B to adj[A]
+// and A to adj[B]; every adj[i] is then SORTED ASCENDING so the BFS tie-break is
+// bit-stable regardless of edge emission order.
+//
+// Every shape violation is the fail-closed .Bad_Field refusal the section molds
+// share: a lead line that is not exactly four tokens, a sub-record run that does
+// not split into NODE_COUNT + EDGE_COUNT, a malformed navnode/navedge line, or a
+// navedge index outside [0, NODE_COUNT) — never a best-effort partial graph. An
+// empty `[nav 0]` (a level-less artifact) yields an empty navs slice with no
+// special case.
+load_navs :: proc(
+	section: Artifact_Section,
+	allocator := context.allocator,
+) -> (
+	navs: []Nav_Graph,
+	err: Artifact_Error,
+) {
+	out := make([]Nav_Graph, len(section.records), allocator)
+	for rec, i in section.records {
+		f := record_fields(rec)
+		// nav NAME NODE_COUNT EDGE_COUNT
+		if len(f) != 4 || f[0] != "nav" {
+			return nil, .Bad_Field
+		}
+		node_count, n_ok := strconv.parse_int(f[2])
+		edge_count, e_ok := strconv.parse_int(f[3])
+		if !n_ok || !e_ok || node_count < 0 || edge_count < 0 {
+			return nil, .Bad_Field
+		}
+		// The sub-record run splits exactly: NODE_COUNT navnode lines, then
+		// EDGE_COUNT navedge lines — an under- or over-shaped record is refused.
+		if len(rec.subs) != node_count + edge_count {
+			return nil, .Bad_Field
+		}
+		centers := load_nav_nodes(rec.subs[:node_count], allocator) or_return
+		adj := load_nav_edges(rec.subs[node_count:], node_count, allocator) or_return
+		out[i] = Nav_Graph {
+			name    = strings.clone(f[1], allocator),
+			centers = centers,
+			adj     = adj,
+		}
+	}
+	return out, .None
+}
+
+// load_nav_nodes reads a run of `navnode FIXED_X FIXED_Y` sub-records (§12) into
+// the node-index-ordered center slice: each line is exactly three tokens, the
+// two coordinates raw Q32.32 Fixed bits (decode_fixed — no float in the load
+// path). Line position IS the node index, so the slice order is the topology.
+load_nav_nodes :: proc(
+	subs: []string,
+	allocator := context.allocator,
+) -> (
+	centers: []Vec2,
+	err: Artifact_Error,
+) {
+	out := make([]Vec2, len(subs), allocator)
+	for sub, i in subs {
+		sf := strings.fields(sub, context.temp_allocator)
+		if len(sf) != 3 || sf[0] != "navnode" {
+			return nil, .Bad_Field
+		}
+		x, x_ok := decode_fixed(sf[1])
+		y, y_ok := decode_fixed(sf[2])
+		if !x_ok || !y_ok {
+			return nil, .Bad_Field
+		}
+		out[i] = Vec2{x = x, y = y}
+	}
+	return out, .None
+}
+
+// load_nav_edges reads a run of `navedge A B` sub-records (§12) into the
+// per-node adjacency lists: each line is exactly three tokens, A and B decimal
+// node indices in [0, node_count). Each undirected edge appends B to adj[A] and
+// A to adj[B]; every adj[i] is then sorted ascending so the BFS frontier walks
+// neighbors in stable index order (the determinism tie-break). An index outside
+// the node range refuses — the search indexes adj unconditionally, so the gate
+// lives here, once.
+load_nav_edges :: proc(
+	subs: []string,
+	node_count: int,
+	allocator := context.allocator,
+) -> (
+	adj: [][]int,
+	err: Artifact_Error,
+) {
+	// Build mutable per-node neighbor lists, then freeze each into an owned slice.
+	lists := make([][dynamic]int, node_count, context.temp_allocator)
+	for &list in lists {
+		list = make([dynamic]int, context.temp_allocator)
+	}
+	for sub in subs {
+		sf := strings.fields(sub, context.temp_allocator)
+		if len(sf) != 3 || sf[0] != "navedge" {
+			return nil, .Bad_Field
+		}
+		a, a_ok := strconv.parse_int(sf[1])
+		b, b_ok := strconv.parse_int(sf[2])
+		if !a_ok || !b_ok || a < 0 || a >= node_count || b < 0 || b >= node_count {
+			return nil, .Bad_Field
+		}
+		append(&lists[a], b)
+		append(&lists[b], a)
+	}
+	out := make([][]int, node_count, allocator)
+	for &list, i in lists {
+		nav_sort_ascending(list[:])
+		neighbors := make([]int, len(list), allocator)
+		copy(neighbors, list[:])
+		out[i] = neighbors
+	}
+	return out, .None
+}
+
+// nav_sort_ascending sorts a small adjacency list in place by insertion sort —
+// the neighbor lists are tiny (≤4 for a 4-neighbor grid graph) and a determinism
+// path wants a fixed, dependency-free comparison order, so the simplest
+// in-place sort is the right one (no map, no allocation, bit-stable).
+nav_sort_ascending :: proc(xs: []int) {
+	for i in 1 ..< len(xs) {
+		key := xs[i]
+		j := i - 1
+		for j >= 0 && xs[j] > key {
+			xs[j + 1] = xs[j]
+			j -= 1
+		}
+		xs[j + 1] = key
+	}
+}

@@ -308,6 +308,17 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 				return result, tm_ok
 			}
 		}
+		// The §12 nav query on a level seam's NavHandle marker receiver —
+		// warren's `nav.path(self.pos, goal)` (nav.odin). Keyed on the handle's
+		// declared type so a same-named member on another record never routes
+		// here; only `path` lands in this story (advance/los/reachable/nearest
+		// are the separate advance story).
+		if record.type_name == "NavHandle" {
+			if result, nav_ok, is_nav := eval_nav_method(interp, node, env, record, method);
+			   is_nav {
+				return result, nav_ok
+			}
+		}
 		// The §22 self-first adders chain off a built Audio record value
 		// (Audio.track(k, c).pitch(p).gain(g).bus(b)); a non-Audio receiver or a
 		// non-adder member falls through to ok=false.

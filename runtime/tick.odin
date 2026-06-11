@@ -1040,6 +1040,15 @@ bind_param :: proc(
 		return input_marker(interp)
 	case type == "Time":
 		return interp.time
+	case type == "Nav":
+		// The §12 nav resource: a `nav: Nav` param IS the statement "this behavior
+		// consults navigation". The value bound here is only the receiver
+		// nav.path(...) dispatches on (eval_nav_method, nav.odin) — the graph is
+		// read through program_nav at the call, never carried in the value — so a
+		// NavHandle marker record suffices without widening the Value union (the
+		// input_marker mold). The default no-named-layer resolves to the single
+		// baked layer (§12: the default is the one resource, no name).
+		return nav_marker(interp)
 	case type == "Rng":
 		// The threaded per-tick Rng: a drawing behavior binds `rng: Rng` to the
 		// CURRENT fold-forward state, draws from it (pick advances it), and returns
