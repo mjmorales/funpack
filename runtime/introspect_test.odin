@@ -20,7 +20,7 @@ import "core:testing"
 // record-valued columns (stats/home) so the value encoding renders composite
 // blackboards, not just scalars.
 @(private = "file")
-INTROSPECT_FIXTURE :: "funpack-artifact 12\n" +
+INTROSPECT_FIXTURE :: "funpack-artifact 13\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
 	"version L5:0.1.0\n" +

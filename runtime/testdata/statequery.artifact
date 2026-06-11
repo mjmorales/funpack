@@ -1,4 +1,4 @@
-funpack-artifact 12
+funpack-artifact 13
 [meta 2]
 project pong
 version L5:0.1.0
@@ -590,3 +590,4 @@ node fixed 0 0
 node field h 1
 node name BOARD 0
 [tilemaps 0]
+[nav 0]

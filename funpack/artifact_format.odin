@@ -168,7 +168,31 @@ import "core:strings"
 // from the origin — the format gap the tilemap-anchor ADR closes). A lead-line
 // field is a layout change: 11 → 12 (§1). Every level-less artifact moves by
 // the version stamp alone (the v7 stamp-only restamp precedent).
-ARTIFACT_SCHEMA_VERSION :: 12
+//
+// Version 13 carries the §12 §1 NAV GRAPHS through to the runtime — the
+// walkable-cell topology a tilemap's solids imply, baked once so the runtime
+// path-finds over a graph it never authored (the picture IS the topology, §12
+// §1). Two layout changes ride it: (1) one new section, `[nav N]`, appended
+// after [tilemaps] as the fixed §3 section tail — one record per baked tile
+// layer in the SAME slice order [tilemaps] emits, so a nav record keys 1:1 to its
+// tilemap: a lead line `nav NAME NODE_COUNT EDGE_COUNT` carrying NO grid metadata
+// (§12 §5 forbids exposing the raw Cell index, so the artifact leaks no col/row),
+// then NODE_COUNT `navnode FIXED_X FIXED_Y` sub-records (each a walkable cell's
+// world-space CENTER as two raw Q32.32 Fixed, §2.3 — the v12 anchor encoding,
+// reconstructed from the layer's anchor + cell_size alone; centers, not indices,
+// because the Cell index is not exposed) in ROW-MAJOR order so the line position
+// IS the node index, then EDGE_COUNT `navedge A B` sub-records (two decimal node
+// indices into the row-major node list, `A < B` canonical, in ascending (A, B)
+// order) — the 4-NEIGHBOR orthogonal adjacencies (right/down deduped to one
+// undirected edge each; §12 §4 makes diagonal/cost a bake-time stance, so the
+// conservative single-algorithm 4-neighbor bake is the default, never an 8-
+// neighbor diagonal toggle without a spec decision). The §12 §1 hierarchical
+// decomposition stays INVISIBLE: one FLAT graph per layer, no tiers in the wire
+// format. (2) two new closed sub-record keywords, `navnode` and `navedge`. A
+// new section and new sub-record keywords are layout changes: 12 → 13 (§1).
+// Every level-less artifact moves by the version stamp plus the constant
+// `[nav 0]` tail (the §3 fixed-tail precedent the level-less `[tilemaps 0]` set).
+ARTIFACT_SCHEMA_VERSION :: 13
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
@@ -235,6 +259,8 @@ SUB_RECORD_KEYWORDS := []string{
 	"index", // a [queries] record's §05 §3 @index/@spatial requirement `index KIND THING FIELD` (§16, schema v9)
 	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (§17, schema v12)
 	"row", // a [tilemaps] record's row-major cell line `row …` (§17, schema v12)
+	"navnode", // a [nav] record's walkable-cell center `navnode FIXED_X FIXED_Y` (§18, schema v13)
+	"navedge", // a [nav] record's 4-neighbor adjacency `navedge A B` (§18, schema v13)
 }
 
 // Artifact_Section is one parsed `[name N]` block from an artifact: the

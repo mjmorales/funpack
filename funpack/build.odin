@@ -346,8 +346,10 @@ has_entrypoints_fcfg :: proc(root: string) -> bool {
 // `krognid_parts`) land in [functions] as self-contained records, and bakes the
 // tree's levels/*.flvl tile layers (bake_tree_tile_layers) so the artifact's
 // [tilemaps] section carries the §18 §3 static environment — the dungeon's
-// terrain reaches the runtime in the same build that emits its behaviors. A
-// read failure or any checked-pipeline floor surfaces as the stage_emit_indexed
+// terrain reaches the runtime in the same build that emits its behaviors — and
+// derives the §12 §1 nav graphs from those same layers (bake_tree_nav_graphs) so
+// the artifact's [nav] section carries the walkable-cell topology the runtime
+// path-finds over. A read failure or any checked-pipeline floor surfaces as the stage_emit_indexed
 // error, which stage_build maps to Compile_Failed (no artifact); a level that
 // trips a §17.4/§18 §5 bake gate is the same exit-2 compile-error class,
 // surfaced as Gate_Failed.
@@ -380,9 +382,14 @@ emit_tree_artifact :: proc(root: string, project: Project, sources: []Source, al
 		// layer-less artifact.
 		return "", .Gate_Failed
 	}
+	// The §12 §1 nav graphs are a SIBLING bake over the SAME baked tile layers
+	// (bake_tree_nav_graphs, not folded into the tilemap bake): one flat graph
+	// per layer in the same slice order, so the [nav] section mirrors [tilemaps].
+	// A level-less tree has no layers, so the slice is empty (the `[nav 0]` tail).
+	nav_graphs := bake_tree_nav_graphs(tilemaps, allocator)
 	sibling_asts := build_sibling_module_asts(sources, source.module)
 	identity := Project_Identity{name = project.name, version = project.version}
-	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, tilemaps, allocator)
+	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, tilemaps, nav_graphs, allocator)
 }
 
 // bake_tree_tile_layers bakes every levels/*.flvl under the §14 tree and
@@ -442,6 +449,132 @@ bake_tree_tile_layers :: proc(root: string, sources: []Source, index: Module_Ind
 		}
 	}
 	return out[:], true
+}
+
+// Baked_Nav_Graph is one §12 §1 navigation graph derived from a single baked
+// tile layer (docs/artifact-format.md §18, schema v13) — the walkable-cell
+// topology the runtime path-finds over. It is a FLAT graph: the §12 §1
+// hierarchical decomposition stays invisible in the wire format, so the artifact
+// carries one tier of nodes and one tier of edges, never a tree. `name` is the
+// source layer's name (the same TilemapHandle constant name), so a nav record
+// keys 1:1 to its tilemap record. nodes are the walkable cells' world-space
+// CENTERS in ROW-MAJOR order — node index = row-major rank among walkable cells —
+// because §12 §5 forbids exposing the raw Cell index, so the artifact leaks no
+// col/row, only the cell-center Vec2. edges are the 4-neighbor orthogonal
+// adjacencies between walkable cells, deduped and canonical (A < B).
+Baked_Nav_Graph :: struct {
+	name:  string,
+	nodes: []Nav_Node,
+	edges: []Nav_Edge,
+}
+
+// Nav_Node is one walkable cell's world-space CENTER as a Vec2 of raw Q32.32
+// Fixed (docs/artifact-format.md §18) — the v12 anchor encoding (encode_fixed),
+// reconstructed from the layer alone (anchor_x/anchor_y + col/row + half-cell).
+// The col/row are NOT carried: §12 §5 exposes only the center, never the Cell
+// index, so the runtime path-finds over centers and the artifact leaks no grid
+// coordinate.
+Nav_Node :: struct {
+	x: Fixed,
+	y: Fixed,
+}
+
+// Nav_Edge is one undirected 4-neighbor adjacency between two walkable cells,
+// stored as two node indices into the row-major node list with `a < b`
+// canonical (docs/artifact-format.md §18). The bake emits only the right
+// (c+1) and down (r+1) neighbors so each undirected edge appears once, and the
+// `a < b` ordering makes the pair canonical regardless of walk direction.
+Nav_Edge :: struct {
+	a: int,
+	b: int,
+}
+
+// bake_tree_nav_graphs derives one §12 §1 nav graph per baked tile layer — a
+// SIBLING to bake_tree_tile_layers (the tilemap/nav split §12/§18 keep, never
+// folded into one bake), consuming the SAME []Baked_Tile_Layer in the SAME slice
+// order so the [nav] section's record order mirrors [tilemaps] exactly. It is a
+// pure function of the layers (no level re-read, no host nondeterminism §29): the
+// walkable set, the centers, and the edges all derive from each layer's cells +
+// palette + anchor alone. A walkable cell is an empty/marker cell
+// (TILE_LAYER_EMPTY_CELL — markers sit on the floor) OR a non-solid tile
+// (!palette[cells[i]].solid; palette[].solid is the single source of truth, §12
+// §1). A level-less tree (no layers) returns the empty slice — the constant
+// `[nav 0]` tail.
+bake_tree_nav_graphs :: proc(layers: []Baked_Tile_Layer, allocator := context.allocator) -> []Baked_Nav_Graph {
+	graphs := make([]Baked_Nav_Graph, len(layers), allocator)
+	for layer, i in layers {
+		graphs[i] = bake_layer_nav_graph(layer, allocator)
+	}
+	return graphs
+}
+
+// bake_layer_nav_graph derives one layer's flat nav graph: the walkable cells'
+// row-major centers as nodes and their 4-neighbor orthogonal adjacencies as
+// edges. The cell→node map is built first (row-major rank among walkable cells,
+// TILE_LAYER_EMPTY_CELL or a non-solid tile), so an edge can name node indices
+// rather than cell indices. Edges emit only the right (c+1) and down (r+1)
+// neighbors, so each undirected adjacency appears once with `a < b` canonical and
+// the edge list is in ascending (a, b) order (the row-major scan visits cells —
+// and thus the smaller endpoint of every edge — in ascending node-index order).
+bake_layer_nav_graph :: proc(layer: Baked_Tile_Layer, allocator := context.allocator) -> Baked_Nav_Graph {
+	cell_to_node := make([]int, len(layer.cells), context.temp_allocator)
+	node_count := 0
+	for r in 0 ..< layer.rows {
+		for c in 0 ..< layer.cols {
+			cell := r * layer.cols + c
+			if nav_cell_walkable(layer, layer.cells[cell]) {
+				cell_to_node[cell] = node_count
+				node_count += 1
+			} else {
+				cell_to_node[cell] = -1
+			}
+		}
+	}
+	nodes := make([]Nav_Node, node_count, allocator)
+	edges := make([dynamic]Nav_Edge, 0, node_count * 2, allocator)
+	half := fixed_div(to_fixed(layer.cell_size), to_fixed(2))
+	for r in 0 ..< layer.rows {
+		for c in 0 ..< layer.cols {
+			cell := r * layer.cols + c
+			node := cell_to_node[cell]
+			if node < 0 {
+				continue
+			}
+			// The center from the layer alone (cell_center math, flvl_bake.odin):
+			// the grid's top-left corner is (anchor_x, anchor_y), col grows +x and
+			// row grows -y, so the cell center is half a cell in from its corner.
+			off := fixed_add(to_fixed(int_mul(i64(c), layer.cell_size)), half)
+			nodes[node].x = fixed_add(layer.anchor_x, off)
+			nodes[node].y = fixed_sub(layer.anchor_y, fixed_add(to_fixed(int_mul(i64(r), layer.cell_size)), half))
+			// Undirected dedupe: emit only the right and down neighbors so each
+			// adjacency appears once. The scan visits cells in row-major order, so
+			// `node` is the smaller endpoint of every edge it opens — `a < b`.
+			if c + 1 < layer.cols {
+				if right := cell_to_node[cell + 1]; right >= 0 {
+					append(&edges, Nav_Edge{a = node, b = right})
+				}
+			}
+			if r + 1 < layer.rows {
+				if down := cell_to_node[cell + layer.cols]; down >= 0 {
+					append(&edges, Nav_Edge{a = node, b = down})
+				}
+			}
+		}
+	}
+	return Baked_Nav_Graph{name = strings.clone(layer.name, allocator), nodes = nodes, edges = edges[:]}
+}
+
+// nav_cell_walkable reports whether a baked cell admits a nav node (§12 §1): an
+// empty or marker cell (TILE_LAYER_EMPTY_CELL — a marker places an entity on the
+// floor, never a solid) is walkable, and a tile cell is walkable iff its palette
+// entry is NOT solid (palette[].solid is the single source of truth, §12 §1 —
+// the same baked collision verdict the tilemap section carries). A solid tile
+// (a wall, baked rubble) is the only non-walkable cell.
+nav_cell_walkable :: proc(layer: Baked_Tile_Layer, cell: int) -> bool {
+	if cell == TILE_LAYER_EMPTY_CELL {
+		return true
+	}
+	return !layer.palette[cell].solid
 }
 
 // clone_tile_layer deep-copies one baked layer into the caller's allocator —
