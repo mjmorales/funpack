@@ -1,4 +1,4 @@
-funpack-artifact 12
+funpack-artifact 13
 [meta 2]
 project krognid
 version L5:0.1.0
@@ -501,3 +501,4 @@ bind axis P1 Drive::Forward source:stick_y(Stick::Left)
 entrypoint main pipeline:Stroll tick_hz:60 logical:160x120 bindings:bindings
 [queries 0]
 [tilemaps 0]
+[nav 0]

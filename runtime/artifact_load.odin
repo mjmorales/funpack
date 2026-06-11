@@ -95,6 +95,15 @@ build_program :: proc(
 			program.queries = load_queries(section, allocator) or_return
 		case "tilemaps":
 			program.tilemaps = load_tilemaps(section, allocator) or_return
+		case "nav":
+			// v13 §12 nav graphs are CONSUMED-AND-DISCARDED here, not loaded:
+			// the parser (parse_section) already grouped and count-validated the
+			// `navnode`/`navedge` sub-records and advanced the cursor to the next
+			// section, so admitting the name is all that keeps the loader from
+			// refusing it via the default arm. Story B does NOT build a Nav
+			// resource — the runtime nav-resource path story (nav-resource-path-
+			// from-to) owns real loading. Runtime CONSUMES the format; funpack
+			// DEFINES it (Lore #9).
 		case:
 			return {}, .Malformed_Header // an unknown section is a schema mismatch
 		}

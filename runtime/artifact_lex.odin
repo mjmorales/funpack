@@ -145,7 +145,28 @@ import "core:strings"
 // A lead-line field is a layout change: 11 → 12 (funpack/docs/
 // artifact-format.md §1, §17). Level-less artifacts move by the stamp alone
 // (the v7 stamp-only restamp precedent).
-ARTIFACT_SCHEMA_VERSION :: 12
+//
+// v13 carries the §12 §1 NAV GRAPHS — the walkable-cell topology a tilemap's
+// solids imply, baked once on the funpack side so this runtime path-finds over
+// a graph it never authored (the picture IS the topology, §12 §1; runtime
+// CONSUMES the format, funpack DEFINES it — Lore #9). Two layout changes ride
+// it: (1) one new section, `[nav N]`, appended after [tilemaps] as the fixed §3
+// section tail — one record per baked tile layer in the SAME slice order
+// [tilemaps] emits (a nav record keys 1:1 to its tilemap): a lead line `nav
+// NAME NODE_COUNT EDGE_COUNT` carrying NO grid metadata (§12 §5 forbids leaking
+// the raw Cell index, so no col/row), then NODE_COUNT `navnode FIXED_X FIXED_Y`
+// sub-records (each a walkable cell's world-space CENTER as two raw Q32.32
+// Fixed, §2.3 — centers not indices, in ROW-MAJOR order so line position IS the
+// node index), then EDGE_COUNT `navedge A B` sub-records (two decimal node
+// indices, `A < B` canonical, the 4-neighbor orthogonal adjacencies). (2) two
+// new sub-record keywords, `navnode` and `navedge`. This runtime ADMITS the
+// framing and CONSUMES-AND-DISCARDS the section (it does NOT yet build a Nav
+// resource — the nav-resource path story owns real loading); the arm exists
+// only so the loader does not choke on the new section. A new section and new
+// sub-record keywords are layout changes: 12 → 13 (funpack/artifact_format.odin
+// v13, §1, §12). Level-less artifacts move by the stamp plus the constant
+// `[nav 0]` tail (the level-less `[tilemaps 0]` precedent).
+ARTIFACT_SCHEMA_VERSION :: 13
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
@@ -168,6 +189,8 @@ SUB_RECORD_KEYWORDS :: [?]string {
 	"index", // a [queries] record's §05 §3 @index/@spatial requirement (v9, §16)
 	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (v11 framing, §17)
 	"row", // a [tilemaps] record's row-major cell line `row …` (v11 framing, §17)
+	"navnode", // a [nav] record's walkable-cell center `navnode FIXED_X FIXED_Y` (v13, §12)
+	"navedge", // a [nav] record's 4-neighbor adjacency `navedge A B` (v13, §12)
 }
 
 // Artifact_Error is the closed parse-failure enum. Every failure is a refusal
