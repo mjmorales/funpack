@@ -1,4 +1,4 @@
-# funpack artifact format — v12
+# funpack artifact format — v13
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,7 +25,7 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 12
+funpack-artifact 13
 ```
 
 - `schema_version` is the integer after the space (here `12`).
@@ -158,7 +158,25 @@ funpack-artifact 12
   bounds from the origin), so §17's documented mapping is reproducible from the
   record alone. A lead-line field is a layout change: 11 → 12. A level-less
   artifact moves by the version stamp alone (the v7 stamp-only restamp
-  precedent).
+  precedent). v13 carries the **§12 §1 nav graphs** through to the runtime —
+  the walkable-cell topology a tilemap's solids imply, baked once so the runtime
+  path-finds over a graph it never authored (the picture **is** the topology,
+  §12 §1). Two layout changes ride it: (a) one new section, `[nav N]` (§18),
+  appended after `[tilemaps]` as the fixed §3 section tail — one record per baked
+  tile layer in the **same slice order** `[tilemaps]` emits, so a nav record keys
+  1:1 to its tilemap: a lead line `nav NAME NODE_COUNT EDGE_COUNT` carrying **no**
+  grid metadata (§12 §5 forbids exposing the raw Cell index, so the artifact leaks
+  no col/row), then `NODE_COUNT` `navnode FIXED_X FIXED_Y` sub-records — one per
+  walkable cell, each the cell's world-space **center** as two raw Q32.32 `Fixed`
+  (§2.3), in **row-major** order so the line position **is** the node index (the
+  raw Cell index is never the wire token, §12 §5) — then `EDGE_COUNT` `navedge A
+  B` sub-records, the **4-neighbor orthogonal** adjacencies as two decimal node
+  indices, **canonical `A < B`** and in ascending `(A, B)` order. The §12 §1
+  hierarchical decomposition stays **invisible**: one **flat** graph per layer, no
+  tiers in the wire format. (b) two new **sub-record keywords**, `navnode` and
+  `navedge`. A new section and new sub-record keywords are layout changes:
+  12 → 13. A level-less artifact moves by the version stamp plus the constant
+  `[nav 0]` tail (the §3 fixed-tail precedent the level-less `[tilemaps 0]` set).
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -209,7 +227,8 @@ no field whose value depends on when, where, or on which machine it was emitted.
   unambiguously, then re-derives `N` by counting the **lead** lines (those whose
   keyword is *not* a sub-record keyword). The closed sub-record keyword set is:
   `variant`, `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`,
-  `node`, `migrate` (v8, §6), `index` (v9, §16), `tile` and `row` (v11, §17). A
+  `node`, `migrate` (v8, §6), `index` (v9, §16), `tile` and `row` (v11, §17),
+  `navnode` and `navedge` (v13, §18). A
   declared `N` that disagrees with the lead-line count is an error (an under-
   or over-shaped section, §29-style exact-match).
 
@@ -411,7 +430,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 12
+funpack-artifact 13
 [meta 2]
 …
 [enums N]
@@ -439,6 +458,8 @@ funpack-artifact 12
 [queries N]
 …
 [tilemaps N]
+…
+[nav N]
 …
 ```
 
@@ -1040,7 +1061,62 @@ row C0 C1 … C{COLS-1}
 
 ---
 
-## 18. Parsing recipe (runtime, zero funpack imports)
+## 18. `[nav]` — baked nav graphs (§12 §1, schema v13)
+
+One record per baked tile layer, in the **same slice order** `[tilemaps]`
+emits (§17), so a `[nav]` record keys **1:1** to its `[tilemaps]` record by
+position — the same level-declaration / §14.4 deterministic-walk order. A nav
+graph is the §12 §1 **walkable-cell topology** a tilemap's solids imply, baked
+once so the runtime path-finds over a graph it never authored (the picture **is**
+the topology). `[nav]` is the fixed final section of the §3 order (§3).
+
+```
+nav NAME NODE_COUNT EDGE_COUNT
+navnode FIXED_X FIXED_Y
+…
+navedge A B
+…
+```
+
+- The lead line `nav NAME NODE_COUNT EDGE_COUNT`: `NAME` is the layer's authored
+  name (the same token its `[tilemaps]` record carries); `NODE_COUNT` is the
+  number of `navnode` lines that follow; `EDGE_COUNT` is the number of `navedge`
+  lines after them. The lead line carries **no** grid metadata — no `COLS`/`ROWS`,
+  no `CELL_SIZE`, no anchor. This is the **deliberate §12 §5 asymmetry** vs
+  `[tilemaps]` (§17), which carries `COLS`/`ROWS` because its grid is rendered and
+  collided **batched** by cell. The nav graph exposes only walkable **centers** and
+  their adjacency: the raw **Cell index is never exposed** in the wire format
+  (§12 §5), so no col/row leaks through `[nav]`.
+- `navnode FIXED_X FIXED_Y` is one walkable cell's world-space **center**, two raw
+  Q32.32 `Fixed` fields (§2.3) — the **same anchor encoding** the v12 `[tilemaps]`
+  lead line uses, reconstructed from the layer's anchor + `CELL_SIZE` alone. One
+  `navnode` per walkable cell, in **row-major** order (the grid read as a picture,
+  row 0 = the level's top edge — the §17 row order), so a node's **line position
+  is its node index** (0-based). Centers, not indices, are the token precisely
+  because §12 §5 forbids exposing the Cell index.
+- `navedge A B` is one **4-neighbor orthogonal** adjacency: `A` and `B` are two
+  decimal **node indices** into the row-major `navnode` list (each `0 ≤ idx <
+  NODE_COUNT`). The right/down neighbor pair of every walkable cell is deduped to
+  **one undirected edge**, written **canonical `A < B`**, and the `navedge` lines
+  are in **ascending `(A, B)`** order. §12 §4 makes diagonal/cost a bake-time
+  stance, so the conservative single-algorithm **4-neighbor** bake is the default
+  — never an 8-neighbor diagonal toggle without a spec decision.
+- **Walkable = non-solid.** A cell is a `navnode` iff it is **not solid** — the
+  walkability verdict is derived from the tilemap palette's `solid` flag (the
+  `tile NAME SOLID` line, §17), the §12 §1 **single source of truth**. A solid
+  cell contributes no node and no incident edge; the nav graph never re-decides
+  collision.
+- The §12 §1 **hierarchical decomposition is invisible** in the wire format: one
+  **flat** graph per layer, no tiers — the runtime path-finds the flat node/edge
+  list directly.
+- A **level-less** artifact has no tile layers, so this section is the constant
+  empty tail `[nav 0]` — the §3 fixed-tail precedent the level-less `[tilemaps 0]`
+  set. Every level-less artifact moves to v13 by the version stamp plus this
+  constant tail (the v12→v13 stamp-and-empty-tail restamp, §1).
+
+---
+
+## 19. Parsing recipe (runtime, zero funpack imports)
 
 A runtime parses an artifact thus, reading top-to-bottom, never seeking:
 
@@ -1052,7 +1128,7 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
    spans its lead line up to the next lead line. Lead lines are those whose
    leading keyword is *not* in the closed sub-record keyword set (`variant`,
    `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`, `node`,
-   `migrate`, `index`, `tile`, `row`). This
+   `migrate`, `index`, `tile`, `row`, `navnode`, `navedge`). This
    is the **only** parse discipline; the format does not promise a
    second grammar-only reader that derives `N` from declared sub-counts (it cannot
    be sound where a record carries an uncounted run, e.g. a `const`'s body `node`
