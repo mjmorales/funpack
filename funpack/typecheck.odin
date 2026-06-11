@@ -1747,7 +1747,7 @@ pick_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 }
 
 // grid_cells_check types both grid_cells arities (spec §18 §4, engine.grid),
-// selected by argument count — the overload-on-arity mold first's two forms
+// selected by argument count — the overload-on-arity mold `first`'s two forms
 // use. The CANONICAL form grid_cells(size: Cell) -> [Cell] takes a
 // user cell record — structurally, a record whose schema is exactly the two Int
 // fields x and y (the Cell is the user's, not the engine's, so the judgment is
