@@ -66,9 +66,9 @@ run_fmt_verb :: proc(mode: Fmt_Mode) -> int {
 // tree is canonical. Generated seams (gen/*.gen.fun) are skipped — the bake
 // emitter owns their bytes.
 fmt_verb_exit :: proc(root: string, mode: Fmt_Mode) -> int {
-	project, project_err := read_project(root)
+	project, project_err, project_detail := read_project(root)
 	if project_err != .None {
-		fmt.eprintfln("funpack fmt: %v", project_err)
+		fmt.eprintfln("funpack fmt: %s", project_refusal_message(project_err, project_detail, context.temp_allocator))
 		return 2
 	}
 	drifted := 0

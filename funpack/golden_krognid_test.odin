@@ -81,7 +81,7 @@ krognid_committed_seam_path :: proc(t: ^testing.T) -> (path: string, ok: bool) {
 		)
 		return "", false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None {
 		log.warnf("SKIP krognid golden: krognid tree at %s did not read (%v)", dir, read_err)
 		return "", false
@@ -265,7 +265,7 @@ test_krognid_project_reads_and_joins_seam :: proc(t: ^testing.T) {
 		)
 		return
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	testing.expect_value(t, read_err, Project_Error.None)
 	if read_err != .None {
 		return
@@ -360,7 +360,7 @@ test_krognid_whole_tree_green :: proc(t: ^testing.T) {
 		)
 		return
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	testing.expect_value(t, read_err, Project_Error.None)
 	if read_err != .None {
 		return

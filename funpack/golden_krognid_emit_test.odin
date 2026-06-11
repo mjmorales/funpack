@@ -40,7 +40,7 @@ krognid_emit :: proc(t: ^testing.T) -> (artifact: string, ok: bool) {
 		)
 		return "", false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None {
 		log.warnf("SKIP krognid emit golden: krognid tree at %s did not read (%v)", dir, read_err)
 		return "", false

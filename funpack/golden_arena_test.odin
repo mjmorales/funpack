@@ -206,7 +206,7 @@ test_golden_arena_project_typechecks :: proc(t: ^testing.T) {
 		)
 		return
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	testing.expect_value(t, read_err, Project_Error.None)
 	if read_err != .None {
 		return
@@ -259,7 +259,7 @@ test_golden_arena_inline_tests_pass :: proc(t: ^testing.T) {
 		)
 		return
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	testing.expect_value(t, read_err, Project_Error.None)
 	if read_err != .None {
 		return

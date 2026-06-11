@@ -186,7 +186,7 @@ test_path_dep_resolves_under_project_name_root :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	project, err := read_project(root)
+	project, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.None)
 	if err != .None {
 		return
@@ -230,7 +230,7 @@ test_path_dep_fn_in_combinator_slot :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	project, err := read_project(root)
+	project, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.None)
 	if err != .None {
 		return
@@ -258,7 +258,7 @@ test_path_dep_private_member_fails_project_walk :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	project, err := read_project(root)
+	project, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.None)
 	if err != .None {
 		return
@@ -286,7 +286,7 @@ test_dep_imports_dep_structural_refusal :: proc(t: ^testing.T) {
 		return
 	}
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Package_Imports_Package)
 }
 
@@ -302,7 +302,7 @@ test_package_named_like_engine_root_refused :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Package_Shadows_Engine_Root)
 }
 
@@ -317,7 +317,7 @@ test_local_module_shadowing_dep_root_refused :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Module_Shadows_Package_Root)
 }
 
@@ -332,8 +332,12 @@ test_dep_name_mismatch_refused :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, detail := read_project(root)
 	testing.expect_value(t, err, Project_Error.Dep_Name_Mismatch)
+	// The uniform detail channel carries BOTH identities — the declared `use`
+	// name and the tree's project name — so the refusal line names the drift.
+	testing.expect(t, strings.contains(detail, "hexgrid"))
+	testing.expect(t, strings.contains(detail, "hexgrove"))
 }
 
 @(test)
@@ -353,7 +357,7 @@ test_path_dep_with_entrypoint_is_not_a_package :: proc(t: ^testing.T) {
 		return
 	}
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Malformed_Package_Tree)
 }
 
@@ -372,7 +376,7 @@ test_path_dep_missing_tree_refused :: proc(t: ^testing.T) {
 		return
 	}
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Malformed_Package_Tree)
 }
 
@@ -442,7 +446,7 @@ test_vendored_pin_match_builds_clean :: proc(t: ^testing.T) {
 		return
 	}
 
-	project, err := read_project(root)
+	project, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.None)
 	if err != .None {
 		return
@@ -469,11 +473,18 @@ test_vendored_pin_mismatch_refused_with_fix_it :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, detail := read_project(root)
 	testing.expect_value(t, err, Project_Error.Package_Hash_Mismatch)
+	// The fix-it rides read_project's uniform detail channel — not dropped.
+	testing.expect(t, strings.contains(detail, "re-pin"))
 
 	_, build_verdict := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, build_verdict.err, Build_Error.Malformed_Tree)
+	// The build refusal line names the project arm + fix-it through the
+	// offender channel instead of a bare Malformed_Tree.
+	build_message := build_refusal_message(build_verdict, context.temp_allocator)
+	testing.expect(t, strings.contains(build_message, "Package_Hash_Mismatch"))
+	testing.expect(t, strings.contains(build_message, "re-pin"))
 
 	verify_err, fix_it := verify_vendored_deps(
 		root,
@@ -512,7 +523,7 @@ test_vendored_pin_exact_match_discipline :: proc(t: ^testing.T) {
 			log.warnf("SKIP exact-match discipline: cannot rewrite deps.fcfg under %s", root)
 			return
 		}
-		_, err := read_project(root)
+		_, err, _ := read_project(root)
 		testing.expect_value(t, err, Project_Error.Package_Hash_Mismatch)
 	}
 }
@@ -532,7 +543,7 @@ test_pinned_dep_missing_vendored_tree_refused :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Missing_Vendored_Package)
 
 	verify_err, fix_it := verify_vendored_deps(

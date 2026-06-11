@@ -39,7 +39,7 @@ arena_committed_seam_path :: proc(t: ^testing.T) -> (path: string, ok: bool) {
 		)
 		return "", false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None {
 		log.warnf("SKIP seam compare: arena tree at %s did not read (%v)", dir, read_err)
 		return "", false
@@ -148,7 +148,7 @@ test_seam_compare_missing :: proc(t: ^testing.T) {
 		return
 	}
 
-	project, read_err := read_project(root)
+	project, read_err, _ := read_project(root)
 	testing.expect_value(t, read_err, Project_Error.None)
 	if read_err != .None {
 		return

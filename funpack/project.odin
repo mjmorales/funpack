@@ -16,6 +16,7 @@
 // is rejected, never silently ignored.
 package funpack
 
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
@@ -223,27 +224,34 @@ Project_Error :: enum {
 	Package_Hash_Mismatch,
 }
 
-read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
+// read_project's detail return is the uniform one-line advisory channel every
+// Project_Error arm rides — the named-offender refusal-line discipline build
+// refusals follow (Build_Verdict.offender), applied at project-read time. The
+// closed enum stays the machine contract; detail is advisory text naming the
+// offender or carrying the fix-it ("" when an arm has no payload yet), so a
+// CLI refusal line tells the agent exactly what to repair without any verb
+// growing arm-by-arm prose.
+read_project :: proc(root: string) -> (project: Project, err: Project_Error, detail: string) {
 	configs_dir, _ := filepath.join({root, "funpack_configs"}, context.temp_allocator)
 	if !os.is_dir(configs_dir) {
-		return Project{}, .Missing_Configs_Dir
+		return Project{}, .Missing_Configs_Dir, ""
 	}
 	fcfg_path, _ := filepath.join({configs_dir, "project.fcfg"}, context.temp_allocator)
 	fcfg_bytes, read_err := os.read_entire_file_from_path(fcfg_path, context.temp_allocator)
 	if read_err != nil {
-		return Project{}, .Missing_Project_Fcfg
+		return Project{}, .Missing_Project_Fcfg, ""
 	}
 	identity, parse_err := parse_project_fcfg(string(fcfg_bytes))
 	if parse_err != .None {
-		return Project{}, parse_err
+		return Project{}, parse_err, ""
 	}
-	src_sources, src_err := collect_sources(root)
+	src_sources, src_err, src_detail := collect_sources(root)
 	if src_err != .None {
-		return Project{}, src_err
+		return Project{}, src_err, src_detail
 	}
 	builds, builds_err := read_builds_fcfg(configs_dir)
 	if builds_err != .None {
-		return Project{}, builds_err
+		return Project{}, builds_err, ""
 	}
 	capabilities := derive_tree_capabilities(root)
 	// A baked gen/*.gen.fun seam joins the source set so it rides the same
@@ -255,18 +263,18 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 	// COMBINED set so a seam colliding with a hand-written module fails the tree.
 	seam_sources, seam_collect_err := collect_seam_sources(root, capabilities)
 	if seam_collect_err != .None {
-		return Project{}, seam_collect_err
+		return Project{}, seam_collect_err, ""
 	}
-	sources, merge_err := merge_sources(src_sources, seam_sources)
+	sources, merge_err, merge_detail := merge_sources(src_sources, seam_sources)
 	if merge_err != .None {
-		return Project{}, merge_err
+		return Project{}, merge_err, merge_detail
 	}
 	// §17 acyclic layering: a generated seam imports schema modules + engine.*
 	// only. A seam importing a behavior module closes the import cycle, so it is
 	// a compile error (Seam_Imports_Behavior). The check runs over the combined
 	// set so it can classify every imported user module by its declarations.
 	if layer_err := check_seam_layering(seam_sources, sources); layer_err != .None {
-		return Project{}, layer_err
+		return Project{}, layer_err, ""
 	}
 	// §30: the optional deps.fcfg declares the dependency set; each PATH dep
 	// resolves to a package tree whose sources join the build under the
@@ -275,22 +283,22 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 	// derived module shadowing a package root is caught too.
 	deps, deps_err := read_deps_fcfg(configs_dir)
 	if deps_err != .None {
-		return Project{}, deps_err
+		return Project{}, deps_err, ""
 	}
 	// §30 §4: every registry/url pin verifies over its committed vendored
 	// tree BEFORE any package source joins the build, so check/build/test
 	// all gate alike at project-read time. The closed arm is the machine
-	// contract; the fix-it riding beside it is advisory and dropped here
-	// (path deps are skipped inside — §30 §3 grants them no hash).
-	if verify_err, _ := verify_vendored_deps(root, deps); verify_err != .None {
-		return Project{}, verify_err
+	// contract; the fix-it riding beside it is the detail line (path deps
+	// are skipped inside — §30 §3 grants them no hash).
+	if verify_err, fix_it := verify_vendored_deps(root, deps); verify_err != .None {
+		return Project{}, verify_err, fix_it
 	}
-	package_sources, pkg_err := collect_package_sources(root, deps)
+	package_sources, pkg_err, pkg_detail := collect_package_sources(root, deps)
 	if pkg_err != .None {
-		return Project{}, pkg_err
+		return Project{}, pkg_err, pkg_detail
 	}
-	if shadow_err := check_package_root_shadowing(sources, deps); shadow_err != .None {
-		return Project{}, shadow_err
+	if shadow_err, shadow_detail := check_package_root_shadowing(sources, deps); shadow_err != .None {
+		return Project{}, shadow_err, shadow_detail
 	}
 	return Project {
 			name = identity.name,
@@ -301,7 +309,19 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error) {
 			deps = deps,
 			package_sources = package_sources,
 		},
-		.None
+		.None,
+		""
+}
+
+// project_refusal_message renders one project-read refusal line: the closed
+// arm name, with the advisory detail appended when the arm carries one — the
+// build_refusal_message mold, so every CLI verb prints refusals through one
+// channel instead of growing arm-by-arm prose.
+project_refusal_message :: proc(err: Project_Error, detail: string, allocator := context.allocator) -> string {
+	if detail == "" {
+		return fmt.aprintf("%v", err, allocator = allocator)
+	}
+	return fmt.aprintf("%v: %s", err, detail, allocator = allocator)
 }
 
 // read_builds_fcfg reads the optional builds.fcfg out of the configs dir and
@@ -940,14 +960,14 @@ cfg_scan_punct :: proc(ch: u8) -> Cfg_Token {
 // name reject with Duplicate_Module (§15.6) — module identity is
 // single-owner, so the second deriver in sorted-path order trips the
 // check deterministically.
-collect_sources :: proc(root: string) -> ([]Source, Project_Error) {
+collect_sources :: proc(root: string) -> ([]Source, Project_Error, string) {
 	src_dir, _ := filepath.join({root, "src"}, context.temp_allocator)
 	if !os.is_dir(src_dir) {
-		return nil, .Missing_Src_Dir
+		return nil, .Missing_Src_Dir, ""
 	}
 	paths := collect_fun_paths(src_dir)
 	if len(paths) == 0 {
-		return nil, .No_Sources
+		return nil, .No_Sources, ""
 	}
 	slice.sort(paths)
 	// The walker resolves the source root through realpath, so the
@@ -964,15 +984,15 @@ collect_sources :: proc(root: string) -> ([]Source, Project_Error) {
 	for path, i in paths {
 		module := derive_module_name(abs_src_dir, path)
 		if module_under_reserved_root(module) {
-			return nil, .Reserved_Engine_Root
+			return nil, .Reserved_Engine_Root, fmt.tprintf("%s derives module '%s' under the reserved engine root (§15 §7)", path, module)
 		}
 		if module in seen {
-			return nil, .Duplicate_Module
+			return nil, .Duplicate_Module, fmt.tprintf("%s derives module '%s', which another source already derives (§15 §6)", path, module)
 		}
 		seen[module] = true
 		sources[i] = Source{path = path, module = module}
 	}
-	return sources, .None
+	return sources, .None, ""
 }
 
 // collect_fun_paths walks `src_dir` breadth-first and returns every
@@ -1210,7 +1230,7 @@ capabilities_any_on :: proc(caps: Capabilities) -> bool {
 // is pre-checked, so a reserved collision here can only come from src/, but the
 // arm is total over the combined set). The deterministic order matters because
 // downstream stages walk Project.sources by index.
-merge_sources :: proc(src_sources: []Source, seam_sources: []Source) -> ([]Source, Project_Error) {
+merge_sources :: proc(src_sources: []Source, seam_sources: []Source) -> ([]Source, Project_Error, string) {
 	combined := make([]Source, len(src_sources) + len(seam_sources), context.temp_allocator)
 	copy(combined[:len(src_sources)], src_sources)
 	copy(combined[len(src_sources):], seam_sources)
@@ -1220,14 +1240,14 @@ merge_sources :: proc(src_sources: []Source, seam_sources: []Source) -> ([]Sourc
 	seen := make(map[string]bool, context.temp_allocator)
 	for source in combined {
 		if module_under_reserved_root(source.module) {
-			return nil, .Reserved_Engine_Root
+			return nil, .Reserved_Engine_Root, fmt.tprintf("%s derives module '%s' under the reserved engine root (§15 §7)", source.path, source.module)
 		}
 		if source.module in seen {
-			return nil, .Duplicate_Module
+			return nil, .Duplicate_Module, fmt.tprintf("%s derives module '%s', which another source already derives (§15 §6)", source.path, source.module)
 		}
 		seen[source.module] = true
 	}
-	return combined, .None
+	return combined, .None, ""
 }
 
 // check_seam_layering enforces the §17 schema/seam/behavior acyclic-import

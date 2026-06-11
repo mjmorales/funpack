@@ -132,7 +132,7 @@ pong_source :: proc() -> (source: string, ok: bool) {
 		log.warnf("SKIP golden pong: %s not found — set FUNPACK_PONG_DIR or check out funpack-spec as a sibling of the repo", dir)
 		return "", false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None || len(project.sources) == 0 {
 		return "", false
 	}

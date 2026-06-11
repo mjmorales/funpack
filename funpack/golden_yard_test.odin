@@ -410,7 +410,7 @@ yard_source :: proc() -> (source: string, ok: bool) {
 		log.warnf("SKIP golden yard: %s not found — set FUNPACK_YARD_DIR or check out funpack-spec as a sibling of the repo", dir)
 		return "", false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None || len(project.sources) == 0 {
 		return "", false
 	}
@@ -432,7 +432,7 @@ yard_emit_inputs :: proc(t: ^testing.T) -> (inputs: Pong_Emit_Inputs, ok: bool) 
 		_ = present
 		return Pong_Emit_Inputs{}, false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None || len(project.sources) == 0 {
 		return Pong_Emit_Inputs{}, false
 	}

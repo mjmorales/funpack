@@ -115,7 +115,7 @@ test_read_project_valid_tree :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	project, err := read_project(root)
+	project, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.None)
 	testing.expect_value(t, project.name, "numerics")
 	testing.expect_value(t, project.version, "0.1.0")
@@ -133,7 +133,7 @@ test_read_project_malformed_tree_rejected :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
 }
 
@@ -147,13 +147,13 @@ test_read_project_missing_version_tree_rejected :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Missing_Project_Version)
 }
 
 @(test)
 test_read_project_missing_tree :: proc(t: ^testing.T) {
-	_, err := read_project("/nonexistent-funpack-project-root")
+	_, err, _ := read_project("/nonexistent-funpack-project-root")
 	testing.expect_value(t, err, Project_Error.Missing_Configs_Dir)
 }
 
@@ -189,7 +189,7 @@ test_read_project_nested_source_module :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	project, err := read_project(root)
+	project, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.None)
 	testing.expect_value(t, len(project.sources), 1)
 	testing.expect_value(t, project.sources[0].module, "combat.melee")
@@ -207,7 +207,7 @@ test_read_project_reserved_engine_root_rejected :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Reserved_Engine_Root)
 }
 
@@ -223,7 +223,7 @@ test_read_project_duplicate_module_rejected :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Duplicate_Module)
 }
 
@@ -238,7 +238,7 @@ test_read_project_distinct_modules_accepted :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	project, err := read_project(root)
+	project, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.None)
 	testing.expect_value(t, len(project.sources), 2)
 	if len(project.sources) == 2 {
@@ -257,7 +257,7 @@ test_read_project_reserved_engine_bare_root_rejected :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Reserved_Engine_Root)
 }
 
@@ -573,7 +573,7 @@ test_arena_builds_and_capabilities :: proc(t: ^testing.T) {
 		return
 	}
 
-	project, err := read_project(dir)
+	project, err, _ := read_project(dir)
 	testing.expect_value(t, err, Project_Error.None)
 	if err != .None {
 		return

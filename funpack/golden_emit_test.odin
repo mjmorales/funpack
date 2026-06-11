@@ -171,7 +171,7 @@ snake_emit_inputs :: proc(t: ^testing.T) -> (inputs: Pong_Emit_Inputs, ok: bool)
 		_ = present
 		return Pong_Emit_Inputs{}, false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None || len(project.sources) == 0 {
 		return Pong_Emit_Inputs{}, false
 	}
@@ -205,7 +205,7 @@ pong_emit_inputs :: proc(t: ^testing.T) -> (inputs: Pong_Emit_Inputs, ok: bool) 
 		_ = present
 		return Pong_Emit_Inputs{}, false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None || len(project.sources) == 0 {
 		return Pong_Emit_Inputs{}, false
 	}

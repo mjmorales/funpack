@@ -252,7 +252,7 @@ test_index_contract_snake_project_record :: proc(t: ^testing.T) {
 		log.warnf("SKIP index contract snake: %s not found — set FUNPACK_SNAKE_DIR or check out funpack-spec as a sibling", dir)
 		return
 	}
-	identity, project_err := read_project(dir)
+	identity, project_err, _ := read_project(dir)
 	testing.expect_value(t, project_err, Project_Error.None)
 	if project_err != .None || len(identity.sources) == 0 {
 		return
@@ -630,7 +630,7 @@ pong_project_record :: proc() -> (record: Project_Record, ok: bool) {
 	if !os.is_dir(dir) {
 		return Project_Record{}, false
 	}
-	identity, project_err := read_project(dir)
+	identity, project_err, _ := read_project(dir)
 	if project_err != .None || len(identity.sources) == 0 {
 		return Project_Record{}, false
 	}

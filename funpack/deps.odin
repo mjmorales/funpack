@@ -214,28 +214,42 @@ cfg_skip_doc_deps :: proc(p: ^Cfg_Parser) -> Project_Error {
 // against the declared pin by verify_vendored_deps (the §30 §4 gate
 // read_project runs before this resolution); joining their sources to the
 // build lands later behind that same gate.
-collect_package_sources :: proc(root: string, deps: []Dep) -> (sources: []Source, err: Project_Error) {
+collect_package_sources :: proc(root: string, deps: []Dep) -> (sources: []Source, err: Project_Error, detail: string) {
 	collected := make([dynamic]Source, 0, 4, context.temp_allocator)
 	for dep in deps {
 		if dep.source != .Path {
 			continue
 		}
 		dep_root, _ := filepath.join({root, dep.value}, context.temp_allocator)
-		identity := read_package_identity(dep_root) or_return
+		identity, identity_err := read_package_identity(dep_root)
+		if identity_err != .None {
+			return nil, identity_err, fmt.tprintf("use %s: the tree at %s is not a well-formed package", dep.name, dep.value)
+		}
 		if module_under_reserved_root(identity.name) {
-			return nil, .Package_Shadows_Engine_Root
+			return nil, .Package_Shadows_Engine_Root, fmt.tprintf("use %s: the tree's project name '%s' falls under the reserved engine root (§15 §7)", dep.name, identity.name)
 		}
 		if identity.name != dep.name {
-			return nil, .Dep_Name_Mismatch
+			return nil, .Dep_Name_Mismatch, fmt.tprintf("use %s: the tree's project.fcfg declares '%s' — one name, one identity (§30 §7)", dep.name, identity.name)
 		}
-		check_package_is_leaf(dep_root) or_return
-		dep_sources := collect_package_tree_sources(dep_root) or_return
+		if leaf_err := check_package_is_leaf(dep_root); leaf_err != .None {
+			if leaf_err == .Package_Imports_Package {
+				return nil, leaf_err, fmt.tprintf("use %s: the tree declares its own dependencies — a package depends only on engine (§30 §2)", dep.name)
+			}
+			return nil, leaf_err, fmt.tprintf("use %s: the tree at %s is not a well-formed package", dep.name, dep.value)
+		}
+		dep_sources, tree_err, tree_detail := collect_package_tree_sources(dep_root)
+		if tree_err != .None {
+			if tree_detail == "" {
+				tree_detail = fmt.tprintf("use %s: the tree at %s is not a well-formed package", dep.name, dep.value)
+			}
+			return nil, tree_err, tree_detail
+		}
 		for source in dep_sources {
 			prefixed := strings.concatenate({identity.name, ".", source.module}, context.temp_allocator)
 			append(&collected, Source{path = source.path, module = prefixed, package_root = identity.name})
 		}
 	}
-	return collected[:], .None
+	return collected[:], .None, ""
 }
 
 // read_package_identity reads and parses a path dependency's
@@ -301,15 +315,15 @@ check_package_is_leaf :: proc(dep_root: string) -> Project_Error {
 // sources exports nothing — the declared path does not hold a package); the
 // precise §15 arms (Reserved_Engine_Root, Duplicate_Module) pass through
 // untouched, naming the same rule they name on a consumer tree.
-collect_package_tree_sources :: proc(dep_root: string) -> (sources: []Source, err: Project_Error) {
-	collected, collect_err := collect_sources(dep_root)
+collect_package_tree_sources :: proc(dep_root: string) -> (sources: []Source, err: Project_Error, detail: string) {
+	collected, collect_err, collect_detail := collect_sources(dep_root)
 	#partial switch collect_err {
 	case .None:
-		return collected, .None
+		return collected, .None, ""
 	case .Missing_Src_Dir, .No_Sources:
-		return nil, .Malformed_Package_Tree
+		return nil, .Malformed_Package_Tree, ""
 	case:
-		return nil, collect_err
+		return nil, collect_err, collect_detail
 	}
 }
 
@@ -323,16 +337,16 @@ collect_package_tree_sources :: proc(dep_root: string) -> (sources: []Source, er
 // reserves its root, path or not: a registry/url dep's namespace is claimed
 // by the declaration even before its vendored tree resolves (§30 §4,
 // downstream), so the collision cannot appear later as a silent rebind.
-check_package_root_shadowing :: proc(sources: []Source, deps: []Dep) -> Project_Error {
+check_package_root_shadowing :: proc(sources: []Source, deps: []Dep) -> (err: Project_Error, detail: string) {
 	for dep in deps {
 		dep_prefix := strings.concatenate({dep.name, "."}, context.temp_allocator)
 		for source in sources {
 			if source.module == dep.name || strings.has_prefix(source.module, dep_prefix) {
-				return .Module_Shadows_Package_Root
+				return .Module_Shadows_Package_Root, fmt.tprintf("%s derives module '%s', which shadows the declared dependency root '%s' (§30 §7)", source.path, source.module, dep.name)
 			}
 		}
 	}
-	return .None
+	return .None, ""
 }
 
 // ── §30 §4 content-hash pins + vendored verification ─────────────────────

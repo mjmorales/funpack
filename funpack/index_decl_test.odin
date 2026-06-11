@@ -851,7 +851,7 @@ checkout_decl_records :: proc(
 		log.warnf("SKIP index contract decl records %s: %s not found — set %s or check out funpack-spec as a sibling", label, dir, env_name)
 		return nil, false
 	}
-	identity, project_err := read_project(dir)
+	identity, project_err, _ := read_project(dir)
 	testing.expect_value(t, project_err, Project_Error.None)
 	if project_err != .None || len(identity.sources) == 0 {
 		return nil, false

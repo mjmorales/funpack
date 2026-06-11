@@ -66,7 +66,7 @@ expect_fmt_golden_tree :: proc(t: ^testing.T, src: string, label: string, env_na
 
 	_, verdict_before := stage_build(root, .Dev, context.temp_allocator)
 
-	project, project_err := read_project(root)
+	project, project_err, _ := read_project(root)
 	testing.expect_value(t, project_err, Project_Error.None)
 	if project_err != .None {
 		return

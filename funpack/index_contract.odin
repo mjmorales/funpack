@@ -817,7 +817,7 @@ Index_Module :: struct {
 // decl by its §15 module name (`arena_game.chase`), the §29 §2 module-qualified
 // name, so a cross-module index disambiguates a name two modules both declare.
 read_index_project :: proc(root: string, allocator := context.allocator) -> (ndjson: string, err: Index_Contract_Error, compiled: bool) {
-	identity, project_err := read_project(root)
+	identity, project_err, _ := read_project(root)
 	if project_err != .None {
 		return "", .Missing_Configs_Dir, false
 	}

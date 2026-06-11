@@ -151,9 +151,12 @@ build_refusal_message :: proc(verdict: Build_Verdict, allocator := context.alloc
 // in dev, and in release either emits the same bytes (hole- and probe-free) or
 // refuses before any emission.
 stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocator) -> (product: Build_Product, verdict: Build_Verdict) {
-	project, project_err := read_project(root)
+	project, project_err, project_detail := read_project(root)
 	if project_err != .None {
-		return Build_Product{}, Build_Verdict{err = .Malformed_Tree}
+		// The closed Build_Error arm stays the machine contract; the project
+		// arm + its detail ride the offender line so the refusal names what
+		// to repair instead of a bare Malformed_Tree.
+		return Build_Product{}, Build_Verdict{err = .Malformed_Tree, offender = project_refusal_message(project_err, project_detail, allocator)}
 	}
 	if len(project.sources) == 0 {
 		return Build_Product{}, Build_Verdict{err = .Malformed_Tree}

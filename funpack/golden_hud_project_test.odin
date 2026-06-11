@@ -145,7 +145,7 @@ test_golden_hud_whole_tree_evaluates :: proc(t: ^testing.T) {
 		)
 		return
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	testing.expect_value(t, read_err, Project_Error.None)
 	if read_err != .None {
 		return
@@ -210,7 +210,7 @@ test_golden_hud_demo_declaration_inventory :: proc(t: ^testing.T) {
 		)
 		return
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	testing.expect_value(t, read_err, Project_Error.None)
 	if read_err != .None {
 		return

@@ -51,7 +51,7 @@ test_merge_sources_combines_and_sorts :: proc(t: ^testing.T) {
 	// sorted-by-path order — the order downstream stages walk by index.
 	src := []Source{{path = "/p/src/arena_world.fun", module = "arena_world"}}
 	seam := []Source{{path = "/p/gen/arena.gen.fun", module = "arena"}}
-	merged, err := merge_sources(src, seam)
+	merged, err, _ := merge_sources(src, seam)
 	testing.expect_value(t, err, Project_Error.None)
 	testing.expect_value(t, len(merged), 2)
 	if len(merged) == 2 {
@@ -68,7 +68,7 @@ test_merge_sources_cross_set_duplicate_module_rejected :: proc(t: ^testing.T) {
 	// combined-set re-check catches it as Duplicate_Module.
 	src := []Source{{path = "/p/src/arena.fun", module = "arena"}}
 	seam := []Source{{path = "/p/gen/arena.gen.fun", module = "arena"}}
-	_, err := merge_sources(src, seam)
+	_, err, _ := merge_sources(src, seam)
 	testing.expect_value(t, err, Project_Error.Duplicate_Module)
 }
 
@@ -141,7 +141,7 @@ test_source_is_behavior_module_classifies :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	src, src_err := collect_sources(root)
+	src, src_err, _ := collect_sources(root)
 	testing.expect_value(t, src_err, Project_Error.None)
 	testing.expect(t, source_is_behavior_module(src, "game"))
 	testing.expect(t, !source_is_behavior_module(src, "world"))
@@ -168,7 +168,7 @@ test_seam_import_arena :: proc(t: ^testing.T) {
 		return
 	}
 
-	project, err := read_project(dir)
+	project, err, _ := read_project(dir)
 	testing.expect_value(t, err, Project_Error.None)
 	if err != .None {
 		return
@@ -284,7 +284,7 @@ test_seam_imports_behavior_rejects :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	_, err := read_project(root)
+	_, err, _ := read_project(root)
 	testing.expect_value(t, err, Project_Error.Seam_Imports_Behavior)
 	log.infof("seam-imports-behavior: a gen/ seam importing arena_game (behavior module) rejects with Seam_Imports_Behavior")
 }

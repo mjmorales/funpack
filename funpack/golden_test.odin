@@ -19,7 +19,7 @@ test_golden_numerics_full_file_parses :: proc(t: ^testing.T) {
 		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
 		return
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	testing.expect_value(t, read_err, Project_Error.None)
 	testing.expect_value(t, project.name, "numerics")
 	testing.expect(t, len(project.sources) > 0)
@@ -63,7 +63,7 @@ test_golden_numerics_full_pipeline_passes :: proc(t: ^testing.T) {
 		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
 		return
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	testing.expect_value(t, read_err, Project_Error.None)
 	testing.expect(t, len(project.sources) > 0)
 
@@ -85,7 +85,7 @@ golden_source :: proc() -> (source: string, ok: bool) {
 		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
 		return "", false
 	}
-	project, read_err := read_project(dir)
+	project, read_err, _ := read_project(dir)
 	if read_err != .None || len(project.sources) == 0 {
 		return "", false
 	}

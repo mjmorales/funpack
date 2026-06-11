@@ -240,9 +240,9 @@ run_check_verb :: proc(root: string, mode: Build_Mode) -> int {
 // module's compile error (never a counted failure); 1 when assertions failed; 0
 // when every assertion passed.
 run_test_verb :: proc() -> int {
-	project, project_err := read_project(".")
+	project, project_err, project_detail := read_project(".")
 	if project_err != .None {
-		fmt.eprintfln("funpack test: %v", project_err)
+		fmt.eprintfln("funpack test: %s", project_refusal_message(project_err, project_detail, context.temp_allocator))
 		return 2
 	}
 	report := run_project_pipeline(project_pipeline_sources(project))
