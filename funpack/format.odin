@@ -20,7 +20,10 @@
 //     and the import block are contiguous.
 //   - Directive block order: @doc, the bare @expose marker, @gtag (ONE
 //     directive carrying every label), @todo notes, then debug probes,
-//     families in slice order.
+//     families in slice order. Declaration-targeting directives render
+//     adjacent to their keyword, after that block: @index/@spatial before
+//     `query`, the decl-level @migrate before `data`; a field-level @migrate
+//     renders inline before its field name.
 //   - data/enum/signal bodies are single-line (`data Board { w: Fixed, h:
 //     Fixed }`); thing/singleton bodies are multiline with the type column
 //     aligned to the longest field name; pipeline stages are multiline with
@@ -215,6 +218,27 @@ fmt_probe :: proc(b: ^strings.Builder, probe: Debug_Probe) {
 	strings.write_string(b, ")\n")
 }
 
+// fmt_migrate writes one §05 §6 @migrate directive in its closed form set:
+// `@migrate(from: "old")`, `@migrate(with: convert)`, or the combined
+// `@migrate(from: "old", with: convert)` — `from` before `with`, the only
+// order the parser admits, so the rendering re-parses to the same node.
+fmt_migrate :: proc(b: ^strings.Builder, node: Migrate_Node) {
+	strings.write_string(b, "@migrate(")
+	if node.has_from {
+		strings.write_string(b, "from: \"")
+		strings.write_string(b, node.from)
+		strings.write_string(b, "\"")
+	}
+	if node.has_with {
+		if node.has_from {
+			strings.write_string(b, ", ")
+		}
+		strings.write_string(b, "with: ")
+		strings.write_string(b, node.with)
+	}
+	strings.write_string(b, ")")
+}
+
 // fmt_zero_padded writes a non-negative value left-padded with zeros to the
 // given width — the ISO date components' 4/2/2 spellings.
 fmt_zero_padded :: proc(b: ^strings.Builder, value: i64, width: int) {
@@ -255,6 +279,13 @@ fmt_let_decl :: proc(b: ^strings.Builder, decl: Let_Decl_Node) {
 // spelling for data), with the optional `: Kind` ascription.
 fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
+	if decl.has_migrate {
+		// The decl-level @migrate (a renamed type, spec §05 §6) renders
+		// adjacent to the `data` keyword it targets — the @index/@spatial
+		// adjacency mold — after the ordinary directive block.
+		fmt_migrate(b, decl.migrate)
+		strings.write_string(b, "\n")
+	}
 	strings.write_string(b, "data ")
 	strings.write_string(b, decl.name)
 	if decl.kind != "" {
@@ -353,6 +384,13 @@ fmt_field_list_inline :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 	for field, i in fields {
 		if i > 0 {
 			strings.write_string(b, ", ")
+		}
+		if field.has_migrate {
+			// A field-level @migrate (spec §05 §6 — only a `data` field
+			// carries one) renders inline before its field, the parser's
+			// single-line spelling.
+			fmt_migrate(b, field.migrate)
+			strings.write_string(b, " ")
 		}
 		strings.write_string(b, field.name)
 		strings.write_string(b, ": ")

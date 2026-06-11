@@ -255,6 +255,34 @@ test_fmt_query_declaration :: proc(t: ^testing.T) {
 	expect_canonical(t, source, expected)
 }
 
+@(test)
+test_fmt_migrate_field_forms :: proc(t: ^testing.T) {
+	// All three closed §05 §6 field forms survive the canonical projection
+	// inline before their field — fmt must never strip the schema-evolution
+	// channel (a silent @migrate drop is save-breaking data loss).
+	source := "data Player { @migrate(from: \"old_pos\") pos: Vec2, @migrate(with: meters_to_units) reach: Fixed, @migrate(from: \"speed\", with: to_velocity) velocity: Fixed, hp: Int }\n"
+	expected := source
+	expect_canonical(t, source, expected)
+}
+
+@(test)
+test_fmt_migrate_decl_rename :: proc(t: ^testing.T) {
+	// The decl-level rename form renders adjacent to the `data` keyword,
+	// after the ordinary directive block — the @index/@spatial adjacency mold.
+	source := "@doc(\"Renamed from Old.\")\n@migrate(from: \"OldPlayer\")\ndata Player { hp: Int }\n"
+	expected := source
+	expect_canonical(t, source, expected)
+}
+
+@(test)
+test_fmt_migrate_multiline_normalizes_inline :: proc(t: ^testing.T) {
+	// A field-level @migrate written on its own line normalizes to the
+	// canonical inline spelling — same node, one projection.
+	source := "data Player {\n  @migrate(from: \"old_pos\")\n  pos: Vec2,\n  hp: Int\n}\n"
+	expected := "data Player { @migrate(from: \"old_pos\") pos: Vec2, hp: Int }\n"
+	expect_canonical(t, source, expected)
+}
+
 // ── ast_equiv: AST equivalence modulo span provenance ────────────────────
 // Structural equality over every parse-level node, ignoring the 1-based
 // `line` fields (projection metadata, not AST content). Shared by the
@@ -308,6 +336,9 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 	for decl, i in a.datas {
 		other := b.datas[i]
 		if decl.name != other.name || decl.kind != other.kind || !field_decls_equiv(decl.fields, other.fields) {
+			return false
+		}
+		if !migrate_equiv(decl.migrate, decl.has_migrate, other.migrate, other.has_migrate) {
 			return false
 		}
 		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
@@ -475,8 +506,24 @@ field_decls_equiv :: proc(a, b: []Field_Decl) -> bool {
 		if field.has_default && !expr_equiv(field.default, other.default) {
 			return false
 		}
+		if !migrate_equiv(field.migrate, field.has_migrate, other.migrate, other.has_migrate) {
+			return false
+		}
 	}
 	return true
+}
+
+// migrate_equiv compares the §05 §6 @migrate carry — schema-evolution AST
+// content (a dropped node is silent save-breaking data loss), modulo the
+// `line` span.
+migrate_equiv :: proc(a: Migrate_Node, a_has: bool, b: Migrate_Node, b_has: bool) -> bool {
+	if a_has != b_has {
+		return false
+	}
+	if !a_has {
+		return true
+	}
+	return a.has_from == b.has_from && a.from == b.from && a.has_with == b.has_with && a.with == b.with
 }
 
 variant_decl_equiv :: proc(a, b: Variant_Decl) -> bool {
