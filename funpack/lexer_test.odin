@@ -41,6 +41,69 @@ test_lex_unterminated_string_is_invalid :: proc(t: ^testing.T) {
 	testing.expect_value(t, tokens[0].kind, Token_Kind.Invalid)
 }
 
+@(test)
+test_lex_string_escapes_accepted_raw :: proc(t: ^testing.T) {
+	// The closed lexical-core §4 escape set — the escaped quote and the
+	// EscapedBrace pair — lexes as ONE String_Lit whose text is the RAW
+	// source spelling, backslash included (the byte-deterministic carry
+	// every consumer reads). The stdlib @doc shape is the canonical case.
+	tokens := stage_lex(`"interpolation (\"{x}\"), never +"`)
+	testing.expect_value(t, len(tokens), 1)
+	testing.expect_value(t, tokens[0].kind, Token_Kind.String_Lit)
+	testing.expect_value(t, tokens[0].text, `interpolation (\"{x}\"), never +`)
+
+	braces := stage_lex(`"a literal \{brace\} pair"`)
+	testing.expect_value(t, len(braces), 1)
+	testing.expect_value(t, braces[0].kind, Token_Kind.String_Lit)
+	testing.expect_value(t, braces[0].text, `a literal \{brace\} pair`)
+
+	// An escaped quote hard against the closer — the prelude.fun shape
+	// `(\"{x}\")` ends `\")` — must not swallow the real terminator.
+	edge := stage_lex(`"\"" x`)
+	testing.expect_value(t, len(edge), 2)
+	testing.expect_value(t, edge[0].kind, Token_Kind.String_Lit)
+	testing.expect_value(t, edge[0].text, `\"`)
+	testing.expect_value(t, edge[1].kind, Token_Kind.Ident)
+}
+
+@(test)
+test_lex_string_unknown_escape_is_malformed :: proc(t: ^testing.T) {
+	// A backslash before anything outside the closed §4 set is the named
+	// Malformed_Escape token — including `\\` and `\n`: the spec names no
+	// C-style zoo, so there is no literal-backslash spelling. The token
+	// consumes through the closing quote, so the stream resynchronizes.
+	tokens := stage_lex(`"bad \n escape" x`)
+	testing.expect_value(t, len(tokens), 2)
+	testing.expect_value(t, tokens[0].kind, Token_Kind.Malformed_Escape)
+	testing.expect_value(t, tokens[1].kind, Token_Kind.Ident)
+
+	backslash := stage_lex(`"no \\ backslash"`)
+	testing.expect_value(t, len(backslash), 1)
+	testing.expect_value(t, backslash[0].kind, Token_Kind.Malformed_Escape)
+}
+
+@(test)
+test_lex_string_trailing_backslash_is_malformed :: proc(t: ^testing.T) {
+	// A trailing backslash at input end or line end has no escape character
+	// to consume — Malformed_Escape, not the unterminated-string Invalid.
+	at_eof := stage_lex("\"abc\\")
+	testing.expect_value(t, len(at_eof), 1)
+	testing.expect_value(t, at_eof[0].kind, Token_Kind.Malformed_Escape)
+
+	at_newline := stage_lex("\"abc\\\nx")
+	testing.expect_value(t, at_newline[0].kind, Token_Kind.Malformed_Escape)
+}
+
+@(test)
+test_lex_string_escaped_quote_then_unterminated_is_invalid :: proc(t: ^testing.T) {
+	// `\"` escapes the only quote in sight, so the literal never closes:
+	// the well-formed escape leaves an UNTERMINATED string, which keeps its
+	// existing Invalid verdict (first failure in source order decides).
+	tokens := stage_lex("\"abc\\\"")
+	testing.expect_value(t, len(tokens), 1)
+	testing.expect_value(t, tokens[0].kind, Token_Kind.Invalid)
+}
+
 expect_kinds :: proc(t: ^testing.T, tokens: []Token, kinds: []Token_Kind) {
 	testing.expect_value(t, len(tokens), len(kinds))
 	if len(tokens) != len(kinds) {

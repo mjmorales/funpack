@@ -60,6 +60,11 @@ test_encoder_output_matches_format_spec :: proc(t: ^testing.T) {
 	// A string with an embedded space still occupies one line — the byte
 	// count, not a delimiter scan, bounds it.
 	testing.expect_value(t, encode_string("a b", a), "L3:a b")
+	// A lexical-core §4 escape rides through verbatim: the lexer carries the
+	// raw spelling (backslash + quote = 2 bytes each) and the length prefix
+	// bounds it with no artifact-side escaping — byte-deterministic by
+	// construction.
+	testing.expect_value(t, encode_string(`say \"hi\"`, a), `L10:say \"hi\"`)
 	testing.expect_value(t, encode_bool(false), "false")
 }
 

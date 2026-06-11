@@ -46,9 +46,12 @@ Fixed_Lit_Expr :: struct {
 }
 
 // String_Lit_Expr carries a string literal's raw inner text, including any
-// `{expr}` interpolation holes (spec §02 §2). Interpolation is parse-only
-// here — the holes are retained verbatim in `text`, not split into
-// sub-expressions; that split is a typing/lowering concern, not grammar.
+// `{expr}` interpolation holes (spec §02 §2) and the closed lexical-core §4
+// escape spellings (`\"` `\{` `\}`) backslash-and-all. Interpolation is
+// parse-only here — the holes are retained verbatim in `text`, not split into
+// sub-expressions; that split is a typing/lowering concern, not grammar — and
+// unescaping is the same kind of lowering concern, so `text` is always the
+// source bytes between the quotes.
 String_Lit_Expr :: struct {
 	text: string,
 }

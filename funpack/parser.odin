@@ -470,6 +470,7 @@ Parse_Error :: enum {
 	Malformed_Extern,      // an `extern` prefixing neither `fn` nor `type` — the §02 §7 extern family is closed (fun.ebnf §8: ExternDecl ::= 'extern' (ExternFn | ExternType)), so a stray `extern data …` is a named malformed-extern verdict, never a generic token error
 	Malformed_Type_Params, // a §03 §3 generic declaration header whose `[…]` matches none of the TypeParams forms (fun.ebnf §4: '[' UPPER_IDENT (',' UPPER_IDENT)* ']') — empty brackets, a non-identifier parameter, a trailing comma, or a missing `]` between parameters; the one casing-class deviation (a lowercase parameter name) keeps the parser-wide Wrong_Case verdict, the Malformed_Index_Path mold
 	Malformed_Fn_Type,     // a §02 §3 function type whose shape matches none of the FnType form (fun.ebnf §11: 'fn' '(' (Type (',' Type)*)? ')' '->' Type) — a missing `(` after `fn`, a trailing comma or non-type parameter, a missing `)`/comma between parameters, or a missing `->` before the result; an element type's OWN errors keep their verdicts (a lowercase name stays Wrong_Case), the Malformed_Type_Params mold
+	Malformed_String_Escape, // a string literal whose backslash escape is outside the closed lexical-core §4 set (`\"` `\{` `\}`) — an unknown escape character, or a trailing backslash at line/input end; the lexer marks the literal (Token_Kind.Malformed_Escape) and advance names the verdict centrally, so every string position reports it; an UNTERMINATED string keeps its existing Unexpected_Token verdict — the Malformed_Fn_Type mold
 }
 
 Parser :: struct {
@@ -2067,12 +2068,24 @@ peek_kind :: proc(p: ^Parser) -> Token_Kind {
 	return p.tokens[p.pos].kind
 }
 
+// advance consumes one token. It is the central choke point for the lexer's
+// named-error tokens: a Malformed_Escape string literal maps to the
+// Malformed_String_Escape verdict HERE, so a string-consuming position (an
+// expression atom, @doc, a test name) reports the named verdict without
+// per-site checks. A peek-guarded directive-argument loop (@gtag, @migrate)
+// surfaces its own sibling verdict instead — still a reject, never a skip.
+// Sound because the direct `p.pos += 1` consumption sites are all
+// peek-guarded by a specific expected kind, which a Malformed_Escape token
+// never matches.
 advance :: proc(p: ^Parser) -> (tok: Token, err: Parse_Error) {
 	if at_end(p) {
 		return Token{}, .Unexpected_End
 	}
 	tok = p.tokens[p.pos]
 	p.pos += 1
+	if tok.kind == .Malformed_Escape {
+		return Token{}, .Malformed_String_Escape
+	}
 	return tok, .None
 }
 

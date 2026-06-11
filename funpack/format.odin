@@ -110,7 +110,8 @@ fmt_decl_separator :: proc(b: ^strings.Builder, wrote_prior: ^bool) {
 // ── header ───────────────────────────────────────────────────────────────
 
 // fmt_doc_line writes one `@doc("…")` line; the content is the lexer-verbatim
-// inner text (a string literal cannot contain a quote, so it re-lexes whole).
+// inner text — a quote can only appear ESCAPED (`\"`, lexical-core §4) and the
+// lexer carries the raw spelling, backslash included, so it re-lexes whole.
 fmt_doc_line :: proc(b: ^strings.Builder, doc: string) {
 	strings.write_string(b, "@doc(\"")
 	strings.write_string(b, doc)

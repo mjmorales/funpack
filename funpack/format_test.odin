@@ -39,6 +39,17 @@ test_fmt_module_doc_and_import_forms :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fmt_string_escapes_reemit_canonical_spelling :: proc(t: ^testing.T) {
+	// The closed lexical-core §4 escapes (`\"` `\{` `\}`) re-emit verbatim —
+	// the raw-spelling carry IS the canonical (and only legal) spelling, so
+	// fmt(fmt(x)) == fmt(x) holds through expect_canonical's idempotence leg.
+	// The @doc line is the stdlib prelude.fun shape; the let pins the
+	// expression-position literal.
+	source := "@doc(\"Built by interpolation (\\\"{x}\\\"), never +.\")\nlet GREETING: String = \"say \\\"hi\\\" \\{now\\}\"\n"
+	expect_canonical(t, source, source)
+}
+
+@(test)
 test_fmt_let_decl_directive_block_order :: proc(t: ^testing.T) {
 	// @gtag labels split across two directives accumulate; the canonical form
 	// is ONE @gtag in the fixed @doc → @gtag → @todo → probe order.

@@ -15,15 +15,15 @@
 // The stdlib sweep covers the PARSEABLE subset of stdlib/engine/*.fun and
 // pins both counts exactly (the golden-count discipline: when the spec or the
 // grammar evolves, the pins change in lockstep — never loosened to ranges).
-// The non-parsing files are a KNOWN gap — escaped quotes in string literals
-// (`@doc("… (\"{x}\") …")`) and @doc on enum variants are §02 / §05 surface
-// the parser does not yet admit (generic declaration headers `enum Option[T]`
-// and function-typed parameters `pred: fn(T) -> Bool` ARE admitted, §03 §3 /
-// §02 §3), and grid.fun names a parameter with the RESERVED keyword `fn`
-// (`fn: fn(Int, Int) -> Cell`) — a spec-side contradiction (fun.ll1.md §2
-// reserves `fn`; fun.ebnf §7 Param ::= LOWER_IDENT), held fail-closed — each
-// SKIP names its file loudly; admitting the rest is a parser story (or a spec
-// fix, for grid), not a formatter workaround.
+// The non-parsing files are a KNOWN gap — @doc on enum variants is §05
+// surface the parser does not yet admit (escaped string quotes
+// `@doc("… (\"{x}\") …")`, generic declaration headers `enum Option[T]`, and
+// function-typed parameters `pred: fn(T) -> Bool` ARE admitted, lexical-core
+// §4 / §03 §3 / §02 §3), and grid.fun names a parameter with the RESERVED
+// keyword `fn` (`fn: fn(Int, Int) -> Cell`) — a spec-side contradiction
+// (fun.ll1.md §2 reserves `fn`; fun.ebnf §7 Param ::= LOWER_IDENT), held
+// fail-closed — each SKIP names its file loudly; admitting the rest is a
+// parser story (or a spec fix, for grid), not a formatter workaround.
 package funpack
 
 import "core:log"
@@ -43,18 +43,19 @@ STDLIB_SURFACE_FILE_COUNT :: 22
 
 // STDLIB_PARSEABLE_FILE_COUNT pins how many stdlib surface files the §02
 // grammar currently admits (and the sweep therefore proves fmt-idempotent).
-// The remainder use escaped string quotes or variant-level @doc — the named
-// grammar gap (`extern type Name` admission lifted the pin from 6 to 12; §03
-// §3 generic declaration headers lifted it to 13 — world.fun; §02 §3
-// function-typed parameters lifted it to 14 — list.fun; ui.fun carries
-// fn-typed params too but stays gapped on escaped quotes) — except grid.fun,
-// which parses its fn-typed param fine but NAMES that parameter with the
-// reserved keyword `fn` (fun.ll1.md §2), a spec-side contradiction held
-// fail-closed (pinned in parser_test.odin
-// test_parse_fn_keyword_param_name_rejected). When the parser grows that
-// surface (or the spec renames grid.fun's parameter), this pin rises in
-// lockstep.
-STDLIB_PARSEABLE_FILE_COUNT :: 14
+// The remainder use variant-level @doc — the named grammar gap (`extern type
+// Name` admission lifted the pin from 6 to 12; §03 §3 generic declaration
+// headers lifted it to 13 — world.fun; §02 §3 function-typed parameters
+// lifted it to 14 — list.fun; lexical-core §4 escaped string quotes lifted it
+// to 19 — model.fun, nav.fun, prelude.fun, string.fun, ui.fun). The three
+// still gapped: render.fun and render3.fun carry @doc on enum variants (§05
+// surface the parser does not yet admit), and grid.fun parses its fn-typed
+// param fine but NAMES that parameter with the reserved keyword `fn`
+// (fun.ll1.md §2), a spec-side contradiction held fail-closed (pinned in
+// parser_test.odin test_parse_fn_keyword_param_name_rejected). When the
+// parser grows that surface (or the spec renames grid.fun's parameter), this
+// pin rises in lockstep.
+STDLIB_PARSEABLE_FILE_COUNT :: 19
 
 // resolve_stdlib_dir resolves the stdlib surface tree (env override, else
 // the sibling checkout), mirroring the per-example resolvers.
@@ -193,8 +194,8 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 		}
 		ast, parse_err := stage_parse(stage_lex(string(bytes)))
 		if parse_err != .None {
-			// The named gap: escaped string quotes and variant-level @doc (§02
-			// / §05 surface the parser does not yet admit), plus grid.fun's
+			// The named gap: variant-level @doc (§05 surface the parser does
+			// not yet admit — render.fun, render3.fun), plus grid.fun's
 			// reserved-keyword parameter name `fn` (held fail-closed). Loud
 			// per-file, counted by the pin below.
 			log.warnf("SKIP golden fmt stdlib %s: %v — outside the parser-admitted §02 surface", filepath.base(path), parse_err)
@@ -216,5 +217,5 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 		formatted_count += 1
 	}
 	testing.expect_value(t, formatted_count, STDLIB_PARSEABLE_FILE_COUNT)
-	log.infof("golden fmt stdlib: %d of %d surface files are parser-admitted and fmt-idempotent; the remainder are the named escaped-quote/variant-doc grammar gap plus grid.fun's reserved-keyword param name", formatted_count, len(paths))
+	log.infof("golden fmt stdlib: %d of %d surface files are parser-admitted and fmt-idempotent; the remainder are the named variant-doc grammar gap plus grid.fun's reserved-keyword param name", formatted_count, len(paths))
 }

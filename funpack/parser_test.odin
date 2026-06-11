@@ -2081,3 +2081,38 @@ test_parse_fn_keyword_param_name_rejected :: proc(t: ^testing.T) {
 	_, err := stage_parse(stage_lex("extern fn grid_cells(w: Int, h: Int, fn: fn(Int, Int) -> Cell) -> [Cell]\n"))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
 }
+
+@(test)
+test_parse_string_escapes_carried_raw :: proc(t: ^testing.T) {
+	// The closed lexical-core §4 escapes parse in every string position and
+	// carry the RAW spelling, backslash included — the stdlib @doc shape and
+	// an expression-position literal both land verbatim in the AST.
+	ast, err := stage_parse(stage_lex("@doc(\"Built by interpolation (\\\"{x}\\\"), never +.\")\nlet GREETING: String = \"say \\\"hi\\\" \\{now\\}\"\n"))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.lets), 1)
+	testing.expect_value(t, ast.lets[0].doc, `Built by interpolation (\"{x}\"), never +.`)
+	lit, is_string := ast.lets[0].value.(^String_Lit_Expr)
+	testing.expect(t, is_string)
+	if is_string {
+		testing.expect_value(t, lit.text, `say \"hi\" \{now\}`)
+	}
+}
+
+@(test)
+test_parse_malformed_string_escape_named_verdict :: proc(t: ^testing.T) {
+	// A backslash escape outside the closed §4 set is the named
+	// Malformed_String_Escape verdict (the Malformed_Fn_Type mold) in every
+	// string position — a @doc argument, an expression literal, a test name —
+	// for the unknown-escape and trailing-backslash shapes alike. An
+	// UNTERMINATED string keeps its existing Unexpected_Token verdict.
+	_, doc_err := stage_parse(stage_lex("@doc(\"a \\n newline\")\nfn f() -> Int {\n  return 1\n}\n"))
+	testing.expect_value(t, doc_err, Parse_Error.Malformed_String_Escape)
+	_, expr_err := stage_parse(stage_lex("let S: String = \"no \\\\ backslash\"\n"))
+	testing.expect_value(t, expr_err, Parse_Error.Malformed_String_Escape)
+	_, name_err := stage_parse(stage_lex("test \"bad \\q\" {\n  assert true\n}\n"))
+	testing.expect_value(t, name_err, Parse_Error.Malformed_String_Escape)
+	_, trailing_err := stage_parse(stage_lex("let S: String = \"dangling\\"))
+	testing.expect_value(t, trailing_err, Parse_Error.Malformed_String_Escape)
+	_, unterminated_err := stage_parse(stage_lex("let S: String = \"open\n"))
+	testing.expect_value(t, unterminated_err, Parse_Error.Unexpected_Token)
+}

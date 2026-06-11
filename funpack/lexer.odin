@@ -15,6 +15,14 @@ package funpack
 
 Token_Kind :: enum {
 	Invalid,
+	// Malformed_Escape is a string literal carrying a backslash escape outside
+	// the closed lexical-core §4 set (`\"` `\{` `\}`) — an unknown escape
+	// character or a trailing backslash at line/input end. A distinct kind
+	// (not Invalid, which an UNTERMINATED string keeps) so the parser can name
+	// the verdict: advance maps it to Malformed_String_Escape, never a generic
+	// token error. The lexer stays total — the token spans the rest of the
+	// literal through its closing quote, so the stream resynchronizes after it.
+	Malformed_Escape,
 	// declaration/statement keywords (one unique opener per production)
 	Test,
 	Assert,
@@ -346,17 +354,58 @@ scan_punct :: proc(source: string, start: int) -> (tok: Token, next: int) {
 	return Token{kind = one_kind, text = one}, start + 1
 }
 
-// scan_string returns the contents between the quotes; an unterminated
-// string (end of input or a newline before the closing quote) is Invalid.
+// scan_string returns the contents between the quotes — the RAW source
+// spelling, escapes included. The escape set is the CLOSED lexical-core §4
+// set: the escaped quote `\"` (the "unescaped" carve-out in STRING_TEXT) and
+// the EscapedBrace pair `\{` `\}`; nothing else may follow a backslash (no
+// C-style escape zoo — the spec names exactly these, so there is no `\\` and
+// no way to spell a literal backslash). Raw carry keeps every downstream
+// consumer byte-deterministic: fmt re-emits the spelling verbatim (the only
+// legal spelling, so canonical by construction), the artifact's
+// length-prefixed encode_string and the index's JSON marshal each apply
+// their own escaping over the same bytes, and unescaping is a lowering
+// concern like interpolation holes (String_Lit_Expr). An unterminated
+// string (end of input or a newline before the closing quote) is Invalid;
+// a malformed escape — an unknown escape character, or a trailing backslash
+// at line/input end — is the distinct Malformed_Escape token. The first
+// failure in source order decides which.
 scan_string :: proc(source: string, start: int) -> (tok: Token, next: int) {
 	i := start + 1
 	for i < len(source) && source[i] != '"' && source[i] != '\n' {
+		if source[i] == '\\' {
+			if i+1 >= len(source) || !is_string_escape(source[i+1]) {
+				return malformed_escape_token(source, start, i)
+			}
+			i += 2
+			continue
+		}
 		i += 1
 	}
 	if i >= len(source) || source[i] != '"' {
 		return Token{kind = .Invalid, text = source[start:i]}, i
 	}
 	return Token{kind = .String_Lit, text = source[start+1 : i]}, i + 1
+}
+
+// is_string_escape reports whether a character may follow a backslash inside
+// a string literal — the closed lexical-core §4 escape set and nothing more.
+is_string_escape :: proc(ch: u8) -> bool {
+	return ch == '"' || ch == '{' || ch == '}'
+}
+
+// malformed_escape_token consumes the rest of a string literal whose escape
+// at `bad` is malformed, through the nearest closing quote on the line (or to
+// the line/input end), so the lexer stays total and the token stream
+// resynchronizes after the one named-error token.
+malformed_escape_token :: proc(source: string, start: int, bad: int) -> (tok: Token, next: int) {
+	i := bad
+	for i < len(source) && source[i] != '\n' {
+		if source[i] == '"' {
+			return Token{kind = .Malformed_Escape, text = source[start : i+1]}, i + 1
+		}
+		i += 1
+	}
+	return Token{kind = .Malformed_Escape, text = source[start:i]}, i
 }
 
 // scan_number is type-directed per spec §10: a bare digit run is Int,

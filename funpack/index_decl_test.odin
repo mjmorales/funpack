@@ -174,6 +174,39 @@ test "round-trips" {
 }
 
 @(test)
+test_index_decl_doc_escaped_quote_round_trips :: proc(t: ^testing.T) {
+	// A @doc carrying lexical-core §4 escapes reaches the index byte-faithfully
+	// end to end: the lexer's raw-spelling carry (backslash + quote) lands in
+	// the decl record's doc field, json.marshal applies the NDJSON's own JSON
+	// escaping over those bytes, and the exact-match decode recovers the same
+	// raw spelling — no double- or un-escape at either seam. The doc is the
+	// stdlib prelude.fun shape that motivated the escape admission.
+	source := "@doc(\"Built by interpolation (\\\"{x}\\\"), never +.\")\nfn greet(x: Int) -> Int {\n  return x\n}\n"
+	typed, flat, ok := compile_snippet(source)
+	testing.expect(t, ok)
+	if !ok {
+		return
+	}
+	records := derive_decl_records("", typed, flat)
+	greet, has_greet := find_record(records, "greet")
+	testing.expect(t, has_greet)
+	if !has_greet {
+		return
+	}
+	raw_doc := `Built by interpolation (\"{x}\"), never +.`
+	testing.expect_value(t, greet.doc, raw_doc)
+
+	line := emit_decl_record(greet, context.temp_allocator)
+	decoded, decode_err := decode_index_line(line, context.temp_allocator)
+	testing.expect_value(t, decode_err, Index_Read_Error.None)
+	if decl, is_decl := decoded.(Decl_Record); is_decl {
+		testing.expect_value(t, decl.doc, raw_doc)
+	} else {
+		testing.expect(t, is_decl)
+	}
+}
+
+@(test)
 test_index_decl_query_record :: proc(t: ^testing.T) {
 	// A §08 §3 query declaration projects one decl record of kind Query — the
 	// v4 form admission — carrying exactly the §29 §2 enumeration: span/doc/
