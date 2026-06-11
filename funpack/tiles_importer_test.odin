@@ -368,11 +368,13 @@ test_emit_tileset_only_manifest_imports_tilemap_alone :: proc(t: ^testing.T) {
 
 @(test)
 test_engine_tilemap_surface_resolves_tileset_handle :: proc(t: ^testing.T) {
-	// The partition's admitted row resolves: TilesetHandle binds to
-	// engine.tilemap as a Type_Name. The partition is DELIBERATELY PARTIAL —
-	// TilemapHandle (a §26 tilemap name the tilemap-layer story admits) is
-	// still an Unknown_Member, pinning that growth stays a deliberate edit.
-	source := "import engine.tilemap.{TilesetHandle}\n"
+	// The partition's admitted rows resolve: TilesetHandle AND TilemapHandle
+	// (the tilemap-layer story's deliberate admission, lifting the wave-1
+	// Unknown_Member pin) both bind to engine.tilemap as Type_Names. The
+	// partition stays DELIBERATELY PARTIAL — SetTile and the tile queries are
+	// still Unknown_Member, pinning that growth stays the runtime story's
+	// deliberate edit.
+	source := "import engine.tilemap.{TilesetHandle, TilemapHandle}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	bindings, err := resolve_imports(ast)
@@ -386,11 +388,50 @@ test_engine_tilemap_surface_resolves_tileset_handle :: proc(t: ^testing.T) {
 		testing.expect_value(t, binding.module, "engine.tilemap")
 		testing.expect_value(t, binding.kind, Decl_Kind.Type_Name)
 	}
+	layer_binding, layer_bound := bindings.names["TilemapHandle"]
+	testing.expect(t, layer_bound, "TilemapHandle must bind")
+	if layer_bound {
+		testing.expect_value(t, layer_binding.module, "engine.tilemap")
+		testing.expect_value(t, layer_binding.kind, Decl_Kind.Type_Name)
+	}
 
-	bogus, bogus_err := stage_parse(stage_lex("import engine.tilemap.{TilemapHandle}\n"))
+	bogus, bogus_err := stage_parse(stage_lex("import engine.tilemap.{SetTile}\n"))
 	testing.expect_value(t, bogus_err, Parse_Error.None)
 	_, reject := resolve_imports(bogus)
 	testing.expect_value(t, reject, Type_Error.Unknown_Member)
+}
+
+@(test)
+test_tilemap_handle_typecheck_fixture :: proc(t: ^testing.T) {
+	// The admit side of the layer handle's record schema: a TilemapHandle
+	// param, return, and `TilemapHandle{name: "…"}` literal all typecheck
+	// clean — the level seam's layer-constant shape (`let terrain:
+	// TilemapHandle = TilemapHandle{name: "terrain"}`), CI-executing and
+	// sibling-independent (the TilesetHandle fixture pattern).
+	source := "import engine.tilemap.TilemapHandle\n" +
+		"let terrain: TilemapHandle = TilemapHandle{name: \"terrain\"}\n" +
+		"fn pick(layer: TilemapHandle) -> TilemapHandle {\n" +
+		"  return layer\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.None)
+}
+
+@(test)
+test_tilemap_handle_unknown_field_is_compile_error :: proc(t: ^testing.T) {
+	// The reject side: the layer handle's closed schema is the single String
+	// `name` — an extra field fails the record check, the same closed-schema
+	// rejection every engine record enforces.
+	source := "import engine.tilemap.TilemapHandle\n" +
+		"fn bad() -> TilemapHandle {\n" +
+		"  return TilemapHandle{name: \"terrain\", cells: 4}\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect(t, err != .None)
 }
 
 @(test)

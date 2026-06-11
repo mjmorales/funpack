@@ -37,13 +37,14 @@ Flvl_Coord :: struct {
 
 // Flvl_Item_Kind is the closed set of body-item forms a level, prefab, or
 // for-loop body holds (grammar/flvl.ebnf LevelItem/PrefabItem): a placement, a
-// for-loop, or a nested prefab declaration. It is the discriminant of an
-// Flvl_Item, which records the source ORDER of the body's items across the three
-// kinds.
+// for-loop, a nested prefab declaration, or — at level depth only — a §18 §3
+// tilemap layer. It is the discriminant of an Flvl_Item, which records the
+// source ORDER of the body's items across the kinds.
 Flvl_Item_Kind :: enum {
 	Place,
 	For,
 	Prefab,
+	Tilemap, // a LevelItem only — prefab/for bodies admit no tilemap (grammar/flvl.ebnf PrefabItem)
 }
 
 // Flvl_Item records one body item's kind and its index into the matching
@@ -78,7 +79,45 @@ Flvl_Level :: struct {
 	prefabs:        []Flvl_Prefab,
 	places:         []Flvl_Place,
 	fors:           []Flvl_For,
+	tilemaps:       []Flvl_Tilemap,
 	items:          []Flvl_Item, // body items in source order (declaration-order spawn list)
+}
+
+// Flvl_Tilemap is one `tilemap <name> cell <N> { legend { … } grid """…""" }`
+// layer (grammar/flvl.ebnf Tilemap, spec §18 §3): the layer's LOWER_IDENT name,
+// the per-cell logical size after the CONTEXTUAL `cell` word, the legend's
+// char→bind entries in declaration order, and the grid's DEDENTED rows. The
+// rows carry the common-leading-indentation strip the grammar mandates (so a
+// grid indented to block depth carries no phantom legend columns); the §18 §5
+// rectangularity gate over the dedented rows is the bake's, downstream.
+Flvl_Tilemap :: struct {
+	name:      string,
+	cell_size: i64,
+	legend:    []Flvl_Legend_Entry,
+	rows:      []string, // dedented grid rows, top-to-bottom (row-major source order)
+}
+
+// Flvl_Legend_Kind is the closed LegendBind form set (grammar/flvl.ebnf
+// LegendBind): a tile name (static environment, resolved project-globally at
+// bake), a spawn marker (an entity), or the explicit empty cell.
+Flvl_Legend_Kind :: enum {
+	Tile,
+	Spawn,
+	Empty,
+}
+
+// Flvl_Legend_Entry is one `<char> <bind>` legend line (spec §18 §3): the
+// single legend char and its bind. tile_name carries a .Tile bind's
+// LOWER_IDENT; spawn_type/spawn_name carry a .Spawn bind's UPPER_IDENT thing
+// type and its optional LOWER_IDENT marker name (has_spawn_name distinguishes
+// the named `'P' spawn Player hero` from the anonymous `'g' spawn Goblin`).
+Flvl_Legend_Entry :: struct {
+	char:           u8,
+	kind:           Flvl_Legend_Kind,
+	tile_name:      string, // .Tile: the project-global tile name
+	spawn_type:     string, // .Spawn: the marker's thing type (UPPER_IDENT)
+	spawn_name:     string, // .Spawn: the optional unique marker name
+	has_spawn_name: bool,
 }
 
 // Flvl_Place is one `place <Type> [<name>] { params }? at <where> [facing
@@ -242,8 +281,7 @@ Flvl_Parser :: struct {
 // level source's tokens. Leading separators are skipped, the one level block is
 // parsed, and any trailing separators are consumed; a token after the block (a
 // second `level`, stray input) is Unexpected_Token. The §17.4 `include` split
-// across files and the §18 `tilemap` grid layer are out of this seam's scope —
-// they ride the streaming/tilemap stories.
+// across files is out of this seam's scope — it rides the streaming story.
 parse_flvl :: proc(source: string) -> (level: Flvl_Level, err: Flvl_Parse_Error) {
 	p := Flvl_Parser{tokens = lex_flvl(source)}
 	flvl_skip_separators(&p)
@@ -258,7 +296,7 @@ parse_flvl :: proc(source: string) -> (level: Flvl_Level, err: Flvl_Parse_Error)
 // parse_flvl_level parses the `level <Name> 2d|3d { LevelItem* }` block
 // (grammar/flvl.ebnf LevelBlock). The name is UPPER_IDENT; the dimension word
 // follows; the body dispatches its items off their unique opening keyword:
-// `bounds`, `things`, `prefab`, `place`, and `for`.
+// `bounds`, `things`, `prefab`, `place`, `for`, and `tilemap`.
 parse_flvl_level :: proc(p: ^Flvl_Parser) -> (level: Flvl_Level, err: Flvl_Parse_Error) {
 	flvl_expect(p, .Level) or_return
 	name := flvl_expect_upper(p) or_return
@@ -269,6 +307,7 @@ parse_flvl_level :: proc(p: ^Flvl_Parser) -> (level: Flvl_Level, err: Flvl_Parse
 	prefabs := make([dynamic]Flvl_Prefab, 0, 4, context.temp_allocator)
 	places := make([dynamic]Flvl_Place, 0, 8, context.temp_allocator)
 	fors := make([dynamic]Flvl_For, 0, 4, context.temp_allocator)
+	tilemaps := make([dynamic]Flvl_Tilemap, 0, 2, context.temp_allocator)
 	items := make([dynamic]Flvl_Item, 0, 16, context.temp_allocator)
 	flvl_skip_separators(p)
 	for flvl_peek_kind(p) != .R_Brace {
@@ -292,6 +331,10 @@ parse_flvl_level :: proc(p: ^Flvl_Parser) -> (level: Flvl_Level, err: Flvl_Parse
 			fr := parse_flvl_for(p) or_return
 			append(&items, Flvl_Item{kind = .For, index = len(fors)})
 			append(&fors, fr)
+		case .Tilemap:
+			tm := parse_flvl_tilemap(p) or_return
+			append(&items, Flvl_Item{kind = .Tilemap, index = len(tilemaps)})
+			append(&tilemaps, tm)
 		case .Invalid:
 			return Flvl_Level{}, .Unexpected_End
 		case:
@@ -303,8 +346,172 @@ parse_flvl_level :: proc(p: ^Flvl_Parser) -> (level: Flvl_Level, err: Flvl_Parse
 	level.prefabs = prefabs[:]
 	level.places = places[:]
 	level.fors = fors[:]
+	level.tilemaps = tilemaps[:]
 	level.items = items[:]
 	return level, .None
+}
+
+// parse_flvl_tilemap parses one `tilemap <name> cell <N> { Sep? Legend Sep Grid
+// Sep? }` layer (grammar/flvl.ebnf Tilemap, spec §18 §3). `cell` is the
+// CONTEXTUAL keyword: it lexes as an ordinary LOWER_IDENT (it is also the
+// `cell(col, row)` anchor callee), so the header matches the Ident's TEXT —
+// any other word there is out of grammar position. The body is fixed-order:
+// the legend block, then the grid block.
+parse_flvl_tilemap :: proc(p: ^Flvl_Parser) -> (tilemap: Flvl_Tilemap, err: Flvl_Parse_Error) {
+	flvl_expect(p, .Tilemap) or_return
+	tilemap.name = flvl_expect_lower(p) or_return
+	cell_word := flvl_expect(p, .Ident) or_return
+	if cell_word.text != "cell" {
+		return Flvl_Tilemap{}, .Unexpected_Token
+	}
+	size_tok := flvl_expect(p, .Int_Lit) or_return
+	tilemap.cell_size = size_tok.int_value
+	flvl_expect(p, .L_Brace) or_return
+	flvl_skip_separators(p)
+	tilemap.legend = parse_flvl_legend(p) or_return
+	flvl_skip_separators(p)
+	flvl_expect(p, .Grid) or_return
+	grid_tok := flvl_advance(p) or_return
+	if grid_tok.kind == .Invalid {
+		// An unterminated `"""` block lexes Invalid (the input ended inside the
+		// grid) — the parse_flvl_atom mold's Invalid→Unexpected_End reading.
+		return Flvl_Tilemap{}, .Unexpected_End
+	}
+	if grid_tok.kind != .Triple_String {
+		return Flvl_Tilemap{}, .Unexpected_Token
+	}
+	tilemap.rows = flvl_dedent_grid(grid_tok.text)
+	flvl_skip_separators(p)
+	flvl_expect(p, .R_Brace) or_return
+	return tilemap, .None
+}
+
+// parse_flvl_legend parses `legend '{' LegendEntry (Sep LegendEntry)* Sep? '}'`
+// (grammar/flvl.ebnf Legend): each entry is a Char literal then its bind — a
+// LOWER_IDENT tile name, `spawn <Type> [<name>]`, or `empty`. At least one
+// entry is required (the production admits no empty legend); entries keep
+// declaration order, the order the §18 §3 resolution and the baked palette
+// read.
+parse_flvl_legend :: proc(p: ^Flvl_Parser) -> (entries: []Flvl_Legend_Entry, err: Flvl_Parse_Error) {
+	flvl_expect(p, .Legend) or_return
+	flvl_expect(p, .L_Brace) or_return
+	list := make([dynamic]Flvl_Legend_Entry, 0, 8, context.temp_allocator)
+	flvl_skip_separators(p)
+	for flvl_peek_kind(p) != .R_Brace {
+		entry := parse_flvl_legend_entry(p) or_return
+		append(&list, entry)
+		flvl_skip_separators(p)
+	}
+	flvl_expect(p, .R_Brace) or_return
+	if len(list) == 0 {
+		return nil, .Unexpected_Token
+	}
+	return list[:], .None
+}
+
+// parse_flvl_legend_entry parses one `Char LegendBind` line (grammar/flvl.ebnf
+// LegendEntry): the legend char, then the bind dispatched on its opening
+// token — a LOWER_IDENT is a tile, `spawn` opens a marker (UPPER_IDENT type,
+// optional LOWER_IDENT unique name), `empty` is the explicit empty cell.
+parse_flvl_legend_entry :: proc(p: ^Flvl_Parser) -> (entry: Flvl_Legend_Entry, err: Flvl_Parse_Error) {
+	char_tok := flvl_expect(p, .Char_Lit) or_return
+	entry.char = char_tok.char_value
+	#partial switch flvl_peek_kind(p) {
+	case .Ident:
+		entry.kind = .Tile
+		entry.tile_name = flvl_expect_lower(p) or_return
+	case .Spawn:
+		p.pos += 1
+		entry.kind = .Spawn
+		entry.spawn_type = flvl_expect_upper(p) or_return
+		// The optional marker name: a LOWER_IDENT before the entry separator
+		// names the marker (`'P' spawn Player hero`); its absence is the
+		// anonymous repeat-freely form.
+		if flvl_peek_kind(p) == .Ident {
+			entry.spawn_name = flvl_expect_lower(p) or_return
+			entry.has_spawn_name = true
+		}
+	case .Empty:
+		p.pos += 1
+		entry.kind = .Empty
+	case .Invalid:
+		return Flvl_Legend_Entry{}, .Unexpected_End
+	case:
+		return Flvl_Legend_Entry{}, .Unexpected_Token
+	}
+	return entry, .None
+}
+
+// flvl_dedent_grid lowers a grid block's raw triple-string interior to its
+// dedented rows (grammar/flvl.ebnf Grid): the normative common-leading-
+// indentation strip that runs BEFORE the §18 §5 rectangularity gate, so a grid
+// indented to block depth carries no phantom legend columns. The first line
+// (the run between the opening fence and its newline) and the last line (the
+// closing fence's indentation) are dropped when whitespace-only — they are
+// layout, not rows. The common indent is the longest shared leading-whitespace
+// PREFIX across the retained rows; a row legitimately opening with a legend
+// space narrows the common prefix for every row, so meaningful leading chars
+// are never eaten.
+flvl_dedent_grid :: proc(raw: string) -> []string {
+	lines := make([dynamic]string, 0, 16, context.temp_allocator)
+	start := 0
+	for i := 0; i <= len(raw); i += 1 {
+		if i == len(raw) || raw[i] == '\n' {
+			append(&lines, raw[start:i])
+			start = i + 1
+		}
+	}
+	rows := lines[:]
+	if len(rows) > 0 && flvl_is_blank_line(rows[0]) {
+		rows = rows[1:]
+	}
+	if len(rows) > 0 && flvl_is_blank_line(rows[len(rows)-1]) {
+		rows = rows[:len(rows)-1]
+	}
+	if len(rows) == 0 {
+		return rows
+	}
+	indent := flvl_leading_whitespace(rows[0])
+	for row in rows[1:] {
+		indent = flvl_common_prefix(indent, flvl_leading_whitespace(row))
+	}
+	dedented := make([]string, len(rows), context.temp_allocator)
+	for row, i in rows {
+		dedented[i] = row[len(indent):]
+	}
+	return dedented
+}
+
+// flvl_is_blank_line reports whether a grid line is whitespace-only — the
+// opening-fence remainder and the closing-fence indentation the dedent drops.
+flvl_is_blank_line :: proc(line: string) -> bool {
+	for i in 0 ..< len(line) {
+		if line[i] != ' ' && line[i] != '\t' && line[i] != '\r' {
+			return false
+		}
+	}
+	return true
+}
+
+// flvl_leading_whitespace returns a row's leading space/tab run — one side of
+// the common-indent fold.
+flvl_leading_whitespace :: proc(row: string) -> string {
+	i := 0
+	for i < len(row) && (row[i] == ' ' || row[i] == '\t') {
+		i += 1
+	}
+	return row[:i]
+}
+
+// flvl_common_prefix returns the longest shared prefix of two whitespace runs —
+// the fold step that narrows the common indent to what EVERY row carries.
+flvl_common_prefix :: proc(a, b: string) -> string {
+	limit := min(len(a), len(b))
+	i := 0
+	for i < limit && a[i] == b[i] {
+		i += 1
+	}
+	return a[:i]
 }
 
 // flvl_parse_dim reads the `2d`/`3d` header word (grammar/flvl.ebnf Dim).

@@ -338,6 +338,334 @@ level Arena 2d {
 	testing.expect_value(t, err, Bake_Error.Prefab_Member_Not_Placed)
 }
 
+// ── §18 §3 tilemap layer fixtures ───────────────────────────────────────────
+
+// tile_table_fixture builds the project-global tile table from one hand-built
+// tileset (wall solid, floor passable) — the §18 §3 namespace the tilemap
+// fixtures' legends resolve through.
+tile_table_fixture :: proc(t: ^testing.T) -> []Project_Tile {
+	tiles := make([]Tileset_Tile, 2, context.temp_allocator)
+	tiles[0] = Tileset_Tile{name = "wall", cell_x = 1, cell_y = 0, solid = true}
+	tiles[1] = Tileset_Tile{name = "floor", cell_x = 0, cell_y = 0, solid = false}
+	sets := make([]Tileset_Asset, 1, context.temp_allocator)
+	sets[0] = Tileset_Asset{name = "Fixture", atlas = "fix", tiles = tiles}
+	table, err := project_tile_table(sets, context.temp_allocator)
+	testing.expect_value(t, err, Bake_Error.None)
+	return table
+}
+
+// bake_tile_fixture is bake_fixture with the project tile table supplied — the
+// shared wiring for every tilemap-bearing fixture below.
+bake_tile_fixture :: proc(t: ^testing.T, schema_src, level_src: string, tiles: []Project_Tile) -> (baked: Baked_Level, err: Bake_Error) {
+	schema_ast, schema_parse := stage_parse(stage_lex(schema_src))
+	testing.expect_value(t, schema_parse, Parse_Error.None)
+	level, level_parse := parse_flvl(level_src)
+	testing.expect_value(t, level_parse, Flvl_Parse_Error.None)
+	index := build_module_index_from_asts({"arena_world"}, {schema_ast})
+	return bake_flvl(level, schema_ast, "arena_world", index, tiles)
+}
+
+// TILEMAP_LEVEL is the canonical clean tilemap fixture: a 4×3 grid (cell 16,
+// exactly the 64×48 bounds) carrying both tile binds, an anonymous marker, a
+// named marker, an empty cell, and a `cell()`-anchored place after the layer.
+TILEMAP_LEVEL :: `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+
+  tilemap terrain cell 16 {
+    legend {
+      '#' wall
+      '.' floor
+      'g' spawn Pillar
+      'P' spawn Player hero
+      ' ' empty
+    }
+    grid """
+      ####
+      #P.g
+      # ##
+    """
+  }
+
+  place Switch plate at cell(1, 2)
+}
+`
+
+@(test)
+test_flvl_bake_tilemap_clean_fixture :: proc(t: ^testing.T) {
+	// AC: the layer bakes to its tile-layer model, the markers bake to spawns
+	// row-major, the named marker is a Ref + seam symbol, and the cell()
+	// anchor resolves against the grid — the §18 §3 lowering end-to-end.
+	baked, err := bake_tile_fixture(t, SCHEMA_SOURCE, TILEMAP_LEVEL, tile_table_fixture(t))
+	testing.expect_value(t, err, Bake_Error.None)
+
+	// One layer: 4×3 at cell 16, palette in LEGEND order (wall, floor) with
+	// the §18 §2 collision verdicts carried.
+	testing.expect_value(t, len(baked.tile_layers), 1)
+	layer := baked.tile_layers[0]
+	testing.expect_value(t, layer.name, "terrain")
+	testing.expect_value(t, layer.cell_size, 16)
+	testing.expect_value(t, layer.cols, 4)
+	testing.expect_value(t, layer.rows, 3)
+	testing.expect_value(t, len(layer.palette), 2)
+	testing.expect_value(t, layer.palette[0].name, "wall")
+	testing.expect_value(t, layer.palette[0].solid, true)
+	testing.expect_value(t, layer.palette[1].name, "floor")
+	testing.expect_value(t, layer.palette[1].solid, false)
+
+	// The row-major cells: a tile cell carries its palette index; the marker
+	// and empty cells carry no tile (a marker paints no terrain).
+	testing.expect_value(t, len(layer.cells), 12)
+	expected_cells := []int{
+		0, 0, 0, 0,
+		0, TILE_LAYER_EMPTY_CELL, 1, TILE_LAYER_EMPTY_CELL,
+		0, TILE_LAYER_EMPTY_CELL, 0, 0,
+	}
+	for want, i in expected_cells {
+		testing.expect_value(t, layer.cells[i], want)
+	}
+
+	// Spawns in declaration order, the layer's markers row-major first: the
+	// named hero (row 1, col 1), the anonymous pillar (row 1, col 3), then the
+	// cell()-anchored switch.
+	testing.expect_value(t, len(baked.spawns), 3)
+	testing.expect_value(t, baked.spawns[0].thing_type, "Player")
+	testing.expect_value(t, baked.spawns[1].thing_type, "Pillar")
+	testing.expect_value(t, baked.spawns[2].thing_type, "Switch")
+
+	// Marker positions are CELL CENTERS, row 0 at the level's top edge:
+	// hero (1,1) → (24, 24); pillar (3,1) → (56, 24) on the 48-high bounds.
+	testing.expect_value(t, baked.spawns[0].pos.x, to_fixed(24))
+	testing.expect_value(t, baked.spawns[0].pos.y, to_fixed(24))
+	testing.expect_value(t, baked.spawns[1].pos.x, to_fixed(56))
+	testing.expect_value(t, baked.spawns[1].pos.y, to_fixed(24))
+
+	// The cell(1, 2) anchor is the same mapping: (24, 8).
+	testing.expect_value(t, baked.spawns[2].pos.x, to_fixed(24))
+	testing.expect_value(t, baked.spawns[2].pos.y, to_fixed(8))
+
+	// The named marker is a Ref with its name-derived stable Id and a seam
+	// symbol; the anonymous marker takes a counter id (declaration order 0).
+	hero, has_hero := find_baked_ref(baked.refs, "Arena.hero")
+	testing.expect(t, has_hero)
+	testing.expect_value(t, hero.thing_type, "Player")
+	testing.expect_value(t, hero.id, stable_id("Arena.hero"))
+	testing.expect_value(t, baked.spawns[1].id, 0)
+	testing.expect_value(t, len(baked.symbols), 2)
+	testing.expect_value(t, baked.symbols[0].local_name, "hero")
+	testing.expect_value(t, baked.symbols[1].local_name, "plate")
+}
+
+// ── §18 §5 tilemap gate rejections (one fixture per arm) ────────────────────
+
+@(test)
+test_flvl_gate_char_not_in_legend :: proc(t: ^testing.T) {
+	// A grid char no legend entry binds is the legend-less-char compile error.
+	level := `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+  tilemap terrain cell 16 {
+    legend {
+      '#' wall
+    }
+    grid """
+      ####
+      #?##
+      ####
+    """
+  }
+}
+`
+	_, err := bake_tile_fixture(t, SCHEMA_SOURCE, level, tile_table_fixture(t))
+	testing.expect_value(t, err, Bake_Error.Char_Not_In_Legend)
+}
+
+@(test)
+test_flvl_gate_grid_not_rectangular :: proc(t: ^testing.T) {
+	// Dedented rows of unequal length are the non-rectangular-grid compile
+	// error — the gate runs AFTER the common-indent strip, so a genuinely
+	// ragged row (not block indentation) trips it.
+	level := `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+  tilemap terrain cell 16 {
+    legend {
+      '#' wall
+    }
+    grid """
+      ####
+      ###
+      ####
+    """
+  }
+}
+`
+	_, err := bake_tile_fixture(t, SCHEMA_SOURCE, level, tile_table_fixture(t))
+	testing.expect_value(t, err, Bake_Error.Grid_Not_Rectangular)
+}
+
+@(test)
+test_flvl_gate_unknown_tile_name :: proc(t: ^testing.T) {
+	// A legend tile name absent from the project-global table is the
+	// unknown-tile-name compile error — declared is gated, used or not (the
+	// `lava` char never appears in the grid).
+	level := `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+  tilemap terrain cell 16 {
+    legend {
+      '#' wall
+      'L' lava
+    }
+    grid """
+      ####
+      ####
+      ####
+    """
+  }
+}
+`
+	_, err := bake_tile_fixture(t, SCHEMA_SOURCE, level, tile_table_fixture(t))
+	testing.expect_value(t, err, Bake_Error.Unknown_Tile_Name)
+}
+
+@(test)
+test_flvl_gate_tile_name_collision :: proc(t: ^testing.T) {
+	// Two tilesets declaring the same tile name is the cross-tileset
+	// collision compile error (one name, one tile — the ADR's project-global
+	// namespace rule).
+	first := make([]Tileset_Tile, 1, context.temp_allocator)
+	first[0] = Tileset_Tile{name = "wall", solid = true}
+	second := make([]Tileset_Tile, 1, context.temp_allocator)
+	second[0] = Tileset_Tile{name = "wall", solid = false}
+	sets := make([]Tileset_Asset, 2, context.temp_allocator)
+	sets[0] = Tileset_Asset{name = "A", atlas = "a", tiles = first}
+	sets[1] = Tileset_Asset{name = "B", atlas = "b", tiles = second}
+	_, err := project_tile_table(sets, context.temp_allocator)
+	testing.expect_value(t, err, Bake_Error.Tile_Name_Collision)
+}
+
+@(test)
+test_flvl_gate_duplicate_named_marker :: proc(t: ^testing.T) {
+	// A named marker must appear exactly once (§18 §3) — its second cell
+	// claims the same level-qualified name, the duplicate-name compile error.
+	level := `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+  tilemap terrain cell 16 {
+    legend {
+      '#' wall
+      'P' spawn Player hero
+    }
+    grid """
+      ####
+      #PP#
+      ####
+    """
+  }
+}
+`
+	_, err := bake_tile_fixture(t, SCHEMA_SOURCE, level, tile_table_fixture(t))
+	testing.expect_value(t, err, Bake_Error.Duplicate_Name)
+}
+
+@(test)
+test_flvl_gate_cell_outside_grid :: proc(t: ^testing.T) {
+	// A `cell()` outside the grid is its own compile error: col 9 on a 4-wide
+	// grid is out of range…
+	out_of_range := `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+  tilemap terrain cell 16 {
+    legend {
+      '#' wall
+    }
+    grid """
+      ####
+      ####
+      ####
+    """
+  }
+  place Switch plate at cell(9, 9)
+}
+`
+	_, err := bake_tile_fixture(t, SCHEMA_SOURCE, out_of_range, tile_table_fixture(t))
+	testing.expect_value(t, err, Bake_Error.Cell_Outside_Grid)
+
+	// …and a cell() in a level with NO tilemap layer is the degenerate case of
+	// the same gate — any cell is outside a grid that does not exist.
+	no_grid := `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+  place Switch plate at cell(0, 0)
+}
+`
+	_, no_grid_err := bake_tile_fixture(t, SCHEMA_SOURCE, no_grid, tile_table_fixture(t))
+	testing.expect_value(t, no_grid_err, Bake_Error.Cell_Outside_Grid)
+}
+
+@(test)
+test_flvl_gate_marker_unknown_thing :: proc(t: ^testing.T) {
+	// A marker whose thing type the schema does not declare is the same
+	// unknown-thing-type compile error a `place` of it would be.
+	level := `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+  tilemap terrain cell 16 {
+    legend {
+      '#' wall
+      'x' spawn Ghost
+    }
+    grid """
+      ####
+      #x##
+      ####
+    """
+  }
+}
+`
+	_, err := bake_tile_fixture(t, SCHEMA_SOURCE, level, tile_table_fixture(t))
+	testing.expect_value(t, err, Bake_Error.Unknown_Thing_Type)
+}
+
+@(test)
+test_flvl_gate_marker_without_pos :: proc(t: ^testing.T) {
+	// A marker cell writes the thing's `pos` like an `at` does, so a marker on
+	// a thing with no `pos` of the level's arity is the at-without-pos gate.
+	schema := `
+import engine.math.{Vec2}
+thing Player { pos: Vec2 }
+thing Gem { score: Int }
+`
+	level := `
+level Arena 2d {
+  bounds (0, 0) (64, 48)
+  things arena_world
+  tilemap terrain cell 16 {
+    legend {
+      '#' wall
+      'j' spawn Gem
+    }
+    grid """
+      ####
+      #j##
+      ####
+    """
+  }
+}
+`
+	_, err := bake_tile_fixture(t, schema, level, tile_table_fixture(t))
+	testing.expect_value(t, err, Bake_Error.At_Without_Pos)
+}
+
 // ── Test-local lookup helpers ───────────────────────────────────────────────
 
 // find_baked_ref finds a Ref table entry by its level-qualified name, walked by

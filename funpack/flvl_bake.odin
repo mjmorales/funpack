@@ -36,17 +36,24 @@ import "core:strings"
 Bake_Error :: enum {
 	None,
 	Unresolved_Name,          // a reference-by-name (`gate: plate`) or anchor names no placed instance
-	Duplicate_Name,           // two named instances share a level-qualified name
+	Duplicate_Name,           // two named instances share a level-qualified name (a duplicate NAMED MARKER is this same violation — a marker name is a level-qualified instance name, §18 §3/§5)
 	Type_Mismatched_Ref,      // a Ref[T] field bound to an instance whose thing type is not T
 	Param_Not_On_Schema,      // a param/override key not a field of the placed thing's schema
-	At_Without_Pos,           // an `at` on a thing with no `pos` of the level's arity (dimensionality)
+	At_Without_Pos,           // an `at` (or a §18 §3 marker cell) on a thing with no `pos` of the level's arity
 	Outside_Bounds,           // a resolved coordinate lies outside the level's `bounds`
 	Seam_Imports_Behavior,    // a .gen.fun seam imports a behavior module (§17.2 layering)
 	Prefab_Member_Not_Placed, // an override names a prefab member the prefab never places
 	Things_Module_Unresolved, // the `things <module>` line is absent or names no indexed module
-	Unknown_Thing_Type,       // a `place <Type>` names neither a prefab nor a schema thing
+	Unknown_Thing_Type,       // a `place <Type>` or a `spawn <Type>` marker names neither a prefab nor a schema thing
 	Bad_Coordinate,           // an anchor/offset expression the bake cannot fold to a coordinate
 	Bad_Bounds,               // the `bounds` corners are absent or not the level's arity
+	// The §18 §5 tilemap gates, each its own closed arm — the arm IS the
+	// diagnostic an agent repairs against, never folded.
+	Char_Not_In_Legend,       // a grid char no legend entry binds (§18 §5)
+	Grid_Not_Rectangular,     // the dedented grid rows differ in length, or the grid is empty (§18 §5)
+	Unknown_Tile_Name,        // a legend tile name absent from the project-global tile table (§18 §5)
+	Tile_Name_Collision,      // two tilesets declare the same tile name (one name, one tile — the ADR's cross-tileset gate, §18 §3)
+	Cell_Outside_Grid,        // a `cell(col, row)` anchor outside the grid — or in a level with no grid (§18 §5)
 }
 
 // Baked_Coord is one resolved placement coordinate: fixed-point components in
@@ -137,10 +144,11 @@ Baked_Symbol :: struct {
 
 // Baked_Level is the whole lowered model: the typed Ref symbol table (named
 // instances only), the deterministic spawn list (every instance, named and
-// anonymous, prefab/loop expanded in place), the placed prefab instances, and the
-// top-level symbol order (symbols) the seam's `data <Level>` record fields follow.
-// It is the canonical initial-world data the seam emitter (the leaf story) renders
-// to `<level>.gen.fun` and the runtime loads.
+// anonymous, prefab/loop expanded in place), the placed prefab instances, the
+// top-level symbol order (symbols) the seam's `data <Level>` record fields
+// follow, and the §18 §3 baked tile layers in declaration order. It is the
+// canonical initial-world data the seam emitter (the leaf story) renders to
+// `<level>.gen.fun` and the runtime loads.
 Baked_Level :: struct {
 	level_name:    string,
 	dim:           Flvl_Dim,
@@ -152,7 +160,93 @@ Baked_Level :: struct {
 	spawns:        []Baked_Spawn,
 	prefabs:       []Baked_Prefab_Instance,
 	symbols:       []Baked_Symbol,
+	tile_layers:   []Baked_Tile_Layer,
 }
+
+// ── Tile layers (§18 §3) ────────────────────────────────────────────────────
+
+// Project_Tile is one entry of the PROJECT-GLOBAL tile table the legend
+// resolves through (the tilemap-legend ADR / spec §18 §3): every `.tiles`
+// tileset contributes its tiles to one flat name set — a tilemap names no
+// tileset. The entry carries the owning tileset (collision provenance), the
+// §18 §2 baked collision verdict, the atlas cell, and the tags.
+Project_Tile :: struct {
+	name:    string,
+	tileset: string, // the owning tileset's UPPER_IDENT name
+	solid:   bool,
+	cell_x:  i64,
+	cell_y:  i64,
+	tags:    []string,
+}
+
+// project_tile_table aggregates the project's imported tilesets into the one
+// flat §18 §3 tile namespace, in tileset slice order then tile source order —
+// never a map, so the table is deterministic. Two tilesets declaring the same
+// tile name is the Tile_Name_Collision bake gate (one name, one tile — the
+// duplicate-named-marker discipline applied to tiles, per the ADR); the
+// WITHIN-tileset duplicate is the importer's own Duplicate_Tile_Name reject,
+// upstream of this table.
+project_tile_table :: proc(tilesets: []Tileset_Asset, allocator := context.allocator) -> (table: []Project_Tile, err: Bake_Error) {
+	entries := make([dynamic]Project_Tile, 0, 8, allocator)
+	for tileset in tilesets {
+		for tile in tileset.tiles {
+			for claimed in entries {
+				if claimed.name == tile.name {
+					return nil, .Tile_Name_Collision
+				}
+			}
+			append(&entries, Project_Tile{
+				name    = tile.name,
+				tileset = tileset.name,
+				solid   = tile.solid,
+				cell_x  = tile.cell_x,
+				cell_y  = tile.cell_y,
+				tags    = tile.tags,
+			})
+		}
+	}
+	return entries[:], .None
+}
+
+// find_project_tile resolves a legend tile name against the project table,
+// walked by index. found = false is the Unknown_Tile_Name gate's trigger.
+find_project_tile :: proc(table: []Project_Tile, name: string) -> (tile: Project_Tile, found: bool) {
+	for candidate in table {
+		if candidate.name == name {
+			return candidate, true
+		}
+	}
+	return Project_Tile{}, false
+}
+
+// Baked_Tile is one palette entry of a baked tile layer: the project-global
+// tile name and its §18 §2 collision verdict — the (name, solid) pair the
+// artifact's `tile` sub-records carry and the runtime renders/collides from.
+Baked_Tile :: struct {
+	name:  string,
+	solid: bool,
+}
+
+// Baked_Tile_Layer is one lowered `tilemap` layer (spec §18 §3): the layer
+// name (also the seam's TilemapHandle constant name), the per-cell logical
+// size, the grid dimensions, the tile palette (the legend's tile binds in
+// LEGEND order, used or not — declaration order, never first-use order), and
+// the row-major per-cell palette indices. A cell with no tile — an `empty`
+// bind or a marker cell (a marker places an entity, it paints no terrain) —
+// carries TILE_LAYER_EMPTY_CELL. Markers are NOT here: they lower to the
+// spawn list like every placement.
+Baked_Tile_Layer :: struct {
+	name:      string,
+	cell_size: i64,
+	cols:      int,
+	rows:      int,
+	palette:   []Baked_Tile,
+	cells:     []int, // row-major palette index per cell; TILE_LAYER_EMPTY_CELL = no tile
+}
+
+// TILE_LAYER_EMPTY_CELL marks a tile-less grid cell in Baked_Tile_Layer.cells
+// (an `empty` legend bind or a spawn-marker cell).
+TILE_LAYER_EMPTY_CELL :: -1
 
 // ── Schema view ─────────────────────────────────────────────────────────────
 // The bake reads the schema module's thing types from its parsed Ast. A thing
@@ -234,6 +328,22 @@ Bake_Scope :: struct {
 	// declarations inside a prefab body (so prefabs nest to arbitrary depth via
 	// `place <Nested>` — spec §17.1).
 	prefabs:     []Flvl_Prefab,
+	// The level's grid reference the `cell(col, row)` anchor resolves against
+	// (spec §18 §3) — level structure, shared by every child scope.
+	grid:        Flvl_Grid_Info,
+}
+
+// Flvl_Grid_Info is the level-wide grid reference the `cell(col, row)` anchor
+// resolves against: the FIRST declared tilemap layer's dimensions and cell
+// size (declaration order — the grid is level structure, so the anchor is
+// independent of where the `place` sits relative to the layer). present =
+// false in a layer-less level, where every cell() is the Cell_Outside_Grid
+// gate (any cell is outside a grid that does not exist).
+Flvl_Grid_Info :: struct {
+	present:   bool,
+	cols:      int,
+	rows:      int,
+	cell_size: i64,
 }
 
 // Bake_Context threads the level header (arity, bounds), the schema things, the
@@ -254,6 +364,10 @@ Bake_Context :: struct {
 	// (prefab-member) placement is reached through its prefab symbol, so only
 	// depth-0 placements append here (scope.name_prefix == level.name).
 	symbols:      [dynamic]Baked_Symbol,
+	// tiles is the project-global §18 §3 tile table the legends resolve through;
+	// tile_layers accumulates the lowered layers in declaration order.
+	tiles:        []Project_Tile,
+	tile_layers:  [dynamic]Baked_Tile_Layer,
 }
 
 // ── Entry ───────────────────────────────────────────────────────────────────
@@ -261,9 +375,12 @@ Bake_Context :: struct {
 // bake_flvl lowers a parsed level against its schema module into the baked
 // model, or rejects with the §17.4 gate the level trips. The schema is the
 // `things <module>` module's parsed Ast; index is the project name index used to
-// resolve that the `things` module exists. This is the bake story's single seam;
+// resolve that the `things` module exists; tiles is the project-global §18 §3
+// tile table (project_tile_table over every imported .tiles tileset) the
+// tilemap legends resolve through — nil is the layer-less default, where any
+// legend tile name is Unknown_Tile_Name. This is the bake story's single seam;
 // the seam-emit byte contract is the leaf story's, downstream of this.
-bake_flvl :: proc(level: Flvl_Level, schema: Ast, schema_module: string, index: Module_Index) -> (baked: Baked_Level, err: Bake_Error) {
+bake_flvl :: proc(level: Flvl_Level, schema: Ast, schema_module: string, index: Module_Index, tiles: []Project_Tile = nil) -> (baked: Baked_Level, err: Bake_Error) {
 	// (1) Resolve `things <module>` against the index: the line is required and
 	// must name an indexed module (spec §17.1).
 	if level.things_module == "" {
@@ -285,26 +402,31 @@ bake_flvl :: proc(level: Flvl_Level, schema: Ast, schema_module: string, index: 
 	bounds_max := coord_of_components(level.bounds_max.components, level.dim) or_return
 
 	ctx := Bake_Context {
-		level   = level,
-		schema  = schema,
-		names   = make(map[string]bool, 16, context.temp_allocator),
-		refs    = make([dynamic]Baked_Ref, 0, 16, context.temp_allocator),
-		spawns  = make([dynamic]Baked_Spawn, 0, 16, context.temp_allocator),
-		prefabs = make([dynamic]Baked_Prefab_Instance, 0, 4, context.temp_allocator),
-		symbols = make([dynamic]Baked_Symbol, 0, 8, context.temp_allocator),
+		level       = level,
+		schema      = schema,
+		names       = make(map[string]bool, 16, context.temp_allocator),
+		refs        = make([dynamic]Baked_Ref, 0, 16, context.temp_allocator),
+		spawns      = make([dynamic]Baked_Spawn, 0, 16, context.temp_allocator),
+		prefabs     = make([dynamic]Baked_Prefab_Instance, 0, 4, context.temp_allocator),
+		symbols     = make([dynamic]Baked_Symbol, 0, 8, context.temp_allocator),
+		tiles       = tiles,
+		tile_layers = make([dynamic]Baked_Tile_Layer, 0, 2, context.temp_allocator),
 	}
 
 	// The top-level scope: the level name is the qualified-name root, and the
-	// origin is the bounds_min (the `origin` anchor's coordinate).
+	// origin is the bounds_min (the `origin` anchor's coordinate). The grid
+	// reference (the cell() anchor's target) is the FIRST declared tilemap
+	// layer — level structure, so it resolves independently of item order.
 	root := Bake_Scope {
 		name_prefix = level.name,
 		origin      = bounds_min,
 		loop_vars   = make(map[string]i64, 4, context.temp_allocator),
 		siblings    = make(map[string]Baked_Coord, 16, context.temp_allocator),
 		prefabs     = level.prefabs,
+		grid        = level_grid_info(level),
 	}
 
-	expand_items(&ctx, &root, level.items, level.places, level.fors, bounds_min, bounds_max) or_return
+	expand_items(&ctx, &root, level.items, level.places, level.fors, level.tilemaps, bounds_min, bounds_max) or_return
 
 	return Baked_Level {
 		level_name    = level.name,
@@ -314,7 +436,29 @@ bake_flvl :: proc(level: Flvl_Level, schema: Ast, schema_module: string, index: 
 		spawns        = ctx.spawns[:],
 		prefabs       = ctx.prefabs[:],
 		symbols       = ctx.symbols[:],
+		tile_layers   = ctx.tile_layers[:],
 	}, .None
+}
+
+// level_grid_info derives the cell()-anchor grid reference from the level's
+// FIRST tilemap layer (declaration order). Dimensions read the dedented rows
+// as parsed; the §18 §5 rectangularity gate fires when the layer itself
+// expands, so a ragged grid still rejects even when a cell() resolves first.
+level_grid_info :: proc(level: Flvl_Level) -> Flvl_Grid_Info {
+	if len(level.tilemaps) == 0 {
+		return Flvl_Grid_Info{}
+	}
+	first := level.tilemaps[0]
+	cols := 0
+	if len(first.rows) > 0 {
+		cols = len(first.rows[0])
+	}
+	return Flvl_Grid_Info {
+		present   = true,
+		cols      = cols,
+		rows      = len(first.rows),
+		cell_size = first.cell_size,
+	}
 }
 
 // is_top_level_scope reports whether a scope is the level's depth-0 scope — the
@@ -327,13 +471,17 @@ is_top_level_scope :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope) -> bool {
 }
 
 // expand_items expands one body's items in DECLARATION order (spec §17.4 — the
-// spawn list is source order with prefabs/loops expanded in place). It walks the
-// interleaved `items` record (parser order across the place/for/nested kinds),
+// spawn list is source order with prefabs/loops expanded in place; a §18 §3
+// tilemap layer's markers expand row-major where the layer is declared). It
+// walks the interleaved `items` record (parser order across the kinds),
 // dispatching each to its per-kind slice: a `place` of a prefab type stamps the
 // prefab and a `place` of a schema thing emits a spawn; a `for` expands its body
-// once per loop value with the var bound. A nested prefab DECLARATION carries no
-// spawn — it is a type stamped only where a `place <Nested>` names it.
-expand_items :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, items: []Flvl_Item, places: []Flvl_Place, fors: []Flvl_For, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
+// once per loop value with the var bound; a `tilemap` lowers to its tile layer
+// plus its marker spawns. A nested prefab DECLARATION carries no spawn — it is
+// a type stamped only where a `place <Nested>` names it. tilemaps is the
+// level's layer slice — a prefab or for body admits no tilemap (the grammar's
+// PrefabItem), so those callers pass nil.
+expand_items :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, items: []Flvl_Item, places: []Flvl_Place, fors: []Flvl_For, tilemaps: []Flvl_Tilemap, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
 	for item in items {
 		switch item.kind {
 		case .Place:
@@ -342,6 +490,8 @@ expand_items :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, items: []Flvl_Item,
 			expand_for(ctx, scope, fors[item.index], bounds_min, bounds_max) or_return
 		case .Prefab:
 			// A nested prefab declaration is a type, not a placement — no spawn.
+		case .Tilemap:
+			expand_tilemap(ctx, scope, tilemaps[item.index], bounds_min, bounds_max) or_return
 		}
 	}
 	return .None
@@ -367,12 +517,13 @@ expand_for :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, loop: Flvl_For, bound
 			loop_vars   = make(map[string]i64, len(scope.loop_vars) + 1, context.temp_allocator),
 			siblings    = scope.siblings,
 			prefabs     = visible[:],
+			grid        = scope.grid,
 		}
 		for k, v in scope.loop_vars {
 			child.loop_vars[k] = v
 		}
 		child.loop_vars[loop.var] = i
-		expand_items(ctx, &child, loop.items, loop.places, loop.fors, bounds_min, bounds_max) or_return
+		expand_items(ctx, &child, loop.items, loop.places, loop.fors, nil, bounds_min, bounds_max) or_return
 	}
 	return .None
 }
@@ -497,10 +648,16 @@ anchor_member :: proc(base: Baked_Coord, member: string, bounds_min, bounds_max:
 }
 
 // anchor_call folds a call postfix step on a coordinate. `.offset(x:, y:[, z:])`
-// adds the per-component deltas to its receiver (spec §17.1). The callee is a
-// `<base>.offset` Member_Expr whose receiver folds to the base coordinate; each
-// named arg's value folds to a Fixed delta over the loop-var scope.
+// adds the per-component deltas to its receiver (spec §17.1); the bare
+// `cell(col, row)` call is the §18 §3 grid anchor, resolved to the cell's
+// center against the level's grid reference. Any other call form is
+// Bad_Coordinate. The offset callee is a `<base>.offset` Member_Expr whose
+// receiver folds to the base coordinate; each named arg's value folds to a
+// Fixed delta over the loop-var scope.
 anchor_call :: proc(scope: ^Bake_Scope, call: ^Flvl_Call_Expr, bounds_min, bounds_max: Baked_Coord, dim: Flvl_Dim) -> (coord: Baked_Coord, err: Bake_Error) {
+	if name, is_name := call.callee.(^Flvl_Name_Expr); is_name && name.name == "cell" {
+		return resolve_cell_anchor(scope, call, bounds_min, bounds_max, dim)
+	}
 	member, is_member := call.callee.(^Flvl_Member_Expr)
 	if !is_member || member.member != "offset" {
 		return Baked_Coord{}, .Bad_Coordinate
@@ -521,6 +678,51 @@ anchor_call :: proc(scope: ^Bake_Scope, call: ^Flvl_Call_Expr, bounds_min, bound
 		}
 	}
 	return coord, .None
+}
+
+// resolve_cell_anchor folds the `cell(col, row)` grid anchor (spec §18 §3) to
+// the named cell's center coordinate. The two args are positional integers
+// (0-indexed col then row, origin top-left — the dungeon example's reading),
+// folded over the loop-var scope like any range bound. A col/row outside the
+// grid — or any cell() in a level with no tilemap layer — is the §18 §5
+// Cell_Outside_Grid gate; a named arg or a wrong arity is a malformed anchor
+// (Bad_Coordinate), the grammar-shape reject, not the range gate.
+resolve_cell_anchor :: proc(scope: ^Bake_Scope, call: ^Flvl_Call_Expr, bounds_min, bounds_max: Baked_Coord, dim: Flvl_Dim) -> (coord: Baked_Coord, err: Bake_Error) {
+	if len(call.args) != 2 {
+		return Baked_Coord{}, .Bad_Coordinate
+	}
+	if call.arg_names[0] != "" || call.arg_names[1] != "" {
+		return Baked_Coord{}, .Bad_Coordinate
+	}
+	col := fold_int(scope, call.args[0]) or_return
+	row := fold_int(scope, call.args[1]) or_return
+	grid := scope.grid
+	if !grid.present {
+		return Baked_Coord{}, .Cell_Outside_Grid
+	}
+	if col < 0 || col >= i64(grid.cols) || row < 0 || row >= i64(grid.rows) {
+		return Baked_Coord{}, .Cell_Outside_Grid
+	}
+	return cell_center(col, row, grid.cell_size, bounds_min, bounds_max, dim), .None
+}
+
+// cell_center is the grid→world mapping (spec §18 §3 — a marker spawns "at its
+// cell center", and cell() is the same point): the grid's top-left corner
+// anchors at (bounds_min.x, bounds_max.y) — row 0 is the TOP row, the
+// picture's reading, with the world's y-up pinned by the top_edge/bottom_edge
+// anchors — so col grows +x and row grows -y. The fold is over the Q32.32
+// kernel (a half-cell is exact in Fixed even for an odd cell size), so the
+// center is bit-identical everywhere. A 3d level's grid layer sits at the
+// bounds' z floor (stacked layers giving the third axis ride a later story).
+cell_center :: proc(col, row: i64, cell_size: i64, bounds_min, bounds_max: Baked_Coord, dim: Flvl_Dim) -> Baked_Coord {
+	half := fixed_div(to_fixed(cell_size), to_fixed(2))
+	x := fixed_add(bounds_min.x, fixed_add(to_fixed(int_mul(col, cell_size)), half))
+	y := fixed_sub(bounds_max.y, fixed_add(to_fixed(int_mul(row, cell_size)), half))
+	coord := Baked_Coord{dim = dim, x = x, y = y}
+	if dim == .D3 {
+		coord.z = bounds_min.z
+	}
+	return coord
 }
 
 // fold_fixed folds an offset-arithmetic expression to a Fixed (spec §17.1
@@ -705,6 +907,179 @@ emit_thing_spawn :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Pla
 	return .None
 }
 
+// ── Tilemap expansion (§18 §3) ──────────────────────────────────────────────
+
+// expand_tilemap lowers one `tilemap` layer where it is declared: the layer
+// name claims its level-qualified name (one namespace with instances — a layer
+// and a marker cannot collide silently), the dedented grid passes the §18 §5
+// rectangularity gate, the legend's tile binds resolve through the
+// project-global tile table into the palette (LEGEND order, used or not —
+// resolution gates a declared name, not its first use), and the grid walks
+// row-major: a tile cell records its palette index, an `empty` or marker cell
+// records no tile, and a marker cell emits its spawn at the cell center — the
+// §18 §3 row-major derivation that makes marker ids deterministic.
+expand_tilemap :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, tilemap: Flvl_Tilemap, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
+	qualified := qualify(scope.name_prefix, tilemap.name)
+	if ctx.names[qualified] {
+		return .Duplicate_Name
+	}
+	ctx.names[qualified] = true
+
+	// The §18 §5 rectangularity gate, AFTER the parser's dedent (the grammar's
+	// strip-before-gate order): every dedented row carries the same column
+	// count, and a rowless or columnless grid is degenerate — also the gate.
+	rows := len(tilemap.rows)
+	if rows == 0 {
+		return .Grid_Not_Rectangular
+	}
+	cols := len(tilemap.rows[0])
+	if cols == 0 {
+		return .Grid_Not_Rectangular
+	}
+	for row in tilemap.rows {
+		if len(row) != cols {
+			return .Grid_Not_Rectangular
+		}
+	}
+
+	// The palette: the legend's tile binds in LEGEND order, de-duplicated by
+	// name (two chars may bind one tile), each resolved through the
+	// project-global table — an unresolved name is the §18 §5 gate whether or
+	// not the grid uses the char.
+	palette := make([dynamic]Baked_Tile, 0, len(tilemap.legend), context.temp_allocator)
+	for entry in tilemap.legend {
+		if entry.kind != .Tile {
+			continue
+		}
+		tile, found := find_project_tile(ctx.tiles, entry.tile_name)
+		if !found {
+			return .Unknown_Tile_Name
+		}
+		if palette_index(palette[:], tile.name) < 0 {
+			append(&palette, Baked_Tile{name = tile.name, solid = tile.solid})
+		}
+	}
+
+	// The row-major walk: terrain cells take their palette index; empty and
+	// marker cells take no tile (a marker places an entity, it paints no
+	// terrain); marker cells emit their spawns in walk order.
+	cells := make([]int, rows * cols, context.temp_allocator)
+	for row, r in tilemap.rows {
+		for c in 0 ..< cols {
+			entry, found := find_legend_entry(tilemap.legend, row[c])
+			if !found {
+				return .Char_Not_In_Legend
+			}
+			cell_index := r * cols + c
+			switch entry.kind {
+			case .Tile:
+				cells[cell_index] = palette_index(palette[:], entry.tile_name)
+			case .Empty:
+				cells[cell_index] = TILE_LAYER_EMPTY_CELL
+			case .Spawn:
+				cells[cell_index] = TILE_LAYER_EMPTY_CELL
+				emit_marker_spawn(ctx, scope, entry, i64(c), i64(r), tilemap.cell_size, bounds_min, bounds_max) or_return
+			}
+		}
+	}
+
+	append(&ctx.tile_layers, Baked_Tile_Layer{
+		name      = tilemap.name,
+		cell_size = tilemap.cell_size,
+		cols      = cols,
+		rows      = rows,
+		palette   = palette[:],
+		cells     = cells,
+	})
+	return .None
+}
+
+// find_legend_entry resolves a grid char against the legend, walked by index
+// in declaration order (first match wins, deterministically). found = false is
+// the Char_Not_In_Legend gate's trigger.
+find_legend_entry :: proc(legend: []Flvl_Legend_Entry, char: u8) -> (entry: Flvl_Legend_Entry, found: bool) {
+	for candidate in legend {
+		if candidate.char == char {
+			return candidate, true
+		}
+	}
+	return Flvl_Legend_Entry{}, false
+}
+
+// palette_index finds a tile name's slot in the layer palette, walked by
+// index; -1 when absent (the dedupe probe and the cell-index lookup share it).
+palette_index :: proc(palette: []Baked_Tile, name: string) -> int {
+	for tile, i in palette {
+		if tile.name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// emit_marker_spawn lowers one marker cell to its spawn (spec §18 §3): the
+// marker's thing type must be a schema thing with a `pos` of the level's arity
+// (the same Unknown_Thing_Type / At_Without_Pos floors a `place` clears), the
+// pos is the CELL CENTER, and a named marker claims its level-qualified name
+// exactly like a named placement — a Baked_Ref entry, a top-level seam symbol,
+// and a sibling coordinate an instance-relative anchor can read. A duplicate
+// named marker is therefore the Duplicate_Name gate (§18 §5); an anonymous
+// marker takes the declaration-order counter id. A marker carries no params
+// and no facing — every field beyond `pos` defaults (the dungeon schema's
+// reading).
+emit_marker_spawn :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, entry: Flvl_Legend_Entry, col, row: i64, cell_size: i64, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
+	thing, is_thing := schema_thing(ctx.schema, entry.spawn_type)
+	if !is_thing {
+		return .Unknown_Thing_Type
+	}
+	pos_field, has_pos := schema_field(thing, "pos")
+	if !has_pos || !pos_arity_matches(pos_field, ctx.level.dim) {
+		return .At_Without_Pos
+	}
+
+	pos := cell_center(col, row, cell_size, bounds_min, bounds_max, ctx.level.dim)
+	if !within_bounds(pos, bounds_min, bounds_max) {
+		return .Outside_Bounds
+	}
+
+	id: u64
+	if entry.has_spawn_name {
+		qualified := qualify(scope.name_prefix, entry.spawn_name)
+		if ctx.names[qualified] {
+			return .Duplicate_Name
+		}
+		ctx.names[qualified] = true
+		id = stable_id(qualified)
+		ref_index := len(ctx.refs)
+		append(&ctx.refs, Baked_Ref{
+			name       = qualified,
+			local_name = entry.spawn_name,
+			thing_type = entry.spawn_type,
+			id         = id,
+		})
+		// A tilemap is a LevelItem, so its named markers are always depth-0
+		// seam symbols — "the seam gains the named markers as Refs" (§18 §3).
+		if is_top_level_scope(ctx, scope) {
+			append(&ctx.symbols, Baked_Symbol{
+				kind       = .Ref,
+				local_name = entry.spawn_name,
+				index      = ref_index,
+			})
+		}
+		scope.siblings[entry.spawn_name] = pos
+	} else {
+		id = ctx.anon_counter
+		ctx.anon_counter += 1
+	}
+
+	append(&ctx.spawns, Baked_Spawn{
+		thing_type = entry.spawn_type,
+		id         = id,
+		pos        = pos,
+	})
+	return .None
+}
+
 // resolve_params resolves one placement's flat (non-dotted) params against the
 // placed thing's schema (spec §17.1 — params typecheck against the schema). A
 // param key naming no field is param-not-on-schema; a reference-by-name value on
@@ -820,6 +1195,7 @@ stamp_prefab :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Place, 
 		loop_vars   = scope.loop_vars,
 		siblings    = make(map[string]Baked_Coord, 8, context.temp_allocator),
 		prefabs     = visible[:],
+		grid        = scope.grid,
 	}
 
 	// Record the member-Ref count before expansion so the prefab instance can
@@ -865,7 +1241,7 @@ stamp_prefab :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Place, 
 // preserves the per-kind slice positions the items index into, so the merged
 // body keeps its declaration order.
 expand_prefab_body :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, prefab: Flvl_Prefab, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
-	return expand_items(ctx, scope, prefab.items, prefab.places, prefab.fors, bounds_min, bounds_max)
+	return expand_items(ctx, scope, prefab.items, prefab.places, prefab.fors, nil, bounds_min, bounds_max)
 }
 
 // apply_overrides folds a placement's dotted-path overrides into a clone of the

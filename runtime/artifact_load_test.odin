@@ -29,12 +29,10 @@ load_golden :: proc(t: ^testing.T) -> (program: Program, ok: bool) {
 	return loaded, true
 }
 
-// The version gate is exact-match: the golden's stamp is v8, and the loader
-// builds against exactly that. A wrong stamp or version is refused, never parsed
-// (§1). v8 is the accept case (the §05 §6 @migrate schema bump — the [data]
-// `migrate FROM WITH` sub-record carrying rename/retype metadata); v7 (the
-// prior typed-hole schema) and any future v9 are mismatches the loader refuses
-// before reading any payload.
+// The version gate is exact-match: the golden's stamp is the current schema
+// version, and the loader builds against exactly that. A wrong stamp or
+// version is refused, never parsed (§1): a prior version and any future
+// version are mismatches the loader refuses before reading any payload.
 @(test)
 test_load_version_gate :: proc(t: ^testing.T) {
 	program, ok := load_golden(t)
@@ -43,15 +41,15 @@ test_load_version_gate :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, program.schema_version, ARTIFACT_SCHEMA_VERSION)
 
-	// A v8 stamp is now a mismatch — the prior (@migrate-carry) schema, refused
+	// A v10 stamp is now a mismatch — the prior (all[T]-node) schema, refused
 	// before any payload.
-	old_version := "funpack-artifact 8\n[meta 0]\n"
+	old_version := "funpack-artifact 10\n[meta 0]\n"
 	_, old_err := load_program(old_version, context.temp_allocator)
 	testing.expect_value(t, old_err, Artifact_Error.Version_Mismatch)
 
-	// A FUTURE version (v10) is equally a mismatch — the gate is exact, not
+	// A FUTURE version (v12) is equally a mismatch — the gate is exact, not
 	// floor-or-ceiling.
-	future_version := "funpack-artifact 11\n[meta 0]\n"
+	future_version := "funpack-artifact 12\n[meta 0]\n"
 	_, future_err := load_program(future_version, context.temp_allocator)
 	testing.expect_value(t, future_err, Artifact_Error.Version_Mismatch)
 
@@ -585,7 +583,7 @@ test_body_string_node_retains_interpolation :: proc(t: ^testing.T) {
 // multi-module bump, the typed-hole `stub` node, and the @migrate [data] carry
 // are all additive over these v5 record shapes, which still load), so the
 // version gate admits it and the additive decode arms are exercised.
-V5_ARTIFACT :: "funpack-artifact 10\n" +
+V5_ARTIFACT :: "funpack-artifact 11\n" +
 	"[meta 2]\n" +
 	"project yard\n" +
 	"version L5:0.1.0\n" +
@@ -679,12 +677,12 @@ test_load_v5_additive_arms :: proc(t: ^testing.T) {
 @(test)
 test_load_v5_malformed_refused :: proc(t: ^testing.T) {
 	// An unknown section name is a schema mismatch — build_program refuses it.
-	unknown_section := "funpack-artifact 10\n[meta 2]\nproject yard\nversion L5:0.1.0\n[gravity 0]\n"
+	unknown_section := "funpack-artifact 11\n[meta 2]\nproject yard\nversion L5:0.1.0\n[gravity 0]\n"
 	_, unknown_err := load_program(unknown_section, context.temp_allocator)
 	testing.expect_value(t, unknown_err, Artifact_Error.Malformed_Header)
 
 	// A declared count that over-shapes the section is a parse-layer refusal.
-	bad_count := "funpack-artifact 10\n[enums 2]\nenum CollisionLayer CollisionLayer 1\nvariant Solid unit\n"
+	bad_count := "funpack-artifact 11\n[enums 2]\nenum CollisionLayer CollisionLayer 1\nvariant Solid unit\n"
 	_, count_err := load_program(bad_count, context.temp_allocator)
 	testing.expect_value(t, count_err, Artifact_Error.Section_Count_Mismatch)
 }

@@ -93,6 +93,16 @@ build_program :: proc(
 			program.entrypoint = load_entrypoint(section) or_return
 		case "queries":
 			program.queries = load_queries(section, allocator) or_return
+		case "tilemaps":
+			// The v11 §18 §3 tile-layer carry. Decoding the layers into the
+			// Program (batched render, grid collision, the tile queries) is
+			// the tilemap-runtime story's; until that decode lands this
+			// runtime FAILS CLOSED on a tile-bearing artifact — refusing is
+			// honest, silently dropping authored terrain is not. The empty
+			// section every level-less game emits loads clean.
+			if len(section.records) != 0 {
+				return {}, .Malformed_Header // tile-layer decode not yet implemented — refuse, never ignore
+			}
 		case:
 			return {}, .Malformed_Header // an unknown section is a schema mismatch
 		}

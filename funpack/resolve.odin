@@ -533,10 +533,13 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.SoundHandle), true
 	case "AtlasHandle":
 		return engine_type_of(.AtlasHandle), true
-	// §18 §2 the engine.tilemap tileset handle grounds the same way — a .tiles
-	// seam constant's `let NAME: TilesetHandle` declared type.
+	// §18 §2/§3 the engine.tilemap handles ground the same way — a .tiles seam
+	// constant's `let NAME: TilesetHandle` and a level seam's `let <layer>:
+	// TilemapHandle` declared types.
 	case "TilesetHandle":
 		return engine_type_of(.TilesetHandle), true
+	case "TilemapHandle":
+		return engine_type_of(.TilemapHandle), true
 	// §16 §7 anim: a pose generator's `-> Pose` return, a rig seam's `-> Skeleton`/
 	// `-> PartSet` returns, and a `transform: Transform` slot all name an engine
 	// type in field/param/return position. Slot/Side/Bone ground here too so a

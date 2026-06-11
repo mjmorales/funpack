@@ -21,12 +21,17 @@
 package funpack
 
 // Flvl_Token_Kind is the closed token set the §17 level grammar reads. Keyword
-// tokens (Level/Bounds/Things/Place/At/Facing/Prefab/For/In) open the level's
+// tokens (Level/Bounds/Things/Place/At/Facing/Prefab/For/In, plus the §18 §3
+// tilemap-layer keywords Tilemap/Legend/Grid/Spawn/Empty) open the level's
 // productions; Dim carries a `2d`/`3d` header word; Int/Fixed/String are the
-// anchor-expression atoms; the operator/bracket glyphs drive the offset
-// arithmetic, range, dotted-path, and block structure. Dot_Dot is the range
-// operator `..`, scanned ahead of the member-access Dot so `0..5` never lexes
-// as two member accesses.
+// anchor-expression atoms; Char_Lit and Triple_String are the §18 §3 legend/grid
+// literals; the operator/bracket glyphs drive the offset arithmetic, range,
+// dotted-path, and block structure. Dot_Dot is the range operator `..`, scanned
+// ahead of the member-access Dot so `0..5` never lexes as two member accesses.
+// NOTE: `cell` is deliberately NOT a keyword — it is a CONTEXTUAL word
+// (grammar/flvl.ebnf Tilemap): the tilemap header reads it as the cell-size
+// marker by text, while `cell(13, 4)` stays an ordinary LOWER_IDENT anchor
+// callee (grammar/flvl.ebnf AnchorAtom / spec §18 §3).
 Flvl_Token_Kind :: enum {
 	Invalid, // end of input or an unrecognized glyph
 	// production-opening keywords
@@ -39,12 +44,20 @@ Flvl_Token_Kind :: enum {
 	Prefab,
 	For,
 	In,
+	// the §18 §3 tilemap-layer keywords
+	Tilemap,
+	Legend,
+	Grid,
+	Spawn,
+	Empty,
 	// names, the dimension header word, and literals
 	Ident,
-	Dim,        // the `2d` / `3d` header word
+	Dim,           // the `2d` / `3d` header word
 	Int_Lit,
 	Fixed_Lit,
 	String_Lit,
+	Char_Lit,      // a single-quoted legend char `'#'` (spec §18 §3)
+	Triple_String, // a `"""…"""` grid block, raw interior bytes (spec §18 §3)
 	// brackets
 	L_Paren,
 	R_Paren,
@@ -79,6 +92,7 @@ Flvl_Token :: struct {
 	case_class: Flvl_Ident_Case, // Ident first-letter case
 	int_value:  i64,             // Int_Lit value
 	fixed_bits: Fixed,           // Fixed_Lit value
+	char_value: u8,              // Char_Lit value (the legend char, spec §18 §3)
 	line:       int,             // 1-based source line of the token's first byte (§17 diagnostic provenance)
 }
 
@@ -106,7 +120,29 @@ lex_flvl :: proc(content: string) -> []Flvl_Token {
 				i += 1
 			}
 		case ch == '"':
+			// The `"""` grid opener is matched before the plain string scan
+			// (maximal munch) so a triple-quoted block never lexes as an empty
+			// string plus a stray quote. The interior is raw bytes — it spans
+			// newlines — so the line counter advances past every interior LF
+			// to keep token provenance exact for whatever follows the grid.
+			if i+2 < len(content) && content[i+1] == '"' && content[i+2] == '"' {
+				tok, next := flvl_scan_triple_string(content, i)
+				tok.line = line
+				for j := i; j < next; j += 1 {
+					if content[j] == '\n' {
+						line += 1
+					}
+				}
+				append(&tokens, tok)
+				i = next
+				continue
+			}
 			tok, next := flvl_scan_string(content, i)
+			tok.line = line
+			append(&tokens, tok)
+			i = next
+		case ch == '\'':
+			tok, next := flvl_scan_char(content, i)
 			tok.line = line
 			append(&tokens, tok)
 			i = next
@@ -143,6 +179,42 @@ flvl_scan_string :: proc(content: string, start: int) -> (tok: Flvl_Token, next:
 		return Flvl_Token{kind = .Invalid, text = content[start:i]}, i
 	}
 	return Flvl_Token{kind = .String_Lit, text = content[start+1 : i]}, i + 1
+}
+
+// flvl_scan_triple_string scans a `"""…"""` grid block (grammar/flvl.ebnf Grid,
+// spec §18 §3): the token text is the RAW interior between the two triple-quote
+// fences, newlines included — the parser owns the dedent (the common-leading-
+// indentation strip the grammar mandates BEFORE the §18 §5 rectangularity
+// gate). An unterminated block (end of input before the closing fence) is
+// Invalid, the parser's reject signal.
+flvl_scan_triple_string :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
+	i := start + 3
+	for i+2 < len(content) {
+		if content[i] == '"' && content[i+1] == '"' && content[i+2] == '"' {
+			return Flvl_Token{kind = .Triple_String, text = content[start+3 : i]}, i + 3
+		}
+		i += 1
+	}
+	return Flvl_Token{kind = .Invalid, text = content[start:]}, len(content)
+}
+
+// flvl_scan_char scans a single-quoted legend char `'#'` (grammar/flvl.ebnf
+// LegendEntry, spec §18 §3): exactly one byte between the quotes — the legend
+// maps single CHARACTERS, so a multi-byte body, an empty `''`, or an
+// unterminated quote is Invalid, the parser's reject signal. The space char
+// `' '` is a legal body (the corpus `' ' empty` bind).
+flvl_scan_char :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
+	if start+2 < len(content) && content[start+1] != '\n' && content[start+2] == '\'' {
+		body := content[start+1]
+		return Flvl_Token{kind = .Char_Lit, text = content[start+1 : start+2], char_value = body}, start + 3
+	}
+	// Reject without consuming past the line so the parser's diagnostic stays
+	// anchored to the malformed literal.
+	end := start + 1
+	for end < len(content) && content[end] != '\n' && end < start+3 {
+		end += 1
+	}
+	return Flvl_Token{kind = .Invalid, text = content[start:end]}, end
 }
 
 // flvl_scan_number scans a number atom, the dimension header word, or stops
@@ -206,6 +278,19 @@ flvl_scan_ident :: proc(content: string, start: int) -> (tok: Flvl_Token, next: 
 		return Flvl_Token{kind = .For, text = text}, i
 	case "in":
 		return Flvl_Token{kind = .In, text = text}, i
+	// The §18 §3 tilemap-layer keywords. `cell` is deliberately absent — it is
+	// contextual (the tilemap header reads the Ident's text), because it is also
+	// the `cell(col, row)` anchor callee, a LOWER_IDENT atom position.
+	case "tilemap":
+		return Flvl_Token{kind = .Tilemap, text = text}, i
+	case "legend":
+		return Flvl_Token{kind = .Legend, text = text}, i
+	case "grid":
+		return Flvl_Token{kind = .Grid, text = text}, i
+	case "spawn":
+		return Flvl_Token{kind = .Spawn, text = text}, i
+	case "empty":
+		return Flvl_Token{kind = .Empty, text = text}, i
 	}
 	return Flvl_Token{kind = .Ident, text = text, case_class = flvl_classify_case(text)}, i
 }

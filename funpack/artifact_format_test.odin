@@ -120,6 +120,7 @@ test_golden_artifact_section_counts :: proc(t: ^testing.T) {
 		"bindings",
 		"entrypoint",
 		"queries",
+		"tilemaps",
 	}
 	testing.expect_value(t, len(doc.sections), len(expected_order))
 	for name, i in expected_order {
@@ -141,6 +142,7 @@ test_golden_artifact_section_counts :: proc(t: ^testing.T) {
 	expect_section_count(t, doc, "bindings", 4) // P1/P2 keys+stick
 	expect_section_count(t, doc, "entrypoint", 1) // main
 	expect_section_count(t, doc, "queries", 0) // pong declares no query (v9 constant tail)
+	expect_section_count(t, doc, "tilemaps", 0) // pong has no tile layer (v11 constant tail)
 }
 
 expect_section_count :: proc(t: ^testing.T, doc: Artifact_Doc, name: string, want: int) {

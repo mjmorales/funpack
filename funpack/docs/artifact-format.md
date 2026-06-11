@@ -1,4 +1,4 @@
-# funpack artifact format — v10
+# funpack artifact format — v11
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 10
+funpack-artifact 11
 ```
 
-- `schema_version` is the integer after the space (here `10`).
+- `schema_version` is the integer after the space (here `11`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -133,7 +133,21 @@ funpack-artifact 10
   query body reads the world through — a query takes **only value parameters**
   (the View-parameter interim shape is retired by the same bump), so the
   `[queries]` carry (§16) is unchanged in layout while every world read moves
-  inside the body. A new node KIND is a layout change: 9 → 10.
+  inside the body. A new node KIND is a layout change: 9 → 10. v11 carries the
+  **§18 §3 tile layers** through to the runtime — the static environment a
+  tilemap's ASCII grid bakes to, which the runtime renders **batched** and
+  collides against (never per-tile `Draw::Sprite`) and which an artifact-blind
+  runtime could neither draw nor collide. Two layout changes ride it: (a) one
+  new section, `[tilemaps T]` (§17), appended after `[queries]` — one record
+  per baked layer in level declaration order: a lead line `tilemap NAME
+  CELL_SIZE COLS ROWS PALETTE_COUNT`, then `PALETTE_COUNT` `tile NAME SOLID`
+  palette lines (the layer's legend-declared tile types in legend order, each
+  carrying its §18 §2 baked collision verdict), then `ROWS` `row …` lines of
+  `COLS` space-separated cells — a decimal palette index or `-` for a tile-less
+  cell (an `empty` legend bind or a marker cell; markers lower to the spawn
+  machinery, never this section); (b) two new **sub-record keywords**, `tile`
+  and `row`. A new section and new sub-record keywords are layout changes:
+  10 → 11.
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -184,8 +198,9 @@ no field whose value depends on when, where, or on which machine it was emitted.
   unambiguously, then re-derives `N` by counting the **lead** lines (those whose
   keyword is *not* a sub-record keyword). The closed sub-record keyword set is:
   `variant`, `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`,
-  `node`, `migrate` (v8, §6). A declared `N` that disagrees with the lead-line
-  count is an error (an under- or over-shaped section, §29-style exact-match).
+  `node`, `migrate` (v8, §6), `index` (v9, §16), `tile` and `row` (v11, §17). A
+  declared `N` that disagrees with the lead-line count is an error (an under-
+  or over-shaped section, §29-style exact-match).
 
   This **lead-line reader is the single parse discipline** for top-level record
   boundaries: a top-level record runs from its lead line up to the next lead line
@@ -385,7 +400,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 9
+funpack-artifact 11
 [meta 2]
 …
 [enums N]
@@ -411,6 +426,8 @@ funpack-artifact 9
 [entrypoint 1]
 …
 [queries N]
+…
+[tilemaps N]
 …
 ```
 
@@ -962,12 +979,50 @@ node …
 - Several queries may declare the same `(KIND, THING, FIELD)` requirement; the
   runtime maintains ONE structure per distinct requirement (§08 §3: an index is
   a cache — a pure function of state).
-- Cross-module query carry is deliberately absent (the §17 seam carries fns
-  only); widening it is a schema bump.
+- Cross-module query carry is deliberately absent (the §17-levels seam carries
+  fns only); widening it is a schema bump.
 
 ---
 
-## 17. Parsing recipe (runtime, zero funpack imports)
+## 17. `[tilemaps]` — baked tile layers (§18 §3, schema v11)
+
+One record per baked tilemap layer, in **level declaration order** (v11). A
+layer is the static environment a `.flvl` tilemap's ASCII grid bakes to: the
+runtime renders it **batched** and collides against it — never per-tile
+`Draw::Sprite` (§18 §3). Spawn **markers are not here**: a marker lowers to the
+spawn machinery like every placement, so this section carries terrain only.
+
+```
+tilemap NAME CELL_SIZE COLS ROWS PALETTE_COUNT
+tile NAME SOLID
+…
+row C0 C1 … C{COLS-1}
+…
+```
+
+- The lead line: `NAME` is the layer's authored name (also the level seam's
+  `TilemapHandle` constant name); `CELL_SIZE` is the per-cell logical size in
+  integer world units; `COLS`/`ROWS` are the grid dimensions; `PALETTE_COUNT`
+  is the number of `tile` lines that follow.
+- `tile NAME SOLID` is one palette entry: the project-global tile name and its
+  §18 §2 **baked collision verdict** (`true`/`false`, §2.5) — the bake already
+  resolved the name through the tileset table, so a reader takes both tokens
+  as final. Entries follow the legend's declaration order.
+- Exactly `ROWS` `row` lines follow the palette, top row first (the grid is
+  read as a picture: row 0 is the level's TOP edge). Each carries exactly
+  `COLS` space-separated cells: a decimal **palette index** (0-based into this
+  record's `tile` lines) or `-` for a tile-less cell (an `empty` legend bind or
+  a marker cell).
+- The grid→world mapping is fixed: the grid's top-left corner anchors at
+  `(bounds_min.x, bounds_max.y)`; cell `(col, row)`'s center is
+  `(bounds_min.x + col*CELL_SIZE + CELL_SIZE/2,
+  bounds_max.y - row*CELL_SIZE - CELL_SIZE/2)` — the same point the bake gave
+  the cell's markers and `cell()` anchors, so render, collision, and spawns
+  share one mapping.
+
+---
+
+## 18. Parsing recipe (runtime, zero funpack imports)
 
 A runtime parses an artifact thus, reading top-to-bottom, never seeking:
 
@@ -979,7 +1034,7 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
    spans its lead line up to the next lead line. Lead lines are those whose
    leading keyword is *not* in the closed sub-record keyword set (`variant`,
    `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`, `node`,
-   `migrate`, `index`). This
+   `migrate`, `index`, `tile`, `row`). This
    is the **only** parse discipline; the format does not promise a
    second grammar-only reader that derives `N` from declared sub-counts (it cannot
    be sound where a record carries an uncounted run, e.g. a `const`'s body `node`
@@ -994,8 +1049,8 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
 4. Build the in-memory game model (enums, data/signal/thing schemas, function
    bodies, behaviors with their step bodies, the flattened pipeline, the routing
    map, the spawn batch, the binding table, the entrypoint, the query
-   declarations with their index requirements) and interpret the carried
-   checked-AST nodes per the §09 canonical semantics.
+   declarations with their index requirements, the tile layers) and interpret
+   the carried checked-AST nodes per the §09 canonical semantics.
 
 Because every section's `N` is the lead-line count, every record shapes its
 sub-records by declared scalar counts, every body `node` declares its `child_count`,

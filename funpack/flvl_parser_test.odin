@@ -178,6 +178,154 @@ test_flvl_parses_nested_prefab_and_override :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_flvl_parses_tilemap_layer :: proc(t: ^testing.T) {
+	// The §18 §3 tilemap layer: a `cell`-sized header (contextual `cell` — the
+	// word lexes as an Ident, the header reads its text), a legend covering
+	// every bind form (tile / anonymous spawn / named spawn / empty), and a
+	// dedented TripleString grid.
+	src := "level Dungeon 2d {\n" +
+		"  bounds (0, 0) (64, 32)\n" +
+		"  things dungeon_world\n" +
+		"  tilemap terrain cell 16 {\n" +
+		"    legend {\n" +
+		"      '#' wall\n" +
+		"      '.' floor\n" +
+		"      'g' spawn Slime\n" +
+		"      'P' spawn Player hero\n" +
+		"      ' ' empty\n" +
+		"    }\n" +
+		"    grid \"\"\"\n" +
+		"      ####\n" +
+		"      #P g\n" +
+		"      ####\n" +
+		"    \"\"\"\n" +
+		"  }\n" +
+		"}\n"
+	level, err := parse_flvl(src)
+	testing.expect_value(t, err, Flvl_Parse_Error.None)
+	testing.expect_value(t, len(level.tilemaps), 1)
+	tm := level.tilemaps[0]
+	testing.expect_value(t, tm.name, "terrain")
+	testing.expect_value(t, tm.cell_size, 16)
+
+	// Five legend entries in declaration order, each carrying its bind form.
+	testing.expect_value(t, len(tm.legend), 5)
+	testing.expect_value(t, tm.legend[0].char, '#')
+	testing.expect_value(t, tm.legend[0].kind, Flvl_Legend_Kind.Tile)
+	testing.expect_value(t, tm.legend[0].tile_name, "wall")
+	testing.expect_value(t, tm.legend[2].kind, Flvl_Legend_Kind.Spawn)
+	testing.expect_value(t, tm.legend[2].spawn_type, "Slime")
+	testing.expect_value(t, tm.legend[2].has_spawn_name, false)
+	testing.expect_value(t, tm.legend[3].char, 'P')
+	testing.expect_value(t, tm.legend[3].spawn_type, "Player")
+	testing.expect_value(t, tm.legend[3].has_spawn_name, true)
+	testing.expect_value(t, tm.legend[3].spawn_name, "hero")
+	testing.expect_value(t, tm.legend[4].char, ' ')
+	testing.expect_value(t, tm.legend[4].kind, Flvl_Legend_Kind.Empty)
+
+	// The grid dedents to its three 4-char rows: the block indentation strips
+	// (the grammar's common-leading-indentation rule), and the row with the
+	// interior legend space keeps it.
+	testing.expect_value(t, len(tm.rows), 3)
+	testing.expect_value(t, tm.rows[0], "####")
+	testing.expect_value(t, tm.rows[1], "#P g")
+	testing.expect_value(t, tm.rows[2], "####")
+
+	// The layer rides the interleaved item record like every LevelItem.
+	testing.expect_value(t, len(level.items), 1)
+	testing.expect_value(t, level.items[0].kind, Flvl_Item_Kind.Tilemap)
+}
+
+@(test)
+test_flvl_grid_dedent_keeps_meaningful_leading_space :: proc(t: ^testing.T) {
+	// The dedent strips only the COMMON prefix: a row legitimately opening
+	// with a legend space narrows the common indent for every row, so the
+	// meaningful leading char survives. Here row 2 opens two spaces shallower
+	// than the others, so only that much strips.
+	src := "level Arena 2d {\n" +
+		"  bounds (0, 0) (64, 32)\n" +
+		"  things arena_world\n" +
+		"  tilemap terrain cell 16 {\n" +
+		"    legend {\n" +
+		"      '#' wall\n" +
+		"      ' ' empty\n" +
+		"    }\n" +
+		"    grid \"\"\"\n" +
+		"      ####\n" +
+		"    # ###\n" +
+		"      ####\n" +
+		"    \"\"\"\n" +
+		"  }\n" +
+		"}\n"
+	level, err := parse_flvl(src)
+	testing.expect_value(t, err, Flvl_Parse_Error.None)
+	tm := level.tilemaps[0]
+	testing.expect_value(t, len(tm.rows), 3)
+	testing.expect_value(t, tm.rows[0], "  ####")
+	testing.expect_value(t, tm.rows[1], "# ###")
+	testing.expect_value(t, tm.rows[2], "  ####")
+}
+
+@(test)
+test_flvl_parses_cell_anchor_callee :: proc(t: ^testing.T) {
+	// `cell` stays an ordinary LOWER_IDENT in anchor position (the contextual-
+	// keyword requirement): `at cell(13, 4)` parses as a call whose callee is
+	// the bare name `cell` with two positional Int args.
+	src := "level Arena 2d {\n  place Chest loot { gems: 5 } at cell(13, 4)\n}\n"
+	level, err := parse_flvl(src)
+	testing.expect_value(t, err, Flvl_Parse_Error.None)
+	testing.expect_value(t, len(level.places), 1)
+	call, is_call := level.places[0].position.(^Flvl_Call_Expr)
+	testing.expect(t, is_call, "cell() position is a call expr")
+	callee, is_name := call.callee.(^Flvl_Name_Expr)
+	testing.expect(t, is_name, "cell() callee is a bare name")
+	testing.expect_value(t, callee.name, "cell")
+	testing.expect_value(t, len(call.args), 2)
+	testing.expect_value(t, call.arg_names[0], "")
+	col, col_is_int := call.args[0].(^Flvl_Int_Expr)
+	testing.expect(t, col_is_int, "cell() col arg is an Int atom")
+	testing.expect_value(t, col.value, 13)
+}
+
+@(test)
+test_flvl_rejects_malformed_tilemap :: proc(t: ^testing.T) {
+	// Each malformed §18 §3 form rejects with the closed parse arm it trips —
+	// grammar violations are parse rejects; the §18 §5 gates are the bake's.
+	legend_body :: "    legend {\n      '#' wall\n    }\n"
+	grid_body :: "    grid \"\"\"\n      #\n    \"\"\"\n"
+
+	// The grid ahead of the legend violates the fixed body order.
+	grid_first := "level A 2d {\n  tilemap terrain cell 16 {\n" + grid_body + legend_body + "  }\n}\n"
+	_, err_order := parse_flvl(grid_first)
+	testing.expect_value(t, err_order, Flvl_Parse_Error.Unexpected_Token)
+
+	// A missing contextual `cell` word is out of grammar position.
+	no_cell := "level A 2d {\n  tilemap terrain 16 {\n" + legend_body + grid_body + "  }\n}\n"
+	_, err_cell := parse_flvl(no_cell)
+	testing.expect_value(t, err_cell, Flvl_Parse_Error.Unexpected_Token)
+
+	// A multi-char legend literal is not a Char (the lexer's Invalid token).
+	multi_char := "level A 2d {\n  tilemap terrain cell 16 {\n    legend {\n      '##' wall\n    }\n" + grid_body + "  }\n}\n"
+	_, err_char := parse_flvl(multi_char)
+	testing.expect_value(t, err_char, Flvl_Parse_Error.Unexpected_Token)
+
+	// An empty legend violates the LegendEntry+ production.
+	empty_legend := "level A 2d {\n  tilemap terrain cell 16 {\n    legend {\n    }\n" + grid_body + "  }\n}\n"
+	_, err_legend := parse_flvl(empty_legend)
+	testing.expect_value(t, err_legend, Flvl_Parse_Error.Unexpected_Token)
+
+	// A lower-case marker type is Wrong_Case (spawn takes UPPER_IDENT).
+	low_marker := "level A 2d {\n  tilemap terrain cell 16 {\n    legend {\n      'g' spawn slime\n    }\n" + grid_body + "  }\n}\n"
+	_, err_case := parse_flvl(low_marker)
+	testing.expect_value(t, err_case, Flvl_Parse_Error.Wrong_Case)
+
+	// An unterminated grid block ends the input mid-production.
+	unterminated := "level A 2d {\n  tilemap terrain cell 16 {\n" + legend_body + "    grid \"\"\"\n      #\n"
+	_, err_end := parse_flvl(unterminated)
+	testing.expect_value(t, err_end, Flvl_Parse_Error.Unexpected_End)
+}
+
+@(test)
 test_flvl_rejects_malformed_place :: proc(t: ^testing.T) {
 	// A place missing its type name (a lower-case word where UPPER_IDENT is
 	// required) rejects as Wrong_Case.

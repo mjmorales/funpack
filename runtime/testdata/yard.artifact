@@ -1,4 +1,4 @@
-funpack-artifact 10
+funpack-artifact 11
 [meta 2]
 project yard
 version L5:0.1.0
@@ -805,3 +805,4 @@ bind button P1 Cmd::Apply source:key(Key::Enter)
 [entrypoint 1]
 entrypoint main pipeline:Yard tick_hz:60 logical:160x120 bindings:bindings
 [queries 0]
+[tilemaps 0]

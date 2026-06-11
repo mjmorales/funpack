@@ -86,13 +86,16 @@ Engine_Kind :: enum {
 	TextureHandle,   // §26 a baked-texture handle (texture("…"))
 	SoundHandle,     // §26 a baked-sound handle (sound("…"))
 	AtlasHandle,     // §26 a sprite-atlas handle (atlas("…"); cell/frame accessors)
-	// §18 §2 / §26 the tilemap partition's handle (engine.tilemap): the typed
-	// constant a .tiles bake's seam binds (`let dungeon: TilesetHandle =
-	// TilesetHandle{name: "dungeon"}`). Same single-String-`name` record schema
-	// as the engine.assets handles (surface_engine_record); §26 declares no
-	// string constructor for it. TilemapHandle/SetTile and the tile queries
-	// ride the tilemap-layer story, not this kind.
+	// §18 §2/§3 / §26 the tilemap partition's handles (engine.tilemap): the
+	// typed constants the bakes bind (the .tiles seam's `let dungeon:
+	// TilesetHandle = TilesetHandle{name: "dungeon"}`; the level seam's
+	// `let terrain: TilemapHandle = TilemapHandle{name: "terrain"}` layer
+	// constant). Each is the single-String-`name` record schema the
+	// engine.assets handles carry (surface_engine_record); §26 declares no
+	// string constructor for either. SetTile and the tile_at/solid_at queries
+	// ride the tilemap-runtime story, not these kinds.
 	TilesetHandle,   // §18 §2 a baked-tileset handle (the .tiles seam constant)
+	TilemapHandle,   // §18 §3 a baked tile-LAYER handle (the level seam's layer constant)
 	// §16 §7 the rig/animation surface (engine.anim): the engine-provided
 	// skeleton, the part→slot mesh bindings, the sparse bone→Transform pose, and
 	// the bone/slot/side enums a pose generator and the generated rig seam name.

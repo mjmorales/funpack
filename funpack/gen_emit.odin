@@ -64,10 +64,13 @@ Seam_Decl :: struct {
 }
 
 // Seam_Decl_Kind is the closed set of .gen.fun declaration bodies: a `data`
-// record or an `extern fn`. Adding a kind is a deliberate seam-grammar change.
+// record, an `extern fn`, or a typed `let` constant. Adding a kind is a
+// deliberate seam-grammar change — Seam_Let joined for the §18 §3 tilemap
+// layer's TilemapHandle constant (the assets.gen.fun handle-constant mold).
 Seam_Decl_Kind :: union {
 	Seam_Data,
 	Seam_Extern_Fn,
+	Seam_Let,
 }
 
 // Seam_Data is a `data Name { … }` record. `multiline` selects the layout the
@@ -94,6 +97,17 @@ Seam_Field :: struct {
 Seam_Extern_Fn :: struct {
 	name:        string,
 	return_type: string,
+}
+
+// Seam_Let is a `let name: Type = value` module-level constant — the typed
+// handle constant a bake binds (the §19 asset seam's `let dungeon:
+// TilesetHandle = TilesetHandle{name: "dungeon"}` mold; the §18 §3 level
+// seam's TilemapHandle layer constant). value carries the final rendered
+// initializer token, pre-resolved by the baker.
+Seam_Let :: struct {
+	name:  string,
+	type:  string,
+	value: string,
 }
 
 // emit_gen_fun renders a Seam to canonical .gen.fun source bytes, matching the
@@ -151,7 +165,21 @@ emit_seam_decl :: proc(b: ^strings.Builder, decl: Seam_Decl) {
 		emit_seam_data(b, body)
 	case Seam_Extern_Fn:
 		emit_seam_extern_fn(b, body)
+	case Seam_Let:
+		emit_seam_let(b, body)
 	}
+}
+
+// emit_seam_let writes `let name: Type = value` on one line — the typed handle
+// constant a bake binds (the assets/tilemap handle mold).
+emit_seam_let :: proc(b: ^strings.Builder, decl: Seam_Let) {
+	strings.write_string(b, "let ")
+	strings.write_string(b, decl.name)
+	strings.write_string(b, ": ")
+	strings.write_string(b, decl.type)
+	strings.write_string(b, " = ")
+	strings.write_string(b, decl.value)
+	strings.write_string(b, "\n")
 }
 
 // emit_seam_data writes a `data` record in the layout its `multiline` flag

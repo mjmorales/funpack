@@ -616,14 +616,14 @@ eval_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value,
 
 // is_asset_handle_name reports whether `name` is one of the §19/§26 typed
 // asset handle records — the closed set the evaluator constructs as literals:
-// the four engine.assets handles plus the §18 §2 engine.tilemap TilesetHandle
-// a .tiles seam constant binds. surface_engine_record also schemas
-// Body/Save/etc., which the evaluator does not build in test position, so the
-// handle set is named explicitly here rather than constructing every engine
-// record.
+// the four engine.assets handles plus the §18 §2/§3 engine.tilemap handles
+// the .tiles and level seam constants bind (TilesetHandle / TilemapHandle).
+// surface_engine_record also schemas Body/Save/etc., which the evaluator does
+// not build in test position, so the handle set is named explicitly here
+// rather than constructing every engine record.
 is_asset_handle_name :: proc(name: string) -> bool {
 	switch name {
-	case "MeshHandle", "TextureHandle", "SoundHandle", "AtlasHandle", "TilesetHandle":
+	case "MeshHandle", "TextureHandle", "SoundHandle", "AtlasHandle", "TilesetHandle", "TilemapHandle":
 		return true
 	}
 	return false

@@ -41,6 +41,12 @@ Emit_Input :: struct {
 	// self-contained record the runtime finds by bare name. Empty for a single-
 	// module game (every byte of pong/snake/hunt/yard is unchanged).
 	imported_fns: []Function_Record,
+	// tilemaps are the §18 §3 baked tile layers (flvl_bake.odin) the [tilemaps]
+	// section carries (docs/artifact-format.md §17, schema v11) — the static
+	// environment the runtime renders batched and collides against. Empty for a
+	// level-less game, which moves by the version stamp plus the constant
+	// `[tilemaps 0]` tail alone.
+	tilemaps:     []Baked_Tile_Layer,
 }
 
 // Emit_Error distinguishes the ways emission can refuse before it writes bytes:
@@ -175,6 +181,7 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_bindings(&b, input.ast)
 	emit_entrypoint(&b, input.entrypoint)
 	emit_queries(&b, input.ast, input.module)
+	emit_tilemaps(&b, input.tilemaps)
 
 	return strings.to_string(b)
 }
@@ -1244,4 +1251,49 @@ index_directive_tag :: proc(kind: Index_Directive_Kind) -> string {
 		return "spatial"
 	}
 	return "index"
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// [tilemaps] — the §18 §3 baked tile layers (docs/artifact-format.md §17)
+// ───────────────────────────────────────────────────────────────────────────
+
+// emit_tilemaps writes one record per baked tile layer in level declaration
+// order (schema v11): the lead line `tilemap NAME CELL_SIZE COLS ROWS
+// PALETTE_COUNT`, then the palette's `tile NAME SOLID` lines (legend order,
+// each carrying its §18 §2 baked collision verdict), then ROWS `row` lines of
+// COLS space-separated cells — a decimal palette index or `-` for a tile-less
+// cell (an `empty` legend bind or a marker cell; markers ride the spawn
+// machinery, never this section). Every walk is slice-order over the baked
+// model, so two emissions are byte-identical.
+emit_tilemaps :: proc(b: ^strings.Builder, layers: []Baked_Tile_Layer) {
+	emit_header(b, "tilemaps", len(layers))
+	for layer in layers {
+		strings.write_string(b, "tilemap ")
+		strings.write_string(b, layer.name)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, int(layer.cell_size))
+		strings.write_byte(b, ' ')
+		strings.write_int(b, layer.cols)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, layer.rows)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, len(layer.palette))
+		emit_line(b, "")
+		for tile in layer.palette {
+			emit_line(b, "tile ", tile.name, " ", encode_bool(tile.solid))
+		}
+		for r in 0 ..< layer.rows {
+			strings.write_string(b, "row")
+			for c in 0 ..< layer.cols {
+				strings.write_byte(b, ' ')
+				cell := layer.cells[r * layer.cols + c]
+				if cell == TILE_LAYER_EMPTY_CELL {
+					strings.write_byte(b, '-')
+				} else {
+					strings.write_int(b, cell)
+				}
+			}
+			emit_line(b, "")
+		}
+	}
 }

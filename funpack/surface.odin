@@ -290,18 +290,22 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
-		// §18 §2 / §26 the tilemap partition's HANDLE row: TilesetHandle is the
-		// typed constant a .tiles bake's generated seam binds (`let dungeon:
-		// TilesetHandle = TilesetHandle{name: "dungeon"}`, the §19 manifest
-		// path), admitted exactly as the engine.assets handles are — a
-		// Type_Name row plus the single-String-`name` record schema
-		// (surface_engine_record). DELIBERATELY PARTIAL: §26's tilemap row also
-		// owns TilemapHandle, SetTile, and the tile_at/solid_at/cell_of
-		// queries, which ride the tilemap-layer/runtime stories — growing this
-		// partition is their deliberate edit, never a side effect here.
+		// §18 §2/§3 / §26 the tilemap partition's HANDLE rows: TilesetHandle is
+		// the typed constant a .tiles bake's generated seam binds (`let
+		// dungeon: TilesetHandle = TilesetHandle{name: "dungeon"}`, the §19
+		// manifest path); TilemapHandle is the typed constant a level bake's
+		// seam binds per §18 §3 tile layer (`let terrain: TilemapHandle =
+		// TilemapHandle{name: "terrain"}`) — both admitted exactly as the
+		// engine.assets handles are, a Type_Name row plus the
+		// single-String-`name` record schema (surface_engine_record).
+		// DELIBERATELY PARTIAL: §26's tilemap row also owns SetTile and the
+		// tile_at/solid_at/cell_of queries, which ride the tilemap-runtime
+		// story — growing this partition is its deliberate edit, never a side
+		// effect here.
 		path = "engine.tilemap",
 		decls = {
 			{"TilesetHandle", .Type_Name},
+			{"TilemapHandle", .Type_Name},
 		},
 	},
 	{
@@ -1458,6 +1462,10 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 		return engine_type_of(.TilesetHandle), clone_fields({
 				{name = "name", type = engine_type_of(.String)},
 			}), true
+	case "TilemapHandle":
+		return engine_type_of(.TilemapHandle), clone_fields({
+				{name = "name", type = engine_type_of(.String)},
+			}), true
 	}
 	return nil, nil, false
 }
@@ -1507,6 +1515,8 @@ engine_kind_name :: proc(kind: Engine_Kind) -> string {
 		return "AtlasHandle"
 	case .TilesetHandle:
 		return "TilesetHandle"
+	case .TilemapHandle:
+		return "TilemapHandle"
 	}
 	return ""
 }

@@ -8,9 +8,16 @@
 //
 // The seam shape (exemplar funpack-spec/examples/arena/gen/arena.gen.fun):
 //   - import engine.world.{Spawn, Ref}            — the seam's engine surface
+//   - import engine.tilemap.{TilemapHandle}       — only when the level carries a
+//                                                   §18 §3 tile layer
 //   - import <schema>.{<placed thing types>}      — the schema module, members in
 //                                                   schema-declaration order, only
 //                                                   the thing types the level places
+//                                                   (markers included — a marker IS
+//                                                   a placement)
+//   - let <layer>: TilemapHandle = TilemapHandle{name: "<layer>"}  — one §18 §3
+//                                                   layer constant per tilemap, in
+//                                                   declaration order
 //   - data <Level><PrefabType> { <member>: Ref[T], … }  — one inline record per
 //                                                   distinct prefab type a top-level
 //                                                   symbol places, members in order
@@ -44,6 +51,7 @@ Level_Seam_Docs :: struct {
 	symbols:  string, // the `data <Level>` symbol-table @doc
 	spawns:   string, // the `extern fn <level>_spawns` @doc
 	accessor: string, // the `extern fn <level>` @doc
+	tilemap:  string, // the `let <layer>: TilemapHandle` constant @doc (§18 §3)
 }
 
 // level_seam_of_baked projects a baked level onto the shared Seam model. schema is
@@ -53,12 +61,24 @@ Level_Seam_Docs :: struct {
 // stack-backed compound-literal slice). The projection is deterministic: imports,
 // records, and fields all walk ordered slices, so the emitted bytes are stable.
 level_seam_of_baked :: proc(baked: Baked_Level, schema: Ast, docs: Level_Seam_Docs, allocator := context.allocator) -> Seam {
-	imports := make([]Seam_Import, 2, allocator)
+	// The engine import block: engine.world always (Spawn/Ref are every level
+	// seam's surface); engine.tilemap joins when the level carries a §18 §3
+	// tile layer (the TilemapHandle constants' type); the schema import last —
+	// engine imports ahead of the schema module, the exemplar order.
+	has_layers := len(baked.tile_layers) > 0
+	import_count := 3 if has_layers else 2
+	imports := make([]Seam_Import, import_count, allocator)
 	imports[0] = Seam_Import {
 		path    = "engine.world",
 		members = slice_lit({"Spawn", "Ref"}, allocator),
 	}
-	imports[1] = Seam_Import {
+	if has_layers {
+		imports[1] = Seam_Import {
+			path    = "engine.tilemap",
+			members = slice_lit({"TilemapHandle"}, allocator),
+		}
+	}
+	imports[import_count-1] = Seam_Import {
 		path    = level_schema_module_path(baked, allocator),
 		members = level_placed_thing_types(baked, schema, allocator),
 	}
@@ -67,7 +87,21 @@ level_seam_of_baked :: proc(baked: Baked_Level, schema: Ast, docs: Level_Seam_Do
 	// symbol places, in first-appearance order, ahead of the symbol-table record.
 	prefab_records := level_prefab_records(baked, docs.prefab, allocator)
 
-	declarations := make([dynamic]Seam_Decl, 0, len(prefab_records) + 3, allocator)
+	declarations := make([dynamic]Seam_Decl, 0, len(prefab_records) + len(baked.tile_layers) + 3, allocator)
+	// The §18 §3 layer constants lead the declarations (the assets.gen.fun
+	// handle-constant position: lets directly after the imports), one per
+	// baked layer in declaration order — "the seam gains the layer as a
+	// TilemapHandle".
+	for layer in baked.tile_layers {
+		append(&declarations, Seam_Decl {
+			doc  = docs.tilemap,
+			kind = Seam_Let {
+				name  = strings.clone(layer.name, allocator),
+				type  = "TilemapHandle",
+				value = tilemap_handle_value(layer.name, allocator),
+			},
+		})
+	}
 	for record in prefab_records {
 		append(&declarations, record)
 	}
@@ -197,6 +231,13 @@ level_symbol_fields :: proc(baked: Baked_Level, allocator := context.allocator) 
 		}
 	}
 	return fields
+}
+
+// tilemap_handle_value renders a layer constant's initializer token —
+// `TilemapHandle{name: "<layer>"}`, the §19 handle-constant value shape the
+// assets seam fixed (keyed on the layer's authored name, spec §18 §3).
+tilemap_handle_value :: proc(layer_name: string, allocator := context.allocator) -> string {
+	return strings.concatenate({"TilemapHandle{name: \"", layer_name, "\"}"}, allocator)
 }
 
 // ref_type_token renders a `Ref[<thing_type>]` field type token — the typed

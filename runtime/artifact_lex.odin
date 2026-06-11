@@ -121,7 +121,19 @@ import "core:strings"
 // parameters and reads the world inside its body, so the [queries] layout is
 // unchanged while the body forest gains the new kind: 9 → 10
 // (funpack/docs/artifact-format.md §1, §2.7).
-ARTIFACT_SCHEMA_VERSION :: 10
+//
+// v11 carries the §18 §3 TILE LAYERS — the static environment a tilemap's
+// ASCII grid bakes to, which this runtime will render BATCHED and collide
+// against. Two layout changes ride it: (1) one new section, `[tilemaps T]`,
+// appended after [queries] — per layer a lead line `tilemap NAME CELL_SIZE
+// COLS ROWS PALETTE_COUNT`, then `tile NAME SOLID` palette lines, then ROWS
+// `row …` lines of palette indices (`-` = tile-less cell); (2) two new
+// sub-record keywords, `tile` and `row`. Decoding the section into the Program
+// (render, collision, queries) is the tilemap-runtime story's — this runtime
+// admits the framing and FAILS CLOSED on a tile-bearing artifact until that
+// decode lands (build_program): 10 → 11 (funpack/docs/artifact-format.md §1,
+// §17).
+ARTIFACT_SCHEMA_VERSION :: 11
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
@@ -142,6 +154,8 @@ SUB_RECORD_KEYWORDS :: [?]string {
 	"node",
 	"migrate", // a [data] record's §05 §6 rename/retype carry (v8, §6)
 	"index", // a [queries] record's §05 §3 @index/@spatial requirement (v9, §16)
+	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (v11, §17)
+	"row", // a [tilemaps] record's row-major cell line `row …` (v11, §17)
 }
 
 // Artifact_Error is the closed parse-failure enum. Every failure is a refusal
