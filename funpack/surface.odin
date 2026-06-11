@@ -287,6 +287,21 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
+		// §18 §2 / §26 the tilemap partition's HANDLE row: TilesetHandle is the
+		// typed constant a .tiles bake's generated seam binds (`let dungeon:
+		// TilesetHandle = TilesetHandle{name: "dungeon"}`, the §19 manifest
+		// path), admitted exactly as the engine.assets handles are — a
+		// Type_Name row plus the single-String-`name` record schema
+		// (surface_engine_record). DELIBERATELY PARTIAL: §26's tilemap row also
+		// owns TilemapHandle, SetTile, and the tile_at/solid_at/cell_of
+		// queries, which ride the tilemap-layer/runtime stories — growing this
+		// partition is their deliberate edit, never a side effect here.
+		path = "engine.tilemap",
+		decls = {
+			{"TilesetHandle", .Type_Name},
+		},
+	},
+	{
 		// §16 §7 the rig/animation surface the §16 generated rig seam and the §20
 		// render3 pose generators import. The seven type names (Skeleton/PartSet/
 		// Slot/Side/Pose/Bone/Transform) are §26 line-76's anim row; rot_x/up are
@@ -1436,6 +1451,10 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 		return engine_type_of(.AtlasHandle), clone_fields({
 				{name = "name", type = engine_type_of(.String)},
 			}), true
+	case "TilesetHandle":
+		return engine_type_of(.TilesetHandle), clone_fields({
+				{name = "name", type = engine_type_of(.String)},
+			}), true
 	}
 	return nil, nil, false
 }
@@ -1483,6 +1502,8 @@ engine_kind_name :: proc(kind: Engine_Kind) -> string {
 		return "SoundHandle"
 	case .AtlasHandle:
 		return "AtlasHandle"
+	case .TilesetHandle:
+		return "TilesetHandle"
 	}
 	return ""
 }
