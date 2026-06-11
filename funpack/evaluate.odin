@@ -1345,29 +1345,46 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 	// declaration's module of origin is invisible at the use site — including
 	// a §30 package module's exposed fn called across the package edge). The
 	// arguments are CONSUMER expressions, so they evaluate in the consumer
-	// ctx/env first; the body then runs in a fresh ctx over the OWNING
-	// module's (ast, env, bindings) with the shared visited set — mirroring
-	// eval_module_qualified_const and eval_module_record. An engine.* .Func
-	// binding has no user eval surface, so module_eval_lookup misses it and
-	// the fall-through stays the pre-existing miss arm.
-	if binding, bound := ctx.bindings.names[name.name]; bound && binding.kind == .Func {
-		if owner, found := module_eval_lookup(ctx.modules, binding.module); found {
-			if fn, indexes, declared := find_user_callable(owner.ast, name.name); declared {
-				args := eval_args(ctx, env, e.args) or_return
-				owner_ctx := Eval_Ctx {
-					ast      = owner.ast,
-					env      = owner.env,
-					bindings = owner.bindings,
-					modules  = owner.modules,
-					module   = binding.module,
-					visiting = ctx.visiting,
-				}
-				owner_ctx.query_indexes = indexes
-				return eval_user_fn(owner_ctx, fn, args)
-			}
-		}
+	// ctx/env first; the body then runs in the owner ctx find_imported_fn
+	// builds.
+	if owner_ctx, fn, found := find_imported_fn(ctx, name.name); found {
+		args := eval_args(ctx, env, e.args) or_return
+		return eval_user_fn(owner_ctx, fn, args)
 	}
 	return nil, false
+}
+
+// find_imported_fn resolves a bare name an import bound to a sibling user
+// module's fn into that fn plus a fresh ctx over the OWNING module's (ast,
+// env, bindings) with the caller's shared visited set — mirroring
+// eval_module_qualified_const and eval_module_record. Both bare-name fn
+// positions resolve through here: the call callee (eval_call) and the
+// combinator slot (apply_combinator). An engine.* .Func binding has no user
+// eval surface, so module_eval_lookup misses it and found stays false,
+// leaving the caller's fall-through arm untouched.
+find_imported_fn :: proc(ctx: Eval_Ctx, name: string) -> (owner_ctx: Eval_Ctx, fn: Fn_Node, found: bool) {
+	binding, bound := ctx.bindings.names[name]
+	if !bound || binding.kind != .Func {
+		return
+	}
+	owner, has_owner := module_eval_lookup(ctx.modules, binding.module)
+	if !has_owner {
+		return
+	}
+	user_fn, indexes, declared := find_user_callable(owner.ast, name)
+	if !declared {
+		return
+	}
+	owner_ctx = Eval_Ctx {
+		ast      = owner.ast,
+		env      = owner.env,
+		bindings = owner.bindings,
+		modules  = owner.modules,
+		module   = binding.module,
+		visiting = ctx.visiting,
+	}
+	owner_ctx.query_indexes = indexes
+	return owner_ctx, user_fn, true
 }
 
 // eval_asset_constructor lowers a §19/§26 manifest-checked string constructor
@@ -1823,6 +1840,12 @@ apply_combinator :: proc(ctx: Eval_Ctx, env: ^Env, arg: Expr, args: []Value) -> 
 			body_ctx := ctx
 			body_ctx.query_indexes = indexes
 			return eval_user_fn(body_ctx, fn, args)
+		}
+		// An IMPORTED fn in the combinator slot (map(xs, dep_fn)) runs in
+		// its owning module's ctx — the same cross-module arm eval_call has;
+		// the argument row is already evaluated consumer-side.
+		if owner_ctx, fn, found := find_imported_fn(ctx, name.name); found {
+			return eval_user_fn(owner_ctx, fn, args)
 		}
 	}
 	return nil, false

@@ -849,6 +849,16 @@ name_check :: proc(ctx: Check_Ctx, e: ^Name_Expr) -> (type: Type, err: Type_Erro
 				return value_type, .None
 			}
 		}
+		// A bare name an import bound to a SIBLING user module's fn is a
+		// function value exactly like the local-fn arm above — the form a
+		// combinator argument takes across the module (or §30 package) edge.
+		// A stdlib .Func binding carries no user signature, so the lookup
+		// misses it and the fall-through below stands.
+		if binding.kind == .Func {
+			if signature, is_cross := module_call_signature(ctx.index, ctx.bindings, e.name); is_cross {
+				return signature, .None
+			}
+		}
 		// A type, module, or bare function name is not a value.
 		return nil, .Unsupported_Expr
 	}

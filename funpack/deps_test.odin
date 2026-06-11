@@ -214,6 +214,35 @@ test_path_dep_resolves_under_project_name_root :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_path_dep_fn_in_combinator_slot :: proc(t: ^testing.T) {
+	// A dep's exposed fn passed BARE-NAME into a stdlib combinator slot
+	// (map's mapper) types as a function value and evaluates in its owning
+	// module's ctx — the apply_combinator sibling of eval_call's
+	// cross-module arm, end-to-end across the §30 package edge.
+	consumer := "import engine.list.{map, contains}\n" +
+		"import hexgrid.layout.{axial_to_pixel}\n" +
+		"test \"imported fn rides the combinator slot\" {\n" +
+		"  assert contains(map([3, 4], axial_to_pixel), 4)\n" +
+		"}\n"
+	root, ok := write_dep_scratch_tree(t, consumer, "hexgrid", "hexgrid", HEXGRID_LAYOUT_FUN)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	project, err := read_project(root)
+	testing.expect_value(t, err, Project_Error.None)
+	if err != .None {
+		return
+	}
+	report := run_project_pipeline(project_pipeline_sources(project))
+	testing.expect_value(t, report.index_err, Project_Pipeline_Error.None)
+	testing.expect_value(t, report.module_err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
 test_path_dep_private_member_fails_project_walk :: proc(t: ^testing.T) {
 	// The §30 §6 edge holds through the full tree walk: the consumer
 	// importing the dependency's package-private helper is a compile error

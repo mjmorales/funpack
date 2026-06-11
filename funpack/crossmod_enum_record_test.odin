@@ -165,3 +165,22 @@ test_to_fixed_resolves_via_prelude_and_math :: proc(t: ^testing.T) {
 	testing.expect_value(t, math_binding.module, "engine.prelude")
 	testing.expect_value(t, math_binding.kind, Decl_Kind.Func)
 }
+
+// ── (typecheck) a cross-module fn used as a combinator-slot VALUE ─────────────
+
+@(test)
+test_crossmod_fn_value_in_combinator_slot :: proc(t: ^testing.T) {
+	// An imported fn passed BARE-NAME into a combinator slot (map's mapper)
+	// types as a function value off its cross-module signature — the
+	// name_check sibling of call_check's module_call_signature arm.
+	seam := "fn double(x: Int) -> Int {\n  return x + x\n}\n"
+	app := `import engine.list.map
+import seam.{double}
+fn run(xs: [Int]) -> [Int] {
+  return map(xs, double)
+}`
+	index, app_ast, ok := crossmod_index(seam, app)
+	testing.expect(t, ok)
+	_, err := stage_typecheck_indexed(app_ast, index)
+	testing.expect_value(t, err, Type_Error.None)
+}
