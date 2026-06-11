@@ -264,6 +264,7 @@ Program :: struct {
 	bindings:       []Binding,
 	entrypoint:     Entrypoint,
 	queries:        []Query_Decl,
+	tilemaps:       []Tile_Layer, // the §18 §3 baked tile layers (v11 [tilemaps], tilemap.odin)
 }
 
 // program_query finds a §16 query declaration by name, or nil. The query call

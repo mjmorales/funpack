@@ -97,7 +97,20 @@ import "core:slice"
 // streams and their CONTENT digests (per-tick AND session, the latter seeded from the
 // frozen FRAME_SESSION_SEED) are unmoved. Only krognid's stream carries the Vec3
 // column bytes.
-FRAME_DIGEST_SCHEMA_VERSION :: 6
+// v7 adds the §18 §3 BATCHED tile-layer tag (Cmd_Tag.Tilemap): render_version
+// engine-emits one Draw_Tilemap per decoded [tilemaps] layer (never per-tile
+// commands), and the digest folds the LAYER'S FULL CONTENT — name, cell size,
+// dimensions, the grid→world anchor, the palette's (name, solid) pairs, and
+// every row-major cell index — so the rendered terrain is inside the
+// comparison surface bit-exactly (a single flipped cell changes the digest,
+// the surface the §18 §4 SetTile story will move). The ordinal is APPENDED
+// (Tilemap=7 after Draw3_Rigged=6), and every committed golden artifact
+// carries `[tilemaps 0]` — no golden draw-list emits the new tag, so all
+// committed pong/snake/hunt/yard/krognid CONTENT digests (per-tick AND
+// session, the session seeded from the frozen FRAME_SESSION_SEED, not this
+// version) are byte-unchanged under the v7 bump. Only a tile-layer-carrying
+// artifact produces the new (correct) bytes.
+FRAME_DIGEST_SCHEMA_VERSION :: 7
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
@@ -149,6 +162,7 @@ Cmd_Tag :: enum u8 {
 	Draw3_Light  = 4, // a Draw3_Light: dir (Vec3), color ordinal
 	Draw3_Plane  = 5, // a Draw3_Plane: at (Vec3), size (Vec2), color ordinal
 	Draw3_Rigged = 6, // a Draw3_Rigged: skeleton/parts handles, pose, at (Vec3)
+	Tilemap      = 7, // a Draw_Tilemap: the full §18 §3 batched layer (name, geometry, anchor, palette, cells)
 }
 
 // Frame_Digest is one committed tick's digest: the tick ordinal it was taken at
@@ -531,6 +545,28 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		write_handle(buf, c.parts)
 		write_pose(buf, c.pose)
 		write_vec3(buf, c.at)
+	case Draw_Tilemap:
+		// The batched §18 §3 layer folds COMPLETE: name, cell size, dims, the
+		// grid→world anchor, the legend-order palette (each name + solid
+		// byte), and every row-major cell index — counts lead each run so two
+		// layers never alias across a boundary. A cell index is its i64 value
+		// (TILE_CELL_EMPTY folds as the all-ones byte run), so one flipped
+		// tile changes the digest — the surface the SetTile story will move.
+		append(buf, u8(Cmd_Tag.Tilemap))
+		write_length_prefixed(buf, c.layer.name)
+		put_u64_le(buf, u64(c.layer.cell_size))
+		put_u64_le(buf, u64(i64(c.layer.cols)))
+		put_u64_le(buf, u64(i64(c.layer.rows)))
+		write_vec2(buf, c.layer.top_left)
+		put_u64_le(buf, u64(len(c.layer.palette)))
+		for tile in c.layer.palette {
+			write_length_prefixed(buf, tile.name)
+			append(buf, u8(1) if tile.solid else u8(0))
+		}
+		put_u64_le(buf, u64(len(c.layer.cells)))
+		for cell in c.layer.cells {
+			put_u64_le(buf, u64(i64(cell)))
+		}
 	}
 }
 

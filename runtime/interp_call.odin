@@ -297,10 +297,20 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	if handle, is_handle := recv.(Handle_Value); is_handle {
 		return eval_handle_method(interp, node, env, handle, method)
 	}
-	// The §22 self-first adders chain off a built Audio record value
-	// (Audio.track(k, c).pitch(p).gain(g).bus(b)); a non-Audio receiver or a
-	// non-adder member falls through to ok=false.
 	if record, is_record := recv.(Record_Value); is_record {
+		// The §18 §4 tile queries on a level seam's TilemapHandle{name} record
+		// receiver — the dungeon's `map.tile_at(target)` calling convention
+		// (tilemap.odin). Keyed on the handle's declared type so a same-named
+		// member on another record never routes here.
+		if record.type_name == "TilemapHandle" {
+			if result, tm_ok, is_tilemap := eval_tilemap_method(interp, node, env, record, method);
+			   is_tilemap {
+				return result, tm_ok
+			}
+		}
+		// The §22 self-first adders chain off a built Audio record value
+		// (Audio.track(k, c).pitch(p).gain(g).bus(b)); a non-Audio receiver or a
+		// non-adder member falls through to ok=false.
 		if bent, is_audio := eval_audio_adder(interp, record, method, node, env); is_audio {
 			return bent, true
 		}
