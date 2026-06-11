@@ -137,6 +137,10 @@ expose_closure_verdict :: proc(ast: Ast, bindings: Bindings, index: Module_Index
 			// file header) — a behavior is reached through its pipeline, a pipeline
 			// declares stage names only, and the parser attaches no @expose to a
 			// test block.
+		case .Extern_Type:
+			// An opaque type references no other type — no fields, no signature
+			// (§26 §2) — so an @expose'd extern type has no closure surface to
+			// walk. It participates as a REFERENT through local_type_exposure.
 		}
 	}
 	return Expose_Closure_Verdict{}
@@ -158,6 +162,9 @@ local_type_exposure :: proc(ast: Ast) -> map[string]bool {
 		exposure[decl.name] = decl.exposed
 	}
 	for decl in ast.signals {
+		exposure[decl.name] = decl.exposed
+	}
+	for decl in ast.extern_types {
 		exposure[decl.name] = decl.exposed
 	}
 	return exposure

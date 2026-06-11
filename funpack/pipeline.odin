@@ -41,6 +41,7 @@ Ast :: struct {
 	behaviors:  []Behavior_Node, // `behavior name on Thing { fn step(…) … }`
 	pipelines:  []Pipeline_Node, // `pipeline Name { stage: [behaviors] … }`
 	tests:      []Test_Node,
+	extern_types: []Extern_Type_Node, // `extern type Name` §26 §2 opaque native types
 }
 
 // Ast_Decl_Kind names one top-level declaration kind — the closed tag a Decl_Ref
@@ -57,6 +58,7 @@ Ast_Decl_Kind :: enum {
 	Behavior,
 	Pipeline,
 	Test,
+	Extern_Type, // `extern type Name` (§26 §2) — an extern FN rides .Fn via Fn_Node.is_extern
 }
 
 // Decl_Ref locates one declaration in the Ast: kind selects the per-kind

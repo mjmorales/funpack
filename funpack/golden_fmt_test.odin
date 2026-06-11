@@ -15,11 +15,12 @@
 // The stdlib sweep covers the PARSEABLE subset of stdlib/engine/*.fun and
 // pins both counts exactly (the golden-count discipline: when the spec or the
 // grammar evolves, the pins change in lockstep — never loosened to ranges).
-// The non-parsing files are a KNOWN frontend grammar gap — `extern type` and
-// generic declaration headers (`enum Option[T]`, `data Ref[T]`) and
-// function-typed parameters (`pred: fn(T) -> Bool`) are §02 §7 / §26 surface
-// the parser does not yet admit — each SKIP names its file loudly; admitting
-// them is a parser story, not a formatter workaround.
+// The non-parsing files are a KNOWN frontend grammar gap — generic
+// declaration headers (`enum Option[T]`, `data Ref[T]`, `extern type View[T]`)
+// and function-typed parameters (`pred: fn(T) -> Bool`) are §02 §7 / §03 §3
+// surface the parser does not yet admit (the bare `extern type Name` form IS
+// admitted) — each SKIP names its file loudly; admitting them is a parser
+// story, not a formatter workaround.
 package funpack
 
 import "core:log"
@@ -39,10 +40,10 @@ STDLIB_SURFACE_FILE_COUNT :: 22
 
 // STDLIB_PARSEABLE_FILE_COUNT pins how many stdlib surface files the §02
 // grammar currently admits (and the sweep therefore proves fmt-idempotent).
-// The remainder use `extern type`, generic declaration headers, or
-// function-typed parameters — the named grammar gap. When the parser grows
-// that surface, this pin rises in lockstep.
-STDLIB_PARSEABLE_FILE_COUNT :: 6
+// The remainder use generic declaration headers or function-typed parameters
+// — the named grammar gap (`extern type Name` admission lifted the pin from 6
+// to 12). When the parser grows that surface, this pin rises in lockstep.
+STDLIB_PARSEABLE_FILE_COUNT :: 12
 
 // resolve_stdlib_dir resolves the stdlib surface tree (env override, else
 // the sibling checkout), mirroring the per-example resolvers.
@@ -181,8 +182,8 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 		}
 		ast, parse_err := stage_parse(stage_lex(string(bytes)))
 		if parse_err != .None {
-			// The named grammar gap: extern type, generic declaration headers,
-			// function-typed parameters (spec §02 §7 / §26 surface the parser
+			// The named grammar gap: generic declaration headers and
+			// function-typed parameters (spec §02 §7 / §03 §3 surface the parser
 			// does not yet admit). Loud per-file, counted by the pin below.
 			log.warnf("SKIP golden fmt stdlib %s: %v — outside the parser-admitted §02 surface", filepath.base(path), parse_err)
 			continue
@@ -203,5 +204,5 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 		formatted_count += 1
 	}
 	testing.expect_value(t, formatted_count, STDLIB_PARSEABLE_FILE_COUNT)
-	log.infof("golden fmt stdlib: %d of %d surface files are parser-admitted and fmt-idempotent; the remainder are the named extern-type/generic-header grammar gap", formatted_count, len(paths))
+	log.infof("golden fmt stdlib: %d of %d surface files are parser-admitted and fmt-idempotent; the remainder are the named generic-header/fn-typed-param grammar gap", formatted_count, len(paths))
 }

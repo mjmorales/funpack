@@ -91,6 +91,8 @@ render_canonical :: proc(ast: Ast, allocator := context.allocator) -> string {
 			fmt_pipeline(&b, ast.pipelines[ref.index])
 		case .Test:
 			fmt_test(&b, ast.tests[ref.index])
+		case .Extern_Type:
+			fmt_extern_type(&b, ast.extern_types[ref.index])
 		}
 	}
 	return strings.to_string(b)
@@ -453,6 +455,17 @@ fmt_fn_decl :: proc(b: ^strings.Builder, decl: Fn_Node) {
 	strings.write_string(b, " {\n")
 	fmt_statements(b, decl.body, 1)
 	strings.write_string(b, "}\n")
+}
+
+// fmt_extern_type writes `extern type Name` after the shared directive block —
+// the whole declaration is the one keyword-pair line (§26 §2: an opaque type
+// carries no funpack-visible fields and no body, so there is nothing else to
+// project).
+fmt_extern_type :: proc(b: ^strings.Builder, decl: Extern_Type_Node) {
+	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
+	strings.write_string(b, "extern type ")
+	strings.write_string(b, decl.name)
+	strings.write_string(b, "\n")
 }
 
 // fmt_signature writes `(p: T, …) -> R` — the parameter list and return

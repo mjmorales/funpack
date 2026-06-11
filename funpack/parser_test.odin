@@ -1761,3 +1761,85 @@ test_parse_decl_sequence_source_order :: proc(t: ^testing.T) {
 		testing.expect_value(t, extern_ast.decls[1], Decl_Ref{kind = .Fn, index = 0})
 	}
 }
+
+@(test)
+test_parse_extern_type_decl :: proc(t: ^testing.T) {
+	// `extern type Name` (spec §02 §7, §26 §2) parses into its dedicated
+	// Extern_Type_Node carrier: the opaque type is the name alone — no fields,
+	// no body — and it joins the source-ordered declaration sequence under its
+	// own kind, with the span anchored on the `extern` keyword's line.
+	source := "data A { x: Int }\nextern type Sketch\nextern type Anchors\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.extern_types), 2)
+	if len(ast.extern_types) != 2 {
+		return
+	}
+	testing.expect_value(t, ast.extern_types[0].name, "Sketch")
+	testing.expect_value(t, ast.extern_types[0].line, 2)
+	testing.expect_value(t, ast.extern_types[1].name, "Anchors")
+	testing.expect_value(t, len(ast.decls), 3)
+	if len(ast.decls) == 3 {
+		testing.expect_value(t, ast.decls[1], Decl_Ref{kind = .Extern_Type, index = 0})
+		testing.expect_value(t, ast.decls[2], Decl_Ref{kind = .Extern_Type, index = 1})
+	}
+}
+
+@(test)
+test_parse_extern_type_carries_directive_block :: proc(t: ^testing.T) {
+	// An extern type consumes the shared §05 prefix block like every other
+	// declaration form: @doc, @gtag, and the @expose flag land on the node and
+	// never bleed onto the next declaration.
+	source := "@doc(\"an immutable 2D outline\")\n" +
+		"@gtag(\"geometry\")\n" +
+		"@expose\n" +
+		"extern type Sketch\n" +
+		"\n" +
+		"extern type Anchors\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.extern_types), 2)
+	if len(ast.extern_types) != 2 {
+		return
+	}
+	testing.expect_value(t, ast.extern_types[0].doc, "an immutable 2D outline")
+	testing.expect_value(t, len(ast.extern_types[0].gtags), 1)
+	testing.expect(t, ast.extern_types[0].exposed)
+	testing.expect_value(t, ast.extern_types[1].doc, "")
+	testing.expect(t, !ast.extern_types[1].exposed)
+}
+
+@(test)
+test_parse_extern_type_wrong_case_rejected :: proc(t: ^testing.T) {
+	// A declared type name is UPPER_IDENT (lexical-core.ebnf §2) — a
+	// snake_case extern type name is the named Wrong_Case verdict, the same
+	// casing-is-structural rule every type declaration enforces.
+	_, err := stage_parse(stage_lex("extern type sketch\n"))
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
+}
+
+@(test)
+test_parse_extern_family_closed :: proc(t: ^testing.T) {
+	// The §02 §7 extern family is closed (fun.ebnf §8: ExternDecl ::= 'extern'
+	// (ExternFn | ExternType)): an `extern` prefixing anything else — a data
+	// declaration, or nothing at all — is the named Malformed_Extern verdict,
+	// never a generic token error.
+	_, data_err := stage_parse(stage_lex("extern data Foo { x: Int }\n"))
+	testing.expect_value(t, data_err, Parse_Error.Malformed_Extern)
+	_, bare_err := stage_parse(stage_lex("extern\n"))
+	testing.expect_value(t, bare_err, Parse_Error.Malformed_Extern)
+}
+
+@(test)
+test_parse_extern_type_trailing_junk_rejected :: proc(t: ^testing.T) {
+	// Trailing junk after a well-formed `extern type Name` header stays the
+	// generic Unexpected_Token (the named diagnostics cover the malformed
+	// family and the casing deviation): an opaque type has no body, so a brace
+	// where the terminator belongs is rejected, and the generic header form
+	// (`extern type View[T]`) is the §03 §3 generic-declaration story, not yet
+	// admitted.
+	_, brace_err := stage_parse(stage_lex("extern type Sketch { x: Int }\n"))
+	testing.expect_value(t, brace_err, Parse_Error.Unexpected_Token)
+	_, generic_err := stage_parse(stage_lex("extern type View[T]\n"))
+	testing.expect_value(t, generic_err, Parse_Error.Unexpected_Token)
+}

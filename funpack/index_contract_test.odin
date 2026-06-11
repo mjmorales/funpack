@@ -102,10 +102,10 @@ test_index_contract_emits_valid_ndjson_with_schema_version :: proc(t: ^testing.T
 	testing.expect(t, strings.has_prefix(body, "{"))
 	testing.expect(t, strings.has_suffix(body, "}"))
 	// schema_version is the leading key (it is the first struct field) and
-	// carries the current INDEX_SCHEMA_VERSION stamp (now 5 — the §05 §4
-	// exposed-flag reshape bumped it from 4).
+	// carries the current INDEX_SCHEMA_VERSION stamp (now 6 — the §02 §7
+	// extern-type kind admission bumped it from 5).
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":5"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":6"))
 }
 
 @(test)
@@ -373,7 +373,7 @@ test_index_contract_pong_decl_records :: proc(t: ^testing.T) {
 		// Every decl line carries the bumped v3 stamp; stub is false on this
 		// hole-free tree, the DERIVED todo flag is false on this note-free
 		// tree, and the DERIVED debug field is [] on this probe-free tree.
-		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":5,"))
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":6,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
 		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
@@ -420,7 +420,7 @@ test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(lines[0], "\"pipeline_flattened\":"))
 	for i in 1 ..< len(lines) {
 		decl := lines[i]
-		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":5,"))
+		testing.expect(t, strings.has_prefix(decl, "{\"schema_version\":6,"))
 		testing.expect(t, strings.contains(decl, "\"stub\":false"))
 		testing.expect(t, strings.contains(decl, "\"todo\":false"))
 		testing.expect(t, strings.contains(decl, "\"debug\":[]"))
@@ -457,7 +457,7 @@ stream_has_decl :: proc(lines: []string, name_needle: string, field_needle: stri
 test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
 	// A hand-built decl record marshals to exactly one JSON object on one line,
 	// terminated by a single LF, carrying the leading schema_version stamp at
-	// the current INDEX_SCHEMA_VERSION (now 5) — the one-object-per-line NDJSON
+	// the current INDEX_SCHEMA_VERSION (now 6) — the one-object-per-line NDJSON
 	// transport, identical to the project record's.
 	record := minimal_decl_record()
 	line := emit_decl_record(record, context.temp_allocator)
@@ -468,9 +468,9 @@ test_index_decl_record_ndjson_shape :: proc(t: ^testing.T) {
 	testing.expect(t, strings.has_prefix(body, "{"))
 	testing.expect(t, strings.has_suffix(body, "}"))
 	// schema_version is the leading key (the first struct field) carrying the
-	// current v3 stamp.
+	// current stamp.
 	testing.expect(t, strings.has_prefix(body, "{\"schema_version\":"))
-	testing.expect(t, strings.contains(body, "\"schema_version\":5"))
+	testing.expect(t, strings.contains(body, "\"schema_version\":6"))
 	// The kind enum emits as its readable name (use_enum_names), never an
 	// ordinal — a Behavior decl reports "Behavior".
 	testing.expect(t, strings.contains(body, "\"kind\":\"Behavior\""))

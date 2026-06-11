@@ -81,7 +81,15 @@ import "core:strings"
 // adding one is exactly the contract RESHAPE the same section sanctions
 // behind a version bump (the exact-match field set changes, so a v4-pinned
 // consumer must refuse on the version gate, never on Unknown_Field).
-INDEX_SCHEMA_VERSION :: 5
+//
+// Version 6 admits the §02 §7 / §26 §2 `extern type` declaration form into the
+// closed Index_Decl_Kind set — one decl record per declaration now includes
+// `kind: "Extern_Type"` records, with the FIELD set unchanged. The v4 Query
+// precedent applies verbatim: extending the closed kind domain is a reshape,
+// because a v5-pinned consumer reading an extern-type-bearing stream must
+// refuse on the version gate (the Schema_Mismatch fix-it), never mid-record on
+// Unknown_Enum_Value.
+INDEX_SCHEMA_VERSION :: 6
 
 // Index_Decl_Kind is the closed §29 §2 set of source DECLARATION FORMS the
 // per-declaration `decl` record reports — the kind taxonomy of what a
@@ -107,6 +115,7 @@ Index_Decl_Kind :: enum {
 	Pipeline,  // a `pipeline` declaration (§07)
 	Let,       // a module-level `let` value binding (§02)
 	Test,      // a `test` declaration (§29 §1)
+	Extern_Type, // an `extern type` opaque engine-native type (§02/§26 §2, v6)
 }
 
 // Decl_Record is the closed, exact-match per-declaration `decl` record of the
@@ -540,6 +549,10 @@ source_has_expose :: proc(ast: Ast) -> bool {
 			}
 		case .Test:
 			// A test block admits no @expose — the parser attaches none.
+		case .Extern_Type:
+			if ast.extern_types[ref.index].exposed {
+				return true
+			}
 		}
 	}
 	return false

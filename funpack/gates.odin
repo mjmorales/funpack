@@ -169,6 +169,9 @@ release_holed_decl :: proc(ast: Ast) -> (declaration: string, holed: bool) {
 			if body_holds_stub(decl.body) {
 				return decl.name, true
 			}
+		case .Extern_Type:
+			// An opaque type carries no fields and no body (§26 §2) — no
+			// expression position, so it can never hole.
 		}
 	}
 	return "", false
@@ -385,6 +388,11 @@ release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
 			}
 		case .Test:
 			// The parser attaches no probes to a test block — nothing to check.
+		case .Extern_Type:
+			decl := ast.extern_types[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
 		}
 	}
 	return "", false

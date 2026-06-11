@@ -118,6 +118,11 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 			append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, expr_holds_stub(decl.value), decl.exposed))
 		case .Test:
 			append(&records, test_decl_record(module, ast.tests[ref.index]))
+		case .Extern_Type:
+			// An opaque type owns no field default and no body (§26 §2) — no
+			// expression position — so its stub verdict is constant false.
+			decl := ast.extern_types[ref.index]
+			append(&records, body_less_decl(module, decl.name, .Extern_Type, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, false, decl.exposed))
 		}
 	}
 

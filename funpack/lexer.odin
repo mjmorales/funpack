@@ -29,6 +29,13 @@ Token_Kind :: enum {
 	// FIRST(Declaration) opener, so it tokenizes here like every other unique
 	// declaration keyword rather than riding as a contextual Ident.
 	Extern,
+	// `type` is the §02/§26 §2 opaque-type selector inside the extern family
+	// (`extern type Sketch` — fun.ebnf §8: ExternDecl ::= 'extern' (ExternFn |
+	// ExternType)). It is a reserved keyword like `fn` (grammar/fun.ll1.md §2),
+	// never a contextual Ident: no sanctioned surface names a value `type`, so
+	// it tokenizes as a hard kind and the extern dispatch stays LL(1) on token
+	// kinds alone.
+	Type,
 	Match,
 	// §06/§07 declaration and expression keywords. `behavior`/`signal` are
 	// reserved declaration openers (they never name a value on the golden
@@ -393,6 +400,8 @@ scan_ident :: proc(source: string, start: int) -> (tok: Token, next: int) {
 		return Token{kind = .Fn, text = text}, i
 	case "extern":
 		return Token{kind = .Extern, text = text}, i
+	case "type":
+		return Token{kind = .Type, text = text}, i
 	case "match":
 		return Token{kind = .Match, text = text}, i
 	case "behavior":

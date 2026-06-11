@@ -218,6 +218,25 @@ Fn_Node :: struct {
 	has_fallback: bool,
 }
 
+// Extern_Type_Node is a §02 §7 / §26 §2 `extern type Name` declaration: an
+// engine-native OPAQUE type whose representation and ABI are
+// compiler/runtime-internal, never observable in `.fun`. It carries no
+// funpack-visible fields and no body — the name plus the shared directive
+// surface IS the whole declaration (transparent `data` is the preferred
+// spelling for engine types, §26 §2). Stdlib/privileged-context only by
+// doctrine (§26 §2: extern is a compile error in an ordinary project); that
+// gate is a downstream stage's job, not the parser's — the same split
+// `extern fn` keeps.
+Extern_Type_Node :: struct {
+	name:    string,
+	doc:     string,
+	gtags:   []string,
+	probes:  []Debug_Probe, // §05 §5 debug directives attached to this declaration
+	todos:   []Todo_Node, // @todo("msg", window) notes attached to this declaration (spec §05 §2)
+	exposed: bool, // §05 §4 @expose — published into the external contract (spec §30 §6, §27 §2)
+	line:    int, // 1-based source line of the `extern` keyword (artifact-format §9 span provenance)
+}
+
 // Index_Directive_Kind is the closed §05 §3 data-plane index directive pair —
 // `@index(Thing.field)` for reverse/key lookup, `@spatial(Thing.field)` for
 // the built-in radius/nearest queries. The set is closed like every directive
@@ -425,6 +444,7 @@ Parse_Error :: enum {
 	Malformed_Index_Path,  // an @index/@spatial whose argument is not exactly the lexical-core §5 FieldPath `(Thing.field)` (missing/empty parens, no dot, trailing junk) — the one casing-class deviation (a lowercase head, an UpperCamel field) keeps the parser-wide Wrong_Case verdict
 	Index_Wrong_Target,    // a well-formed @index/@spatial prefixing a declaration the spec does not admit — §08 §3 places the directive on a `query` declaration (the query's declared index requirement), and the spec names no other target
 	Expose_Unexpected_Arg, // an @expose carrying an argument — @expose is bare (lexical-core §5; spec §05 §4: it publishes the declaration it prefixes, there is no value to name), the @trace mold
+	Malformed_Extern,      // an `extern` prefixing neither `fn` nor `type` — the §02 §7 extern family is closed (fun.ebnf §8: ExternDecl ::= 'extern' (ExternFn | ExternType)), so a stray `extern data …` is a named malformed-extern verdict, never a generic token error
 }
 
 Parser :: struct {
@@ -452,6 +472,7 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 		behaviors = make([dynamic]Behavior_Node, 0, 16, context.temp_allocator),
 		pipelines = make([dynamic]Pipeline_Node, 0, 2, context.temp_allocator),
 		tests     = make([dynamic]Test_Node, 0, 8, context.temp_allocator),
+		extern_types = make([dynamic]Extern_Type_Node, 0, 4, context.temp_allocator),
 	}
 	module_doc := ""
 	seen_decl := false
@@ -483,6 +504,7 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 			behaviors = out.behaviors[:],
 			pipelines = out.pipelines[:],
 			tests = out.tests[:],
+			extern_types = out.extern_types[:],
 		},
 		.None
 }
@@ -518,6 +540,7 @@ Decl_Sink :: struct {
 	behaviors: [dynamic]Behavior_Node,
 	pipelines: [dynamic]Pipeline_Node,
 	tests:     [dynamic]Test_Node,
+	extern_types: [dynamic]Extern_Type_Node, // `extern type Name` opaque types (§26 §2)
 }
 
 // sink_mark appends the just-appended declaration's Decl_Ref onto the
@@ -548,6 +571,8 @@ sink_mark :: proc(out: ^Decl_Sink, kind: Ast_Decl_Kind) {
 		index = len(out.pipelines) - 1
 	case .Test:
 		index = len(out.tests) - 1
+	case .Extern_Type:
+		index = len(out.extern_types) - 1
 	}
 	append(&out.decls, Decl_Ref{kind = kind, index = index})
 }
@@ -622,18 +647,7 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 		append(&out.fns, node)
 		sink_mark(out, .Fn)
 	case .Extern:
-		// `extern fn` (§02/§26) is the body-less native-boundary fn the §17 seam
-		// declares (`extern fn arena_spawns() -> [Spawn]`). It joins ast.fns
-		// alongside ordinary fns — same export surface, same term partition — and
-		// carries is_extern so the body-typing pass skips it.
-		node := parse_extern_fn_decl(p) or_return
-		node.doc = pending.doc
-		node.gtags = pending.gtags[:]
-		node.probes = pending.probes[:]
-		node.todos = pending.todos[:]
-		node.exposed = pending.exposed
-		append(&out.fns, node)
-		sink_mark(out, .Fn)
+		return parse_extern_declaration(p, out, pending)
 	case .Behavior:
 		node := parse_behavior(p) or_return
 		node.doc = pending.doc
@@ -1403,15 +1417,55 @@ parse_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 	return fn, .None
 }
 
-// parse_extern_fn_decl parses an `extern fn name(p: T, …) -> R` declaration
-// (spec §02 §7, §26): a body-less native-boundary function. It shares the name
-// and signature grammar with parse_fn_decl but stops at the return type — an
-// extern fn has NO `{ … }` body, so the next token is the statement terminator,
-// not a brace. The node lands in ast.fns with is_extern set, so it exports its
-// name like any fn while the body-typing pass skips it. This is the §17 seam's
-// `extern fn arena() -> Arena` form, whose implementation the engine provides.
-parse_extern_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
+// parse_extern_declaration dispatches the §02 §7 extern family off the one
+// token after the consumed `extern` keyword (LL(1), fun.ebnf §8: ExternDecl
+// ::= 'extern' (ExternFn | ExternType)): `fn` opens the body-less
+// native-boundary fn, `type` the engine-native opaque type (§26 §2). The
+// family is closed, so any other follower is the named Malformed_Extern
+// verdict — a stray `extern data …` reports the malformed extern, never a
+// generic token error. Both arms consume the shared pending directive block,
+// mirroring every other declaration arm of parse_declaration.
+parse_extern_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> Parse_Error {
 	extern_tok := expect(p, .Extern) or_return
+	#partial switch peek_kind(p) {
+	case .Fn:
+		// `extern fn` (§02/§26) is the body-less native-boundary fn the §17 seam
+		// declares (`extern fn arena_spawns() -> [Spawn]`). It joins ast.fns
+		// alongside ordinary fns — same export surface, same term partition — and
+		// carries is_extern so the body-typing pass skips it.
+		node := parse_extern_fn_decl(p, extern_tok.line) or_return
+		node.doc = pending.doc
+		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
+		append(&out.fns, node)
+		sink_mark(out, .Fn)
+	case .Type:
+		node := parse_extern_type_decl(p, extern_tok.line) or_return
+		node.doc = pending.doc
+		node.gtags = pending.gtags[:]
+		node.probes = pending.probes[:]
+		node.todos = pending.todos[:]
+		node.exposed = pending.exposed
+		append(&out.extern_types, node)
+		sink_mark(out, .Extern_Type)
+	case:
+		return .Malformed_Extern
+	}
+	return .None
+}
+
+// parse_extern_fn_decl parses the `fn name(p: T, …) -> R` remainder of an
+// `extern fn` declaration (spec §02 §7, §26) — parse_extern_declaration has
+// already consumed the `extern` keyword, whose line is the declaration's span
+// anchor. It shares the name and signature grammar with parse_fn_decl but
+// stops at the return type — an extern fn has NO `{ … }` body, so the next
+// token is the statement terminator, not a brace. The node lands in ast.fns
+// with is_extern set, so it exports its name like any fn while the body-typing
+// pass skips it. This is the §17 seam's `extern fn arena() -> Arena` form,
+// whose implementation the engine provides.
+parse_extern_fn_decl :: proc(p: ^Parser, extern_line: int) -> (node: Fn_Node, err: Parse_Error) {
 	expect(p, .Fn) or_return
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case {
@@ -1425,10 +1479,26 @@ parse_extern_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 			name = name.text,
 			params = params,
 			return_type = return_type,
-			line = extern_tok.line,
+			line = extern_line,
 			is_extern = true,
 		},
 		.None
+}
+
+// parse_extern_type_decl parses the `type Name` remainder of an `extern type`
+// declaration (spec §02 §7, §26 §2) — parse_extern_declaration has already
+// consumed the `extern` keyword, whose line is the declaration's span anchor.
+// The UPPER_IDENT name IS the whole declaration: an opaque type carries no
+// funpack-visible fields and no body (§26 §2), so the name is followed by the
+// statement terminator. A generic header (`extern type View[T]`, fun.ebnf §8
+// TypeParams) is the §03 §3 generic-declaration-header story, not admitted
+// here yet — a `[` after the name stays the generic token error until that
+// story lands.
+parse_extern_type_decl :: proc(p: ^Parser, extern_line: int) -> (node: Extern_Type_Node, err: Parse_Error) {
+	expect(p, .Type) or_return
+	name := expect_type_name(p) or_return
+	terminate_statement(p) or_return
+	return Extern_Type_Node{name = name, line = extern_line}, .None
 }
 
 // parse_query parses a §08 §3 first-class query declaration: `query name(p: T,

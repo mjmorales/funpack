@@ -234,6 +234,66 @@ query nearest_cell(origin: Vec2) -> Vec2 {
 }
 
 @(test)
+test_index_decl_extern_type_record :: proc(t: ^testing.T) {
+	// An `extern type` declaration (§02 §7, §26 §2) projects onto the v6
+	// Extern_Type decl kind as a body-less record: an opaque type owns no
+	// expression position (stub constant-false), no body (dup_class 0, empty
+	// calls), and no pipeline slot (empty emits/consumes/mut_data); the §05
+	// directive derivations carry like every decl. Proven over the PARSED AST
+	// (the stub-derivation mold): derive_decl_records reads only the nodes,
+	// routes, and env, so a hand-built Typed_Ast isolates the projection.
+	source := `@doc("an immutable 2D outline")
+@expose
+extern type Sketch
+extern type Anchors
+`
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	records := derive_decl_records("", Typed_Ast{ast = ast}, Flattened_Pipeline{})
+	testing.expect_value(t, len(records), 2)
+
+	sketch, has_sketch := find_record(records, "Sketch")
+	testing.expect(t, has_sketch)
+	if !has_sketch {
+		return
+	}
+	testing.expect_value(t, sketch.schema_version, INDEX_SCHEMA_VERSION)
+	testing.expect_value(t, sketch.kind, Index_Decl_Kind.Extern_Type)
+	testing.expect_value(t, sketch.span, 3) // `extern` on line 3
+	testing.expect_value(t, sketch.doc, "an immutable 2D outline")
+	testing.expect_value(t, sketch.exposed, true)
+	testing.expect_value(t, sketch.stub, false)
+	testing.expect_value(t, sketch.todo, false)
+	testing.expect_value(t, sketch.dup_class, u64(0))
+	testing.expect_value(t, len(sketch.calls), 0)
+	testing.expect_value(t, len(sketch.emits), 0)
+	testing.expect_value(t, len(sketch.consumes), 0)
+	testing.expect_value(t, len(sketch.mut_data), 0)
+
+	anchors, has_anchors := find_record(records, "Anchors")
+	testing.expect(t, has_anchors)
+	testing.expect_value(t, anchors.exposed, false)
+
+	// Round-trip the emitted line through the exact-match consumer (the v4
+	// Query admission mold): a v6 stream's Extern_Type kind decodes onto the
+	// same closed Decl_Record, proof the kind name lands inside the closed
+	// enum and the field set is unchanged.
+	line := emit_decl_record(sketch, context.temp_allocator)
+	decoded, decode_err := decode_index_line(line, context.temp_allocator)
+	testing.expect_value(t, decode_err, Index_Read_Error.None)
+	decoded_decl, is_decl := decoded.(Decl_Record)
+	testing.expect(t, is_decl)
+	if is_decl {
+		testing.expect_value(t, decoded_decl.kind, Index_Decl_Kind.Extern_Type)
+		testing.expect_value(t, decoded_decl.qualified_name, "Sketch")
+	}
+	log.infof("index decl extern type record verified (kind Extern_Type, schema v%d)", INDEX_SCHEMA_VERSION)
+}
+
+@(test)
 test_index_decl_stub_from_holes :: proc(t: ^testing.T) {
 	// stub derives from the parser's holed flag (§05 §2): a fn whose body is a
 	// @stub(T) hole — and the @stub(T, fallback) form — emits stub=true, and a

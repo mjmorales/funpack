@@ -92,6 +92,17 @@ test_fmt_fn_forms :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fmt_extern_type :: proc(t: ^testing.T) {
+	// An `extern type Name` declaration (§02 §7, §26 §2) renders as the one
+	// keyword-pair line after its directive block — the opaque type has no
+	// fields or body to project — and round-trips canonically beside its
+	// extern-fn sibling (the stdlib surface shape, e.g. geom.fun).
+	source := "@doc(\"an immutable 2D outline\")\n@expose\nextern type Sketch\n\nextern type Anchors\n\nextern fn outline(s: Sketch) -> [Vec2]\n"
+	expected := source
+	expect_canonical(t, source, expected)
+}
+
+@(test)
 test_fmt_behavior_and_holed_step :: proc(t: ^testing.T) {
 	source := "behavior paddle_move on Paddle {\n  fn step(self: Paddle, input: Input, time: Time) -> Paddle {\n    let dir = input.value(self.player, Steer::Move)\n    return self with { y: clamp(self.y + dir * self.speed * time.dt, 0.0, BOARD.h) }\n  }\n}\n\nbehavior idle on Ball {\n  fn step(self: Ball) -> Ball @stub(Ball)\n}\n"
 	expected := source
@@ -304,7 +315,8 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 	   len(a.queries) != len(b.queries) ||
 	   len(a.behaviors) != len(b.behaviors) ||
 	   len(a.pipelines) != len(b.pipelines) ||
-	   len(a.tests) != len(b.tests) {
+	   len(a.tests) != len(b.tests) ||
+	   len(a.extern_types) != len(b.extern_types) {
 		return false
 	}
 	// The source-ordered declaration sequence is AST content (the canonical
@@ -442,6 +454,17 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 	for decl, i in a.tests {
 		other := b.tests[i]
 		if decl.name != other.name || decl.doc != other.doc || !statements_equiv(decl.body, other.body) {
+			return false
+		}
+	}
+	for decl, i in a.extern_types {
+		// An opaque type is its name plus the shared directive surface (§26 §2)
+		// — there is no field or body content to compare.
+		other := b.extern_types[i]
+		if decl.name != other.name {
+			return false
+		}
+		if !directives_equiv(decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes, other.doc, other.exposed, other.gtags, other.todos, other.probes) {
 			return false
 		}
 	}
