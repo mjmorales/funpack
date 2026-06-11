@@ -85,6 +85,15 @@ Tick_State :: struct {
 	spawns:          [dynamic]Pending_Spawn,
 	despawns:        [dynamic]Ref,
 	persist_commands: [dynamic]Record_Value, // the §24 Save/Restore/ApplySettings emits this tick
+	// settile_commands collects this tick's §18 §4 [SetTile] emits as the raw
+	// Record_Values the fold produced (the persist-batch mold: read at the
+	// boundary, never lowered into a blackboard row). fold_tile_layers applies
+	// them in THIS collection order at commit — the deterministic tick-end
+	// application; settile_refusals records each command that failed its
+	// application as a NAMED per-command refusal (never a silent drop, never a
+	// halted tick — the persist Result::Err arm, tilemap.odin).
+	settile_commands: [dynamic]Record_Value,
+	settile_refusals: [dynamic]Set_Tile_Refusal,
 	rng:             Rng, // the per-tick PRNG state a draw advances, threaded fold-forward
 	// superseded collects the blackboard maps this tick ABANDONED — a row's prior
 	// map replaced by write_blackboard's fresh one, or a despawned row's map. These
@@ -858,6 +867,11 @@ field_is_int :: proc(decl: ^Thing_Decl, name: string) -> bool {
 // step_tick_persist driver (save_io.odin); routing it here makes every persist
 // key a silent no-op. The deliberate plain-path consumer is replay.odin's
 // capture, whose record carries inputs only.
+// The §18 §4 [SetTile] batch is NOT under that invariant: a SetTile is SIM
+// state (committed tile-layer cells), not an IO boundary effect, so EVERY
+// driver applies it at commit (commit_tick_state → fold_tile_layers) — the
+// replay re-fold runs through this plain driver and must re-apply the same
+// terrain writes bit-identically.
 // Index maintenance (§08 §3): `indices` is the run's maintained engine-index
 // state, carried in/out by pointer exactly as the Rng is. When non-nil, the
 // fold runs against the structures as they stood at tick start (an update is
@@ -1120,6 +1134,13 @@ dispatch_emit_component :: proc(
 		// (the persist driver), never as a committed-state write, so the determinism
 		// record never sees it (team Lore #9). The outcome signal arrives NEXT tick.
 		queue_persist_commands(interp, state, value)
+	case is_settile_command_list_type(emit):
+		// A §18 §4 [SetTile] emit (the dungeon's dig) — collect it into the
+		// tick's tile-command batch. fold_tile_layers applies the batch at the
+		// commit boundary in this collection order, so next tick's render,
+		// collision, and queries all read the rewritten terrain from the same
+		// committed data.
+		queue_settile_commands(interp, state, value)
 	case is_command_list_type(emit):
 		queue_commands(interp, state, value)
 	case behavior != nil:
@@ -1397,6 +1418,27 @@ queue_persist_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Valu
 	}
 }
 
+// queue_settile_commands collects a behavior's §18 §4 [SetTile] command list
+// into the tick's tile-command batch, keeping the records AS Record_Values (the
+// persist-batch mold): fold_tile_layers reads their map/cell/tile columns at the
+// commit boundary and never lowers them into a blackboard row (a SetTile is a
+// terrain write, not a thing to commit). A non-record element is a malformed
+// command — recorded as the NAMED Malformed_Command refusal, never silently
+// skipped (the §18 §4 application's fail-closed floor).
+queue_settile_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
+	list, is_list := result.(List_Value)
+	if !is_list {
+		return
+	}
+	for elem in list.elements {
+		if record, is_record := elem.(Record_Value); is_record {
+			append(&state.settile_commands, record)
+		} else {
+			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Malformed_Command})
+		}
+	}
+}
+
 // queue_spawn queues a directly-built spawn (a thing name + blackboard) for the
 // tick-boundary batch — the seam a test or a future command-emitting behavior
 // drives without routing through a [Draw]-shaped emit. The row is NOT visible
@@ -1486,6 +1528,8 @@ new_tick_state :: proc(
 		spawns = make([dynamic]Pending_Spawn, allocator),
 		despawns = make([dynamic]Ref, allocator),
 		persist_commands = make([dynamic]Record_Value, allocator),
+		settile_commands = make([dynamic]Record_Value, allocator),
+		settile_refusals = make([dynamic]Set_Tile_Refusal, allocator),
 		superseded = make([dynamic]map[string]Field_Value, allocator),
 		query_memo = make(map[string]Value, allocator),
 		allocator = allocator,
@@ -1522,12 +1566,19 @@ new_tick_tables :: proc(prior: World_Version, allocator := context.allocator) ->
 // version-level structural sharing is commit_version's job once the changed-set
 // is supplied; here every table is supplied so the next version is fully
 // materialized, which the determinism comparison reads as a stable snapshot.
+// The tick's collected [SetTile] batch applies HERE — the §18 §4 deterministic
+// tick-end application: fold_tile_layers folds the commands (in collection
+// order) into the next version's COW tile-layer state, so every commit path
+// (plain, persist, control-class branch) carries terrain identically; a
+// command-less tick shares the prior slice by reference.
 commit_tick_state :: proc(
 	prior: World_Version,
 	state: ^Tick_State,
 	allocator := context.allocator,
 ) -> World_Version {
-	return commit_tick_tables(prior, state.tables, allocator)
+	version := commit_tick_tables(prior, state.tables, allocator)
+	version.tilemaps = fold_tile_layers(prior, state)
+	return version
 }
 
 // commit_tick_tables commits a set of working tables onto a prior version: each
@@ -1688,6 +1739,11 @@ is_signal_list_type :: proc(type: string) -> bool {
 		// Draw/Spawn/Despawn below get).
 		return false
 	}
+	if is_settile_command_list_type(type) {
+		// `[SetTile]` is the §18 §4 terrain-write command list — it routes to the
+		// tile-command batch, never the mailbox (the same disjointness as above).
+		return false
+	}
 	inner := signal_type_of(type)
 	return inner != "Draw" && inner != "Spawn" && inner != "Despawn"
 }
@@ -1708,6 +1764,16 @@ is_command_list_type :: proc(type: string) -> bool {
 // the determinism record (it never touches a committed table; team Lore #9).
 is_persist_command_list_type :: proc(type: string) -> bool {
 	return type == "[Save]" || type == "[Restore]" || type == "[ApplySettings]"
+}
+
+// is_settile_command_list_type reports whether an emit type is the §18 §4
+// `[SetTile]` terrain-command list — the destructible-terrain emit a dig-shaped
+// behavior returns. Like the persist lists it is an engine-command batch, NOT a
+// signal and NOT the spawn batch: it collects into the tick's settile_commands
+// and fold_tile_layers applies it to the committed tile-layer state at the
+// boundary (a [Spawn]-class deterministic tick-end application, §18 §4).
+is_settile_command_list_type :: proc(type: string) -> bool {
+	return type == "[SetTile]"
 }
 
 // is_view_type reports whether a param type is a `View[T]` read — the stable-Id

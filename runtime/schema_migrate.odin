@@ -282,7 +282,12 @@ migrate_world_version :: proc(
 			next_id   = table.next_id,
 		}
 	}
-	return World_Version{tick = world.tick, tables = tables}, Migrate_Refusal{}
+	// §18 §4 / §09 §3: a hot-reload swap RE-SEEDS tile-layer state from the NEW
+	// program's bake — the recompiled artifact may carry different layers, and
+	// the §09 migration kernel reshapes thing schemas only (dynamic-tile carry
+	// across reloads is deliberately undefined — never a silent alias of the
+	// OLD program's terrain into the new build).
+	return World_Version{tick = world.tick, tables = tables, tilemaps = program.tilemaps}, Migrate_Refusal{}
 }
 
 // migrate_row_field executes ONE plan action over one row — the §09 §4 verdict

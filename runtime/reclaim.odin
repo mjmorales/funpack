@@ -257,7 +257,43 @@ free_tick_state :: proc(state: ^Tick_State, allocator := context.allocator) {
 	delete(state.spawns)
 	delete(state.despawns)
 	delete(state.persist_commands)
+	delete(state.settile_commands)
+	delete(state.settile_refusals)
 	delete(state.superseded)
+}
+
+// free_version_tilemaps retires a now-dead version's §18 §4 tile-layer state —
+// the layers slice and each layer's cells backing — SKIPPING every slice the
+// SURVIVING version still aliases (COW: a SetTile-less tick shares the whole
+// slice; a SetTile tick copies only the touched layers' cells) and every slice
+// the PROGRAM owns (version -1 aliases the pristine decoded bake, which is
+// never reclaimed — it is the loader's). Alias detection is the same
+// pointer-identity discipline world_versions_same_identity uses: layer order
+// is fixed by artifact declaration, so index-wise comparison is exact. Names
+// and palettes always alias the program's decode and are never freed here.
+// Call it where free_version_structure is called — after the successor commits.
+free_version_tilemaps :: proc(
+	dead: World_Version,
+	survivor: World_Version,
+	program: ^Program,
+	allocator := context.allocator,
+) {
+	if len(dead.tilemaps) == 0 {
+		return
+	}
+	if raw_data(dead.tilemaps) == raw_data(survivor.tilemaps) ||
+	   raw_data(dead.tilemaps) == raw_data(program.tilemaps) {
+		// The survivor (or the bake) still reads this exact slice — nothing is dead.
+		return
+	}
+	for layer, i in dead.tilemaps {
+		survivor_aliases := i < len(survivor.tilemaps) && raw_data(layer.cells) == raw_data(survivor.tilemaps[i].cells)
+		program_owns := i < len(program.tilemaps) && raw_data(layer.cells) == raw_data(program.tilemaps[i].cells)
+		if !survivor_aliases && !program_owns {
+			delete(layer.cells, allocator)
+		}
+	}
+	delete(dead.tilemaps, allocator)
 }
 
 // free_signal_mailbox frees the per-tick signal mailbox's routing structure: the

@@ -304,13 +304,16 @@ STDLIB_SURFACE := []Module_Surface{
 		// AtlasHandle cell/frame mold), so admission here is the Func table
 		// row that lets the dungeon's bare import resolve; the
 		// TilemapHandle.of fixture types through surface_static_method.
-		// DELIBERATELY PARTIAL: §26's tilemap row also owns SetTile, which
-		// rides the tilemap-runtime story — growing this partition is its
-		// deliberate edit, never a side effect here.
+		// SetTile is the §18 §4 destructible-terrain command record the
+		// dungeon's dig imports and returns (`-> [SetTile]`): a Type_Name row
+		// whose construction schema (map: TilemapHandle, cell: the user's
+		// Cell record, tile: String) is surface_engine_record — the partition
+		// is the complete §26 tilemap row.
 		path = "engine.tilemap",
 		decls = {
 			{"TilesetHandle", .Type_Name},
 			{"TilemapHandle", .Type_Name},
+			{"SetTile", .Type_Name},
 			{"tile_at", .Func},
 			{"solid_at", .Func},
 			{"cell_of", .Func},
@@ -1505,6 +1508,20 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 	case "TilemapHandle":
 		return engine_type_of(.TilemapHandle), clone_fields({
 				{name = "name", type = engine_type_of(.String)},
+			}), true
+	case "SetTile":
+		// §18 §4 the destructible-terrain command (the dungeon's dig returns
+		// `[SetTile{map: map, cell: target, tile: "floor"}]`): `map` is the
+		// level seam's TilemapHandle naming the layer to rewrite; `cell` is
+		// the USER's Cell record (the grid_cells/cell_of discipline — no
+		// checker ground for a user record, so the nil unknown, the Body
+		// layer/mask mold); `tile` is the project-global tile name the layer's
+		// palette resolves at tick end. The result is the command's engine
+		// type, so a `-> [SetTile]` return unifies with the constructed list.
+		return engine_type_of(.SetTile), clone_fields({
+				{name = "map", type = engine_type_of(.TilemapHandle)},
+				{name = "cell", type = nil},
+				{name = "tile", type = engine_type_of(.String)},
 			}), true
 	}
 	return nil, nil, false

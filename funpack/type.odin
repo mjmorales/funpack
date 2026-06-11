@@ -92,10 +92,14 @@ Engine_Kind :: enum {
 	// `let terrain: TilemapHandle = TilemapHandle{name: "terrain"}` layer
 	// constant). Each is the single-String-`name` record schema the
 	// engine.assets handles carry (surface_engine_record); §26 declares no
-	// string constructor for either. SetTile and the tile_at/solid_at queries
-	// ride the tilemap-runtime story, not these kinds.
+	// string constructor for either. The tile_at/solid_at queries ride the
+	// handle as engine methods, not as kinds. SetTile is the §18 §4
+	// destructible-terrain command — the [Spawn]-class record a behavior
+	// returns (`-> [SetTile]`), applied deterministically at tick end; its
+	// construction schema (map/cell/tile) is surface_engine_record.
 	TilesetHandle,   // §18 §2 a baked-tileset handle (the .tiles seam constant)
 	TilemapHandle,   // §18 §3 a baked tile-LAYER handle (the level seam's layer constant)
+	SetTile,         // §18 §4 the dynamic-tile command record (SetTile{map, cell, tile})
 	// §16 §7 the rig/animation surface (engine.anim): the engine-provided
 	// skeleton, the part→slot mesh bindings, the sparse bone→Transform pose, and
 	// the bone/slot/side enums a pose generator and the generated rig seam name.

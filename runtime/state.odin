@@ -117,9 +117,18 @@ Version_Table :: struct {
 // touches only some tables SHARES the untouched ones by reference (structural
 // sharing), so an unchanged table is never copied. A version is read-only: every
 // read primitive below is a pure function of one World_Version.
+//
+// `tilemaps` is the §18 §4 DYNAMIC tile-layer state at this tick — the same COW
+// discipline at the layer level: a SetTile-less tick shares the prior slice by
+// reference; a tick whose fold collected SetTile commands commits a fresh slice
+// with only the TOUCHED layers' cells copied (fold_tile_layers). Version -1
+// aliases the program's decoded bake, which therefore stays pristine: render,
+// collision, and the queries all read THIS version's terrain, so a re-fold from
+// any recorded version observes that tick's tile state by construction.
 World_Version :: struct {
-	tick:   int, // the committed tick ordinal — the MVCC version number
-	tables: []Version_Table,
+	tick:     int, // the committed tick ordinal — the MVCC version number
+	tables:   []Version_Table,
+	tilemaps: []Tile_Layer, // §18 §4 tile-layer state (COW; aliases the bake until a SetTile commits)
 }
 
 // initial_version builds the empty committed version (tick -1, before setup) from
@@ -128,7 +137,8 @@ World_Version :: struct {
 // transaction commits the first populated version on top of; the read layer can
 // already query it (every View is empty, every Ref resolves None). The state
 // layer OWNS no spawning — it only lifts the loader substrate into the versioned
-// read model.
+// read model. The world's tile-layer seed (an alias of the program's decoded
+// bake) becomes version -1's tile state, carried forward COW from there.
 initial_version :: proc(world: World, allocator := context.allocator) -> World_Version {
 	tables := make([]Version_Table, len(world.tables), allocator)
 	for table, i in world.tables {
@@ -139,7 +149,7 @@ initial_version :: proc(world: World, allocator := context.allocator) -> World_V
 			next_id   = table.next_id,
 		}
 	}
-	return World_Version{tick = -1, tables = tables}
+	return World_Version{tick = -1, tables = tables, tilemaps = world.tilemaps}
 }
 
 // commit_version produces the next COW tick version with STRUCTURAL SHARING: the
@@ -165,7 +175,10 @@ commit_version :: proc(
 			tables[i] = table
 		}
 	}
-	return World_Version{tick = prior.tick + 1, tables = tables}
+	// Tile-layer state shares forward by reference here; a tick that applied
+	// SetTile commands replaces the slice at the commit seam (commit_tick_state),
+	// the same supply-the-changed-part discipline `changed` gives tables.
+	return World_Version{tick = prior.tick + 1, tables = tables, tilemaps = prior.tilemaps}
 }
 
 // version_find_table returns the committed table holding rows of the named
@@ -427,6 +440,16 @@ world_versions_equal :: proc(a, b: World_Version) -> bool {
 			if row_a.id != row_b.id || !blackboards_equal(row_a.fields, row_b.fields) {
 				return false
 			}
+		}
+	}
+	// §18 §4 tile-layer state is committed world state, so it is inside the
+	// determinism comparison: one diverging cell index fails the equality.
+	if len(a.tilemaps) != len(b.tilemaps) {
+		return false
+	}
+	for layer_a, i in a.tilemaps {
+		if !tile_layers_equal(layer_a, b.tilemaps[i]) {
+			return false
 		}
 	}
 	return true

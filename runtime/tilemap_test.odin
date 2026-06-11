@@ -388,10 +388,12 @@ test_tilemap_method_dispatch :: proc(t: ^testing.T) {
 	// center_of a Vec2 — each value exact against the kernel fixtures above.
 	layers := make([]Tile_Layer, 1, context.temp_allocator)
 	layers[0] = fixture_layer()
-	program := Program {
+	program := Program{}
+	// Tile state is committed world state (§18 §4): the dispatch resolves the
+	// layer through the interp's VERSION, never the program's bake.
+	version := World_Version {
 		tilemaps = layers,
 	}
-	version := World_Version{}
 	interp := tilemap_test_interp(&program, &version)
 	handle := tilemap_handle_value("terrain")
 
@@ -441,10 +443,10 @@ test_tilemap_method_dispatch_fails_closed :: proc(t: ^testing.T) {
 	// non-query member on the handle all answer ok=false.
 	layers := make([]Tile_Layer, 1, context.temp_allocator)
 	layers[0] = fixture_layer()
-	program := Program {
+	program := Program{}
+	version := World_Version {
 		tilemaps = layers,
 	}
-	version := World_Version{}
 	interp := tilemap_test_interp(&program, &version)
 
 	_, ok := eval_tilemap_query(&interp, "tile_at", tilemap_handle_value("nowhere"), tilemap_cell_record(0, 0))
@@ -463,13 +465,16 @@ test_tilemap_method_dispatch_fails_closed :: proc(t: ^testing.T) {
 test_render_emits_one_batched_tilemap_command :: proc(t: ^testing.T) {
 	// AC (batched render): a 12-tile layer joins the draw-list as EXACTLY ONE
 	// layer-level Draw_Tilemap carrying the whole layer — never per-tile
-	// commands (§18 §3) — leading the list in declaration order.
+	// commands (§18 §3) — leading the list in declaration order. The layers
+	// come from the rendered VERSION's committed tile state (§18 §4 — render
+	// updates from the same data a SetTile rewrites), never the program bake.
 	layers := make([]Tile_Layer, 1, context.temp_allocator)
 	layers[0] = fixture_layer()
-	program := Program {
+	program := Program{}
+	version := World_Version {
 		tilemaps = layers,
 	}
-	draw := render_version(&program, World_Version{}, empty(), tilemap_time_resource(), context.temp_allocator)
+	draw := render_version(&program, version, empty(), tilemap_time_resource(), context.temp_allocator)
 	testing.expect_value(t, len(draw.cmds), 1)
 	cmd, is_tilemap := draw.cmds[0].(Draw_Tilemap)
 	testing.expect(t, is_tilemap)

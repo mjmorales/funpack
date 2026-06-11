@@ -304,8 +304,17 @@ Thing_Table :: struct {
 // a once-spawned ordinary thing, so the singleton path is generic but unexercised
 // by pong). This file builds the empty tables; it runs neither
 // setup nor any tick.
+//
+// `tilemaps` is the §18 §4 DYNAMIC tile-state seed: an ALIAS of the program's
+// decoded [tilemaps] tables (a slice-header copy, no clone) that initial_version
+// lifts onto version -1, so tile state rides the COW version chain from tick 0.
+// The program's decoded tables stay pristine forever — a SetTile tick
+// copy-on-writes the touched layer's cells at commit (fold_tile_layers), never
+// mutates in place, which is what keeps every re-fold (replay, §28 refold,
+// control-class branches) reading its own version's terrain.
 World :: struct {
-	tables: []Thing_Table,
+	tables:   []Thing_Table,
+	tilemaps: []Tile_Layer,
 }
 
 // world_find_table returns the (mutable pointer to the) table holding rows of
@@ -332,5 +341,7 @@ new_world :: proc(program: Program, allocator := context.allocator) -> World {
 			next_id   = Thing_Id(0),
 		}
 	}
-	return World{tables = tables}
+	// The dynamic-tile seed ALIASES the program's decoded layers (COW: the
+	// first SetTile commit replaces the slice, never the bake's bytes).
+	return World{tables = tables, tilemaps = program.tilemaps}
 }

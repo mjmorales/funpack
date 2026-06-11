@@ -130,15 +130,16 @@ Draw3_Rigged :: struct {
 }
 
 // Draw_Tilemap is the §18 §3 BATCHED tile-layer command: ONE draw command per
-// baked layer carrying the whole decoded layer — never per-tile Draw::Sprite
+// baked layer carrying the whole committed layer — never per-tile Draw::Sprite
 // rows (§18 §3's normative batching). It is ENGINE-EMITTED, not behavior-
-// emitted: the tile layer is static environment the artifact carries, so
-// render_version prepends one Draw_Tilemap per program layer (declaration
-// order, beneath every behavior draw) before the render behaviors run. The
-// carried Tile_Layer's slices alias the program's decoded tables (the program
-// outlives every tick), so the command is a view, not a copy; the digest folds
-// the layer's full content (name, geometry, anchor, palette, cells) so the
-// drawn terrain is inside the comparison surface bit-exactly.
+// emitted: render_version prepends one Draw_Tilemap per layer of the rendered
+// VERSION's tile state (declaration order, beneath every behavior draw) before
+// the render behaviors run — the §18 §4 "render updates from the same data"
+// clause: a SetTile committed this tick is in this tick's draw-list. The
+// carried Tile_Layer's slices alias the version's COW tables (the version
+// outlives its projection), so the command is a view, not a copy; the digest
+// folds the layer's full content (name, geometry, anchor, palette, cells) so
+// the drawn terrain is inside the comparison surface bit-exactly.
 Draw_Tilemap :: struct {
 	layer: Tile_Layer,
 }
@@ -244,12 +245,15 @@ render_version :: proc(
 	interp := new_interp(program, &committed, nil, input, time, allocator)
 
 	cmds := make([dynamic]Draw_Cmd, allocator)
-	// The §18 §3 baked tile layers lead the draw-list: one BATCHED Draw_Tilemap
-	// per program layer in artifact declaration order (deterministic — a slice
-	// walk over decoded tables), BENEATH every behavior-emitted command (the
-	// terrain is the environment entities draw over). Engine-emitted: no render
-	// behavior authors these, and never per-tile commands (§18 §3).
-	for &layer in program.tilemaps {
+	// The §18 §3 tile layers lead the draw-list: one BATCHED Draw_Tilemap per
+	// layer of the rendered VERSION's committed tile state, in artifact
+	// declaration order (deterministic — a slice walk over committed tables),
+	// BENEATH every behavior-emitted command (the terrain is the environment
+	// entities draw over). Engine-emitted: no render behavior authors these,
+	// and never per-tile commands (§18 §3). Reading the version — not the
+	// program's pristine bake — is what makes a tick-end SetTile visible to
+	// this tick's render and digest (§18 §4).
+	for &layer in version.tilemaps {
 		append(&cmds, Draw_Tilemap{layer = layer})
 	}
 	for step in program.pipeline {

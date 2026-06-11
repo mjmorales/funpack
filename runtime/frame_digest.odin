@@ -102,8 +102,10 @@ import "core:slice"
 // commands), and the digest folds the LAYER'S FULL CONTENT — name, cell size,
 // dimensions, the grid→world anchor, the palette's (name, solid) pairs, and
 // every row-major cell index — so the rendered terrain is inside the
-// comparison surface bit-exactly (a single flipped cell changes the digest,
-// the surface the §18 §4 SetTile story will move). The ordinal is APPENDED
+// comparison surface bit-exactly (a single flipped cell changes the digest —
+// the §18 §4 SetTile command moves exactly this surface, no further digest
+// change: the application rewrites committed cells the fold already covers,
+// so the v7 encoding carries dynamic tiles as-is). The ordinal is APPENDED
 // (Tilemap=7 after Draw3_Rigged=6), and every committed golden artifact
 // carries `[tilemaps 0]` — no golden draw-list emits the new tag, so all
 // committed pong/snake/hunt/yard/krognid CONTENT digests (per-tick AND
@@ -551,7 +553,8 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		// byte), and every row-major cell index — counts lead each run so two
 		// layers never alias across a boundary. A cell index is its i64 value
 		// (TILE_CELL_EMPTY folds as the all-ones byte run), so one flipped
-		// tile changes the digest — the surface the SetTile story will move.
+		// tile changes the digest — the exact surface a committed §18 §4
+		// SetTile moves (the §28 determinism warranty over dynamic terrain).
 		append(buf, u8(Cmd_Tag.Tilemap))
 		write_length_prefixed(buf, c.layer.name)
 		put_u64_le(buf, u64(c.layer.cell_size))

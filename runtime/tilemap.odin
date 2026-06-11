@@ -1,10 +1,18 @@
-// The §18 §3 baked tile layer and its §18 §4 query surface: the static
-// environment a tilemap's ASCII grid bakes to, decoded from the artifact's
-// [tilemaps] section (docs/artifact-format.md §17, schema v11) into the
-// Program, rendered BATCHED (one layer-level draw command, never per-tile
-// Draw::Sprite rows — render.odin), and queried through the level seam's
-// TilemapHandle (tile_at / solid_at / cell_of / center_of, interp_call.odin →
-// eval_tilemap_method here).
+// The §18 §3 baked tile layer, its §18 §4 query surface, and the §18 §4
+// SetTile tick-end application: the environment a tilemap's ASCII grid bakes
+// to, decoded from the artifact's [tilemaps] section (docs/artifact-format.md
+// §17, schema v11) into the Program, rendered BATCHED (one layer-level draw
+// command, never per-tile Draw::Sprite rows — render.odin), and queried
+// through the level seam's TilemapHandle (tile_at / solid_at / cell_of /
+// center_of, interp_call.odin → eval_tilemap_method here).
+//
+// Tile state is COMMITTED WORLD STATE: the program's decoded tables are the
+// pristine BAKE, aliased onto version -1 and carried forward COW on the
+// World_Version chain — a behavior-returned SetTile{map, cell, tile} (the
+// [Spawn]-class command path) folds into the NEXT version's layer tables at
+// the commit boundary (fold_tile_layers), so next tick's render, collision,
+// and queries all update from the same data and every recorded version
+// re-folds over its own tick's terrain (replay, §28, branches).
 //
 // Collision is the QUERY surface (§18 §2, §18 §4): tile collision is sim-side
 // and deterministic — a behavior gates its own movement through solid_at over
@@ -61,10 +69,28 @@ Tile_Layer :: struct {
 }
 
 // program_tilemap finds a decoded tile layer by its TilemapHandle name, or nil
-// — the lookup the handle-method dispatch resolves a `TilemapHandle{name}`
-// receiver through, mirroring program_function's bare-name contract.
+// — the BAKE-side lookup (the program's pristine decoded tables). The query
+// and render surfaces resolve through version_tilemap instead: tile state is
+// committed world state (§18 §4 SetTile), so a read always answers over its
+// own version's terrain, never the bake's.
 program_tilemap :: proc(program: ^Program, name: string) -> ^Tile_Layer {
 	for &layer in program.tilemaps {
+		if layer.name == name {
+			return &layer
+		}
+	}
+	return nil
+}
+
+// version_tilemap finds a committed tile layer by its TilemapHandle name at one
+// World_Version, or nil — the lookup the handle-method dispatch resolves a
+// `TilemapHandle{name}` receiver through (mirroring program_function's
+// bare-name contract), against THIS version's COW tile state.
+version_tilemap :: proc(version: ^World_Version, name: string) -> ^Tile_Layer {
+	if version == nil {
+		return nil
+	}
+	for &layer in version.tilemaps {
 		if layer.name == name {
 			return &layer
 		}
@@ -248,20 +274,33 @@ eval_tilemap_method :: proc(
 	return nil, false, true
 }
 
-// tilemap_of_handle resolves a TilemapHandle record receiver to its decoded
-// layer: the handle's `name` String field keys program_tilemap. nil when the
-// field is absent, not a String, or names no decoded layer — the caller fails
-// closed.
+// tilemap_of_handle resolves a TilemapHandle record receiver to its committed
+// layer: the handle's `name` String field keys version_tilemap against the
+// interp's version — mid-fold that is the tick's ENTERING version, so a query
+// reads the terrain the tick started from and a SetTile applied at tick end is
+// first visible to the NEXT tick's queries (§18 §4). nil when the field is
+// absent, not a String, or names no committed layer — the caller fails closed.
 tilemap_of_handle :: proc(interp: ^Interp, handle: Record_Value) -> ^Tile_Layer {
+	name, ok := tilemap_handle_name(handle)
+	if !ok {
+		return nil
+	}
+	return version_tilemap(interp.version, name)
+}
+
+// tilemap_handle_name reads the `name` String field off a `TilemapHandle{name}`
+// record value — the one field the handle carries. ok=false on a missing or
+// non-String field (a malformed handle fails closed, never a guessed layer).
+tilemap_handle_name :: proc(handle: Record_Value) -> (name: string, ok: bool) {
 	field, present := handle.fields["name"]
 	if !present {
-		return nil
+		return "", false
 	}
-	name, is_string := field.(String_Value)
+	text, is_string := field.(String_Value)
 	if !is_string {
-		return nil
+		return "", false
 	}
-	return program_tilemap(interp.program, name.text)
+	return text.text, true
 }
 
 // cell_arg reads a `Cell{x, y}` record argument into its integer cell
@@ -294,4 +333,153 @@ cell_value :: proc(interp: ^Interp, col, row: i64) -> Value {
 	fields["x"] = col
 	fields["y"] = row
 	return Record_Value{type_name = "Cell", fields = fields}
+}
+
+// --- The §18 §4 SetTile tick-end application (the [Spawn]-class command path) -
+
+// Set_Tile_Refusal_Kind is the closed set of ways one SetTile command fails its
+// tick-end application. Each is a NAMED per-command refusal — the §24 persist
+// Result::Err mold (the command fails closed, the tick completes, nothing is
+// silently dropped) — recorded into Tick_State.settile_refusals in application
+// order, deterministic under replay (same inputs, same refusals).
+Set_Tile_Refusal_Kind :: enum {
+	Malformed_Command, // the record is not the SetTile{map, cell, tile} shape
+	Unknown_Layer,     // `map` names no committed tile layer
+	Unknown_Tile,      // `tile` names no palette entry of the layer
+	Cell_Out_Of_Grid,  // `cell` lies outside the layer's grid
+}
+
+// Set_Tile_Refusal names one refused SetTile command: the refusal arm plus the
+// offending coordinates the diagnostic needs ("" / 0 where the malformed shape
+// never yielded them). The strings alias the command record's same-tick eval
+// values — refusals are a same-tick read, never carried across the boundary.
+Set_Tile_Refusal :: struct {
+	kind:  Set_Tile_Refusal_Kind,
+	layer: string, // the named layer ("" when the map handle itself is malformed)
+	tile:  string, // the named tile ("" when absent/malformed)
+	col:   int, // the target cell, when the command carried one
+	row:   int,
+}
+
+// tilemap_palette_index finds a tile's palette index by its project-global
+// name, or -1 — the name → index resolution one applied SetTile performs
+// against the layer's legend-order palette.
+tilemap_palette_index :: proc(layer: ^Tile_Layer, tile: string) -> int {
+	for def, i in layer.palette {
+		if def.name == tile {
+			return i
+		}
+	}
+	return -1
+}
+
+// fold_tile_layers folds one tick's collected SetTile commands into the next
+// committed version's tile-layer state — the §18 §4 tick-end application,
+// applied in COMMAND COLLECTION ORDER (flattened pipeline order, stable Id
+// order within a behavior, list order within a return — the same order the
+// spawn batch fixes), so the fold is a pure function of the tick's command
+// sequence and the last write to a cell wins deterministically.
+//
+// COW at the layer level: a tick with no commands SHARES the prior slice by
+// reference (the structural-sharing discipline tables get); a command-carrying
+// tick allocates a fresh layers slice on the COMMIT allocator and copies only
+// the TOUCHED layers' cells once each — names and palettes alias the prior
+// version (ultimately the program's pristine decode) forever, so the only
+// per-version ownership is the cells backing the live reclaimer retires.
+//
+// Every invalid command is a NAMED refusal (Set_Tile_Refusal) appended to
+// state.settile_refusals — fail the COMMAND closed, never the tick, and never
+// a silent drop (the spawn batch's unknown-thing `continue` is deliberately
+// NOT matched; the persist Result::Err per-command arm is).
+fold_tile_layers :: proc(prior: World_Version, state: ^Tick_State) -> []Tile_Layer {
+	if len(state.settile_commands) == 0 {
+		return prior.tilemaps
+	}
+	layers := make([]Tile_Layer, len(prior.tilemaps), state.commit_allocator)
+	copy(layers, prior.tilemaps)
+	// Which layers' cells are already fresh THIS tick — copy once, then write
+	// in place within the tick's own copy.
+	fresh := make([]bool, len(layers), state.allocator)
+
+	for command in state.settile_commands {
+		layer_name, cell, tile, shape_ok := settile_command_parts(command)
+		if !shape_ok {
+			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Malformed_Command, layer = layer_name})
+			continue
+		}
+		index := -1
+		for &layer, i in layers {
+			if layer.name == layer_name {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Unknown_Layer, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
+			continue
+		}
+		layer := &layers[index]
+		palette := tilemap_palette_index(layer, tile)
+		if palette < 0 {
+			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Unknown_Tile, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
+			continue
+		}
+		if cell.x < 0 || cell.x >= layer.cols || cell.y < 0 || cell.y >= layer.rows {
+			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Cell_Out_Of_Grid, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
+			continue
+		}
+		if !fresh[index] {
+			cells := make([]int, len(layer.cells), state.commit_allocator)
+			copy(cells, layer.cells)
+			layer.cells = cells
+			fresh[index] = true
+		}
+		layer.cells[cell.y * layer.cols + cell.x] = palette
+	}
+	return layers
+}
+
+// Settile_Cell is the integer target cell one parsed SetTile command names.
+Settile_Cell :: struct {
+	x: int,
+	y: int,
+}
+
+// settile_command_parts reads one collected SetTile record into its
+// application parts: the `map` handle's layer name, the `cell` record's
+// integer coordinates, and the `tile` String. ok=false on any missing or
+// mis-shaped field — the Malformed_Command refusal arm (typecheck admits only
+// the closed schema, so this is the artifact-tamper fail-closed floor, not a
+// reachable source-level shape). The layer name is returned even on a
+// malformed cell/tile so the refusal can still point at the layer.
+settile_command_parts :: proc(command: Record_Value) -> (layer: string, cell: Settile_Cell, tile: string, ok: bool) {
+	map_field, has_map := command.fields["map"]
+	if !has_map {
+		return "", {}, "", false
+	}
+	handle, is_record := map_field.(Record_Value)
+	if !is_record {
+		return "", {}, "", false
+	}
+	name, name_ok := tilemap_handle_name(handle)
+	if !name_ok {
+		return "", {}, "", false
+	}
+	cell_field, has_cell := command.fields["cell"]
+	if !has_cell {
+		return name, {}, "", false
+	}
+	col, row, cell_ok := cell_arg(cell_field)
+	if !cell_ok {
+		return name, {}, "", false
+	}
+	tile_field, has_tile := command.fields["tile"]
+	if !has_tile {
+		return name, {}, "", false
+	}
+	text, is_string := tile_field.(String_Value)
+	if !is_string {
+		return name, {}, "", false
+	}
+	return name, Settile_Cell{x = col, y = row}, text.text, true
 }

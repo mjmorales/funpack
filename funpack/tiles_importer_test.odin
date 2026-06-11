@@ -368,14 +368,12 @@ test_emit_tileset_only_manifest_imports_tilemap_alone :: proc(t: ^testing.T) {
 
 @(test)
 test_engine_tilemap_surface_resolves_tileset_handle :: proc(t: ^testing.T) {
-	// The partition's admitted rows resolve: TilesetHandle AND TilemapHandle
-	// (the tilemap-layer story's deliberate admission, lifting the wave-1
-	// Unknown_Member pin) both bind to engine.tilemap as Type_Names. The
-	// partition stays DELIBERATELY PARTIAL — SetTile is still Unknown_Member,
-	// pinning that growth stays the runtime story's deliberate edit (the four
-	// §18 §4 queries were admitted by the TilemapHandle.of fixture story and
-	// are pinned in tilemap_fixture_test.odin).
-	source := "import engine.tilemap.{TilesetHandle, TilemapHandle}\n"
+	// The partition's admitted rows resolve: TilesetHandle, TilemapHandle, AND
+	// SetTile — the complete §26 tilemap row — all bind to engine.tilemap as
+	// Type_Names. A name outside the row is Unknown_Member, pinning that any
+	// further growth stays a deliberate edit (the four §18 §4 query Funcs are
+	// pinned in tilemap_fixture_test.odin).
+	source := "import engine.tilemap.{TilesetHandle, TilemapHandle, SetTile}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	bindings, err := resolve_imports(ast)
@@ -395,8 +393,14 @@ test_engine_tilemap_surface_resolves_tileset_handle :: proc(t: ^testing.T) {
 		testing.expect_value(t, layer_binding.module, "engine.tilemap")
 		testing.expect_value(t, layer_binding.kind, Decl_Kind.Type_Name)
 	}
+	settile_binding, settile_bound := bindings.names["SetTile"]
+	testing.expect(t, settile_bound, "SetTile must bind")
+	if settile_bound {
+		testing.expect_value(t, settile_binding.module, "engine.tilemap")
+		testing.expect_value(t, settile_binding.kind, Decl_Kind.Type_Name)
+	}
 
-	bogus, bogus_err := stage_parse(stage_lex("import engine.tilemap.{SetTile}\n"))
+	bogus, bogus_err := stage_parse(stage_lex("import engine.tilemap.{WarpTile}\n"))
 	testing.expect_value(t, bogus_err, Parse_Error.None)
 	_, reject := resolve_imports(bogus)
 	testing.expect_value(t, reject, Type_Error.Unknown_Member)

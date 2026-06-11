@@ -557,6 +557,18 @@ step_tick_persist :: proc(
 	// on the eval scratch (read here, same tick, pre-reset).
 	effects := process_persist_commands(carrier.store, program, committed, state.persist_commands[:], commit_allocator)
 
+	// §18 §4 / §24 GAP (deliberate): the save stream serializes thing tables
+	// only — dynamic tile-layer state is NOT in the §24 byte format — so a
+	// restored swap INHERITS the pre-restore committed version's terrain by
+	// reference (tile state survives a restore unchanged). Persisting tile state
+	// requires a save-format bump (serializer + saved-hash + schema_migrate);
+	// inheriting here keeps the swap version total (a swap with nil tilemaps
+	// would erase the terrain from every later render).
+	if swap, has_swap := effects.swap.?; has_swap {
+		swap.tilemaps = committed.tilemaps
+		effects.swap = swap
+	}
+
 	// LIVE GENERATIONAL RECLAMATION (reclaim_live; the unbounded-loop bound). Retire the
 	// now-dead BASE version on the persistent commit allocator, before the live driver
 	// frees the eval scratch. This is the ONLY safe moment and place: `committed` (N+1)
@@ -574,13 +586,20 @@ step_tick_persist :: proc(
 		// Retire `base` (N or the restored swap): its tables/rows structure plus the maps
 		// the commit abandoned (superseded). Its UNWRITTEN rows' maps are NOT freed here —
 		// they are now aliased solely by `committed` (N+1) and travel forward with it.
+		// Tile-layer state retires alias-guarded (free_version_tilemaps skips every
+		// slice `committed` or the program's pristine bake still reads).
 		free_superseded_maps(state.superseded, commit_allocator)
 		free_version_structure(base, commit_allocator)
+		free_version_tilemaps(base, committed, program, commit_allocator)
 
 		// On a RESTORE tick the fold bypassed `prior` (it folded from the swap base), so
 		// `prior` (the committed N) is referenced by nothing now — N+1 aliases the SWAP's
 		// maps, never N's. Free it WHOLLY (structure + every map). A normal tick has
 		// base == prior and already retired it above; the pointer compare distinguishes.
+		// Its tile state needs no retire here: free_version_fully frees tables and
+		// row maps only and never touches tilemaps — `prior`'s tile slice was
+		// inherited by the swap (the §24 inherit above) and travels forward with
+		// the committed version.
 		if !world_versions_same_identity(base, prior) {
 			free_version_fully(prior, commit_allocator)
 		}
