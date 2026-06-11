@@ -1019,6 +1019,10 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 			// route (the chase-AI fixture's `Nav.of(route)`), the nav twin of
 			// View.of — yields the Nav handle Nav.path then queries.
 			return func_of({engine_type_of(.Path)}, engine_type_of(.Nav)), true
+		case "fail":
+			// §12: the Err-arm fixture twin of Nav.of — builds a failed Nav from a
+			// NavError so the failed-query branch is testable end-to-end.
+			return func_of({engine_type_of(.NavError)}, engine_type_of(.Nav)), true
 		}
 	case "TilemapHandle":
 		switch member {

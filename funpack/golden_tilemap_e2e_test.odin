@@ -298,14 +298,16 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 	// Result) and funpack-evaluated through Nav.of (Nav_Value, the nav-method and
 	// Path.advance evaluators), so the chase AI's inline asserts run GREEN.
 	//
-	// The 21 warren_game inline asserts evaluate in the funpack interpreter —
+	// The 25 warren_game inline asserts evaluate in the funpack interpreter —
 	// three per `routed`/`drifted`/`replan_due`/`follow` test (12), one for
 	// `step_to` and one for `open_burrow` and one for the arrived-rabbit hide (3),
-	// two each for `nearest_rabbit`/`stalk dashes`/`bolt runs` (6) = 21. The
-	// non-behavior modules (warren_world, the gen seams) carry no asserts, so the
-	// project-wide sum is exactly 21. A regression that drops one, or a source
-	// edit that adds one, moves this number in lockstep — never loosen it to a
-	// range.
+	// two each for `nearest_rabbit`/`stalk dashes`/`bolt runs` (6), and four for
+	// the `Nav.fail fails every query coherently` test — path==Result::Err,
+	// reachable==false, los==false, nearest==Option::None — the Err-arm fixture
+	// twin of Nav.of (4) = 25. The non-behavior modules (warren_world, the gen
+	// seams) carry no asserts, so the project-wide sum is exactly 25. A regression
+	// that drops one, or a source edit that adds one, moves this number in lockstep
+	// — never loosen it to a range.
 	dir := resolve_warren_example_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP golden warren nav pin: %s not found — set FUNPACK_WARREN_DIR or check out funpack-spec as a sibling of the repo", dir)
@@ -334,7 +336,7 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 		log.errorf("golden warren nav pin: %s did not compile (%v)", report.failed_path, report.module_err)
 		return
 	}
-	testing.expect_value(t, report.passed, 21)
+	testing.expect_value(t, report.passed, 25)
 	testing.expect_value(t, report.failed, 0)
 
 	// The build verb emits both products now that the nav surface is admitted:

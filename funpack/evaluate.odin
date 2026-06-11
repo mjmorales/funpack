@@ -2299,6 +2299,23 @@ eval_resource_builder :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: strin
 			}
 			return Nav_Value{route = route}, true
 		}
+		// §12 Nav.fail(err): the Err-arm twin — builds a failed Nav from a NavError
+		// variant so every query fails coherently (path() → Result::Err(err),
+		// los/reachable → false, nearest → None). The route stays at its zero
+		// Record_Value (a failed Nav's path never reads it). A non-NavError argument
+		// is fail-closed (typecheck admits only NavError here, so it never reaches a
+		// passing program), mirroring the Nav.of non-Path guard.
+		if member == "fail" && len(args) == 1 {
+			err_value, err_ok := eval_expr(ctx, env, args[0])
+			if !err_ok {
+				return nil, false
+			}
+			err, is_enum := err_value.(Enum_Value)
+			if !is_enum || err.type_name != "NavError" {
+				return nil, false
+			}
+			return Nav_Value{failed = true, err = err.variant}, true
+		}
 	case "Input":
 		if member == "empty" && len(args) == 0 {
 			return Input_Value{pressed = make([]Input_Press, 0, context.temp_allocator)}, true
@@ -2545,15 +2562,20 @@ eval_nav_method :: proc(ctx: Eval_Ctx, env: ^Env, nav: Nav_Value, member: string
 	case "los", "reachable":
 		// The cheap yes/no checks read true on the fixture — the segment is
 		// unobstructed and the endpoints reachable, the stand-in's pinned answer.
+		// A failed Nav (the Nav.fail twin) reads false — every query fails coherently.
 		if len(args) != 2 {
 			return nil, false
 		}
-		return true, true
+		return !nav.failed, true
 	case "nearest":
 		// The fixture snap is the identity: an arbitrary point maps to itself as
-		// the nearest on-nav point (Option::Some(point)).
+		// the nearest on-nav point (Option::Some(point)). A failed Nav (the Nav.fail
+		// twin) yields Option::None — every query fails coherently.
 		if len(args) != 1 {
 			return nil, false
+		}
+		if nav.failed {
+			return none_value(), true
 		}
 		point := eval_expr(ctx, env, args[0]) or_return
 		return some_value(point), true
