@@ -54,4 +54,4 @@ jobs:
       - name: Lint (vet + strict style)
         run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:lint runtime:lint runtime:lint-live'
       - name: Test
-        run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:test runtime:test
+        run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:test runtime:test'
