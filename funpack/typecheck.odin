@@ -1746,14 +1746,27 @@ pick_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Erro
 	return tuple_of({option_of(list.elem), engine_type_of(.Rng)}), .None
 }
 
-// grid_cells_check types grid_cells(w, h, builder) (spec, engine.grid): two Int
-// grid dimensions and a builder fn(x, y) -> Cell, yielding a list of whatever
-// the builder returns ([Cell] for `grid_cells(GRID.size.x, GRID.size.y, fn(x, y){
-// Cell{x: x, y: y} })`). The element type is call-site-inferred from the
-// builder's result — the Cell is the user's, not the engine's — so admission is
-// the Func table row and the typing is here, like the list combinators. The
-// builder's two params infer as Int (the grid coordinates).
+// grid_cells_check types both grid_cells arities (spec §18 §4, engine.grid),
+// selected by argument count — the overload-on-arity mold first's two forms
+// use. The CANONICAL form grid_cells(size: Cell) -> [Cell] takes a
+// user cell record — structurally, a record whose schema is exactly the two Int
+// fields x and y (the Cell is the user's, not the engine's, so the judgment is
+// the schema shape, never a name) — and yields a list of that same type. The
+// non-idiomatic 3-arg mapper grid_cells(w, h, builder) takes two Int grid
+// dimensions and a builder fn(x, y) -> Cell, yielding a list of whatever the
+// builder returns ([Cell] for `grid_cells(GRID.size.x, GRID.size.y, fn(x, y){
+// Cell{x: x, y: y} })`); its element type is call-site-inferred from the
+// builder's result, so admission is the one Func table row and the typing is
+// here, like the list combinators. The builder's two params infer as Int (the
+// grid coordinates).
 grid_cells_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) == 1 {
+		size := expr_check(ctx, e.args[0]) or_return
+		if !is_cell_shaped(ctx, size) {
+			return nil, .Type_Mismatch
+		}
+		return list_of(size), .None
+	}
 	if len(e.args) != 3 {
 		return nil, .Type_Mismatch
 	}
@@ -1764,6 +1777,25 @@ grid_cells_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Typ
 	}
 	cell := combinator_result(ctx, e.args[2], {Ground_Type.Int, Ground_Type.Int}) or_return
 	return list_of(cell), .None
+}
+
+// is_cell_shaped reports the §18 §4 grid-cell shape: a user record whose
+// declared schema is EXACTLY the two Int fields x and y. Exactness is what
+// makes the canonical grid_cells sound — the evaluator constructs result cells
+// carrying only x and y, so a record with any further field could never be
+// rebuilt faithfully and is rejected here, not approximated there.
+is_cell_shaped :: proc(ctx: Check_Ctx, t: Type) -> bool {
+	user, is_user := t.(^User_Type)
+	if !is_user {
+		return false
+	}
+	schema, found := ctx_record_schema(ctx, user.name)
+	if !found || len(schema.fields) != 2 {
+		return false
+	}
+	x_type, has_x := record_field_type(schema, "x")
+	y_type, has_y := record_field_type(schema, "y")
+	return has_x && has_y && is_ground(x_type, .Int) && is_ground(y_type, .Int)
 }
 
 // combinator_result types a combinator's function argument against an inferred

@@ -1785,13 +1785,47 @@ eval_filter :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, o
 	return List_Value{elements = kept[:]}, true
 }
 
-// eval_grid_cells lowers `grid_cells(w, h, fn(x, y) -> Cell) -> [Cell]` (spec
-// §26): every cell of a w×h grid in STABLE ROW-MAJOR order, built by the two-arg
-// lambda. The outer loop walks rows (y from 0), the inner walks columns (x from
-// 0), so the enumeration is machine-identical — driven by the loop indices, never
-// by any map iteration. A non-positive extent yields the empty list (total). The
-// w/h are Ints (§10). Snake's all_cells() folds free-cell selection through this.
+// eval_grid_cells lowers both grid_cells arities (spec §18 §4 / §26), selected
+// by argument count like the typing arm: the CANONICAL `grid_cells(size: Cell)
+// -> [Cell]` enumerates every cell of a size.x×size.y grid as records of the
+// argument's own type, and the non-idiomatic mapper `grid_cells(w, h, fn(x, y)
+// -> Cell)` builds each cell through the two-arg lambda. Both walk in the SAME
+// STABLE ROW-MAJOR order: the outer loop walks rows (y from 0), the inner walks
+// columns (x from 0), so the enumeration is machine-identical — driven by the
+// loop indices, never by any map iteration. A non-positive extent yields the
+// empty list (total). The dimensions are Ints (§10). Snake's all_cells() folds
+// free-cell selection through the mapper form.
 eval_grid_cells :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) == 1 {
+		size_val := eval_expr(ctx, env, e.args[0]) or_return
+		size, is_record := size_val.(Record_Value)
+		if !is_record {
+			return nil, false
+		}
+		w_val := record_field_value(size.fields, "x") or_return
+		h_val := record_field_value(size.fields, "y") or_return
+		w, w_is_int := w_val.(i64)
+		h, h_is_int := h_val.(i64)
+		if !w_is_int || !h_is_int {
+			return nil, false
+		}
+		count := (w > 0 && h > 0) ? int(w) * int(h) : 0
+		out := make([]Value, count, context.temp_allocator)
+		idx := 0
+		for y in 0 ..< h {
+			for x in 0 ..< w {
+				// Each cell is a record of the size argument's OWN type — the
+				// typing arm pinned its schema to exactly {x: Int, y: Int}, so
+				// this construction is total over the declared fields.
+				fields := make([]Record_Field_Value, 2, context.temp_allocator)
+				fields[0] = Record_Field_Value{name = "x", value = x}
+				fields[1] = Record_Field_Value{name = "y", value = y}
+				out[idx] = Record_Value{type_name = size.type_name, fields = fields}
+				idx += 1
+			}
+		}
+		return List_Value{elements = out}, true
+	}
 	if len(e.args) != 3 {
 		return nil, false
 	}

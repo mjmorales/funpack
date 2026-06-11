@@ -212,9 +212,12 @@ STDLIB_SURFACE := []Module_Surface{
 	},
 	{
 		// engine.grid: the grid helper surface. grid_cells enumerates a grid's
-		// cells, taking the grid dims and a fn(x, y) -> Cell builder; its
-		// signature is call-site-inferred (the Cell element is the user's, not
-		// the engine's), so admission here is the Func table row.
+		// cells in two arity-selected forms (§18 §4): the canonical
+		// grid_cells(size: Cell) -> [Cell] over a user cell record, and the
+		// non-idiomatic 3-arg mapper taking the grid dims and a fn(x, y) ->
+		// Cell builder. Either way the signature is call-site-inferred (the
+		// Cell element is the user's, not the engine's), so admission here is
+		// the one Func table row and grid_cells_check selects the form.
 		path = "engine.grid",
 		decls = {
 			{"grid_cells", .Func},
