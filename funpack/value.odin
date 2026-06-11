@@ -23,6 +23,7 @@ Value :: union {
 	Time_Value,
 	Transform_Value,
 	Pose_Value,
+	Tilemap_Value,
 }
 
 // Transform_Value is a §16 §7 local bone transform: translation, orientation,
@@ -71,6 +72,32 @@ List_Value :: struct {
 // list materializes as a List_Value, so a tuple never holds a View.
 Tuple_Value :: struct {
 	elements: []Value,
+}
+
+// Tilemap_Value is the §18 §4 test-position tile layer: the (cell, tile, solid)
+// rows TilemapHandle.of(cell_size, cells) seeds, in the layer's own grid-local
+// coordinate space anchored at the origin (the bake's world bounds and y-up
+// flip belong to the runtime's baked handle, never to this fixture). The four
+// queries read it: tile_at/solid_at scan the seeded rows — an unseeded cell
+// reads None/not-solid, total, never a fault — cell_of floor-divides a world
+// position by the cell size, and center_of reads a cell's center (origin +
+// half cell). cell_type_name carries the seeded cells' record type so cell_of
+// constructs cells of the user's own Cell type (the grid_cells discipline);
+// it is "" when no cell was seeded, so an empty fixture's cell_of yields an
+// untagged record that equals no user Cell — defined, just never equal.
+Tilemap_Value :: struct {
+	cell_size:      i64,
+	cell_type_name: string,
+	cells:          []Tilemap_Seed_Cell,
+}
+
+// Tilemap_Seed_Cell is one seeded row of a Tilemap_Value: the cell's integer
+// grid coordinates and the (tile, solid) verdicts the queries answer with.
+Tilemap_Seed_Cell :: struct {
+	x:     i64,
+	y:     i64,
+	tile:  string,
+	solid: bool,
 }
 
 // Input_Value is the test-position Input snapshot: the set of (player, action)
@@ -212,6 +239,10 @@ value_equal :: proc(a, b: Value) -> bool {
 		// Input snapshots have no value-equality in the surface (no test compares
 		// two Inputs); comparing them is always false rather than promising a set
 		// equality the language never defines.
+		return false
+	case Tilemap_Value:
+		// A fixture tile layer has no value-equality in the surface either (no
+		// test compares two layers); always false, the Input_Value discipline.
 		return false
 	case Time_Value:
 		bv, ok := b.(Time_Value)

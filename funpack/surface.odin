@@ -290,22 +290,31 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
-		// §18 §2/§3 / §26 the tilemap partition's HANDLE rows: TilesetHandle is
-		// the typed constant a .tiles bake's generated seam binds (`let
-		// dungeon: TilesetHandle = TilesetHandle{name: "dungeon"}`, the §19
-		// manifest path); TilemapHandle is the typed constant a level bake's
-		// seam binds per §18 §3 tile layer (`let terrain: TilemapHandle =
+		// §18 §2/§3/§4 / §26 the tilemap partition: TilesetHandle is the typed
+		// constant a .tiles bake's generated seam binds (`let dungeon:
+		// TilesetHandle = TilesetHandle{name: "dungeon"}`, the §19 manifest
+		// path); TilemapHandle is the typed constant a level bake's seam binds
+		// per §18 §3 tile layer (`let terrain: TilemapHandle =
 		// TilemapHandle{name: "terrain"}`) — both admitted exactly as the
 		// engine.assets handles are, a Type_Name row plus the
-		// single-String-`name` record schema (surface_engine_record).
-		// DELIBERATELY PARTIAL: §26's tilemap row also owns SetTile and the
-		// tile_at/solid_at/cell_of queries, which ride the tilemap-runtime
-		// story — growing this partition is its deliberate edit, never a side
-		// effect here.
+		// single-String-`name` record schema (surface_engine_record). The four
+		// §18 §4 layer queries (tile_at/solid_at/cell_of/center_of) are
+		// self-first TilemapHandle accessors typed at the call site as engine
+		// methods off the handle receiver (surface_engine_method, the
+		// AtlasHandle cell/frame mold), so admission here is the Func table
+		// row that lets the dungeon's bare import resolve; the
+		// TilemapHandle.of fixture types through surface_static_method.
+		// DELIBERATELY PARTIAL: §26's tilemap row also owns SetTile, which
+		// rides the tilemap-runtime story — growing this partition is its
+		// deliberate edit, never a side effect here.
 		path = "engine.tilemap",
 		decls = {
 			{"TilesetHandle", .Type_Name},
 			{"TilemapHandle", .Type_Name},
+			{"tile_at", .Func},
+			{"solid_at", .Func},
+			{"cell_of", .Func},
+			{"center_of", .Func},
 		},
 	},
 	{
@@ -987,6 +996,20 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 			// View.of — yields the Nav handle Nav.path then queries.
 			return func_of({engine_type_of(.Path)}, engine_type_of(.Nav)), true
 		}
+	case "TilemapHandle":
+		switch member {
+		case "of":
+			// §18 §4 TilemapHandle.of(cell_size, cells): the fixture tile layer
+			// an inline test seeds where a baked layer would be — the
+			// View.of/Nav.of mold for the tilemap handle. Takes the Int cell
+			// size and the (cell, tile, solid) seed rows; the row's cell is the
+			// user's own Cell record, which has no checker ground (the
+			// grid_cells discipline), so its tuple position is the nil unknown.
+			return func_of(
+				{Ground_Type.Int, list_of(tuple_of({nil, engine_type_of(.String), Ground_Type.Bool}))},
+				engine_type_of(.TilemapHandle),
+			), true
+		}
 	case "Skeleton":
 		// §16 §7 the named-topology skeleton builders: Skeleton.humanoid() is the
 		// standard humanoid the krognid rig seam returns; empty() seeds an inline
@@ -1151,6 +1174,23 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 		// bare Result engine value matched Ok/Err downstream.
 		if member == "path" {
 			return func_of({Ground_Type.Vec2, Ground_Type.Vec2}, engine_type_of(.Result)), true
+		}
+	case .TilemapHandle:
+		// §18 §4 the four layer queries off the handle receiver — the dungeon's
+		// method-style spelling (map.tile_at(cell)). The cell parameter and the
+		// cell_of result are the user's own Cell record, which has no checker
+		// ground (the grid_cells discipline), so each types as the nil unknown;
+		// every other position is exact. tile_at is total: an unseeded or
+		// out-of-grid cell is Option::None, never a fault.
+		switch member {
+		case "tile_at":
+			return func_of({nil}, option_of(engine_type_of(.String))), true
+		case "solid_at":
+			return func_of({nil}, Ground_Type.Bool), true
+		case "cell_of":
+			return func_of({Ground_Type.Vec2}, nil), true
+		case "center_of":
+			return func_of({nil}, Ground_Type.Vec2), true
 		}
 	case .Path:
 		// §08: advance(from, arrive) walks the route one waypoint — `from` is the

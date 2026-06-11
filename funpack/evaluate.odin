@@ -1944,6 +1944,11 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 	if input, is_input := receiver.(Input_Value); is_input {
 		return eval_input_method(ctx, env, input, callee.member, args)
 	}
+	// A §18 §4 layer query on a fixture tile layer (the TilemapHandle.of value:
+	// map.tile_at(cell), map.solid_at(cell), map.cell_of(pos), map.center_of(cell)).
+	if tilemap, is_tilemap := receiver.(Tilemap_Value); is_tilemap {
+		return eval_tilemap_method(ctx, env, tilemap, callee.member, args)
+	}
 	// A §16 §7 method on a Pose value: set(Bone, Transform) drives one bone
 	// (returning the Pose, so a generator chains .set across bones), get(Bone)
 	// reads a bone's Transform (rest when the pose leaves it undriven).
@@ -2120,15 +2125,21 @@ eval_audio_adder :: proc(ctx: Eval_Ctx, env: ^Env, record: Record_Value, member:
 	return Record_Value{type_name = record.type_name, variant = record.variant, fields = updated}, true
 }
 
-// eval_resource_builder lowers the §23 static resource builders applied as a
-// type-name static method (spec §23): Input.empty() is the empty input snapshot
-// an inline test seeds, Time.at(dt) a fixed-dt Time resource, and View.of(list) a
-// §08 read table built from a literal list — materialized as a List_Value so the
-// list combinators (first/map/filter) read its rows as elements exactly as they
-// read a literal list. is_builder is false for any other (type, member) pair so
-// the caller falls through to its other type-name forms.
+// eval_resource_builder lowers the static resource builders applied as a
+// type-name static method (spec §23 / §18 §4): Input.empty() is the empty input
+// snapshot an inline test seeds, Time.at(dt) a fixed-dt Time resource,
+// View.of(list) a §08 read table built from a literal list — materialized as a
+// List_Value so the list combinators (first/map/filter) read its rows as
+// elements exactly as they read a literal list — and TilemapHandle.of(cell_size,
+// cells) the §18 §4 fixture tile layer the four layer queries answer over.
+// is_builder is false for any other (type, member) pair so the caller falls
+// through to its other type-name forms.
 eval_resource_builder :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: string, args: []Expr) -> (value: Value, is_builder: bool) {
 	switch type_name {
+	case "TilemapHandle":
+		if member == "of" && len(args) == 2 {
+			return eval_tilemap_fixture(ctx, env, args)
+		}
 	case "Input":
 		if member == "empty" && len(args) == 0 {
 			return Input_Value{pressed = make([]Input_Press, 0, context.temp_allocator)}, true
@@ -2243,6 +2254,165 @@ input_is_pressed :: proc(input: Input_Value, player, action: string) -> bool {
 		}
 	}
 	return false
+}
+
+// eval_tilemap_fixture lowers TilemapHandle.of(cell_size, cells) — the §18 §4
+// fixture tile layer an inline test seeds where a baked layer would be (the
+// View.of/Nav.of mold). cell_size is a positive Int; cells is a list of
+// (cell, tile, solid) tuples whose cell is a user Cell record over Int x/y.
+// The layer is its own coordinate space anchored at the origin (grid-local),
+// so the queries are pure fixed-point grid math — the bake's world bounds and
+// y-up flip belong to the runtime's baked handle, never to this fixture. ok is
+// false on a malformed seed (a non-positive cell size, a non-tuple row, a
+// wrong-shaped cell) — fail-closed; the typecheck-rejected forms never reach a
+// passing program.
+eval_tilemap_fixture :: proc(ctx: Eval_Ctx, env: ^Env, args: []Expr) -> (value: Value, ok: bool) {
+	size_value := eval_expr(ctx, env, args[0]) or_return
+	cell_size, size_is_int := size_value.(i64)
+	if !size_is_int || cell_size <= 0 {
+		return nil, false
+	}
+	rows_value := eval_expr(ctx, env, args[1]) or_return
+	rows, is_list := rows_value.(List_Value)
+	if !is_list {
+		return nil, false
+	}
+	cells := make([]Tilemap_Seed_Cell, len(rows.elements), context.temp_allocator)
+	cell_type_name := ""
+	for element, i in rows.elements {
+		row, is_tuple := element.(Tuple_Value)
+		if !is_tuple || len(row.elements) != 3 {
+			return nil, false
+		}
+		x, y, type_name, cell_ok := tilemap_cell_coords(row.elements[0])
+		tile, tile_is_string := row.elements[1].(string)
+		solid, solid_is_bool := row.elements[2].(bool)
+		if !cell_ok || !tile_is_string || !solid_is_bool {
+			return nil, false
+		}
+		// The first seeded row's cell type names the layer's Cell record, so
+		// cell_of constructs cells of the user's own type (the grid_cells
+		// discipline — every row carries the same type once typecheck passes).
+		if cell_type_name == "" {
+			cell_type_name = type_name
+		}
+		cells[i] = Tilemap_Seed_Cell{x = x, y = y, tile = tile, solid = solid}
+	}
+	return Tilemap_Value{cell_size = cell_size, cell_type_name = cell_type_name, cells = cells}, true
+}
+
+// eval_tilemap_method lowers a §18 §4 layer query on a fixture tile layer:
+// tile_at reads the seeded tile name as Option::Some(name) — an unseeded cell
+// is Option::None, total, never a fault; solid_at reads the seeded solid
+// verdict — an unseeded cell is not solid (the void is not a wall); cell_of
+// floor-divides a world position by the cell size into the containing cell,
+// constructed as the seeded cells' own record type; center_of reads a cell's
+// world-space center (origin + half cell). All grid-local: the fixture layer
+// is anchored at the origin, so every answer is exact fixed-point arithmetic.
+eval_tilemap_method :: proc(ctx: Eval_Ctx, env: ^Env, tilemap: Tilemap_Value, member: string, args: []Expr) -> (value: Value, ok: bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	arg := eval_expr(ctx, env, args[0]) or_return
+	switch member {
+	case "tile_at":
+		x, y, _, cell_ok := tilemap_cell_coords(arg)
+		if !cell_ok {
+			return nil, false
+		}
+		seed, found := tilemap_seed_lookup(tilemap.cells, x, y)
+		if !found {
+			return Option_Value{is_some = false}, true
+		}
+		return some_value(seed.tile), true
+	case "solid_at":
+		x, y, _, cell_ok := tilemap_cell_coords(arg)
+		if !cell_ok {
+			return nil, false
+		}
+		seed, found := tilemap_seed_lookup(tilemap.cells, x, y)
+		if !found {
+			return false, true
+		}
+		return seed.solid, true
+	case "cell_of":
+		pos, is_vec := arg.(Vec2_Value)
+		if !is_vec {
+			return nil, false
+		}
+		fields := make([]Record_Field_Value, 2, context.temp_allocator)
+		fields[0] = Record_Field_Value{name = "x", value = tilemap_cell_index(pos.x, tilemap.cell_size)}
+		fields[1] = Record_Field_Value{name = "y", value = tilemap_cell_index(pos.y, tilemap.cell_size)}
+		return Record_Value{type_name = tilemap.cell_type_name, fields = fields}, true
+	case "center_of":
+		x, y, _, cell_ok := tilemap_cell_coords(arg)
+		if !cell_ok {
+			return nil, false
+		}
+		return Vec2_Value{
+			x = tilemap_cell_center(x, tilemap.cell_size),
+			y = tilemap_cell_center(y, tilemap.cell_size),
+		}, true
+	}
+	return nil, false
+}
+
+// tilemap_cell_coords reads a cell-record value's Int x/y grid coordinates and
+// its record type name (the user's own Cell type, which cell_of echoes back —
+// the grid_cells discipline). ok is false for a non-record value, missing
+// fields, or non-Int coordinates.
+tilemap_cell_coords :: proc(cell: Value) -> (x, y: i64, type_name: string, ok: bool) {
+	record, is_record := cell.(Record_Value)
+	if !is_record {
+		return 0, 0, "", false
+	}
+	x_value, has_x := record_field_value(record.fields, "x")
+	y_value, has_y := record_field_value(record.fields, "y")
+	if !has_x || !has_y {
+		return 0, 0, "", false
+	}
+	xi, x_is_int := x_value.(i64)
+	yi, y_is_int := y_value.(i64)
+	if !x_is_int || !y_is_int {
+		return 0, 0, "", false
+	}
+	return xi, yi, record.type_name, true
+}
+
+// tilemap_seed_lookup finds a seeded row by cell coordinates — a linear scan
+// in seed order (the determinism tripwire: never a map).
+tilemap_seed_lookup :: proc(cells: []Tilemap_Seed_Cell, x, y: i64) -> (cell: Tilemap_Seed_Cell, found: bool) {
+	for candidate in cells {
+		if candidate.x == x && candidate.y == y {
+			return candidate, true
+		}
+	}
+	return Tilemap_Seed_Cell{}, false
+}
+
+// tilemap_cell_index floor-divides one Q32.32 world coordinate by the Int cell
+// size: the grid index of the cell containing the coordinate. Exact over the
+// raw bits with floor semantics — a negative position lands in the correct
+// negative cell, never truncation's off-by-one toward zero. The fixture
+// builder guarantees cell_size > 0, so the i128 quotient adjustment only needs
+// the negative-dividend arm.
+tilemap_cell_index :: proc(coord: Fixed, cell_size: i64) -> i64 {
+	span := i128(cell_size) << FIXED_FRACTION_BITS
+	quotient := i128(coord) / span
+	if i128(coord) % span != 0 && i128(coord) < 0 {
+		quotient -= 1
+	}
+	return int_saturate(quotient)
+}
+
+// tilemap_cell_center is one axis of the §18 §4 center_of: the cell's origin
+// (index × cell size, saturating in integer units) plus the half cell, lifted
+// to Q32.32 — exact integer arithmetic (an odd cell size's half is a dyadic
+// .5, exactly representable), saturating at the rails like every kernel op.
+tilemap_cell_center :: proc(index: i64, cell_size: i64) -> Fixed {
+	origin := i128(int_mul(index, cell_size)) << FIXED_FRACTION_BITS
+	half := i128(cell_size) << (FIXED_FRACTION_BITS - 1)
+	return fixed_saturate(origin + half)
 }
 
 // eval_quat_constructor lowers the Quat.axis_angle associated constructor.
