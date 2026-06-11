@@ -25,6 +25,11 @@
 // content hash, anywhere. The importers are the parallelizable DAG nodes of §4:
 // the atlas node deps-on its raw image hash, the model and audio nodes have no
 // dependencies, so a bake walks them in any order.
+//
+// The fourth kind — the .tiles tileset (§18 §2) — lives in its own file
+// (tiles_importer.odin, the grammar is its own lexer/parser pair) and joins
+// the battery through the closed import_asset dispatch below; like the atlas
+// it is a DAG node with one dependency (its atlas, §19 §5).
 package funpack
 
 // ── Importer version strings ─────────────────────────────────────────────
@@ -39,13 +44,28 @@ AUDIO_IMPORTER_VERSION :: "audio@1"
 
 // Importer_Error is closed with one arm per way an importer can reject. None
 // is success. Malformed_Source is any grammar violation in a DSL source (the
-// .fpm or .atlas surface): a stray glyph, a value of the wrong shape, an
-// unterminated string, a missing required clause, a clip naming an undeclared
-// cell. The set is uniform across importers so a caller branches on one enum
-// regardless of which kind it imported.
+// .fpm, .atlas, or .tiles surface): a stray glyph, a value of the wrong shape,
+// an unterminated string, a missing required clause, a clip naming an
+// undeclared cell. The set is uniform across importers so a caller branches on
+// one enum regardless of which kind it imported; the tiles arms below are the
+// .tiles importer's SEMANTIC rejects — grammar-legal sources that fail a §18
+// §2 bake floor — named so an agent repairing a tileset is told which field is
+// missing rather than re-deriving it from a generic reject.
 Importer_Error :: enum {
 	None,
 	Malformed_Source,
+	// Missing_Tile_Cell: a grammar-legal tile declares no `cell:` — without an
+	// atlas cell the tile cannot draw, and §18 §2 bakes tile content, never
+	// defaults it (the fail-closed required-ness verdict, tiles_parse_tile).
+	Missing_Tile_Cell,
+	// Missing_Tile_Solid: a grammar-legal tile declares no `solid:` — the
+	// sim-side collision verdict is baked into the tile layer (§18 §2), so an
+	// absent verdict is a named reject, never an assumed `false`.
+	Missing_Tile_Solid,
+	// Duplicate_Tile_Name: two tiles in one tileset share a name — the §18 §3
+	// one-name-one-tile discipline applied inside the file (the cross-tileset
+	// project-global namespace check is the tilemap layer story's).
+	Duplicate_Tile_Name,
 }
 
 // ── Model importer (.fpm) ────────────────────────────────────────────────
@@ -440,7 +460,7 @@ atlas_parse_clip :: proc(p: ^Atlas_Parser, declared: map[string]bool) -> (clip: 
 }
 
 // ── Closed dispatch keyed on Asset_Kind ──────────────────────────────────
-// Imported_Asset is the closed union over the three importer outputs, tagged
+// Imported_Asset is the closed union over the four importer outputs, tagged
 // by the same Asset_Kind the manifest registry uses. The bake walks the
 // manifest, dispatches each entry's kind to its importer, and folds the result
 // into this union — so a kind that has no importer arm is a compile error in
@@ -450,14 +470,16 @@ Imported_Asset :: union {
 	Model_Asset,
 	Atlas_Asset,
 	Audio_Asset,
+	Tileset_Asset,
 }
 
 // import_asset is the closed dispatch keyed on Asset_Kind: one arm per kind,
 // each routing to its format importer over the same source bytes the manifest
 // names. The model and audio importers take no dependency hashes (their §4 DAG
-// nodes have no inputs); the atlas takes the resolved hash of its raw image.
-// Passing audio's DSL-less source as bytes is the binary path; the model and
-// atlas paths parse the bytes as their DSL text. Because Asset_Kind is closed,
+// nodes have no inputs); the atlas takes the resolved hash of its raw image
+// and the tileset the resolved hash of its atlas (§19 §5). Passing audio's
+// DSL-less source as bytes is the binary path; the model, atlas, and tileset
+// paths parse the bytes as their DSL text. Because Asset_Kind is closed,
 // adding a kind without an arm here fails the build — the dispatch can never
 // silently drop an asset.
 import_asset :: proc(kind: Asset_Kind, src: []byte, dep_hashes: []string) -> (asset: Imported_Asset, err: Importer_Error) {
@@ -471,6 +493,9 @@ import_asset :: proc(kind: Asset_Kind, src: []byte, dep_hashes: []string) -> (as
 	case .Audio:
 		audio := import_audio(src) or_return
 		return audio, .None
+	case .Tileset:
+		tileset := import_tileset(string(src), dep_hashes) or_return
+		return tileset, .None
 	}
 	return nil, .Malformed_Source
 }
