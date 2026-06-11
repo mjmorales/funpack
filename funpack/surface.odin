@@ -170,7 +170,7 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
-		// The list combinator surface. fold/map/filter/find/first plus the
+		// The list combinator surface. fold/map/filter/find/first/last plus the
 		// snake/hunt combinators prepend/init/contains/concat/is_empty and the
 		// yard length read len: every row's signature is call-site-inferred
 		// (surface_signatures returns found = false for them), so admission here
@@ -183,6 +183,7 @@ STDLIB_SURFACE := []Module_Surface{
 			{"filter", .Func},
 			{"find", .Func},
 			{"first", .Func},
+			{"last", .Func},
 			{"prepend", .Func},
 			{"init", .Func},
 			{"contains", .Func},
@@ -211,16 +212,27 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
-		// engine.grid: the grid helper surface. grid_cells enumerates a grid's
-		// cells in two arity-selected forms (§18 §4): the canonical
-		// grid_cells(size: Cell) -> [Cell] over a user cell record, and the
-		// non-idiomatic 3-arg mapper taking the grid dims and a fn(x, y) ->
-		// Cell builder. Either way the signature is call-site-inferred (the
-		// Cell element is the user's, not the engine's), so admission here is
-		// the one Func table row and grid_cells_check selects the form.
+		// engine.grid: the §26 integer-grid helper surface — the complete row
+		// (`Cell`, grid_cells/neighbors/in_bounds). Cell is the stdlib's PLAIN
+		// DATA record (stdlib/engine/grid.fun: `data Cell { x: Int, y: Int }`),
+		// admitted as a STRUCTURAL record (surface_structural_record), never an
+		// engine ground — an imported Cell types and evaluates exactly as the
+		// same user-declared record would, so every call-site-inferred grid/
+		// tilemap signature stays structural and a fixture-local
+		// `data Cell` types the same way. grid_cells enumerates a grid's cells in two
+		// arity-selected forms (§18 §4): the canonical grid_cells(size: Cell)
+		// -> [Cell] over a cell-shaped record, and the non-idiomatic 3-arg
+		// mapper taking the grid dims and a fn(x, y) -> Cell builder
+		// (grid_cells_check selects the form). neighbors(cell) -> [Cell] and
+		// in_bounds(cell, size) -> Bool are cell-shape-checked combinators
+		// (neighbors_check / in_bounds_check) — structural over any {x: Int,
+		// y: Int} record, the imported Cell or the user's own.
 		path = "engine.grid",
 		decls = {
+			{"Cell", .Type_Name},
 			{"grid_cells", .Func},
+			{"neighbors", .Func},
+			{"in_bounds", .Func},
 		},
 	},
 	{
@@ -1005,9 +1017,11 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 			// §18 §4 TilemapHandle.of(cell_size, cells): the fixture tile layer
 			// an inline test seeds where a baked layer would be — the
 			// View.of/Nav.of mold for the tilemap handle. Takes the Int cell
-			// size and the (cell, tile, solid) seed rows; the row's cell is the
-			// user's own Cell record, which has no checker ground (the
-			// grid_cells discipline), so its tuple position is the nil unknown.
+			// size and the (cell, tile, solid) seed rows; the row's cell is a
+			// structural Cell record with no checker ground (the grid_cells
+			// discipline — the imported engine.grid Cell and a user-declared
+			// one both type structurally), so its tuple position is the nil
+			// unknown.
 			return func_of(
 				{Ground_Type.Int, list_of(tuple_of({nil, engine_type_of(.String), Ground_Type.Bool}))},
 				engine_type_of(.TilemapHandle),
@@ -1181,10 +1195,11 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 	case .TilemapHandle:
 		// §18 §4 the four layer queries off the handle receiver — the dungeon's
 		// method-style spelling (map.tile_at(cell)). The cell parameter and the
-		// cell_of result are the user's own Cell record, which has no checker
-		// ground (the grid_cells discipline), so each types as the nil unknown;
-		// every other position is exact. tile_at is total: an unseeded or
-		// out-of-grid cell is Option::None, never a fault.
+		// cell_of result are a structural Cell record with no checker ground
+		// (the grid_cells discipline — the imported engine.grid Cell and a
+		// user-declared one both type structurally), so each types as the nil
+		// unknown; every other position is exact. tile_at is total: an unseeded
+		// or out-of-grid cell is Option::None, never a fault.
 		switch member {
 		case "tile_at":
 			return func_of({nil}, option_of(engine_type_of(.String))), true
@@ -1512,12 +1527,13 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 	case "SetTile":
 		// §18 §4 the destructible-terrain command (the dungeon's dig returns
 		// `[SetTile{map: map, cell: target, tile: "floor"}]`): `map` is the
-		// level seam's TilemapHandle naming the layer to rewrite; `cell` is
-		// the USER's Cell record (the grid_cells/cell_of discipline — no
-		// checker ground for a user record, so the nil unknown, the Body
-		// layer/mask mold); `tile` is the project-global tile name the layer's
-		// palette resolves at tick end. The result is the command's engine
-		// type, so a `-> [SetTile]` return unifies with the constructed list.
+		// level seam's TilemapHandle naming the layer to rewrite; `cell` is a
+		// structural Cell record (the grid_cells/cell_of discipline — no
+		// checker ground, so the nil unknown, the Body layer/mask mold; the
+		// imported engine.grid Cell and a user-declared one both flow in);
+		// `tile` is the project-global tile name the layer's palette resolves
+		// at tick end. The result is the command's engine type, so a
+		// `-> [SetTile]` return unifies with the constructed list.
 		return engine_type_of(.SetTile), clone_fields({
 				{name = "map", type = engine_type_of(.TilemapHandle)},
 				{name = "cell", type = nil},
@@ -1525,6 +1541,34 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 			}), true
 	}
 	return nil, nil, false
+}
+
+// surface_structural_record types an imported stdlib record that is PLAIN DATA
+// rather than an opaque engine value — the stdlib file declares it as ordinary
+// `data` surface syntax, so importing it must behave exactly as if the user had
+// written the same declaration locally. The schema is keyed on (name, owning
+// partition) through the import bindings, so a USER declaration named Cell in a
+// module that never imports engine.grid is untouched, and the §02
+// one-name-one-meaning collision rule rejects declaring AND importing the
+// name. The only entry is engine.grid's `Cell { x: Int, y: Int }`
+// (stdlib/engine/grid.fun, §26): it types as User_Type("Cell", .Data) — NO
+// Engine_Kind ground is minted, preserving the grid_cells discipline — so
+// construction, projection, `with`, equality, is_cell_shaped, and the evaluator
+// all treat it as the structural record it is. Consulted as a fallback by
+// resolve_type_ref (annotation position), ctx_record_schema (expression
+// position), and the evaluator's record-literal arm.
+surface_structural_record :: proc(bindings: Bindings, name: string) -> (schema: Record_Schema, found: bool) {
+	binding, bound := bindings.names[name]
+	if !bound || binding.kind != .Type_Name {
+		return Record_Schema{}, false
+	}
+	if name == "Cell" && binding.module == "engine.grid" {
+		fields := make([]Field_Schema, 2, context.temp_allocator)
+		fields[0] = Field_Schema{name = "x", type = Ground_Type.Int}
+		fields[1] = Field_Schema{name = "y", type = Ground_Type.Int}
+		return Record_Schema{type_name = "Cell", kind = .Data, fields = fields}, true
+	}
+	return Record_Schema{}, false
 }
 
 // surface_engine_member_record reads a field off an engine record value (spec
@@ -1537,7 +1581,11 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 // Result engine value, typed here so its match scrutinee is well-formed.
 surface_engine_member_record :: proc(receiver: ^Engine_Type, member: string) -> (type: Type, found: bool) {
 	#partial switch receiver.kind {
-	case .Body, .Settings, .AccessOpts:
+	// Path joins the readable engine records (the warren's `route.steps`
+	// drifted-route probe): a field is readable iff it is constructable, and
+	// Path{steps, cost} construction is already §08 surface — reading the
+	// fields back is the same record schema, NOT a §12 graph query.
+	case .Body, .Settings, .AccessOpts, .Path:
 		_, fields, has_schema := surface_engine_record(engine_kind_name(receiver.kind))
 		if !has_schema {
 			return nil, false
@@ -1556,6 +1604,8 @@ surface_engine_member_record :: proc(receiver: ^Engine_Type, member: string) -> 
 // table). Only the record kinds need a name; a non-record kind returns "".
 engine_kind_name :: proc(kind: Engine_Kind) -> string {
 	#partial switch kind {
+	case .Path:
+		return "Path"
 	case .Body:
 		return "Body"
 	case .Settings:

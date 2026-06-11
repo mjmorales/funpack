@@ -31,6 +31,8 @@ package funpack
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
+import "core:strings"
 
 // FUNPACK_BUILD_DIR is the §14 derived-products directory (`.funpack/`): the
 // gitignored sibling of `funpack_configs/` and `src/` where a build writes its
@@ -341,9 +343,14 @@ has_entrypoints_fcfg :: proc(root: string) -> bool {
 // validation (§07) resolves the pipeline/bindings names against that module. It
 // also builds the sibling module→AST map the §17 cross-module SEAM-FN CARRY reads,
 // so the entrypoint's imported seam fns (krognid's `krognid_skeleton`/
-// `krognid_parts`) land in [functions] as self-contained records. A read failure or
-// any checked-pipeline floor surfaces as the stage_emit_indexed error, which
-// stage_build maps to Compile_Failed (no artifact).
+// `krognid_parts`) land in [functions] as self-contained records, and bakes the
+// tree's levels/*.flvl tile layers (bake_tree_tile_layers) so the artifact's
+// [tilemaps] section carries the §18 §3 static environment — the dungeon's
+// terrain reaches the runtime in the same build that emits its behaviors. A
+// read failure or any checked-pipeline floor surfaces as the stage_emit_indexed
+// error, which stage_build maps to Compile_Failed (no artifact); a level that
+// trips a §17.4/§18 §5 bake gate is the same exit-2 compile-error class,
+// surfaced as Gate_Failed.
 emit_tree_artifact :: proc(root: string, project: Project, sources: []Source, allocator := context.allocator) -> (artifact: string, err: Emit_Error) {
 	entrypoint_path, _ := filepath.join({root, "funpack_configs", "entrypoints.fcfg"}, context.temp_allocator)
 	entrypoint_bytes, ep_err := os.read_entire_file_from_path(entrypoint_path, context.temp_allocator)
@@ -365,9 +372,154 @@ emit_tree_artifact :: proc(root: string, project: Project, sources: []Source, al
 		return "", .Parse_Failed
 	}
 	index := build_project_module_index(sources)
+	tilemaps, baked_ok := bake_tree_tile_layers(root, sources, index, allocator)
+	if !baked_ok {
+		// A level that does not parse, a tileset/manifest the table cannot
+		// build from, or any §17.4/§18 §5 bake gate: the build refuses before
+		// emission — a malformed level is a compile error, never a silently
+		// layer-less artifact.
+		return "", .Gate_Failed
+	}
 	sibling_asts := build_sibling_module_asts(sources, source.module)
 	identity := Project_Identity{name = project.name, version = project.version}
-	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, allocator)
+	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, tilemaps, allocator)
+}
+
+// bake_tree_tile_layers bakes every levels/*.flvl under the §14 tree and
+// concatenates their §18 §3 tile layers — the [tilemaps] slice the artifact
+// carries. Levels walk in sorted-filename order (the §14.4 deterministic
+// subsystem walk) and each level's layers ride in declaration order, so the
+// section order is a pure function of the tree. Each level bakes against its
+// own `things <module>` schema source and the ONE project-global tile table
+// (project_tile_table over every manifest-registered tileset — the
+// tilemap-legend ADR's flat namespace). ok = false on ANY floor — an
+// unreadable/unparsable level, a missing schema source, a manifest or tileset
+// that cannot build the table, or a §17.4/§18 §5 bake gate — so the caller
+// refuses the build rather than emitting a partial environment. A tree with no
+// levels/ directory returns the empty slice (the level-less `[tilemaps 0]`
+// tail).
+bake_tree_tile_layers :: proc(root: string, sources: []Source, index: Module_Index, allocator := context.allocator) -> (layers: []Baked_Tile_Layer, ok: bool) {
+	level_paths := collect_level_paths(root)
+	if len(level_paths) == 0 {
+		return nil, true
+	}
+	tilesets, tilesets_ok := read_tree_tilesets(root)
+	if !tilesets_ok {
+		return nil, false
+	}
+	table, table_err := project_tile_table(tilesets, context.temp_allocator)
+	if table_err != .None {
+		return nil, false
+	}
+	out := make([dynamic]Baked_Tile_Layer, 0, 2, allocator)
+	for path in level_paths {
+		level_bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+		if read_err != nil {
+			return nil, false
+		}
+		level, parse_err := parse_flvl(string(level_bytes))
+		if parse_err != .None {
+			return nil, false
+		}
+		schema_source, has_schema := select_entrypoint_source(sources, level.things_module)
+		if !has_schema {
+			return nil, false
+		}
+		schema_bytes, schema_read := os.read_entire_file_from_path(schema_source.path, context.temp_allocator)
+		if schema_read != nil {
+			return nil, false
+		}
+		schema_ast, schema_parse := stage_parse(stage_lex(string(schema_bytes)))
+		if schema_parse != .None {
+			return nil, false
+		}
+		baked, bake_err := bake_flvl(level, schema_ast, level.things_module, index, table)
+		if bake_err != .None {
+			return nil, false
+		}
+		for layer in baked.tile_layers {
+			append(&out, clone_tile_layer(layer, allocator))
+		}
+	}
+	return out[:], true
+}
+
+// clone_tile_layer deep-copies one baked layer into the caller's allocator —
+// the bake works in temp memory (bake_flvl's context.temp_allocator slices),
+// and the emitted artifact must outlive the bake's scratch.
+clone_tile_layer :: proc(layer: Baked_Tile_Layer, allocator := context.allocator) -> Baked_Tile_Layer {
+	cloned := layer
+	cloned.name = strings.clone(layer.name, allocator)
+	palette := make([]Baked_Tile, len(layer.palette), allocator)
+	for tile, i in layer.palette {
+		palette[i] = Baked_Tile{name = strings.clone(tile.name, allocator), solid = tile.solid}
+	}
+	cells := make([]int, len(layer.cells), allocator)
+	copy(cells, layer.cells)
+	cloned.palette = palette
+	cloned.cells = cells
+	return cloned
+}
+
+// collect_level_paths walks levels/ for the tree's *.flvl authoring files in
+// sorted-filename order — the same deterministic order the §14.4 capability
+// reader derives its expected gen/ outputs in, so the [tilemaps] section order
+// never depends on the directory walk. An absent levels/ (or one holding no
+// .flvl) returns the empty slice — the level-less tree.
+collect_level_paths :: proc(root: string) -> []string {
+	dir, _ := filepath.join({root, "levels"}, context.temp_allocator)
+	if !os.is_dir(dir) {
+		return nil
+	}
+	paths := make([dynamic]string, 0, 4, context.temp_allocator)
+	walker := os.walker_create(dir)
+	defer os.walker_destroy(&walker)
+	for info in os.walker_walk(&walker) {
+		if info.type != .Regular || !strings.has_suffix(info.name, ".flvl") {
+			continue
+		}
+		append(&paths, strings.clone(info.fullpath, context.temp_allocator))
+	}
+	slice.sort(paths[:])
+	return paths[:]
+}
+
+// read_tree_tilesets imports every manifest-registered tileset under assets/ —
+// the inputs project_tile_table aggregates into the §18 §3 project-global tile
+// namespace. The committed assets.manifest is the source of truth (§19 §3): a
+// tileset entry's source file imports with the entry's declared dependency
+// hashes (a tileset deps-on its atlas, §19 §5). A tree with no manifest has no
+// registered tilesets (the empty table — a legend tile name then trips the
+// Unknown_Tile_Name gate honestly); a PRESENT manifest that does not parse, or
+// a registered tileset whose source is unreadable or rejects its importer, is
+// ok = false — fail-closed, never a silently empty namespace.
+read_tree_tilesets :: proc(root: string) -> (tilesets: []Tileset_Asset, ok: bool) {
+	manifest_path, _ := filepath.join({root, "assets", "assets.manifest"}, context.temp_allocator)
+	manifest_bytes, read_err := os.read_entire_file_from_path(manifest_path, context.temp_allocator)
+	if read_err != nil {
+		return nil, true
+	}
+	manifest, manifest_err := read_asset_manifest(string(manifest_bytes))
+	if manifest_err != .None {
+		return nil, false
+	}
+	out := make([dynamic]Tileset_Asset, 0, 2, context.temp_allocator)
+	for entry in manifest.entries {
+		if entry.kind != .Tileset {
+			continue
+		}
+		source_path, _ := filepath.join({root, "assets", entry.source}, context.temp_allocator)
+		source_bytes, source_err := os.read_entire_file_from_path(source_path, context.temp_allocator)
+		if source_err != nil {
+			return nil, false
+		}
+		tileset, import_err := import_tileset(string(source_bytes), entry.deps)
+		if import_err != .None {
+			return nil, false
+		}
+		append(&out, tileset)
+	}
+	return out[:], true
 }
 
 // build_sibling_module_asts parses every source EXCEPT the entrypoint module and

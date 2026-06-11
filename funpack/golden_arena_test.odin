@@ -275,18 +275,21 @@ test_golden_arena_inline_tests_pass :: proc(t: ^testing.T) {
 		return
 	}
 
-	// The funpack-evaluable arena asserts pass. arena_game carries FOUR asserts the
+	// The funpack-evaluable arena asserts pass. arena_game carries SIX asserts the
 	// funpack evaluator owns end-to-end — the pure-numeric `step_to` snap, the
-	// `gate_open(Option::None) == false` shut case, and the two
+	// `gate_open(Option::None) == false` shut case, the two
 	// `gate_open(Option::Some(Switch{…}))` cases (true while on, false while off)
-	// whose CROSS-MODULE Switch record construction the evaluator now materializes
-	// via the hud integration's eval_module_record arm — all four passing; the
-	// remaining asserts exercise engine-value execution (View.of/.resolve,
+	// whose CROSS-MODULE Switch record construction the evaluator materializes
+	// via the hud integration's eval_module_record arm, and the two
+	// `nearest_player` cases (eval_or_else makes the fold-then-or_else default
+	// shape funpack-evaluable end-to-end, so the pin counts them — the same
+	// lockstep the hud integration's 2 → 4 move followed); the
+	// remaining asserts exercise engine-value execution (View.resolve,
 	// Nav.of/.advance) the runtime owns, so they are not the funpack evaluator's to
 	// pass (the yard split). The count is pinned EXACTLY: a regression that drops a
 	// funpack-evaluable assert, or that mis-evaluates one, moves this number — never
 	// loosen it to a range.
-	testing.expect_value(t, report.passed, 4)
+	testing.expect_value(t, report.passed, 6)
 	log.infof(
 		"golden arena: project compiles end-to-end; the %d funpack-evaluable inline asserts pass (engine-value asserts are the runtime's, per the yard split)",
 		report.passed,

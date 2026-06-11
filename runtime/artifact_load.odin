@@ -530,28 +530,23 @@ load_index_reqs :: proc(
 	return out, .None
 }
 
-// --- §17 tilemaps (schema v11) ----------------------------------------------
+// --- §17 tilemaps (schema v12) ----------------------------------------------
 
 // load_tilemaps reads each §17 tile-layer record: the lead line `tilemap NAME
-// CELL_SIZE COLS ROWS PALETTE_COUNT`, then exactly PALETTE_COUNT `tile NAME
-// SOLID` palette lines (legend order, each carrying its §18 §2 baked collision
-// verdict), then exactly ROWS `row …` lines of COLS cells — a decimal palette
-// index into THIS record's palette or `-` for a tile-less cell. Every shape
-// violation is the fail-closed .Bad_Field refusal the section molds share: a
-// non-positive dimension or cell size, a sub-record run that does not split
-// exactly into the declared palette+row counts, a malformed palette line, a
-// row of the wrong arity, or a cell index outside the palette — never a
-// best-effort partial layer.
-//
-// ANCHOR DERIVATION (the grid→world mapping, §17): the doc anchors the grid's
-// top-left at (bounds_min.x, bounds_max.y), but the v11 record does not carry
-// the level bounds, so the loader derives the anchor as (0, rows*cell_size) —
-// the grid's own extent anchored at the world origin. This is bit-identical to
-// the bake's marker/cell() mapping exactly when the grid spans the level
-// bounds from (0, 0), which every tilemap-carrying example satisfies; a level
-// whose bounds anchor elsewhere cannot be represented faithfully until the
-// format carries the anchor (a funpack-side format decision — see the
-// Tile_Layer.top_left doc).
+// CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y PALETTE_COUNT` (v12 — the anchor is
+// the world point of the grid's top-left corner as two raw Q32.32 Fixed
+// fields, the authoritative grid→world mapping datum the bake emitted from its
+// level bounds), then exactly PALETTE_COUNT `tile NAME SOLID` palette lines
+// (legend order, each carrying its §18 §2 baked collision verdict), then
+// exactly ROWS `row …` lines of COLS cells — a decimal palette index into THIS
+// record's palette or `-` for a tile-less cell. Every shape violation is the
+// fail-closed .Bad_Field refusal the section molds share: a non-positive
+// dimension or cell size, a malformed anchor, a sub-record run that does not
+// split exactly into the declared palette+row counts, a malformed palette
+// line, a row of the wrong arity, or a cell index outside the palette — never
+// a best-effort partial layer. The anchor is READ, never derived: the v11
+// derivation (0, rows*cell_size) — exact only for a grid spanning its bounds
+// from the origin — retired with the v12 carry (the tilemap-anchor ADR).
 load_tilemaps :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -562,21 +557,22 @@ load_tilemaps :: proc(
 	out := make([]Tile_Layer, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// tilemap NAME CELL_SIZE COLS ROWS PALETTE_COUNT
-		if len(f) != 6 || f[0] != "tilemap" {
+		// tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y PALETTE_COUNT
+		if len(f) != 8 || f[0] != "tilemap" {
 			return nil, .Bad_Field
 		}
 		cell_size, cs_ok := strconv.parse_i64(f[2])
 		cols, c_ok := strconv.parse_int(f[3])
 		rows, r_ok := strconv.parse_int(f[4])
-		palette_count, p_ok := strconv.parse_int(f[5])
-		if !cs_ok || !c_ok || !r_ok || !p_ok {
+		anchor_x, ax_ok := strconv.parse_i64(f[5])
+		anchor_y, ay_ok := strconv.parse_i64(f[6])
+		palette_count, p_ok := strconv.parse_int(f[7])
+		if !cs_ok || !c_ok || !r_ok || !ax_ok || !ay_ok || !p_ok {
 			return nil, .Bad_Field
 		}
 		// A degenerate grid or cell size never reaches a query — the §18 §5
 		// bake gates reject it upstream, so its arrival here is a malformed
-		// artifact, refused (cell_of divides by the cell size; the anchor
-		// multiplies rows by it).
+		// artifact, refused (cell_of divides by the cell size).
 		if cell_size <= 0 || cols <= 0 || rows <= 0 || palette_count < 0 {
 			return nil, .Bad_Field
 		}
@@ -592,7 +588,10 @@ load_tilemaps :: proc(
 			cell_size = cell_size,
 			cols      = cols,
 			rows      = rows,
-			top_left  = Vec2{x = to_fixed(0), y = to_fixed(int_mul(i64(rows), cell_size))},
+			// The v12 anchor carry is authoritative: the raw Q32.32 bits read
+			// off the lead line ARE the grid's top-left world corner — the
+			// bake's (bounds_min.x, bounds_max.y).
+			top_left  = Vec2{x = Fixed(anchor_x), y = Fixed(anchor_y)},
 			palette   = palette,
 			cells     = cells,
 		}

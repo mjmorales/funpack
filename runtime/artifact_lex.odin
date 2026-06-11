@@ -133,7 +133,19 @@ import "core:strings"
 // admits the framing and FAILS CLOSED on a tile-bearing artifact until that
 // decode lands (build_program): 10 → 11 (funpack/docs/artifact-format.md §1,
 // §17).
-ARTIFACT_SCHEMA_VERSION :: 11
+//
+// v12 makes the §18 §3 tile-layer record SELF-DESCRIBING for any level bounds:
+// the [tilemaps] lead line gains the grid→world ANCHOR — the world point of
+// the grid's top-left corner, two raw Q32.32 Fixed fields between ROWS and
+// PALETTE_COUNT (`tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y
+// PALETTE_COUNT`). The bake emits it from the level bounds (bounds_min.x,
+// bounds_max.y) and this runtime's loader READS it instead of deriving
+// (0, rows*cell_size) — the v11 derivation was exact only for a grid spanning
+// its bounds from the origin (the format gap the tilemap-anchor ADR closes).
+// A lead-line field is a layout change: 11 → 12 (funpack/docs/
+// artifact-format.md §1, §17). Level-less artifacts move by the stamp alone
+// (the v7 stamp-only restamp precedent).
+ARTIFACT_SCHEMA_VERSION :: 12
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
@@ -154,8 +166,8 @@ SUB_RECORD_KEYWORDS :: [?]string {
 	"node",
 	"migrate", // a [data] record's §05 §6 rename/retype carry (v8, §6)
 	"index", // a [queries] record's §05 §3 @index/@spatial requirement (v9, §16)
-	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (v11, §17)
-	"row", // a [tilemaps] record's row-major cell line `row …` (v11, §17)
+	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (v11 framing, §17)
+	"row", // a [tilemaps] record's row-major cell line `row …` (v11 framing, §17)
 }
 
 // Artifact_Error is the closed parse-failure enum. Every failure is a refusal

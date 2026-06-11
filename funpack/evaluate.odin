@@ -611,7 +611,29 @@ eval_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value,
 	if _, _, is_handle := surface_engine_record(e.type_name); is_handle && is_asset_handle_name(e.type_name) {
 		return eval_asset_handle_literal(ctx, env, e)
 	}
+	// An imported STRUCTURAL stdlib record literal (engine.grid's `Cell{x: 5,
+	// y: 3}`, §26): plain stdlib data with no declared defaults, so the value
+	// is the same Record_Value the user's own `data Cell` literal builds —
+	// tagged with the record name, one slot per named field — and equality,
+	// projection, and the §18 §4 query kernel all read it structurally.
+	if schema, is_structural := surface_structural_record(ctx.bindings, e.type_name); is_structural {
+		return eval_structural_record(ctx, env, e, schema)
+	}
 	return nil, false
+}
+
+// eval_structural_record builds an imported structural stdlib record value
+// (surface_structural_record — engine.grid's Cell): every named field
+// evaluates in the consumer's env, and the schema carries no defaults, so the
+// literal's fields are the value's whole slot set (the eval_user_record shape
+// minus the default fill).
+eval_structural_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr, schema: Record_Schema) -> (value: Value, ok: bool) {
+	fields := make([]Record_Field_Value, len(e.fields), context.temp_allocator)
+	for field, i in e.fields {
+		v := eval_expr(ctx, env, field.value) or_return
+		fields[i] = Record_Field_Value{name = field.name, value = v}
+	}
+	return Record_Value{type_name = schema.type_name, fields = fields}, true
 }
 
 // is_asset_handle_name reports whether `name` is one of the §19/§26 typed
@@ -1302,6 +1324,14 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_fold(ctx, env, e)
 	case "first":
 		return eval_first(ctx, env, e)
+	case "or_else":
+		return eval_or_else(ctx, env, e)
+	case "last":
+		return eval_last(ctx, env, e)
+	case "neighbors":
+		return eval_neighbors(ctx, env, e)
+	case "in_bounds":
+		return eval_in_bounds(ctx, env, e)
 	case "within":
 		return eval_within(ctx, env, e)
 	case "nearest_first":
@@ -1618,6 +1648,89 @@ eval_first :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok
 		}
 	}
 	return Option_Value{is_some = false, payload = nil}, true
+}
+
+// eval_or_else lowers or_else(option, fallback) -> T (spec §26): the Some
+// payload, or the fallback — the unwrap the fold-then-default shape ends on
+// (the dungeon's hero_pos, the arena's nearest_player). The fallback
+// evaluates only on the None arm, so an or_else over a Some never runs it —
+// observationally identical in a pure language, and it keeps a
+// Some-carrying call evaluable even where the fallback expression is not.
+eval_or_else :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	option := eval_expr(ctx, env, e.args[0]) or_return
+	boxed, is_option := option.(Option_Value)
+	if !is_option {
+		return nil, false
+	}
+	if boxed.is_some {
+		return boxed.payload^, true
+	}
+	return eval_expr(ctx, env, e.args[1])
+}
+
+// eval_last lowers last(list) -> Option[T] (the stdlib engine.list signature):
+// the final element as Some, or None over the empty list — first's
+// one-argument form read from the other end (the warren's drifted-route
+// probe).
+eval_last :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 1) or_return
+	if len(elements) == 0 {
+		return Option_Value{is_some = false, payload = nil}, true
+	}
+	return some_value(elements[len(elements) - 1]), true
+}
+
+// eval_neighbors lowers neighbors(cell) -> [Cell] (§18 §4, stdlib
+// engine.grid): the four orthogonally adjacent cells of the argument's own
+// record type, in ROW-MAJOR READING ORDER — (x, y-1) above, then (x-1, y) and
+// (x+1, y) on the row, then (x, y+1) below — the same y-outer order grid_cells
+// enumerates, so a fold over the open set is deterministic by construction.
+eval_neighbors :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	arg := eval_expr(ctx, env, e.args[0]) or_return
+	x, y, type_name, is_cell := tilemap_cell_coords(arg)
+	if !is_cell {
+		return nil, false
+	}
+	offsets := [4][2]i64{{0, -1}, {-1, 0}, {1, 0}, {0, 1}}
+	elements := make([]Value, 4, context.temp_allocator)
+	for offset, i in offsets {
+		elements[i] = structural_cell_value(type_name, x + offset[0], y + offset[1])
+	}
+	return List_Value{elements = elements}, true
+}
+
+// eval_in_bounds lowers in_bounds(cell, size) -> Bool (§18 §4, stdlib
+// engine.grid): whether the cell lies in the [0, size.x) × [0, size.y) grid —
+// the dungeon's open-neighbor gate beside `enterable`.
+eval_in_bounds :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	cell := eval_expr(ctx, env, e.args[0]) or_return
+	size := eval_expr(ctx, env, e.args[1]) or_return
+	x, y, _, cell_ok := tilemap_cell_coords(cell)
+	sx, sy, _, size_ok := tilemap_cell_coords(size)
+	if !cell_ok || !size_ok {
+		return nil, false
+	}
+	return x >= 0 && x < sx && y >= 0 && y < sy, true
+}
+
+// structural_cell_value builds one {x, y} cell record of the given record type
+// — the neighbors elements, tagged with the ARGUMENT's own type name (the
+// grid_cells discipline: the cell type is the caller's, echoed back like
+// cell_of does).
+structural_cell_value :: proc(type_name: string, x, y: i64) -> Value {
+	fields := make([]Record_Field_Value, 2, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "x", value = x}
+	fields[1] = Record_Field_Value{name = "y", value = y}
+	return Record_Value{type_name = type_name, fields = fields}
 }
 
 // eval_list_arg evaluates argument i of an expected-arity call and demands a

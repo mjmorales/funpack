@@ -154,7 +154,21 @@ import "core:strings"
 // are NOT in this section: they lower to the spawn machinery like every
 // placement. (2) two new closed sub-record keywords, `tile` and `row`. A new
 // section and new sub-record keywords are layout changes: 10 → 11 (§1).
-ARTIFACT_SCHEMA_VERSION :: 11
+//
+// Version 12 makes the §18 §3 tile-layer record SELF-DESCRIBING for any level
+// bounds: the [tilemaps] lead line gains the grid→world ANCHOR — the world
+// point of the grid's top-left corner, two raw Q32.32 Fixed fields (§2.3)
+// between ROWS and PALETTE_COUNT: `tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X
+// ANCHOR_Y PALETTE_COUNT`. The bake emits it from the level bounds
+// (bounds_min.x, bounds_max.y) — the same corner the marker/cell() lowering
+// anchored on — and the runtime loader READS it instead of deriving
+// (0, rows*cell_size), so §17's documented mapping is reproducible from the
+// record alone (the v11 record carried no bounds, leaving an artifact-blind
+// runtime to a derivation that is exact only when the grid spans its bounds
+// from the origin — the format gap the tilemap-anchor ADR closes). A lead-line
+// field is a layout change: 11 → 12 (§1). Every level-less artifact moves by
+// the version stamp alone (the v7 stamp-only restamp precedent).
+ARTIFACT_SCHEMA_VERSION :: 12
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
@@ -219,8 +233,8 @@ SUB_RECORD_KEYWORDS := []string{
 	"node", // a body checked-AST node line (§2.7) — every fn/step/const/bindings/setup body is a run of these
 	"migrate", // a [data] record's §05 §6 rename/retype carry (§6, schema v8) — after a `field` line for that field, before any `field` line for the renamed type
 	"index", // a [queries] record's §05 §3 @index/@spatial requirement `index KIND THING FIELD` (§16, schema v9)
-	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (§17, schema v11)
-	"row", // a [tilemaps] record's row-major cell line `row …` (§17, schema v11)
+	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (§17, schema v12)
+	"row", // a [tilemaps] record's row-major cell line `row …` (§17, schema v12)
 }
 
 // Artifact_Section is one parsed `[name N]` block from an artifact: the

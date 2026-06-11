@@ -848,6 +848,14 @@ name_check :: proc(ctx: Check_Ctx, e: ^Name_Expr) -> (type: Type, err: Type_Erro
 			if value_type, typed := surface_value_type(e.name); typed {
 				return value_type, .None
 			}
+			// A bare name an import bound to a SIBLING user module's `let`
+			// constant (the dungeon's `import dungeon.{terrain}` seam handle):
+			// its declared type rides the typed index — the bare-name twin of
+			// the module-qualified const read (module_const_type), so a
+			// member-imported constant types exactly as its qualified spelling.
+			if const_type, is_cross := module_member_const_type(ctx.index, ctx.bindings, e.name); is_cross {
+				return const_type, .None
+			}
 		}
 		// A bare name an import bound to a SIBLING user module's fn is a
 		// function value exactly like the local-fn arm above — the form a
@@ -1041,7 +1049,14 @@ ctx_record_schema :: proc(ctx: Check_Ctx, name: string) -> (schema: Record_Schem
 	if record, declared := ctx.env.records[name]; declared {
 		return record, true
 	}
-	return module_record_schema(ctx.index, ctx.bindings, name)
+	if record, is_cross := module_record_schema(ctx.index, ctx.bindings, name); is_cross {
+		return record, true
+	}
+	// An imported STRUCTURAL stdlib record (engine.grid's Cell, §26): the
+	// stdlib's own `data` declaration, so construction, projection, `with`,
+	// and the cell-shape tests all read the same schema a user declaration
+	// would carry (surface_structural_record — no engine ground).
+	return surface_structural_record(ctx.bindings, name)
 }
 
 // field_member reads a member off a value's type: a user record's declared
@@ -1121,6 +1136,14 @@ record_check :: proc(ctx: Check_Ctx, e: ^Record_Expr) -> (type: Type, err: Type_
 		// imported from arena_world): the name binds as a sibling-module .Type_Name,
 		// so its field schema comes from the project-wide index, not the local env.
 		if record, declared := module_record_schema(ctx.index, ctx.bindings, e.type_name); declared {
+			user_record_check(ctx, e, record) or_return
+			return user_type_of(record.type_name, record.kind), .None
+		}
+		// An imported STRUCTURAL stdlib record literal (engine.grid's
+		// `Cell{x: 16, y: 9}`, §26): plain stdlib data, checked against the
+		// same schema a user declaration would carry and yielding the same
+		// nominal User_Type — no engine ground (surface_structural_record).
+		if record, is_structural := surface_structural_record(ctx.bindings, e.type_name); is_structural {
 			user_record_check(ctx, e, record) or_return
 			return user_type_of(record.type_name, record.kind), .None
 		}
@@ -1507,6 +1530,15 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "first":
 		t, fe := first_check(ctx, e)
 		return t, true, fe
+	case "last":
+		t, le := last_check(ctx, e)
+		return t, true, le
+	case "neighbors":
+		t, ne := neighbors_check(ctx, e)
+		return t, true, ne
+	case "in_bounds":
+		t, ie := in_bounds_check(ctx, e)
+		return t, true, ie
 	case "within":
 		t, we := spatial_combinator_check(ctx, e, true)
 		return t, true, we
@@ -1872,6 +1904,66 @@ first_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Err
 	}
 	combinator_check(ctx, e.args[1], {elem}, Ground_Type.Bool) or_return
 	return option_of(elem), .None
+}
+
+// last is last(list: [T]) -> Option[T] (the stdlib engine.list signature) —
+// first's one-argument form read from the other end, the warren's
+// drifted-route probe (`last(route.steps)`). The element type comes off the
+// source like every list combinator; there is no predicate form (the stdlib
+// declares exactly the one arity).
+last_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	elem, ok := source_element(source)
+	if !ok {
+		return nil, .Type_Mismatch
+	}
+	return option_of(elem), .None
+}
+
+// neighbors is neighbors(cell: Cell) -> [Cell] (§18 §4, stdlib engine.grid):
+// the four orthogonally adjacent cells. The argument must be cell-shaped (a
+// structural {x: Int, y: Int} record — the imported engine.grid Cell or the
+// user's own, the grid_cells discipline) or the nil unknown (a cell_of result
+// flows in untyped, like every structural Cell position), and the result is a
+// list of the SAME type, so the dungeon's `filter(neighbors(here), …)` folds
+// over the caller's cell type.
+neighbors_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	cell := expr_check(ctx, e.args[0]) or_return
+	if !cell_shaped_or_unknown(ctx, cell) {
+		return nil, .Type_Mismatch
+	}
+	return list_of(cell), .None
+}
+
+// in_bounds is in_bounds(cell: Cell, size: Cell) -> Bool (§18 §4, stdlib
+// engine.grid): whether a cell lies within a size.x×size.y grid. Both
+// positions are cell-shaped structural records or the nil unknown (the
+// grid_cells discipline); the verdict is the Bool ground.
+in_bounds_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	cell := expr_check(ctx, e.args[0]) or_return
+	size := expr_check(ctx, e.args[1]) or_return
+	if !cell_shaped_or_unknown(ctx, cell) || !cell_shaped_or_unknown(ctx, size) {
+		return nil, .Type_Mismatch
+	}
+	return Ground_Type.Bool, .None
+}
+
+// cell_shaped_or_unknown admits a cell position: a cell-shaped record
+// (is_cell_shaped) or the nil unknown — a §18 §4 query result (cell_of) or an
+// inference-untyped lambda parameter carrying no ground, the same tolerance
+// types_compatible grants every unknown (spec: the structural unknown unifies,
+// never fails closed at a structural position).
+cell_shaped_or_unknown :: proc(ctx: Check_Ctx, t: Type) -> bool {
+	return t == nil || is_cell_shaped(ctx, t)
 }
 
 // or_else is (Option[T], T) -> T (spec §26): it unwraps an Option to its element

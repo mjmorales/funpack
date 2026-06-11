@@ -344,3 +344,44 @@ test_int_compared_to_fixed_rejected :: proc(t: ^testing.T) {
 		"}\n")
 	testing.expect_value(t, err, Type_Error.Type_Mismatch)
 }
+
+// LAST_HEADER is the self-contained engine.list `last` surface: the Option
+// prelude, the combinator import, and a Cell record for typed elements (the
+// warren's `last(route.steps)` drifted-route probe, fixture-shaped).
+LAST_HEADER :: "import engine.prelude.{Option, or_else}\n" +
+	"import engine.list.last\n" +
+	"data Cell { x: Int, y: Int }\n"
+
+@(test)
+test_last_types_and_evaluates :: proc(t: ^testing.T) {
+	// AC (last, the stdlib engine.list signature): last(list) -> Option[T] —
+	// first's one-argument form read from the other end. Typing pins the
+	// Option[T] result and the stdlib's exactly-one arity (no predicate
+	// form); evaluation pins the final element and the empty-list None.
+	typed_source := LAST_HEADER +
+		"fn route_end(steps: [Cell], fallback: Cell) -> Cell {\n" +
+		"  return or_else(last(steps), fallback)\n" +
+		"}\n"
+	typed_ast, typed_parse := stage_parse(stage_lex(typed_source))
+	testing.expect_value(t, typed_parse, Parse_Error.None)
+	_, typed_err := stage_typecheck(typed_ast)
+	testing.expect_value(t, typed_err, Type_Error.None)
+
+	arity_source := LAST_HEADER +
+		"fn bad(steps: [Cell]) -> Bool {\n" +
+		"  return last(steps, fn(c) { return true })\n" +
+		"}\n"
+	arity_ast, arity_parse := stage_parse(stage_lex(arity_source))
+	testing.expect_value(t, arity_parse, Parse_Error.None)
+	_, arity_err := stage_typecheck(arity_ast)
+	testing.expect_value(t, arity_err, Type_Error.Type_Mismatch)
+
+	report, err := run_test_pipeline(LAST_HEADER +
+		"test \"last reads the final element, None when empty\" {\n" +
+		"  assert last([Cell{x: 1, y: 0}, Cell{x: 2, y: 0}]) == Option::Some(Cell{x: 2, y: 0})\n" +
+		"  assert last([]) == Option::None\n" +
+		"}\n")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}

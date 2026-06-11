@@ -229,17 +229,25 @@ Baked_Tile :: struct {
 
 // Baked_Tile_Layer is one lowered `tilemap` layer (spec §18 §3): the layer
 // name (also the seam's TilemapHandle constant name), the per-cell logical
-// size, the grid dimensions, the tile palette (the legend's tile binds in
-// LEGEND order, used or not — declaration order, never first-use order), and
-// the row-major per-cell palette indices. A cell with no tile — an `empty`
-// bind or a marker cell (a marker places an entity, it paints no terrain) —
-// carries TILE_LAYER_EMPTY_CELL. Markers are NOT here: they lower to the
-// spawn list like every placement.
+// size, the grid dimensions, the grid→world anchor, the tile palette (the
+// legend's tile binds in LEGEND order, used or not — declaration order, never
+// first-use order), and the row-major per-cell palette indices. A cell with no
+// tile — an `empty` bind or a marker cell (a marker places an entity, it
+// paints no terrain) — carries TILE_LAYER_EMPTY_CELL. Markers are NOT here:
+// they lower to the spawn list like every placement.
+//
+// anchor_x/anchor_y are the world point of the grid's TOP-LEFT corner —
+// (bounds_min.x, bounds_max.y), the same corner the marker/cell() lowering
+// anchors on (cell_center) — carried as authoritative v12 format data on the
+// [tilemaps] lead line (the tilemap-anchor ADR), so the runtime reproduces the
+// bake's mapping from the record alone for ANY level bounds.
 Baked_Tile_Layer :: struct {
 	name:      string,
 	cell_size: i64,
 	cols:      int,
 	rows:      int,
+	anchor_x:  Fixed, // world x of the grid's top-left corner (bounds_min.x)
+	anchor_y:  Fixed, // world y of the grid's top-left corner (bounds_max.y)
 	palette:   []Baked_Tile,
 	cells:     []int, // row-major palette index per cell; TILE_LAYER_EMPTY_CELL = no tile
 }
@@ -988,6 +996,12 @@ expand_tilemap :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, tilemap: Flvl_Til
 		cell_size = tilemap.cell_size,
 		cols      = cols,
 		rows      = rows,
+		// The grid→world anchor: the grid's top-left corner sits at
+		// (bounds_min.x, bounds_max.y) — the same corner cell_center anchors
+		// the marker/cell() lowering on, carried so the artifact's mapping is
+		// self-describing (v12, the tilemap-anchor ADR).
+		anchor_x  = bounds_min.x,
+		anchor_y  = bounds_max.y,
 		palette   = palette[:],
 		cells     = cells,
 	})

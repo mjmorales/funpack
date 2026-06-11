@@ -1,7 +1,7 @@
 // The §18 §3 baked tile layer, its §18 §4 query surface, and the §18 §4
 // SetTile tick-end application: the environment a tilemap's ASCII grid bakes
 // to, decoded from the artifact's [tilemaps] section (docs/artifact-format.md
-// §17, schema v11) into the Program, rendered BATCHED (one layer-level draw
+// §17, schema v12) into the Program, rendered BATCHED (one layer-level draw
 // command, never per-tile Draw::Sprite rows — render.odin), and queried
 // through the level seam's TilemapHandle (tile_at / solid_at / cell_of /
 // center_of, interp_call.odin → eval_tilemap_method here).
@@ -49,15 +49,11 @@ Tile_Def :: struct {
 //
 // `top_left` is the grid→world anchor: the world point of the grid's top-left
 // corner — the doc's `(bounds_min.x, bounds_max.y)` (§17: row 0 is the level's
-// TOP edge, col grows +x, row grows -y). The v11 record does NOT carry the
-// level bounds, so the loader DERIVES the anchor as (0, rows*cell_size) — the
-// grid's own extent anchored at the world origin — which is bit-identical to
-// the bake's marker/cell() mapping exactly when the grid spans the level
-// bounds from (0, 0), as every tilemap-carrying example does (dungeon 16×9×16
-// over (0,0)..(256,144), warren 16×12×8 over (0,0)..(128,96)). The anchor is
-// an explicit field (not re-derived per query) so the query kernel is general:
-// when the format grows an authoritative anchor carry, only the loader's
-// derivation changes. See load_tilemaps for the format-gap note.
+// TOP edge, col grows +x, row grows -y). The v12 lead line carries it as
+// authoritative format data (the tilemap-anchor ADR), so the loader READS it
+// — the record is self-describing for any level bounds, and the query kernel
+// stays anchor-general (the anchor is an explicit field, never re-derived per
+// query).
 Tile_Layer :: struct {
 	name:      string,
 	cell_size: i64, // per-cell logical size in integer world units (> 0)

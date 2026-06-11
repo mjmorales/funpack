@@ -1,4 +1,4 @@
-# funpack artifact format — v11
+# funpack artifact format — v12
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 11
+funpack-artifact 12
 ```
 
-- `schema_version` is the integer after the space (here `11`).
+- `schema_version` is the integer after the space (here `12`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -147,7 +147,18 @@ funpack-artifact 11
   cell (an `empty` legend bind or a marker cell; markers lower to the spawn
   machinery, never this section); (b) two new **sub-record keywords**, `tile`
   and `row`. A new section and new sub-record keywords are layout changes:
-  10 → 11.
+  10 → 11. v12 makes the tile-layer record **self-describing for any level
+  bounds**: the `[tilemaps]` lead line gains the **grid→world anchor** — the
+  world point of the grid's top-left corner, two raw Q32.32 `Fixed` fields
+  (§2.3) between `ROWS` and `PALETTE_COUNT` (`tilemap NAME CELL_SIZE COLS ROWS
+  ANCHOR_X ANCHOR_Y PALETTE_COUNT`). The bake emits it from the level bounds
+  (`bounds_min.x`, `bounds_max.y`) — the same corner the marker/`cell()`
+  lowering anchors on — and the runtime loader **reads** it instead of deriving
+  `(0, rows*CELL_SIZE)` (the v11 derivation, exact only for a grid spanning its
+  bounds from the origin), so §17's documented mapping is reproducible from the
+  record alone. A lead-line field is a layout change: 11 → 12. A level-less
+  artifact moves by the version stamp alone (the v7 stamp-only restamp
+  precedent).
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -400,7 +411,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 11
+funpack-artifact 12
 [meta 2]
 …
 [enums N]
@@ -984,16 +995,18 @@ node …
 
 ---
 
-## 17. `[tilemaps]` — baked tile layers (§18 §3, schema v11)
+## 17. `[tilemaps]` — baked tile layers (§18 §3, schema v12)
 
-One record per baked tilemap layer, in **level declaration order** (v11). A
+One record per baked tilemap layer, in **level declaration order** (a
+multi-level tree contributes its levels in sorted authoring-filename order,
+the §14.4 deterministic walk, each level's layers in declaration order). A
 layer is the static environment a `.flvl` tilemap's ASCII grid bakes to: the
 runtime renders it **batched** and collides against it — never per-tile
 `Draw::Sprite` (§18 §3). Spawn **markers are not here**: a marker lowers to the
 spawn machinery like every placement, so this section carries terrain only.
 
 ```
-tilemap NAME CELL_SIZE COLS ROWS PALETTE_COUNT
+tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y PALETTE_COUNT
 tile NAME SOLID
 …
 row C0 C1 … C{COLS-1}
@@ -1002,8 +1015,13 @@ row C0 C1 … C{COLS-1}
 
 - The lead line: `NAME` is the layer's authored name (also the level seam's
   `TilemapHandle` constant name); `CELL_SIZE` is the per-cell logical size in
-  integer world units; `COLS`/`ROWS` are the grid dimensions; `PALETTE_COUNT`
-  is the number of `tile` lines that follow.
+  integer world units; `COLS`/`ROWS` are the grid dimensions;
+  `ANCHOR_X`/`ANCHOR_Y` are the **grid→world anchor** — the world point of the
+  grid's top-left corner as two raw Q32.32 `Fixed` fields (§2.3), emitted by
+  the bake from the level bounds (`bounds_min.x`, `bounds_max.y`) and
+  **authoritative**: a reader takes the anchor as final, never re-derives it
+  from the grid's extent (v12); `PALETTE_COUNT` is the number of `tile` lines
+  that follow.
 - `tile NAME SOLID` is one palette entry: the project-global tile name and its
   §18 §2 **baked collision verdict** (`true`/`false`, §2.5) — the bake already
   resolved the name through the tileset table, so a reader takes both tokens
@@ -1013,12 +1031,12 @@ row C0 C1 … C{COLS-1}
   `COLS` space-separated cells: a decimal **palette index** (0-based into this
   record's `tile` lines) or `-` for a tile-less cell (an `empty` legend bind or
   a marker cell).
-- The grid→world mapping is fixed: the grid's top-left corner anchors at
-  `(bounds_min.x, bounds_max.y)`; cell `(col, row)`'s center is
-  `(bounds_min.x + col*CELL_SIZE + CELL_SIZE/2,
-  bounds_max.y - row*CELL_SIZE - CELL_SIZE/2)` — the same point the bake gave
-  the cell's markers and `cell()` anchors, so render, collision, and spawns
-  share one mapping.
+- The grid→world mapping reads the carried anchor: cell `(col, row)`'s center
+  is `(ANCHOR_X + col*CELL_SIZE + CELL_SIZE/2,
+  ANCHOR_Y - row*CELL_SIZE - CELL_SIZE/2)` — the same point the bake gave the
+  cell's markers and `cell()` anchors (the anchor IS `(bounds_min.x,
+  bounds_max.y)`), so render, collision, and spawns share one mapping, and the
+  record is self-describing for any level bounds.
 
 ---
 

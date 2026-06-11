@@ -1,25 +1,25 @@
-// The §18 §3/§4 tile-layer acceptance fixtures: the v11 [tilemaps] decode (the
-// populated-section flip from the prior fail-closed refusal, plus the named
-// malformed-record refusals the wave-2 review flagged as uncovered), the four
-// §18 §4 queries pinned to exact fixed-point values over hand-built layers
-// (including the dungeon-parity cells the bake hand-verified), the
-// TilemapHandle method dispatch through the interpreter, the BATCHED render
-// emission (one command per layer, never per-tile), and the digest fold's
-// determinism over a tile-layer-carrying draw-list.
+// The §18 §3/§4 tile-layer acceptance fixtures: the v12 [tilemaps] decode (the
+// populated-section flip, the named malformed-record refusal sweep, and the
+// v12 anchor read), the four §18 §4 queries pinned to exact fixed-point values
+// over hand-built layers (including the dungeon-parity cells the bake
+// hand-verified), the TilemapHandle method dispatch through the interpreter,
+// the BATCHED render emission (one command per layer, never per-tile), and the
+// digest fold's determinism over a tile-layer-carrying draw-list.
 package funpack_runtime
 
 import "core:testing"
 
 // --- fixtures ---------------------------------------------------------------
 
-// TILEMAP_FIXTURE_ARTIFACT is a minimal v11 artifact carrying exactly the
-// 4×3 layer funpack's emit_tilemap_test pins byte-for-byte (two palette
-// entries, the three cell classes: tile, tile-less, tile) — so the decode here
-// reads the same bytes the emitter is proven to produce.
+// TILEMAP_FIXTURE_ARTIFACT is a minimal v12 artifact carrying a 4×3 layer
+// with two palette entries and the three cell classes (tile, tile-less, tile)
+// — the same layer shape funpack's emit_tilemap_test pins byte-for-byte. The
+// lead line's anchor (0, 48·2^32) is the grid's top-left world corner the v12
+// carry makes authoritative.
 TILEMAP_FIXTURE_ARTIFACT ::
-	"funpack-artifact 11\n" +
+	"funpack-artifact 12\n" +
 	"[tilemaps 1]\n" +
-	"tilemap terrain 16 4 3 2\n" +
+	"tilemap terrain 16 4 3 0 206158430208 2\n" +
 	"tile wall true\n" +
 	"tile floor false\n" +
 	"row 0 0 0 0\n" +
@@ -27,8 +27,8 @@ TILEMAP_FIXTURE_ARTIFACT ::
 	"row 0 - 0 0\n"
 
 // fixture_layer hand-builds the same 4×3 layer the artifact fixture decodes
-// to — the query fixtures' direct subject (cell 16; top-left at (0, 48): the
-// grid's own extent anchored at the world origin).
+// to — the query fixtures' direct subject (cell 16; the carried anchor puts
+// the grid's top-left at world (0, 48)).
 fixture_layer :: proc() -> Tile_Layer {
 	palette := make([]Tile_Def, 2, context.temp_allocator)
 	palette[0] = Tile_Def{name = "wall", solid = true}
@@ -66,16 +66,16 @@ dungeon_layer :: proc() -> Tile_Layer {
 	}
 }
 
-// --- the v11 decode (the populated-section flip) ----------------------------
+// --- the v12 decode (the populated-section flip) ----------------------------
 
 @(test)
 test_load_tilemaps_populated_decodes :: proc(t: ^testing.T) {
 	// AC (decode): a POPULATED [tilemaps] section now loads — the prior
 	// fail-closed Malformed_Header refusal is replaced by the real decode —
 	// and every carried field lands exactly: name, cell size, dimensions,
-	// the legend-order palette with its baked solid verdicts, the row-major
-	// cells with `-` as TILE_CELL_EMPTY, and the derived (0, rows*cell)
-	// grid→world anchor.
+	// the v12 grid→world anchor READ off the lead line (never derived), the
+	// legend-order palette with its baked solid verdicts, and the row-major
+	// cells with `-` as TILE_CELL_EMPTY.
 	program, err := load_program(TILEMAP_FIXTURE_ARTIFACT, context.temp_allocator)
 	testing.expect_value(t, err, Artifact_Error.None)
 	testing.expect_value(t, len(program.tilemaps), 1)
@@ -103,7 +103,7 @@ test_load_tilemaps_populated_decodes :: proc(t: ^testing.T) {
 test_load_tilemaps_empty_section_still_loads :: proc(t: ^testing.T) {
 	// The `[tilemaps 0]` tail every level-less artifact emits keeps loading
 	// clean with zero layers (the pre-decode behavior, unchanged).
-	program, err := load_program("funpack-artifact 11\n[tilemaps 0]\n", context.temp_allocator)
+	program, err := load_program("funpack-artifact 12\n[tilemaps 0]\n", context.temp_allocator)
 	testing.expect_value(t, err, Artifact_Error.None)
 	testing.expect_value(t, len(program.tilemaps), 0)
 }
@@ -114,32 +114,34 @@ test_load_tilemaps_malformed_refused :: proc(t: ^testing.T) {
 	// .Bad_Field — the coverage the wave-2 reviewer flagged. Each case bends
 	// exactly one §17 shape rule of the well-formed fixture.
 	malformed := [?]string {
-		// lead line: wrong arity (missing PALETTE_COUNT)
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 4 3\ntile wall true\nrow 0 0 0 0\n",
+		// lead line: the retired v11 arity (no anchor fields)
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 4 3 2\ntile wall true\nrow 0 0 0 0\n",
+		// lead line: non-numeric anchor
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 y 1\ntile wall true\nrow 0 0\n",
 		// lead line: zero cell size (cell_of divides by it)
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 0 2 1 1\ntile wall true\nrow 0 0\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 0 2 1 0 0 1\ntile wall true\nrow 0 0\n",
 		// lead line: zero cols
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 0 1 1\ntile wall true\nrow\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 0 1 0 0 1\ntile wall true\nrow\n",
 		// lead line: non-numeric rows
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 x 1\ntile wall true\nrow 0 0\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 x 0 0 1\ntile wall true\nrow 0 0\n",
 		// sub-record run: a missing row line (declared ROWS=2, one present)
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 2 1\ntile wall true\nrow 0 0\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 2 0 0 1\ntile wall true\nrow 0 0\n",
 		// sub-record run: a surplus palette line (declared 1, two present)
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 1 1\ntile wall true\ntile floor false\nrow 0 0\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\ntile floor false\nrow 0 0\n",
 		// palette: a row line where a tile line is declared (the windows split positionally)
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 1 1\nrow 0 0\ntile wall true\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\nrow 0 0\ntile wall true\n",
 		// palette: non-bool SOLID
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 1 1\ntile wall yes\nrow 0 0\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall yes\nrow 0 0\n",
 		// palette: wrong arity (missing SOLID)
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 1 1\ntile wall\nrow 0 0\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall\nrow 0 0\n",
 		// row: wrong arity (one cell on a 2-col grid)
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 1 1\ntile wall true\nrow 0\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\nrow 0\n",
 		// row: a palette index past the declared palette
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 1 1\ntile wall true\nrow 0 1\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\nrow 0 1\n",
 		// row: a negative palette index (the `-` form is the only tile-less spelling)
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 1 1\ntile wall true\nrow 0 -2\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\nrow 0 -2\n",
 		// row: a non-numeric cell
-		"funpack-artifact 11\n[tilemaps 1]\ntilemap terrain 16 2 1 1\ntile wall true\nrow 0 z\n",
+		"funpack-artifact 12\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\nrow 0 z\n",
 	}
 	for artifact in malformed {
 		_, err := load_program(artifact, context.temp_allocator)
@@ -270,11 +272,10 @@ test_tilemap_dungeon_grid_parity :: proc(t: ^testing.T) {
 
 @(test)
 test_tilemap_kernel_general_over_anchor :: proc(t: ^testing.T) {
-	// The kernel is general over the anchor, not specialized to the loader's
-	// (0, rows*cell) derivation: a layer anchored at (-32, 16) answers the
-	// same doc formula exactly — center_of(0,0) = (-32 + 8, 16 - 8) — and the
-	// cell_of round trip holds, so an authoritative anchor carry needs only a
-	// loader change.
+	// The kernel is general over the anchor — the property the v12 carry
+	// rests on: a layer anchored at (-32, 16) answers the same doc formula
+	// exactly — center_of(0,0) = (-32 + 8, 16 - 8) — and the cell_of round
+	// trip holds, so any bounds the bake emits map faithfully.
 	layer := fixture_layer()
 	layer.top_left = Vec2{x = to_fixed(-32), y = to_fixed(16)}
 	center := tilemap_center_of(&layer, 0, 0)

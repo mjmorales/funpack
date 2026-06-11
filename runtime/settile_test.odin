@@ -126,7 +126,7 @@ test_settile_refusals_are_named :: proc(t: ^testing.T) {
 
 // --- the end-to-end command path (artifact → fold → next tick) ---------------
 
-// SETTILE_ARTIFACT is a hand-built v11 artifact over the 4×3 fixture layer:
+// SETTILE_ARTIFACT is a hand-built v12 artifact over the 4×3 fixture layer:
 // a control-stage `dig` on Digger returning one `SetTile{map: terrain,
 // cell: (1,1), tile: "wall"}` per tick (the dungeon's dig spelling as the
 // emitted node forest), and a `probe` on Prober writing `solid_at((1,1))`
@@ -134,7 +134,7 @@ test_settile_refusals_are_named :: proc(t: ^testing.T) {
 // the tick's ENTERING terrain, so it sees the dig's write exactly one tick
 // later. Section order follows the §3 contract (tilemaps after entrypoint,
 // the yard golden's order).
-SETTILE_ARTIFACT :: "funpack-artifact 11\n" +
+SETTILE_ARTIFACT :: "funpack-artifact 12\n" +
 	"[meta 2]\n" +
 	"project settile\n" +
 	"version L5:0.1.0\n" +
@@ -188,7 +188,7 @@ SETTILE_ARTIFACT :: "funpack-artifact 11\n" +
 	"[entrypoint 1]\n" +
 	"entrypoint main pipeline:Dig tick_hz:60 logical:160x120 bindings:bindings\n" +
 	"[tilemaps 1]\n" +
-	"tilemap terrain 16 4 3 2\n" +
+	"tilemap terrain 16 4 3 0 206158430208 2\n" +
 	"tile wall true\n" +
 	"tile floor false\n" +
 	"row 0 0 0 0\n" +

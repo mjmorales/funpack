@@ -42,10 +42,12 @@ Emit_Input :: struct {
 	// module game (every byte of pong/snake/hunt/yard is unchanged).
 	imported_fns: []Function_Record,
 	// tilemaps are the §18 §3 baked tile layers (flvl_bake.odin) the [tilemaps]
-	// section carries (docs/artifact-format.md §17, schema v11) — the static
-	// environment the runtime renders batched and collides against. Empty for a
-	// level-less game, which moves by the version stamp plus the constant
-	// `[tilemaps 0]` tail alone.
+	// section carries (docs/artifact-format.md §17, schema v12) — the static
+	// environment the runtime renders batched and collides against, each layer
+	// carrying its v12 grid→world anchor. The build verb threads them in from
+	// the tree's levels/*.flvl bake (emit_tree_artifact); empty for a level-less
+	// game, which moves by the version stamp plus the constant `[tilemaps 0]`
+	// tail alone.
 	tilemaps:     []Baked_Tile_Layer,
 }
 
@@ -88,7 +90,7 @@ stage_emit :: proc(
 	entrypoint_fcfg: string,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
-	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, allocator)
+	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, nil, allocator)
 }
 
 // stage_emit_indexed is the source → artifact seam typed against a project-wide
@@ -108,6 +110,12 @@ stage_emit :: proc(
 // present in this map, carries that fn's full record (signature + body) into
 // [functions] (collect_imported_fn_records). A nil/absent map (the single-source
 // stage_emit) carries nothing, so a one-module game's bytes are unchanged.
+//
+// tilemaps are the tree's §18 §3 baked tile layers (the levels/*.flvl bake the
+// build verb runs — bake_tree_tile_layers) threaded through to the artifact's
+// [tilemaps] section. Like every other input they are a pure function of the
+// tree, so emission stays pure; nil is the level-less default (the constant
+// `[tilemaps 0]` tail).
 stage_emit_indexed :: proc(
 	source: string,
 	module: string,
@@ -115,6 +123,7 @@ stage_emit_indexed :: proc(
 	entrypoint_fcfg: string,
 	index: Module_Index,
 	module_asts: map[string]Ast,
+	tilemaps: []Baked_Tile_Layer = nil,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -153,6 +162,7 @@ stage_emit_indexed :: proc(
 		project      = project,
 		entrypoint   = entrypoint,
 		imported_fns = collect_imported_fn_records(ast, module_asts),
+		tilemaps     = tilemaps,
 	}
 	return emit_artifact(input, allocator), .None
 }
@@ -1258,13 +1268,16 @@ index_directive_tag :: proc(kind: Index_Directive_Kind) -> string {
 // ───────────────────────────────────────────────────────────────────────────
 
 // emit_tilemaps writes one record per baked tile layer in level declaration
-// order (schema v11): the lead line `tilemap NAME CELL_SIZE COLS ROWS
-// PALETTE_COUNT`, then the palette's `tile NAME SOLID` lines (legend order,
-// each carrying its §18 §2 baked collision verdict), then ROWS `row` lines of
-// COLS space-separated cells — a decimal palette index or `-` for a tile-less
-// cell (an `empty` legend bind or a marker cell; markers ride the spawn
-// machinery, never this section). Every walk is slice-order over the baked
-// model, so two emissions are byte-identical.
+// order (schema v12): the lead line `tilemap NAME CELL_SIZE COLS ROWS
+// ANCHOR_X ANCHOR_Y PALETTE_COUNT` — the anchor is the world point of the
+// grid's top-left corner as two raw Q32.32 Fixed fields (§2.3), the v12
+// authoritative grid→world mapping datum (the tilemap-anchor ADR) — then the
+// palette's `tile NAME SOLID` lines (legend order, each carrying its §18 §2
+// baked collision verdict), then ROWS `row` lines of COLS space-separated
+// cells — a decimal palette index or `-` for a tile-less cell (an `empty`
+// legend bind or a marker cell; markers ride the spawn machinery, never this
+// section). Every walk is slice-order over the baked model, so two emissions
+// are byte-identical.
 emit_tilemaps :: proc(b: ^strings.Builder, layers: []Baked_Tile_Layer) {
 	emit_header(b, "tilemaps", len(layers))
 	for layer in layers {
@@ -1276,6 +1289,10 @@ emit_tilemaps :: proc(b: ^strings.Builder, layers: []Baked_Tile_Layer) {
 		strings.write_int(b, layer.cols)
 		strings.write_byte(b, ' ')
 		strings.write_int(b, layer.rows)
+		strings.write_byte(b, ' ')
+		strings.write_string(b, encode_fixed(layer.anchor_x, context.temp_allocator))
+		strings.write_byte(b, ' ')
+		strings.write_string(b, encode_fixed(layer.anchor_y, context.temp_allocator))
 		strings.write_byte(b, ' ')
 		strings.write_int(b, len(layer.palette))
 		emit_line(b, "")

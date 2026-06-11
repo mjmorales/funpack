@@ -1,12 +1,14 @@
-// The §18 §3 tile-layer artifact carry (schema v11, docs/artifact-format.md
+// The §18 §3 tile-layer artifact carry (schema v12, docs/artifact-format.md
 // §17): the [tilemaps] section — per layer a `tilemap NAME CELL_SIZE COLS ROWS
-// PALETTE_COUNT` lead line, `tile NAME SOLID` palette sub-records, and ROWS
-// `row …` cell lines — and the byte disciplines the bump rides on: a
-// layer-less project emits the constant `[tilemaps 0]` tail (every section
-// emits its header, §3), and the new `tile`/`row` sub-record keywords frame
-// under the funpack reader's lead-line discipline so every section count still
-// reconciles. The emit-side reader (parse_artifact) is the round-trip proof;
-// the loader-side decode is the runtime story's.
+// ANCHOR_X ANCHOR_Y PALETTE_COUNT` lead line (the anchor is the grid's
+// top-left world corner as raw Q32.32 Fixed, the v12 authoritative grid→world
+// mapping datum), `tile NAME SOLID` palette sub-records, and ROWS `row …` cell
+// lines — and the byte disciplines the carry rides on: a layer-less project
+// emits the constant `[tilemaps 0]` tail (every section emits its header, §3),
+// and the `tile`/`row` sub-record keywords frame under the funpack reader's
+// lead-line discipline so every section count still reconciles. The emit-side
+// reader (parse_artifact) is the round-trip proof; the loader-side decode is
+// the runtime loader's (artifact_load.odin).
 package funpack
 
 import "core:strings"
@@ -21,7 +23,10 @@ emit_tilemaps_section :: proc(layers: []Baked_Tile_Layer) -> string {
 }
 
 // tile_layer_fixture is the hand-built 4×3 layer the emission fixtures pin:
-// two palette entries and the three cell classes (tile, empty/marker, tile).
+// two palette entries, the three cell classes (tile, empty/marker, tile), and
+// a NONZERO v12 anchor — the grid's top-left at world (32, 48), i.e. a level
+// whose bounds do not start at the origin, the exact shape the anchor carry
+// exists for.
 tile_layer_fixture :: proc() -> []Baked_Tile_Layer {
 	palette := make([]Baked_Tile, 2, context.temp_allocator)
 	palette[0] = Baked_Tile{name = "wall", solid = true}
@@ -38,6 +43,8 @@ tile_layer_fixture :: proc() -> []Baked_Tile_Layer {
 		cell_size = 16,
 		cols      = 4,
 		rows      = 3,
+		anchor_x  = to_fixed(32),
+		anchor_y  = to_fixed(48),
 		palette   = palette,
 		cells     = cells,
 	}
@@ -46,14 +53,15 @@ tile_layer_fixture :: proc() -> []Baked_Tile_Layer {
 
 @(test)
 test_emit_tilemaps_record_bytes :: proc(t: ^testing.T) {
-	// AC (artifact carries the layer): the v11 record shape byte-exact — the
-	// lead line's dimensions/cell-size/palette-count, the `tile NAME SOLID`
-	// palette lines in legend order, and the row-major `row` lines with `-`
-	// for tile-less cells (the golden-emission discipline).
+	// AC (artifact carries the layer): the v12 record shape byte-exact — the
+	// lead line's dimensions/cell-size, the anchor as raw Q32.32 decimal
+	// (32·2^32 = 137438953472, 48·2^32 = 206158430208), the palette count, the
+	// `tile NAME SOLID` palette lines in legend order, and the row-major `row`
+	// lines with `-` for tile-less cells (the golden-emission discipline).
 	section := emit_tilemaps_section(tile_layer_fixture())
 	expected :=
 		"[tilemaps 1]\n" +
-		"tilemap terrain 16 4 3 2\n" +
+		"tilemap terrain 16 4 3 137438953472 206158430208 2\n" +
 		"tile wall true\n" +
 		"tile floor false\n" +
 		"row 0 0 0 0\n" +
@@ -80,12 +88,12 @@ test_tile_row_sub_records_frame_under_lead_line_reader :: proc(t: ^testing.T) {
 	testing.expect(t, is_sub_record_line("tile wall true"))
 	testing.expect(t, is_sub_record_line("row 0 - 1 -"))
 	doc_text :=
-		"funpack-artifact 11\n" +
+		"funpack-artifact 12\n" +
 		"[tilemaps 2]\n" +
-		"tilemap terrain 16 2 1 1\n" +
+		"tilemap terrain 16 2 1 0 68719476736 1\n" +
 		"tile wall true\n" +
 		"row 0 0\n" +
-		"tilemap canopy 16 2 1 1\n" +
+		"tilemap canopy 16 2 1 0 68719476736 1\n" +
 		"tile leaf false\n" +
 		"row - 0\n"
 	doc, err := parse_artifact(doc_text)
@@ -99,11 +107,11 @@ test_tile_row_sub_records_frame_under_lead_line_reader :: proc(t: ^testing.T) {
 @(test)
 test_emit_tilemaps_round_trips_through_reader :: proc(t: ^testing.T) {
 	// AC (emit-side round trip): the freshly-emitted section parses back
-	// through the funpack reader inside a v11 document — the declared count
+	// through the funpack reader inside a v12 document — the declared count
 	// reconciles against the lead-line discipline, so the bytes the runtime
 	// story will decode are well-formed by construction.
 	doc_text := strings.concatenate(
-		{"funpack-artifact 11\n", emit_tilemaps_section(tile_layer_fixture())},
+		{"funpack-artifact 12\n", emit_tilemaps_section(tile_layer_fixture())},
 		context.temp_allocator,
 	)
 	doc, err := parse_artifact(doc_text)

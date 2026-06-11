@@ -425,6 +425,14 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref, index
 		if engine, is_engine := engine_type_name(ref.name); is_engine {
 			return engine
 		}
+		// An imported STRUCTURAL stdlib record (engine.grid's `Cell { x, y }`,
+		// §26): plain data the stdlib declares as ordinary `data` syntax, so an
+		// annotation naming it resolves to the same nominal User_Type the
+		// user's own declaration would — no engine ground is minted (the
+		// grid_cells discipline; surface_structural_record).
+		if record, is_structural := surface_structural_record(bindings, ref.name); is_structural {
+			return user_type_of(record.type_name, record.kind)
+		}
 		// A name imported from a sibling user module (a `gate: Ref[Switch]`
 		// where Switch came from arena_world, a `hero: Ref[Player]` in a seam):
 		// resolve it to the same nominal User_Type the owning module would,

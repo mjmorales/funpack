@@ -311,6 +311,30 @@ module_call_signature :: proc(index: Module_Index, bindings: Bindings, name: str
 	return export.signature, true
 }
 
+// module_member_const_type resolves the declared type of a BARE imported
+// const reference — the member-import twin of module_const_type's
+// whole-module route. `import dungeon.{terrain}` binds `terrain` as a .Value
+// member of the seam module, and a bare `terrain` use types as the export's
+// resolved let type (the seam's TilemapHandle constant), exactly as the
+// module-qualified `assets.coin_sfx` read does. found = false for a name that
+// is not a member-imported user const (a stdlib .Value like pi falls to the
+// surface table; an unindexed module leaves the caller's miss arm standing).
+module_member_const_type :: proc(index: Module_Index, bindings: Bindings, name: string) -> (type: Type, found: bool) {
+	binding, bound := bindings.names[name]
+	if !bound || binding.kind != .Value {
+		return nil, false
+	}
+	entry, has_entry := module_index_lookup(index, binding.module)
+	if !has_entry {
+		return nil, false
+	}
+	export, exported := module_export_lookup(entry, name)
+	if !exported || export.kind != .Const {
+		return nil, false
+	}
+	return export.let_type, true
+}
+
 // module_const_type resolves the declared type of a module-qualified const
 // reference — the cross-module CONST surface a consumer reads to type
 // `assets.coin_sfx` (a whole-module `import assets` handle, then a `.coin_sfx`
