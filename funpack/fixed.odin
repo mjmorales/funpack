@@ -217,16 +217,37 @@ fixed_checked_div :: proc(a, b: Fixed) -> (quotient: Fixed, ok: bool) {
 }
 
 // fixed_from_decimal converts a literal's integer part and fractional
-// digits to Q32.32 bits, rounding to nearest (spec §10: deterministic
-// compile-time rounding). All-integer arithmetic — no float anywhere in
-// the path, so the bits are identical on every machine.
+// digits to Q32.32 bits, rounding to nearest with ties up (spec §10:
+// deterministic compile-time rounding). All-integer arithmetic — no float
+// anywhere in the path, so the bits are identical on every machine — and
+// exact for ANY digit count: the fraction's leading FIXED_FRACTION_BITS+1
+// bits are extracted by repeated decimal doubling (the carry out of the
+// digit array is the next bit, most significant first), so no intermediate
+// ever exceeds one decimal digit per position. The capture-to-test exporter
+// renders exact dyadic decimals up to 32 fractional digits; a fixed-width
+// numerator would overflow at ~29 (2^96 < numer·2^32), silently corrupting
+// a round-trip of those literals.
 fixed_from_decimal :: proc(int_part: i64, frac_digits: string) -> Fixed {
-	numer: u128 = 0
-	denom: u128 = 1
-	for ch in frac_digits {
-		numer = numer*10 + u128(ch - '0')
-		denom *= 10
+	stack: [64]u8
+	digits := stack[:min(len(frac_digits), len(stack))]
+	if len(frac_digits) > len(stack) {
+		digits = make([]u8, len(frac_digits), context.temp_allocator)
 	}
-	frac_bits := u64((numer << FIXED_FRACTION_BITS + denom/2) / denom)
+	for i in 0 ..< len(frac_digits) {
+		digits[i] = frac_digits[i] - '0'
+	}
+	// floor(x·2^33) for the decimal fraction x, one doubling per bit.
+	bits: u64 = 0
+	for _ in 0 ..< FIXED_FRACTION_BITS + 1 {
+		carry: u8 = 0
+		for i := len(digits) - 1; i >= 0; i -= 1 {
+			doubled := digits[i]*2 + carry
+			digits[i] = doubled % 10
+			carry = doubled / 10
+		}
+		bits = bits<<1 | u64(carry)
+	}
+	// Round half up off the extra bit: floor(x·2^32 + 1/2) = (floor(x·2^33)+1)>>1.
+	frac_bits := (bits + 1) >> 1
 	return Fixed((int_part << FIXED_FRACTION_BITS) + i64(frac_bits))
 }

@@ -23,6 +23,35 @@ test_fixed_from_decimal_rounds_to_nearest :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fixed_from_decimal_long_literal_boundary :: proc(t: ^testing.T) {
+	// The capture-to-test exporter renders exact dyadic Q32.32 decimals up
+	// to 32 fractional digits; these must round-trip to their exact bits
+	// (a fixed-width numerator overflows at ~29 digits, 2^96 < numer·2^32,
+	// so the boundary pins the digit-doubling kernel's exactness).
+	testing.expect_value(t, fixed_from_decimal(0, "00000000023283064365386962890625"), Fixed(1)) // 2^-32
+	testing.expect_value(t, fixed_from_decimal(0, "99999999976716935634613037109375"), Fixed(4294967295)) // (2^32-1)/2^32
+	testing.expect_value(t, fixed_from_decimal(1, "99999999976716935634613037109375"), Fixed(1 << 32 | 4294967295))
+}
+
+@(test)
+test_fixed_from_decimal_beyond_32_digits_rounds :: proc(t: ^testing.T) {
+	// Digits beyond the 32 dyadic places only steer rounding: 1.5·2^-32 (33
+	// digits) is the exact tie and rounds up; one ulp-of-decimal below it
+	// rounds down; 2^-33 (the half of one fraction bit) ties up to 1.
+	testing.expect_value(t, fixed_from_decimal(0, "000000000349245965480804443359375"), Fixed(2))
+	testing.expect_value(t, fixed_from_decimal(0, "0000000003492459654808044433593749999"), Fixed(1))
+	testing.expect_value(t, fixed_from_decimal(0, "000000000116415321826934814453125"), Fixed(1))
+}
+
+@(test)
+test_fixed_from_decimal_past_stack_buffer :: proc(t: ^testing.T) {
+	// A fraction longer than the 64-digit stack buffer takes the allocated
+	// path and stays exact: 0.5 followed by a tail of zeros is still 2^31.
+	long_half := "5" + "0000000000000000000000000000000000000000000000000000000000000000000000"
+	testing.expect_value(t, fixed_from_decimal(0, long_half), Fixed(1 << 31))
+}
+
+@(test)
 test_fixed_add_saturates_at_rails :: proc(t: ^testing.T) {
 	testing.expect_value(t, fixed_add(FIXED_MAX, to_fixed(1)), FIXED_MAX)
 	testing.expect_value(t, fixed_sub(FIXED_MIN, to_fixed(1)), FIXED_MIN)
