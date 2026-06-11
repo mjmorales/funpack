@@ -12,17 +12,15 @@
 // resolves through the resolve_spec_dir env-override/SKIP-warn protocol — a
 // skipped golden warns loudly, never silently passes.
 //
-// The stdlib sweep covers the PARSEABLE subset of stdlib/engine/*.fun and
-// pins both counts exactly (the golden-count discipline: when the spec or the
-// grammar evolves, the pins change in lockstep — never loosened to ranges).
-// The one non-parsing file is a KNOWN gap: grid.fun names a parameter with
-// the RESERVED keyword `fn` (`fn: fn(Int, Int) -> Cell`) — a spec-side
-// contradiction (fun.ll1.md §2 reserves `fn`; fun.ebnf §7 Param ::=
-// LOWER_IDENT), held fail-closed on a spec-repo task — its SKIP names the
-// file loudly; the fix is a spec rename, not a formatter workaround. The
-// rest of the once-gapped §05/§03/§02 surface (escaped string quotes,
-// generic declaration headers, function-typed parameters, and @doc on enum
-// variants) IS admitted.
+// The stdlib sweep is TOTAL: every stdlib/engine/*.fun file is grammar-
+// admitted, and both counts are pinned exactly (the golden-count discipline:
+// when the spec or the grammar evolves, the pins change in lockstep — never
+// loosened to ranges). The once-gapped surface is all admitted — escaped
+// string quotes, generic declaration headers, function-typed parameters,
+// @doc on enum variants, and grid.fun, whose reserved-keyword parameter name
+// (`fn`, contradicting fun.ll1.md §2 / fun.ebnf §7) was renamed `builder`
+// spec-side; `fn` itself stays reserved in name position
+// (parser_test.odin test_parse_fn_keyword_param_name_rejected).
 package funpack
 
 import "core:log"
@@ -47,12 +45,12 @@ STDLIB_SURFACE_FILE_COUNT :: 22
 // world.fun; §02 §3 function-typed parameters to 14 — list.fun; lexical-core
 // §4 escaped string quotes to 19 — model.fun, nav.fun, prelude.fun,
 // string.fun, ui.fun; §05 §1 @doc on enum variants to 21 — render.fun,
-// render3.fun. The ONE still gapped: grid.fun parses its fn-typed param fine
-// but NAMES that parameter with the reserved keyword `fn` (fun.ll1.md §2), a
-// spec-side contradiction held fail-closed on a spec-repo task (pinned in
-// parser_test.odin test_parse_fn_keyword_param_name_rejected). When the spec
-// renames grid.fun's parameter, this pin rises in lockstep.
-STDLIB_PARSEABLE_FILE_COUNT :: 21
+// render3.fun; the spec-side rename of grid.fun's reserved-keyword parameter
+// (`fn` -> `builder`, resolving the fun.ll1.md §2 / fun.ebnf §7
+// contradiction at its source) to 22 — grid.fun. The sweep is TOTAL: this
+// pin equals STDLIB_SURFACE_FILE_COUNT, and a divergence means a residual
+// grammar gap — a hard failure, never a silent exclusion.
+STDLIB_PARSEABLE_FILE_COUNT :: 22
 
 // resolve_stdlib_dir resolves the stdlib surface tree (env override, else
 // the sibling checkout), mirroring the per-example resolvers.
@@ -160,11 +158,12 @@ test_golden_fmt_ten_example_idempotence_sweep :: proc(t: ^testing.T) {
 @(test)
 test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 	// The stdlib surface files, swept per-file (they are bare modules, not §14
-	// trees): every file the grammar admits must render canonically such that
-	// the rendering re-parses to an equivalent AST, renders idempotently, and
-	// projects byte-identically across two independent passes. Both the total
-	// and the parseable count are pinned exactly; a non-parsing file is the
-	// named grammar gap, SKIP-logged per file, never silent.
+	// trees): every file must parse, render canonically such that the
+	// rendering re-parses to an equivalent AST, render idempotently, and
+	// project byte-identically across two independent passes. Both pins hold
+	// at the same value — the sweep is total, so a non-parsing file is a hard
+	// failure named per file, never a silent exclusion; only an absent
+	// checkout SKIPs, loudly.
 	dir := resolve_stdlib_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP golden fmt stdlib: %s not found — set FUNPACK_STDLIB_DIR or check out funpack-spec as a sibling", dir)
@@ -190,11 +189,11 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 			continue
 		}
 		ast, parse_err := stage_parse(stage_lex(string(bytes)))
+		testing.expect_value(t, parse_err, Parse_Error.None)
 		if parse_err != .None {
-			// The named gap: grid.fun's reserved-keyword parameter name `fn`
-			// — a spec-side contradiction held fail-closed on a spec-repo
-			// task. Loud per-file, counted by the pin below.
-			log.warnf("SKIP golden fmt stdlib %s: %v — outside the parser-admitted §02 surface", filepath.base(path), parse_err)
+			// A residual grammar gap — the sweep is total, so this is a
+			// FAILURE, named loudly per file and counted by the pin below.
+			log.errorf("golden fmt stdlib %s: %v — outside the parser-admitted §02 surface", filepath.base(path), parse_err)
 			continue
 		}
 		canonical := render_canonical(ast, context.temp_allocator)
@@ -213,5 +212,5 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 		formatted_count += 1
 	}
 	testing.expect_value(t, formatted_count, STDLIB_PARSEABLE_FILE_COUNT)
-	log.infof("golden fmt stdlib: %d of %d surface files are parser-admitted and fmt-idempotent; the one remainder is grid.fun's reserved-keyword param name (spec-side, held fail-closed)", formatted_count, len(paths))
+	log.infof("golden fmt stdlib: all %d of %d surface files are parser-admitted and fmt-idempotent — the sweep is total", formatted_count, len(paths))
 }
