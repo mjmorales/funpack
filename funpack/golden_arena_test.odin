@@ -275,21 +275,25 @@ test_golden_arena_inline_tests_pass :: proc(t: ^testing.T) {
 		return
 	}
 
-	// The funpack-evaluable arena asserts pass. arena_game carries SIX asserts the
+	// The funpack-evaluable arena asserts pass. arena_game carries SEVEN asserts the
 	// funpack evaluator owns end-to-end — the pure-numeric `step_to` snap, the
 	// `gate_open(Option::None) == false` shut case, the two
 	// `gate_open(Option::Some(Switch{…}))` cases (true while on, false while off)
 	// whose CROSS-MODULE Switch record construction the evaluator materializes
-	// via the hud integration's eval_module_record arm, and the two
+	// via the hud integration's eval_module_record arm, the two
 	// `nearest_player` cases (eval_or_else makes the fold-then-or_else default
 	// shape funpack-evaluable end-to-end, so the pin counts them — the same
-	// lockstep the hud integration's 2 → 4 move followed); the
-	// remaining asserts exercise engine-value execution (View.resolve,
-	// Nav.of/.advance) the runtime owns, so they are not the funpack evaluator's to
-	// pass (the yard split). The count is pinned EXACTLY: a regression that drops a
-	// funpack-evaluable assert, or that mis-evaluates one, moves this number — never
-	// loosen it to a range.
-	testing.expect_value(t, report.passed, 6)
+	// lockstep the hud integration's 2 → 4 move followed), AND the `chase advances`
+	// case: the Nav_Value funpack-eval arm lifted Nav.of/.path/.advance from
+	// runtime-owned to funpack-evaluable, so the whole AI fold now runs in the
+	// evaluator and its `step_to` lands `(delta * speed) / d` through the Vec2/Fixed
+	// div kernel — `((10,0) * 0.8) / 10 == (0.8, 0)`, exact (the 6 → 7 move follows
+	// the same boundary-shift lockstep). The remaining asserts exercise engine-value
+	// execution (View.resolve) the runtime owns, so they are not the funpack
+	// evaluator's to pass (the yard split). The count is pinned EXACTLY: a regression
+	// that drops a funpack-evaluable assert, or that mis-evaluates one, moves this
+	// number — never loosen it to a range.
+	testing.expect_value(t, report.passed, 7)
 	log.infof(
 		"golden arena: project compiles end-to-end; the %d funpack-evaluable inline asserts pass (engine-value asserts are the runtime's, per the yard split)",
 		report.passed,

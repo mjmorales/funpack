@@ -24,6 +24,19 @@ test_vec_dot_cross_length :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_vec2_div_by_fixed_round_toward_zero :: proc(t: ^testing.T) {
+	// §10: Vec2 / Fixed divides each lane through the same round-toward-zero
+	// fixed_div kernel vec2_scale uses for mul — step_to's `(delta * speed) / d`.
+	// (10,0) / 10.0 == (1.0, 0) exactly, lane-for-lane.
+	v := Vec2_Value{x = to_fixed(10), y = to_fixed(0)}
+	testing.expect_value(t, vec2_div(v, to_fixed(10)), Vec2_Value{x = to_fixed(1), y = to_fixed(0)})
+	// Mul-then-div round-trips the reordered form: (delta * speed) / speed.
+	delta := Vec2_Value{x = to_fixed(3), y = to_fixed(4)}
+	speed := to_fixed(2)
+	testing.expect_value(t, vec2_div(vec2_scale(delta, speed), speed), delta)
+}
+
+@(test)
 test_quat_identity_laws :: proc(t: ^testing.T) {
 	v := Vec3_Value{x = to_fixed(1), y = to_fixed(2), z = to_fixed(3)}
 	testing.expect_value(t, quat_rotate(QUAT_IDENTITY, v), v)
