@@ -27,7 +27,11 @@
 //   - data/enum/signal bodies are single-line (`data Board { w: Fixed, h:
 //     Fixed }`); thing/singleton bodies are multiline with the type column
 //     aligned to the longest field name; pipeline stages are multiline with
-//     the value column aligned to the longest stage name.
+//     the value column aligned to the longest stage name. The one enum
+//     exception: an enum any of whose variants carries a §05 §1 @doc renders
+//     multiline (the thing/singleton mold), each doc line above its variant —
+//     a doc line cannot sit inside a single-line body, and a doc-less enum
+//     keeps the single-line corpus rendering unchanged.
 //   - Record literals are tight (`Vec2{x: v.x}`); `with` updates are spaced
 //     (`self with { y: v }`); declaration braces are spaced (`{ w: Fixed }`).
 //   - Expressions render on one line — separators normalize to `, `, member
@@ -303,7 +307,12 @@ fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
 
 // fmt_enum writes `enum Name { A, B(T), C{f: T} }` single-line, with the
 // optional §03 §3 generic header and the optional enum-as-role `: Kind`
-// ascription, in the fun.ebnf §4 declaration order.
+// ascription, in the fun.ebnf §4 declaration order. An enum any of whose
+// variants carries a §05 §1 @doc renders multiline instead (the
+// thing/singleton mold): one variant per line, comma-terminated except the
+// last, each doc-carrying variant's `@doc("…")` line above it at the same
+// indent — a doc line cannot sit inside the single-line body, and the
+// doc-less rendering stays untouched so the existing corpus does not reshape.
 fmt_enum :: proc(b: ^strings.Builder, decl: Enum_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "enum ")
@@ -315,6 +324,30 @@ fmt_enum :: proc(b: ^strings.Builder, decl: Enum_Node) {
 	}
 	if len(decl.variants) == 0 {
 		strings.write_string(b, " {}\n")
+		return
+	}
+	any_variant_doc := false
+	for variant in decl.variants {
+		if variant.doc != "" {
+			any_variant_doc = true
+			break
+		}
+	}
+	if any_variant_doc {
+		strings.write_string(b, " {\n")
+		for variant, i in decl.variants {
+			if variant.doc != "" {
+				strings.write_string(b, FMT_INDENT)
+				fmt_doc_line(b, variant.doc)
+			}
+			strings.write_string(b, FMT_INDENT)
+			fmt_variant_decl(b, variant)
+			if i < len(decl.variants) - 1 {
+				strings.write_string(b, ",")
+			}
+			strings.write_string(b, "\n")
+		}
+		strings.write_string(b, "}\n")
 		return
 	}
 	strings.write_string(b, " { ")

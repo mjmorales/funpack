@@ -95,7 +95,10 @@ Field_Decl :: struct {
 // Variant_Decl is one enum variant (spec §03 §2): plain (`Left`),
 // tuple-payload (`MoveTo(Vec2)`), or struct-payload (`Rgb{ r: Fixed, … }`).
 // The payload shape is the closed Variant_Payload tag; tuple args live in
-// `tuple`, struct fields in `fields`.
+// `tuple`, struct fields in `fields`. doc is the variant's §05 §1 @doc — the
+// ONE directive a variant admits (§05: "each `Draw` variant carries a @doc";
+// every other directive names a non-variant target, so parse_enum rejects it
+// with a keyed wrong-target verdict); "" when the variant carries none.
 Variant_Payload :: enum {
 	Plain,  // `Variant`
 	Tuple,  // `Variant(T, …)`
@@ -107,6 +110,7 @@ Variant_Decl :: struct {
 	payload: Variant_Payload,
 	tuple:   []Type_Ref,    // Tuple payload: positional types
 	fields:  []Field_Decl,  // Struct payload: named fields
+	doc:     string,        // §05 §1 variant-level @doc; "" when absent
 }
 
 // Param_Decl is one `name: Type` parameter of a fn or the reserved
@@ -471,6 +475,7 @@ Parse_Error :: enum {
 	Malformed_Type_Params, // a §03 §3 generic declaration header whose `[…]` matches none of the TypeParams forms (fun.ebnf §4: '[' UPPER_IDENT (',' UPPER_IDENT)* ']') — empty brackets, a non-identifier parameter, a trailing comma, or a missing `]` between parameters; the one casing-class deviation (a lowercase parameter name) keeps the parser-wide Wrong_Case verdict, the Malformed_Index_Path mold
 	Malformed_Fn_Type,     // a §02 §3 function type whose shape matches none of the FnType form (fun.ebnf §11: 'fn' '(' (Type (',' Type)*)? ')' '->' Type) — a missing `(` after `fn`, a trailing comma or non-type parameter, a missing `)`/comma between parameters, or a missing `->` before the result; an element type's OWN errors keep their verdicts (a lowercase name stays Wrong_Case), the Malformed_Type_Params mold
 	Malformed_String_Escape, // a string literal whose backslash escape is outside the closed lexical-core §4 set (`\"` `\{` `\}`) — an unknown escape character, or a trailing backslash at line/input end; the lexer marks the literal (Token_Kind.Malformed_Escape) and advance names the verdict centrally, so every string position reports it; an UNTERMINATED string keeps its existing Unexpected_Token verdict — the Malformed_Fn_Type mold
+	Variant_Directive_Wrong_Target, // a declaration-family directive (@gtag/@todo/@expose/a debug probe) prefixing an enum variant — §05 admits exactly @doc on a variant ("each `Draw` variant carries a @doc"); every other directive names a non-variant target — or a variant @doc left dangling with no variant to attach to; @migrate and @index/@spatial on a variant keep their directive-keyed Migrate_Wrong_Target / Index_Wrong_Target verdicts — the Migrate_Wrong_Target mold
 }
 
 Parser :: struct {
@@ -1420,7 +1425,14 @@ parse_field_list :: proc(p: ^Parser, allow_migrate := false) -> (fields: []Field
 // { … }`) and the optional enum-as-role kind ascription `enum Steer: Axis
 // { … }` (§03 §4), in the fun.ebnf §4 order (EnumDecl ::= 'enum' UPPER_IDENT
 // TypeParams? KindAsc? '{' … '}'). Variants are UpperCamel, newline- or
-// comma-separated.
+// comma-separated, and a variant may carry a §05 §1 @doc prefix (on its own
+// line or inline before the variant), consumed by the variant that follows it
+// — the field-level @migrate carry mold. @doc is the ONE directive §05 admits
+// on a variant ("each `Draw` variant carries a @doc"); any other directive in
+// variant position is a keyed wrong-target verdict: @migrate and
+// @index/@spatial keep their directive-keyed verdicts, the rest of the
+// declaration family is Variant_Directive_Wrong_Target — never a silently
+// dropped annotation.
 parse_enum :: proc(p: ^Parser) -> (node: Enum_Node, err: Parse_Error) {
 	// `enum` is a contextual keyword (Ident); the by-text dispatch already
 	// verified the text, so consume the opener as an Ident here.
@@ -1431,10 +1443,59 @@ parse_enum :: proc(p: ^Parser) -> (node: Enum_Node, err: Parse_Error) {
 	expect(p, .L_Brace) or_return
 	skip_field_separators(p)
 	variants := make([dynamic]Variant_Decl, 0, 8, context.temp_allocator)
-	for peek_kind(p) == .Ident {
+	pending_doc := ""
+	has_pending_doc := false
+	for {
+		if peek_kind(p) == .At {
+			p.pos += 1
+			directive := expect(p, .Ident) or_return
+			switch directive.text {
+			case "doc":
+				expect(p, .L_Paren) or_return
+				str := expect(p, .String_Lit) or_return
+				expect(p, .R_Paren) or_return
+				// Last-wins on repetition, the decl-level @doc semantics; the
+				// directive may sit on its own line above its variant, so only
+				// newlines are skipped (commas stay variant separators).
+				pending_doc = str.text
+				has_pending_doc = true
+				skip_newlines(p)
+			case "migrate":
+				// The schema-evolution channel targets data fields and renamed
+				// type declarations (spec §05 §6), never a variant — the
+				// directive-keyed verdict, mirroring parse_field_list.
+				return node, .Migrate_Wrong_Target
+			case "index", "spatial":
+				// §08 §3 places the data-plane index requirement on a `query`
+				// declaration only — the directive-keyed verdict.
+				return node, .Index_Wrong_Target
+			case "gtag", "todo", "expose", "break", "log", "watch", "trace":
+				// Well-formed declaration-family directives §05 admits on
+				// declarations but NOT on a variant (a variant is not a decl
+				// record — it carries no index entry to label, note, or
+				// publish, and no step to probe).
+				return node, .Variant_Directive_Wrong_Target
+			case:
+				// Outside the closed §05 directive set entirely — the generic
+				// token error, matching parse_directive's default arm.
+				return node, .Unexpected_Token
+			}
+			continue
+		}
+		if peek_kind(p) != .Ident {
+			break
+		}
 		variant := parse_variant(p) or_return
+		variant.doc = pending_doc
+		pending_doc = ""
+		has_pending_doc = false
 		append(&variants, variant)
 		skip_field_separators(p)
+	}
+	if has_pending_doc {
+		// A @doc with no variant following it documents nothing — dangling at
+		// the body's close is the wrong-target verdict (the @migrate mold).
+		return node, .Variant_Directive_Wrong_Target
 	}
 	expect(p, .R_Brace) or_return
 	return Enum_Node{name = name, kind = kind, type_params = type_params, variants = variants[:], line = enum_tok.line}, .None

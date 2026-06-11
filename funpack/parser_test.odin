@@ -330,6 +330,127 @@ test_parse_enum_payload_variants :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(e.variants[2].fields), 2)
 }
 
+// ── §05 §1 @doc on enum variants ──────────────────────────────────────────────
+// A variant admits exactly @doc ("each `Draw` variant carries a @doc" —
+// fun.ebnf §4 Variant ::= Directive* UPPER_IDENT VariantPayload?); the carry is
+// Variant_Decl.doc. Every other directive in variant position is a keyed
+// wrong-target verdict: @migrate/@index/@spatial keep their directive-keyed
+// verdicts, the rest of the declaration family is
+// Variant_Directive_Wrong_Target — the @migrate Migrate_Wrong_Target mold.
+
+@(test)
+test_parse_variant_doc_carried :: proc(t: ^testing.T) {
+	// The stdlib render.fun shape: each @doc on its own line above its variant
+	// (struct, tuple, and plain payloads), the enum's own @doc untouched, and a
+	// doc-less variant carrying "".
+	source := "@doc(\"A 2D draw command.\")\n" +
+		"enum Draw {\n" +
+		"  @doc(\"A filled rectangle.\")\n" +
+		"  Rect{ at: Vec2, color: Color },\n" +
+		"  @doc(\"A move-to op.\")\n" +
+		"  MoveTo(Vec2),\n" +
+		"  Close\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	if err != .None {
+		return
+	}
+	e := ast.enums[0]
+	testing.expect_value(t, e.doc, "A 2D draw command.")
+	testing.expect_value(t, len(e.variants), 3)
+	testing.expect_value(t, e.variants[0].doc, "A filled rectangle.")
+	testing.expect_value(t, e.variants[0].payload, Variant_Payload.Struct)
+	testing.expect_value(t, e.variants[1].doc, "A move-to op.")
+	testing.expect_value(t, e.variants[1].payload, Variant_Payload.Tuple)
+	testing.expect_value(t, e.variants[2].doc, "")
+	testing.expect_value(t, e.variants[2].payload, Variant_Payload.Plain)
+}
+
+@(test)
+test_parse_variant_doc_inline :: proc(t: ^testing.T) {
+	// The grammar puts no line break between a variant's directives and its
+	// name (fun.ebnf §4), so the inline spelling parses too — attached to the
+	// variant that follows, the field-level inline-@migrate mold.
+	source := "enum Side { @doc(\"The left side.\") Left, Right }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	if err != .None {
+		return
+	}
+	e := ast.enums[0]
+	testing.expect_value(t, len(e.variants), 2)
+	testing.expect_value(t, e.variants[0].doc, "The left side.")
+	testing.expect_value(t, e.variants[1].doc, "")
+}
+
+@(test)
+test_parse_variant_gtag_rejected :: proc(t: ^testing.T) {
+	// @gtag labels an indexed declaration (spec §05 §1); a variant is not a
+	// decl record, so a variant-position @gtag is the named wrong-target
+	// verdict, never a silently dropped label.
+	source := "enum Side { @gtag(\"side\") Left, Right }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
+}
+
+@(test)
+test_parse_variant_todo_rejected :: proc(t: ^testing.T) {
+	// @todo notes are index-recorded per declaration (spec §05 §2, §29 §2) —
+	// no variant target exists.
+	source := "enum Side {\n  @todo(\"rename\", T-0042)\n  Left\n}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
+}
+
+@(test)
+test_parse_variant_probe_rejected :: proc(t: ^testing.T) {
+	// The §05 §5 debug probes observe declarations and fields (fun.ebnf §1
+	// Annotation positions), never a variant — the Variant production admits
+	// Directive*, not Annotation*, so a probe there is wrong-target.
+	source := "enum Side { @log(side) Left, Right }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
+}
+
+@(test)
+test_parse_variant_expose_rejected :: proc(t: ^testing.T) {
+	// @expose publishes a DECLARATION into the external contract (spec §05
+	// §4); a variant ships with its enum, so a variant-level @expose is
+	// wrong-target.
+	source := "enum Side { @expose Left, Right }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
+}
+
+@(test)
+test_parse_variant_migrate_rejected :: proc(t: ^testing.T) {
+	// @migrate keeps its directive-keyed verdict on a variant — the
+	// schema-evolution channel targets data fields and renamed type
+	// declarations only (spec §05 §6), mirroring the field-body rejection.
+	source := "enum Side { @migrate(from: \"L\") Left, Right }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
+}
+
+@(test)
+test_parse_variant_index_rejected :: proc(t: ^testing.T) {
+	// @index/@spatial keep their directive-keyed verdict on a variant — §08
+	// §3 places the index requirement on a `query` declaration only.
+	source := "enum Side { @index(Enemy.cell) Left, Right }\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Index_Wrong_Target)
+}
+
+@(test)
+test_parse_variant_doc_dangling_rejected :: proc(t: ^testing.T) {
+	// A @doc with no variant following it documents nothing — dangling at the
+	// body's close is the wrong-target verdict (the dangling-@migrate mold).
+	source := "enum Side {\n  Left\n  @doc(\"nothing follows\")\n}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
+}
+
 // fun.ll1.md §2 classifies `thing`/`singleton`/`data`/`enum`/`on` as CONTEXTUAL
 // keywords: a keyword only where it opens a module-level declaration (or, for
 // `on`, separates a behavior header), an ordinary §02 snake_case value name

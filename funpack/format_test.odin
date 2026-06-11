@@ -85,6 +85,37 @@ test_fmt_data_enum_signal_single_line :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fmt_enum_variant_doc_multiline :: proc(t: ^testing.T) {
+	// An enum any of whose variants carries a §05 §1 @doc renders multiline
+	// (the thing/singleton mold): one variant per line, comma-terminated
+	// except the last, each doc line above its variant at the same indent;
+	// struct payloads keep the tight-brace spelling; an inline-doc spelling
+	// normalizes onto its own line. Idempotence (fmt(fmt(x)) == fmt(x)) rides
+	// expect_canonical's third leg.
+	source := "@doc(\"A 2D draw command.\")\n" +
+		"enum Draw { @doc(\"A filled rectangle.\") Rect{ at: Vec2, color: Color }, @doc(\"A move-to op.\") MoveTo(Vec2), Close }\n"
+	expected := "@doc(\"A 2D draw command.\")\n" +
+		"enum Draw {\n" +
+		"  @doc(\"A filled rectangle.\")\n" +
+		"  Rect{at: Vec2, color: Color},\n" +
+		"  @doc(\"A move-to op.\")\n" +
+		"  MoveTo(Vec2),\n" +
+		"  Close\n" +
+		"}\n"
+	expect_canonical(t, source, expected)
+}
+
+@(test)
+test_fmt_enum_docless_stays_single_line :: proc(t: ^testing.T) {
+	// The doc-less enum keeps the single-line canonical rendering — the
+	// variant-doc multiline form must NOT reshape the existing corpus — even
+	// when authored multiline, and even beside a doc-carrying sibling.
+	source := "enum Side {\n  Left\n  Right\n}\n\nenum Flip {\n  @doc(\"Mirror on X.\")\n  X\n  None\n}\n"
+	expected := "enum Side { Left, Right }\n\nenum Flip {\n  @doc(\"Mirror on X.\")\n  X,\n  None\n}\n"
+	expect_canonical(t, source, expected)
+}
+
+@(test)
 test_fmt_thing_alignment_and_defaults :: proc(t: ^testing.T) {
 	// thing/singleton bodies render multiline with the type column aligned to
 	// the longest field name, defaults trailing unaligned.
@@ -595,7 +626,9 @@ migrate_equiv :: proc(a: Migrate_Node, a_has: bool, b: Migrate_Node, b_has: bool
 }
 
 variant_decl_equiv :: proc(a, b: Variant_Decl) -> bool {
-	if a.name != b.name || a.payload != b.payload {
+	// The §05 §1 variant-level @doc is AST content (the sole documentation
+	// channel — a dropped doc is silent data loss), compared like the name.
+	if a.name != b.name || a.payload != b.payload || a.doc != b.doc {
 		return false
 	}
 	if len(a.tuple) != len(b.tuple) {
