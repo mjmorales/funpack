@@ -336,7 +336,7 @@ write_source_value :: proc(
 		}
 		strings.write_string(b, ")")
 		return ""
-	case Ref, Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+	case Ref, Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		return fmt.aprintf("captured value has no funpack source literal: %v", value, allocator = allocator)
 	}
 	return "captured value has no funpack source literal: nil"

@@ -268,6 +268,16 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 		   is_ctor {
 			return ctor, true
 		}
+		// The §12 fixture nav builders `Nav.of(route)` / `Nav.fail(err)` are
+		// TYPE-NAME static constructors that take one arg — intercepted here (before
+		// the `Nav` name is evaluated as a local, which would fail-closed) the same
+		// way Audio.track is. They build the Nav_Value FIXTURE arm a behavior test
+		// queries; the ENGINE nav (a real graph) arrives as a NavHandle record, not
+		// through this constructor.
+		if ctor, is_ctor := eval_nav_constructor(interp, recv_node.fields[0], method, node, env);
+		   is_ctor {
+			return ctor, true
+		}
 	}
 	recv, recv_ok := eval(interp, recv_node, env)
 	if !recv_ok {
@@ -311,13 +321,23 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 		// The §12 nav query on a level seam's NavHandle marker receiver —
 		// warren's `nav.path(self.pos, goal)` (nav.odin). Keyed on the handle's
 		// declared type so a same-named member on another record never routes
-		// here; only `path` lands in this story (advance/los/reachable/nearest
-		// are the separate advance story).
+		// here. path/reachable/nearest resolve over the loaded graph; engine los
+		// fails closed pending the [nav]-format occupancy decision (ADR
+		// 2026-06-11-engine-los-needs-occupancy-not-in-nav-format).
 		if record.type_name == "NavHandle" {
 			if result, nav_ok, is_nav := eval_nav_method(interp, node, env, record, method);
 			   is_nav {
 				return result, nav_ok
 			}
+		}
+		// The §12 Path.advance(pos, arrive): a path-follower steps one waypoint along
+		// a Path record value (route.advance in a chase fold). advance is a Path
+		// METHOD (spec engine.nav `fn advance(self: Path, …)`), NOT a Nav method, so
+		// it dispatches on the Path record receiver — beside the NavHandle/
+		// TilemapHandle record arms, keyed on the declared type so a same-named
+		// member on another record never routes here.
+		if record.type_name == "Path" && method == "advance" {
+			return eval_path_advance(interp, node, env, record)
 		}
 		// The §22 self-first adders chain off a built Audio record value
 		// (Audio.track(k, c).pitch(p).gain(g).bus(b)); a non-Audio receiver or a
@@ -325,6 +345,14 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 		if bent, is_audio := eval_audio_adder(interp, record, method, node, env); is_audio {
 			return bent, true
 		}
+	}
+	// The §12 fixture nav queries on a Nav.of/Nav.fail value (the Nav_Value arm,
+	// NOT the engine NavHandle record): nav.path/los/reachable/nearest. Dispatched
+	// by Value arm — the fixture answers its @doc-pinned stand-in semantics; the
+	// engine NavHandle record (above) answers the real-graph queries. The two
+	// never share a value.
+	if nav, is_nav := recv.(Nav_Value); is_nav {
+		return eval_nav_fixture_method(interp, nav, method, node, env)
 	}
 	return nil, false
 }
@@ -665,7 +693,7 @@ builtin_abs :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return (v < 0 ? fixed_neg(v) : v), true
 	case i64:
 		return (v < 0 ? int_neg(v) : v), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		return nil, false
 	}
 	return nil, false

@@ -190,21 +190,34 @@ nav_route_cost :: proc(graph: ^Nav_Graph, route: []int) -> Fixed {
 
 // --- the NavHandle method dispatch (the behavior-call surface) -------------
 
-// eval_nav_method lowers the §12 path() query reached as a value-method on a
+// eval_nav_method lowers a §12 ENGINE nav query reached as a value-method on a
 // level seam's `NavHandle{name}` record receiver — warren's
 // `nav.path(self.pos, goal)` calling convention (the TilemapHandle /
-// apply_impulse mold). ONLY `case "path":` is implemented here; advance / los /
-// reachable / nearest are a separate query surface (not yet built), so a member
-// outside this arm falls through (is_nav_method=false) to the next receiver arm.
+// apply_impulse mold) — over a REAL loaded Nav_Graph. This is the engine side
+// of the §12 surface (the fixture side is eval_nav_fixture_method over the
+// Nav_Value arm). `path`, `reachable`, `nearest` land here; `los` over a real
+// graph FAILS CLOSED (see below). A member outside these arms falls through
+// (is_nav_method=false) to the next receiver arm.
 //
-// path() evaluates its two Vec2 args, resolves each to a walkable node by exact
-// center match, and returns a Result[Path, NavError] Variant:
-//   - an off-nav endpoint (no exact center match) → Err(NavError::OffNav),
-//     checked BEFORE the search;
-//   - both endpoints valid but disconnected → Err(NavError::Unreachable);
-//   - a route → Ok(Path{ steps: [Vec2], cost: Fixed }).
+//   - path(from, to)      → Result[Path, NavError] over the loaded graph (exact
+//                           endpoint match → OffNav / Unreachable / Ok(Path)).
+//   - reachable(from, to) → Bool: a route exists at all (the BFS reachability,
+//                           no waypoints materialized). An off-nav endpoint is
+//                           NOT an error here (reachable returns Bool, not a
+//                           Result) → false.
+//   - nearest(point)      → Option[Vec2]: the closest walkable center by squared
+//                           distance, ascending-index tie-break; empty graph →
+//                           None.
+//   - los(from, to)       → FAILS CLOSED (ok=false). Line-of-sight needs the
+//                           per-cell occupancy the [nav] format does not carry
+//                           (centers + adjacency only); a guessed `true` would
+//                           silently corrupt a line-of-fire gate. Deferred to
+//                           the engine-los leaf (engine-los-over-a-baked-nav-gr)
+//                           pending a §12 / [nav]-format decision (ADR
+//                           2026-06-11-engine-los-needs-occupancy-not-in-nav-format).
+//
 // A malformed receiver (unknown graph, non-Vec2 arg) or wrong call arity fails
-// closed (ok=false), never a guessed route.
+// closed (ok=false), never a guessed result.
 eval_nav_method :: proc(
 	interp: ^Interp,
 	node: ^Node,
@@ -217,30 +230,318 @@ eval_nav_method :: proc(
 	is_nav_method: bool,
 ) {
 	switch method {
+	case "path", "reachable", "los":
+		// The two-Vec2 endpoint queries: the call node is `field(from, to)` —
+		// receiver-method field plus two argument children, three children total.
+		graph := nav_of_handle(interp, handle)
+		if graph == nil || len(node.children) != 3 {
+			return nil, false, true
+		}
+		from_val, from_ok := eval(interp, &node.children[1], env)
+		if !from_ok {
+			return nil, false, true
+		}
+		to_val, to_ok := eval(interp, &node.children[2], env)
+		if !to_ok {
+			return nil, false, true
+		}
+		from_vec, from_is_vec := from_val.(Vec2)
+		to_vec, to_is_vec := to_val.(Vec2)
+		if !from_is_vec || !to_is_vec {
+			return nil, false, true
+		}
+		switch method {
+		case "path":
+			return nav_path_result(interp, graph, from_vec, to_vec), true, true
+		case "reachable":
+			return nav_reachable(graph, from_vec, to_vec), true, true
+		case "los":
+			// FAIL CLOSED. The engine line-of-sight query needs per-cell occupancy
+			// that the [nav] format (centers + adjacency, §12 §5) does not carry, so
+			// there is no honest answer to return. Refused, NEVER a guessed true —
+			// deferred to the engine-los leaf (engine-los-over-a-baked-nav-gr) pending
+			// a §12 / [nav]-format decision (ADR
+			// 2026-06-11-engine-los-needs-occupancy-not-in-nav-format).
+			return nil, false, true
+		}
+	case "nearest":
+		// nearest(point): the call node is `field(point)` — receiver-method field
+		// plus one argument child, two children total.
+		graph := nav_of_handle(interp, handle)
+		if graph == nil || len(node.children) != 2 {
+			return nil, false, true
+		}
+		point_val, point_ok := eval(interp, &node.children[1], env)
+		if !point_ok {
+			return nil, false, true
+		}
+		point, is_vec := point_val.(Vec2)
+		if !is_vec {
+			return nil, false, true
+		}
+		return nav_nearest(interp, graph, point), true, true
+	}
+	return nil, false, false
+}
+
+// nav_reachable answers §12 reachable(from, to) over a loaded graph: whether a
+// route exists at all, without materializing waypoints. Both endpoints are
+// resolved to walkable nodes by EXACT center match — an off-nav endpoint is NOT
+// an error here (reachable returns a Bool, not a Result), so it reads false. With
+// both endpoints valid, the answer reuses nav_path and discards the route: the
+// BFS-reachability bool alone. Pure over (graph, from, to) — bit-stable.
+nav_reachable :: proc(graph: ^Nav_Graph, from, to: Vec2) -> bool {
+	from_node := nav_node_of(graph, from)
+	to_node := nav_node_of(graph, to)
+	if from_node == NAV_NO_NODE || to_node == NAV_NO_NODE {
+		return false
+	}
+	_, ok := nav_path(graph, from_node, to_node, context.temp_allocator)
+	return ok
+}
+
+// nav_nearest answers §12 nearest(point) over a loaded graph: the closest
+// walkable cell CENTER to an arbitrary point, or None for an empty graph. The
+// scan is ascending node order with a strict `<` on the squared distance
+// (vec2_dot of the difference — NO sqrt, so it is exact-integer and deterministic;
+// the monotone sqrt preserves the argmin, so the squared metric ranks identically
+// to true distance). Strict `<` means the LOWEST node index wins a tie — the §12
+// stable tie-break. Empty graph → Option::None.
+nav_nearest :: proc(interp: ^Interp, graph: ^Nav_Graph, point: Vec2) -> Value {
+	if len(graph.centers) == 0 {
+		return none_value()
+	}
+	best_index := 0
+	best_dist := vec2_dot(vec2_sub(graph.centers[0], point), vec2_sub(graph.centers[0], point))
+	for i in 1 ..< len(graph.centers) {
+		diff := vec2_sub(graph.centers[i], point)
+		dist := vec2_dot(diff, diff)
+		if dist < best_dist {
+			best_dist = dist
+			best_index = i
+		}
+	}
+	return some_value(interp, graph.centers[best_index])
+}
+
+// --- the §12 FIXTURE nav surface (Nav.of / Nav.fail + the fixture queries) --
+//
+// The fixture is a SEPARATE machine from the engine path above: Nav.of/Nav.fail
+// build a Nav_Value (the value arm), and eval_nav_fixture_method answers the five
+// queries over it with the @doc-pinned stand-in semantics — NO graph, NO search.
+// The runtime mirrors funpack's evaluate.odin eval_nav_method / eval_path_advance
+// BEHAVIOR exactly (a different machine, one §12 contract), never linked code.
+
+// eval_nav_constructor lowers the §12 fixture nav builders reached as type-name
+// static methods: `Nav.of(route)` builds a non-failed Nav_Value carrying the
+// supplied Path route the five queries replay (path → Ok(route), los/reachable →
+// true, nearest → identity Some(p)); `Nav.fail(err)` builds the coherent-failure
+// twin from a NavError variant (path → Err(err), los/reachable → false, nearest →
+// None). is_ctor is false for any other (type, member) so a non-nav-constructor
+// `Type.method()` falls through to the value-receiver dispatch.
+//
+// Nav.of guards its arg to a `Path` Record_Value and Nav.fail guards its arg to a
+// `NavError` Variant_Value — a wrong-arm arg fails closed (is_ctor=false; the
+// typecheck admits only the right type, so a passing program never hits it). The
+// dispatch is by Value arm at the query site, so the fixture NEVER carries an
+// engine-vs-fixture flag — the Nav_Value arm IS the fixture identity.
+eval_nav_constructor :: proc(
+	interp: ^Interp,
+	type_name, member: string,
+	node: ^Node,
+	env: ^Env,
+) -> (
+	value: Value,
+	is_ctor: bool,
+) {
+	if type_name != "Nav" {
+		return nil, false
+	}
+	// Nav.of(route) / Nav.fail(err): the call node is `field(arg)` — receiver-method
+	// field plus one argument child, two children total.
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	switch member {
+	case "of":
+		arg, arg_ok := eval(interp, &node.children[1], env)
+		if !arg_ok {
+			return nil, false
+		}
+		route, is_path := arg.(Record_Value)
+		if !is_path || route.type_name != "Path" {
+			return nil, false
+		}
+		return Nav_Value{route = route}, true
+	case "fail":
+		arg, arg_ok := eval(interp, &node.children[1], env)
+		if !arg_ok {
+			return nil, false
+		}
+		err, is_variant := arg.(Variant_Value)
+		if !is_variant || err.enum_type != "NavError" {
+			return nil, false
+		}
+		return Nav_Value{failed = true, err = err.case_name}, true
+	}
+	return nil, false
+}
+
+// eval_nav_fixture_method answers a §12 query on a Nav.of/Nav.fail FIXTURE value
+// (the Nav_Value arm), mirroring funpack's eval_nav_method behavior:
+//   - path(from, to)      → Result::Ok(route) replaying the supplied route — or,
+//                           on the Nav.fail twin, Result::Err(NavError::err).
+//                           The endpoints are IGNORED (the fixture replays its
+//                           pinned route, a deterministic stand-in).
+//   - los/reachable(f, t) → !failed (true on Nav.of, false on Nav.fail).
+//   - nearest(point)      → IDENTITY Some(point) on Nav.of (the fixture snap is
+//                           the identity — an off-nav point maps to itself), None
+//                           on Nav.fail.
+// advance is NOT a Nav method here — it is a Path-record method (eval_path_advance,
+// dispatched on the Path receiver in eval_method_call). A wrong arity fails closed
+// (ok=false), so a typecheck-rejected form never reaches a passing program.
+eval_nav_fixture_method :: proc(
+	interp: ^Interp,
+	nav: Nav_Value,
+	method: string,
+	node: ^Node,
+	env: ^Env,
+) -> (
+	value: Value,
+	ok: bool,
+) {
+	switch method {
 	case "path":
-	case:
-		return nil, false, false
+		// path(from, to): three children (field + two args). Endpoints ignored.
+		if len(node.children) != 3 {
+			return nil, false
+		}
+		if nav.failed {
+			return nav_err_value(interp, nav.err), true
+		}
+		return nav_ok_value(interp, nav.route), true
+	case "los", "reachable":
+		// The cheap yes/no checks: three children. true on Nav.of, false on Nav.fail.
+		if len(node.children) != 3 {
+			return nil, false
+		}
+		return !nav.failed, true
+	case "nearest":
+		// nearest(point): two children (field + one arg). Identity Some(point) on
+		// Nav.of, None on Nav.fail.
+		if len(node.children) != 2 {
+			return nil, false
+		}
+		if nav.failed {
+			return none_value(), true
+		}
+		point, point_ok := eval(interp, &node.children[1], env)
+		if !point_ok {
+			return nil, false
+		}
+		return some_value(interp, point), true
 	}
-	graph := nav_of_handle(interp, handle)
-	// path(self, from, to): the call node is `field(from, to)` — receiver-method
-	// field plus two argument children, so three children total.
-	if graph == nil || len(node.children) != 3 {
-		return nil, false, true
+	return nil, false
+}
+
+// eval_path_advance lowers §12 Path.advance(pos, arrive) on a Path RECORD value —
+// the path-follower fold (spec engine.nav `fn advance(self: Path, …)`), mirroring
+// funpack's eval_path_advance. It reads the route's `steps: [Vec2]` and consumes
+// the LEADING waypoints already within `arrive` of `pos` (the follower has reached
+// them), then the first remaining step is the next waypoint (Option::Some) and the
+// rest is the remaining Path; an exhausted route yields (Option::None, the empty
+// route) — the arrival signal a chase folds to a hide. Returns the
+// (Option[Vec2], Path) pair as a Tuple_Value, destructured by a follow/run_for
+// match. ok is false on a wrong arity or a malformed Path/arg.
+//
+// The arrival comparison is the kernel `vec2_length(vec2_sub(wp, pos)) <= arrive`
+// — raw Q32.32 bits through the same kernel ops a baked-graph follow runs, NEVER a
+// float tolerance (the determinism floor: same bits on every replay).
+eval_path_advance :: proc(
+	interp: ^Interp,
+	node: ^Node,
+	env: ^Env,
+	route: Record_Value,
+) -> (
+	value: Value,
+	ok: bool,
+) {
+	// advance(self, pos, arrive): the call node is `field(pos, arrive)` —
+	// receiver-method field plus two argument children, three children total.
+	if len(node.children) != 3 {
+		return nil, false
 	}
-	from_val, from_ok := eval(interp, &node.children[1], env)
-	if !from_ok {
-		return nil, false, true
+	pos_val, pos_ok := eval(interp, &node.children[1], env)
+	if !pos_ok {
+		return nil, false
 	}
-	to_val, to_ok := eval(interp, &node.children[2], env)
-	if !to_ok {
-		return nil, false, true
+	pos, pos_is_vec := pos_val.(Vec2)
+	if !pos_is_vec {
+		return nil, false
 	}
-	from_vec, from_is_vec := from_val.(Vec2)
-	to_vec, to_is_vec := to_val.(Vec2)
-	if !from_is_vec || !to_is_vec {
-		return nil, false, true
+	arrive_val, arrive_ok := eval(interp, &node.children[2], env)
+	if !arrive_ok {
+		return nil, false
 	}
-	return nav_path_result(interp, graph, from_vec, to_vec), true, true
+	arrive, arrive_is_fixed := arrive_val.(Fixed)
+	if !arrive_is_fixed {
+		return nil, false
+	}
+	steps_field, has_steps := route.fields["steps"]
+	if !has_steps {
+		return nil, false
+	}
+	steps, steps_is_list := steps_field.(List_Value)
+	if !steps_is_list {
+		return nil, false
+	}
+	// Drop the leading waypoints the follower has already reached (within the
+	// arrival radius of pos), so the next waypoint is the first one still ahead.
+	next := 0
+	for next < len(steps.elements) {
+		wp, wp_is_vec := steps.elements[next].(Vec2)
+		if !wp_is_vec {
+			return nil, false
+		}
+		if vec2_length(vec2_sub(wp, pos)) <= arrive {
+			next += 1
+			continue
+		}
+		break
+	}
+	remaining := nav_path_record(interp, steps.elements[next:], route)
+	if next >= len(steps.elements) {
+		// The route is exhausted — every waypoint reached. None signals arrival.
+		return nav_tuple2(interp, none_value(), remaining), true
+	}
+	return nav_tuple2(interp, some_value(interp, steps.elements[next]), remaining), true
+}
+
+// nav_path_record rebuilds a Path record value carrying the given remaining steps
+// and the source route's cost verbatim — the trimmed route advance threads
+// forward (the cost is the whole route's cost; a follower reads waypoints, never
+// the residual). The steps slice is made on interp.allocator (NOT a stack
+// compound literal — annotation #11) so the rebuilt record outlives the call.
+nav_path_record :: proc(interp: ^Interp, steps: []Value, source: Record_Value) -> Record_Value {
+	fields := make(map[string]Value, interp.allocator)
+	owned := make([]Value, len(steps), interp.allocator)
+	copy(owned, steps)
+	fields["steps"] = List_Value{elements = owned}
+	if cost, has_cost := source.fields["cost"]; has_cost {
+		fields["cost"] = cost
+	}
+	return Record_Value{type_name = "Path", fields = fields}
+}
+
+// nav_tuple2 boxes a two-value pair as a Tuple_Value — the (Option[Vec2], Path)
+// pair Path.advance returns, destructured by a follow/run_for tuple match. The
+// elements slice is made on interp.allocator (NOT a stack compound literal —
+// annotation #11) so the tuple outlives the call.
+nav_tuple2 :: proc(interp: ^Interp, a, b: Value) -> Value {
+	elements := make([]Value, 2, interp.allocator)
+	elements[0] = a
+	elements[1] = b
+	return Tuple_Value{elements = elements}
 }
 
 // nav_path_result runs path() over a resolved graph and boxes the

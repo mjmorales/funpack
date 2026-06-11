@@ -850,7 +850,7 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		// framing with no value bytes).
 		append(buf, u8(Field_Tag.String))
 		snap_put_string(buf, x.text)
-	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 	// A transient never lands in a committed structural column — the §16 §7 anim
 	// VALUES (Transform/Pose/handle) are render-time, composed into a [Draw3] list,
 	// never persisted. A Vec3 is NOT here: a committed Vec3 column (a thing's `pos`,

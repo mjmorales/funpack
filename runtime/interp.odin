@@ -107,6 +107,35 @@ Value :: union {
 	Transform_Value, // a §16 §7 local bone transform: translation + orientation + scale
 	Pose_Value, // a §16 §7 sparse Bone→Transform map (the engine.anim Pose)
 	Handle_Value, // an opaque engine anim handle (Skeleton/PartSet) — composed through builders, never read by field
+	Nav_Value, // a §12 fixture nav handle (Nav.of/Nav.fail) — a behavior-test stand-in for a baked graph, never committed
+}
+
+// Nav_Value is the §12 FIXTURE nav handle the Nav.of(route) / Nav.fail(err)
+// builders seed for a behavior unit test — the deterministic stand-in a test
+// passes where a baked nav graph would be (the View.of / TilemapHandle.of mold).
+// It is the runtime mirror of funpack's value.odin Nav_Value: same shape, a
+// DIFFERENT machine (runtime interp vs funpack evaluate) satisfying the ONE §12
+// fixture contract by mirrored BEHAVIOR, never linked code.
+//
+// The fixture is dispatched by Value ARM, never by a flag inside a record: this
+// Nav_Value arm is the FIXTURE; the ENGINE nav (a real loaded Nav_Graph) arrives
+// as a `NavHandle{name}` Record_Value marker resolved through program_nav. A
+// receiver that is this arm answers the fixture semantics (path replays `route`,
+// los/reachable read true, nearest is the identity snap); a `NavHandle` record
+// receiver answers the engine queries over the loaded graph. The two never
+// share a value.
+//
+// `route` is the Path record Nav.of was built from (type_name "Path", fields
+// steps/cost) that path() replays. `failed`/`err` carry the Nav.fail twin's
+// coherent total failure (path() → Result::Err(err), los/reachable → false,
+// nearest → None); Nav.of always builds a non-failed handle, so they sit at the
+// zero value there. A fixture is transient — it is never a committed blackboard
+// column, so it joins the Lambda/Tuple/Rng unsupported-column arms in every
+// closed value type-switch.
+Nav_Value :: struct {
+	route:  Record_Value, // the Path route Nav.of was built from (steps/cost)
+	failed: bool, // the Nav.fail twin: every query fails coherently
+	err:    string, // the NavError variant name Nav.fail's path() wraps
 }
 
 // --- The evaluation environment ------------------------------------------
@@ -416,7 +445,7 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return nil, false
 		}
 		return field_value_to_value(fv), true
-	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// A tuple is positional (read by a tuple pattern, never by name), an Rng has
 		// no field, and the §16 §7 anim values are opaque — a Pose reads by .get not
 		// .field, a Transform/Skeleton/PartSet by no field at all. None is a
@@ -552,7 +581,7 @@ eval_with :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		type_name = "Vec2"
 		merged["x"] = b.x
 		merged["y"] = b.y
-	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// A `with` is a record/Vec2 functional update; a tuple/Rng/anim value is not
 		// a record (a Vec3/Transform/Pose/handle composes through its builders, never
 		// a field update).
@@ -636,7 +665,7 @@ eval_unary :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return Vec2{fixed_neg(v.x), fixed_neg(v.y)}, true
 		case Vec3:
 			return Vec3{fixed_neg(v.x), fixed_neg(v.y), fixed_neg(v.z)}, true
-		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 			return nil, false
 		}
 	case "not":
@@ -926,9 +955,10 @@ values_equal :: proc(a, b: Value) -> bool {
 		// Skeleton/PartSet built the same way are equal (the Rigged record's Eq).
 		bv, ok := b.(Handle_Value)
 		return ok && handles_equal(av, bv)
-	case Lambda_Value, Rng:
-		// A closure has no value identity and an Rng is a threaded resource —
-		// neither is a comparand the §03 Eq surface admits.
+	case Lambda_Value, Rng, Nav_Value:
+		// A closure has no value identity, an Rng is a threaded resource, and a Nav
+		// fixture is a query RECEIVER (never a comparand) — none is admitted by the
+		// §03 Eq surface.
 		return false
 	}
 	return false
@@ -1030,7 +1060,7 @@ format_value :: proc(interp: ^Interp, v: Value) -> string {
 		return aprint_int(fixed_trunc(x), interp.allocator)
 	case Variant_Value:
 		return strings.clone(x.case_name, interp.allocator)
-	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// A tuple/Rng/anim value never reaches a §20 Text hole (render carries no
 		// draw text holes over these); no display form, render empty.
 		return ""
@@ -1062,7 +1092,7 @@ as_fixed :: proc(v: Value) -> (f: Fixed, ok: bool) {
 		return n, true
 	case i64:
 		return to_fixed(n), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		return Fixed(0), false
 	}
 	return Fixed(0), false
@@ -1198,7 +1228,7 @@ value_to_field_value :: proc(
 		return clone_record_value(x, allocator), true
 	case List_Value:
 		return clone_list_value(x, allocator), true
-	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// A Tuple is split by the tick into its halves before commit and never
 		// lands whole on a row; an Rng is THREADED (carried in Tick_State, written
 		// forward), never persisted as a column; a closure has no value identity.
@@ -1252,7 +1282,7 @@ clone_column_value :: proc(v: Value, allocator := context.allocator) -> Value {
 		return clone_list_value(x, allocator)
 	case Variant_Value:
 		return clone_variant_value(x, allocator)
-	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value:
+	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// The scalar/Vec/handle arms copy by value (a Pose's bone slice and a
 		// handle's op log live in the eval arena, the same transient lifetime as a
 		// tuple — the §16 §7 anim values are render-time, never a committed column).

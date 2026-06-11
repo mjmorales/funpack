@@ -991,6 +991,11 @@ render_value_text :: proc(b: ^strings.Builder, value: Value) {
 		render_pose_text(b, v)
 	case Handle_Value:
 		render_handle_text(b, v)
+	case Nav_Value:
+		// A §12 fixture nav handle (Nav.of/Nav.fail) — a behavior-test stand-in,
+		// never a blackboard column; renders as a readable opaque form like the
+		// other transient arms (it appears only in a trace result).
+		fmt.sbprintf(b, "<nav failed=%v>", v.failed)
 	case:
 		// A nil Value (an unbound read) renders as the explicit absence token.
 		strings.write_string(b, "<none>")

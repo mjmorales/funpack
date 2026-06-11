@@ -468,7 +468,7 @@ append_value_key :: proc(buf: ^[dynamic]u8, value: Value) -> bool {
 	case String_Value:
 		append(buf, u8(Field_Tag.String))
 		append(buf, ..transmute([]u8)v.text)
-	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// Transient interpreter arms never commit as a column, so they can
 		// never key an index — the unsupported verdict, fail closed.
 		return false
