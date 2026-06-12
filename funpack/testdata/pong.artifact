@@ -1,4 +1,4 @@
-funpack-artifact 15
+funpack-artifact 16
 [meta 2]
 project pong
 version L5:0.1.0
@@ -514,3 +514,4 @@ entrypoint main pipeline:Pong tick_hz:60 logical:160x120 bindings:bindings
 [queries 0]
 [tilemaps 0]
 [nav 0]
+[assets 0]

@@ -1,4 +1,4 @@
-# funpack artifact format — v15
+# funpack artifact format — v16
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 15
+funpack-artifact 16
 ```
 
-- `schema_version` is the integer after the space (here `15`).
+- `schema_version` is the integer after the space (here `16`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -236,7 +236,29 @@ funpack-artifact 15
   schema. A **Ref-valued param** has no ratified §13 encoding and is not
   emitted; it rides the deferred level-accessor bump. Widened populations are
   layout changes: 14 → 15. A single-module, level-less artifact moves by the
-  version stamp alone (the v7 stamp-only restamp precedent).
+  version stamp alone (the v7 stamp-only restamp precedent). v16 carries the
+  **§19 asset pixels** through to the runtime — the decoded atlas/image art a
+  textured render (`Draw_Sprite{atlas, cell}`) needs and which an artifact-blind
+  runtime could not draw (v11's `[tilemaps]` carried the tile **grid** but no
+  pixels; the sprite art never reached the runtime). One layout change rides it:
+  one new section, `[assets A]` (§19), appended after `[nav]` as the new fixed §3
+  section **tail** (the `[nav]` tail precedent). Its records are two top-level
+  kinds plus one sub-record: (a) `image HASH W H b64:RGBA` — one per **distinct**
+  decoded image, **content-addressed** by its §2 image hash, the canonical RGBA8
+  buffer base64-encoded (`core:encoding/base64`, std-alphabet RFC-4648) as one
+  ASCII token so the committed text golden stays diffable and the runtime decodes
+  with the same core pkg; two atlases sharing one image carry the blob **once**
+  (the §2 hash dedup); (b) `atlas NAME IMAGE_HASH CELL_COUNT` — one per registered
+  atlas, referencing its image by hash; (c) the new **sub-record keyword**
+  `region NAME PX_X PX_Y PX_W PX_H` — one per atlas cell, the pixel rect into the
+  image (the grid-coord×cell-size lowering), so `(atlas-name, cell-name) →
+  (image pixels, pixel rect)` is resolvable from the artifact alone. The pixels are
+  **not** a §29 purity break: `import_image` decodes deterministically and base64
+  is a pure byte→ASCII map, so two emissions are byte-identical (the walk is
+  slice-order over the baked model, never map order). A new section and one new
+  sub-record keyword are layout changes: 15 → 16. An asset-less game writes the
+  constant `[assets 0]` tail and moves by the version stamp alone (the v7
+  stamp-only restamp / `[nav 0]` tail precedent).
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -288,7 +310,7 @@ no field whose value depends on when, where, or on which machine it was emitted.
   keyword is *not* a sub-record keyword). The closed sub-record keyword set is:
   `variant`, `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`,
   `node`, `migrate` (v8, §6), `index` (v9, §16), `tile` and `row` (v11, §17),
-  `navnode` and `navedge` (v13, §18). A
+  `navnode` and `navedge` (v13, §18), `region` (v16, §19). A
   declared `N` that disagrees with the lead-line count is an error (an under-
   or over-shaped section, §29-style exact-match).
 
@@ -492,7 +514,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 15
+funpack-artifact 16
 [meta 2]
 …
 [enums N]
@@ -522,6 +544,8 @@ funpack-artifact 15
 [tilemaps N]
 …
 [nav N]
+…
+[assets N]
 …
 ```
 
@@ -1223,7 +1247,55 @@ navedge A B
 
 ---
 
-## 19. Parsing recipe (runtime, zero funpack imports)
+## 19. `[assets]` — baked sprite pixels + atlas slice rects (§19, schema v16)
+
+The decoded atlas/image art a textured render needs — the pixels a
+`Draw_Sprite{atlas, cell}` blits and which an artifact-blind runtime could not
+draw. `[tilemaps]` (§17) carries the tile **grid**; this section carries the
+sprite **pixels**. `[assets]` is the fixed final section of the §3 order (the
+new tail, after `[nav]`). Records are two top-level kinds — `image` and `atlas`
+— plus the `region` sub-record:
+
+```
+image HASH W H b64:RGBA
+atlas NAME IMAGE_HASH CELL_COUNT
+region NAME PX_X PX_Y PX_W PX_H
+…
+```
+
+- `image HASH W H b64:RGBA` is one **distinct** decoded image, **content-addressed**
+  by its §2 content hash: `HASH` is the canonical hash (`sha256:…`, the same value
+  the asset manifest keys the image by); `W`/`H` are the decoded pixel dimensions
+  (`Int` §2.2); `b64:RGBA` is the canonical RGBA8 buffer (`W·H·4` bytes, row-major
+  top-to-bottom — the `import_image` `.alpha_add_if_missing` output) base64-encoded
+  (`core:encoding/base64`, the std-alphabet RFC-4648 encoding) as **one ASCII
+  token** on the line. The base64 keeps the committed text golden diffable and the
+  runtime decodes with the same `core` package. Two atlases sharing one image hold
+  the blob **once** (the content-hash dedup) — each references it by `HASH`, never
+  by repeating the pixels.
+- `atlas NAME IMAGE_HASH CELL_COUNT` is one registered atlas, in committed-registry
+  order: `NAME` is the atlas's registered name (the token a `Draw_Sprite{atlas,
+  cell}` carries); `IMAGE_HASH` is the `image` record it slices (the dedup key);
+  `CELL_COUNT` is the number of `region` sub-records that follow.
+- `region NAME PX_X PX_Y PX_W PX_H` is one atlas cell's **pixel rectangle** into
+  its image, in atlas source-declaration order: `NAME` is the cell name a sprite
+  draw addresses; the rect is the §19 grid-coord×cell-size lowering —
+  `PX_X = cell.x·grid_w`, `PX_Y = cell.y·grid_h`, `PX_W = grid_w`, `PX_H = grid_h`
+  (all decimal `Int` §2.2). So `(atlas-name, cell-name) → (image pixels, pixel
+  rect)` is resolvable from the artifact alone: find the atlas by `NAME`, its image
+  by `IMAGE_HASH`, the cell's rect by `region NAME`.
+- **Purity (§29).** The pixels are not a host-nondeterminism break: `import_image`
+  decodes deterministically (the §4 deterministic importer) and base64 is a pure
+  byte→ASCII map, so two emissions are byte-identical. The image and atlas walks
+  are slice-order over the baked model, never map order.
+- An **asset-less** game has no sprite assets, so this section is the constant empty
+  tail `[assets 0]` — the §3 fixed-tail precedent the `[nav 0]`/`[tilemaps 0]` tails
+  set. Every asset-less artifact moves to v16 by the version stamp plus this constant
+  tail (the v7 stamp-only restamp precedent).
+
+---
+
+## 20. Parsing recipe (runtime, zero funpack imports)
 
 A runtime parses an artifact thus, reading top-to-bottom, never seeking:
 
@@ -1235,7 +1307,7 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
    spans its lead line up to the next lead line. Lead lines are those whose
    leading keyword is *not* in the closed sub-record keyword set (`variant`,
    `field`, `gtag`, `param`, `emit`, `producer`, `consumer`, `set`, `node`,
-   `migrate`, `index`, `tile`, `row`, `navnode`, `navedge`). This
+   `migrate`, `index`, `tile`, `row`, `navnode`, `navedge`, `region`). This
    is the **only** parse discipline; the format does not promise a
    second grammar-only reader that derives `N` from declared sub-counts (it cannot
    be sound where a record carries an uncounted run, e.g. a `const`'s body `node`
@@ -1250,8 +1322,9 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
 4. Build the in-memory game model (enums, data/signal/thing schemas, function
    bodies, behaviors with their step bodies, the flattened pipeline, the routing
    map, the spawn batch, the binding table, the entrypoint, the query
-   declarations with their index requirements, the tile layers) and interpret
-   the carried checked-AST nodes per the §09 canonical semantics.
+   declarations with their index requirements, the tile layers, the nav graphs,
+   the sprite assets) and interpret the carried checked-AST nodes per the §09
+   canonical semantics.
 
 Because every section's `N` is the lead-line count, every record shapes its
 sub-records by declared scalar counts, every body `node` declares its `child_count`,

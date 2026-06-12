@@ -88,7 +88,7 @@ test_tile_row_sub_records_frame_under_lead_line_reader :: proc(t: ^testing.T) {
 	testing.expect(t, is_sub_record_line("tile wall true"))
 	testing.expect(t, is_sub_record_line("row 0 - 1 -"))
 	doc_text :=
-		"funpack-artifact 15\n" +
+		"funpack-artifact 16\n" +
 		"[tilemaps 2]\n" +
 		"tilemap terrain 16 2 1 0 68719476736 1\n" +
 		"tile wall true\n" +
@@ -111,7 +111,7 @@ test_emit_tilemaps_round_trips_through_reader :: proc(t: ^testing.T) {
 	// reconciles against the lead-line discipline, so the bytes the runtime
 	// story will decode are well-formed by construction.
 	doc_text := strings.concatenate(
-		{"funpack-artifact 15\n", emit_tilemaps_section(tile_layer_fixture())},
+		{"funpack-artifact 16\n", emit_tilemaps_section(tile_layer_fixture())},
 		context.temp_allocator,
 	)
 	doc, err := parse_artifact(doc_text)

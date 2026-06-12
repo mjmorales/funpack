@@ -20,6 +20,7 @@
 // and does not execute the artifact (the runtime owns execution).
 package funpack
 
+import "core:encoding/base64"
 import "core:strings"
 
 // Emit_Input bundles the four pure inputs the emitter projects into bytes: the
@@ -71,6 +72,14 @@ Emit_Input :: struct {
 	// them from the same baked layers; empty for a level-less game (the constant
 	// `[nav 0]` tail).
 	nav_graphs:   []Baked_Nav_Graph,
+	// assets are the §19 baked sprite assets the [assets] section carries
+	// (docs/artifact-format.md §19, schema v16) — the decoded, content-addressed
+	// image pixels and the atlas slice rects a textured `Draw_Sprite{atlas, cell}`
+	// resolves against. The build verb threads them in from the §19-literal
+	// manifest bake (bake_tree_assets) only when the tree carries an
+	// assets.manifest; empty for an asset-less game, which writes the constant
+	// `[assets 0]` tail and moves by the version stamp alone.
+	assets:       Baked_Assets,
 }
 
 // Emit_Error distinguishes the ways emission can refuse before it writes bytes:
@@ -112,7 +121,7 @@ stage_emit :: proc(
 	entrypoint_fcfg: string,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
-	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, nil, nil, nil, allocator)
+	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, nil, nil, nil, Baked_Assets{}, allocator)
 }
 
 // stage_emit_indexed is the source → artifact seam typed against a project-wide
@@ -142,6 +151,12 @@ stage_emit :: proc(
 // every other input they are a pure function of the tree, so emission stays pure;
 // nil is the level-less default (the constant `[tilemaps 0]` / `[nav 0]` tails
 // and the resolve_setup_spawns [setup] path).
+//
+// assets are the tree's §19 baked sprite assets (bake_tree_assets) the [assets]
+// section carries — the decoded content-addressed image pixels and the atlas slice
+// rects (schema v16). Like every other input it is a pure function of the tree
+// (import_image decodes deterministically), so emission stays pure; the empty
+// Baked_Assets is the asset-less default (the constant `[assets 0]` tail).
 stage_emit_indexed :: proc(
 	source: string,
 	module: string,
@@ -152,6 +167,7 @@ stage_emit_indexed :: proc(
 	tilemaps: []Baked_Tile_Layer = nil,
 	nav_graphs: []Baked_Nav_Graph = nil,
 	level_spawns: []Level_Spawn_Batch = nil,
+	assets: Baked_Assets = {},
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -194,6 +210,7 @@ stage_emit_indexed :: proc(
 		tilemaps       = tilemaps,
 		nav_graphs     = nav_graphs,
 		level_spawns   = level_spawns,
+		assets         = assets,
 	}
 	return emit_artifact(input, allocator), .None
 }
@@ -224,6 +241,7 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_queries(&b, input.ast, input.module)
 	emit_tilemaps(&b, input.tilemaps)
 	emit_navs(&b, input.nav_graphs)
+	emit_assets(&b, input.assets)
 
 	return strings.to_string(b)
 }
@@ -1472,6 +1490,103 @@ emit_navs :: proc(b: ^strings.Builder, graphs: []Baked_Nav_Graph) {
 			strings.write_int(b, edge.a)
 			strings.write_byte(b, ' ')
 			strings.write_int(b, edge.b)
+			emit_line(b, "")
+		}
+	}
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// [assets] — the §19 baked sprite pixels + atlas slice rects
+// (docs/artifact-format.md §19, schema v16)
+// ───────────────────────────────────────────────────────────────────────────
+
+// Baked_Assets is the §19 sprite art the [assets] section carries (schema v16):
+// the distinct decoded images (content-addressed by hash) and the atlases that
+// slice them. images is the dedup set — two atlases sharing one image hold one
+// Baked_Image — and atlases reference an image by its hash, so the pixel blob
+// appears once. The [assets] top-level record count is len(images) + len(atlases);
+// region sub-records ride inside their atlas. The empty value is the asset-less
+// default (the constant `[assets 0]` tail).
+Baked_Assets :: struct {
+	images:  []Baked_Image,
+	atlases: []Baked_Atlas,
+}
+
+// Baked_Image is one distinct decoded image the [assets] section carries: its §2
+// content hash (the dedup key an atlas references), the decoded pixel dimensions,
+// and the canonical RGBA8 buffer (width*height*4 bytes, row-major top-to-bottom —
+// import_image's `.alpha_add_if_missing` output) the emitter base64-encodes into
+// one ASCII token.
+Baked_Image :: struct {
+	hash:   string,
+	width:  int,
+	height: int,
+	pixels: []byte,
+}
+
+// Baked_Atlas is one atlas the [assets] section carries: its registered name (the
+// token a `Draw_Sprite{atlas, cell}` carries), the hash of the image it slices
+// (the dedup reference into images), and its cell regions in source order — the
+// pixel rects (atlas-name, cell-name) → (image pixels, rect) resolves through.
+Baked_Atlas :: struct {
+	name:       string,
+	image_hash: string,
+	regions:    []Baked_Region,
+}
+
+// Baked_Region is one atlas cell's pixel rectangle into its image — the §19
+// grid-coord×cell-size lowering (px_x = cell.x*grid_w, px_y = cell.y*grid_h,
+// px_w = grid_w, px_h = grid_h). name is the cell name a sprite draw addresses.
+Baked_Region :: struct {
+	name:  string,
+	px_x:  int,
+	px_y:  int,
+	px_w:  int,
+	px_h:  int,
+}
+
+// emit_assets writes the [assets] section (schema v16): one `image HASH W H
+// b64:RGBA` record per distinct decoded image (content-addressed, so a shared
+// image's blob appears once), then one `atlas NAME IMAGE_HASH CELL_COUNT` record
+// per atlas with its `region NAME PX_X PX_Y PX_W PX_H` cell rects. The top-level
+// record count is len(images) + len(atlases); region lines are sub-records (the
+// closed SUB_RECORD_KEYWORDS set), so the lead-line discipline reconciles the
+// count. Both walks are slice-order over the baked model and base64 is a pure
+// byte→ASCII map, so two emissions are byte-identical (§29). An asset-less game
+// writes the constant `[assets 0]` tail.
+emit_assets :: proc(b: ^strings.Builder, assets: Baked_Assets) {
+	emit_header(b, "assets", len(assets.images) + len(assets.atlases))
+	for image in assets.images {
+		strings.write_string(b, "image ")
+		strings.write_string(b, image.hash)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, image.width)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, image.height)
+		strings.write_string(b, " b64:")
+		encoded, _ := base64.encode(image.pixels, base64.ENC_TABLE, context.temp_allocator)
+		strings.write_string(b, encoded)
+		emit_line(b, "")
+	}
+	for atlas in assets.atlases {
+		strings.write_string(b, "atlas ")
+		strings.write_string(b, atlas.name)
+		strings.write_byte(b, ' ')
+		strings.write_string(b, atlas.image_hash)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, len(atlas.regions))
+		emit_line(b, "")
+		for region in atlas.regions {
+			strings.write_string(b, "region ")
+			strings.write_string(b, region.name)
+			strings.write_byte(b, ' ')
+			strings.write_int(b, region.px_x)
+			strings.write_byte(b, ' ')
+			strings.write_int(b, region.px_y)
+			strings.write_byte(b, ' ')
+			strings.write_int(b, region.px_w)
+			strings.write_byte(b, ' ')
+			strings.write_int(b, region.px_h)
 			emit_line(b, "")
 		}
 	}

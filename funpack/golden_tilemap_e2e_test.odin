@@ -260,6 +260,76 @@ test_golden_dungeon_build_carries_tile_layer_in_both_products :: proc(t: ^testin
 	log.infof("golden dungeon build: both products emit, the artifact carries the anchored terrain layer (%d bytes), double-build byte-identical", len(product.artifact))
 }
 
+// ── Dungeon: the v16 [assets] sprite-pixel carry (the N>0 proof) ─────────────
+
+@(test)
+test_golden_dungeon_build_carries_populated_assets_section :: proc(t: ^testing.T) {
+	// AC (v16 [assets], N>0): stage_build over the live dungeon tree emits the
+	// [assets] section POPULATED — the decoded content-addressed image pixels and
+	// the atlas slice rects a textured Draw_Sprite{atlas, cell} resolves against.
+	// This is the N>0 path the asset-less pong/empty-tail goldens never exercise.
+	// Exact structure (the golden-count discipline — never a range): [assets 2] =
+	// one `image` record (dungeon.png, deduped by content hash) + one `atlas`
+	// record (DungeonAtlas), and the atlas carries 8 `region` cell rects
+	// (floor/wall/water/rubble + hero/slime/chest_closed/chest_open). The whole
+	// section round-trips through the funpack-side parse_artifact with the section
+	// count reconciled against the lead-line discipline (image+atlas are lead
+	// lines, region is a sub-record). The image is the dungeon manifest's hash, so
+	// content-addressing is consistent between the manifest bake and the assets
+	// bake. Emission is deterministic (§29): two builds are byte-identical.
+	dir := resolve_dungeon_example_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP golden dungeon assets: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
+		return
+	}
+	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
+		log.errorf("golden dungeon assets: refused (%s)", build_refusal_message(verdict, context.temp_allocator))
+		return
+	}
+
+	doc, parse_err := parse_artifact(product.artifact)
+	testing.expect_value(t, parse_err, Artifact_Parse_Error.None)
+	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)
+
+	// [assets] is the fixed §3 section tail (after [nav]); the section count
+	// reconciles against the lead-line discipline through parse_artifact above
+	// (a count mismatch would have been Count_Mismatch, not None). N = 2: the
+	// deduped image + the atlas.
+	assets_section, assets_found := artifact_find_section(doc, "assets")
+	testing.expect(t, assets_found)
+	testing.expect_value(t, assets_section.count, 2)
+	testing.expect_value(t, assets_section.name, "assets")
+
+	// One distinct image, content-addressed by the dungeon manifest's hash (so the
+	// blob is keyed by the same content address the [assets] atlas record points
+	// at). The 16×16 grid over a 64×32 atlas image yields the 4×2 cell layout. The
+	// image lead line carries the hash, decoded dims, then the b64:RGBA token —
+	// the prefix is pinned; the base64 body is length-bound but not byte-pinned
+	// here (the runtime-side decode test owns the pixel round-trip).
+	DUNGEON_IMAGE_HASH :: "sha256:9091f089c41ac7720fe139b9adfd1b488e7d141a5fc56b9f44b69d50320216d9"
+	testing.expect(t, artifact_has_line_prefix(product.artifact, strings.concatenate({"image ", DUNGEON_IMAGE_HASH, " 64 32 b64:"}, context.temp_allocator)))
+
+	// The atlas references the image by hash and declares its 8 cell regions.
+	testing.expect(t, artifact_has_line(product.artifact, strings.concatenate({"atlas DungeonAtlas ", DUNGEON_IMAGE_HASH, " 8"}, context.temp_allocator)))
+
+	// The cell rects: the §19 grid-coord×cell-size lowering (px = grid_coord *
+	// 16, w/h = 16). Row 0 is terrain (y=0), row 1 the actors/props (y=16).
+	testing.expect(t, artifact_has_line(product.artifact, "region floor 0 0 16 16"))
+	testing.expect(t, artifact_has_line(product.artifact, "region wall 16 0 16 16"))
+	testing.expect(t, artifact_has_line(product.artifact, "region rubble 48 0 16 16"))
+	testing.expect(t, artifact_has_line(product.artifact, "region hero 0 16 16 16"))
+	testing.expect(t, artifact_has_line(product.artifact, "region chest_open 48 16 16 16"))
+
+	// Determinism (§29): two builds emit byte-identical assets (and the whole
+	// artifact), so the base64 pixel token carries no host nondeterminism.
+	second, second_verdict := stage_build(dir, .Dev, context.temp_allocator)
+	testing.expect_value(t, second_verdict.err, Build_Error.None)
+	testing.expect(t, product.artifact == second.artifact)
+	log.infof("golden dungeon assets: the [assets] section carries 1 deduped image (64×32 RGBA8, base64) + the DungeonAtlas with 8 cell rects, round-trips through parse_artifact, double-build byte-identical")
+}
+
 // ── Dungeon: the v15 cross-module declaration carry ─────────────────────────
 
 @(test)

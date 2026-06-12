@@ -216,7 +216,38 @@ import "core:strings"
 // populations are layout changes: 14 → 15 (§1). A single-module, level-less
 // artifact moves by the version stamp alone (the v7 stamp-only restamp
 // precedent).
-ARTIFACT_SCHEMA_VERSION :: 15
+//
+// Version 16 carries the §19 ASSET PIXELS through to the runtime — the decoded
+// atlas/image art a textured render (`Draw_Sprite{atlas, cell}`) needs and which
+// an artifact-blind runtime could not draw (the v11 [tilemaps] carried the tile
+// GRID but no pixels; the sprite art never reached the runtime). One layout change
+// rides it: one new section, `[assets A]`, appended after [nav] as the new fixed
+// §3 section TAIL (the [nav] tail precedent). Its records are two TOP-LEVEL kinds
+// plus one sub-record. (1) `image HASH W H b64:RGBA` — one per DISTINCT decoded
+// image, content-addressed by its §2 image hash: HASH is the canonical hash
+// (`sha256:…`), W/H the decoded pixel dimensions, and b64:RGBA the canonical RGBA8
+// buffer (W·H·4 bytes, row-major top-to-bottom, import_image's
+// `.alpha_add_if_missing` output) base64-encoded (core:encoding/base64, the
+// std-alphabet RFC-4648 encoding) as one ASCII token on the line, so the committed
+// text golden stays diffable and the runtime decodes with the same core pkg.
+// Two atlases sharing one image carry the blob ONCE (the §2 hash dedup); each atlas
+// references it by HASH, never by repeating the pixels. (2) `atlas NAME IMAGE_HASH
+// CELL_COUNT` — one per registered atlas, in committed-registry order: NAME is the
+// atlas's registered name, IMAGE_HASH the `image` record it slices (the dedup key),
+// CELL_COUNT the number of `region` sub-records. (3) the new sub-record keyword
+// `region NAME PX_X PX_Y PX_W PX_H` — one per atlas cell in source-declaration
+// order: NAME the cell name a `Draw_Sprite{atlas, cell}` carries, and the pixel
+// rect into the image (PX_X = cell.x·grid_w, PX_Y = cell.y·grid_h, PX_W = grid_w,
+// PX_H = grid_h, all decimal Int §2.2 — the grid-coord×cell-size lowering), so
+// (atlas-name, cell-name) → (image pixels, pixel rect) is resolvable from the
+// artifact alone. The pixels are NOT a §29 purity break: import_image decodes
+// deterministically and base64 is a pure byte→ASCII map, so two emissions are
+// byte-identical (the walk is slice-order over the baked model, never map order).
+// A game with NO assets writes the constant `[assets 0]` tail and moves by the
+// version stamp alone (the v7 stamp-only restamp / [nav 0] tail precedent). A new
+// section and one new sub-record keyword are layout changes: 15 → 16 (§1). ADR
+// 2026-06-12-assets-section-base64-content-addressed.
+ARTIFACT_SCHEMA_VERSION :: 16
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
@@ -285,6 +316,7 @@ SUB_RECORD_KEYWORDS := []string{
 	"row", // a [tilemaps] record's row-major cell line `row …` (§17, schema v12)
 	"navnode", // a [nav] record's walkable-cell center `navnode FIXED_X FIXED_Y` (§18, schema v13)
 	"navedge", // a [nav] record's 4-neighbor adjacency `navedge A B` (§18, schema v13)
+	"region", // an [assets] atlas record's cell rect `region NAME PX_X PX_Y PX_W PX_H` (§19, schema v16)
 }
 
 // Artifact_Section is one parsed `[name N]` block from an artifact: the

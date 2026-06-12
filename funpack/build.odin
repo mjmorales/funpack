@@ -450,8 +450,12 @@ has_entrypoints_fcfg :: proc(root: string) -> bool {
 // behaviors — the v15 [setup] fold carries each level's deterministic spawn
 // batch, and the §12 §1 nav graphs derive from those same layers
 // (bake_tree_nav_graphs) so the artifact's [nav] section carries the
-// walkable-cell topology the runtime path-finds over. A read failure or any
-// checked-pipeline floor surfaces as the stage_emit_indexed
+// walkable-cell topology the runtime path-finds over, and bakes the tree's §19
+// sprite assets (bake_tree_assets, only when an assets.manifest is present) so
+// the artifact's [assets] section carries the decoded content-addressed image
+// pixels + atlas slice rects a textured Draw_Sprite resolves against (schema
+// v16). A read failure or any checked-pipeline floor surfaces as the
+// stage_emit_indexed
 // error, which stage_build maps to Compile_Failed (no artifact); a level that
 // trips a §17.4/§18 §5 bake gate is the same exit-2 compile-error class,
 // surfaced as Gate_Failed.
@@ -489,9 +493,24 @@ emit_tree_artifact :: proc(root: string, project: Project, sources: []Source, al
 	// per layer in the same slice order, so the [nav] section mirrors [tilemaps].
 	// A level-less tree has no layers, so the slice is empty (the `[nav 0]` tail).
 	nav_graphs := bake_tree_nav_graphs(tilemaps, allocator)
+	// The §19 [assets] sprite art (schema v16): the decoded content-addressed
+	// image pixels + atlas slice rects a textured Draw_Sprite resolves against.
+	// Baked only when the tree carries an assets.manifest (stage_build already
+	// staleness-gated it); an asset-less tree threads the empty Baked_Assets (the
+	// constant `[assets 0]` tail). A bake floor here is the same exit-2 compile
+	// class as a level-bake floor — a malformed/missing asset refuses the build
+	// rather than emitting a sprite-less artifact.
+	assets := Baked_Assets{}
+	if asset_tree_has_manifest(root) {
+		baked_assets, assets_err, _ := bake_tree_assets(root, allocator)
+		if assets_err != .None {
+			return "", .Gate_Failed
+		}
+		assets = baked_assets
+	}
 	sibling_asts := build_sibling_module_asts(sources, source.module)
 	identity := Project_Identity{name = project.name, version = project.version}
-	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, tilemaps, nav_graphs, level_spawns, allocator)
+	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, tilemaps, nav_graphs, level_spawns, assets, allocator)
 }
 
 // bake_tree_levels bakes every levels/*.flvl under the §14 tree and

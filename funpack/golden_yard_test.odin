@@ -390,6 +390,20 @@ artifact_contains :: proc(artifact: string, fragment: string) -> bool {
 	return strings.contains(artifact, fragment)
 }
 
+// artifact_has_line_prefix reports whether some whole LF-delimited line BEGINS
+// with `prefix` — the line-scoped match for a record whose lead tokens are pinned
+// but whose tail varies (a v16 `image …` record whose b64:RGBA token's bytes are
+// not pinned here). Stricter than a substring: the prefix must open a line, never
+// match mid-line.
+artifact_has_line_prefix :: proc(artifact: string, prefix: string) -> bool {
+	for candidate in strings.split(artifact, "\n", context.temp_allocator) {
+		if strings.has_prefix(candidate, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // find_stage is a linear lookup of a pipeline's stage by name — the v5 fixtures
 // read the physics battery stage without depending on its position.
 find_stage :: proc(pipeline: Pipeline_Node, name: string) -> (Pipeline_Stage, bool) {
