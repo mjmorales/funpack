@@ -370,3 +370,54 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 	testing.expect(t, artifact_has_line(product.artifact, "nav maze 80 80"))
 	log.infof("golden warren nav pin FLIPPED: the full warren project compiles end-to-end; %d funpack-evaluable chase asserts pass, both build products emit, and the [nav] section carries the 80-node maze graph", report.passed)
 }
+
+// test_emit_warren_matches_runtime_testdata is the warren cross-package byte
+// seam: the live stage_build artifact equals the committed
+// runtime/testdata/warren.artifact the runtime nav golden #loads, byte-for-byte
+// (the krognid/statequery seam mold). FUNPACK_REGEN_GOLDEN=1 REWRITES the
+// committed copy from the live build — checked BEFORE the staged-bump skip, so
+// a regen run can bootstrap the copy across a schema bump (the ordering gap the
+// krognid seam carries). Without regen, a committed copy stamped behind
+// ARTIFACT_SCHEMA_VERSION SKIPs loudly (a staged schema bump — the runtime-side
+// reconcile restores the seam); a SAME-version divergence is the hard failure
+// this seam exists to catch.
+@(test)
+test_emit_warren_matches_runtime_testdata :: proc(t: ^testing.T) {
+	dir := resolve_warren_example_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP warren testdata match: %s not found — check out funpack-spec as a sibling of the repo", dir)
+		return
+	}
+	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
+		return
+	}
+	committed_path, _ := filepath.join({#directory, "..", "runtime", "testdata", "warren.artifact"}, context.temp_allocator)
+	if os.get_env("FUNPACK_REGEN_GOLDEN", context.temp_allocator) != "" {
+		testing.expect(t, os.write_entire_file(committed_path, transmute([]u8)product.artifact) == nil)
+		log.infof("REGEN warren: wrote %s (%d bytes)", committed_path, len(product.artifact))
+		return
+	}
+	committed_bytes, read_err := os.read_entire_file_from_path(committed_path, context.temp_allocator)
+	if read_err != nil {
+		log.warnf("SKIP warren testdata match: committed %s unreadable — regenerate with FUNPACK_REGEN_GOLDEN=1", committed_path)
+		return
+	}
+	committed := string(committed_bytes)
+	if _, committed_version, stamp_ok := parse_version_stamp(line_around(committed, 0)); stamp_ok && committed_version < ARTIFACT_SCHEMA_VERSION {
+		log.warnf(
+			"SKIP warren testdata match: committed runtime copy is stamped v%d while the emitter is at v%d — a staged schema bump; regenerate with FUNPACK_REGEN_GOLDEN=1 or land the runtime-side reconcile",
+			committed_version,
+			ARTIFACT_SCHEMA_VERSION,
+		)
+		return
+	}
+	testing.expect_value(t, len(product.artifact), len(committed))
+	testing.expect(t, product.artifact == committed)
+	if product.artifact != committed {
+		report_first_byte_diff(product.artifact, committed)
+		return
+	}
+	log.infof("emit warren: the live build reproduces the committed runtime/testdata/warren.artifact byte-for-byte (%d bytes)", len(product.artifact))
+}
