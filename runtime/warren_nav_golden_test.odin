@@ -181,6 +181,60 @@ test_warren_golden_offnav_and_containing_cell :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_warren_golden_startup_spawns_carried_schema :: proc(t: ^testing.T) {
+	// AC (the v15 carry feeding run_startup over producer-real bytes): the
+	// warren [setup 4] batch spawns the four named markers against the CARRIED
+	// [things] schemas, and the Rabbit/Ferret composite `path: Path =
+	// Path(steps=[],cost=0)` default decodes TYPED through the synthesized §8
+	// [data] Path projection (the Settings mold): steps resolves [Vec2] → an
+	// empty List_Value column, cost resolves Fixed → a Fixed(0) column — never
+	// untyped tokens. Marker centers are hand-derived from warren.flvl (the
+	// same anchors the nav pins use); hidden/repath_t fill from their carried
+	// scalar defaults.
+	program, ok := warren_nav_world(t)
+	if !ok {
+		return
+	}
+	world := new_world(program, context.temp_allocator)
+	version := run_startup(&program, initial_version(world, context.temp_allocator), context.temp_allocator)
+
+	rabbits := version_find_table(&version, "Rabbit")
+	ferrets := version_find_table(&version, "Ferret")
+	burrows := version_find_table(&version, "Burrow")
+	if !testing.expect(t, rabbits != nil && ferrets != nil && burrows != nil) {
+		return
+	}
+	testing.expect_value(t, len(rabbits.rows), 1)
+	testing.expect_value(t, len(ferrets.rows), 1)
+	testing.expect_value(t, len(burrows.rows), 2)
+
+	doe := rabbits.rows[0]
+	testing.expect_value(t, doe.fields["pos"].(Vec2), warren_doe())
+	testing.expect_value(t, doe.fields["hidden"].(bool), false)
+	doe_path, doe_path_is_record := doe.fields["path"].(Record_Value)
+	testing.expect(t, doe_path_is_record)
+	if doe_path_is_record {
+		testing.expect_value(t, doe_path.type_name, "Path")
+		steps, steps_is_list := doe_path.fields["steps"].(List_Value)
+		testing.expect(t, steps_is_list)
+		testing.expect_value(t, len(steps.elements), 0)
+		testing.expect_value(t, doe_path.fields["cost"].(Fixed), Fixed(0))
+	}
+
+	hob := ferrets.rows[0]
+	testing.expect_value(t, hob.fields["pos"].(Vec2), warren_hob())
+	testing.expect_value(t, hob.fields["repath_t"].(Fixed), Fixed(0))
+	hob_path, hob_path_is_record := hob.fields["path"].(Record_Value)
+	testing.expect(t, hob_path_is_record)
+	if hob_path_is_record {
+		testing.expect_value(t, hob_path.type_name, "Path")
+	}
+
+	testing.expect_value(t, burrows.rows[0].fields["pos"].(Vec2), warren_den())
+	testing.expect_value(t, burrows.rows[1].fields["pos"].(Vec2), warren_sealed())
+}
+
+@(test)
 test_warren_golden_los_over_the_baked_maze :: proc(t: ^testing.T) {
 	// AC (§12 §3 los over the emitted bake): along the doe's
 	// top corridor — (12,84) to (44,84), cells (1..5, 1) all floor — sight is
