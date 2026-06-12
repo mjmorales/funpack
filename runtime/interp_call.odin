@@ -624,6 +624,12 @@ eval_named_call :: proc(
 		return builtin_len(interp, node, env)
 	case "grid_cells":
 		return builtin_grid_cells(interp, node, env)
+	case "neighbors":
+		return builtin_neighbors(interp, node, env)
+	case "in_bounds":
+		return builtin_in_bounds(interp, node, env)
+	case "or_else":
+		return builtin_or_else(interp, node, env)
 	case "sound":
 		return builtin_sound(interp, node, env)
 	case "pick":
@@ -1210,6 +1216,107 @@ builtin_grid_cells :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: V
 		}
 	}
 	return List_Value{elements = out}, true
+}
+
+// builtin_neighbors is the §18 §4 stdlib engine.grid `neighbors(cell) -> [Cell]`:
+// the four orthogonally adjacent cells of the argument's own record type, in
+// ROW-MAJOR READING ORDER — (x, y-1) above, then (x-1, y) and (x+1, y) on the
+// row, then (x, y+1) below — the same y-outer order grid_cells enumerates, so a
+// fold over the open set is deterministic by construction. MIRRORS funpack
+// evaluate.odin's eval_neighbors (the dungeon's ooze filters this
+// list through in_bounds + enterable). The element type name echoes the
+// ARGUMENT's (the grid_cells discipline: the cell type is the caller's). A
+// non-cell argument is ok=false (fail-closed).
+builtin_neighbors :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	x, y, type_name, is_cell := grid_cell_coords(arg)
+	if !is_cell {
+		return nil, false
+	}
+	offsets := [4][2]i64{{0, -1}, {-1, 0}, {1, 0}, {0, 1}}
+	elements := make([]Value, 4, interp.allocator)
+	for offset, i in offsets {
+		fields := make(map[string]Value, interp.allocator)
+		fields["x"] = x + offset[0]
+		fields["y"] = y + offset[1]
+		elements[i] = Record_Value{type_name = type_name, fields = fields}
+	}
+	return List_Value{elements = elements}, true
+}
+
+// builtin_in_bounds is the §18 §4 stdlib engine.grid `in_bounds(cell, size) ->
+// Bool`: whether the cell lies in the [0, size.x) × [0, size.y) grid — the
+// dungeon's open-neighbor gate beside `enterable`. MIRRORS funpack
+// evaluate.odin's eval_in_bounds. Either argument failing the cell shape is
+// ok=false (fail-closed).
+builtin_in_bounds :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	cell_val, cell_ok := eval(interp, &node.children[1], env)
+	size_val, size_ok := eval(interp, &node.children[2], env)
+	if !cell_ok || !size_ok {
+		return nil, false
+	}
+	x, y, _, x_is_cell := grid_cell_coords(cell_val)
+	sx, sy, _, size_is_cell := grid_cell_coords(size_val)
+	if !x_is_cell || !size_is_cell {
+		return nil, false
+	}
+	return x >= 0 && x < sx && y >= 0 && y < sy, true
+}
+
+// grid_cell_coords reads a `Cell{x, y}` record value into its integer cell
+// coordinates plus its OWN type name (the name neighbors echoes back onto the
+// elements it builds) — the runtime twin of funpack's tilemap_cell_coords.
+// ok=false for any non-record value or a record without two Int x/y columns.
+grid_cell_coords :: proc(arg: Value) -> (x, y: i64, type_name: string, ok: bool) {
+	record, is_record := arg.(Record_Value)
+	if !is_record {
+		return 0, 0, "", false
+	}
+	x_field, x_present := record.fields["x"]
+	y_field, y_present := record.fields["y"]
+	if !x_present || !y_present {
+		return 0, 0, "", false
+	}
+	xi, x_is_int := x_field.(i64)
+	yi, y_is_int := y_field.(i64)
+	if !x_is_int || !y_is_int {
+		return 0, 0, "", false
+	}
+	return xi, yi, record.type_name, true
+}
+
+// builtin_or_else is the §26 prelude unwrap `or_else(option, fallback) -> T`:
+// the Some payload, or the fallback — the fold-then-default unwrap the
+// dungeon's hero_pos ends on. MIRRORS funpack evaluate.odin's eval_or_else:
+// the fallback expression evaluates ONLY on the None arm, so an or_else over a
+// Some never runs it — observationally identical in a pure language, and it
+// keeps a Some-carrying call evaluable even where the fallback is not. A
+// non-Option argument is ok=false (fail-closed).
+builtin_or_else :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	option_val, option_ok := eval(interp, &node.children[1], env)
+	if !option_ok {
+		return nil, false
+	}
+	option, is_variant := option_val.(Variant_Value)
+	if !is_variant || option.enum_type != "Option" {
+		return nil, false
+	}
+	if option.case_name == "Some" && option.payload != nil {
+		return option.payload^, true
+	}
+	return eval(interp, &node.children[2], env)
 }
 
 // builtin_pick is the §26 seeded draw `pick(list, rng) -> (Option[T], Rng)`
