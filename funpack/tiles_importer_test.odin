@@ -118,18 +118,29 @@ test_import_tileset_warren_golden :: proc(t: ^testing.T) {
 
 @(test)
 test_dungeon_manifest_registers_tileset :: proc(t: ^testing.T) {
-	// The committed dungeon assets.manifest registers the tileset beside its
-	// atlas: kind tileset, importer tiles@1, deps carrying the atlas hash (the
-	// §19 §5 dependency edge). Pinned to the golden manifest in lockstep.
+	// The committed (GENERATED) dungeon assets.manifest registers the §19-literal
+	// DAG: the discovered image node (kind=image, named by the PNG filename), then
+	// its atlas, then the tileset — three entries in bottom-up order. The tileset
+	// (the LAST entry) deps-on its atlas (the §19 §5 edge). The dep prefix is the
+	// atlas name `dungeon_atlas@sha256:`; the digest is now a REAL full hash (the
+	// §19-literal bake reads the real PNG, no phantom). Pinned to the golden
+	// manifest in lockstep — the image node moved the tileset from index 1 to 2.
 	content, ok := tiles_golden_source(resolve_dungeon_assets_dir(), "assets.manifest")
 	if !ok {
 		return
 	}
 	manifest, err := read_asset_manifest(content)
 	testing.expect_value(t, err, Asset_Manifest_Error.None)
-	testing.expect_value(t, len(manifest.entries), 2)
+	testing.expect_value(t, len(manifest.entries), 3)
 
-	tileset := manifest.entries[1]
+	// The first entry is the discovered image node — a first-class manifest asset
+	// (kind=image), the atlas's raw-image dependency read off disk and hashed.
+	image := manifest.entries[0]
+	testing.expect_value(t, image.kind, Asset_Kind.Image)
+	testing.expect_value(t, image.name, "dungeon.png")
+	testing.expect_value(t, len(image.deps), 0)
+
+	tileset := manifest.entries[2]
 	testing.expect_value(t, tileset.name, "dungeon")
 	testing.expect_value(t, tileset.kind, Asset_Kind.Tileset)
 	testing.expect_value(t, tileset.source, "dungeon.tiles")
@@ -140,18 +151,25 @@ test_dungeon_manifest_registers_tileset :: proc(t: ^testing.T) {
 
 @(test)
 test_warren_manifest_registers_tileset :: proc(t: ^testing.T) {
-	// Same pin over the warren manifest — the tileset entry's NAME differs from
-	// its tileset block's name (warren_tiles vs Warren): the manifest name is
-	// the handle the seam emits, the block name is the DSL's.
+	// Same pin over the warren manifest — the §19-literal three-node DAG (image,
+	// atlas, tileset). The tileset entry's NAME differs from its tileset block's
+	// name (warren_tiles vs Warren): the manifest name is the handle the seam
+	// emits, the block name is the DSL's. The image node moved the tileset to
+	// index 2.
 	content, ok := tiles_golden_source(resolve_warren_assets_dir(), "assets.manifest")
 	if !ok {
 		return
 	}
 	manifest, err := read_asset_manifest(content)
 	testing.expect_value(t, err, Asset_Manifest_Error.None)
-	testing.expect_value(t, len(manifest.entries), 2)
+	testing.expect_value(t, len(manifest.entries), 3)
 
-	tileset := manifest.entries[1]
+	image := manifest.entries[0]
+	testing.expect_value(t, image.kind, Asset_Kind.Image)
+	testing.expect_value(t, image.name, "warren.png")
+	testing.expect_value(t, len(image.deps), 0)
+
+	tileset := manifest.entries[2]
 	testing.expect_value(t, tileset.name, "warren_tiles")
 	testing.expect_value(t, tileset.kind, Asset_Kind.Tileset)
 	testing.expect_value(t, tileset.source, "warren.tiles")
@@ -174,7 +192,8 @@ test_import_tileset_bakes_through_manifest :: proc(t: ^testing.T) {
 	manifest, manifest_err := read_asset_manifest(manifest_content)
 	testing.expect_value(t, manifest_err, Asset_Manifest_Error.None)
 
-	entry := manifest.entries[1]
+	// The tileset is the LAST entry of the §19-literal DAG (image, atlas, tileset).
+	entry := manifest.entries[2]
 	src, src_ok := tiles_golden_source(resolve_dungeon_assets_dir(), entry.source)
 	if !src_ok {
 		return

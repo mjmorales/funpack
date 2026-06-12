@@ -114,15 +114,40 @@ emit_assets_gen_fun :: proc(manifest: Asset_Manifest, docs: []string, allocator 
 	// with no tileset emits no engine.tilemap line.
 	emit_assets_import(&b, manifest)
 
-	for entry, i in manifest.entries {
+	// The doc index counts only the EMITTED entries (handle-bearing kinds), not
+	// every manifest entry: an image node carries no handle constant (it is sliced
+	// THROUGH its atlas, never named by game code — §19 §1: the atlas's seam is the
+	// AtlasHandle, the image has no independent seam), so the per-asset docs the
+	// caller supplies align to the handle-bearing entries, not to the registry's
+	// image nodes interleaved among them.
+	emitted := 0
+	for entry in manifest.entries {
+		if !asset_emits_handle(entry.kind) {
+			continue
+		}
 		// A blank line before every handle block: the same separator the import
 		// gets, so the first handle is offset from the import and every adjacent
 		// pair is offset from each other.
 		strings.write_string(&b, "\n")
-		doc := i < len(docs) ? docs[i] : ""
+		doc := emitted < len(docs) ? docs[emitted] : ""
 		emit_asset_handle(&b, entry, doc)
+		emitted += 1
 	}
 	return strings.to_string(b)
+}
+
+// asset_emits_handle reports whether an Asset_Kind carries a typed handle
+// constant in the generated assets.gen.fun seam. Every kind EXCEPT Image does: a
+// model→MeshHandle, atlas→AtlasHandle, audio→SoundHandle, tileset→TilesetHandle
+// are all named by game code. An IMAGE is a first-class manifest/DAG node (hashed,
+// closed-registry) but carries NO seam handle — it is the atlas's raw-image
+// dependency, sliced through the AtlasHandle, never referenced directly (§19 §1:
+// the image has no independent seam). Skipping it keeps the seam a pure function of
+// the handle-bearing assets, so registering an image does not perturb the seam
+// bytes (and never emits a `let dungeon.png:` whose `.`-bearing name is not a valid
+// funpack identifier).
+asset_emits_handle :: proc(kind: Asset_Kind) -> bool {
+	return kind != .Image
 }
 
 // emit_assets_import writes one `import <module>.{T0, T1, …}` line per owning
@@ -155,6 +180,12 @@ emit_assets_import :: proc(b: ^strings.Builder, manifest: Asset_Manifest) {
 assets_used_handle_modules :: proc(manifest: Asset_Manifest, allocator := context.allocator) -> []string {
 	modules := make([dynamic]string, 0, 2, allocator)
 	for entry in manifest.entries {
+		// Image nodes carry no handle (sliced through their atlas, §19 §1), so
+		// they contribute no import module — registering an image never adds an
+		// import line to the seam.
+		if !asset_emits_handle(entry.kind) {
+			continue
+		}
 		module := asset_handle_module(entry.kind)
 		if !slice_contains_string(modules[:], module) {
 			append(&modules, module)
@@ -171,6 +202,11 @@ assets_used_handle_modules :: proc(manifest: Asset_Manifest, allocator := contex
 assets_used_handle_types :: proc(manifest: Asset_Manifest, module: string, allocator := context.allocator) -> []string {
 	types := make([dynamic]string, 0, 3, allocator)
 	for entry in manifest.entries {
+		// Image nodes carry no handle (§19 §1), so they contribute no handle type
+		// to any import line.
+		if !asset_emits_handle(entry.kind) {
+			continue
+		}
 		if asset_handle_module(entry.kind) != module {
 			continue
 		}

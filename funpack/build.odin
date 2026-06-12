@@ -96,6 +96,15 @@ Build_Error :: enum {
 	Index_Failed,
 	Holed_Declaration,
 	Debug_Directive,
+	// Asset_Bake_Failed is the §19-literal manifest-bake refusal arm: the asset
+	// bake could not produce a manifest that matches the committed one — a
+	// missing/unreadable source, a missing or corrupt image file, an importer
+	// reject, or (the §19 §5 seam-staleness model) a committed assets.manifest
+	// that does not byte-match the freshly-baked one. Like every other arm it
+	// maps to exit 2, no product — a stale or unbuildable asset graph refuses the
+	// whole build before either emission surface runs. The offender line names
+	// the offending asset/file and the specific bake error (asset_bake_refusal_message).
+	Asset_Bake_Failed,
 }
 
 // Build_Verdict is the build seam's refusal verdict: the closed Build_Error arm
@@ -122,6 +131,82 @@ build_refusal_message :: proc(verdict: Build_Verdict, allocator := context.alloc
 		return fmt.aprintf("%v", verdict.err, allocator = allocator)
 	}
 	return fmt.aprintf("%v: %s", verdict.err, verdict.offender, allocator = allocator)
+}
+
+// stage_asset_bake is the §19-literal manifest-bake GATE the build runs over a
+// tree carrying an assets/assets.manifest: it bakes the manifest from real source
+// bytes (bake_asset_manifest — every hash recomputed, each atlas's image read off
+// disk), emits the canonical manifest text (emit_asset_manifest), and
+// STALENESS-CHECKS it against the committed bytes (bake_manifest_staleness, §19
+// §5). It is the pure check side — it WRITES nothing — so a stale committed
+// manifest is a Build_Error here (exit 2, no product), and regeneration is the
+// impure CLI side's job (regen_asset_manifest under FUNPACK_REGEN_GOLDEN). The
+// returned verdict's offender carries the bake error kind + the offending
+// asset/file path so the refusal line names exactly what to repair (a missing
+// image, a stale manifest awaiting regen).
+stage_asset_bake :: proc(root: string, allocator := context.allocator) -> Build_Verdict {
+	baked, bake_err, bake_detail := bake_asset_manifest(root, context.temp_allocator)
+	if bake_err != .None {
+		return Build_Verdict{err = .Asset_Bake_Failed, offender = asset_bake_refusal_message(bake_err, bake_detail, allocator)}
+	}
+	emitted := emit_asset_manifest(baked, context.temp_allocator)
+	if stale_err, stale_detail := bake_manifest_staleness(root, emitted); stale_err != .None {
+		return Build_Verdict{err = .Asset_Bake_Failed, offender = asset_bake_refusal_message(stale_err, stale_detail, allocator)}
+	}
+	return Build_Verdict{}
+}
+
+// asset_bake_refusal_message renders an Asset_Bake_Error + its offending
+// asset/file path as the build refusal's offender line — the advisory fix-it that
+// rides beside the closed Asset_Bake_Failed arm (the named-offender discipline:
+// the arm is the machine contract, this names what to repair). A Stale_Manifest
+// directs the agent to regenerate; the read/source/image errors name the file
+// that could not be resolved. The line is deterministic (a pure function of the
+// error + detail) so goldens may pin it.
+asset_bake_refusal_message :: proc(err: Asset_Bake_Error, detail: string, allocator := context.allocator) -> string {
+	switch err {
+	case .None:
+		return ""
+	case .Stale_Manifest:
+		return fmt.aprintf("Stale_Manifest: %s does not match the freshly-baked manifest — regenerate it (FUNPACK_REGEN_GOLDEN=1 funpack build) and commit the diff", detail, allocator = allocator)
+	case .Missing_Manifest:
+		return fmt.aprintf("Missing_Manifest: %s — a tree that bakes assets must carry the generated manifest", detail, allocator = allocator)
+	case .Malformed_Manifest:
+		return fmt.aprintf("Malformed_Manifest: %s — the committed manifest does not parse", detail, allocator = allocator)
+	case .Missing_Source:
+		return fmt.aprintf("Missing_Source: %s — a registered asset source is not on disk", detail, allocator = allocator)
+	case .Malformed_Source:
+		return fmt.aprintf("Malformed_Source: %s — an asset source rejected its importer", detail, allocator = allocator)
+	case .Missing_Image:
+		return fmt.aprintf("Missing_Image: %s — an atlas names an image file that is not on disk", detail, allocator = allocator)
+	case .Malformed_Image:
+		return fmt.aprintf("Malformed_Image: %s — an image file could not be decoded", detail, allocator = allocator)
+	}
+	return fmt.aprintf("%v: %s", err, detail, allocator = allocator)
+}
+
+// regen_asset_manifest is the §19-literal manifest bake's IMPURE regenerate side:
+// it bakes the manifest from real source bytes and WRITES the freshly-emitted text
+// back to the committed assets/assets.manifest, so the next build's staleness gate
+// passes. It is the dev-regenerate path the CLI runs under FUNPACK_REGEN_GOLDEN — a
+// committed-but-generated artifact the operator regenerates and commits as a diff
+// (§19 §3). A tree with no manifest is a no-op (ok = true — nothing to regen); a
+// bake or write failure is ok = false with the error named, so a regen that cannot
+// produce a manifest fails loudly rather than silently leaving the committed copy
+// stale.
+regen_asset_manifest :: proc(root: string) -> (err: Asset_Bake_Error, detail: string) {
+	if !asset_tree_has_manifest(root) {
+		return .None, ""
+	}
+	baked, bake_err, bake_detail := bake_asset_manifest(root, context.temp_allocator)
+	if bake_err != .None {
+		return bake_err, bake_detail
+	}
+	emitted := emit_asset_manifest(baked, context.temp_allocator)
+	if !write_asset_manifest(root, emitted) {
+		return .Missing_Manifest, asset_manifest_path(root, context.temp_allocator)
+	}
+	return .None, ""
 }
 
 // stage_build is the build verb's pure seam: it reads the §14 project tree at
@@ -162,6 +247,20 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 	}
 	if len(project.sources) == 0 {
 		return Build_Product{}, Build_Verdict{err = .Malformed_Tree}
+	}
+	// §19-literal manifest-bake gate: a tree carrying an assets/assets.manifest
+	// has its manifest REGENERATED from real source bytes (every hash recomputed,
+	// each atlas's image read off disk and hashed) and STALENESS-CHECKED against
+	// the committed bytes (§19 §5: a committed generated manifest that does not
+	// match the freshly-baked one is a build error). This runs before either
+	// emission surface so a stale or unbuildable asset graph refuses the whole
+	// build — exit 2, no product — naming the offending asset/file. A tree with no
+	// manifest has no assets to bake, so the gate is skipped (an asset-free game
+	// is not refused).
+	if asset_tree_has_manifest(root) {
+		if bake_verdict := stage_asset_bake(root, allocator); bake_verdict.err != .None {
+			return Build_Product{}, bake_verdict
+		}
 	}
 	// §30 §7: a path dependency is compiled through the consumer's pipeline
 	// with the same gates as its own code, so every build/check walk below

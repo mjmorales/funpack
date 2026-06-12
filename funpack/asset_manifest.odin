@@ -312,10 +312,13 @@ manifest_scan_punct :: proc(ch: u8) -> Manifest_Token {
 }
 
 // is_manifest_word_char admits the characters a manifest word can carry: a
-// block name or key (`coin`, `coin_sfx`, `importer`) and a kind value
-// (`model`). Letters, digits, and underscore — the same class .fun
-// identifiers use (is_ident_char already admits `_`), scanned here without
-// the casing classes the manifest grammar has no use for.
+// block name or key (`coin`, `coin_sfx`, `importer`), a kind value (`model`),
+// and an IMAGE block name, which is the raw image's filename (`dungeon.png`) —
+// the §19-literal bake registers each discovered image as a first-class node
+// named by its filename, and a dep references it as `<filename>@<hash>`, so the
+// block-name word must admit the `.` a filename carries. Letters, digits, and
+// underscore (the .fun identifier class, is_ident_char) plus `.` — scanned here
+// without the casing classes the manifest grammar has no use for.
 is_manifest_word_char :: proc(ch: u8) -> bool {
-	return is_ident_char(ch)
+	return is_ident_char(ch) || ch == '.'
 }

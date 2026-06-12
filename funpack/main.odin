@@ -184,6 +184,19 @@ warden_verb_exit :: proc(root: string, cmd: Warden_Command, arg := "", find := W
 // arms — but the wording is advisory: the machine contract is exclusively the
 // exit code (§29 §3).
 run_build_verb :: proc(mode: Build_Mode) -> int {
+	// §19-literal manifest regen (the operator-gated dev-regenerate path): under
+	// FUNPACK_REGEN_GOLDEN the build first REGENERATES the committed
+	// assets/assets.manifest from real source bytes, so the staleness gate then
+	// passes — this is how an asset-source edit (or an importer-version bump)
+	// re-pins the generated manifest the operator commits as a diff (§19 §3). A
+	// regen that cannot bake (a missing image, an importer reject) refuses the
+	// build before any product, exit 2, naming the offending asset.
+	if os.get_env("FUNPACK_REGEN_GOLDEN", context.temp_allocator) != "" {
+		if regen_err, regen_detail := regen_asset_manifest("."); regen_err != .None {
+			fmt.eprintfln("funpack build: %s", asset_bake_refusal_message(regen_err, regen_detail, context.temp_allocator))
+			return 2
+		}
+	}
 	product, verdict := stage_build(".", mode, context.temp_allocator)
 	if verdict.err != .None {
 		fmt.eprintfln("funpack build: %s", build_refusal_message(verdict, context.temp_allocator))
