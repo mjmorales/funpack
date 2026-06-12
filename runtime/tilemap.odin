@@ -459,30 +459,61 @@ cell_value :: proc(interp: ^Interp, col, row: i64) -> Value {
 	return Record_Value{type_name = "Cell", fields = fields}
 }
 
-// --- The §18 §4 SetTile tick-end application (the [Spawn]-class command path) -
+// --- The §18 §4 tile-command tick-end application (the [Spawn]-class path) -
 
-// Set_Tile_Refusal_Kind is the closed set of ways one SetTile command fails its
-// tick-end application. Each is a NAMED per-command refusal — the §24 persist
-// Result::Err mold (the command fails closed, the tick completes, nothing is
-// silently dropped) — recorded into Tick_State.settile_refusals in application
-// order, deterministic under replay (same inputs, same refusals).
-Set_Tile_Refusal_Kind :: enum {
-	Malformed_Command, // the record is not the SetTile{map, cell, tile} shape
-	Unknown_Layer,     // `map` names no committed tile layer
-	Unknown_Tile,      // `tile` names no palette entry of the layer
-	Cell_Out_Of_Grid,  // `cell` lies outside the layer's grid
+// Terrain_Command_Kind discriminates the two §18 §4 committed-tile-state writes
+// a behavior emits: a per-cell `SetTile{map, cell, tile}` edit and its whole-
+// layer twin `BuildLayer{map, fill, cells}` (a seeded generation behavior's bulk
+// write that REPLACES the layer's contents). Both ride ONE ordered terrain-
+// command stream (Tick_State.terrain_commands) so a tick mixing the two folds
+// them in a single deterministic collection order — a closed enum, the digest's
+// kind-tag discipline applied to the command side.
+Terrain_Command_Kind :: enum {
+	Set_Tile,    // SetTile{map, cell, tile} — a one-cell edit
+	Build_Layer, // BuildLayer{map, fill, cells} — a whole-layer replacement
 }
 
-// Set_Tile_Refusal names one refused SetTile command: the refusal arm plus the
-// offending coordinates the diagnostic needs ("" / 0 where the malformed shape
-// never yielded them). The strings alias the command record's same-tick eval
-// values — refusals are a same-tick read, never carried across the boundary.
-Set_Tile_Refusal :: struct {
-	kind:  Set_Tile_Refusal_Kind,
-	layer: string, // the named layer ("" when the map handle itself is malformed)
-	tile:  string, // the named tile ("" when absent/malformed)
-	col:   int, // the target cell, when the command carried one
-	row:   int,
+// Terrain_Command is one collected committed-tile-state write tagged by kind in
+// COLLECTION ORDER: the kind dispatches the fold (settile_apply / buildlayer_apply)
+// and `record` is the raw same-tick Record_Value the emit produced (the persist-
+// batch mold — read at the boundary, never lowered into a blackboard row). One
+// stream, both kinds, so a same-tick BuildLayer-then-SetTile (or the reverse)
+// folds in exactly the order the tick collected them — last write to a cell wins
+// across BOTH kinds, deterministic under replay.
+Terrain_Command :: struct {
+	kind:   Terrain_Command_Kind,
+	record: Record_Value,
+}
+
+// Tile_Command_Refusal_Kind is the closed set of ways one terrain command
+// (SetTile OR BuildLayer) fails its tick-end application. Each is a NAMED
+// per-command refusal — the §24 persist Result::Err mold (the command fails
+// closed, the tick completes, nothing is silently dropped) — recorded into
+// Tick_State.tile_refusals in application order, deterministic under replay
+// (same inputs, same refusals). The arms are shared across both commands: a
+// BuildLayer's `fill` and each override tile name resolve through the same
+// Unknown_Tile arm SetTile's `tile` does, and an override cell rides the same
+// Cell_Out_Of_Grid arm; the `command` discriminant on Tile_Command_Refusal names
+// which emitted the refusal.
+Tile_Command_Refusal_Kind :: enum {
+	Malformed_Command, // the record is not the command's declared shape
+	Unknown_Layer,     // `map` names no committed tile layer
+	Unknown_Tile,      // a named tile (`tile` / `fill` / an override) names no palette entry
+	Cell_Out_Of_Grid,  // a target cell lies outside the layer's grid
+}
+
+// Tile_Command_Refusal names one refused terrain command: the emitting command,
+// the refusal arm, and the offending names/coordinates the diagnostic needs ("" /
+// 0 where the malformed shape never yielded them). The strings alias the command
+// record's same-tick eval values — refusals are a same-tick read, never carried
+// across the boundary.
+Tile_Command_Refusal :: struct {
+	command: Terrain_Command_Kind,
+	kind:    Tile_Command_Refusal_Kind,
+	layer:   string, // the named layer ("" when the map handle itself is malformed)
+	tile:    string, // the named/offending tile ("" when absent/malformed)
+	col:     int, // the target cell, when the command carried one
+	row:     int,
 }
 
 // tilemap_palette_index finds a tile's palette index by its project-global
@@ -497,70 +528,161 @@ tilemap_palette_index :: proc(layer: ^Tile_Layer, tile: string) -> int {
 	return -1
 }
 
-// fold_tile_layers folds one tick's collected SetTile commands into the next
-// committed version's tile-layer state — the §18 §4 tick-end application,
-// applied in COMMAND COLLECTION ORDER (flattened pipeline order, stable Id
-// order within a behavior, list order within a return — the same order the
-// spawn batch fixes), so the fold is a pure function of the tick's command
-// sequence and the last write to a cell wins deterministically.
+// fold_tile_layers folds one tick's collected terrain commands (SetTile +
+// BuildLayer) into the next committed version's tile-layer state — the §18 §4
+// tick-end application, applied in ONE COMMAND COLLECTION ORDER (flattened
+// pipeline order, stable Id order within a behavior, list order within a return
+// — the same order the spawn batch fixes). The two kinds share the single
+// ordered stream, so the fold is a pure function of the tick's command sequence
+// and the last write to a cell wins ACROSS BOTH kinds: a BuildLayer reached
+// after a SetTile resets the whole layer over that edit, and a SetTile reached
+// after a BuildLayer edits the freshly-built layer — exactly as a SetTile after
+// a SetTile overwrites the earlier cell.
 //
 // COW at the layer level: a tick with no commands SHARES the prior slice by
 // reference (the structural-sharing discipline tables get); a command-carrying
 // tick allocates a fresh layers slice on the COMMIT allocator and copies only
-// the TOUCHED layers' cells once each — names and palettes alias the prior
-// version (ultimately the program's pristine decode) forever, so the only
-// per-version ownership is the cells backing the live reclaimer retires.
+// the TOUCHED layers' cells once each (a BuildLayer touches its layer like any
+// edit, then writes the whole cells array in place) — names and palettes alias
+// the prior version (ultimately the program's pristine decode) forever, so the
+// only per-version ownership is the cells backing the live reclaimer retires.
 //
-// Every invalid command is a NAMED refusal (Set_Tile_Refusal) appended to
-// state.settile_refusals — fail the COMMAND closed, never the tick, and never
-// a silent drop (the spawn batch's unknown-thing `continue` is deliberately
-// NOT matched; the persist Result::Err per-command arm is).
+// Every invalid command is a NAMED refusal (Tile_Command_Refusal) appended to
+// state.tile_refusals — fail the COMMAND closed, never the tick, and never a
+// silent drop (the spawn batch's unknown-thing `continue` is deliberately NOT
+// matched; the persist Result::Err per-command arm is).
 fold_tile_layers :: proc(prior: World_Version, state: ^Tick_State) -> []Tile_Layer {
-	if len(state.settile_commands) == 0 {
+	if len(state.terrain_commands) == 0 {
 		return prior.tilemaps
 	}
 	layers := make([]Tile_Layer, len(prior.tilemaps), state.commit_allocator)
 	copy(layers, prior.tilemaps)
 	// Which layers' cells are already fresh THIS tick — copy once, then write
-	// in place within the tick's own copy.
+	// in place within the tick's own copy. A BuildLayer's whole-layer write and
+	// a SetTile's single-cell write share the same fresh-set discipline.
 	fresh := make([]bool, len(layers), state.allocator)
 
-	for command in state.settile_commands {
-		layer_name, cell, tile, shape_ok := settile_command_parts(command)
-		if !shape_ok {
-			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Malformed_Command, layer = layer_name})
-			continue
+	for command in state.terrain_commands {
+		switch command.kind {
+		case .Set_Tile:
+			settile_apply(command.record, layers, fresh, state)
+		case .Build_Layer:
+			buildlayer_apply(command.record, layers, fresh, state)
 		}
-		index := -1
-		for &layer, i in layers {
-			if layer.name == layer_name {
-				index = i
-				break
-			}
-		}
-		if index < 0 {
-			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Unknown_Layer, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
-			continue
-		}
-		layer := &layers[index]
-		palette := tilemap_palette_index(layer, tile)
-		if palette < 0 {
-			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Unknown_Tile, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
-			continue
-		}
-		if cell.x < 0 || cell.x >= layer.cols || cell.y < 0 || cell.y >= layer.rows {
-			append(&state.settile_refusals, Set_Tile_Refusal{kind = .Cell_Out_Of_Grid, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
-			continue
-		}
-		if !fresh[index] {
-			cells := make([]int, len(layer.cells), state.commit_allocator)
-			copy(cells, layer.cells)
-			layer.cells = cells
-			fresh[index] = true
-		}
-		layer.cells[cell.y * layer.cols + cell.x] = palette
 	}
 	return layers
+}
+
+// settile_apply folds one SetTile{map, cell, tile} command into the working
+// layers — the per-cell arm of fold_tile_layers. A malformed shape, an unknown
+// layer, an unknown tile, or an out-of-grid cell is the matching NAMED refusal
+// (the command fails closed); otherwise the targeted cell takes the tile's
+// palette index, COW-copying the layer's cells once on first touch this tick.
+settile_apply :: proc(record: Record_Value, layers: []Tile_Layer, fresh: []bool, state: ^Tick_State) {
+	layer_name, cell, tile, shape_ok := settile_command_parts(record)
+	if !shape_ok {
+		append(&state.tile_refusals, Tile_Command_Refusal{command = .Set_Tile, kind = .Malformed_Command, layer = layer_name})
+		return
+	}
+	index := find_layer_index(layers, layer_name)
+	if index < 0 {
+		append(&state.tile_refusals, Tile_Command_Refusal{command = .Set_Tile, kind = .Unknown_Layer, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
+		return
+	}
+	layer := &layers[index]
+	palette := tilemap_palette_index(layer, tile)
+	if palette < 0 {
+		append(&state.tile_refusals, Tile_Command_Refusal{command = .Set_Tile, kind = .Unknown_Tile, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
+		return
+	}
+	if cell.x < 0 || cell.x >= layer.cols || cell.y < 0 || cell.y >= layer.rows {
+		append(&state.tile_refusals, Tile_Command_Refusal{command = .Set_Tile, kind = .Cell_Out_Of_Grid, layer = layer_name, tile = tile, col = cell.x, row = cell.y})
+		return
+	}
+	cow_layer_cells(layer, index, fresh, state)
+	layer.cells[cell.y * layer.cols + cell.x] = palette
+}
+
+// buildlayer_apply folds one BuildLayer{map, fill, cells} command into the
+// working layers — the WHOLE-LAYER arm of fold_tile_layers (§18 §4 "the whole-
+// layer twin"). It REPLACES the named layer's contents atomically: every cell
+// takes `fill`'s palette index, then each `cells` override (a (Cell, tile-name)
+// tuple) is applied in list order — last write wins. The whole command is
+// validated BEFORE any write so it is all-or-nothing: a malformed record, an
+// unknown layer, an unknown `fill` tile, an override naming an unknown tile, or
+// an override cell out of grid is the matching NAMED refusal and the layer is
+// left untouched (a partially-applied generation would be neither the old layer
+// nor the requested one — the fail-closed contract demands the whole command
+// stand or fall). The fill replaces the layer's cells whether or not the layer
+// carried prior SetTile/BuildLayer edits this tick (collection-order semantics:
+// the build resets over anything earlier).
+buildlayer_apply :: proc(record: Record_Value, layers: []Tile_Layer, fresh: []bool, state: ^Tick_State) {
+	layer_name, fill, overrides, shape_ok := buildlayer_command_parts(record, state.allocator)
+	if !shape_ok {
+		append(&state.tile_refusals, Tile_Command_Refusal{command = .Build_Layer, kind = .Malformed_Command, layer = layer_name})
+		return
+	}
+	index := find_layer_index(layers, layer_name)
+	if index < 0 {
+		append(&state.tile_refusals, Tile_Command_Refusal{command = .Build_Layer, kind = .Unknown_Layer, layer = layer_name, tile = fill})
+		return
+	}
+	layer := &layers[index]
+	fill_index := tilemap_palette_index(layer, fill)
+	if fill_index < 0 {
+		append(&state.tile_refusals, Tile_Command_Refusal{command = .Build_Layer, kind = .Unknown_Tile, layer = layer_name, tile = fill})
+		return
+	}
+	// Validate EVERY override before writing — the whole command is all-or-nothing.
+	for override in overrides {
+		override_index := tilemap_palette_index(layer, override.tile)
+		if override_index < 0 {
+			append(&state.tile_refusals, Tile_Command_Refusal{command = .Build_Layer, kind = .Unknown_Tile, layer = layer_name, tile = override.tile, col = override.cell.x, row = override.cell.y})
+			return
+		}
+		if override.cell.x < 0 || override.cell.x >= layer.cols || override.cell.y < 0 || override.cell.y >= layer.rows {
+			append(&state.tile_refusals, Tile_Command_Refusal{command = .Build_Layer, kind = .Cell_Out_Of_Grid, layer = layer_name, tile = override.tile, col = override.cell.x, row = override.cell.y})
+			return
+		}
+	}
+	// Commit the whole-layer write: fill every cell, then the overrides in order.
+	cow_layer_cells(layer, index, fresh, state)
+	for i in 0 ..< len(layer.cells) {
+		layer.cells[i] = fill_index
+	}
+	for override in overrides {
+		palette := tilemap_palette_index(layer, override.tile) // re-resolved: validated above
+		layer.cells[override.cell.y * layer.cols + override.cell.x] = palette
+	}
+}
+
+// find_layer_index returns the slice index of the layer named `name`, or -1 —
+// the in-place lookup the fold's per-command dispatch resolves a `map` handle's
+// layer through (linear scan, the no-map discipline).
+find_layer_index :: proc(layers: []Tile_Layer, name: string) -> int {
+	for &layer, i in layers {
+		if layer.name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// cow_layer_cells copies a touched layer's `cells` backing ONCE per tick onto the
+// commit allocator, then leaves it fresh for in-place writes — the layer-level
+// COW the fold and the carry kernel share (a SetTile single-cell write and a
+// BuildLayer whole-layer write both go through it). `fresh[index]` gates the
+// copy so repeated writes to the same layer this tick reuse the one copy; the
+// name/palette ALWAYS alias the prior version (only `cells` is per-version owned,
+// which the live reclaimer retires).
+cow_layer_cells :: proc(layer: ^Tile_Layer, index: int, fresh: []bool, state: ^Tick_State) {
+	if fresh[index] {
+		return
+	}
+	cells := make([]int, len(layer.cells), state.commit_allocator)
+	copy(cells, layer.cells)
+	layer.cells = cells
+	fresh[index] = true
 }
 
 // Settile_Cell is the integer target cell one parsed SetTile command names.
@@ -606,4 +728,77 @@ settile_command_parts :: proc(command: Record_Value) -> (layer: string, cell: Se
 		return name, {}, "", false
 	}
 	return name, Settile_Cell{x = col, y = row}, text.text, true
+}
+
+// Buildlayer_Override is one parsed BuildLayer cell override: the integer target
+// cell and the tile NAME it takes (the `(Cell, String)` tuple's two positions).
+Buildlayer_Override :: struct {
+	cell: Settile_Cell,
+	tile: string,
+}
+
+// buildlayer_command_parts reads one collected BuildLayer record into its
+// application parts: the `map` handle's layer name, the `fill` String base tile,
+// and the `cells` list of (Cell, tile-name) override tuples. ok=false on any
+// missing or mis-shaped field — the Malformed_Command refusal arm (typecheck
+// admits only the closed schema, so this is the artifact-tamper fail-closed
+// floor, not a reachable source-level shape). The layer name is returned even on
+// a malformed fill/cells so the refusal can still point at the layer.
+//
+// The `cells` field is a `node list` of `node tuple 2` elements (the
+// `[(Cell, String)]` lowering): each tuple's position 0 is a `Cell{x, y}` record
+// and position 1 a String. A non-list `cells`, a non-tuple element, a wrong-arity
+// tuple, a non-Cell first position, or a non-String second position fails the
+// whole command closed — `overrides` is the empty slice on a non-list `cells`,
+// the partial-prefix slice on a mid-list malformation (ok=false either way, so
+// the fold ignores the partial parse and refuses the command).
+buildlayer_command_parts :: proc(
+	command: Record_Value,
+	allocator := context.allocator,
+) -> (layer: string, fill: string, overrides: []Buildlayer_Override, ok: bool) {
+	map_field, has_map := command.fields["map"]
+	if !has_map {
+		return "", "", nil, false
+	}
+	handle, is_record := map_field.(Record_Value)
+	if !is_record {
+		return "", "", nil, false
+	}
+	name, name_ok := tilemap_handle_name(handle)
+	if !name_ok {
+		return "", "", nil, false
+	}
+	fill_field, has_fill := command.fields["fill"]
+	if !has_fill {
+		return name, "", nil, false
+	}
+	fill_text, fill_is_string := fill_field.(String_Value)
+	if !fill_is_string {
+		return name, "", nil, false
+	}
+	cells_field, has_cells := command.fields["cells"]
+	if !has_cells {
+		return name, fill_text.text, nil, false
+	}
+	list, is_list := cells_field.(List_Value)
+	if !is_list {
+		return name, fill_text.text, nil, false
+	}
+	parsed := make([dynamic]Buildlayer_Override, allocator)
+	for elem in list.elements {
+		tuple, is_tuple := elem.(Tuple_Value)
+		if !is_tuple || len(tuple.elements) != 2 {
+			return name, fill_text.text, parsed[:], false
+		}
+		col, row, cell_ok := cell_arg(tuple.elements[0])
+		if !cell_ok {
+			return name, fill_text.text, parsed[:], false
+		}
+		tile_text, tile_is_string := tuple.elements[1].(String_Value)
+		if !tile_is_string {
+			return name, fill_text.text, parsed[:], false
+		}
+		append(&parsed, Buildlayer_Override{cell = Settile_Cell{x = col, y = row}, tile = tile_text.text})
+	}
+	return name, fill_text.text, parsed[:], true
 }

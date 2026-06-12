@@ -879,9 +879,9 @@ test_settile_live_nav :: proc(t: ^testing.T) {
 		prior := los_version(nav_layer_with_cells(base))
 		state := new_tick_state(prior, context.temp_allocator, context.temp_allocator)
 		// SetTile(ground, cell (1,1), "floor") — the center wall falls.
-		append(&state.settile_commands, nav_settile_record("ground", 1, 1, "floor"))
+		append(&state.terrain_commands, Terrain_Command{kind = .Set_Tile, record = nav_settile_record("ground", 1, 1, "floor")})
 		folded := fold_tile_layers(prior, &state)
-		testing.expect_value(t, len(state.settile_refusals), 0)
+		testing.expect_value(t, len(state.tile_refusals), 0)
 		refolded := World_Version{tilemaps = folded}
 
 		res, ok := eval_engine_nav(&refolded, "path", left_mid, right_mid)

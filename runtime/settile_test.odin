@@ -25,6 +25,14 @@ settile_record :: proc(layer: string, x, y: i64, tile: string) -> Record_Value {
 	return Record_Value{type_name = "SetTile", fields = fields}
 }
 
+// queue_settile_record appends a hand-built SetTile onto the tick's ordered
+// terrain-command stream tagged .Set_Tile — the kind-tagged shape
+// queue_settile_commands produces, so the fold dispatch tests drive the same
+// stream the routing fills.
+queue_settile_record :: proc(state: ^Tick_State, layer: string, x, y: i64, tile: string) {
+	append(&state.terrain_commands, Terrain_Command{kind = .Set_Tile, record = settile_record(layer, x, y, tile)})
+}
+
 // settile_prior_version builds a committed version carrying the 4×3 fixture
 // layer as its tile state — the fold's input world.
 settile_prior_version :: proc() -> World_Version {
@@ -43,13 +51,13 @@ test_settile_fold_applies_and_cows :: proc(t: ^testing.T) {
 	// at the layer level), and the untouched cells carry over bit-identical.
 	prior := settile_prior_version()
 	state := new_tick_state(prior, context.temp_allocator, context.temp_allocator)
-	append(&state.settile_commands, settile_record("terrain", 1, 1, "floor"))
+	queue_settile_record(&state, "terrain", 1, 1, "floor")
 
 	next := fold_tile_layers(prior, &state)
 	testing.expect_value(t, len(next), 1)
 	testing.expect_value(t, next[0].cells[1 * 4 + 1], 1) // "floor" is palette index 1
 	testing.expect_value(t, prior.tilemaps[0].cells[1 * 4 + 1], TILE_CELL_EMPTY)
-	testing.expect_value(t, len(state.settile_refusals), 0)
+	testing.expect_value(t, len(state.tile_refusals), 0)
 	// Every other cell is the prior's value — only the targeted cell moved.
 	for cell, i in prior.tilemaps[0].cells {
 		if i != 1 * 4 + 1 {
@@ -67,12 +75,12 @@ test_settile_fold_orders_last_write_wins :: proc(t: ^testing.T) {
 	// — so the last write to a cell wins, a pure function of the sequence.
 	prior := settile_prior_version()
 	state := new_tick_state(prior, context.temp_allocator, context.temp_allocator)
-	append(&state.settile_commands, settile_record("terrain", 1, 1, "floor"))
-	append(&state.settile_commands, settile_record("terrain", 1, 1, "wall"))
+	queue_settile_record(&state, "terrain", 1, 1, "floor")
+	queue_settile_record(&state, "terrain", 1, 1, "wall")
 
 	next := fold_tile_layers(prior, &state)
 	testing.expect_value(t, next[0].cells[1 * 4 + 1], 0) // "wall" is palette index 0
-	testing.expect_value(t, len(state.settile_refusals), 0)
+	testing.expect_value(t, len(state.tile_refusals), 0)
 }
 
 @(test)
@@ -96,27 +104,28 @@ test_settile_refusals_are_named :: proc(t: ^testing.T) {
 	prior := settile_prior_version()
 	state := new_tick_state(prior, context.temp_allocator, context.temp_allocator)
 
-	append(&state.settile_commands, settile_record("cavern", 0, 0, "floor")) // unknown layer
-	append(&state.settile_commands, settile_record("terrain", 0, 0, "lava")) // unknown tile
-	append(&state.settile_commands, settile_record("terrain", 4, 0, "floor")) // col past the grid
-	append(&state.settile_commands, settile_record("terrain", 0, -1, "floor")) // negative row
+	queue_settile_record(&state, "cavern", 0, 0, "floor") // unknown layer
+	queue_settile_record(&state, "terrain", 0, 0, "lava") // unknown tile
+	queue_settile_record(&state, "terrain", 4, 0, "floor") // col past the grid
+	queue_settile_record(&state, "terrain", 0, -1, "floor") // negative row
 	malformed := settile_record("terrain", 0, 0, "floor")
 	delete_key(&malformed.fields, "tile")
-	append(&state.settile_commands, malformed)
-	append(&state.settile_commands, settile_record("terrain", 2, 1, "wall")) // valid
+	append(&state.terrain_commands, Terrain_Command{kind = .Set_Tile, record = malformed})
+	queue_settile_record(&state, "terrain", 2, 1, "wall") // valid
 
 	next := fold_tile_layers(prior, &state)
-	testing.expect_value(t, len(state.settile_refusals), 5)
-	testing.expect_value(t, state.settile_refusals[0].kind, Set_Tile_Refusal_Kind.Unknown_Layer)
-	testing.expect_value(t, state.settile_refusals[0].layer, "cavern")
-	testing.expect_value(t, state.settile_refusals[1].kind, Set_Tile_Refusal_Kind.Unknown_Tile)
-	testing.expect_value(t, state.settile_refusals[1].tile, "lava")
-	testing.expect_value(t, state.settile_refusals[2].kind, Set_Tile_Refusal_Kind.Cell_Out_Of_Grid)
-	testing.expect_value(t, state.settile_refusals[2].col, 4)
-	testing.expect_value(t, state.settile_refusals[3].kind, Set_Tile_Refusal_Kind.Cell_Out_Of_Grid)
-	testing.expect_value(t, state.settile_refusals[3].row, -1)
-	testing.expect_value(t, state.settile_refusals[4].kind, Set_Tile_Refusal_Kind.Malformed_Command)
-	testing.expect_value(t, state.settile_refusals[4].layer, "terrain")
+	testing.expect_value(t, len(state.tile_refusals), 5)
+	testing.expect_value(t, state.tile_refusals[0].kind, Tile_Command_Refusal_Kind.Unknown_Layer)
+	testing.expect_value(t, state.tile_refusals[0].command, Terrain_Command_Kind.Set_Tile)
+	testing.expect_value(t, state.tile_refusals[0].layer, "cavern")
+	testing.expect_value(t, state.tile_refusals[1].kind, Tile_Command_Refusal_Kind.Unknown_Tile)
+	testing.expect_value(t, state.tile_refusals[1].tile, "lava")
+	testing.expect_value(t, state.tile_refusals[2].kind, Tile_Command_Refusal_Kind.Cell_Out_Of_Grid)
+	testing.expect_value(t, state.tile_refusals[2].col, 4)
+	testing.expect_value(t, state.tile_refusals[3].kind, Tile_Command_Refusal_Kind.Cell_Out_Of_Grid)
+	testing.expect_value(t, state.tile_refusals[3].row, -1)
+	testing.expect_value(t, state.tile_refusals[4].kind, Tile_Command_Refusal_Kind.Malformed_Command)
+	testing.expect_value(t, state.tile_refusals[4].layer, "terrain")
 
 	// The refused commands changed nothing; the valid one landed.
 	testing.expect_value(t, next[0].cells[1 * 4 + 2], 0) // (2,1) "floor"→"wall"
@@ -336,7 +345,7 @@ test_settile_reclaim_alias_guards :: proc(t: ^testing.T) {
 	// Tick A applies a SetTile: a fresh slice + fresh cells on the persistent
 	// commit allocator (2 tracked allocations).
 	state_a := new_tick_state(v0, context.temp_allocator, persistent)
-	append(&state_a.settile_commands, settile_record("terrain", 1, 1, "floor"))
+	queue_settile_record(&state_a, "terrain", 1, 1, "floor")
 	v1 := World_Version {
 		tilemaps = fold_tile_layers(v0, &state_a),
 	}
@@ -359,7 +368,7 @@ test_settile_reclaim_alias_guards :: proc(t: ^testing.T) {
 	// exactly the superseded slice + cells (back to 2 — v3's own pair), with
 	// no bad free recorded.
 	state_c := new_tick_state(v2, context.temp_allocator, persistent)
-	append(&state_c.settile_commands, settile_record("terrain", 2, 1, "wall"))
+	queue_settile_record(&state_c, "terrain", 2, 1, "wall")
 	v3 := World_Version {
 		tilemaps = fold_tile_layers(v2, &state_c),
 	}

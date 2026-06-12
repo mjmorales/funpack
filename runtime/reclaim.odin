@@ -234,7 +234,8 @@ free_version_fully :: proc(v: World_Version, allocator := context.allocator) {
 //     array, never a live map);
 //   - the tables slice itself;
 //   - the signal mailbox (both routing maps and their accumulated lists);
-//   - the spawns / despawns / persist_commands dynamic arrays;
+//   - the spawns / despawns / persist_commands / terrain_commands /
+//     tile_refusals dynamic arrays;
 //   - the `superseded` collection backing (its MAPS are freed by
 //     free_superseded_maps FIRST; this frees only the [dynamic] array holding
 //     them).
@@ -257,8 +258,8 @@ free_tick_state :: proc(state: ^Tick_State, allocator := context.allocator) {
 	delete(state.spawns)
 	delete(state.despawns)
 	delete(state.persist_commands)
-	delete(state.settile_commands)
-	delete(state.settile_refusals)
+	delete(state.terrain_commands)
+	delete(state.tile_refusals)
 	delete(state.superseded)
 }
 
