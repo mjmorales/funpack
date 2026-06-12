@@ -134,7 +134,7 @@ test_settile_refusals_are_named :: proc(t: ^testing.T) {
 // the tick's ENTERING terrain, so it sees the dig's write exactly one tick
 // later. Section order follows the §3 contract (tilemaps after entrypoint,
 // the yard golden's order).
-SETTILE_ARTIFACT :: "funpack-artifact 14\n" +
+SETTILE_ARTIFACT :: "funpack-artifact 15\n" +
 	"[meta 2]\n" +
 	"project settile\n" +
 	"version L5:0.1.0\n" +

@@ -1,11 +1,27 @@
-funpack-artifact 14
+funpack-artifact 15
 [meta 2]
 project warren
 version L5:0.1.0
 [enums 0]
-[data 0]
+[data 1]
+data Path 2 false
+field steps [Vec2] -
+field cost Fixed -
 [signals 0]
-[things 0]
+[things 3]
+thing Rabbit false 1 3
+gtag L2:ai
+field pos Vec2 -
+field path Path =Path(steps=[],cost=0)
+field hidden Bool =false
+thing Ferret false 1 3
+gtag L2:ai
+field pos Vec2 -
+field path Path =Path(steps=[],cost=0)
+field repath_t Fixed =0
+thing Burrow false 1 1
+gtag L7:scenery
+field pos Vec2 -
 [functions 18]
 function step_to fn 3 return:Vec2 4 span:warren_game:32
 param from Vec2
@@ -388,7 +404,15 @@ step 0 stage:startup behavior:setup
 step 1 stage:ai behavior:stalk
 step 2 stage:ai behavior:bolt
 [signal_routing 0]
-[setup 0]
+[setup 4]
+spawn Rabbit 1
+set pos =vec2 51539607552 360777252864
+spawn Burrow 1
+set pos =vec2 498216206336 360777252864
+spawn Burrow 1
+set pos =vec2 120259084288 85899345920
+spawn Ferret 1
+set pos =vec2 498216206336 85899345920
 [bindings 0]
 [entrypoint 1]
 entrypoint main pipeline:WarrenGame tick_hz:60 logical:128x96 bindings:bindings

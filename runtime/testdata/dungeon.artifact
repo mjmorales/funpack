@@ -1,0 +1,886 @@
+funpack-artifact 15
+[meta 2]
+project dungeon
+version L5:0.1.0
+[enums 2]
+enum Act Button 5
+variant Up unit
+variant Down unit
+variant Left unit
+variant Right unit
+variant Dig unit
+enum Dir - 4
+variant Up unit
+variant Down unit
+variant Left unit
+variant Right unit
+[data 0]
+[signals 1]
+signal Looted 1
+field gems Int -
+[things 3]
+thing Player false 1 3
+gtag L5:actor
+field pos Vec2 -
+field dir Dir =Dir::Down
+field gems Int =0
+thing Slime false 1 2
+gtag L2:ai
+field pos Vec2 -
+field rest Fixed =0
+thing Chest false 1 3
+gtag L4:loot
+field pos Vec2 -
+field gems Int =1
+field opened Bool =false
+[functions 17]
+function step_cell fn 2 return:Cell 1 span:dungeon_game:28
+param c Cell
+param d Dir
+node return 1
+node match 4 9
+node name d 0
+node arm bare_variant Dir Up 0
+node record Cell 2 2
+node recfield x 1
+node field x 1
+node name c 0
+node recfield y 1
+node binary sub 2
+node field y 1
+node name c 0
+node int 1 0
+node arm bare_variant Dir Down 0
+node record Cell 2 2
+node recfield x 1
+node field x 1
+node name c 0
+node recfield y 1
+node binary add 2
+node field y 1
+node name c 0
+node int 1 0
+node arm bare_variant Dir Left 0
+node record Cell 2 2
+node recfield x 1
+node binary sub 2
+node field x 1
+node name c 0
+node int 1 0
+node recfield y 1
+node field y 1
+node name c 0
+node arm bare_variant Dir Right 0
+node record Cell 2 2
+node recfield x 1
+node binary add 2
+node field x 1
+node name c 0
+node int 1 0
+node recfield y 1
+node field y 1
+node name c 0
+function dir_from_input fn 1 return:Option[Dir] 5 span:dungeon_game:38
+param input Input
+node if_return 2
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Act Up false 0
+node variant Option Some true 1
+node variant Dir Up false 0
+node if_return 2
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Act Down false 0
+node variant Option Some true 1
+node variant Dir Down false 0
+node if_return 2
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Act Left false 0
+node variant Option Some true 1
+node variant Dir Left false 0
+node if_return 2
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Act Right false 0
+node variant Option Some true 1
+node variant Dir Right false 0
+node return 1
+node variant Option None false 0
+function enterable fn 2 return:Bool 1 span:dungeon_game:47
+param tile Option[String]
+param solid Bool
+node return 1
+node match 2 5
+node name tile 0
+node arm variant_binds Option Some 1 _
+node unary not 1
+node name solid 0
+node arm bare_variant Option None 0
+node name false 0
+function enter fn 3 return:Vec2 2 span:dungeon_game:55
+param map TilemapHandle
+param target Cell
+param stay Vec2
+node if_return 2
+node call 3
+node name enterable 0
+node call 2
+node field tile_at 1
+node name map 0
+node name target 0
+node call 2
+node field solid_at 1
+node name map 0
+node name target 0
+node call 2
+node field center_of 1
+node name map 0
+node name target 0
+node return 1
+node name stay 0
+function walk fn 2 return:Player 2 span:dungeon_game:61
+param self Player
+param d Dir
+node let target 1
+node call 3
+node name step_cell 0
+node call 2
+node field cell_of 1
+node name terrain 0
+node field pos 1
+node name self 0
+node name d 0
+node return 1
+node with 2 3
+node name self 0
+node recfield pos 1
+node call 4
+node name enter 0
+node name terrain 0
+node name target 0
+node field pos 1
+node name self 0
+node recfield dir 1
+node name d 0
+function diggable fn 1 return:Bool 1 span:dungeon_game:78
+param tile Option[String]
+node return 1
+node binary eq 2
+node name tile 0
+node variant Option Some true 1
+node string L6:rubble 0
+function dist1 fn 2 return:Int 2 span:dungeon_game:94
+param a Int
+param b Int
+node if_return 2
+node binary lt 2
+node name a 0
+node name b 0
+node binary sub 2
+node name b 0
+node name a 0
+node return 1
+node binary sub 2
+node name a 0
+node name b 0
+function manhattan fn 2 return:Int 1 span:dungeon_game:100
+param a Cell
+param b Cell
+node return 1
+node binary add 2
+node call 3
+node name dist1 0
+node field x 1
+node name a 0
+node field x 1
+node name b 0
+node call 3
+node name dist1 0
+node field y 1
+node name a 0
+node field y 1
+node name b 0
+function toward fn 3 return:Cell 1 span:dungeon_game:105
+param from Cell
+param goal Cell
+param open [Cell]
+node return 1
+node call 4
+node name fold 0
+node name open 0
+node name from 0
+node lambda 2 best c 1
+node if_expr 3
+node binary lt 2
+node call 3
+node name manhattan 0
+node name c 0
+node name goal 0
+node call 3
+node name manhattan 0
+node name best 0
+node name goal 0
+node name c 0
+node name best 0
+function hero_pos fn 2 return:Vec2 1 span:dungeon_game:110
+param players View[Player]
+param fallback Vec2
+node return 1
+node call 3
+node name or_else 0
+node call 4
+node name fold 0
+node name players 0
+node variant Option None false 0
+node lambda 2 acc p 1
+node variant Option Some true 1
+node field pos 1
+node name p 0
+node name fallback 0
+function chest_cell fn 1 return:String 2 span:dungeon_game:147
+param opened Bool
+node if_return 2
+node name opened 0
+node string L10:chest_open 0
+node return 1
+node string L12:chest_closed 0
+function MAP_SIZE const 0 return:Cell 1 span:dungeon_game:16
+node return 1
+node record Cell 2 2
+node recfield x 1
+node int 16 0
+node recfield y 1
+node int 9 0
+function SLIME_REST const 0 return:Fixed 1 span:dungeon_game:19
+node return 1
+node fixed 1717986918 0
+function TILE const 0 return:Vec2 1 span:dungeon_game:22
+node return 1
+node record Vec2 2 2
+node recfield x 1
+node fixed 68719476736 0
+node recfield y 1
+node fixed 68719476736 0
+function bindings bindings 0 return:Bindings 1 span:dungeon_game:178
+node return 1
+node call 4
+node field button 1
+node call 4
+node field button 1
+node call 4
+node field button 1
+node call 4
+node field button 1
+node call 4
+node field button 1
+node call 1
+node field empty 1
+node name Bindings 0
+node variant PlayerId P1 false 0
+node variant Act Up false 0
+node list 2 2
+node variant Key W false 0
+node variant Key Up false 0
+node variant PlayerId P1 false 0
+node variant Act Down false 0
+node list 2 2
+node variant Key S false 0
+node variant Key Down false 0
+node variant PlayerId P1 false 0
+node variant Act Left false 0
+node list 2 2
+node variant Key A false 0
+node variant Key Left false 0
+node variant PlayerId P1 false 0
+node variant Act Right false 0
+node list 2 2
+node variant Key D false 0
+node variant Key Right false 0
+node variant PlayerId P1 false 0
+node variant Act Dig false 0
+node list 1 1
+node variant Key Space false 0
+function setup startup 0 return:[Spawn] 1 span:dungeon_game:184
+node return 1
+node call 1
+node name dungeon_spawns 0
+function terrain const 0 return:TilemapHandle 1 span:dungeon:7
+node return 1
+node record TilemapHandle 1 1
+node recfield name 1
+node string L7:terrain 0
+[behaviors 8]
+behavior step_hero on:Player stage:control contract:Update 1 2 1 1
+gtag L5:actor
+param self Player
+param input Input
+emit Player
+node return 1
+node match 2 5
+node call 2
+node name dir_from_input 0
+node name input 0
+node arm variant_binds Option Some 1 d
+node call 3
+node name walk 0
+node name self 0
+node name d 0
+node arm bare_variant Option None 0
+node name self 0
+behavior dig on:Player stage:control contract:Update 2 2 1 4
+gtag L5:actor
+gtag L7:terrain
+param self Player
+param input Input
+emit [SetTile]
+node if_return 2
+node unary not 1
+node call 3
+node field pressed 1
+node name input 0
+node variant PlayerId P1 false 0
+node variant Act Dig false 0
+node list 0 0
+node let target 1
+node call 3
+node name step_cell 0
+node call 2
+node field cell_of 1
+node name terrain 0
+node field pos 1
+node name self 0
+node field dir 1
+node name self 0
+node if_return 2
+node call 2
+node name diggable 0
+node call 2
+node field tile_at 1
+node name terrain 0
+node name target 0
+node list 1 1
+node record SetTile 3 3
+node recfield map 1
+node name terrain 0
+node recfield cell 1
+node name target 0
+node recfield tile 1
+node string L5:floor 0
+node return 1
+node list 0 0
+behavior ooze on:Slime stage:ai contract:Update 1 3 1 5
+gtag L2:ai
+param self Slime
+param time Time
+param players View[Player]
+emit Slime
+node if_return 2
+node binary gt 2
+node field rest 1
+node name self 0
+node fixed 0 0
+node with 1 2
+node name self 0
+node recfield rest 1
+node binary sub 2
+node field rest 1
+node name self 0
+node field dt 1
+node name time 0
+node let here 1
+node call 2
+node field cell_of 1
+node name terrain 0
+node field pos 1
+node name self 0
+node let open 1
+node call 3
+node name filter 0
+node call 2
+node name neighbors 0
+node name here 0
+node lambda 1 c 1
+node binary and 2
+node call 3
+node name in_bounds 0
+node name c 0
+node name MAP_SIZE 0
+node call 3
+node name enterable 0
+node call 2
+node field tile_at 1
+node name terrain 0
+node name c 0
+node call 2
+node field solid_at 1
+node name terrain 0
+node name c 0
+node let goal 1
+node call 2
+node field cell_of 1
+node name terrain 0
+node call 3
+node name hero_pos 0
+node name players 0
+node field pos 1
+node name self 0
+node return 1
+node with 2 3
+node name self 0
+node recfield pos 1
+node call 2
+node field center_of 1
+node name terrain 0
+node call 4
+node name toward 0
+node name here 0
+node name goal 0
+node name open 0
+node recfield rest 1
+node name SLIME_REST 0
+behavior open_chest on:Chest stage:loot contract:Update 1 2 1 5
+gtag L4:loot
+param self Chest
+param players View[Player]
+emit (Chest,[Looted])
+node if_return 2
+node field opened 1
+node name self 0
+node tuple 2 2
+node name self 0
+node list 0 0
+node let here 1
+node call 2
+node field cell_of 1
+node name terrain 0
+node field pos 1
+node name self 0
+node let visitors 1
+node call 3
+node name filter 0
+node name players 0
+node lambda 1 p 1
+node binary eq 2
+node call 2
+node field cell_of 1
+node name terrain 0
+node field pos 1
+node name p 0
+node name here 0
+node if_return 2
+node call 2
+node name is_empty 0
+node name visitors 0
+node tuple 2 2
+node name self 0
+node list 0 0
+node return 1
+node tuple 2 2
+node with 1 2
+node name self 0
+node recfield opened 1
+node name true 0
+node list 1 1
+node record Looted 1 1
+node recfield gems 1
+node field gems 1
+node name self 0
+behavior collect on:Player stage:loot contract:Update 2 2 1 1
+gtag L5:actor
+gtag L4:loot
+param self Player
+param looted [Looted]
+emit Player
+node return 1
+node call 4
+node name fold 0
+node name looted 0
+node name self 0
+node lambda 2 p l 1
+node with 1 2
+node name p 0
+node recfield gems 1
+node binary add 2
+node field gems 1
+node name p 0
+node field gems 1
+node name l 0
+behavior draw_hero on:Player stage:render contract:Render 1 1 1 1
+gtag L6:render
+param self Player
+emit [Draw]
+node return 1
+node list 1 1
+node record Draw::Sprite 7 7
+node recfield atlas 1
+node field dungeon_atlas 1
+node name assets 0
+node recfield cell 1
+node string L4:hero 0
+node recfield at 1
+node field pos 1
+node name self 0
+node recfield size 1
+node name TILE 0
+node recfield tint 1
+node variant Color White false 0
+node recfield flip 1
+node variant Flip None false 0
+node recfield layer 1
+node int 5 0
+behavior draw_slime on:Slime stage:render contract:Render 1 1 1 1
+gtag L6:render
+param self Slime
+emit [Draw]
+node return 1
+node list 1 1
+node record Draw::Sprite 7 7
+node recfield atlas 1
+node field dungeon_atlas 1
+node name assets 0
+node recfield cell 1
+node string L5:slime 0
+node recfield at 1
+node field pos 1
+node name self 0
+node recfield size 1
+node name TILE 0
+node recfield tint 1
+node variant Color White false 0
+node recfield flip 1
+node variant Flip None false 0
+node recfield layer 1
+node int 4 0
+behavior draw_chest on:Chest stage:render contract:Render 1 1 1 1
+gtag L6:render
+param self Chest
+emit [Draw]
+node return 1
+node list 1 1
+node record Draw::Sprite 7 7
+node recfield atlas 1
+node field dungeon_atlas 1
+node name assets 0
+node recfield cell 1
+node call 2
+node name chest_cell 0
+node field opened 1
+node name self 0
+node recfield at 1
+node field pos 1
+node name self 0
+node recfield size 1
+node name TILE 0
+node recfield tint 1
+node variant Color White false 0
+node recfield flip 1
+node variant Flip None false 0
+node recfield layer 1
+node int 3 0
+[pipeline_flattened 9]
+step 0 stage:startup behavior:setup
+step 1 stage:control behavior:step_hero
+step 2 stage:control behavior:dig
+step 3 stage:ai behavior:ooze
+step 4 stage:loot behavior:open_chest
+step 5 stage:loot behavior:collect
+step 6 stage:render behavior:draw_hero
+step 7 stage:render behavior:draw_slime
+step 8 stage:render behavior:draw_chest
+[signal_routing 0]
+[setup 4]
+spawn Player 1
+set pos =vec2 171798691840 446676598784
+spawn Slime 1
+set pos =vec2 790273982464 446676598784
+spawn Slime 1
+set pos =vec2 240518168576 171798691840
+spawn Chest 2
+set pos =vec2 927712935936 309237645312
+set gems =5
+[bindings 9]
+bind button P1 Act::Up source:key(Key::W)
+bind button P1 Act::Up source:key(Key::Up)
+bind button P1 Act::Down source:key(Key::S)
+bind button P1 Act::Down source:key(Key::Down)
+bind button P1 Act::Left source:key(Key::A)
+bind button P1 Act::Left source:key(Key::Left)
+bind button P1 Act::Right source:key(Key::D)
+bind button P1 Act::Right source:key(Key::Right)
+bind button P1 Act::Dig source:key(Key::Space)
+[entrypoint 1]
+entrypoint main pipeline:DungeonCrawl tick_hz:60 logical:256x144 bindings:bindings
+[queries 0]
+[tilemaps 1]
+tilemap terrain 16 16 9 0 618475290624 4
+tile wall true
+tile floor false
+tile water false
+tile rubble true
+row 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+row 0 1 1 1 1 1 1 0 1 1 1 1 1 1 1 0
+row 0 1 - 1 1 1 1 0 1 1 1 - 1 1 1 0
+row 0 1 1 2 2 1 1 3 1 1 1 1 1 1 1 0
+row 0 1 1 2 2 1 1 0 1 1 - - - 1 1 0
+row 0 1 1 1 1 1 1 3 1 1 - - - 1 1 0
+row 0 1 1 - 1 1 1 0 1 1 1 1 1 1 1 0
+row 0 1 1 1 1 1 1 0 1 1 1 1 1 1 1 0
+row 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+[nav 1]
+nav terrain 91 155
+navnode 103079215104 515396075520
+navnode 171798691840 515396075520
+navnode 240518168576 515396075520
+navnode 309237645312 515396075520
+navnode 377957122048 515396075520
+navnode 446676598784 515396075520
+navnode 584115552256 515396075520
+navnode 652835028992 515396075520
+navnode 721554505728 515396075520
+navnode 790273982464 515396075520
+navnode 858993459200 515396075520
+navnode 927712935936 515396075520
+navnode 996432412672 515396075520
+navnode 103079215104 446676598784
+navnode 171798691840 446676598784
+navnode 240518168576 446676598784
+navnode 309237645312 446676598784
+navnode 377957122048 446676598784
+navnode 446676598784 446676598784
+navnode 584115552256 446676598784
+navnode 652835028992 446676598784
+navnode 721554505728 446676598784
+navnode 790273982464 446676598784
+navnode 858993459200 446676598784
+navnode 927712935936 446676598784
+navnode 996432412672 446676598784
+navnode 103079215104 377957122048
+navnode 171798691840 377957122048
+navnode 240518168576 377957122048
+navnode 309237645312 377957122048
+navnode 377957122048 377957122048
+navnode 446676598784 377957122048
+navnode 584115552256 377957122048
+navnode 652835028992 377957122048
+navnode 721554505728 377957122048
+navnode 790273982464 377957122048
+navnode 858993459200 377957122048
+navnode 927712935936 377957122048
+navnode 996432412672 377957122048
+navnode 103079215104 309237645312
+navnode 171798691840 309237645312
+navnode 240518168576 309237645312
+navnode 309237645312 309237645312
+navnode 377957122048 309237645312
+navnode 446676598784 309237645312
+navnode 584115552256 309237645312
+navnode 652835028992 309237645312
+navnode 721554505728 309237645312
+navnode 790273982464 309237645312
+navnode 858993459200 309237645312
+navnode 927712935936 309237645312
+navnode 996432412672 309237645312
+navnode 103079215104 240518168576
+navnode 171798691840 240518168576
+navnode 240518168576 240518168576
+navnode 309237645312 240518168576
+navnode 377957122048 240518168576
+navnode 446676598784 240518168576
+navnode 584115552256 240518168576
+navnode 652835028992 240518168576
+navnode 721554505728 240518168576
+navnode 790273982464 240518168576
+navnode 858993459200 240518168576
+navnode 927712935936 240518168576
+navnode 996432412672 240518168576
+navnode 103079215104 171798691840
+navnode 171798691840 171798691840
+navnode 240518168576 171798691840
+navnode 309237645312 171798691840
+navnode 377957122048 171798691840
+navnode 446676598784 171798691840
+navnode 584115552256 171798691840
+navnode 652835028992 171798691840
+navnode 721554505728 171798691840
+navnode 790273982464 171798691840
+navnode 858993459200 171798691840
+navnode 927712935936 171798691840
+navnode 996432412672 171798691840
+navnode 103079215104 103079215104
+navnode 171798691840 103079215104
+navnode 240518168576 103079215104
+navnode 309237645312 103079215104
+navnode 377957122048 103079215104
+navnode 446676598784 103079215104
+navnode 584115552256 103079215104
+navnode 652835028992 103079215104
+navnode 721554505728 103079215104
+navnode 790273982464 103079215104
+navnode 858993459200 103079215104
+navnode 927712935936 103079215104
+navnode 996432412672 103079215104
+navedge 0 1
+navedge 0 13
+navedge 1 2
+navedge 1 14
+navedge 2 3
+navedge 2 15
+navedge 3 4
+navedge 3 16
+navedge 4 5
+navedge 4 17
+navedge 5 18
+navedge 6 7
+navedge 6 19
+navedge 7 8
+navedge 7 20
+navedge 8 9
+navedge 8 21
+navedge 9 10
+navedge 9 22
+navedge 10 11
+navedge 10 23
+navedge 11 12
+navedge 11 24
+navedge 12 25
+navedge 13 14
+navedge 13 26
+navedge 14 15
+navedge 14 27
+navedge 15 16
+navedge 15 28
+navedge 16 17
+navedge 16 29
+navedge 17 18
+navedge 17 30
+navedge 18 31
+navedge 19 20
+navedge 19 32
+navedge 20 21
+navedge 20 33
+navedge 21 22
+navedge 21 34
+navedge 22 23
+navedge 22 35
+navedge 23 24
+navedge 23 36
+navedge 24 25
+navedge 24 37
+navedge 25 38
+navedge 26 27
+navedge 26 39
+navedge 27 28
+navedge 27 40
+navedge 28 29
+navedge 28 41
+navedge 29 30
+navedge 29 42
+navedge 30 31
+navedge 30 43
+navedge 31 44
+navedge 32 33
+navedge 32 45
+navedge 33 34
+navedge 33 46
+navedge 34 35
+navedge 34 47
+navedge 35 36
+navedge 35 48
+navedge 36 37
+navedge 36 49
+navedge 37 38
+navedge 37 50
+navedge 38 51
+navedge 39 40
+navedge 39 52
+navedge 40 41
+navedge 40 53
+navedge 41 42
+navedge 41 54
+navedge 42 43
+navedge 42 55
+navedge 43 44
+navedge 43 56
+navedge 44 57
+navedge 45 46
+navedge 45 58
+navedge 46 47
+navedge 46 59
+navedge 47 48
+navedge 47 60
+navedge 48 49
+navedge 48 61
+navedge 49 50
+navedge 49 62
+navedge 50 51
+navedge 50 63
+navedge 51 64
+navedge 52 53
+navedge 52 65
+navedge 53 54
+navedge 53 66
+navedge 54 55
+navedge 54 67
+navedge 55 56
+navedge 55 68
+navedge 56 57
+navedge 56 69
+navedge 57 70
+navedge 58 59
+navedge 58 71
+navedge 59 60
+navedge 59 72
+navedge 60 61
+navedge 60 73
+navedge 61 62
+navedge 61 74
+navedge 62 63
+navedge 62 75
+navedge 63 64
+navedge 63 76
+navedge 64 77
+navedge 65 66
+navedge 65 78
+navedge 66 67
+navedge 66 79
+navedge 67 68
+navedge 67 80
+navedge 68 69
+navedge 68 81
+navedge 69 70
+navedge 69 82
+navedge 70 83
+navedge 71 72
+navedge 71 84
+navedge 72 73
+navedge 72 85
+navedge 73 74
+navedge 73 86
+navedge 74 75
+navedge 74 87
+navedge 75 76
+navedge 75 88
+navedge 76 77
+navedge 76 89
+navedge 77 90
+navedge 78 79
+navedge 79 80
+navedge 80 81
+navedge 81 82
+navedge 82 83
+navedge 84 85
+navedge 85 86
+navedge 86 87
+navedge 87 88
+navedge 88 89
+navedge 89 90

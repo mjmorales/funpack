@@ -47,9 +47,9 @@ test_load_version_gate :: proc(t: ^testing.T) {
 	_, old_err := load_program(old_version, context.temp_allocator)
 	testing.expect_value(t, old_err, Artifact_Error.Version_Mismatch)
 
-	// A FUTURE version (v15) is equally a mismatch — the gate is exact, not
+	// A FUTURE version (v16) is equally a mismatch — the gate is exact, not
 	// floor-or-ceiling.
-	future_version := "funpack-artifact 15\n[meta 0]\n"
+	future_version := "funpack-artifact 16\n[meta 0]\n"
 	_, future_err := load_program(future_version, context.temp_allocator)
 	testing.expect_value(t, future_err, Artifact_Error.Version_Mismatch)
 
@@ -583,7 +583,7 @@ test_body_string_node_retains_interpolation :: proc(t: ^testing.T) {
 // multi-module bump, the typed-hole `stub` node, and the @migrate [data] carry
 // are all additive over these v5 record shapes, which still load), so the
 // version gate admits it and the additive decode arms are exercised.
-V5_ARTIFACT :: "funpack-artifact 14\n" +
+V5_ARTIFACT :: "funpack-artifact 15\n" +
 	"[meta 2]\n" +
 	"project yard\n" +
 	"version L5:0.1.0\n" +
@@ -677,12 +677,12 @@ test_load_v5_additive_arms :: proc(t: ^testing.T) {
 @(test)
 test_load_v5_malformed_refused :: proc(t: ^testing.T) {
 	// An unknown section name is a schema mismatch — build_program refuses it.
-	unknown_section := "funpack-artifact 14\n[meta 2]\nproject yard\nversion L5:0.1.0\n[gravity 0]\n"
+	unknown_section := "funpack-artifact 15\n[meta 2]\nproject yard\nversion L5:0.1.0\n[gravity 0]\n"
 	_, unknown_err := load_program(unknown_section, context.temp_allocator)
 	testing.expect_value(t, unknown_err, Artifact_Error.Malformed_Header)
 
 	// A declared count that over-shapes the section is a parse-layer refusal.
-	bad_count := "funpack-artifact 14\n[enums 2]\nenum CollisionLayer CollisionLayer 1\nvariant Solid unit\n"
+	bad_count := "funpack-artifact 15\n[enums 2]\nenum CollisionLayer CollisionLayer 1\nvariant Solid unit\n"
 	_, count_err := load_program(bad_count, context.temp_allocator)
 	testing.expect_value(t, count_err, Artifact_Error.Section_Count_Mismatch)
 }

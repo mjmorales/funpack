@@ -165,7 +165,39 @@ import "core:strings"
 // sub-record keywords are layout changes: 12 → 13 (funpack/artifact_format.odin
 // v13, §1, §12). Level-less artifacts move by the stamp plus the constant
 // `[nav 0]` tail (the level-less `[tilemaps 0]` precedent).
-ARTIFACT_SCHEMA_VERSION :: 14
+//
+// v14 ratifies the §02 multi-statement early-return guard: one new §2.7 node
+// KIND, `block`, in if_return's outcome position (`node block N` over N
+// statement subtrees, evaluated block-scoped with early-return semantics), and
+// the value-producing `if_expr` decode — see artifact_nodes.odin. A closed
+// node-kind set grows only by a deliberate bump: 13 → 14 (funpack/docs/
+// artifact-format.md §1, §2.7). Artifacts without a multi-statement guard
+// moved by the version stamp alone (the v7 stamp-only restamp precedent).
+//
+// v15 makes a multi-module game's artifact SELF-CONTAINED for live level
+// execution — the runtime-level-load format. Three layout changes ride it, all
+// widened POPULATIONS (the v6 widened-[functions] precedent), no new keyword
+// and no new node kind, so the loader's existing record molds decode them:
+// (1) the cross-module DECLARATION carry — the enum/data/signal/thing
+// declarations the entrypoint module imports from sibling USER modules append
+// after each section's own records (dungeon_world's Player/Slime/Chest things
+// with their complete defaulted field schemas, the Dir enum, the Looted
+// signal), in import-then-member order, so the schema the [setup] batch spawns
+// against rides in the artifact; (2) the imported-CONST carry — an imported
+// module-level `let` (the level seam's `terrain: TilemapHandle`) appends to
+// [functions] as the existing `function NAME const` record form with the seam
+// module's span, so a behavior body's bare-name read resolves through
+// program_function; (3) the LEVEL-BACKED [setup] fold — a setup() that is a
+// lone call to a baked level's `<level>_spawns` extern arrives as concrete §13
+// `spawn`/`set` rows (pos as the Vec2 spread, params by their declared schema
+// field type), so run_startup spawns the initial population without
+// interpreting the extern (§13's no-expressions contract). The level ACCESSOR
+// extern (`dungeon() -> Dungeon`) is deliberately NOT carried — its consumer
+// is a later schema bump; an accessor call fails closed. Widened populations
+// are layout changes: 14 → 15 (funpack/docs/artifact-format.md §1). A
+// single-module, level-less artifact moves by the version stamp alone (the v7
+// stamp-only restamp precedent).
+ARTIFACT_SCHEMA_VERSION :: 15
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
