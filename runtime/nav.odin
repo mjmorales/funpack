@@ -8,17 +8,20 @@
 // apply_impulse / TilemapHandle method-dispatch mold (interp_call.odin →
 // eval_nav_method here).
 //
-// The graph is BAKE-STATIC for the GRAPH queries (path/reachable/nearest):
-// unlike tile state (committed world state that folds SetTile each tick), the
-// nav graph is decoded once into the Program and read straight from there —
-// there is no World_Version COW chain for nav. §12 §1's "SetTile re-derives the
-// affected nav incrementally" is DYNAMIC TERRAIN, a separate concern; this file
-// leaves that seam un-built (path() reads program.navs, not a per-version
-// table; tracked as the settile-driven-incremental-nav task). los is the
-// deliberate exception: it is an OCCUPANCY query, not a graph query, and
-// answers over the live committed tile state of the layer the graph keys 1:1
-// to (ADR 2026-06-11-engine-los-reads-live-tilemap-occupancy) — so a SetTile
-// wall blocks sight from the next tick even while path() still routes the bake.
+// The GRAPH queries (path/reachable/nearest) are VERSION-STATE-COUPLED like los,
+// not bake-static: when the nav's 1:1 layer is committed they answer over the
+// LIVE tile state of that layer, re-deriving the walkable topology per query from
+// the committed cells (derive_nav_graph_from_layer), so a path() issued the tick
+// after a SetTile wall falls routes through the new gap (§12 §1; ADR
+// 2026-06-12-engine-path-reads-live-tilemap-no-materialized-nav). The baked
+// program.navs graph is consulted ONLY as the layerless fallback (no committed
+// 1:1 layer — layerless fixtures, nav-only artifacts), so there is no
+// materialized per-version nav table and no save/restore nav carry: the live
+// layer the §24 save stream already persists IS the nav state. los is the same
+// shape (an OCCUPANCY query over the live layer, ADR
+// 2026-06-11-engine-los-reads-live-tilemap-occupancy); the derivation rule is
+// the funpack bake's rule read live, so a derive over UNCHANGED terrain is
+// bit-identical to the baked decode (the static-golden consistency guarantee).
 //
 // Determinism (§10.5, the tilemap.odin invariant): path() is a pure function of
 // (graph, from, to). The search is a uniform-cost BFS over the flat 4-neighbor
@@ -88,6 +91,94 @@ nav_graphs_equal :: proc(a, b: Nav_Graph) -> bool {
 		}
 	}
 	return true
+}
+
+// --- the live-layer derivation (the bake's rule read per query) ------------
+
+// derive_nav_graph_from_layer rebuilds the §12 §1 nav graph from one committed
+// tile layer's LIVE cells — the funpack bake's derivation rule
+// (build.odin:bake_layer_nav_graph + nav_cell_walkable) reproduced in the
+// runtime so a path/reachable/nearest query answers over the tick's terrain
+// (ADR 2026-06-12-engine-path-reads-live-tilemap-no-materialized-nav). It is a
+// pure function of the layer: the walkable set, the centers, and the edges all
+// derive from cells + palette + anchor alone, so deriving twice over the same
+// layer yields a bit-identical graph (the replay/refold determinism guarantee).
+//
+// Walkability is the bake's `!solid` verdict read through tilemap_solid_at: an
+// empty/marker cell (TILE_CELL_EMPTY) and a non-solid tile are walkable, a solid
+// tile is not — bit-equivalent to nav_cell_walkable because tilemap_solid_at
+// returns false for an empty cell (the void carries no solidity, §18 §2). Nodes
+// are the walkable cells in ROW-MAJOR rank order (line position IS the node
+// index, §12 §5), centers come from tilemap_center_of (the same kernel math the
+// bake uses), and edges are the 4-neighbor orthogonal adjacencies — the bake's
+// undirected dedupe (emit only right c+1 and down r+1) so each edge appears once,
+// then every adj[i] SORTED ASCENDING (nav_sort_ascending) so the BFS tie-break is
+// bit-stable. The ascending-cell-index scan visits cells in ascending node-index
+// order, so a derive over UNCHANGED terrain is structurally equal to the baked
+// decode (nav_graphs_equal == true) — the static-golden consistency guarantee.
+//
+// Ephemeral per query: the graph is built on the supplied (temp/per-tick)
+// allocator and never enters the committed World_Version chain — there is no
+// materialized per-version nav state to reclaim (Lore #17 O(delta) spirit; the
+// "incremental flow field" §12 §2 gestures at is a deferred perf task, not this).
+derive_nav_graph_from_layer :: proc(
+	layer: ^Tile_Layer,
+	allocator := context.allocator,
+) -> Nav_Graph {
+	// First pass: assign each walkable cell its row-major node index (the bake's
+	// cell→node map), so an edge can name node indices, not cell indices.
+	cell_count := layer.cols * layer.rows
+	cell_to_node := make([]int, cell_count, context.temp_allocator)
+	node_count := 0
+	for row in 0 ..< layer.rows {
+		for col in 0 ..< layer.cols {
+			cell := row * layer.cols + col
+			if !tilemap_solid_at(layer, col, row) {
+				cell_to_node[cell] = node_count
+				node_count += 1
+			} else {
+				cell_to_node[cell] = NAV_NO_NODE
+			}
+		}
+	}
+	centers := make([]Vec2, node_count, allocator)
+	// Mutable per-node neighbor lists, frozen into owned ascending slices after.
+	lists := make([][dynamic]int, node_count, context.temp_allocator)
+	for &list in lists {
+		list = make([dynamic]int, context.temp_allocator)
+	}
+	for row in 0 ..< layer.rows {
+		for col in 0 ..< layer.cols {
+			cell := row * layer.cols + col
+			node := cell_to_node[cell]
+			if node == NAV_NO_NODE {
+				continue
+			}
+			centers[node] = tilemap_center_of(layer, i64(col), i64(row))
+			// Undirected dedupe: open only the right (c+1) and down (r+1) edges so
+			// each adjacency appears once; append to BOTH endpoints' lists.
+			if col + 1 < layer.cols {
+				if right := cell_to_node[cell + 1]; right != NAV_NO_NODE {
+					append(&lists[node], right)
+					append(&lists[right], node)
+				}
+			}
+			if row + 1 < layer.rows {
+				if down := cell_to_node[cell + layer.cols]; down != NAV_NO_NODE {
+					append(&lists[node], down)
+					append(&lists[down], node)
+				}
+			}
+		}
+	}
+	adj := make([][]int, node_count, allocator)
+	for &list, i in lists {
+		nav_sort_ascending(list[:])
+		neighbors := make([]int, len(list), allocator)
+		copy(neighbors, list[:])
+		adj[i] = neighbors
+	}
+	return Nav_Graph{name = layer.name, centers = centers, adj = adj}
 }
 
 // --- the §12 §2 path() search (pure, fixed-point, total) -------------------
@@ -278,15 +369,25 @@ eval_nav_method :: proc(
 		if !from_is_vec || !to_is_vec {
 			return nil, false, true
 		}
-		// The graph's 1:1 committed layer: path/reachable read its GEOMETRY for
-		// the §12 §2 containing-cell endpoint resolution (nil → exact-center
-		// only); los reads its OCCUPANCY for the supercover verdict.
+		// The graph's 1:1 committed layer: when present, path/reachable answer over
+		// the LIVE graph derived from its current tile state (so a SetTile wall-fall
+		// routes through the new gap from the next tick — ADR
+		// 2026-06-12-engine-path-reads-live-tilemap-no-materialized-nav); the layer
+		// also supplies the §12 §2 containing-cell resolution geometry. los reads
+		// the layer's OCCUPANCY for the supercover verdict. No committed layer
+		// (layerless fixtures, nav-only artifacts) falls back to the baked graph.
 		layer := nav_layer_of_graph(interp, graph)
+		query_graph := graph
+		derived: Nav_Graph
+		if layer != nil {
+			derived = derive_nav_graph_from_layer(layer, context.temp_allocator)
+			query_graph = &derived
+		}
 		switch method {
 		case "path":
-			return nav_path_result(interp, graph, layer, from_vec, to_vec), true, true
+			return nav_path_result(interp, query_graph, layer, from_vec, to_vec), true, true
 		case "reachable":
-			return nav_reachable(graph, layer, from_vec, to_vec), true, true
+			return nav_reachable(query_graph, layer, from_vec, to_vec), true, true
 		case "los":
 			// The §12 §3 occupancy query: los never reads the graph (centers +
 			// adjacency are connectivity, not visibility) — it answers over the
@@ -314,7 +415,18 @@ eval_nav_method :: proc(
 		if !is_vec {
 			return nil, false, true
 		}
-		return nav_nearest(interp, graph, point), true, true
+		// nearest snaps to the closest LIVE walkable center when the 1:1 layer is
+		// committed (a newly-walkable cell's center becomes snappable the next
+		// tick); the baked graph is the layerless fallback. Same live-read contract
+		// as path/reachable (ADR 2026-06-12).
+		layer := nav_layer_of_graph(interp, graph)
+		query_graph := graph
+		derived: Nav_Graph
+		if layer != nil {
+			derived = derive_nav_graph_from_layer(layer, context.temp_allocator)
+			query_graph = &derived
+		}
+		return nav_nearest(interp, query_graph, point), true, true
 	}
 	return nil, false, false
 }

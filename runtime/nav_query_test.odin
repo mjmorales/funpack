@@ -717,3 +717,219 @@ test_engine_los_no_committed_layer_fails_closed :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, !ok) // fails closed: no guessed true
 }
+
+// --- the §12 §1 SetTile-driven LIVE nav (path/reachable/nearest) -------------
+//
+// ADR 2026-06-12-engine-path-reads-live-tilemap-no-materialized-nav: path /
+// reachable / nearest answer over the LIVE committed tile state of the nav's 1:1
+// layer (exactly as los does), re-deriving the walkable topology per query via
+// derive_nav_graph_from_layer — so a wall that falls (or rises) routes the NEXT
+// tick. The baked program.navs graph is the layerless fallback ONLY. The
+// derivation reproduces the funpack bake's rule (build.odin:bake_layer_nav_graph
+// + nav_cell_walkable), so a derive over UNCHANGED terrain is bit-identical to
+// the baked decode — no static golden can move (the inverse-golden discipline).
+
+// nav_layer_with_cells clones los_grid_layer's 3×3 cell-16 geometry (anchored at
+// top-left (0,48), palette [wall(solid), floor]) with a supplied cell-index
+// pattern — the world a derived live nav graph reads. cells are row-major palette
+// indices (0=wall, 1=floor); the geometry SetTile never mutates stays fixed.
+nav_layer_with_cells :: proc(pattern: []int) -> Tile_Layer {
+	layer := los_grid_layer()
+	cells := make([]int, len(pattern), context.temp_allocator)
+	copy(cells, pattern)
+	layer.cells = cells
+	return layer
+}
+
+// nav_path_steps decodes a path() Result::Ok(Path) Value into its (steps, cost)
+// for a bit-exact route comparison; ok=false on an Err arm (OffNav/Unreachable).
+nav_path_steps :: proc(result: Value) -> (steps: []Vec2, cost: Fixed, ok: bool) {
+	variant, is_variant := result.(Variant_Value)
+	if !is_variant || variant.enum_type != "Result" || variant.case_name != "Ok" {
+		return nil, Fixed(0), false
+	}
+	path := variant.payload^.(Record_Value)
+	list := path.fields["steps"].(List_Value)
+	out := make([]Vec2, len(list.elements), context.temp_allocator)
+	for el, i in list.elements {
+		out[i] = el.(Vec2)
+	}
+	return out, path.fields["cost"].(Fixed), true
+}
+
+// nav_paths_equal compares two decoded routes by raw Vec2 bits + raw cost bits —
+// the bit-identical replay/refold assertion (no float, no tolerance, §10.5).
+nav_paths_equal :: proc(a_steps: []Vec2, a_cost: Fixed, b_steps: []Vec2, b_cost: Fixed) -> bool {
+	if a_cost != b_cost || len(a_steps) != len(b_steps) {
+		return false
+	}
+	for s, i in a_steps {
+		if s != b_steps[i] {
+			return false
+		}
+	}
+	return true
+}
+
+@(test)
+test_settile_live_nav :: proc(t: ^testing.T) {
+	// AC1: path/reachable/nearest answer over the LIVE committed tile layer, not the
+	// bake-static program.navs — SetTile-then-query routes the new terrain, while
+	// UNCHANGED terrain stays bit-identical to the bake (no static golden moves).
+	c0 := Vec2{x = to_fixed(8), y = to_fixed(40)} // node (0,0)
+	c2 := Vec2{x = to_fixed(40), y = to_fixed(40)} // node (2,0)
+	left_mid := Vec2{x = to_fixed(8), y = to_fixed(24)} // cell (0,1) center
+	right_mid := Vec2{x = to_fixed(40), y = to_fixed(24)} // cell (2,1) center
+	center := Vec2{x = to_fixed(24), y = to_fixed(24)} // the solid center cell's center
+
+	base := []int{1, 1, 1, 1, 0, 1, 1, 1, 1} // center (1,1) solid — los_grid_layer
+	gap := []int{1, 1, 1, 1, 1, 1, 1, 1, 1} // center filled to floor — wall FELL
+	// node 2's only neighbors (cell 1 left, cell 5 down) walled — wall BUILT,
+	// isolating the top-right cell so a route to it is Unreachable.
+	walled := []int{1, 0, 1, 1, 0, 0, 1, 1, 1}
+
+	// (a) UNCHANGED terrain — derive == bake, and the live route matches the bake's.
+	{
+		baked := nav_grid_graph()
+		base_layer := nav_layer_with_cells(base)
+		derived := derive_nav_graph_from_layer(&base_layer, context.temp_allocator)
+		testing.expect(t, nav_graphs_equal(derived, baked)) // derive(unchanged) == bake
+
+		version := los_version(nav_layer_with_cells(base))
+		// path left_mid → right_mid must DETOUR the solid center (cost 64, 5 steps):
+		// down-around the bottom row, the only route around the wall.
+		live_res, ok := eval_engine_nav(&version, "path", left_mid, right_mid)
+		testing.expect(t, ok)
+		steps, cost, decoded := nav_path_steps(live_res)
+		testing.expect(t, decoded)
+		testing.expect_value(t, len(steps), 5) // detour: (8,24)(8,40)(24,40)(40,40)(40,24)
+		testing.expect_value(t, steps[0], left_mid)
+		testing.expect_value(t, steps[len(steps) - 1], right_mid)
+		testing.expect_value(t, cost, to_fixed(64)) // 4 edges × 16
+
+		// reachable over the live layer agrees; nearest to the solid center snaps to
+		// a surrounding walkable center (NOT the center — it is not a node yet).
+		reach, rok := eval_engine_nav(&version, "reachable", left_mid, right_mid)
+		testing.expect(t, rok)
+		testing.expect_value(t, reach.(bool), true)
+		near_res, nok := eval_engine_nearest(&version, center)
+		testing.expect(t, nok)
+		near := near_res.(Variant_Value)
+		testing.expect_value(t, near.case_name, "Some")
+		testing.expect(t, near.payload^.(Vec2) != center) // the solid center is no node
+	}
+
+	// (b) wall FALLS (solid → walkable): the gap version routes STRAIGHT through the
+	// new center node (cost 32, 3 steps) where the base detoured, and nearest snaps
+	// to the now-walkable center.
+	gap_version := los_version(nav_layer_with_cells(gap))
+	gap_steps: []Vec2
+	gap_cost: Fixed
+	{
+		res, ok := eval_engine_nav(&gap_version, "path", left_mid, right_mid)
+		testing.expect(t, ok)
+		steps, cost, decoded := nav_path_steps(res)
+		testing.expect(t, decoded)
+		testing.expect_value(t, len(steps), 3) // (8,24)(24,24)(40,24) — through the gap
+		testing.expect_value(t, steps[0], left_mid)
+		testing.expect_value(t, steps[1], center) // the cell that was solid is now a waypoint
+		testing.expect_value(t, steps[2], right_mid)
+		testing.expect_value(t, cost, to_fixed(32)) // 2 edges × 16
+		gap_steps, gap_cost = steps, cost
+
+		near_res, nok := eval_engine_nearest(&gap_version, center)
+		testing.expect(t, nok)
+		near := near_res.(Variant_Value)
+		testing.expect_value(t, near.case_name, "Some")
+		testing.expect_value(t, near.payload^.(Vec2), center) // snaps to the freed cell
+	}
+
+	// (c) wall BUILT (walkable → solid): the top-right cell is isolated, so a path
+	// to it is Unreachable and reachable reads false over the new version.
+	{
+		version := los_version(nav_layer_with_cells(walled))
+		res, ok := eval_engine_nav(&version, "path", c0, c2)
+		testing.expect(t, ok)
+		variant := res.(Variant_Value)
+		testing.expect_value(t, variant.case_name, "Err")
+		testing.expect_value(t, variant.payload^.(Variant_Value).case_name, "Unreachable")
+		reach, rok := eval_engine_nav(&version, "reachable", c0, c2)
+		testing.expect(t, rok)
+		testing.expect_value(t, reach.(bool), false)
+	}
+
+	// (d) SAME-tick / old-version visibility: a query against the OLD (base) version
+	// still sees the OLD topology even after the gap version is committed — the
+	// committed = entering-version §18 §4 next-tick invariant los already obeys.
+	{
+		base_version := los_version(nav_layer_with_cells(base))
+		old_res, ok := eval_engine_nav(&base_version, "path", left_mid, right_mid)
+		testing.expect(t, ok)
+		_, old_cost, decoded := nav_path_steps(old_res)
+		testing.expect(t, decoded)
+		testing.expect_value(t, old_cost, to_fixed(64)) // still the detour — the gap is not visible here
+	}
+
+	// (e) replay / refold determinism: build the gap version a SECOND way — by
+	// FOLDING a SetTile(center → floor) over the base version (the §18 §4 tick-end
+	// application) — and assert the derived route is BIT-IDENTICAL to the
+	// hand-committed gap route. Same inputs ⇒ same committed cells ⇒ same derived
+	// graph ⇒ same Path.
+	{
+		prior := los_version(nav_layer_with_cells(base))
+		state := new_tick_state(prior, context.temp_allocator, context.temp_allocator)
+		// SetTile(ground, cell (1,1), "floor") — the center wall falls.
+		append(&state.settile_commands, nav_settile_record("ground", 1, 1, "floor"))
+		folded := fold_tile_layers(prior, &state)
+		testing.expect_value(t, len(state.settile_refusals), 0)
+		refolded := World_Version{tilemaps = folded}
+
+		res, ok := eval_engine_nav(&refolded, "path", left_mid, right_mid)
+		testing.expect(t, ok)
+		refold_steps, refold_cost, decoded := nav_path_steps(res)
+		testing.expect(t, decoded)
+		testing.expect(t, nav_paths_equal(refold_steps, refold_cost, gap_steps, gap_cost))
+	}
+
+	// (f) layerless fallback unchanged: with NO committed layer (nav_test_interp,
+	// version nil) path/reachable/nearest resolve over the baked program.navs graph
+	// exactly as before — derive is never reached, the bake answers.
+	{
+		baked := nav_grid_graph()
+		program := Program{}
+		program.navs = nav_one_graph(baked)
+		interp := nav_test_interp(&program)
+		// reachable over the connected top row (the existing layerless contract).
+		reach, rok := nav_eval_method(&interp, nav_handle_value("ground"), "reachable", baked.centers[0], baked.centers[2])
+		testing.expect(t, rok)
+		testing.expect_value(t, reach.(bool), true)
+		// nearest snaps to a real baked center (the closest-center scan, not identity).
+		near, nok := nav_eval_method(&interp, nav_handle_value("ground"), "nearest", baked.centers[0])
+		testing.expect(t, nok)
+		opt := near.(Variant_Value)
+		testing.expect_value(t, opt.case_name, "Some")
+		testing.expect_value(t, opt.payload^.(Vec2), baked.centers[0]) // exact baked center
+	}
+}
+
+// nav_settile_record hand-builds one collected SetTile command Record_Value over a
+// NavHandle-shaped `map` handle (the same name-keyed handle the level seam emits)
+// — the settile_record mold, used here to fold a wall-fall into the gap version.
+nav_settile_record :: proc(layer: string, x, y: i64, tile: string) -> Record_Value {
+	fields := make(map[string]Value, context.temp_allocator)
+	fields["map"] = nav_handle_value(layer)
+	fields["cell"] = tilemap_cell_record(x, y)
+	fields["tile"] = String_Value{text = tile}
+	return Record_Value{type_name = "SetTile", fields = fields}
+}
+
+// eval_engine_nearest drives `nav.nearest(point)` through the real dispatch over
+// the grid graph + the supplied committed version (the eval_engine_nav mold for
+// the one-Vec2 nearest query).
+eval_engine_nearest :: proc(version: ^World_Version, point: Vec2) -> (result: Value, ok: bool) {
+	graph := nav_grid_graph()
+	program := Program{}
+	program.navs = nav_one_graph(graph)
+	interp := los_interp(&program, version)
+	return nav_eval_method(&interp, nav_handle_value("ground"), "nearest", point)
+}
