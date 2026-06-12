@@ -112,7 +112,23 @@ import "core:slice"
 // session, the session seeded from the frozen FRAME_SESSION_SEED, not this
 // version) are byte-unchanged under the v7 bump. Only a tile-layer-carrying
 // artifact produces the new (correct) bytes.
-FRAME_DIGEST_SCHEMA_VERSION :: 7
+// v8 adds the §20 §1 / §18 §1 atlas-sprite tag (Cmd_Tag.Sprite): the dungeon's
+// draw_hero/draw_slime/draw_chest behaviors emit a per-entity Draw::Sprite (distinct
+// from the engine-emitted batched Draw_Tilemap — §18 §3 forbids per-tile sprite rows
+// for terrain, but a moving entity IS a behavior-emitted sprite), and the digest folds
+// the LAYER'S COMPLETE STATE — the atlas handle NAME, the cell key, the at/size Vec2s,
+// the tint ordinal, the flip token, and the layer Int — so the drawn entity is inside
+// the comparison surface bit-exactly (a moved `at`, a re-tinted sprite, or a different
+// `cell` changes the digest). The atlas is carried as a NAME only; the present pass
+// resolves the §19 atlas asset to a texture later (the assets epic), never the
+// determinism path. The ordinal is APPENDED (Sprite=8 after Tilemap=7), and NO shipped
+// golden emits a Draw::Sprite — pong/snake/hunt emit Rect/Text, yard adds the 2D
+// Camera, krognid the 3D commands, the dungeon's terrain the batched Tilemap — so all
+// committed pong/snake/hunt/yard/krognid CONTENT digests (per-tick AND session, the
+// session seeded from the frozen FRAME_SESSION_SEED, not this version) are
+// byte-unchanged under the v8 bump even though the comparability stamp advances. Only a
+// sprite-carrying draw-list produces the new (correct) bytes.
+FRAME_DIGEST_SCHEMA_VERSION :: 8
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
@@ -151,11 +167,12 @@ Field_Tag :: enum u8 {
 }
 
 // Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
-// Rect, a Text, a Camera, and the four 3D commands never alias in the stream. Fixed
-// ordinals — a draw-command kind added to the §20 union is a schema bump here too
-// (§04). The ordinals are append-only: each new tag takes the next free ordinal so
-// an existing byte stream is unchanged (pong/snake/hunt/yard emit none of the 3D
-// commands, so their digests are unmoved under the v6 append).
+// Rect, a Text, a Camera, the four 3D commands, the batched Tilemap, and the entity
+// Sprite never alias in the stream. Fixed ordinals — a draw-command kind added to the
+// §20 union is a schema bump here too (§04). The ordinals are append-only: each new
+// tag takes the next free ordinal so an existing byte stream is unchanged
+// (pong/snake/hunt/yard emit none of the 3D/Tilemap/Sprite commands, so their digests
+// are unmoved under the v6/v7/v8 appends).
 Cmd_Tag :: enum u8 {
 	Rect         = 0, // a Draw_Rect: at, size, color
 	Text         = 1, // a Draw_Text: at, length-prefixed text, color
@@ -165,6 +182,7 @@ Cmd_Tag :: enum u8 {
 	Draw3_Plane  = 5, // a Draw3_Plane: at (Vec3), size (Vec2), color ordinal
 	Draw3_Rigged = 6, // a Draw3_Rigged: skeleton/parts handles, pose, at (Vec3)
 	Tilemap      = 7, // a Draw_Tilemap: the full §18 §3 batched layer (name, geometry, anchor, palette, cells)
+	Sprite       = 8, // a Draw_Sprite: atlas name, cell key, at/size (Vec2), tint ordinal, flip token, layer (Int)
 }
 
 // Frame_Digest is one committed tick's digest: the tick ordinal it was taken at
@@ -507,8 +525,10 @@ write_draw_list :: proc(buf: ^[dynamic]u8, draw: Draw_List) {
 // world position. Every number is raw Q32.32 little-endian bits, never a float (§10).
 // The 3D arms fold the COMPLETE 3D state (the determinism bet is on the lowering, not
 // the present), so two folds of the same committed rig digest identically and any
-// single Fixed bit divergence changes the digest. The Draw_Cmd union has exactly
-// these seven arms, so the switch is total.
+// single Fixed bit divergence changes the digest. A Draw_Tilemap folds the §18 §3
+// batched layer; a Draw_Sprite folds the §18 §1 entity sprite's complete state — its
+// atlas NAME, cell key, at/size, tint, flip, and layer — under the appended Sprite=8
+// tag. The Draw_Cmd union has exactly these nine arms, so the switch is total.
 @(private = "file")
 write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 	switch c in cmd {
@@ -570,6 +590,25 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		for cell in c.layer.cells {
 			put_u64_le(buf, u64(i64(cell)))
 		}
+	case Draw_Sprite:
+		// The §20 §1 / §18 §1 atlas sprite folds its COMPLETE state: the atlas
+		// handle NAME and the cell key (length-prefixed strings — the name the
+		// present pass resolves the §19 asset by, carried verbatim, never resolved
+		// here), the at/size Vec2s (raw Q32.32 bits, `at` the §20 §1 center), the
+		// tint as its closed-§20 palette ordinal (one byte), the flip as its
+		// length-prefixed token (the §18 §1 Flip:: case name), and the layer as its
+		// raw i64 bits. Every field is in the fold, so a one-bit divergence in any of
+		// them (a moved `at`, a different `cell`, a flipped `flip`, a re-tinted `tint`,
+		// a re-layered `layer`) changes the digest — the entity sprite is inside the
+		// comparison surface bit-exactly.
+		append(buf, u8(Cmd_Tag.Sprite))
+		write_length_prefixed(buf, c.atlas)
+		write_length_prefixed(buf, c.cell)
+		write_vec2(buf, c.at)
+		write_vec2(buf, c.size)
+		append(buf, u8(c.tint))
+		write_length_prefixed(buf, c.flip)
+		put_u64_le(buf, u64(c.layer))
 	}
 }
 

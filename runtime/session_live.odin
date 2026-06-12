@@ -822,6 +822,16 @@ when #config(FUNPACK_LIVE, false) {
 				// atlas-textured tile draw is a later asset story; the layer's full
 				// CONTENT is already in the determinism digest.
 				present_tile_layer(renderer, c.layer, camera, board, window)
+			case Draw_Sprite:
+				// The §18 §1 entity sprite paints an untextured tinted stand-in: a
+				// center-anchored rect at its `at`/`size` in the sprite's `tint`. The
+				// atlas-textured cell draw needs the §19 atlas asset (the assets epic);
+				// until that resolves the atlas name to a texture + the cell to a uv
+				// region, the present shows the sprite's extent and tint — the same
+				// deliberate untextured flattening Draw3_Plane/Draw_Tilemap use. The
+				// sprite's FULL state (atlas name, cell, flip, layer) is already in the
+				// determinism digest; only the textured PRESENT is deferred.
+				fill_world_rect(renderer, c.at, c.size, c.tint, camera, board, window)
 			}
 		}
 		sdl.RenderPresent(renderer)

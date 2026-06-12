@@ -574,8 +574,10 @@ test_draw3_digest_deterministic :: proc(t: ^testing.T) {
 	testing.expect_value(t, u8(Cmd_Tag.Draw3_Rigged), 6)
 	// And the schema version advanced deliberately — v6 appended these 3D tags;
 	// v7 appended the §18 §3 batched Tilemap tag after them (tilemap_test.odin
-	// pins its ordinal), leaving every 2D/3D ordinal here unmoved.
-	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 7)
+	// pins its ordinal); v8 appended the §18 §1 entity Sprite tag after that
+	// (test_draw_sprite_lowering_and_digest pins its ordinal), leaving every
+	// 2D/3D/Tilemap ordinal here unmoved.
+	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 8)
 
 	// A 2D-only Rect draw-list still digests through the unchanged Rect=0 tag — a
 	// proxy for the committed 2D goldens staying byte-unmoved (the committed-replay tests assert the

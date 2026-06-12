@@ -144,16 +144,46 @@ Draw_Tilemap :: struct {
 	layer: Tile_Layer,
 }
 
+// Draw_Sprite is the §20 §1 / §18 §1 atlas sprite: a named atlas region drawn as a
+// quad at a fixed-point center. It is the per-entity draw command the dungeon's
+// draw_hero/draw_slime/draw_chest behaviors emit — distinct from the engine-emitted
+// batched Draw_Tilemap (§18 §3 forbids per-tile sprite rows for terrain; a moving
+// entity sprite is a behavior-emitted Draw::Sprite). The lowered fields:
+//   - `atlas` is the atlas handle's NAME (a string): the digest carries the name and
+//     the PRESENT pass resolves the atlas to a texture later (the §19 atlas asset is
+//     the assets epic's; the determinism lowering never resolves it, it carries the
+//     name as the stable identity);
+//   - `cell` is the §18 §1 region key (a String — `"hero"`, `"slime"`, the chest's
+//     state cell): the named region the present pass slices from the atlas;
+//   - `at` is the CENTER of the sprite extent (§20 §1 anchor) and `size` reaches
+//     size/2 out on each axis — both Vec2 off the kernel;
+//   - `tint` is the closed §20 palette color (a Draw_Color); `flip` is the §18 §1
+//     flip token (a Flip:: variant case name carried verbatim — None/Horizontal/…);
+//   - `layer` is the §18 §1 draw-order layer (an Int).
+// Every field is folded raw into the digest — the determinism bet is on the lowering;
+// the present resolution (atlas → texture, cell → uv, flip → quad orientation) is
+// render-boundary-only and never re-enters the sim. A new arm is a deliberate
+// schema-version bump (§04 closed-enum; FRAME_DIGEST_SCHEMA_VERSION).
+Draw_Sprite :: struct {
+	atlas: string, // the atlas handle NAME — the present pass resolves the §19 asset
+	cell:  string, // the §18 §1 named region key
+	at:    Vec2, // the CENTER of the extent (§20 §1 anchor)
+	size:  Vec2, // the extent, reaching size/2 out on each axis
+	tint:  Draw_Color, // the closed §20 palette tint
+	flip:  string, // the §18 §1 flip token (a Flip:: case name)
+	layer: i64, // the §18 §1 draw-order layer
+}
+
 // Draw_Cmd is the closed set of §20 draw commands a render behavior emits. A new
 // command kind is a schema-version bump (the closed-enum discipline §04, and the
 // frame digest folds the draw-list so a new arm bumps FRAME_DIGEST_SCHEMA_VERSION).
 // Pong exercises Rect (paddles, ball) and Text (score); yard adds Camera (the 2D
 // world↔screen view); krognid adds the four §20 §1 3D commands
 // (Draw3_Camera/Light/Plane/Rigged); the dungeon's terrain adds the engine-emitted
-// batched Draw_Tilemap (§18 §3). New arms are APPENDED after the existing arms;
-// the union is the draw-list's element type, mixing 2D and 3D commands in one
-// flattened draw-list (an artifact emits one OR the other in practice, but the
-// union admits both).
+// batched Draw_Tilemap (§18 §3) and its entities the behavior-emitted Draw_Sprite
+// (§18 §1). New arms are APPENDED after the existing arms; the union is the
+// draw-list's element type, mixing 2D and 3D commands in one flattened draw-list (an
+// artifact emits one OR the other in practice, but the union admits both).
 Draw_Cmd :: union {
 	Draw_Rect,
 	Draw_Text,
@@ -163,6 +193,7 @@ Draw_Cmd :: union {
 	Draw3_Plane,
 	Draw3_Rigged,
 	Draw_Tilemap,
+	Draw_Sprite,
 }
 
 // Draw_List is the §20 draw-list: the ordered draw commands of one committed
@@ -219,6 +250,14 @@ draw_cmd_equal :: proc(a, b: Draw_Cmd) -> bool {
 		// compares structurally — tile_layers_equal walks both element-wise.
 		y, ok := b.(Draw_Tilemap)
 		return ok && tile_layers_equal(x.layer, y.layer)
+	case Draw_Sprite:
+		// A sprite carries only simply-comparable fields (atlas/cell/flip strings,
+		// at/size Vec2 by raw bits, tint ordinal, layer i64), so `==` is total over
+		// it — the Rect arm's shape. A single-field diff (a moved `at`, a different
+		// `cell`, a flipped `flip`, a re-tinted `tint`, a re-layered `layer`) is
+		// unequal; a kind mismatch is unequal.
+		y, ok := b.(Draw_Sprite)
+		return ok && x == y
 	}
 	// Both nil (an empty union) compares equal; a nil-vs-set mismatch is unequal.
 	return a == nil && b == nil
@@ -416,6 +455,34 @@ draw_command_from_record :: proc(record: Record_Value) -> (cmd: Draw_Cmd, ok: bo
 			return nil, false
 		}
 		return Draw3_Rigged{skeleton = skeleton, parts = parts, pose = pose, at = at}, true
+	case "Draw::Sprite":
+		// the §20 §1 / §18 §1 atlas sprite: atlas handle NAME + cell key (Strings) +
+		// at/size (Vec2, `at` the §20 §1 center) + tint (closed §20 palette) + flip
+		// token + layer (Int). Every field is REQUIRED — a missing one, an
+		// out-of-palette tint (record_color ok=false), or a malformed atlas/flip
+		// REFUSES with ok=false: the documented fail-closed mold drops the command
+		// rather than mispainting. The atlas resolves to a NAME only (the present
+		// pass loads the §19 asset); the digest carries the name verbatim.
+		atlas, atlas_ok := record_handle_name(record, "atlas")
+		cell, cell_ok := record_text(record, "cell")
+		at, at_ok := record_vec2(record, "at")
+		size, size_ok := record_vec2(record, "size")
+		tint, tint_ok := record_color(record, "tint")
+		flip, flip_ok := record_variant_token(record, "flip")
+		layer, layer_ok := record_int(record, "layer")
+		if !atlas_ok || !cell_ok || !at_ok || !size_ok || !tint_ok || !flip_ok || !layer_ok {
+			return nil, false
+		}
+		return Draw_Sprite {
+				atlas = atlas,
+				cell = cell,
+				at = at,
+				size = size,
+				tint = tint,
+				flip = flip,
+				layer = layer,
+			},
+			true
 	}
 	return nil, false
 }
@@ -533,6 +600,68 @@ record_text :: proc(record: Record_Value, name: string) -> (text: string, ok: bo
 		return "", false
 	}
 	return str.text, true
+}
+
+// record_handle_name reads the atlas handle NAME off a Draw::Sprite record's `atlas`
+// field — the §18 §1 atlas reference (`assets.dungeon_atlas`). It accepts BOTH shapes
+// an atlas reference reaches the lowering as (the eval_mesh_name_arg / SoundHandle
+// mold): a typed handle Record_Value carrying one `name` String field (the resolved
+// atlas("…") / AtlasHandle{name} value the §19 assets epic will produce), AND a bare
+// String_Value (the name carried directly when the asset graph is not yet wired). The
+// digest carries the NAME — the present pass resolves the texture later, never the
+// determinism path. ok=false when the field is absent or is neither shape
+// (fail-closed — the malformed sprite drops rather than painting a guessed atlas).
+record_handle_name :: proc(record: Record_Value, name: string) -> (atlas: string, ok: bool) {
+	field, present := record.fields[name]
+	if !present {
+		return "", false
+	}
+	#partial switch f in field {
+	case Record_Value:
+		inner, inner_present := f.fields["name"]
+		if !inner_present {
+			return "", false
+		}
+		str, is_str := inner.(String_Value)
+		if !is_str {
+			return "", false
+		}
+		return str.text, true
+	case String_Value:
+		return f.text, true
+	}
+	return "", false
+}
+
+// record_variant_token reads a §18 §1 flip token off a Draw::Sprite record's `flip`
+// field — the `Flip::None` / `Flip::Horizontal` enum case the present pass orients the
+// quad by. It is carried verbatim as its case name (the same token-only form a unit
+// variant digests under, variant_to_token); the lowering does not interpret it, only
+// folds it. ok=false when the field is absent or not a variant (fail-closed) — distinct
+// from record_color (which defaults an absent color to White): a flip has no §20
+// default, a malformed flip refuses the command.
+record_variant_token :: proc(record: Record_Value, name: string) -> (token: string, ok: bool) {
+	field, present := record.fields[name]
+	if !present {
+		return "", false
+	}
+	variant, is_variant := field.(Variant_Value)
+	if !is_variant {
+		return "", false
+	}
+	return variant.case_name, true
+}
+
+// record_int reads an Int (i64) field off a draw-command record — a Draw::Sprite's
+// §18 §1 `layer` draw-order key. ok=false when the field is absent or not an i64
+// (fail-closed — never a lifted Fixed; the layer is a plain integer §03 ordinal).
+record_int :: proc(record: Record_Value, name: string) -> (value: i64, ok: bool) {
+	field, present := record.fields[name]
+	if !present {
+		return 0, false
+	}
+	v, is_int := field.(i64)
+	return v, is_int
 }
 
 // record_color reads a draw command's color into the §20 palette. An ABSENT color

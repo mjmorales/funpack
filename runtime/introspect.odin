@@ -1178,5 +1178,25 @@ render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 			c.layer.cols,
 			c.layer.rows,
 		)
+	case Draw_Sprite:
+		// The §18 §1 entity sprite dumps its complete lowered state — the atlas
+		// NAME, cell key, at/size, tint, flip token, and layer — the same fields
+		// the digest folds, so the draw-list dump names what diverged.
+		fmt.sbprintf(
+			b,
+			"Sprite(atlas=L%d:%s,cell=L%d:%s,at=Vec2(x=%d,y=%d),size=Vec2(x=%d,y=%d),tint=Color::%v,flip=L%d:%s,layer=%d)",
+			len(c.atlas),
+			c.atlas,
+			len(c.cell),
+			c.cell,
+			i64(c.at.x),
+			i64(c.at.y),
+			i64(c.size.x),
+			i64(c.size.y),
+			c.tint,
+			len(c.flip),
+			c.flip,
+			c.layer,
+		)
 	}
 }

@@ -327,6 +327,157 @@ test_draw_command_unknown_color_does_not_lower :: proc(t: ^testing.T) {
 	testing.expect_value(t, rect.color, Draw_Color.Gray)
 }
 
+// --- (§18 §1) Draw::Sprite lowering + digest fold ---------------------------
+
+// The §20 §1 / §18 §1 atlas sprite is the entity draw command the dungeon's
+// draw_hero/draw_slime/draw_chest behaviors emit (the determinism path only — present
+// resolution of the atlas is the assets epic's, §19). This fixture is the AC1 proof of
+// the additive Draw_Sprite arm, mirroring the Draw_Tilemap (v6→v7) mold:
+//
+//   (a) a well-formed Draw::Sprite record lowers to a Draw_Sprite carrying EVERY field
+//       (atlas NAME, cell key, at/size, tint, flip token, layer);
+//   (b) an out-of-palette tint REFUSES (ok=false), and a missing required field
+//       REFUSES — the fail-closed mold drops the command rather than mispainting;
+//   (c) draw_cmd_equal is true for identical sprites, false on ANY single-field diff
+//       AND on a Draw_Sprite-vs-other-arm kind mismatch;
+//   (d) write_draw_cmd / frame_digest folds the sprite under Cmd_Tag.Sprite (=8): two
+//       folds identical, a one-bit field change moves the digest, and a sprite-bearing
+//       list digests differently from an empty list;
+//   (e) FRAME_DIGEST_SCHEMA_VERSION == 8.
+@(test)
+test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	// (a) a well-formed Draw::Sprite (draw_hero's record verbatim: hero cell, the
+	// White tint, Flip::None, layer 5, the 16×16 TILE extent) lowers carrying every
+	// field exactly.
+	hero := sprite_record("dungeon_atlas", "hero", Vec2{to_fixed(40), to_fixed(24)}, Vec2{to_fixed(16), to_fixed(16)}, "White", "None", 5)
+	cmd, ok := draw_command_from_record(hero)
+	testing.expect(t, ok)
+	sprite, is_sprite := cmd.(Draw_Sprite)
+	testing.expect(t, is_sprite)
+	testing.expect_value(t, sprite.atlas, "dungeon_atlas")
+	testing.expect_value(t, sprite.cell, "hero")
+	testing.expect_value(t, sprite.at, Vec2{to_fixed(40), to_fixed(24)})
+	testing.expect_value(t, sprite.size, Vec2{to_fixed(16), to_fixed(16)})
+	testing.expect_value(t, sprite.tint, Draw_Color.White)
+	testing.expect_value(t, sprite.flip, "None")
+	testing.expect_value(t, sprite.layer, i64(5))
+
+	// The atlas reference also lowers when carried as a typed handle record (the §19
+	// AtlasHandle{name} shape the assets epic resolves to) — record_handle_name reads
+	// either shape, so the lowering is robust to the resolved producer.
+	handle_fields := make(map[string]Value, context.temp_allocator)
+	handle_fields["name"] = String_Value{text = "dungeon_atlas"}
+	hero_handle := hero
+	hero_handle.fields["atlas"] = Record_Value{type_name = "AtlasHandle", fields = handle_fields}
+	cmd_h, ok_h := draw_command_from_record(hero_handle)
+	testing.expect(t, ok_h)
+	sprite_h, is_sprite_h := cmd_h.(Draw_Sprite)
+	testing.expect(t, is_sprite_h)
+	testing.expect_value(t, sprite_h.atlas, "dungeon_atlas")
+
+	// (b) an OUT-OF-PALETTE tint refuses (record_color ok=false) — the closed §20
+	// palette has no Chartreuse slot, so the sprite drops rather than mispainting White.
+	bad_tint := sprite_record("dungeon_atlas", "hero", Vec2{to_fixed(40), to_fixed(24)}, Vec2{to_fixed(16), to_fixed(16)}, "Chartreuse", "None", 5)
+	_, ok_tint := draw_command_from_record(bad_tint)
+	testing.expect(t, !ok_tint)
+
+	// (b) a MISSING required field refuses — drop the `cell` key and the lowering
+	// fail-closes (every Draw::Sprite field is required; no §20 default for cell).
+	no_cell := sprite_record("dungeon_atlas", "hero", Vec2{to_fixed(40), to_fixed(24)}, Vec2{to_fixed(16), to_fixed(16)}, "White", "None", 5)
+	delete_key(&no_cell.fields, "cell")
+	_, ok_cell := draw_command_from_record(no_cell)
+	testing.expect(t, !ok_cell)
+
+	// A missing `layer` (the Int field) likewise refuses — fail-closed across field
+	// kinds, not just the variant/string ones.
+	no_layer := sprite_record("dungeon_atlas", "hero", Vec2{to_fixed(40), to_fixed(24)}, Vec2{to_fixed(16), to_fixed(16)}, "White", "None", 5)
+	delete_key(&no_layer.fields, "layer")
+	_, ok_layer := draw_command_from_record(no_layer)
+	testing.expect(t, !ok_layer)
+
+	// (c) draw_cmd_equal: identical sprites equal; ANY single-field diff unequal.
+	slime := sprite_record("dungeon_atlas", "slime", Vec2{to_fixed(40), to_fixed(24)}, Vec2{to_fixed(16), to_fixed(16)}, "White", "None", 4)
+	hero_again, _ := draw_command_from_record(hero)
+	slime_cmd, _ := draw_command_from_record(slime)
+	testing.expect(t, draw_cmd_equal(cmd, hero_again)) // identical sprites
+	testing.expect(t, !draw_cmd_equal(cmd, slime_cmd)) // differ in cell AND layer
+
+	hero_cmd := cmd.(Draw_Sprite)
+	moved := hero_cmd; moved.at = Vec2{to_fixed(41), to_fixed(24)}
+	retinted := hero_cmd; retinted.tint = .Red
+	reflipped := hero_cmd; reflipped.flip = "Horizontal"
+	relayered := hero_cmd; relayered.layer = 6
+	reatlased := hero_cmd; reatlased.atlas = "other_atlas"
+	resized := hero_cmd; resized.size = Vec2{to_fixed(32), to_fixed(16)}
+	testing.expect(t, !draw_cmd_equal(cmd, moved)) // a single `at` bit moves it
+	testing.expect(t, !draw_cmd_equal(cmd, retinted)) // tint ordinal
+	testing.expect(t, !draw_cmd_equal(cmd, reflipped)) // flip token
+	testing.expect(t, !draw_cmd_equal(cmd, relayered)) // layer i64
+	testing.expect(t, !draw_cmd_equal(cmd, reatlased)) // atlas name
+	testing.expect(t, !draw_cmd_equal(cmd, resized)) // size Vec2
+
+	// (c) a Draw_Sprite-vs-other-arm kind mismatch is unequal (the union dispatch).
+	other_arm: Draw_Cmd = Draw_Rect{at = Vec2{to_fixed(40), to_fixed(24)}, size = Vec2{to_fixed(16), to_fixed(16)}, color = .White}
+	testing.expect(t, !draw_cmd_equal(cmd, other_arm))
+
+	// (d) write_draw_cmd / frame_digest folds the sprite under Cmd_Tag.Sprite (=8).
+	testing.expect_value(t, u8(Cmd_Tag.Sprite), 8) // appended after Tilemap=7
+	empty_version := World_Version{tick = 0, tables = nil}
+	sprite_list := Draw_List{cmds = []Draw_Cmd{cmd}}
+	empty_list := Draw_List{cmds = []Draw_Cmd{}}
+
+	// Two folds of the SAME sprite list digest identically (a pure content hash).
+	digest_a := frame_digest(empty_version, sprite_list).digest
+	digest_b := frame_digest(empty_version, sprite_list).digest
+	testing.expect_value(t, digest_b, digest_a)
+
+	// A one-bit field change (the moved `at`) moves the digest — the sprite is in the
+	// comparison surface, never collapsed to an empty fold.
+	moved_list := Draw_List{cmds = []Draw_Cmd{moved}}
+	testing.expect(t, frame_digest(empty_version, moved_list).digest != digest_a)
+
+	// A re-tinted / re-layered sprite likewise diverges (every folded field counts).
+	retint_list := Draw_List{cmds = []Draw_Cmd{retinted}}
+	relayer_list := Draw_List{cmds = []Draw_Cmd{relayered}}
+	testing.expect(t, frame_digest(empty_version, retint_list).digest != digest_a)
+	testing.expect(t, frame_digest(empty_version, relayer_list).digest != digest_a)
+
+	// A sprite-bearing list digests differently from an empty list — the Sprite tag
+	// and its folded fields are present in the stream, never a no-op.
+	testing.expect(t, digest_a != frame_digest(empty_version, empty_list).digest)
+
+	// The Sprite tag byte leads the folded command: after the empty world state
+	// (tick u64 + table-count u64 = 16) and the draw-list command count (u64 = 8),
+	// offset 24 carries Cmd_Tag.Sprite — the appended ordinal in the bytes.
+	sprite_bytes := frame_bytes(empty_version, sprite_list)
+	tag_offset := 16 + 8
+	testing.expect(t, len(sprite_bytes) > tag_offset)
+	testing.expect_value(t, sprite_bytes[tag_offset], u8(Cmd_Tag.Sprite))
+
+	// (e) the comparability stamp advanced to v8 for this append.
+	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 8)
+}
+
+// sprite_record builds the Draw::Sprite record the dungeon's draw_hero/draw_slime/
+// draw_chest behaviors emit — the atlas NAME (a bare String, the pre-resolution shape),
+// the cell key (a String), at/size (Vec2), the tint/flip as Color::/Flip:: variant
+// cases, and the layer (an Int i64) — so the lowering assertion is grounded in the
+// record shape the artifact's `node record Draw::Sprite` construction produces.
+@(private = "file")
+sprite_record :: proc(atlas, cell: string, at, size: Vec2, tint, flip: string, layer: i64) -> Record_Value {
+	fields := make(map[string]Value, context.temp_allocator)
+	fields["atlas"] = String_Value{text = atlas}
+	fields["cell"] = String_Value{text = cell}
+	fields["at"] = at
+	fields["size"] = size
+	fields["tint"] = Variant_Value{enum_type = "Color", case_name = tint}
+	fields["flip"] = Variant_Value{enum_type = "Flip", case_name = flip}
+	fields["layer"] = layer
+	return Record_Value{type_name = "Draw::Sprite", fields = fields}
+}
+
 // --- test helpers ---------------------------------------------------------
 
 // draw_at reads the i-th draw command, ok=false out of range — the option-shaped
