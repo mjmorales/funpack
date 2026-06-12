@@ -534,8 +534,8 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 // runtime/testdata/warren.artifact the runtime nav golden #loads, byte-for-byte
 // (the krognid/statequery seam mold). FUNPACK_REGEN_GOLDEN=1 REWRITES the
 // committed copy from the live build — checked BEFORE the staged-bump skip, so
-// a regen run can bootstrap the copy across a schema bump (the ordering gap the
-// krognid seam carries). Without regen, a committed copy stamped behind
+// a regen run can bootstrap the copy across a schema bump. Without regen, a
+// committed copy stamped behind
 // ARTIFACT_SCHEMA_VERSION SKIPs loudly (a staged schema bump — the runtime-side
 // reconcile restores the seam); a SAME-version divergence is the hard failure
 // this seam exists to catch.

@@ -180,8 +180,11 @@ test_emit_krognid_thing_and_setup :: proc(t: ^testing.T) {
 // produces. Mirrors the pong emit golden's committed-byte contract
 // (golden_emit_test.odin), extended to the runtime-side copy. SKIPs loudly when the
 // sibling source is absent (no emit to compare) but FAILS on a stale committed copy
-// when both are present. The ONE sanctioned divergence is a STAGED SCHEMA BUMP:
-// when the committed copy's version stamp trails the emitter's
+// when both are present. FUNPACK_REGEN_GOLDEN=1 REWRITES the committed copy from the
+// live emit — checked BEFORE the staged-bump skip, so a regen run can bootstrap the
+// copy across a schema bump (the warren/dungeon regen-first mold). The ONE sanctioned
+// divergence is a STAGED SCHEMA
+// BUMP: when the committed copy's version stamp trails the emitter's
 // ARTIFACT_SCHEMA_VERSION, the producer side has bumped first and the runtime-side
 // reconcile (its own constant, restamps, and replay-hash regeneration — the v7
 // precedent's runtime half) has not landed yet; the test then SKIPs loudly instead
@@ -198,6 +201,11 @@ test_emit_krognid_matches_runtime_testdata :: proc(t: ^testing.T) {
 	// THIS package (the worktree copy), never the main checkout, so a worktree
 	// validation run compares against the worktree's committed bytes.
 	committed_path, _ := filepath.join({#directory, "..", "runtime", "testdata", "krognid.artifact"}, context.temp_allocator)
+	if os.get_env("FUNPACK_REGEN_GOLDEN", context.temp_allocator) != "" {
+		testing.expect(t, os.write_entire_file(committed_path, transmute([]u8)emitted) == nil)
+		log.infof("REGEN krognid: wrote %s (%d bytes)", committed_path, len(emitted))
+		return
+	}
 	committed_bytes, read_err := os.read_entire_file_from_path(committed_path, context.temp_allocator)
 	if read_err != nil {
 		log.warnf("SKIP krognid testdata match: committed %s unreadable", committed_path)
