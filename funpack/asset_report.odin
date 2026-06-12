@@ -221,8 +221,9 @@ write_padded_right :: proc(b: ^strings.Builder, text: string, width: int) {
 // asset_kind_label maps an Asset_Kind onto its lowercase report label — the LABEL
 // column for a kept asset and the inline kind prefix for a stripped one. The
 // mapping is total over the closed kind set: Model → "model", Atlas → "atlas",
-// Audio → "audio", Tileset → "tileset" (the kind word the §5 report renders,
-// distinct from the handle TYPE asset_handle_type renders for the seam).
+// Audio → "audio", Tileset → "tileset", Image → "image" (the kind word the §5
+// report renders, distinct from the handle TYPE asset_handle_type renders for
+// the seam).
 asset_kind_label :: proc(kind: Asset_Kind) -> string {
 	switch kind {
 	case .Model:
@@ -233,6 +234,8 @@ asset_kind_label :: proc(kind: Asset_Kind) -> string {
 		return "audio"
 	case .Tileset:
 		return "tileset"
+	case .Image:
+		return "image"
 	}
 	return ""
 }

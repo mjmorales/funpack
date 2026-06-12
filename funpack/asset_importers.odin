@@ -12,6 +12,9 @@
 //     editing the PNG re-bakes only this atlas and whatever references it)
 //   - raw audio    -> import_audio:  content-hashing the raw binary directly
 //     (no DSL — a Tier-1 binary input hashed as-is)
+//   - raw image    -> import_image:  content-hashing the raw PNG bytes AND
+//     decoding them to a canonical RGBA8 buffer via core:image/png (§1: a
+//     raw file imports to a decoded buffer; Tier-1 native, deterministic)
 //
 // Each importer carries its own importer-version string (model@3, atlas@2,
 // audio@1, matching the committed assets.manifest), folded into the content
@@ -32,6 +35,14 @@
 // it is a DAG node with one dependency (its atlas, §19 §5).
 package funpack
 
+// core:image/png is the Odin-first PNG decoder (load_from_bytes + destroy) —
+// import_image decodes through it, never a custom PNG reader (§4: binary
+// importers are Tier-1 native but contracted deterministic, and decode is a
+// pure function of the source bytes). core:bytes reads the decoded pixel
+// buffer out of the image's bytes.Buffer.
+import "core:bytes"
+import png "core:image/png"
+
 // ── Importer version strings ─────────────────────────────────────────────
 // Each importer-version constant is folded into the §2 content hash. Bumping
 // one changes the hash of everything that importer produced — a kernel fix
@@ -41,6 +52,7 @@ package funpack
 MODEL_IMPORTER_VERSION :: "model@3"
 ATLAS_IMPORTER_VERSION :: "atlas@2"
 AUDIO_IMPORTER_VERSION :: "audio@1"
+IMAGE_IMPORTER_VERSION :: "image@1"
 
 // Importer_Error is closed with one arm per way an importer can reject. None
 // is success. Malformed_Source is any grammar violation in a DSL source (the
@@ -66,6 +78,13 @@ Importer_Error :: enum {
 	// one-name-one-tile discipline applied inside the file (the cross-tileset
 	// project-global namespace check is the tilemap layer story's).
 	Duplicate_Tile_Name,
+	// Malformed_Image: import_image could not decode the raw image bytes — a
+	// truncated, corrupt, or non-PNG input the core:image/png decoder rejects.
+	// Distinct from Malformed_Source (a DSL grammar violation): an image has no
+	// DSL, so its only reject is the decoder failing closed on bad bytes (§4:
+	// the binary importer is deterministic, so a garbage input is a named
+	// reject, never a panic).
+	Malformed_Image,
 }
 
 // ── Model importer (.fpm) ────────────────────────────────────────────────
@@ -471,17 +490,19 @@ Imported_Asset :: union {
 	Atlas_Asset,
 	Audio_Asset,
 	Tileset_Asset,
+	Image_Asset,
 }
 
 // import_asset is the closed dispatch keyed on Asset_Kind: one arm per kind,
 // each routing to its format importer over the same source bytes the manifest
-// names. The model and audio importers take no dependency hashes (their §4 DAG
-// nodes have no inputs); the atlas takes the resolved hash of its raw image
-// and the tileset the resolved hash of its atlas (§19 §5). Passing audio's
-// DSL-less source as bytes is the binary path; the model, atlas, and tileset
-// paths parse the bytes as their DSL text. Because Asset_Kind is closed,
-// adding a kind without an arm here fails the build — the dispatch can never
-// silently drop an asset.
+// names. The model, audio, and image importers take no dependency hashes
+// (their §4 DAG nodes have no inputs); the atlas takes the resolved hash of
+// its raw image and the tileset the resolved hash of its atlas (§19 §5).
+// Passing audio's and image's DSL-less source as bytes is the binary path —
+// audio is hashed as-is, image is hashed AND decoded; the model, atlas, and
+// tileset paths parse the bytes as their DSL text. Because Asset_Kind is
+// closed, adding a kind without an arm here fails the build — the dispatch can
+// never silently drop an asset.
 import_asset :: proc(kind: Asset_Kind, src: []byte, dep_hashes: []string) -> (asset: Imported_Asset, err: Importer_Error) {
 	switch kind {
 	case .Model:
@@ -496,6 +517,9 @@ import_asset :: proc(kind: Asset_Kind, src: []byte, dep_hashes: []string) -> (as
 	case .Tileset:
 		tileset := import_tileset(string(src), dep_hashes) or_return
 		return tileset, .None
+	case .Image:
+		image := import_image(src) or_return
+		return image, .None
 	}
 	return nil, .Malformed_Source
 }
@@ -516,6 +540,57 @@ Audio_Asset :: struct {
 // uniform Importer signature.
 import_audio :: proc(bytes: []byte) -> (asset: Audio_Asset, err: Importer_Error) {
 	asset.hash = asset_content_hash(bytes, AUDIO_IMPORTER_VERSION, nil)
+	return asset, .None
+}
+
+// ── Image importer (raw PNG binary) ──────────────────────────────────────
+// Image_Asset is an imported raw PNG: the §2 content hash of its source bytes
+// PLUS the decoded canonical buffer (§1: a raw image imports to a decoded
+// buffer). Unlike audio — content-hashed but never decoded by funpack — an
+// image is decoded here to RGBA8 so the downstream atlas-slice and texture
+// stages read pixels, not bytes. The buffer is canonical: 8-bit RGBA, four
+// channels, width*height*4 bytes, row-major top-to-bottom. The hash is the
+// asset's identity (the same PNG bytes always hash identically); the decoded
+// buffer is the proof surface (the same bytes always decode to the same
+// pixels). Both are pure functions of the source bytes (§4 determinism).
+Image_Asset :: struct {
+	width:  int, // decoded image width in pixels
+	height: int, // decoded image height in pixels
+	pixels: []byte, // canonical RGBA8 buffer, width*height*4 bytes, row-major
+	hash:   string, // the §2 content hash of the raw PNG source bytes
+}
+
+// import_image content-hashes a raw PNG binary AND decodes it to a canonical
+// RGBA8 buffer (§1: a raw file imports to a decoded buffer). The hash folds
+// the raw bytes and the image importer version (image@1) over an empty
+// dependency list — a raw image has no input assets (§4), so its hash is
+// H(png_bytes ⊕ "image@1"), mirroring import_audio's binary-input fold.
+//
+// Decode is Odin-first: core:image/png.load_from_bytes, never a custom PNG
+// reader. The .alpha_add_if_missing option canonicalizes the output to RGBA8
+// regardless of the source's color type (an RGB PNG gains an opaque alpha
+// channel, grayscale expands to RGB then RGBA), so the buffer is always four
+// 8-bit channels — the single canonical shape the atlas/texture stages read.
+// A truncated, corrupt, or non-PNG input is Malformed_Image: the importer
+// fails closed on the decoder's error, never panics (§4 deterministic binary
+// importer). The decoded pixel bytes are copied out of the image's owned
+// bytes.Buffer into the asset's own slice before the image is destroyed, so
+// the asset outlives the decoder's allocation.
+import_image :: proc(bytes_in: []byte, allocator := context.allocator) -> (asset: Image_Asset, err: Importer_Error) {
+	asset.hash = asset_content_hash(bytes_in, IMAGE_IMPORTER_VERSION, nil)
+	img, decode_err := png.load_from_bytes(bytes_in, png.Options{.alpha_add_if_missing}, allocator)
+	if decode_err != nil {
+		return Image_Asset{}, .Malformed_Image
+	}
+	defer png.destroy(img)
+	asset.width = img.width
+	asset.height = img.height
+	// Copy the decoded pixels out of the decoder-owned bytes.Buffer into the
+	// asset's own slice so the asset outlives the png.destroy below.
+	decoded := bytes.buffer_to_bytes(&img.pixels)
+	pixels := make([]byte, len(decoded), allocator)
+	copy(pixels, decoded)
+	asset.pixels = pixels
 	return asset, .None
 }
 

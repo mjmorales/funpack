@@ -51,8 +51,9 @@ ASSETS_SEAM_GTAG :: "assets"
 // asset_handle_type maps an Asset_Kind onto its typed handle — the type token
 // the `let NAME: KINDHandle` declaration and the import list use. The mapping
 // is total over the closed kind set: Model → MeshHandle (a model bakes to a
-// mesh), Atlas → AtlasHandle, Audio → SoundHandle, Tileset → TilesetHandle. A
-// new kind is a deliberate addition here in lockstep with the Asset_Kind enum.
+// mesh), Atlas → AtlasHandle, Audio → SoundHandle, Tileset → TilesetHandle,
+// Image → TextureHandle (a raw image bakes to a texture, §19 §1 table). A new
+// kind is a deliberate addition here in lockstep with the Asset_Kind enum.
 asset_handle_type :: proc(kind: Asset_Kind) -> string {
 	switch kind {
 	case .Model:
@@ -63,20 +64,23 @@ asset_handle_type :: proc(kind: Asset_Kind) -> string {
 		return "SoundHandle"
 	case .Tileset:
 		return "TilesetHandle"
+	case .Image:
+		return "TextureHandle"
 	}
 	return ""
 }
 
 // asset_handle_module maps an Asset_Kind onto the §26 stdlib module that OWNS
 // its handle type — the module path the seam's import line names. The asset
-// sink engine.assets owns the mesh/atlas/sound handles (§26 line 78);
+// sink engine.assets owns the mesh/atlas/sound/texture handles (§26 line 78);
 // TilesetHandle is owned by engine.tilemap (§26's tilemap row, §18 §2), so a
 // manifest registering a tileset adds a second import line rather than
 // smuggling a foreign type into the engine.assets member list (one name, one
-// owner — the §26 single-exporter rule).
+// owner — the §26 single-exporter rule). Image's TextureHandle is an
+// engine.assets type, so an image rides the existing engine.assets line.
 asset_handle_module :: proc(kind: Asset_Kind) -> string {
 	switch kind {
-	case .Model, .Atlas, .Audio:
+	case .Model, .Atlas, .Audio, .Image:
 		return "engine.assets"
 	case .Tileset:
 		return "engine.tilemap"

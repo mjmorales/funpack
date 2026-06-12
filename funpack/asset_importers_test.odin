@@ -169,6 +169,91 @@ test_import_audio_deterministic :: proc(t: ^testing.T) {
 	testing.expect(t, a.hash != other.hash, "distinct audio bytes must hash distinctly")
 }
 
+// A deterministic 2×2 RGBA8 PNG, hand-built (Python: struct + zlib over a
+// known IHDR/IDAT/IEND framing) and embedded as the byte literal below, so the
+// image importer test needs no checkout and no PNG encoder (core:image/png
+// decodes, but does not encode). The four pixels, row-major top-to-bottom,
+// left-to-right, are: (0,0) red opaque, (1,0) green half-alpha, (0,1) blue
+// opaque, (1,1) yellow fully transparent — the known-pixel ground truth the
+// decode is asserted against. The bytes were verified to decode through
+// core:image/png to exactly the IMAGE_FIXTURE_RGBA buffer below.
+IMAGE_FIXTURE_PNG :: []byte {
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+	0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d, 0x24, 0x00, 0x00, 0x00,
+	0x16, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+	0x1f, 0x08, 0x1b, 0x18, 0x80, 0x34, 0x10, 0x30, 0x30, 0x00, 0x00, 0x41,
+	0xd5, 0x07, 0x7a, 0x73, 0xf4, 0x8b, 0x83, 0x00, 0x00, 0x00, 0x00, 0x49,
+	0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+}
+
+// IMAGE_FIXTURE_RGBA is the canonical RGBA8 decode of IMAGE_FIXTURE_PNG: 16
+// bytes (2×2×4), row-major. Pinned to the known source pixels so the importer's
+// decode is proven exact, not just non-empty.
+IMAGE_FIXTURE_RGBA :: []byte {
+	255, 0, 0, 255, // (0,0) red opaque
+	0, 255, 0, 128, // (1,0) green half-alpha
+	0, 0, 255, 255, // (0,1) blue opaque
+	255, 255, 0, 0, // (1,1) yellow fully transparent
+}
+
+@(test)
+test_import_image_png_decodes_to_rgba :: proc(t: ^testing.T) {
+	// The image importer's defining outcome over the hand-built fixture PNG: the
+	// raw bytes content-hash to the §2 canonical form, and the PNG decodes
+	// through core:image/png to the exact canonical RGBA8 buffer (2×2, four
+	// channels, row-major) the known source pixels demand. Decode is exact, not
+	// best-effort — a wrong pixel is a semantics bug.
+	asset, err := import_image(IMAGE_FIXTURE_PNG)
+	testing.expect_value(t, err, Importer_Error.None)
+	testing.expect_value(t, asset.width, 2)
+	testing.expect_value(t, asset.height, 2)
+
+	// The canonical RGBA8 buffer: width*height*4 bytes, matching the known
+	// source pixels exactly.
+	testing.expect_value(t, len(asset.pixels), 16)
+	for want, i in IMAGE_FIXTURE_RGBA {
+		testing.expect_value(t, asset.pixels[i], want)
+	}
+
+	// The content hash carries the §2 canonical prefix — the image importer
+	// version's output over the raw PNG bytes, the asset's identity.
+	testing.expect(t, len(asset.hash) == len(HASH_PREFIX) + 64, "image hash is sha256: + 64 hex chars")
+}
+
+@(test)
+test_import_image_deterministic :: proc(t: ^testing.T) {
+	// §29 purity: the same PNG bytes always yield the same content hash AND the
+	// same decoded buffer — both are pure functions of the source bytes (§4
+	// determinism), proven on the byte fixture, no checkout.
+	a, ea := import_image(IMAGE_FIXTURE_PNG)
+	b, eb := import_image(IMAGE_FIXTURE_PNG)
+	testing.expect_value(t, ea, Importer_Error.None)
+	testing.expect_value(t, eb, Importer_Error.None)
+	testing.expect(t, a.hash == b.hash, "identical PNG bytes must yield an identical hash")
+	testing.expect_value(t, len(a.pixels), len(b.pixels))
+	for i in 0 ..< len(a.pixels) {
+		testing.expect_value(t, a.pixels[i], b.pixels[i])
+	}
+}
+
+@(test)
+test_import_image_rejects_garbage :: proc(t: ^testing.T) {
+	// A truncated/non-PNG input is Malformed_Image — the importer fails closed on
+	// the core:image/png decoder's error, never panics (§4 deterministic binary
+	// importer). A bare byte run with no PNG signature is the garbage case; a
+	// fixture truncated mid-stream is the truncation case.
+	_, garbage_err := import_image([]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05})
+	testing.expect_value(t, garbage_err, Importer_Error.Malformed_Image)
+
+	// A copy of the fixture truncated mid-stream (the IDAT/IEND tail lopped off):
+	// a well-formed signature and IHDR, but no decodable image data.
+	full := IMAGE_FIXTURE_PNG
+	truncated := full[:len(full) - 20]
+	_, truncated_err := import_image(truncated)
+	testing.expect_value(t, truncated_err, Importer_Error.Malformed_Image)
+}
+
 @(test)
 test_import_asset_dispatch_keyed_on_kind :: proc(t: ^testing.T) {
 	// The closed Asset_Kind dispatch routes each kind to its importer and folds
@@ -190,4 +275,11 @@ test_import_asset_dispatch_keyed_on_kind :: proc(t: ^testing.T) {
 	testing.expect_value(t, eau, Importer_Error.None)
 	_, is_audio := au.(Audio_Asset)
 	testing.expect(t, is_audio, "an .Audio kind dispatches to import_audio")
+
+	im, eim := import_asset(.Image, IMAGE_FIXTURE_PNG, nil)
+	testing.expect_value(t, eim, Importer_Error.None)
+	img_asset, is_image := im.(Image_Asset)
+	testing.expect(t, is_image, "an .Image kind dispatches to import_image")
+	testing.expect_value(t, img_asset.width, 2)
+	testing.expect_value(t, img_asset.height, 2)
 }

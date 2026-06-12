@@ -11,7 +11,7 @@
 // Grammar (an exemplar lives at examples/assets/assets/assets.manifest):
 //   - `# …` line comments, anywhere (full-line or trailing)
 //   - one `[name]` block per asset, opening a key=value body
-//   - `key = value` where value is a bare word (kind: model|atlas|audio|tileset),
+//   - `key = value` where value is a bare word (kind: model|atlas|audio|tileset|image),
 //     a "quoted string" (source/importer/hash/out), or a `[ "a", "b" ]`
 //     list (deps; `[]` is the empty list)
 //
@@ -26,12 +26,17 @@ package funpack
 // manifest, never a silently-tolerated extra kind — the registry is
 // closed, so an unknown kind is an error, not an extension point. Tileset
 // is the §18 §2 .tiles kind (importer tiles_importer.odin); the committed
-// dungeon/warren manifests register one, deps-on its atlas (§19 §5).
+// dungeon/warren manifests register one, deps-on its atlas (§19 §5). Image
+// is the §1 raw-image kind (importer import_image, asset_importers.odin): a
+// Tier-1 binary PNG that imports to a decoded RGBA8 buffer, the §4
+// dependency an atlas slices over — a real asset node, not just a
+// dependency string.
 Asset_Kind :: enum {
 	Model,
 	Atlas,
 	Audio,
 	Tileset,
+	Image,
 }
 
 // Asset_Entry is one [name] block: the asset's registered name (the handle
@@ -61,7 +66,7 @@ Asset_Manifest :: struct {
 // reject. Malformed_Manifest is any grammar violation (a key=value outside
 // a block, a value of the wrong shape, an unterminated string or list, a
 // stray glyph); Unknown_Kind is the dedicated closed-set reject — a `kind`
-// value that is not model/atlas/audio/tileset; Missing_Key is a block missing one
+// value that is not model/atlas/audio/tileset/image; Missing_Key is a block missing one
 // of the required keys; Duplicate_Name is two blocks registering the same
 // name (the registry is single-owner, like §15.6 module identity).
 Asset_Manifest_Error :: enum {
@@ -152,7 +157,7 @@ manifest_parse_block :: proc(p: ^Manifest_Parser) -> (entry: Asset_Entry, err: A
 }
 
 // parse_asset_kind maps a `kind =` word onto the closed Asset_Kind set. A
-// value outside model/atlas/audio/tileset is Unknown_Kind — the
+// value outside model/atlas/audio/tileset/image is Unknown_Kind — the
 // closed-registry reject, never a tolerated extra kind.
 parse_asset_kind :: proc(text: string) -> (kind: Asset_Kind, err: Asset_Manifest_Error) {
 	switch text {
@@ -164,6 +169,8 @@ parse_asset_kind :: proc(text: string) -> (kind: Asset_Kind, err: Asset_Manifest
 		return .Audio, .None
 	case "tileset":
 		return .Tileset, .None
+	case "image":
+		return .Image, .None
 	case:
 		return .Model, .Unknown_Kind
 	}
