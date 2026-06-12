@@ -193,7 +193,30 @@ import "core:strings"
 // Every artifact without a multi-statement guard moves to v14 by the version
 // stamp alone (the v7 stamp-only restamp precedent; v14 adds the `block` node
 // in if_return's outcome position, §2.7).
-ARTIFACT_SCHEMA_VERSION :: 14
+//
+// Version 15 makes a multi-module game's artifact SELF-CONTAINED for live level
+// execution — the runtime-level-load format. Three layout changes ride it, all
+// widened POPULATIONS (the v6 widened-[functions] precedent), no new keyword and
+// no new node kind: (1) the cross-module DECLARATION carry — the enum/data/
+// signal/thing declarations the entrypoint module imports from sibling USER
+// modules append after each section's own records (dungeon_world's
+// Player/Slime/Chest things with their complete defaulted field schemas, the
+// Dir enum, the Looted signal), in import-then-member order, so the schema the
+// [setup] batch spawns against rides in the artifact; (2) the imported-CONST
+// carry — an imported module-level `let` (the level seam's `terrain:
+// TilemapHandle`) appends to [functions] as the existing `function NAME const`
+// record form with the seam module's span, alongside the §17 v6 fn carry, so a
+// behavior body's bare-name read resolves; (3) the LEVEL-BACKED [setup] fold —
+// a setup() that is a lone call to a baked level's `<level>_spawns` extern
+// emits the bake's deterministic spawn list as concrete §13 `spawn`/`set` rows
+// (pos as the Vec2 spread, facing as raw Fixed bits, params by their declared
+// schema field type), honoring §13's no-expressions contract where the prior
+// emitter left `[setup 0]`. The level ACCESSOR extern (`dungeon() -> Dungeon`)
+// is deliberately NOT carried — its consumer is a later schema bump. Widened
+// populations are layout changes: 14 → 15 (§1). A single-module, level-less
+// artifact moves by the version stamp alone (the v7 stamp-only restamp
+// precedent).
+ARTIFACT_SCHEMA_VERSION :: 15
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

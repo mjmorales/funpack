@@ -341,15 +341,18 @@ has_entrypoints_fcfg :: proc(root: string) -> bool {
 // the §14 project identity, and the entrypoints.fcfg text. The entrypoint module
 // is the one whose pipeline the artifact wires, so emission's reference
 // validation (§07) resolves the pipeline/bindings names against that module. It
-// also builds the sibling module→AST map the §17 cross-module SEAM-FN CARRY reads,
-// so the entrypoint's imported seam fns (krognid's `krognid_skeleton`/
-// `krognid_parts`) land in [functions] as self-contained records, and bakes the
-// tree's levels/*.flvl tile layers (bake_tree_tile_layers) so the artifact's
-// [tilemaps] section carries the §18 §3 static environment — the dungeon's
-// terrain reaches the runtime in the same build that emits its behaviors — and
-// derives the §12 §1 nav graphs from those same layers (bake_tree_nav_graphs) so
-// the artifact's [nav] section carries the walkable-cell topology the runtime
-// path-finds over. A read failure or any checked-pipeline floor surfaces as the stage_emit_indexed
+// also builds the sibling module→AST map the §17 cross-module SEAM-FN CARRY and
+// the v15 declaration carry read, so the entrypoint's imported seam fns/consts
+// (krognid's `krognid_skeleton`/`krognid_parts`, dungeon's `terrain`) land in
+// [functions] and its imported schema types land in their sections as
+// self-contained records, and bakes the tree's levels/*.flvl (bake_tree_levels)
+// so the artifact's [tilemaps] section carries the §18 §3 static environment —
+// the dungeon's terrain reaches the runtime in the same build that emits its
+// behaviors — the v15 [setup] fold carries each level's deterministic spawn
+// batch, and the §12 §1 nav graphs derive from those same layers
+// (bake_tree_nav_graphs) so the artifact's [nav] section carries the
+// walkable-cell topology the runtime path-finds over. A read failure or any
+// checked-pipeline floor surfaces as the stage_emit_indexed
 // error, which stage_build maps to Compile_Failed (no artifact); a level that
 // trips a §17.4/§18 §5 bake gate is the same exit-2 compile-error class,
 // surfaced as Gate_Failed.
@@ -374,7 +377,7 @@ emit_tree_artifact :: proc(root: string, project: Project, sources: []Source, al
 		return "", .Parse_Failed
 	}
 	index := build_project_module_index(sources)
-	tilemaps, baked_ok := bake_tree_tile_layers(root, sources, index, allocator)
+	tilemaps, level_spawns, baked_ok := bake_tree_levels(root, sources, index, allocator)
 	if !baked_ok {
 		// A level that does not parse, a tileset/manifest the table cannot
 		// build from, or any §17.4/§18 §5 bake gate: the build refuses before
@@ -389,66 +392,94 @@ emit_tree_artifact :: proc(root: string, project: Project, sources: []Source, al
 	nav_graphs := bake_tree_nav_graphs(tilemaps, allocator)
 	sibling_asts := build_sibling_module_asts(sources, source.module)
 	identity := Project_Identity{name = project.name, version = project.version}
-	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, tilemaps, nav_graphs, allocator)
+	return stage_emit_indexed(string(source_bytes), source.module, identity, string(entrypoint_bytes), index, sibling_asts, tilemaps, nav_graphs, level_spawns, allocator)
 }
 
-// bake_tree_tile_layers bakes every levels/*.flvl under the §14 tree and
-// concatenates their §18 §3 tile layers — the [tilemaps] slice the artifact
-// carries. Levels walk in sorted-filename order (the §14.4 deterministic
-// subsystem walk) and each level's layers ride in declaration order, so the
-// section order is a pure function of the tree. Each level bakes against its
-// own `things <module>` schema source and the ONE project-global tile table
-// (project_tile_table over every manifest-registered tileset — the
-// tilemap-legend ADR's flat namespace). ok = false on ANY floor — an
-// unreadable/unparsable level, a missing schema source, a manifest or tileset
-// that cannot build the table, or a §17.4/§18 §5 bake gate — so the caller
-// refuses the build rather than emitting a partial environment. A tree with no
-// levels/ directory returns the empty slice (the level-less `[tilemaps 0]`
-// tail).
-bake_tree_tile_layers :: proc(root: string, sources: []Source, index: Module_Index, allocator := context.allocator) -> (layers: []Baked_Tile_Layer, ok: bool) {
+// bake_tree_levels bakes every levels/*.flvl under the §14 tree and
+// concatenates two artifact inputs: the §18 §3 tile layers (the [tilemaps]
+// slice) and the per-level deterministic spawn batches (the v15 [setup] fold's
+// input, one Level_Spawn_Batch per level keyed by its `<level>_spawns` seam
+// extern name — the same name the committed .gen.fun seam declares, so the
+// setup() call site and the batch key derive from one rule). Levels walk in
+// sorted-filename order (the §14.4 deterministic subsystem walk) and each
+// level's layers/spawns ride in declaration order, so both slices are a pure
+// function of the tree. Each level bakes against its own `things <module>`
+// schema source and the ONE project-global tile table (project_tile_table over
+// every manifest-registered tileset — the tilemap-legend ADR's flat namespace).
+// ok = false on ANY floor — an unreadable/unparsable level, a missing schema
+// source, a manifest or tileset that cannot build the table, or a §17.4/§18 §5
+// bake gate — so the caller refuses the build rather than emitting a partial
+// environment. A tree with no levels/ directory returns empty slices (the
+// level-less `[tilemaps 0]` tail and the resolve_setup_spawns [setup] path).
+bake_tree_levels :: proc(root: string, sources: []Source, index: Module_Index, allocator := context.allocator) -> (layers: []Baked_Tile_Layer, level_spawns: []Level_Spawn_Batch, ok: bool) {
 	level_paths := collect_level_paths(root)
 	if len(level_paths) == 0 {
-		return nil, true
+		return nil, nil, true
 	}
 	tilesets, tilesets_ok := read_tree_tilesets(root)
 	if !tilesets_ok {
-		return nil, false
+		return nil, nil, false
 	}
 	table, table_err := project_tile_table(tilesets, context.temp_allocator)
 	if table_err != .None {
-		return nil, false
+		return nil, nil, false
 	}
 	out := make([dynamic]Baked_Tile_Layer, 0, 2, allocator)
+	batches := make([dynamic]Level_Spawn_Batch, 0, 2, allocator)
 	for path in level_paths {
 		level_bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
 		if read_err != nil {
-			return nil, false
+			return nil, nil, false
 		}
 		level, parse_err := parse_flvl(string(level_bytes))
 		if parse_err != .None {
-			return nil, false
+			return nil, nil, false
 		}
 		schema_source, has_schema := select_entrypoint_source(sources, level.things_module)
 		if !has_schema {
-			return nil, false
+			return nil, nil, false
 		}
 		schema_bytes, schema_read := os.read_entire_file_from_path(schema_source.path, context.temp_allocator)
 		if schema_read != nil {
-			return nil, false
+			return nil, nil, false
 		}
 		schema_ast, schema_parse := stage_parse(stage_lex(string(schema_bytes)))
 		if schema_parse != .None {
-			return nil, false
+			return nil, nil, false
 		}
 		baked, bake_err := bake_flvl(level, schema_ast, level.things_module, index, table)
 		if bake_err != .None {
-			return nil, false
+			return nil, nil, false
 		}
 		for layer in baked.tile_layers {
 			append(&out, clone_tile_layer(layer, allocator))
 		}
+		append(&batches, Level_Spawn_Batch {
+			fn_name = level_spawns_fn_name(baked, allocator),
+			spawns  = clone_spawns(baked.spawns, allocator),
+		})
 	}
-	return out[:], true
+	return out[:], batches[:], true
+}
+
+// clone_spawns deep-copies one baked level's spawn list into the caller's
+// allocator — the bake works in temp memory (bake_flvl's context.temp_allocator
+// slices), and the emitted artifact must outlive the bake's scratch (the
+// clone_tile_layer discipline applied to spawns).
+clone_spawns :: proc(spawns: []Baked_Spawn, allocator := context.allocator) -> []Baked_Spawn {
+	out := make([]Baked_Spawn, len(spawns), allocator)
+	for spawn, i in spawns {
+		cloned := spawn
+		cloned.thing_type = strings.clone(spawn.thing_type, allocator)
+		params := make([]Baked_Param, len(spawn.params), allocator)
+		for param, j in spawn.params {
+			params[j] = param
+			params[j].field = strings.clone(param.field, allocator)
+		}
+		cloned.params = params
+		out[i] = cloned
+	}
+	return out
 }
 
 // Baked_Nav_Graph is one §12 §1 navigation graph derived from a single baked

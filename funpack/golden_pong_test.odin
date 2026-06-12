@@ -147,18 +147,11 @@ resolve_pong_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_PONG_DIR", PONG_DEFAULT_DIR)
 }
 
-// find_enum / find_thing / find_pipeline / find_behavior are linear lookups
-// by declared name over the parsed AST — the spot-check fixtures read one
-// declaration without depending on its source position.
-find_enum :: proc(ast: Ast, name: string) -> (Enum_Node, bool) {
-	for decl in ast.enums {
-		if decl.name == name {
-			return decl, true
-		}
-	}
-	return Enum_Node{}, false
-}
-
+// find_thing / find_pipeline / find_behavior are linear lookups by declared
+// name over the parsed AST — the spot-check fixtures read one declaration
+// without depending on its source position. (find_enum lives in
+// emit_seam_decls.odin — the v15 declaration carry's production lookup — and
+// these fixtures share it.)
 find_thing :: proc(ast: Ast, name: string) -> (Thing_Node, bool) {
 	for decl in ast.things {
 		if decl.name == name {

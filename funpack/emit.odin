@@ -33,14 +33,29 @@ Emit_Input :: struct {
 	module:       string, // the §15 path-derived module name carried in [functions] spans
 	project:      Project_Identity,
 	entrypoint:   Entrypoint_Config,
-	// imported_fns are the §17 cross-module SEAM fn records the entrypoint module
-	// references — the fns it imports from sibling USER modules (krognid's `stroll`
-	// imports `krognid_skeleton`/`krognid_parts` from the rig seam). Each carries
-	// its OWN seam module in its span, so emit_functions appends them after the
-	// entrypoint module's own records and the Rigged draw body's calls resolve to a
-	// self-contained record the runtime finds by bare name. Empty for a single-
-	// module game (every byte of pong/snake/hunt/yard is unchanged).
+	// imported_fns are the §17 cross-module SEAM fn/const records the entrypoint
+	// module references — the fns and module-level consts it imports from sibling
+	// USER modules (krognid's `stroll` imports `krognid_skeleton`/`krognid_parts`
+	// from the rig seam; dungeon imports the level seam's `terrain` TilemapHandle
+	// const, schema v15). Each carries its OWN seam module in its span, so
+	// emit_functions appends them after the entrypoint module's own records and a
+	// behavior body's references resolve to a self-contained record the runtime
+	// finds by bare name. Empty for a single-module game (every byte of pong/
+	// snake/hunt/yard is unchanged).
 	imported_fns: []Function_Record,
+	// imported_decls is the v15 cross-module DECLARATION carry
+	// (emit_seam_decls.odin): the enum/data/signal/thing declarations the
+	// entrypoint module imports from sibling USER modules, appended after each
+	// section's own declarations so the artifact carries the whole referenced
+	// schema (dungeon_world's Player/Slime/Chest things, Dir enum, Looted
+	// signal). Empty for a single-module game.
+	imported_decls: Imported_Decls,
+	// level_spawns are the baked levels' deterministic spawn lists keyed by
+	// their seam extern names (emit_level_setup.odin, schema v15) — the data
+	// the [setup] emitter folds when setup() is a lone call to a level's
+	// `<level>_spawns` extern. The build verb threads them in from the tree's
+	// levels/*.flvl bake; empty for a level-less game.
+	level_spawns: []Level_Spawn_Batch,
 	// tilemaps are the §18 §3 baked tile layers (flvl_bake.odin) the [tilemaps]
 	// section carries (docs/artifact-format.md §17, schema v12) — the static
 	// environment the runtime renders batched and collides against, each layer
@@ -97,7 +112,7 @@ stage_emit :: proc(
 	entrypoint_fcfg: string,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
-	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, nil, nil, allocator)
+	return stage_emit_indexed(source, module, project, entrypoint_fcfg, Module_Index{}, nil, nil, nil, nil, allocator)
 }
 
 // stage_emit_indexed is the source → artifact seam typed against a project-wide
@@ -119,11 +134,14 @@ stage_emit :: proc(
 // stage_emit) carries nothing, so a one-module game's bytes are unchanged.
 //
 // tilemaps are the tree's §18 §3 baked tile layers (the levels/*.flvl bake the
-// build verb runs — bake_tree_tile_layers) threaded through to the artifact's
+// build verb runs — bake_tree_levels) threaded through to the artifact's
 // [tilemaps] section. nav_graphs are the §12 §1 nav graphs derived from those
-// same layers (bake_tree_nav_graphs) threaded through to the [nav] section. Like
+// same layers (bake_tree_nav_graphs) threaded through to the [nav] section.
+// level_spawns are the same bake's deterministic spawn lists, keyed by their
+// seam extern names, the v15 [setup] fold consumes (emit_level_setup.odin). Like
 // every other input they are a pure function of the tree, so emission stays pure;
-// nil is the level-less default (the constant `[tilemaps 0]` / `[nav 0]` tails).
+// nil is the level-less default (the constant `[tilemaps 0]` / `[nav 0]` tails
+// and the resolve_setup_spawns [setup] path).
 stage_emit_indexed :: proc(
 	source: string,
 	module: string,
@@ -133,6 +151,7 @@ stage_emit_indexed :: proc(
 	module_asts: map[string]Ast,
 	tilemaps: []Baked_Tile_Layer = nil,
 	nav_graphs: []Baked_Nav_Graph = nil,
+	level_spawns: []Level_Spawn_Batch = nil,
 	allocator := context.allocator,
 ) -> (artifact: string, err: Emit_Error) {
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -165,14 +184,16 @@ stage_emit_indexed :: proc(
 		return "", .Entrypoint_Failed
 	}
 	input := Emit_Input {
-		ast          = ast,
-		flat         = verdict.flat,
-		module       = module,
-		project      = project,
-		entrypoint   = entrypoint,
-		imported_fns = collect_imported_fn_records(ast, module_asts),
-		tilemaps     = tilemaps,
-		nav_graphs   = nav_graphs,
+		ast            = ast,
+		flat           = verdict.flat,
+		module         = module,
+		project        = project,
+		entrypoint     = entrypoint,
+		imported_fns   = collect_imported_fn_records(ast, module_asts),
+		imported_decls = collect_imported_decls(ast, module_asts),
+		tilemaps       = tilemaps,
+		nav_graphs     = nav_graphs,
+		level_spawns   = level_spawns,
 	}
 	return emit_artifact(input, allocator), .None
 }
@@ -189,15 +210,15 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_line(&b, ARTIFACT_MAGIC, " ", encode_int(ARTIFACT_SCHEMA_VERSION, context.temp_allocator))
 
 	emit_meta(&b, input.project)
-	emit_enums(&b, input.ast)
-	emit_data(&b, input.ast)
-	emit_signals(&b, input.ast)
-	emit_things(&b, input.ast)
+	emit_enums(&b, input.ast, input.imported_decls.enums)
+	emit_data(&b, input.ast, input.imported_decls)
+	emit_signals(&b, input.ast, input.imported_decls.signals)
+	emit_things(&b, input.ast, input.imported_decls.things)
 	emit_functions(&b, input.ast, input.module, input.imported_fns)
 	emit_behaviors(&b, input.ast, input.flat)
 	emit_pipeline_flattened(&b, input.flat)
 	emit_signal_routing(&b, input.flat)
-	emit_setup(&b, input.ast)
+	emit_setup(&b, input.ast, input.level_spawns, input.imported_decls.things)
 	emit_bindings(&b, input.ast)
 	emit_entrypoint(&b, input.entrypoint)
 	emit_queries(&b, input.ast, input.module)
@@ -246,23 +267,34 @@ emit_meta :: proc(b: ^strings.Builder, project: Project_Identity) {
 // [enums] — sum types and role kinds (docs/artifact-format.md §5)
 // ───────────────────────────────────────────────────────────────────────────
 
-// emit_enums writes one record per enum in source-declaration order, each
-// followed by one `variant` line per variant. KIND is the §03 §4 role kind
-// (Axis/Button/…) or `-` for none; pong's variants are all `unit` (no payload).
-emit_enums :: proc(b: ^strings.Builder, ast: Ast) {
-	emit_header(b, "enums", len(ast.enums))
+// emit_enums writes one record per enum — the entrypoint module's own enums in
+// source-declaration order, then the v15 imported carry (emit_seam_decls.odin)
+// in import-then-member order — each followed by one `variant` line per
+// variant. KIND is the §03 §4 role kind (Axis/Button/…) or `-` for none;
+// pong's variants are all `unit` (no payload).
+emit_enums :: proc(b: ^strings.Builder, ast: Ast, imported: []Enum_Node) {
+	emit_header(b, "enums", len(ast.enums) + len(imported))
 	for decl in ast.enums {
-		kind := decl.kind if decl.kind != "" else "-"
-		strings.write_string(b, "enum ")
-		strings.write_string(b, decl.name)
-		strings.write_byte(b, ' ')
-		strings.write_string(b, kind)
-		strings.write_byte(b, ' ')
-		strings.write_int(b, len(decl.variants))
-		emit_line(b, "")
-		for variant in decl.variants {
-			emit_line(b, "variant ", variant.name, " ", variant_payload_tag(variant))
-		}
+		emit_enum_record(b, decl)
+	}
+	for decl in imported {
+		emit_enum_record(b, decl)
+	}
+}
+
+// emit_enum_record writes one [enums] record (docs/artifact-format.md §5) —
+// the per-decl half emit_enums walks own and imported declarations through.
+emit_enum_record :: proc(b: ^strings.Builder, decl: Enum_Node) {
+	kind := decl.kind if decl.kind != "" else "-"
+	strings.write_string(b, "enum ")
+	strings.write_string(b, decl.name)
+	strings.write_byte(b, ' ')
+	strings.write_string(b, kind)
+	strings.write_byte(b, ' ')
+	strings.write_int(b, len(decl.variants))
+	emit_line(b, "")
+	for variant in decl.variants {
+		emit_line(b, "variant ", variant.name, " ", variant_payload_tag(variant))
 	}
 }
 
@@ -287,36 +319,47 @@ variant_payload_tag :: proc(variant: Variant_Decl) -> string {
 // (docs/artifact-format.md §6, §7, §8)
 // ───────────────────────────────────────────────────────────────────────────
 
-// emit_data writes one `data` record per declaration in source order, each
-// followed by its fields. `mut` is `true` for a `mut data` (§03 §7) — pong has
-// none, so it is always `false` here. After the user data decls, it emits any
-// SYNTHESIZED engine-type data decls (docs/artifact-format.md §8): an engine
-// record the source uses by default but has no user `data` for (yard's Settings).
-// The runtime's composite-default decode resolves a `Settings(…)` default's nested
-// field types against the §8 data decl, so the projection must be present in
-// [data]; the funpack surface owns the engine type, the artifact carries its
-// representable projection. The synthesized decls land in a fixed order after the
-// user decls, so the section stays byte-deterministic.
-emit_data :: proc(b: ^strings.Builder, ast: Ast) {
-	synthetic := synthetic_data_decls(ast)
-	emit_header(b, "data", len(ast.datas) + len(synthetic))
+// emit_data writes one `data` record per declaration — the entrypoint module's
+// own decls in source order, then the v15 imported carry in import-then-member
+// order — each followed by its fields. `mut` is `true` for a `mut data`
+// (§03 §7) — pong has none, so it is always `false` here. After the user data
+// decls, it emits any SYNTHESIZED engine-type data decls
+// (docs/artifact-format.md §8): an engine record the source uses by default but
+// has no user `data` for (yard's Settings). The runtime's composite-default
+// decode resolves a `Settings(…)` default's nested field types against the §8
+// data decl, so the projection must be present in [data]; the funpack surface
+// owns the engine type, the artifact carries its representable projection. The
+// synthesized decls land in a fixed order after the user and imported decls, so
+// the section stays byte-deterministic.
+emit_data :: proc(b: ^strings.Builder, ast: Ast, imported: Imported_Decls) {
+	synthetic := synthetic_data_decls(ast, imported)
+	emit_header(b, "data", len(ast.datas) + len(imported.datas) + len(synthetic))
 	for decl in ast.datas {
-		strings.write_string(b, "data ")
-		strings.write_string(b, decl.name)
-		strings.write_byte(b, ' ')
-		strings.write_int(b, len(decl.fields))
-		emit_line(b, " false")
-		// A renamed TYPE declaration (decl-level @migrate, rename form only)
-		// carries its `migrate` line between the lead line and the first
-		// `field` line (docs/artifact-format.md §6, schema v8).
-		if decl.has_migrate {
-			emit_line(b, "migrate ", decl.migrate.from, " -")
-		}
-		emit_data_fields(b, decl.fields)
+		emit_data_record(b, decl)
+	}
+	for decl in imported.datas {
+		emit_data_record(b, decl)
 	}
 	for decl in synthetic {
 		emit_synthetic_data(b, decl)
 	}
+}
+
+// emit_data_record writes one [data] record (docs/artifact-format.md §6) —
+// the per-decl half emit_data walks own and imported declarations through.
+emit_data_record :: proc(b: ^strings.Builder, decl: Data_Node) {
+	strings.write_string(b, "data ")
+	strings.write_string(b, decl.name)
+	strings.write_byte(b, ' ')
+	strings.write_int(b, len(decl.fields))
+	emit_line(b, " false")
+	// A renamed TYPE declaration (decl-level @migrate, rename form only)
+	// carries its `migrate` line between the lead line and the first
+	// `field` line (docs/artifact-format.md §6, schema v8).
+	if decl.has_migrate {
+		emit_line(b, "migrate ", decl.migrate.from, " -")
+	}
+	emit_data_fields(b, decl.fields)
 }
 
 // Synthetic_Data is one emitter-synthesized engine-type data decl — the
@@ -340,21 +383,22 @@ Synthetic_Data :: struct {
 // iff some thing/data/signal field declares Settings, so a source that never uses
 // Settings emits no extra data record (pong/snake/hunt are unchanged). AccessOpts
 // follows Settings in a fixed order, so the section stays byte-deterministic.
-synthetic_data_decls :: proc(ast: Ast) -> []Synthetic_Data {
+synthetic_data_decls :: proc(ast: Ast, imported: Imported_Decls) -> []Synthetic_Data {
 	out := make([dynamic]Synthetic_Data, 0, 2, context.temp_allocator)
-	if uses_engine_type(ast, "Settings") {
+	if uses_engine_type(ast, imported, "Settings") {
 		append(&out, Synthetic_Data{name = "Settings", fields = SETTINGS_DATA_FIELDS})
 		append(&out, Synthetic_Data{name = "AccessOpts", fields = ACCESS_OPTS_DATA_FIELDS})
 	}
 	return out[:]
 }
 
-// uses_engine_type reports whether any thing/singleton/data/signal field declares
-// the given engine type name as its field type — the trigger for synthesizing
-// that engine type's §8 data projection. It reads the field TYPE spelling
-// (type_ref_string), so `Settings` matches the bare engine type a singleton field
-// holds (yard's `Menu.settings: Settings`).
-uses_engine_type :: proc(ast: Ast, type_name: string) -> bool {
+// uses_engine_type reports whether any thing/singleton/data/signal field — the
+// entrypoint module's own or the v15 imported carry's — declares the given
+// engine type name as its field type — the trigger for synthesizing that engine
+// type's §8 data projection. It reads the field TYPE spelling
+// (type_ref_string), so `Settings` matches the bare engine type a singleton
+// field holds (yard's `Menu.settings: Settings`).
+uses_engine_type :: proc(ast: Ast, imported: Imported_Decls, type_name: string) -> bool {
 	for decl in ast.things {
 		if fields_declare_type(decl.fields, type_name) {
 			return true
@@ -366,6 +410,21 @@ uses_engine_type :: proc(ast: Ast, type_name: string) -> bool {
 		}
 	}
 	for decl in ast.signals {
+		if fields_declare_type(decl.fields, type_name) {
+			return true
+		}
+	}
+	for decl in imported.things {
+		if fields_declare_type(decl.fields, type_name) {
+			return true
+		}
+	}
+	for decl in imported.datas {
+		if fields_declare_type(decl.fields, type_name) {
+			return true
+		}
+	}
+	for decl in imported.signals {
 		if fields_declare_type(decl.fields, type_name) {
 			return true
 		}
@@ -401,40 +460,61 @@ emit_synthetic_data :: proc(b: ^strings.Builder, decl: Synthetic_Data) {
 	}
 }
 
-// emit_signals writes one `signal` record per declaration in source order, same
-// field grammar as [data] but with no `mut` flag (a signal is per-tick, never
-// mutated, §06 §5).
-emit_signals :: proc(b: ^strings.Builder, ast: Ast) {
-	emit_header(b, "signals", len(ast.signals))
+// emit_signals writes one `signal` record per declaration — the entrypoint
+// module's own signals in source order, then the v15 imported carry in
+// import-then-member order — same field grammar as [data] but with no `mut`
+// flag (a signal is per-tick, never mutated, §06 §5).
+emit_signals :: proc(b: ^strings.Builder, ast: Ast, imported: []Signal_Node) {
+	emit_header(b, "signals", len(ast.signals) + len(imported))
 	for decl in ast.signals {
-		strings.write_string(b, "signal ")
-		strings.write_string(b, decl.name)
-		strings.write_byte(b, ' ')
-		strings.write_int(b, len(decl.fields))
-		emit_line(b, "")
-		emit_fields(b, decl.fields)
+		emit_signal_record(b, decl)
+	}
+	for decl in imported {
+		emit_signal_record(b, decl)
 	}
 }
 
-// emit_things writes one `thing` record per thing/singleton in source order,
-// each followed by its `@gtag` set and its blackboard schema. SINGLETON is
-// `true` for a `singleton` (§06 §2); pong models the score as a `thing`, so all
-// three are `false`.
-emit_things :: proc(b: ^strings.Builder, ast: Ast) {
-	emit_header(b, "things", len(ast.things))
+// emit_signal_record writes one [signals] record (docs/artifact-format.md §7) —
+// the per-decl half emit_signals walks own and imported declarations through.
+emit_signal_record :: proc(b: ^strings.Builder, decl: Signal_Node) {
+	strings.write_string(b, "signal ")
+	strings.write_string(b, decl.name)
+	strings.write_byte(b, ' ')
+	strings.write_int(b, len(decl.fields))
+	emit_line(b, "")
+	emit_fields(b, decl.fields)
+}
+
+// emit_things writes one `thing` record per thing/singleton — the entrypoint
+// module's own things in source order, then the v15 imported carry in
+// import-then-member order (dungeon_world's Player/Slime/Chest, the schemas the
+// level-backed [setup] batch spawns against) — each followed by its `@gtag` set
+// and its blackboard schema. SINGLETON is `true` for a `singleton` (§06 §2);
+// pong models the score as a `thing`, so all three are `false`.
+emit_things :: proc(b: ^strings.Builder, ast: Ast, imported: []Thing_Node) {
+	emit_header(b, "things", len(ast.things) + len(imported))
 	for decl in ast.things {
-		strings.write_string(b, "thing ")
-		strings.write_string(b, decl.name)
-		strings.write_byte(b, ' ')
-		strings.write_string(b, encode_bool(decl.is_singleton))
-		strings.write_byte(b, ' ')
-		strings.write_int(b, len(decl.gtags))
-		strings.write_byte(b, ' ')
-		strings.write_int(b, len(decl.fields))
-		emit_line(b, "")
-		emit_gtags(b, decl.gtags)
-		emit_fields(b, decl.fields)
+		emit_thing_record(b, decl)
 	}
+	for decl in imported {
+		emit_thing_record(b, decl)
+	}
+}
+
+// emit_thing_record writes one [things] record (docs/artifact-format.md §8) —
+// the per-decl half emit_things walks own and imported declarations through.
+emit_thing_record :: proc(b: ^strings.Builder, decl: Thing_Node) {
+	strings.write_string(b, "thing ")
+	strings.write_string(b, decl.name)
+	strings.write_byte(b, ' ')
+	strings.write_string(b, encode_bool(decl.is_singleton))
+	strings.write_byte(b, ' ')
+	strings.write_int(b, len(decl.gtags))
+	strings.write_byte(b, ' ')
+	strings.write_int(b, len(decl.fields))
+	emit_line(b, "")
+	emit_gtags(b, decl.gtags)
+	emit_fields(b, decl.fields)
 }
 
 // emit_fields writes one `field` line per field (docs/artifact-format.md §6):
@@ -936,7 +1016,17 @@ emit_endpoint :: proc(b: ^strings.Builder, role: string, endpoint: Signal_Endpoi
 // enum/Vec2 field keeps its §13 form; a composite engine record (a Body) and a list
 // take the §6 single-token nested form (encode_setup_field_value). The runtime then
 // spawns the initial population without interpreting an initializer.
-emit_setup :: proc(b: ^strings.Builder, ast: Ast) {
+//
+// A LEVEL-BACKED setup() — a lone call to a baked level's `<level>_spawns`
+// extern (dungeon/warren, schema v15) — folds the threaded bake's spawn list
+// instead (emit_level_setup.odin): the extern has no body to inline, but the
+// batch it stands for is already a pure function of the tree, so the same §13
+// no-expressions contract holds.
+emit_setup :: proc(b: ^strings.Builder, ast: Ast, batches: []Level_Spawn_Batch, imported_things: []Thing_Node) {
+	if batch, found := level_setup_batch(ast, batches); found {
+		emit_level_setup(b, batch, ast.things, imported_things)
+		return
+	}
 	spawns := resolve_setup_spawns(ast)
 	emit_header(b, "setup", len(spawns))
 	for spawn in spawns {

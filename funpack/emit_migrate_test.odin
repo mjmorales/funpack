@@ -21,7 +21,7 @@ emit_data_section :: proc(t: ^testing.T, source: string) -> string {
 		return ""
 	}
 	b := strings.builder_make(context.temp_allocator)
-	emit_data(&b, ast)
+	emit_data(&b, ast, Imported_Decls{})
 	return strings.to_string(b)
 }
 
@@ -88,7 +88,7 @@ test_migrate_sub_record_frames_under_lead_line_reader :: proc(t: ^testing.T) {
 	testing.expect(t, is_sub_record_line("migrate old_pos -"))
 	testing.expect(t, is_sub_record_line("migrate - lift"))
 	doc_text :=
-		"funpack-artifact 14\n" +
+		"funpack-artifact 15\n" +
 		"[data 2]\n" +
 		"data Player 1 false\n" +
 		"field pos Int -\n" +

@@ -1,4 +1,4 @@
-# funpack artifact format — v13
+# funpack artifact format — v15
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 13
+funpack-artifact 15
 ```
 
-- `schema_version` is the integer after the space (here `12`).
+- `schema_version` is the integer after the space (here `15`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -190,7 +190,47 @@ funpack-artifact 13
   `(Block | Expr)` disposition; v14 ratifies it for `if_return` only. A node
   kind is a ratification change: 13 → 14. Every artifact without a
   multi-statement guard moves by the version stamp alone (the v7 stamp-only
-  restamp precedent).
+  restamp precedent). v15 is the **runtime-level-load format** — it makes a
+  multi-module game's artifact self-contained for live level execution. Three
+  layout changes ride it, all widened **populations** (the v6
+  widened-[functions] precedent); no new section, no new sub-record keyword, no
+  new node kind. (a) The **cross-module declaration carry**: the enum/data/
+  signal/thing declarations the entrypoint module imports from sibling USER
+  modules append into `[enums]`/`[data]`/`[signals]`/`[things]` **after** the
+  entrypoint module's own records, in import-declaration order then brace-group
+  member order (dungeon_game's `import dungeon_world.{Player, Slime, Chest,
+  Dir, Looted}` carries the three things with their complete defaulted field
+  schemas, the `Dir` enum, and the `Looted` signal) — the schemas the `[setup]`
+  batch spawns against and the carried defaults (`dir Dir =Dir::Down`) resolve
+  through ride in the artifact. Only the **import closure** is carried: a
+  sibling declaration the entrypoint never imports (the level seam's `data
+  Dungeon` symbol table) stays absent — its consumer is the deferred
+  level-accessor surface, a later bump. The synthesized engine-type projections
+  (§8) still land **last** in `[data]`, after own and imported records. (b) The
+  **imported-const carry**: an imported module-level `let` (the level seam's
+  `terrain: TilemapHandle = TilemapHandle{name: "terrain"}`) appends to
+  `[functions]` as the **existing** `function NAME const` record form — no
+  params, the initializer as a single `return` subtree through the existing
+  record/string nodes, the SEAM module's span (`span:dungeon:7`) — riding the
+  same appended-after-own-records rule as the v6 seam-fn carry, so a behavior
+  body's bare-name `terrain` read resolves to a self-contained record. (c) The
+  **level-backed `[setup]` fold**: a `setup()` whose body is a lone call to a
+  baked level's `<level>_spawns` extern (`return dungeon_spawns()`) emits the
+  §17 bake's deterministic spawn list as concrete §13 rows — the extern has no
+  body to inline, but the batch it stands for is a pure function of the tree,
+  so §13's no-expressions contract holds where the prior emitter left
+  `[setup 0]` (an empty initial world). Spawn order is the **bake order**
+  (tilemap markers row-major where their layer is declared, then explicit
+  `place` lines, declaration order); each spawn's `set` rows ride in the fixed
+  order `pos` (the §13 `vec2` spread of the bake's cell-center/anchor fold) →
+  `facing` (raw Q32.32 bits, only when authored) → params in source order, each
+  param encoded by its **declared schema field type** (`gems: 5` on an `Int`
+  field emits `set gems =5`, never raw bits). A field the level omits is not
+  emitted — the runtime applies the §6 default off the carried `[things]`
+  schema. A **Ref-valued param** has no ratified §13 encoding and is not
+  emitted; it rides the deferred level-accessor bump. Widened populations are
+  layout changes: 14 → 15. A single-module, level-less artifact moves by the
+  version stamp alone (the v7 stamp-only restamp precedent).
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -446,7 +486,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 13
+funpack-artifact 15
 [meta 2]
 …
 [enums N]
@@ -501,7 +541,10 @@ artifact field.
 
 ## 5. `[enums]` — sum types and role kinds (§03 §2, §03 §4)
 
-One record per declared enum, in source-declaration order. Each enum record is
+One record per declared enum, in source-declaration order. **v15:** the enums
+the entrypoint module imports from sibling USER modules (dungeon's `Dir`)
+follow the module's own records, in import-declaration order then brace-group
+member order — the cross-module declaration carry (§1 v15). Each enum record is
 followed by one `variant` record per variant, in declaration order:
 
 ```
@@ -524,7 +567,10 @@ variant NAME PAYLOAD
 ## 6. `[data]` — value records with field defaults (§03 §1, §08)
 
 One `data` record per `data` declaration, in source order, each followed by its
-fields. Every field carries its declared type and its default-presence flag:
+fields. **v15:** imported sibling-module data declarations follow the module's
+own records (the §1 v15 declaration carry); the synthesized engine-type
+projections (§8) land last either way. Every field carries its declared type
+and its default-presence flag:
 
 ```
 data NAME field_count mut
@@ -623,7 +669,9 @@ restore/hot-reload migration time (§09 §4, §24).
 
 A `signal` is a `data` value declared with the `signal` keyword — the sole
 cross-thing channel (§06 §5). One record per signal, same field grammar as
-`[data]` (§6), but `mut` is always `false` (a signal is per-tick, never mutated):
+`[data]` (§6), but `mut` is always `false` (a signal is per-tick, never
+mutated). **v15:** imported sibling-module signals (dungeon_world's `Looted`)
+follow the module's own records (the §1 v15 declaration carry):
 
 ```
 signal NAME field_count
@@ -638,7 +686,11 @@ Pong's one signal is `Goal { side: Side }`.
 ## 8. `[things]` — stateful entities with their blackboard schema (§06, §08)
 
 One record per `thing` / `singleton`, in source order, each followed by its
-blackboard schema (its `data` fields) and its `@gtag` set:
+blackboard schema (its `data` fields) and its `@gtag` set. **v15:** the things
+the entrypoint module imports from sibling USER schema modules (dungeon_world's
+`Player`/`Slime`/`Chest`, warren_world's `Rabbit`/`Ferret`/`Burrow`) follow the
+module's own records with their complete defaulted field schemas — the schemas
+the level-backed `[setup]` batch (§13) spawns and defaults against:
 
 ```
 thing NAME SINGLETON gtag_count field_count
@@ -683,7 +735,12 @@ One record per module-level `fn`, `let`, the `bindings()` function, and the
 `setup()` function, KIND-grouped in the fixed order fn-helpers → `const` →
 `bindings` → `startup`, each group in source-declaration order (the golden
 fixture and the emitter both embody this rule; readers locate records by
-name, never by position). The function **body** is the serialized
+name, never by position). The §17 cross-module carry — imported sibling-module
+fns (v6) and imported module-level consts (v15, the level seam's `terrain:
+TilemapHandle`) — appends **after** the entrypoint module's own records, in
+import-declaration order then brace-group member order, each record keyed to
+its own SEAM module's span; the carried records are outside the KIND grouping
+(the v6 appended-after rule). The function **body** is the serialized
 checked AST, carried **in** the record as a run of `node` lines (§2.7) — never a
 span reference into source the runtime can never read. The record opens with the
 signature and a body statement count; the `param` lines and the `node` body run
@@ -904,6 +961,22 @@ set FIELD =ENCODED
   **not** a new node kind. A reader discriminates the forms by the leading byte of
   `ENCODED`: `vec2` opens the §13 Vec2 spread, `[` a list, `(`-after-a-name a
   composite record, `::` a bare enum token, a digit a scalar.
+
+**Level-backed setup (v15).** A `setup()` whose body is a lone call to a baked
+level's `<level>_spawns` seam extern (`return dungeon_spawns()`) folds at emit
+time against the §17 bake instead of the source list: one `spawn THING
+field_count` per `Baked_Spawn` in **bake order** — tilemap markers row-major
+where their layer is declared, then explicit `place` lines, declaration order —
+with the `set` rows in the fixed order `pos` (the `vec2` spread of the bake's
+cell-center/anchor fold) → `facing` (raw Q32.32 bits, only when the placement
+authored one) → params in source order. A param encodes by its **declared**
+schema field type (the bake folds scalars to Fixed; an `Int` field re-truncates
+to decimal — dungeon's `Chest { gems: 5 }` emits `set gems =5` — a `Bool` field
+its bare token, a `Fixed` field its raw bits). A field the level omits is not
+emitted; the runtime applies the §6 default off the carried `[things]` schema
+(the same omission rule as a source-listed spawn). A **Ref-valued param** is
+not emitted — its encoding rides the deferred level-accessor bump (§1 v15).
+`field_count` counts exactly the `set` rows that follow.
 
 This is the §07 §4 fixed-population batch: population is fixed within a tick, and a
 thing spawned this tick is first queryable next tick.
