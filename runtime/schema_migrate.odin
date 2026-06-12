@@ -240,6 +240,7 @@ migrate_world_version :: proc(
 	set: Migration_Set,
 	world: World_Version,
 	program: ^Program,
+	old_tilemaps: []Tile_Layer,
 	allocator := context.allocator,
 ) -> (
 	migrated: World_Version,
@@ -282,12 +283,16 @@ migrate_world_version :: proc(
 			next_id   = table.next_id,
 		}
 	}
-	// §18 §4 / §09 §3: a hot-reload swap RE-SEEDS tile-layer state from the NEW
-	// program's bake — the recompiled artifact may carry different layers, and
-	// the §09 migration kernel reshapes thing schemas only (dynamic-tile carry
-	// across reloads is deliberately undefined — never a silent alias of the
-	// OLD program's terrain into the new build).
-	return World_Version{tick = world.tick, tables = tables, tilemaps = program.tilemaps}, Migrate_Refusal{}
+	// §18 §4 / §09 §4: dynamic tile state is COMMITTED WORLD STATE, so the swap
+	// CARRIES it — diff the live committed layers (`world.tilemaps`) against the
+	// PRIOR bake (`old_tilemaps`), exactly the cells SetTile rewrote, and re-apply
+	// that name-keyed delta onto the NEW program's bake (`program.tilemaps`).
+	// New-bake-wins: an edit outside the new grid, whose tile name left the new
+	// palette, or whose layer the new bake dropped, is silently discarded; a level
+	// edit in the reload shows through wherever no carried edit overrides it (ADR
+	// 2026-06-11-dynamic-tiles-carry-across-hot-reload, the shared §09 §4 kernel).
+	carried := tile_carry_apply(tile_carry_delta(old_tilemaps, world.tilemaps, allocator), program.tilemaps, allocator)
+	return World_Version{tick = world.tick, tables = tables, tilemaps = carried}, Migrate_Refusal{}
 }
 
 // migrate_row_field executes ONE plan action over one row — the §09 §4 verdict

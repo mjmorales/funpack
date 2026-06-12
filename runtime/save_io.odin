@@ -398,7 +398,12 @@ apply_restore :: proc(
 	if compile_refusal.kind != .None {
 		return {}, false
 	}
-	migrated, migrate_refusal := migrate_world_version(set, saved, program, allocator)
+	// Restore threads `saved.tilemaps` as the old bake, so the carry delta is
+	// empty and yields the program's bake verbatim — restore does NOT carry
+	// dynamic tile state (the §24 gap). The §24 save-stream path threads the REAL
+	// prior bake + serialized committed delta here to make restore carry, with no
+	// kernel change.
+	migrated, migrate_refusal := migrate_world_version(set, saved, program, saved.tilemaps, allocator)
 	if migrate_refusal.kind != .None {
 		return {}, false
 	}

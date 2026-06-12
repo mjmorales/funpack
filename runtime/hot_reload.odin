@@ -73,7 +73,10 @@ hot_reload_swap :: proc(
 	if compile_refusal.kind != .None {
 		return {}, {}, Reload_Result{refusal = compile_refusal}
 	}
-	migrated_world, migrate_refusal := migrate_world_version(set, committed, &loaded, allocator)
+	// The OLD bake is the RUNNING program's decoded tilemaps — the carry diffs
+	// the live committed layers against it and re-bases the delta onto the new
+	// artifact's bake (§09 §4 / §18 §4: dynamic tile state carries across reload).
+	migrated_world, migrate_refusal := migrate_world_version(set, committed, &loaded, old_program.tilemaps, allocator)
 	if migrate_refusal.kind != .None {
 		return {}, {}, Reload_Result{refusal = migrate_refusal}
 	}
