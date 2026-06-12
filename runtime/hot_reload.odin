@@ -73,10 +73,14 @@ hot_reload_swap :: proc(
 	if compile_refusal.kind != .None {
 		return {}, {}, Reload_Result{refusal = compile_refusal}
 	}
-	// The OLD bake is the RUNNING program's decoded tilemaps — the carry diffs
-	// the live committed layers against it and re-bases the delta onto the new
-	// artifact's bake (§09 §4 / §18 §4: dynamic tile state carries across reload).
-	migrated_world, migrate_refusal := migrate_world_version(set, committed, &loaded, old_program.tilemaps, allocator)
+	// The OLD bake is the RUNNING program's decoded tilemaps — diff the live
+	// committed layers against it (exactly the cells SetTile rewrote) to source
+	// the carry delta, then migrate re-bases it onto the new artifact's bake
+	// (§09 §4 / §18 §4: dynamic tile state carries across reload). Reload sources
+	// the delta from LIVE memory; the §24 restore reconstructs the same delta
+	// from snapshot bytes — both feed the one migrate apply.
+	carry := tile_carry_delta(old_program.tilemaps, committed.tilemaps, allocator)
+	migrated_world, migrate_refusal := migrate_world_version(set, committed, &loaded, carry, allocator)
 	if migrate_refusal.kind != .None {
 		return {}, {}, Reload_Result{refusal = migrate_refusal}
 	}

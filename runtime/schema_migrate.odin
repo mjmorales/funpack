@@ -240,7 +240,7 @@ migrate_world_version :: proc(
 	set: Migration_Set,
 	world: World_Version,
 	program: ^Program,
-	old_tilemaps: []Tile_Layer,
+	carry: Tile_Carry_Delta,
 	allocator := context.allocator,
 ) -> (
 	migrated: World_Version,
@@ -284,14 +284,17 @@ migrate_world_version :: proc(
 		}
 	}
 	// §18 §4 / §09 §4: dynamic tile state is COMMITTED WORLD STATE, so the swap
-	// CARRIES it — diff the live committed layers (`world.tilemaps`) against the
-	// PRIOR bake (`old_tilemaps`), exactly the cells SetTile rewrote, and re-apply
-	// that name-keyed delta onto the NEW program's bake (`program.tilemaps`).
-	// New-bake-wins: an edit outside the new grid, whose tile name left the new
-	// palette, or whose layer the new bake dropped, is silently discarded; a level
-	// edit in the reload shows through wherever no carried edit overrides it (ADR
-	// 2026-06-11-dynamic-tiles-carry-across-hot-reload, the shared §09 §4 kernel).
-	carried := tile_carry_apply(tile_carry_delta(old_tilemaps, world.tilemaps, allocator), program.tilemaps, allocator)
+	// CARRIES it — re-apply the caller-sourced name-keyed `carry` delta onto the
+	// NEW program's bake (`program.tilemaps`). The delta is sourced AT THE CALL
+	// SITE because the two consumers source it differently: hot-reload diffs the
+	// live committed layers against the prior bake in memory, while the §24 restore
+	// reconstructs the SAME delta from the snapshot bytes (the saving build wrote
+	// it). Both feed one apply here — the shared §09 §4 kernel. New-bake-wins: an
+	// edit outside the new grid, whose tile name left the new palette, or whose
+	// layer the new bake dropped, is silently discarded; a level edit in the new
+	// bake shows through wherever no carried edit overrides it (ADR
+	// 2026-06-11-dynamic-tiles-carry-across-hot-reload).
+	carried := tile_carry_apply(carry, program.tilemaps, allocator)
 	return World_Version{tick = world.tick, tables = tables, tilemaps = carried}, Migrate_Refusal{}
 }
 

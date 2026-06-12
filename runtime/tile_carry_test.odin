@@ -289,7 +289,11 @@ test_reload_tile :: proc(t: ^testing.T) {
 			tilemaps = live,
 		}
 		empty_set := Migration_Set{}
-		migrated, refusal := migrate_world_version(empty_set, world, &new_program, old_bake, a)
+		// migrate_world_version takes the carry DELTA (the call site sources it):
+		// diff the live committed layers against the old bake, then migrate re-bases
+		// it onto the new program's bake.
+		carry := tile_carry_delta(old_bake, world.tilemaps, a)
+		migrated, refusal := migrate_world_version(empty_set, world, &new_program, carry, a)
 		testing.expect_value(t, refusal.kind, Migrate_Refusal_Kind.None)
 		testing.expect_value(t, migrated.tick, 7) // tick preserved
 		layer := version_tilemap(&migrated, "terrain")

@@ -74,7 +74,7 @@ test_save_snapshot_round_trips_committed_version :: proc(t: ^testing.T) {
 	committed := persist_startup(&program)
 
 	bytes := serialize_snapshot(&program, committed)
-	restored, _, ok := deserialize_snapshot(bytes)
+	restored, _, _, ok := deserialize_snapshot(bytes)
 	if !testing.expect(t, ok) {
 		return
 	}
@@ -102,7 +102,7 @@ test_snapshot_codec_is_a_fixed_point :: proc(t: ^testing.T) {
 	committed := persist_startup(&program)
 
 	first := serialize_snapshot(&program, committed)
-	restored, _, ok := deserialize_snapshot(first)
+	restored, _, _, ok := deserialize_snapshot(first)
 	if !testing.expect(t, ok) {
 		return
 	}
@@ -168,7 +168,7 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	// empty v5 schema blocks, and the hand-built rows round-trip regardless.
 	bare_program := Program{}
 	bytes := serialize_snapshot(&bare_program, committed)
-	restored, _, ok := deserialize_snapshot(bytes)
+	restored, _, _, ok := deserialize_snapshot(bytes)
 	if !testing.expect(t, ok) {
 		return
 	}
@@ -1042,4 +1042,229 @@ p_emit_self :: proc(on_thing: string, a := context.allocator) -> []string {
 @(private = "file")
 p_behavior :: proc(name, on_thing, stage: string, params: []Param_Decl, emits: []string, body: []Node, a := context.allocator) -> Behavior_Decl {
 	return Behavior_Decl{name = name, on_thing = on_thing, stage = stage, params = params, emits = emits, body = body}
+}
+
+// --- The §18 §4 / §24 §1 dynamic-tile save/restore fixture ------------------
+
+// sr_layer hand-builds a one-layer slice with an explicit palette and row-major
+// cells — the bake/committed-layer constructor for the save/restore tile fixture
+// (the save_io-local twin of tile_carry_test's tc_layer; this file's tests live in
+// their own @(private="file") namespace). cols·rows == len(cells) by construction
+// in every call below.
+@(private = "file")
+sr_layer :: proc(
+	name: string,
+	cols, rows: int,
+	palette: []Tile_Def,
+	cells: []int,
+	allocator := context.allocator,
+) -> Tile_Layer {
+	pal := make([]Tile_Def, len(palette), allocator)
+	copy(pal, palette)
+	cs := make([]int, len(cells), allocator)
+	copy(cs, cells)
+	return Tile_Layer {
+		name = name,
+		cell_size = 16,
+		cols = cols,
+		rows = rows,
+		top_left = Vec2{x = to_fixed(0), y = to_fixed(i64(rows) * 16)},
+		palette = pal,
+		cells = cs,
+	}
+}
+
+// test_save_restore_tile is the AC1 fixture — ONE comprehensive proc (the
+// ODIN_TEST_NAMES exact-match target the criterion pins) packing every arm of the
+// §24 §1 dynamic-tile save/restore through the REAL snapshot codec (v6). It proves
+// the delta survives the bytes: SetTile a cell → serialize → deserialize → re-apply
+// onto the restoring bake yields the dug cell; an empty-delta save round-trips
+// byte-identical; a restore under a CHANGED bake re-bases per the kernel drop rules
+// (new-bake-wins). Hand-built bakes and committed layers, pins computed by hand from
+// the fixture geometry — the tile_carry_test test_reload_tile mold, on the codec seam
+// instead of the in-memory reload seam.
+@(test)
+test_save_restore_tile :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := context.temp_allocator
+
+	// Shared 2-entry palette: wall (solid) = index 0, floor (non-solid) = index 1.
+	wall_floor := []Tile_Def{{name = "wall", solid = true}, {name = "floor", solid = false}}
+
+	// ===================================================================
+	// ARM (a) AC1: a dug cell SURVIVES save/restore through the codec onto the
+	// SAME bake. Saving bake: a 3×1 row "wall wall wall" (all solid). SetTile
+	// floor@(1,0) committed → live "wall floor wall". serialize records the delta
+	// (one edit, name "floor"); deserialize reconstructs it; re-apply onto the
+	// identical restoring bake re-bases the dug cell. Query through version_tilemap
+	// over a World_Version{tilemaps=carried} — the production read path.
+	// ===================================================================
+	{
+		saving_bake := make([]Tile_Layer, 1, a)
+		saving_bake[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
+		live := make([]Tile_Layer, 1, a)
+		live[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 1, 0}, a) // SetTile floor@(1,0)
+
+		program := Program {
+			tilemaps = saving_bake,
+		}
+		committed := World_Version {
+			tick     = 7,
+			tilemaps = live,
+		}
+
+		bytes := serialize_snapshot(&program, committed)
+		_, _, delta, ok := deserialize_snapshot(bytes)
+		if !testing.expect(t, ok) {
+			return
+		}
+		// The codec carried exactly one edit: cell (1,0) named "floor".
+		testing.expect_value(t, len(delta.edits), 1)
+		testing.expect_value(t, delta.edits[0].layer_name, "terrain")
+		testing.expect_value(t, delta.edits[0].col, 1)
+		testing.expect_value(t, delta.edits[0].row, 0)
+		testing.expect_value(t, delta.edits[0].tile_name, "floor")
+
+		// Restoring bake: an identical recompile of the same level.
+		restoring_bake := make([]Tile_Layer, 1, a)
+		restoring_bake[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
+		carried := tile_carry_apply(delta, restoring_bake, a)
+		ver := World_Version {
+			tilemaps = carried,
+		}
+		layer := version_tilemap(&ver, "terrain")
+		testing.expect(t, layer != nil)
+		// The dug cell is floor (non-solid, name "floor") — it survived the codec.
+		testing.expect_value(t, tilemap_solid_at(layer, 1, 0), false)
+		name, has := tilemap_tile_at(layer, 1, 0)
+		testing.expect(t, has)
+		testing.expect_value(t, name, "floor")
+		// The untouched cells stay wall (solid).
+		testing.expect_value(t, tilemap_solid_at(layer, 0, 0), true)
+		testing.expect_value(t, tilemap_solid_at(layer, 2, 0), true)
+	}
+
+	// ===================================================================
+	// ARM (b) AC1: an EMPTY-delta save round-trips BYTE-IDENTICAL. A committed
+	// world whose live layers EQUAL the saving bake (no SetTile ran) writes a lone
+	// u64(0) delta count; serialize ∘ deserialize ∘ serialize is a fixed point, so
+	// the content hash is stable. Also assert the empty delta re-applies onto the
+	// restoring bake with WHOLE-SLICE structural sharing — the no-op carry returns
+	// the bake slice itself (annotation #55: raw_data(carried)==raw_data(bake)
+	// holds ONLY for an empty delta).
+	// ===================================================================
+	{
+		bake := make([]Tile_Layer, 1, a)
+		bake[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
+		live := make([]Tile_Layer, 1, a)
+		live[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a) // == bake: no SetTile
+
+		program := Program {
+			tilemaps = bake,
+		}
+		committed := World_Version {
+			tick     = 3,
+			tilemaps = live,
+		}
+
+		first := serialize_snapshot(&program, committed)
+		_, _, delta, ok := deserialize_snapshot(first)
+		if !testing.expect(t, ok) {
+			return
+		}
+		testing.expect_value(t, len(delta.edits), 0)
+
+		// Byte-identical re-serialize: the empty-delta count rides the fixed point.
+		second := serialize_snapshot(&program, deserialize_world(first, a))
+		testing.expect_value(t, len(second), len(first))
+		for b, i in first {
+			if i < len(second) {
+				testing.expect_value(t, second[i], b)
+			}
+		}
+
+		// The empty delta re-applies as the no-op carry: whole-slice structural
+		// sharing of the restoring bake (annotation #55 — header equality holds for
+		// the empty delta ONLY).
+		restoring_bake := make([]Tile_Layer, 1, a)
+		restoring_bake[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
+		carried := tile_carry_apply(delta, restoring_bake, a)
+		testing.expect(t, raw_data(carried) == raw_data(restoring_bake))
+	}
+
+	// ===================================================================
+	// ARM (c) AC1: a restore under a CHANGED bake RE-BASES per the kernel drop
+	// rules (new-bake-wins). The saved session dug a 2×2 floor passage at three
+	// cells; the restoring bake is a SMALLER 1×2 grid (the level was edited), so
+	// two of the three carried cells fall OUT of the new grid and drop, while the
+	// one in-bounds cell carries. Also pin the COW alias discipline (annotation
+	// #55): an UNtouched (non-carried) sibling layer keeps its cells aliased to the
+	// restoring bake — assert raw_data(carried[i].cells)==raw_data(bake[i].cells),
+	// NOT the slice header (a non-empty delta fresh-copies the layers-slice header).
+	// ===================================================================
+	{
+		// Saving bake: terrain 2×2 all wall + an untouched "decor" sibling layer.
+		saving_bake := make([]Tile_Layer, 2, a)
+		saving_bake[0] = sr_layer("terrain", 2, 2, wall_floor, []int{0, 0, 0, 0}, a)
+		saving_bake[1] = sr_layer("decor", 2, 1, wall_floor, []int{0, 0}, a)
+		// Live: SetTile floor at terrain (1,0)[idx 1], (0,1)[idx 2], (1,1)[idx 3].
+		live := make([]Tile_Layer, 2, a)
+		live[0] = sr_layer("terrain", 2, 2, wall_floor, []int{0, 1, 1, 1}, a)
+		live[1] = sr_layer("decor", 2, 1, wall_floor, []int{0, 0}, a) // untouched
+
+		program := Program {
+			tilemaps = saving_bake,
+		}
+		committed := World_Version {
+			tick     = 11,
+			tilemaps = live,
+		}
+
+		bytes := serialize_snapshot(&program, committed)
+		_, _, delta, ok := deserialize_snapshot(bytes)
+		if !testing.expect(t, ok) {
+			return
+		}
+		// Three terrain edits carried, in row-major order; decor carried none.
+		testing.expect_value(t, len(delta.edits), 3)
+
+		// Restoring bake: terrain SHRANK to 1×2 (one column), decor unchanged.
+		restoring_bake := make([]Tile_Layer, 2, a)
+		restoring_bake[0] = sr_layer("terrain", 1, 2, wall_floor, []int{0, 0}, a)
+		restoring_bake[1] = sr_layer("decor", 2, 1, wall_floor, []int{0, 0}, a)
+		carried := tile_carry_apply(delta, restoring_bake, a)
+
+		terrain := find_tile_layer(carried, "terrain")
+		testing.expect(t, terrain != nil)
+		// (1,0) and (1,1) fell OUT of the 1-wide grid → dropped (new-bake-wins),
+		// so col 0 is what survives. Only (0,1) was in bounds and carried floor.
+		testing.expect_value(t, tilemap_solid_at(terrain, 0, 0), true) // wall (no edit at col 0 row 0)
+		testing.expect_value(t, tilemap_solid_at(terrain, 0, 1), false) // (0,1) carried floor
+
+		// COW alias discipline (annotation #55): the UNtouched decor layer keeps its
+		// cells aliased to the restoring bake (no edit landed on it), even though the
+		// non-empty delta fresh-copied the layers-SLICE header. Assert on the layer's
+		// cells pointer, NOT the slice header.
+		decor_idx := -1
+		for layer, i in carried {
+			if layer.name == "decor" {
+				decor_idx = i
+				break
+			}
+		}
+		testing.expect(t, decor_idx >= 0)
+		testing.expect(t, raw_data(carried[decor_idx].cells) == raw_data(restoring_bake[decor_idx].cells))
+	}
+}
+
+// deserialize_world is a fixture helper: deserialize a snapshot back into just its
+// World_Version, threading the carry/schema out-values away. The re-serialized
+// world omits tilemaps (deserialize never folds the delta into version.tilemaps),
+// but serialize_snapshot reads the DELTA from program.tilemaps vs version.tilemaps —
+// so the byte-fixed-point arm passes the SAME program both times (an empty live
+// tilemaps vs the same bake yields the same empty delta).
+@(private = "file")
+deserialize_world :: proc(bytes: []u8, allocator := context.allocator) -> World_Version {
+	world, _, _, _ := deserialize_snapshot(bytes, allocator)
+	return world
 }

@@ -78,7 +78,19 @@ import "core:strings"
 // the new world mis-reads. The codec-version gate itself stays exact-match (a
 // v4 slot fails closed under a v5 build, per the stamp discipline); the carried
 // schema is what makes the SCHEMA migration §24 mandates possible at all.
-SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(5)
+// v6 carries the §18 §4 / §24 §1 dynamic-TILE-layer DELTA: after the tables, the
+// snapshot writes the live committed layers' delta from the SAVING build's bake
+// (sparse, name-keyed — the same Tile_Carry_Delta hot-reload uses, tile_carry.odin),
+// so a Restore re-applies a dug passage onto the restoring bake instead of
+// silently re-seeding terrain from the new bake (a defect, not a semantics — ADR
+// 2026-06-11-dynamic-tiles-carry-across-hot-reload). The delta is written name-
+// keyed (a layer/cell/tile-name fact, never a palette index) so a later build's
+// reshuffled palette maps it; new-bake-wins on any unmappable cell, applied at
+// restore through the shared kernel. An empty delta (no SetTile ran) writes a
+// single `u64(0)` count and round-trips byte-inert — the common save is unchanged
+// in shape. A v5 slot fails closed under a v6 build (the exact-match stamp), so an
+// older delta-less snapshot is never mis-read as carrying terrain.
+SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(6)
 
 // SAVE_SNAPSHOT_MAGIC leads every snapshot so a stray byte stream (a truncated
 // file, an unrelated blob) is rejected before the version check rather than parsed
@@ -390,7 +402,7 @@ apply_restore :: proc(
 	if u64(xxhash.XXH64(snapshot.bytes)) != snapshot.content_hash {
 		return {}, false
 	}
-	saved, old_schemas, parse_ok := deserialize_snapshot(snapshot.bytes, allocator)
+	saved, old_schemas, saved_delta, parse_ok := deserialize_snapshot(snapshot.bytes, allocator)
 	if !parse_ok {
 		return {}, false
 	}
@@ -398,12 +410,14 @@ apply_restore :: proc(
 	if compile_refusal.kind != .None {
 		return {}, false
 	}
-	// Restore threads `saved.tilemaps` as the old bake, so the carry delta is
-	// empty and yields the program's bake verbatim — restore does NOT carry
-	// dynamic tile state (the §24 gap). The §24 save-stream path threads the REAL
-	// prior bake + serialized committed delta here to make restore carry, with no
-	// kernel change.
-	migrated, migrate_refusal := migrate_world_version(set, saved, program, saved.tilemaps, allocator)
+	// §18 §4 / §24 §1: the snapshot recorded the live tile DELTA from the saving
+	// build's bake (codec v6), and restore RE-APPLIES it — re-based onto THIS
+	// build's bake through the shared carry kernel — so a dug passage survives
+	// save/restore exactly as it survives a reload (ADR 2026-06-11). New-bake-wins
+	// on any cell the restoring bake can no longer hold (out of grid, dropped
+	// layer, tile name gone from the palette). An empty delta (no SetTile ran in
+	// the saved session) re-applies to the bake verbatim — the common restore.
+	migrated, migrate_refusal := migrate_world_version(set, saved, program, saved_delta, allocator)
 	if migrate_refusal.kind != .None {
 		return {}, false
 	}
@@ -668,16 +682,19 @@ seed_outcome_signals :: proc(
 // serialize_snapshot writes a World_Version into its canonical byte stream: a magic
 // + version header, the tick ordinal, the writing program's SCHEMAS (v5 — every
 // data decl and thing blackboard schema as name + per-field name/type-spelling
-// pairs, in declaration order), then every table (thing name, singleton flag,
-// next_id, rows). It carries next_id + singleton — which the frame digest's
-// frame_bytes deliberately OMITS — so a deserialized version is fully SPAWNABLE (a
-// restored world that spawns a thing mints the next correct Id, no collision); the
-// schema carry is what lets a LATER build's Restore diff and migrate the rows
-// (§24 §1, §09 §4). The encoding is raw little-endian fixed-point throughout (no
-// float, no map-iteration order: schemas write in declaration order, row fields in
-// sorted name order), so a serialize → deserialize → re-serialize round-trips
-// bit-for-bit and a restored version digests identically to the version that was
-// saved.
+// pairs, in declaration order), every table (thing name, singleton flag, next_id,
+// rows), then the §18 §4 dynamic-tile DELTA (v6 — the live committed layers' diff
+// from the SAVING build's bake, sparse and name-keyed). It carries next_id +
+// singleton — which the frame digest's frame_bytes deliberately OMITS — so a
+// deserialized version is fully SPAWNABLE (a restored world that spawns a thing
+// mints the next correct Id, no collision); the schema carry is what lets a LATER
+// build's Restore diff and migrate the rows (§24 §1, §09 §4); the tile delta is
+// what lets restore re-apply a dug passage onto the restoring bake. The encoding is
+// raw little-endian fixed-point throughout (no float, no map-iteration order:
+// schemas write in declaration order, row fields in sorted name order, the delta in
+// the kernel's stable layer-decl-then-row-major order), so a serialize → deserialize
+// → re-serialize round-trips bit-for-bit and a restored version digests identically
+// to the version that was saved.
 serialize_snapshot :: proc(program: ^Program, version: World_Version, allocator := context.allocator) -> []u8 {
 	buf := make([dynamic]u8, allocator)
 	snap_put_u64(&buf, SAVE_SNAPSHOT_MAGIC)
@@ -703,7 +720,30 @@ serialize_snapshot :: proc(program: ^Program, version: World_Version, allocator 
 			snap_write_row(&buf, row)
 		}
 	}
+	// v6 §18 §4 / §24 §1: the dynamic-tile delta — the live committed layers
+	// (`version.tilemaps`) diffed against the SAVING build's bake (`program.tilemaps`),
+	// exactly the cells SetTile rewrote. The same kernel hot-reload sources from live
+	// memory; here the saving build records it into the bytes so restore can
+	// reconstruct it against the restoring build's bake (the saving and restoring
+	// bakes may differ). Empty delta ⇒ a lone `u64(0)` count, byte-inert.
+	snap_write_tile_carry(&buf, tile_carry_delta(program.tilemaps, version.tilemaps, allocator))
 	return buf[:]
+}
+
+// snap_write_tile_carry writes the §18 §4 dynamic-tile delta in the kernel's
+// DETERMINISTIC order (the slice is already old-bake layer-decl then row-major, no
+// map iteration): the edit count, then each edit as (layer name, col, row, tile
+// name). Coordinates are signed ints written through the u64 lane (two's-complement
+// bits, the same cast snap_write_field_value uses for an i64 column), so the codec
+// stays raw little-endian with no float.
+snap_write_tile_carry :: proc(buf: ^[dynamic]u8, delta: Tile_Carry_Delta) {
+	snap_put_u64(buf, u64(len(delta.edits)))
+	for edit in delta.edits {
+		snap_put_string(buf, edit.layer_name)
+		snap_put_u64(buf, u64(i64(edit.col)))
+		snap_put_u64(buf, u64(i64(edit.row)))
+		snap_put_string(buf, edit.tile_name)
+	}
 }
 
 // snap_write_row writes one row: its raw Id then its blackboard columns in SORTED
@@ -863,30 +903,36 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	}
 }
 
-// deserialize_snapshot parses a snapshot byte stream back into a World_Version
-// plus the SCHEMAS the writing build recorded (v5) — the OLD side of the §09 §4
-// schema diff a Restore under a changed schema feeds to compile_migration. ok
-// is false on a wrong magic, a version this build was not built for, or any
-// truncation/malformed record that runs the cursor past the buffer — so a Restore
-// of a corrupt or foreign snapshot fails closed (Result::Err) rather than swapping a
-// partial world. The reconstructed version carries next_id + singleton, so it is
-// fully spawnable and digests identically to the saved version.
+// deserialize_snapshot parses a snapshot byte stream back into a World_Version,
+// the SCHEMAS the writing build recorded (v5) — the OLD side of the §09 §4 schema
+// diff a Restore under a changed schema feeds to compile_migration — and the §18 §4
+// dynamic-TILE DELTA the writing build recorded (v6). The delta comes back as a
+// SEPARATE out-value, NOT folded into version.tilemaps: deserialize has only bytes,
+// so it cannot re-base the delta onto a bake (that needs the RESTORING program's
+// tilemaps, which the caller holds). apply_restore re-applies it through
+// migrate_world_version; version.tilemaps stays unset out of here. ok is false on a
+// wrong magic, a version this build was not built for, or any truncation/malformed
+// record that runs the cursor past the buffer — so a Restore of a corrupt or foreign
+// snapshot fails closed (Result::Err) rather than swapping a partial world. The
+// reconstructed version carries next_id + singleton, so it is fully spawnable and
+// digests identically to the saved version.
 deserialize_snapshot :: proc(
 	bytes: []u8,
 	allocator := context.allocator,
 ) -> (
 	version: World_Version,
 	schemas: Schema_Set,
+	carry: Tile_Carry_Delta,
 	ok: bool,
 ) {
 	cur := Snap_Cursor{data = bytes, pos = 0}
 	magic := snap_get_u64(&cur) or_return
 	if magic != SAVE_SNAPSHOT_MAGIC {
-		return {}, {}, false
+		return {}, {}, {}, false
 	}
 	ver := snap_get_u64(&cur) or_return
 	if ver != SAVE_SNAPSHOT_SCHEMA_VERSION {
-		return {}, {}, false
+		return {}, {}, {}, false
 	}
 	tick := i64(snap_get_u64(&cur) or_return)
 	schemas.data = snap_read_schema_block(&cur, allocator) or_return
@@ -909,7 +955,38 @@ deserialize_snapshot :: proc(
 			next_id   = next_id,
 		}
 	}
-	return World_Version{tick = int(tick), tables = tables}, schemas, true
+	carry = snap_read_tile_carry(&cur, allocator) or_return
+	return World_Version{tick = int(tick), tables = tables}, schemas, carry, true
+}
+
+// snap_read_tile_carry parses the v6 dynamic-tile delta back into a Tile_Carry_Delta
+// — the inverse of snap_write_tile_carry, in the recorded slice order. The
+// coordinates read through the u64 lane and cast back to int (the same two's-
+// complement bits snap_read_field_value's Int arm uses). ok=false on a count or
+// string that runs the cursor past the buffer, so a truncated delta fails the whole
+// restore closed.
+snap_read_tile_carry :: proc(
+	cur: ^Snap_Cursor,
+	allocator := context.allocator,
+) -> (
+	delta: Tile_Carry_Delta,
+	ok: bool,
+) {
+	count := snap_get_u64(cur) or_return
+	edits := make([]Tile_Carry_Edit, int(count), allocator)
+	for i in 0 ..< int(count) {
+		layer_name := snap_get_string(cur, allocator) or_return
+		col := int(i64(snap_get_u64(cur) or_return))
+		row := int(i64(snap_get_u64(cur) or_return))
+		tile_name := snap_get_string(cur, allocator) or_return
+		edits[i] = Tile_Carry_Edit {
+			layer_name = layer_name,
+			col        = col,
+			row        = row,
+			tile_name  = tile_name,
+		}
+	}
+	return Tile_Carry_Delta{edits = edits}, true
 }
 
 // snap_write_field_schema writes one decl's field schema: the field count, then
