@@ -329,7 +329,10 @@ is_command_list :: proc(t: Type, kind: Engine_Kind) -> bool {
 // `(Coin, [Sound])`, so the audio one-shot is a real write, not dead code.
 // [SetTile] is the §18 §4 destructible-terrain command an Update behavior
 // returns like Spawn (the dungeon's `dig` emits `[SetTile]`, applied
-// deterministically at tick end), so a tile rewrite is a real write too. The
+// deterministically at tick end), so a tile rewrite is a real write too.
+// [BuildLayer] is SetTile's §18 §4 whole-layer twin — a seeded generation
+// behavior returns `[BuildLayer]` like Spawn to replace a whole layer at tick
+// end, so a layer build is a real write too. The
 // level-triggered keyed [Audio] projection is NOT here — it is the deferred
 // `audio:` terminal slot's return, not an interior-stage emit (slot_of_stage
 // routes `audio:` to the deferred .Audio slot), so it never reaches this
@@ -344,6 +347,7 @@ is_any_command_list :: proc(t: Type) -> bool {
 		is_command_list(t, .Restore) ||
 		is_command_list(t, .ApplySettings) ||
 		is_command_list(t, .Sound) ||
-		is_command_list(t, .SetTile) \
+		is_command_list(t, .SetTile) ||
+		is_command_list(t, .BuildLayer) \
 	)
 }

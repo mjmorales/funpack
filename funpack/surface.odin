@@ -320,12 +320,17 @@ STDLIB_SURFACE := []Module_Surface{
 		// dungeon's dig imports and returns (`-> [SetTile]`): a Type_Name row
 		// whose construction schema (map: TilemapHandle, cell: the user's
 		// Cell record, tile: String) is surface_engine_record — the partition
-		// is the complete §26 tilemap row.
+		// is the complete §26 tilemap row. BuildLayer is SetTile's §18 §4
+		// whole-layer twin: the same [Spawn]-class Type_Name row, a seeded
+		// generation behavior folds an Rng into a whole layer and returns
+		// `-> [BuildLayer]`; its construction schema (map: TilemapHandle, fill:
+		// String, cells: [(Cell, String)]) is surface_engine_record too.
 		path = "engine.tilemap",
 		decls = {
 			{"TilesetHandle", .Type_Name},
 			{"TilemapHandle", .Type_Name},
 			{"SetTile", .Type_Name},
+			{"BuildLayer", .Type_Name},
 			{"tile_at", .Func},
 			{"solid_at", .Func},
 			{"cell_of", .Func},
@@ -1561,6 +1566,28 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 				{name = "map", type = engine_type_of(.TilemapHandle)},
 				{name = "cell", type = nil},
 				{name = "tile", type = engine_type_of(.String)},
+			}), true
+	case "BuildLayer":
+		// §18 §4 the whole-layer twin of SetTile (a seeded generation behavior
+		// returns `[BuildLayer{map: terrain, fill: "floor", cells: [...]}]`):
+		// `map` is the level seam's TilemapHandle naming the layer to build;
+		// `fill` is the project-global base tile every cell takes (a String, the
+		// SetTile `tile` discipline — names, not indices); `cells` is the
+		// explicit (cell, tile-name) overrides as a list of tuples. The cells
+		// row mirrors TilemapHandle.of's `[(Cell, String, Bool)]` seed-row
+		// encoding minus the solid flag (BuildLayer carries no collision — the
+		// tile name resolves collision through the layer's palette, like
+		// SetTile): list_of(tuple_of({nil, String})). The first tuple position
+		// is the nil unknown — a structural Cell record with no checker ground
+		// (the grid_cells discipline: the imported engine.grid Cell and a
+		// user-declared one both flow in structurally), exactly as SetTile's
+		// `cell` field and TilemapHandle.of's row cell are. The result is the
+		// command's engine type, so a `-> [BuildLayer]` return unifies with the
+		// constructed list.
+		return engine_type_of(.BuildLayer), clone_fields({
+				{name = "map", type = engine_type_of(.TilemapHandle)},
+				{name = "fill", type = engine_type_of(.String)},
+				{name = "cells", type = list_of(tuple_of({nil, engine_type_of(.String)}))},
 			}), true
 	}
 	return nil, nil, false

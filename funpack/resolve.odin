@@ -550,9 +550,12 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.TilemapHandle), true
 	// §18 §4 the destructible-terrain command names the element of a dig-shaped
 	// behavior's emitted command list (`-> [SetTile]`), so it grounds here like
-	// Spawn/Despawn/Save.
+	// Spawn/Despawn/Save. BuildLayer is SetTile's whole-layer twin and names the
+	// element of a generation behavior's `-> [BuildLayer]` the same way.
 	case "SetTile":
 		return engine_type_of(.SetTile), true
+	case "BuildLayer":
+		return engine_type_of(.BuildLayer), true
 	// §16 §7 anim: a pose generator's `-> Pose` return, a rig seam's `-> Skeleton`/
 	// `-> PartSet` returns, and a `transform: Transform` slot all name an engine
 	// type in field/param/return position. Slot/Side/Bone ground here too so a

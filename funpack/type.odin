@@ -96,10 +96,15 @@ Engine_Kind :: enum {
 	// handle as engine methods, not as kinds. SetTile is the §18 §4
 	// destructible-terrain command — the [Spawn]-class record a behavior
 	// returns (`-> [SetTile]`), applied deterministically at tick end; its
-	// construction schema (map/cell/tile) is surface_engine_record.
+	// construction schema (map/cell/tile) is surface_engine_record. BuildLayer
+	// is SetTile's §18 §4 whole-layer twin — the [Spawn]-class record a seeded
+	// generation behavior returns (`-> [BuildLayer]`) to replace a whole layer
+	// at tick end; its construction schema (map/fill/cells) is
+	// surface_engine_record.
 	TilesetHandle,   // §18 §2 a baked-tileset handle (the .tiles seam constant)
 	TilemapHandle,   // §18 §3 a baked tile-LAYER handle (the level seam's layer constant)
 	SetTile,         // §18 §4 the dynamic-tile command record (SetTile{map, cell, tile})
+	BuildLayer,      // §18 §4 SetTile's whole-layer twin (BuildLayer{map, fill, cells})
 	// §16 §7 the rig/animation surface (engine.anim): the engine-provided
 	// skeleton, the part→slot mesh bindings, the sparse bone→Transform pose, and
 	// the bone/slot/side enums a pose generator and the generated rig seam name.
