@@ -271,6 +271,13 @@ Program :: struct {
 	// re-derivation (dynamic terrain) is a separate story and would add the
 	// per-version table this field deliberately omits.
 	navs:           []Nav_Graph,
+	// assets is the §19 baked sprite assets (v16 [assets], assets.odin): the
+	// decoded, content-addressed atlas/image PIXELS a textured Draw_Sprite{atlas,
+	// cell} resolves against. Bake-static like navs — read straight from the
+	// Program (asset_region), never folded per tick (a sprite atlas is immutable
+	// art, not committed world state). An asset-less game decodes to the empty set
+	// (the [assets 0] tail).
+	assets:         Asset_Set,
 }
 
 // program_query finds a §16 query declaration by name, or nil. The query call

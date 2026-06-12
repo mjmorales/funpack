@@ -20,7 +20,7 @@ import "core:testing"
 // (so every tick advances n by exactly 1.0 in Q32.32), and an Idle thing
 // stepped by a bare typecheck-only hole (so no tick ever writes it). Both
 // behaviors occupy REAL flattened control steps — the pipelined-hole surface.
-HOLE_ARTIFACT :: "funpack-artifact 15\n" +
+HOLE_ARTIFACT :: "funpack-artifact 16\n" +
 	"[meta 2]\n" +
 	"project holes\n" +
 	"version L5:0.1.0\n" +
@@ -121,7 +121,7 @@ test_load_stub_body_nodes :: proc(t: ^testing.T) {
 
 	// An under-shaped fallback stub (a declared child that is absent) is a
 	// fail-closed refusal, never a partial body.
-	truncated := "funpack-artifact 15\n" +
+	truncated := "funpack-artifact 16\n" +
 		"[behaviors 1]\n" +
 		"behavior approx_step on:Counter stage:control contract:Update 0 0 0 1\n" +
 		"node stub fallback 1\n"

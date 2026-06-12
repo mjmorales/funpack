@@ -15,7 +15,7 @@ import "core:testing"
 // CONTROL_FIXTURE_A is the running build for the reload test — the same
 // one-behavior advance-by-1.0 shape the observe fixture uses.
 @(private = "file")
-CONTROL_FIXTURE_A :: "funpack-artifact 15\n" +
+CONTROL_FIXTURE_A :: "funpack-artifact 16\n" +
 	"[meta 2]\n" +
 	"project ctl\n" +
 	"version L5:0.1.0\n" +
@@ -45,7 +45,7 @@ CONTROL_FIXTURE_A :: "funpack-artifact 15\n" +
 // delta), advance body changed to 2.0/tick — so a post-reload branch tick
 // proves the behavior re-resolved to the NEW body.
 @(private = "file")
-CONTROL_FIXTURE_B :: "funpack-artifact 15\n" +
+CONTROL_FIXTURE_B :: "funpack-artifact 16\n" +
 	"[meta 2]\n" +
 	"project ctl\n" +
 	"version L5:0.2.0\n" +

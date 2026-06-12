@@ -1,4 +1,4 @@
-funpack-artifact 15
+funpack-artifact 16
 [meta 2]
 project warren
 version L5:0.1.0
@@ -595,3 +595,8 @@ navedge 72 77
 navedge 73 79
 navedge 77 78
 navedge 78 79
+[assets 2]
+image sha256:aaa6bd705bb8a404e72bf3c4e3f3e68993a6d26b96195b0134ff72db55142fc4 16 8 b64:bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf8=
+atlas Warren sha256:aaa6bd705bb8a404e72bf3c4e3f3e68993a6d26b96195b0134ff72db55142fc4 2
+region floor 0 0 8 8
+region wall 8 0 8 8

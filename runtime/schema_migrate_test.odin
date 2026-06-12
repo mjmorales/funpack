@@ -28,7 +28,7 @@ import "core:testing"
 // plus a Fixed pos and an Int score, and one control behavior advancing pos by
 // 1.0 each tick (so the saved world is not the startup world).
 @(private = "file")
-MIG_ARTIFACT_A :: "funpack-artifact 15\n" +
+MIG_ARTIFACT_A :: "funpack-artifact 16\n" +
 	"[meta 2]\n" +
 	"project mig\n" +
 	"version L5:0.1.0\n" +
@@ -69,7 +69,7 @@ MIG_ARTIFACT_A :: "funpack-artifact 15\n" +
 // `home` by the renamed spelling and adds the defaulted streak. The behavior
 // and pipeline are unchanged — this pair isolates the SCHEMA delta.
 @(private = "file")
-MIG_ARTIFACT_B :: "funpack-artifact 15\n" +
+MIG_ARTIFACT_B :: "funpack-artifact 16\n" +
 	"[meta 2]\n" +
 	"project mig\n" +
 	"version L5:0.1.0\n" +
@@ -119,7 +119,7 @@ MIG_ARTIFACT_B :: "funpack-artifact 15\n" +
 // a prior key A's Stats never had — the kernel's Unknown_Source refusal, which
 // must surface as the Restore failure Result, never a partial world.
 @(private = "file")
-MIG_ARTIFACT_B_GHOST :: "funpack-artifact 15\n" +
+MIG_ARTIFACT_B_GHOST :: "funpack-artifact 16\n" +
 	"[meta 2]\n" +
 	"project mig\n" +
 	"version L5:0.1.0\n" +
@@ -137,7 +137,7 @@ MIG_ARTIFACT_B_GHOST :: "funpack-artifact 15\n" +
 // MIG_ARTIFACT_B_SILENT_RETYPE is B with mana retyped WITHOUT a directive —
 // the §09 §4 "change field type: breaking" verdict (Retype_Without_Migrate).
 @(private = "file")
-MIG_ARTIFACT_B_SILENT_RETYPE :: "funpack-artifact 15\n" +
+MIG_ARTIFACT_B_SILENT_RETYPE :: "funpack-artifact 16\n" +
 	"[meta 2]\n" +
 	"project mig\n" +
 	"version L5:0.1.0\n" +
@@ -229,15 +229,15 @@ test_load_malformed_migrate_refused :: proc(t: ^testing.T) {
 	// Bad_Field refusal — never a leniently-parsed partial program.
 	context.allocator = context.temp_allocator
 
-	both_absent := "funpack-artifact 15\n[data 1]\ndata D 1 false\nfield a Int -\nmigrate - -\n"
+	both_absent := "funpack-artifact 16\n[data 1]\ndata D 1 false\nfield a Int -\nmigrate - -\n"
 	_, both_err := load_program(both_absent, context.temp_allocator)
 	testing.expect_value(t, both_err, Artifact_Error.Bad_Field)
 
-	decl_with := "funpack-artifact 15\n[data 1]\ndata D 1 false\nmigrate Old lift\nfield a Int -\n"
+	decl_with := "funpack-artifact 16\n[data 1]\ndata D 1 false\nmigrate Old lift\nfield a Int -\n"
 	_, decl_err := load_program(decl_with, context.temp_allocator)
 	testing.expect_value(t, decl_err, Artifact_Error.Bad_Field)
 
-	things_migrate := "funpack-artifact 15\n[things 1]\nthing T false 0 1\nfield a Int -\nmigrate x -\n"
+	things_migrate := "funpack-artifact 16\n[things 1]\nthing T false 0 1\nfield a Int -\nmigrate x -\n"
 	_, things_err := load_program(things_migrate, context.temp_allocator)
 	testing.expect_value(t, things_err, Artifact_Error.Bad_Field)
 }

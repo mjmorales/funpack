@@ -101,6 +101,14 @@ build_program :: proc(
 			// layer in [tilemaps] slice order. Runtime CONSUMES the format;
 			// funpack DEFINES it (Lore #9).
 			program.navs = load_navs(section, allocator) or_return
+		case "assets":
+			// v16 §19 sprite assets decode into the bake-static Asset_Set (the
+			// content-addressed image set + atlases the textured renderer resolves
+			// a Draw_Sprite{atlas, cell} against, assets.odin). [assets] is the new
+			// fixed §3 section TAIL (after [nav]); an asset-less game carries the
+			// constant `[assets 0]`. Runtime CONSUMES the format; funpack DEFINES
+			// it (Lore #9).
+			program.assets = load_assets(section, allocator) or_return
 		case:
 			return {}, .Malformed_Header // an unknown section is a schema mismatch
 		}

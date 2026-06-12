@@ -197,7 +197,31 @@ import "core:strings"
 // are layout changes: 14 → 15 (funpack/docs/artifact-format.md §1). A
 // single-module, level-less artifact moves by the version stamp alone (the v7
 // stamp-only restamp precedent).
-ARTIFACT_SCHEMA_VERSION :: 15
+//
+// v16 carries the §19 ASSET PIXELS through to this runtime — the decoded
+// atlas/image art a textured render (`Draw_Sprite{atlas, cell}`) blits and which
+// an artifact-blind runtime could not draw (v11's [tilemaps] carried the tile
+// GRID but no pixels; the sprite art never reached the runtime). One layout
+// change rides it: one new section, `[assets A]`, appended after [nav] as the new
+// fixed §3 section TAIL (the [nav] tail precedent). Its records are two top-level
+// kinds plus one sub-record: (a) `image HASH W H b64:RGBA` — one per DISTINCT
+// decoded image, content-addressed by its §2 hash, the canonical RGBA8 buffer
+// (W·H·4 bytes, row-major top-to-bottom) base64-encoded (core:encoding/base64,
+// std-alphabet RFC-4648) as one ASCII token; (b) `atlas NAME IMAGE_HASH
+// CELL_COUNT` — one per atlas, referencing its image by hash (two atlases sharing
+// one image carry the blob ONCE, the content-hash dedup); (c) the new sub-record
+// keyword `region NAME PX_X PX_Y PX_W PX_H` — one per atlas cell, the pixel rect
+// into the image, so `(atlas-name, cell-name) → (image pixels, pixel rect)` is
+// resolvable from the artifact alone (asset_region). This runtime DECODES the
+// section into an Asset_Set (assets.odin): each `b64:RGBA` token round-trips
+// through base64.decode (DEC_TABLE — the same core pkg funpack's ENC_TABLE encode
+// produced, the Odin-first policy on both sides of the §29 seam) and is GATED
+// against the declared W·H·4 length (a truncated/corrupt token or a dimension
+// mismatch is a fail-closed refusal). A new section and one new sub-record keyword
+// are layout changes: 15 → 16 (funpack/docs/artifact-format.md §1, §19). An
+// asset-less game writes the constant `[assets 0]` tail and moves by the version
+// stamp alone (the v7 stamp-only restamp / `[nav 0]` tail precedent).
+ARTIFACT_SCHEMA_VERSION :: 16
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
@@ -222,6 +246,7 @@ SUB_RECORD_KEYWORDS :: [?]string {
 	"row", // a [tilemaps] record's row-major cell line `row …` (v11 framing, §17)
 	"navnode", // a [nav] record's walkable-cell center `navnode FIXED_X FIXED_Y` (v13, §12)
 	"navedge", // a [nav] record's 4-neighbor adjacency `navedge A B` (v13, §12)
+	"region", // an [assets] atlas record's cell rect `region NAME PX_X PX_Y PX_W PX_H` (v16, §19)
 }
 
 // Artifact_Error is the closed parse-failure enum. Every failure is a refusal
