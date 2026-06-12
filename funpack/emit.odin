@@ -325,9 +325,10 @@ variant_payload_tag :: proc(variant: Variant_Decl) -> string {
 // (§03 §7) — pong has none, so it is always `false` here. After the user data
 // decls, it emits any SYNTHESIZED engine-type data decls
 // (docs/artifact-format.md §8): an engine record the source uses by default but
-// has no user `data` for (yard's Settings). The runtime's composite-default
-// decode resolves a `Settings(…)` default's nested field types against the §8
-// data decl, so the projection must be present in [data]; the funpack surface
+// has no user `data` for (yard's Settings, warren's Path). The runtime's
+// composite-default decode resolves a `Settings(…)` or `Path(…)` default's
+// nested field types against the §8 data decl, so the projection must be present
+// in [data]; the funpack surface
 // owns the engine type, the artifact carries its representable projection. The
 // synthesized decls land in a fixed order after the user and imported decls, so
 // the section stays byte-deterministic.
@@ -372,22 +373,30 @@ Synthetic_Data :: struct {
 }
 
 // synthetic_data_decls returns the engine-type data decls the source's defaults
-// require the artifact to carry (docs/artifact-format.md §8). The current case: a
+// require the artifact to carry (docs/artifact-format.md §8). Two cases. (1) A
 // Settings default (`Settings.defaults()`) needs the §8 Settings projection in
 // [data] so the runtime decode resolves its nested field types — AND its nested
 // AccessOpts sub-record's projection, because the Settings default carries an
 // `access=AccessOpts(reduce_motion=false)` token whose `reduce_motion` field type
 // the runtime resolves against AccessOpts' own §8 decl (a nested composite default
 // decodes each field against its declared type, so the nested ctor MUST have a data
-// decl or its Bool would lift to a bare string token, not a Bool). Both are emitted
-// iff some thing/data/signal field declares Settings, so a source that never uses
-// Settings emits no extra data record (pong/snake/hunt are unchanged). AccessOpts
-// follows Settings in a fixed order, so the section stays byte-deterministic.
+// decl or its Bool would lift to a bare string token, not a Bool). (2) A Path
+// default (`Path{steps: [], cost: 0.0}` on warren_world's Rabbit/Ferret, carried
+// into [things] by the v15 declaration carry) needs the §8 Path projection so the
+// runtime resolves `steps`/`cost` in the `=Path(steps=[],cost=0)` token to
+// [Vec2]/Fixed instead of lifting them untyped. Each group is emitted iff some
+// thing/data/signal field — own or imported — declares the trigger type, so a
+// source that never uses Settings or Path emits no extra data record (pong/snake/
+// hunt are unchanged). The fixed order Settings, AccessOpts, Path keeps the
+// section byte-deterministic.
 synthetic_data_decls :: proc(ast: Ast, imported: Imported_Decls) -> []Synthetic_Data {
-	out := make([dynamic]Synthetic_Data, 0, 2, context.temp_allocator)
+	out := make([dynamic]Synthetic_Data, 0, 3, context.temp_allocator)
 	if uses_engine_type(ast, imported, "Settings") {
 		append(&out, Synthetic_Data{name = "Settings", fields = SETTINGS_DATA_FIELDS})
 		append(&out, Synthetic_Data{name = "AccessOpts", fields = ACCESS_OPTS_DATA_FIELDS})
+	}
+	if uses_engine_type(ast, imported, "Path") {
+		append(&out, Synthetic_Data{name = "Path", fields = PATH_DATA_FIELDS})
 	}
 	return out[:]
 }
@@ -662,6 +671,21 @@ SETTINGS_DATA_FIELDS := []Synthetic_Field{
 @(rodata)
 ACCESS_OPTS_DATA_FIELDS := []Synthetic_Field{
 	{name = "reduce_motion", type_name = "Bool"},
+}
+
+// PATH_DATA_FIELDS is the §8 projection of the §08 engine.nav Path route value —
+// the ordered waypoint list and the route's total cost, mirroring the surface
+// schema (surface.odin surface_engine_record "Path": steps a [Vec2] list, cost a
+// Fixed scalar). The runtime's composite-default decode resolves a
+// `=Path(steps=[],cost=0)` field-default token (warren_world's Rabbit/Ferret
+// `path` fields, reaching [things] via the v15 declaration carry) against this
+// decl; without it `steps`/`cost` would lift as untyped tokens the moment the
+// runtime spawns a defaulted Rabbit. Both fields are required (the §6 DEFAULT
+// slot is `-`); a Path default supplies both inline.
+@(rodata)
+PATH_DATA_FIELDS := []Synthetic_Field{
+	{name = "steps", type_name = "[Vec2]"},
+	{name = "cost", type_name = "Fixed"},
 }
 
 // Synthetic_Field is one field of an emitter-synthesized engine-type data decl —

@@ -206,7 +206,13 @@ funpack-artifact 15
   sibling declaration the entrypoint never imports (the level seam's `data
   Dungeon` symbol table) stays absent — its consumer is the deferred
   level-accessor surface, a later bump. The synthesized engine-type projections
-  (§8) still land **last** in `[data]`, after own and imported records. (b) The
+  (§8) still land **last** in `[data]`, after own and imported records — and
+  the carry widens the §8 trigger population with it: a `Path`-typed field on
+  any own **or carried** thing/data/signal now synthesizes the §8 `Path`
+  projection (`steps [Vec2]`, `cost Fixed`), so the carried Rabbit/Ferret
+  `=Path(steps=[],cost=0)` defaults decode typed — the v5 Settings precedent
+  applied inside the same closed synthesis mechanism, a [data] population
+  widening like the rest of this bump, not a new mechanism. (b) The
   **imported-const carry**: an imported module-level `let` (the level seam's
   `terrain: TilemapHandle = TilemapHandle{name: "terrain"}`) appends to
   `[functions]` as the **existing** `function NAME const` record form — no
@@ -628,7 +634,11 @@ migrate FROM WITH               # v8, only after a @migrate-prefixed field
     field set, never a half-built record the runtime would have to default. An
     `Option[String]` default is the enum-variant token `=Option::None` (the bare
     `Type::Case` form above; the `[String]` element only shapes the field's
-    declared TYPE column, not the default token).
+    declared TYPE column, not the default token). **v15:** the §08 nav `Path`
+    record rides the same form — warren_world's `path: Path = Path{steps: [],
+    cost: 0.0}` emits `=Path(steps=[],cost=0)` against a synthesized §8 `Path`
+    data record (`steps [Vec2]`, `cost Fixed`), the Settings synthesis precedent
+    triggered over own **and v15-carried** declarations.
 
 This is a **value-encoding addition within the field-default token**, not a new
 section or node kind: a `field` line still carries exactly `NAME TYPE DEFAULT`, and

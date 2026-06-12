@@ -501,6 +501,17 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 	testing.expect(t, artifact_has_line(product.artifact, "field path Path =Path(steps=[],cost=0)"))
 	testing.expect(t, artifact_has_line(product.artifact, "thing Ferret false 1 3"))
 	testing.expect(t, artifact_has_line(product.artifact, "thing Burrow false 1 1"))
+
+	// The carried Rabbit/Ferret `path: Path` fields trigger the synthesized §8
+	// Path data projection — [data 1] (warren declares no user `data`), the one
+	// decl the runtime resolves the `=Path(steps=[],cost=0)` default's
+	// steps/cost types against ([Vec2]/Fixed; untyped tokens without it).
+	data_section, data_found := artifact_find_section(doc, "data")
+	testing.expect(t, data_found)
+	testing.expect_value(t, data_section.count, 1)
+	testing.expect(t, artifact_has_line(product.artifact, "data Path 2 false"))
+	testing.expect(t, artifact_has_line(product.artifact, "field steps [Vec2] -"))
+	testing.expect(t, artifact_has_line(product.artifact, "field cost Fixed -"))
 	setup_section, setup_found := artifact_find_section(doc, "setup")
 	testing.expect(t, setup_found)
 	testing.expect_value(t, setup_section.count, 4)
