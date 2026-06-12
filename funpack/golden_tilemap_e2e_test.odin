@@ -36,6 +36,7 @@ package funpack
 import "core:log"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 // ── Authored seam docs (bake metadata, verbatim in the committed files) ──────
@@ -259,6 +260,122 @@ test_golden_dungeon_build_carries_tile_layer_in_both_products :: proc(t: ^testin
 	log.infof("golden dungeon build: both products emit, the artifact carries the anchored terrain layer (%d bytes), double-build byte-identical", len(product.artifact))
 }
 
+// ── Dungeon: the v15 cross-module declaration carry ─────────────────────────
+
+@(test)
+test_golden_dungeon_artifact_carries_imported_schema :: proc(t: ^testing.T) {
+	// AC (v15 declaration carry): the live dungeon artifact carries the
+	// IMPORTED dungeon_world schema the entrypoint module references — without
+	// the carry [things]/[signals] were 0 and [enums] held only the
+	// entrypoint's Act, so the runtime could neither spawn nor default a single
+	// dungeon row. Exact counts (the golden-count discipline — never a range):
+	// [enums 2] = the entrypoint's Act (Button) + the imported Dir; [signals 1]
+	// = Looted; [things 3] = Player/Slime/Chest, each with its COMPLETE
+	// defaulted field schema (the §6 lines pinned below — the defaults the
+	// level-backed [setup] omission rule resolves against); [data 0] — the
+	// seam's `data Dungeon` symbol table is NOT imported (its consumer is the
+	// deferred level-accessor extern), so the import-closure rule keeps it out.
+	dir := resolve_dungeon_example_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP golden dungeon carry: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
+		return
+	}
+	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
+		return
+	}
+	doc, parse_err := parse_artifact(product.artifact)
+	testing.expect_value(t, parse_err, Artifact_Parse_Error.None)
+
+	enums, enums_found := artifact_find_section(doc, "enums")
+	testing.expect(t, enums_found)
+	testing.expect_value(t, enums.count, 2)
+	testing.expect(t, artifact_has_line(product.artifact, "enum Act Button 5"))
+	testing.expect(t, artifact_has_line(product.artifact, "enum Dir - 4"))
+
+	signals, signals_found := artifact_find_section(doc, "signals")
+	testing.expect(t, signals_found)
+	testing.expect_value(t, signals.count, 1)
+	testing.expect(t, artifact_has_line(product.artifact, "signal Looted 1"))
+	testing.expect(t, artifact_has_line(product.artifact, "field gems Int -"))
+
+	things, things_found := artifact_find_section(doc, "things")
+	testing.expect(t, things_found)
+	testing.expect_value(t, things.count, 3)
+	testing.expect(t, artifact_has_line(product.artifact, "thing Player false 1 3"))
+	testing.expect(t, artifact_has_line(product.artifact, "field dir Dir =Dir::Down"))
+	testing.expect(t, artifact_has_line(product.artifact, "field gems Int =0"))
+	testing.expect(t, artifact_has_line(product.artifact, "thing Slime false 1 2"))
+	testing.expect(t, artifact_has_line(product.artifact, "field rest Fixed =0"))
+	testing.expect(t, artifact_has_line(product.artifact, "thing Chest false 1 3"))
+	testing.expect(t, artifact_has_line(product.artifact, "field gems Int =1"))
+	testing.expect(t, artifact_has_line(product.artifact, "field opened Bool =false"))
+
+	data, data_found := artifact_find_section(doc, "data")
+	testing.expect(t, data_found)
+	testing.expect_value(t, data.count, 0)
+	log.infof("golden dungeon carry: the imported dungeon_world schema (3 things, Dir, Looted) rides the v15 artifact")
+}
+
+@(test)
+test_golden_dungeon_setup_folds_level_batch :: proc(t: ^testing.T) {
+	// AC (v15 level-backed [setup] fold): dungeon's `setup() { return
+	// dungeon_spawns() }` folds the §17 bake's deterministic spawn list into
+	// concrete §13 rows — the prior emitter left `[setup 0]`, violating §13's
+	// "the runtime spawns the initial population without interpreting an
+	// initializer". The 4 rows in BAKE order (markers row-major, then the
+	// placed chest): the named P marker at cell (2,2) → center (40, 104), the
+	// anonymous g markers at (11,2) → (184, 104) and (3,6) → (56, 40), then
+	// `place Chest … { gems: 5 } at cell(13, 4)` → (216, 72) — every center
+	// computed from dungeon.flvl (bounds (0,0)(256,144), cell 16, y-down rows
+	// from the top edge), never read back from the emitter. gems encodes by
+	// its DECLARED Int type (`=5`, not raw Q32.32 bits). The imported `terrain`
+	// const reaches [functions] as a v15 carried const record with the SEAM
+	// module's span (dungeon.gen.fun line 7), so the behaviors' bare-name
+	// terrain reads resolve; [functions 17] = the 16 own records + the carry.
+	dir := resolve_dungeon_example_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP golden dungeon setup fold: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
+		return
+	}
+	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
+		return
+	}
+	doc, parse_err := parse_artifact(product.artifact)
+	testing.expect_value(t, parse_err, Artifact_Parse_Error.None)
+
+	setup, setup_found := artifact_find_section(doc, "setup")
+	testing.expect(t, setup_found)
+	testing.expect_value(t, setup.count, 4)
+	expected_setup :=
+		"[setup 4]\n" +
+		"spawn Player 1\n" +
+		"set pos =vec2 171798691840 446676598784\n" +
+		"spawn Slime 1\n" +
+		"set pos =vec2 790273982464 446676598784\n" +
+		"spawn Slime 1\n" +
+		"set pos =vec2 240518168576 171798691840\n" +
+		"spawn Chest 2\n" +
+		"set pos =vec2 927712935936 309237645312\n" +
+		"set gems =5\n"
+	testing.expect(t, strings.contains(product.artifact, expected_setup))
+
+	functions, functions_found := artifact_find_section(doc, "functions")
+	testing.expect(t, functions_found)
+	testing.expect_value(t, functions.count, 17)
+	terrain_const :=
+		"function terrain const 0 return:TilemapHandle 1 span:dungeon:7\n" +
+		"node return 1\n" +
+		"node record TilemapHandle 1 1\n" +
+		"node recfield name 1\n" +
+		"node string L7:terrain 0\n"
+	testing.expect(t, strings.contains(product.artifact, terrain_const))
+	log.infof("golden dungeon setup fold: the 4-row level batch and the carried terrain const ride the v15 artifact")
+}
+
 // ── Warren: the seam product ─────────────────────────────────────────────────
 
 @(test)
@@ -368,6 +485,36 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 	testing.expect(t, nav_found)
 	testing.expect_value(t, nav_section.count, 1)
 	testing.expect(t, artifact_has_line(product.artifact, "nav maze 80 80"))
+
+	// The v15 carry + fold over warren: [things 3] = the imported
+	// Rabbit/Ferret/Burrow schemas (warren_game imports no enum/signal/const
+	// from its siblings — `maze` is not in its import closure, so no const
+	// record carries), and [setup 4] = the four named markers in row-major bake
+	// order: doe Rabbit at cell (1,1) → center (12, 84), den Burrow at (14,1) →
+	// (116, 84), sealed Burrow at (3,9) → (28, 20), hob Ferret at (14,9) →
+	// (116, 20) — centers computed from warren.flvl (bounds (0,0)(128,96),
+	// cell 8), never read back from the emitter.
+	things_section, things_found := artifact_find_section(doc, "things")
+	testing.expect(t, things_found)
+	testing.expect_value(t, things_section.count, 3)
+	testing.expect(t, artifact_has_line(product.artifact, "thing Rabbit false 1 3"))
+	testing.expect(t, artifact_has_line(product.artifact, "field path Path =Path(steps=[],cost=0)"))
+	testing.expect(t, artifact_has_line(product.artifact, "thing Ferret false 1 3"))
+	testing.expect(t, artifact_has_line(product.artifact, "thing Burrow false 1 1"))
+	setup_section, setup_found := artifact_find_section(doc, "setup")
+	testing.expect(t, setup_found)
+	testing.expect_value(t, setup_section.count, 4)
+	expected_setup :=
+		"[setup 4]\n" +
+		"spawn Rabbit 1\n" +
+		"set pos =vec2 51539607552 360777252864\n" +
+		"spawn Burrow 1\n" +
+		"set pos =vec2 498216206336 360777252864\n" +
+		"spawn Burrow 1\n" +
+		"set pos =vec2 120259084288 85899345920\n" +
+		"spawn Ferret 1\n" +
+		"set pos =vec2 498216206336 85899345920\n"
+	testing.expect(t, strings.contains(product.artifact, expected_setup))
 	log.infof("golden warren nav pin FLIPPED: the full warren project compiles end-to-end; %d funpack-evaluable chase asserts pass, both build products emit, and the [nav] section carries the 80-node maze graph", report.passed)
 }
 
@@ -420,4 +567,56 @@ test_emit_warren_matches_runtime_testdata :: proc(t: ^testing.T) {
 		return
 	}
 	log.infof("emit warren: the live build reproduces the committed runtime/testdata/warren.artifact byte-for-byte (%d bytes)", len(product.artifact))
+}
+
+// test_emit_dungeon_matches_runtime_testdata is the dungeon cross-package byte
+// seam, the warren seam's twin: the live stage_build artifact equals the
+// committed runtime/testdata/dungeon.artifact the runtime's live dungeon
+// execution loads, byte-for-byte. FUNPACK_REGEN_GOLDEN=1 REWRITES the committed
+// copy from the live build — checked BEFORE the staged-bump skip, so a regen
+// run can bootstrap the copy across a schema bump (this seam is BORN staged:
+// the v15 emitter lands before the runtime-side reconcile commits the first
+// copy, so the unreadable-committed-copy SKIP fires until then — loud, never a
+// pass). Without regen, a committed copy stamped behind ARTIFACT_SCHEMA_VERSION
+// SKIPs loudly (a staged schema bump); a SAME-version divergence is the hard
+// failure this seam exists to catch.
+@(test)
+test_emit_dungeon_matches_runtime_testdata :: proc(t: ^testing.T) {
+	dir := resolve_dungeon_example_dir()
+	if !os.is_dir(dir) {
+		log.warnf("SKIP dungeon testdata match: %s not found — check out funpack-spec as a sibling of the repo", dir)
+		return
+	}
+	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Build_Error.None)
+	if verdict.err != .None {
+		return
+	}
+	committed_path, _ := filepath.join({#directory, "..", "runtime", "testdata", "dungeon.artifact"}, context.temp_allocator)
+	if os.get_env("FUNPACK_REGEN_GOLDEN", context.temp_allocator) != "" {
+		testing.expect(t, os.write_entire_file(committed_path, transmute([]u8)product.artifact) == nil)
+		log.infof("REGEN dungeon: wrote %s (%d bytes)", committed_path, len(product.artifact))
+		return
+	}
+	committed_bytes, read_err := os.read_entire_file_from_path(committed_path, context.temp_allocator)
+	if read_err != nil {
+		log.warnf("SKIP dungeon testdata match: committed %s unreadable — regenerate with FUNPACK_REGEN_GOLDEN=1", committed_path)
+		return
+	}
+	committed := string(committed_bytes)
+	if _, committed_version, stamp_ok := parse_version_stamp(line_around(committed, 0)); stamp_ok && committed_version < ARTIFACT_SCHEMA_VERSION {
+		log.warnf(
+			"SKIP dungeon testdata match: committed runtime copy is stamped v%d while the emitter is at v%d — a staged schema bump; regenerate with FUNPACK_REGEN_GOLDEN=1 or land the runtime-side reconcile",
+			committed_version,
+			ARTIFACT_SCHEMA_VERSION,
+		)
+		return
+	}
+	testing.expect_value(t, len(product.artifact), len(committed))
+	testing.expect(t, product.artifact == committed)
+	if product.artifact != committed {
+		report_first_byte_diff(product.artifact, committed)
+		return
+	}
+	log.infof("emit dungeon: the live build reproduces the committed runtime/testdata/dungeon.artifact byte-for-byte (%d bytes)", len(product.artifact))
 }
