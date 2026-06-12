@@ -1,0 +1,573 @@
+funpack-artifact 14
+[meta 2]
+project warren
+version L5:0.1.0
+[enums 0]
+[data 0]
+[signals 0]
+[things 0]
+[functions 18]
+function step_to fn 3 return:Vec2 4 span:warren_game:32
+param from Vec2
+param to Vec2
+param speed Fixed
+node let delta 1
+node binary sub 2
+node name to 0
+node name from 0
+node let d 1
+node call 2
+node name length 0
+node name delta 0
+node if_return 2
+node binary le 2
+node name d 0
+node name speed 0
+node name to 0
+node return 1
+node binary add 2
+node name from 0
+node binary div 2
+node binary mul 2
+node name delta 0
+node name speed 0
+node name d 0
+function closer fn 3 return:Option[Vec2] 2 span:warren_game:41
+param from Vec2
+param acc Option[Vec2]
+param r Rabbit
+node if_return 2
+node field hidden 1
+node name r 0
+node name acc 0
+node return 1
+node match 2 5
+node name acc 0
+node arm bare_variant Option None 0
+node variant Option Some true 1
+node field pos 1
+node name r 0
+node arm variant_binds Option Some 1 b
+node if_expr 3
+node binary lt 2
+node call 2
+node name length 0
+node binary sub 2
+node field pos 1
+node name r 0
+node name from 0
+node call 2
+node name length 0
+node binary sub 2
+node name b 0
+node name from 0
+node variant Option Some true 1
+node field pos 1
+node name r 0
+node variant Option Some true 1
+node name b 0
+function nearest_rabbit fn 2 return:Vec2 2 span:warren_game:51
+param from Vec2
+param rabbits View[Rabbit]
+node let best 1
+node call 4
+node name fold 0
+node name rabbits 0
+node variant Option None false 0
+node lambda 2 acc r 1
+node call 4
+node name closer 0
+node name from 0
+node name acc 0
+node name r 0
+node return 1
+node call 3
+node name or_else 0
+node name best 0
+node name from 0
+function routed fn 2 return:Path 1 span:warren_game:58
+param found Result[Path,NavError]
+param cached Path
+node return 1
+node match 2 5
+node name found 0
+node arm variant_binds Result Ok 1 p
+node name p 0
+node arm variant_binds Result Err 1 _
+node name cached 0
+function drifted fn 2 return:Bool 1 span:warren_game:67
+param route Path
+param goal Vec2
+node return 1
+node match 2 5
+node call 2
+node name last 0
+node field steps 1
+node name route 0
+node arm variant_binds Option Some 1 end
+node binary gt 2
+node call 2
+node name length 0
+node binary sub 2
+node name goal 0
+node name end 0
+node name DRIFT 0
+node arm bare_variant Option None 0
+node name true 0
+function replan_due fn 3 return:Bool 1 span:warren_game:76
+param t Fixed
+param route Path
+param goal Vec2
+node return 1
+node binary or 2
+node binary le 2
+node name t 0
+node fixed 0 0
+node call 3
+node name drifted 0
+node name route 0
+node name goal 0
+function follow fn 3 return:Ferret 1 span:warren_game:82
+param self Ferret
+param route Path
+param timer Fixed
+node return 1
+node match 2 5
+node call 3
+node field advance 1
+node name route 0
+node field pos 1
+node name self 0
+node name ARRIVE 0
+node arm tuple 2
+node arm variant_binds Option Some 1 wp
+node arm bare_binder - - 1 rest
+node with 3 4
+node name self 0
+node recfield pos 1
+node call 4
+node name step_to 0
+node field pos 1
+node name self 0
+node name wp 0
+node name FERRET_SPEED 0
+node recfield path 1
+node name rest 0
+node recfield repath_t 1
+node name timer 0
+node arm tuple 2
+node arm bare_variant Option None 0
+node arm wildcard - - 0
+node with 2 3
+node name self 0
+node recfield path 1
+node name route 0
+node recfield repath_t 1
+node name timer 0
+function burrow_goal fn 3 return:Option[Vec2] 1 span:warren_game:106
+param nav Nav
+param from Vec2
+param b Burrow
+node return 1
+node match 2 5
+node call 2
+node field nearest 1
+node name nav 0
+node field pos 1
+node name b 0
+node arm variant_binds Option Some 1 mouth
+node if_expr 3
+node call 3
+node field reachable 1
+node name nav 0
+node name from 0
+node name mouth 0
+node variant Option Some true 1
+node name mouth 0
+node variant Option None false 0
+node arm bare_variant Option None 0
+node variant Option None false 0
+function open_burrow fn 3 return:Option[Vec2] 1 span:warren_game:115
+param nav Nav
+param from Vec2
+param burrows View[Burrow]
+node return 1
+node call 4
+node name fold 0
+node name burrows 0
+node variant Option None false 0
+node lambda 2 acc b 1
+node match 2 5
+node name acc 0
+node arm variant_binds Option Some 1 g
+node variant Option Some true 1
+node name g 0
+node arm bare_variant Option None 0
+node call 4
+node name burrow_goal 0
+node name nav 0
+node name from 0
+node name b 0
+function run_for fn 3 return:Rabbit 2 span:warren_game:124
+param self Rabbit
+param nav Nav
+param goal Vec2
+node let route 1
+node call 3
+node name routed 0
+node call 3
+node field path 1
+node name nav 0
+node field pos 1
+node name self 0
+node name goal 0
+node field path 1
+node name self 0
+node return 1
+node match 2 5
+node call 3
+node field advance 1
+node name route 0
+node field pos 1
+node name self 0
+node name ARRIVE 0
+node arm tuple 2
+node arm variant_binds Option Some 1 wp
+node arm bare_binder - - 1 rest
+node with 2 3
+node name self 0
+node recfield pos 1
+node call 4
+node name step_to 0
+node field pos 1
+node name self 0
+node name wp 0
+node name RABBIT_SPEED 0
+node recfield path 1
+node name rest 0
+node arm tuple 2
+node arm bare_variant Option None 0
+node arm wildcard - - 0
+node with 2 3
+node name self 0
+node recfield path 1
+node name NO_ROUTE 0
+node recfield hidden 1
+node name true 0
+function FERRET_SPEED const 0 return:Fixed 1 span:warren_game:13
+node return 1
+node fixed 4294967296 0
+function RABBIT_SPEED const 0 return:Fixed 1 span:warren_game:16
+node return 1
+node fixed 3435973837 0
+function ARRIVE const 0 return:Fixed 1 span:warren_game:19
+node return 1
+node fixed 4294967296 0
+function REPATH_TIME const 0 return:Fixed 1 span:warren_game:22
+node return 1
+node fixed 2147483648 0
+function DRIFT const 0 return:Fixed 1 span:warren_game:25
+node return 1
+node fixed 17179869184 0
+function NO_ROUTE const 0 return:Path 1 span:warren_game:28
+node return 1
+node record Path 2 2
+node recfield steps 1
+node list 0 0
+node recfield cost 1
+node fixed 0 0
+function bindings bindings 0 return:Bindings 1 span:warren_game:146
+node return 1
+node call 1
+node field empty 1
+node name Bindings 0
+function setup startup 0 return:[Spawn] 1 span:warren_game:152
+node return 1
+node call 1
+node name warren_spawns 0
+[behaviors 2]
+behavior stalk on:Ferret stage:ai contract:Update 1 4 1 5
+gtag L2:ai
+param self Ferret
+param nav Nav
+param rabbits View[Rabbit]
+param time Time
+emit Ferret
+node let goal 1
+node call 3
+node name nearest_rabbit 0
+node field pos 1
+node name self 0
+node name rabbits 0
+node if_return 2
+node call 3
+node field los 1
+node name nav 0
+node field pos 1
+node name self 0
+node name goal 0
+node with 3 4
+node name self 0
+node recfield pos 1
+node call 4
+node name step_to 0
+node field pos 1
+node name self 0
+node name goal 0
+node name FERRET_SPEED 0
+node recfield path 1
+node name NO_ROUTE 0
+node recfield repath_t 1
+node fixed 0 0
+node let t 1
+node binary sub 2
+node field repath_t 1
+node name self 0
+node field dt 1
+node name time 0
+node if_return 2
+node call 4
+node name replan_due 0
+node name t 0
+node field path 1
+node name self 0
+node name goal 0
+node block 2
+node let route 1
+node call 3
+node name routed 0
+node call 3
+node field path 1
+node name nav 0
+node field pos 1
+node name self 0
+node name goal 0
+node field path 1
+node name self 0
+node return 1
+node call 4
+node name follow 0
+node name self 0
+node name route 0
+node name REPATH_TIME 0
+node return 1
+node call 4
+node name follow 0
+node name self 0
+node field path 1
+node name self 0
+node name t 0
+behavior bolt on:Rabbit stage:ai contract:Update 1 3 1 2
+gtag L2:ai
+param self Rabbit
+param nav Nav
+param burrows View[Burrow]
+emit Rabbit
+node if_return 2
+node field hidden 1
+node name self 0
+node name self 0
+node return 1
+node match 2 5
+node call 4
+node name open_burrow 0
+node name nav 0
+node field pos 1
+node name self 0
+node name burrows 0
+node arm variant_binds Option Some 1 g
+node call 4
+node name run_for 0
+node name self 0
+node name nav 0
+node name g 0
+node arm bare_variant Option None 0
+node name self 0
+[pipeline_flattened 3]
+step 0 stage:startup behavior:setup
+step 1 stage:ai behavior:stalk
+step 2 stage:ai behavior:bolt
+[signal_routing 0]
+[setup 0]
+[bindings 0]
+[entrypoint 1]
+entrypoint main pipeline:WarrenGame tick_hz:60 logical:128x96 bindings:bindings
+[queries 0]
+[tilemaps 1]
+tilemap maze 8 16 12 0 412316860416 2
+tile wall true
+tile floor false
+row 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+row 0 - 1 1 1 1 0 1 1 1 1 1 1 0 - 0
+row 0 1 0 0 0 1 0 1 0 0 0 0 1 0 1 0
+row 0 1 0 1 1 1 0 1 1 1 1 1 1 1 1 0
+row 0 1 0 1 0 0 0 0 0 0 0 1 0 0 0 0
+row 0 1 1 1 0 1 1 1 1 1 0 1 1 1 1 0
+row 0 0 0 1 0 1 0 0 0 1 0 0 0 0 1 0
+row 0 1 1 1 1 1 1 1 0 1 1 1 1 0 1 0
+row 0 1 0 0 0 0 0 1 0 0 0 0 1 0 1 0
+row 0 1 0 - 0 1 1 1 1 1 1 0 1 0 - 0
+row 0 1 0 0 0 1 0 0 0 0 1 0 1 1 1 0
+row 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+[nav 1]
+nav maze 80 80
+navnode 51539607552 360777252864
+navnode 85899345920 360777252864
+navnode 120259084288 360777252864
+navnode 154618822656 360777252864
+navnode 188978561024 360777252864
+navnode 257698037760 360777252864
+navnode 292057776128 360777252864
+navnode 326417514496 360777252864
+navnode 360777252864 360777252864
+navnode 395136991232 360777252864
+navnode 429496729600 360777252864
+navnode 498216206336 360777252864
+navnode 51539607552 326417514496
+navnode 188978561024 326417514496
+navnode 257698037760 326417514496
+navnode 429496729600 326417514496
+navnode 498216206336 326417514496
+navnode 51539607552 292057776128
+navnode 120259084288 292057776128
+navnode 154618822656 292057776128
+navnode 188978561024 292057776128
+navnode 257698037760 292057776128
+navnode 292057776128 292057776128
+navnode 326417514496 292057776128
+navnode 360777252864 292057776128
+navnode 395136991232 292057776128
+navnode 429496729600 292057776128
+navnode 463856467968 292057776128
+navnode 498216206336 292057776128
+navnode 51539607552 257698037760
+navnode 120259084288 257698037760
+navnode 395136991232 257698037760
+navnode 51539607552 223338299392
+navnode 85899345920 223338299392
+navnode 120259084288 223338299392
+navnode 188978561024 223338299392
+navnode 223338299392 223338299392
+navnode 257698037760 223338299392
+navnode 292057776128 223338299392
+navnode 326417514496 223338299392
+navnode 395136991232 223338299392
+navnode 429496729600 223338299392
+navnode 463856467968 223338299392
+navnode 498216206336 223338299392
+navnode 120259084288 188978561024
+navnode 188978561024 188978561024
+navnode 326417514496 188978561024
+navnode 498216206336 188978561024
+navnode 51539607552 154618822656
+navnode 85899345920 154618822656
+navnode 120259084288 154618822656
+navnode 154618822656 154618822656
+navnode 188978561024 154618822656
+navnode 223338299392 154618822656
+navnode 257698037760 154618822656
+navnode 326417514496 154618822656
+navnode 360777252864 154618822656
+navnode 395136991232 154618822656
+navnode 429496729600 154618822656
+navnode 498216206336 154618822656
+navnode 51539607552 120259084288
+navnode 257698037760 120259084288
+navnode 429496729600 120259084288
+navnode 498216206336 120259084288
+navnode 51539607552 85899345920
+navnode 120259084288 85899345920
+navnode 188978561024 85899345920
+navnode 223338299392 85899345920
+navnode 257698037760 85899345920
+navnode 292057776128 85899345920
+navnode 326417514496 85899345920
+navnode 360777252864 85899345920
+navnode 429496729600 85899345920
+navnode 498216206336 85899345920
+navnode 51539607552 51539607552
+navnode 188978561024 51539607552
+navnode 360777252864 51539607552
+navnode 429496729600 51539607552
+navnode 463856467968 51539607552
+navnode 498216206336 51539607552
+navedge 0 1
+navedge 0 12
+navedge 1 2
+navedge 2 3
+navedge 3 4
+navedge 4 13
+navedge 5 6
+navedge 5 14
+navedge 6 7
+navedge 7 8
+navedge 8 9
+navedge 9 10
+navedge 10 15
+navedge 11 16
+navedge 12 17
+navedge 13 20
+navedge 14 21
+navedge 15 26
+navedge 16 28
+navedge 17 29
+navedge 18 19
+navedge 18 30
+navedge 19 20
+navedge 21 22
+navedge 22 23
+navedge 23 24
+navedge 24 25
+navedge 25 26
+navedge 25 31
+navedge 26 27
+navedge 27 28
+navedge 29 32
+navedge 30 34
+navedge 31 40
+navedge 32 33
+navedge 33 34
+navedge 34 44
+navedge 35 36
+navedge 35 45
+navedge 36 37
+navedge 37 38
+navedge 38 39
+navedge 39 46
+navedge 40 41
+navedge 41 42
+navedge 42 43
+navedge 43 47
+navedge 44 50
+navedge 45 52
+navedge 46 55
+navedge 47 59
+navedge 48 49
+navedge 48 60
+navedge 49 50
+navedge 50 51
+navedge 51 52
+navedge 52 53
+navedge 53 54
+navedge 54 61
+navedge 55 56
+navedge 56 57
+navedge 57 58
+navedge 58 62
+navedge 59 63
+navedge 60 64
+navedge 61 68
+navedge 62 72
+navedge 63 73
+navedge 64 74
+navedge 66 67
+navedge 66 75
+navedge 67 68
+navedge 68 69
+navedge 69 70
+navedge 70 71
+navedge 71 76
+navedge 72 77
+navedge 73 79
+navedge 77 78
+navedge 78 79

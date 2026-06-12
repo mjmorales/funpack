@@ -190,9 +190,10 @@ import "core:strings"
 // decomposition stays INVISIBLE: one FLAT graph per layer, no tiers in the wire
 // format. (2) two new closed sub-record keywords, `navnode` and `navedge`. A
 // new section and new sub-record keywords are layout changes: 12 → 13 (§1).
-// Every level-less artifact moves by the version stamp plus the constant
-// `[nav 0]` tail (the §3 fixed-tail precedent the level-less `[tilemaps 0]` set).
-ARTIFACT_SCHEMA_VERSION :: 13
+// Every artifact without a multi-statement guard moves to v14 by the version
+// stamp alone (the v7 stamp-only restamp precedent; v14 adds the `block` node
+// in if_return's outcome position, §2.7).
+ARTIFACT_SCHEMA_VERSION :: 14
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

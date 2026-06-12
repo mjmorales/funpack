@@ -61,10 +61,13 @@ emit_executable_body :: proc(b: ^strings.Builder, holed: bool, has_fallback: boo
 
 // emit_statement serializes one top-level body statement as a node subtree
 // (docs/artifact-format.md §2.7): a `let n = e` is a `let` node over its value,
-// a `return e` is a `return` node over its value, and an `if cond { return v }`
-// early-return guard is an `if_return` node over (condition, returned value).
-// The gameplay surface's guard blocks are the single-`return` shape, so the
-// if_return's second child is the guard's returned expression.
+// a `return e` is a `return` node over its value, and an `if cond { … }`
+// early-return guard is an `if_return` node over (condition, outcome). The
+// outcome is the returned expression when the guard block is the single-bare-
+// `return` shape — the bytes every pre-v14 artifact carries — and a `block`
+// node over the block's statements otherwise (schema v14; §02's grammar allows
+// any statement sequence in a guard block, and the wire must carry what the
+// grammar admits).
 emit_statement :: proc(b: ^strings.Builder, stmt: Statement) {
 	switch node in stmt {
 	case Let_Node:
@@ -76,7 +79,14 @@ emit_statement :: proc(b: ^strings.Builder, stmt: Statement) {
 	case If_Node:
 		emit_line(b, "node if_return 2")
 		emit_expr(b, node.cond)
-		emit_expr(b, if_return_value(node))
+		if ret, bare := single_bare_return(node); bare {
+			emit_expr(b, ret)
+			return
+		}
+		emit_line(b, "node block ", encode_int(i64(len(node.body)), context.temp_allocator))
+		for inner in node.body {
+			emit_statement(b, inner)
+		}
 	case Assert_Node:
 		// Assert is a test-body statement, never a fn/step/const body — the
 		// emitter serializes only executable bodies the runtime interprets, so
@@ -84,17 +94,17 @@ emit_statement :: proc(b: ^strings.Builder, stmt: Statement) {
 	}
 }
 
-// if_return_value returns the value an early-return guard returns — the value of
-// the guard block's single `return` statement (docs/artifact-format.md §2.7).
-// The gameplay surface's guards are the single-`return` shape proven by the
-// frontend, so the body's lone statement is a `return`.
-if_return_value :: proc(node: If_Node) -> Expr {
+// single_bare_return reports whether an early-return guard block is the lone
+// `return v` shape, yielding the returned expression — the v13-stable bare
+// outcome encoding (docs/artifact-format.md §2.7). Any other block rides as a
+// `block` node, never a silent drop.
+single_bare_return :: proc(node: If_Node) -> (value: Expr, bare: bool) {
 	if len(node.body) == 1 {
 		if ret, ok := node.body[0].(Return_Node); ok {
-			return ret.value
+			return ret.value, true
 		}
 	}
-	return nil
+	return nil, false
 }
 
 // emit_expr serializes one expression as a pre-order node subtree

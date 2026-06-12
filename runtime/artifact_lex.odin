@@ -165,7 +165,7 @@ import "core:strings"
 // sub-record keywords are layout changes: 12 → 13 (funpack/artifact_format.odin
 // v13, §1, §12). Level-less artifacts move by the stamp plus the constant
 // `[nav 0]` tail (the level-less `[tilemaps 0]` precedent).
-ARTIFACT_SCHEMA_VERSION :: 13
+ARTIFACT_SCHEMA_VERSION :: 14
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"

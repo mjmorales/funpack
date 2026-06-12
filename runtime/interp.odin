@@ -258,12 +258,26 @@ eval_body :: proc(interp: ^Interp, body: []Node, env: ^Env) -> (value: Value, ok
 			}
 			env.names[stmt.fields[0]] = bound
 		case .If_Return:
-			// `if cond { return value }`: child[0] is the guard, child[1] the value.
+			// `if cond { … }`: child[0] is the guard, child[1] the outcome — the
+			// returned value expression (the single-bare-return shape), or a
+			// `block` of statements (schema v14) whose own `return` ends the
+			// body and whose completion without one falls through to the next
+			// statement (the §02 early-return guard semantics).
 			cond, cond_ok := eval(interp, &stmt.children[0], env)
 			if !cond_ok {
 				return nil, false
 			}
 			if as_bool(cond) {
+				if stmt.children[1].kind == .Block {
+					block_value, returned, block_ok := eval_guard_block(interp, stmt.children[1].children, env)
+					if !block_ok {
+						return nil, false
+					}
+					if returned {
+						return block_value, true
+					}
+					continue
+				}
 				return eval(interp, &stmt.children[1], env)
 			}
 		case .Return:
@@ -280,12 +294,65 @@ eval_body :: proc(interp: ^Interp, body: []Node, env: ^Env) -> (value: Value, ok
 				return eval(interp, &stmt.children[0], env)
 			}
 			return nil, false
-		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .Arm, .All:
-			// A non-statement node at statement position is a malformed body.
+		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .If_Expr, .Arm, .Block, .All:
+			// A non-statement node at statement position is a malformed body
+			// (a `block` stands only in if_return's outcome position, §2.7).
 			return nil, false
 		}
 	}
 	return nil, false
+}
+
+// eval_guard_block folds a v14 guard block's statements (§2.7 `block`): the
+// same statement semantics as eval_body, but completing the run without a
+// `return` is the DEFINED fall-through outcome (returned=false), not a
+// malformed body — the guard simply did not fire an early return. `let`s bind
+// into a child scope, so a block-local binding never leaks into the enclosing
+// body (§02 block scoping); the parent chain keeps every enclosing binding
+// readable.
+eval_guard_block :: proc(interp: ^Interp, stmts: []Node, env: ^Env) -> (value: Value, returned: bool, ok: bool) {
+	scope := Env {
+		names  = make(map[string]Value, interp.allocator),
+		parent = env,
+	}
+	for &stmt in stmts {
+		switch stmt.kind {
+		case .Let:
+			bound, bound_ok := eval(interp, &stmt.children[0], &scope)
+			if !bound_ok {
+				return nil, false, false
+			}
+			scope.names[stmt.fields[0]] = bound
+		case .If_Return:
+			cond, cond_ok := eval(interp, &stmt.children[0], &scope)
+			if !cond_ok {
+				return nil, false, false
+			}
+			if as_bool(cond) {
+				if stmt.children[1].kind == .Block {
+					inner, inner_returned, inner_ok := eval_guard_block(interp, stmt.children[1].children, &scope)
+					if !inner_ok {
+						return nil, false, false
+					}
+					if inner_returned {
+						return inner, true, true
+					}
+					continue
+				}
+				result, result_ok := eval(interp, &stmt.children[1], &scope)
+				return result, true, result_ok
+			}
+		case .Return:
+			result, result_ok := eval(interp, &stmt.children[0], &scope)
+			return result, true, result_ok
+		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .If_Expr, .Arm, .Stub, .Block, .All:
+			// A non-statement node inside a guard block is a malformed body (a
+			// `stub` stands only as a holed body's SOLE statement, never inside
+			// a guard).
+			return nil, false, false
+		}
+	}
+	return nil, false, true
 }
 
 // eval_statement evaluates a single statement node (a const's lone `return`, or
@@ -339,6 +406,18 @@ eval :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool
 		return eval_binary(interp, node, env)
 	case .Match:
 		return eval_match(interp, node, env)
+	case .If_Expr:
+		// The value-producing if (§2.7 `if_expr 3`): the condition selects which
+		// of the two arm expressions evaluates — the unchosen arm is never
+		// evaluated, mirroring the compiler interpreter's If_Expr semantics.
+		cond, cond_ok := eval(interp, &node.children[0], env)
+		if !cond_ok {
+			return nil, false
+		}
+		if as_bool(cond) {
+			return eval(interp, &node.children[1], env)
+		}
+		return eval(interp, &node.children[2], env)
 	case .Call:
 		return eval_call(interp, node, env)
 	case .Lambda:
@@ -350,10 +429,11 @@ eval :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool
 		// behavior's View[T] param reads, so a query observes exactly the §08
 		// mid-tick read-consistency rule (population fixed, columns folding).
 		return view_rows_as_list(interp, node.fields[0]), true
-	case .Recfield, .Arm, .Let, .If_Return, .Return, .Stub:
+	case .Recfield, .Arm, .Let, .If_Return, .Return, .Stub, .Block:
 		// These appear only as children of their owning construct (a `stub`
-		// only as a holed body's sole statement), never as a standalone
-		// expression — reaching one here is a malformed body.
+		// only as a holed body's sole statement, a `block` only in if_return's
+		// outcome position), never as a standalone expression — reaching one
+		// here is a malformed body.
 		return nil, false
 	}
 	return nil, false

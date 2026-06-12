@@ -82,7 +82,7 @@ test_emit_stub_nodes_carry_holes :: proc(t: ^testing.T) {
 		return
 	}
 
-	testing.expect(t, strings.has_prefix(artifact, "funpack-artifact 13\n"))
+	testing.expect(t, strings.has_prefix(artifact, "funpack-artifact 14\n"))
 	doc, parse_err := parse_artifact(artifact)
 	testing.expect_value(t, parse_err, Artifact_Parse_Error.None)
 	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)
@@ -243,7 +243,7 @@ test_golden_holed_pong_artifact_carries_pipelined_fallback :: proc(t: ^testing.T
 	}
 	defer remove_scratch_tree(root)
 
-	testing.expect(t, strings.has_prefix(artifact, "funpack-artifact 13\n"))
+	testing.expect(t, strings.has_prefix(artifact, "funpack-artifact 14\n"))
 	doc, parse_err := parse_artifact(artifact)
 	testing.expect_value(t, parse_err, Artifact_Parse_Error.None)
 	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)

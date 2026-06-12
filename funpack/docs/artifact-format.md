@@ -177,6 +177,20 @@ funpack-artifact 13
   `navedge`. A new section and new sub-record keywords are layout changes:
   12 → 13. A level-less artifact moves by the version stamp plus the constant
   `[nav 0]` tail (the §3 fixed-tail precedent the level-less `[tilemaps 0]` set).
+  v14 closes the **guard-block gap**: §02's grammar allows a multi-statement
+  early-return guard (`if cond { let x = …; return y }`) but the v13 `if_return`
+  carried exactly (condition, returned value), so the emitter silently dropped
+  every statement before the `return` (surfaced by the emitted-warren golden).
+  v14 adds **one node kind, `block`** (§2.7): `node block N` over `N` statement
+  subtrees, allowed in `if_return`'s **outcome position** — a single-bare-return
+  guard keeps the bare value encoding, any other guard block rides as a `block`
+  whose statements evaluate with early-return semantics (block-scoped `let`s; a
+  block that completes without returning falls through to the enclosing body).
+  `block` is the general mechanism for every grammar position holding a
+  `(Block | Expr)` disposition; v14 ratifies it for `if_return` only. A node
+  kind is a ratification change: 13 → 14. Every artifact without a
+  multi-statement guard moves by the version stamp alone (the v7 stamp-only
+  restamp precedent).
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -362,7 +376,9 @@ subtree shape:
 | `arm` (scalar) | `pat:name` `type:name` `case:name` `binder_count:Int` `binders:name…` | 0 (fixed by kind; no trailing `child_count`) | a `wildcard`/`bare_variant`/`variant_binds`/`bare_binder` pattern (its body is the following sibling) |
 | `arm` (tuple, v2) | `tuple` `child_count:Int` | `child_count` = the positional sub-pattern `arm` subtrees | a `(p, q, …)` tuple pattern, e.g. `(Option::Some(cell), next)` |
 | `let` | `name:name` | 1 = the bound value expr | `let n = e` |
-| `if_return` | (none) | 2 = condition, returned value | early-return `if cond { return v }` |
+| `if_return` | (none) | 2 = condition, then the **outcome**: the returned value expr (single-bare-return guard) or a `block` (v14) | early-return `if cond { return v }` / `if cond { let x = …; return y }` |
+| `if_expr` | (none) | 3 = condition, then arm, else arm | a value-producing `if c { a } else { b }` in expression position |
+| `block` (v14) | (none) | `child_count` = the guard block's statement subtrees (`let`/`if_return`/`return`) | a multi-statement guard block in `if_return`'s outcome position; `let`s are block-scoped, completing without `return` falls through |
 | `return` | (none) | 1 = the returned value expr | `return e` |
 | `stub` (v7) | `form:name` (`bare` or `fallback`) | `fallback`: 1 = the approximation expr; `bare`: 0 | a §05 §2 typed hole standing for the whole body: `@stub(T, fallback)` / `@stub(T)` |
 | `all` (v10) | `thing:name` | 0 | the §08 §3 world read `all[Ball]` — the thing's instance rows in stable `Id` order |

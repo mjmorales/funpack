@@ -42,6 +42,11 @@ Node_Kind :: enum {
 	Arm,
 	Let,
 	If_Return,
+	// If_Expr is the value-producing if-expression (§2.7): `node if_expr 3`
+	// over its three ordered children — condition, then arm, else arm — the
+	// match-with-two-arms shape an expression-position `if { } else { }`
+	// lowers to. Statement-position `if` stays If_Return.
+	If_Expr,
 	Return,
 	// Stub is the §05 §2 typed hole standing as a holed body's sole statement
 	// subtree (schema v7): `node stub fallback 1` carries the approximation
@@ -52,6 +57,12 @@ Node_Kind :: enum {
 	// a leaf carrying the read table's thing type name — it evaluates to that
 	// thing's rows in stable Id order, the only world read a query body holds.
 	All,
+	// Block is a multi-statement guard block in if_return's outcome position
+	// (schema v14, §2.7): `node block N` over N statement subtrees. Its `let`s
+	// are block-scoped; completing without a `return` falls through to the
+	// enclosing body. The single-bare-`return` guard keeps the bare value
+	// encoding, so Block appears only where a guard genuinely carries more.
+	Block,
 }
 
 // Node is one interpreted body node: its kind, its decoded scalar fields kept as
@@ -110,6 +121,8 @@ node_kind_from_tag :: proc(tag: string) -> (kind: Node_Kind, ok: bool) {
 		return .Let, true
 	case "if_return":
 		return .If_Return, true
+	case "if_expr":
+		return .If_Expr, true
 	case "return":
 		return .Return, true
 	case "stub":
@@ -123,6 +136,11 @@ node_kind_from_tag :: proc(tag: string) -> (kind: Node_Kind, ok: bool) {
 		// precedes the trailing child count (always 0), so no special handling
 		// beyond this tag mapping (§2.7, schema v10).
 		return .All, true
+	case "block":
+		// A `block` node is count-driven the generic way: `node block N` with
+		// N statement subtrees (§2.7, schema v14), so no special handling
+		// beyond this tag mapping.
+		return .Block, true
 	}
 	return .Int, false
 }
