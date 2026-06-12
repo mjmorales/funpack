@@ -35,20 +35,25 @@ golden_manifest :: proc() -> (content: string, ok: bool) {
 }
 
 @(test)
-test_asset_manifest_reads_three_entries :: proc(t: ^testing.T) {
-	// The reader's defining outcome over the live golden manifest: three
-	// entries, each a closed kind, with pickups carrying its raw-image
-	// dependency hash. The counts are pinned to the golden file on purpose
-	// — when the manifest grows an entry, this count changes in lockstep.
+test_asset_manifest_reads_four_entries :: proc(t: ^testing.T) {
+	// The reader's defining outcome over the live §19-literal golden manifest:
+	// FOUR entries — the coin model, the first-class `pickups.png` IMAGE node the
+	// §19-literal bake discovers ahead of its atlas, the pickups atlas that
+	// deps-on that image, and the coin audio. The counts are pinned to the golden
+	// file on purpose — when the manifest grows an entry, this count changes in
+	// lockstep. The dependency hash is asserted by SHAPE (a `pickups.png@sha256:`
+	// edge), not exact value, so the placeholder image's bytes are free to change
+	// without churning this structural test.
 	content, ok := golden_manifest()
 	if !ok {
 		return
 	}
 	manifest, err := read_asset_manifest(content)
 	testing.expect_value(t, err, Asset_Manifest_Error.None)
-	testing.expect_value(t, len(manifest.entries), 3)
+	testing.expect_value(t, len(manifest.entries), 4)
 
-	// Entries are in committed-file order, walked by index.
+	// Entries are in committed-file order, walked by index — the bottom-up DAG
+	// order puts each discovered image immediately ahead of its atlas.
 	coin := manifest.entries[0]
 	testing.expect_value(t, coin.name, "coin")
 	testing.expect_value(t, coin.kind, Asset_Kind.Model)
@@ -56,16 +61,25 @@ test_asset_manifest_reads_three_entries :: proc(t: ^testing.T) {
 	testing.expect_value(t, coin.importer_version, "model@3")
 	testing.expect_value(t, len(coin.deps), 0)
 
-	pickups := manifest.entries[1]
+	// The first-class image node: a raw-image DAG root (no deps), named by its
+	// filename, discovered from the pickups atlas's `image "pickups.png"` clause.
+	image := manifest.entries[1]
+	testing.expect_value(t, image.name, "pickups.png")
+	testing.expect_value(t, image.kind, Asset_Kind.Image)
+	testing.expect_value(t, image.source, "pickups.png")
+	testing.expect_value(t, image.importer_version, "image@1")
+	testing.expect_value(t, len(image.deps), 0)
+
+	pickups := manifest.entries[2]
 	testing.expect_value(t, pickups.name, "pickups")
 	testing.expect_value(t, pickups.kind, Asset_Kind.Atlas)
 	testing.expect_value(t, pickups.source, "pickups.atlas")
-	// pickups deps-on its raw image input; that dependency hash is the one
-	// the §2 hasher folds into pickups' own hash.
+	// pickups deps-on its real image input; that dependency hash is the one the
+	// §2 hasher folds into pickups' own hash — asserted by edge shape.
 	testing.expect_value(t, len(pickups.deps), 1)
-	testing.expect_value(t, pickups.deps[0], "pickups.png@sha256:b7e2d4f0…")
+	testing.expect(t, strings.has_prefix(pickups.deps[0], "pickups.png@sha256:"), "pickups deps-on the real pickups.png image hash")
 
-	coin_sfx := manifest.entries[2]
+	coin_sfx := manifest.entries[3]
 	testing.expect_value(t, coin_sfx.name, "coin_sfx")
 	testing.expect_value(t, coin_sfx.kind, Asset_Kind.Audio)
 	testing.expect_value(t, coin_sfx.source, "audio/coin.wav")
