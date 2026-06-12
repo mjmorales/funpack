@@ -615,6 +615,90 @@ test_engine_los_reads_the_committed_version :: proc(t: ^testing.T) {
 	testing.expect_value(t, blocked_post.(bool), false)
 }
 
+// --- the §12 §2 containing-cell endpoint resolution (path/reachable) ---------
+//
+// ADR 2026-06-11-path-endpoints-resolve-to-containing-cell: with the 1:1 layer
+// committed, a path()/reachable() endpoint resolves to the walkable node of the
+// cell CONTAINING it (half-open cell_of partition) — a thing paths from where
+// it stands. OffNav still fires from a solid cell; the layerless exact-center
+// contract is pinned by the nav_test.odin units (no version → fail closed).
+
+// eval_engine_nav drives `nav.<method>(from, to)` through the real dispatch
+// over the grid graph + the supplied committed version (the eval_engine_los
+// mold for the two-Vec2 graph queries).
+eval_engine_nav :: proc(version: ^World_Version, method: string, from, to: Vec2) -> (result: Value, ok: bool) {
+	graph := nav_grid_graph()
+	program := Program{}
+	program.navs = nav_one_graph(graph)
+	interp := los_interp(&program, version)
+	return nav_eval_method(&interp, nav_handle_value("ground"), method, from, to)
+}
+
+@(test)
+test_engine_path_resolves_off_center_endpoint_to_containing_cell :: proc(t: ^testing.T) {
+	// AC (§12 §2 resolution): path() from (10, 38) — inside cell (0,0) but off
+	// node 0's center (8,40) — to node 2's exact center succeeds: the endpoint
+	// resolves to its containing cell's node, and the route's steps are the cell
+	// CENTERS [c0, c1, c2] with cost 32 (two 16-unit edges), bit-exact.
+	version := los_version(los_grid_layer())
+	result, ok := eval_engine_nav(&version, "path", Vec2{x = to_fixed(10), y = to_fixed(38)}, Vec2{x = to_fixed(40), y = to_fixed(40)})
+	testing.expect(t, ok)
+	variant := result.(Variant_Value)
+	testing.expect_value(t, variant.case_name, "Ok")
+	route := variant.payload^.(Record_Value)
+	steps := route.fields["steps"].(List_Value)
+	testing.expect_value(t, len(steps.elements), 3)
+	testing.expect_value(t, steps.elements[0].(Vec2), Vec2{x = to_fixed(8), y = to_fixed(40)})
+	testing.expect_value(t, steps.elements[1].(Vec2), Vec2{x = to_fixed(24), y = to_fixed(40)})
+	testing.expect_value(t, steps.elements[2].(Vec2), Vec2{x = to_fixed(40), y = to_fixed(40)})
+	testing.expect_value(t, route.fields["cost"].(Fixed), to_fixed(32))
+}
+
+@(test)
+test_engine_path_solid_cell_endpoint_is_offnav :: proc(t: ^testing.T) {
+	// AC (§12 §2 OffNav): an endpoint inside the SOLID center cell (24,24)
+	// resolves to no walkable node — containing-cell resolution keeps OffNav
+	// honest (snapping out of a wall is nearest()'s job, never path()'s).
+	version := los_version(los_grid_layer())
+	result, ok := eval_engine_nav(&version, "path", Vec2{x = to_fixed(24), y = to_fixed(24)}, Vec2{x = to_fixed(40), y = to_fixed(40)})
+	testing.expect(t, ok)
+	variant := result.(Variant_Value)
+	testing.expect_value(t, variant.case_name, "Err")
+	testing.expect_value(t, variant.payload^.(Variant_Value).case_name, "OffNav")
+}
+
+@(test)
+test_engine_reachable_off_center_with_layer_is_true :: proc(t: ^testing.T) {
+	// AC (§12 §2 reachable): the same one-raw-bit-off endpoint that reads false
+	// LAYERLESS (test_engine_reachable_off_nav_is_false — no geometry, fail
+	// closed) resolves through its containing cell once the 1:1 layer is
+	// committed → true.
+	version := los_version(los_grid_layer())
+	off := Vec2{x = to_fixed(8) + 1, y = to_fixed(40)}
+	result, ok := eval_engine_nav(&version, "reachable", off, Vec2{x = to_fixed(40), y = to_fixed(40)})
+	testing.expect(t, ok)
+	testing.expect_value(t, result.(bool), true)
+}
+
+@(test)
+test_engine_path_boundary_point_resolves_half_open :: proc(t: ^testing.T) {
+	// AC (§12 §2 boundary): a point EXACTLY on the col 0/1 boundary (x=16)
+	// belongs to col 1 under the half-open cell_of partition — the route from
+	// (16,40) starts at node 1's center (24,40), one 16-unit edge to node 0.
+	// Resolution is a partition, never the closed-box supercover los uses.
+	version := los_version(los_grid_layer())
+	result, ok := eval_engine_nav(&version, "path", Vec2{x = to_fixed(16), y = to_fixed(40)}, Vec2{x = to_fixed(8), y = to_fixed(40)})
+	testing.expect(t, ok)
+	variant := result.(Variant_Value)
+	testing.expect_value(t, variant.case_name, "Ok")
+	route := variant.payload^.(Record_Value)
+	steps := route.fields["steps"].(List_Value)
+	testing.expect_value(t, len(steps.elements), 2)
+	testing.expect_value(t, steps.elements[0].(Vec2), Vec2{x = to_fixed(24), y = to_fixed(40)})
+	testing.expect_value(t, steps.elements[1].(Vec2), Vec2{x = to_fixed(8), y = to_fixed(40)})
+	testing.expect_value(t, route.fields["cost"].(Fixed), to_fixed(16))
+}
+
 @(test)
 test_engine_los_no_committed_layer_fails_closed :: proc(t: ^testing.T) {
 	// AC (engine los fails closed): with NO committed version (nil — no layer to

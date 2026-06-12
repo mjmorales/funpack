@@ -95,10 +95,10 @@ nav_graphs_equal :: proc(a, b: Nav_Graph) -> bool {
 // nav_node_of resolves an endpoint Vec2 to its walkable node index by EXACT
 // center match — raw Q32.32 Vec2-bits equality against the graph's centers (the
 // tilemap.odin anchor-compare discipline), scanned in ascending node order so
-// the first match is the stable one. path() does NOT snap: a Vec2 that is not a
-// walkable cell center maps to NAV_NO_NODE → the caller raises OffNav (snapping
-// off-nav targets onto walkable space is nearest()'s job, §12 §3 — a separate
-// query surface). NAV_NO_NODE for an empty graph (no centers to match).
+// the first match is the stable one. This is the RESOLUTION PRIMITIVE, not the
+// §12 §2 endpoint contract: endpoints resolve to the CONTAINING walkable cell
+// (nav_resolve_node) — this scan is its exact-center fast path and the whole
+// contract for a layerless graph. NAV_NO_NODE for an empty graph.
 nav_node_of :: proc(graph: ^Nav_Graph, point: Vec2) -> int {
 	for center, i in graph.centers {
 		if center == point {
@@ -106,6 +106,31 @@ nav_node_of :: proc(graph: ^Nav_Graph, point: Vec2) -> int {
 		}
 	}
 	return NAV_NO_NODE
+}
+
+// nav_resolve_node is the §12 §2 endpoint resolution (ADR
+// 2026-06-11-path-endpoints-resolve-to-containing-cell): an endpoint resolves
+// to the walkable node of the cell CONTAINING it — the half-open cell_of
+// partition over the graph's 1:1 layer, the containing cell's center
+// reconstructed via tilemap_center_of (bit-identical to the bake's navnode
+// math by construction), then the exact center scan. Resolution reads only the
+// layer's GEOMETRY (cell size, anchor, dims) — fields SetTile never mutates —
+// so it is immune to dynamic terrain. The exact-center scan runs first: a
+// center is never on a cell boundary, so the fast path cannot disagree with
+// containment, and it is the WHOLE contract for a layerless graph (a
+// hand-built fixture with no committed 1:1 tilemap) — off-center resolution
+// without geometry would be a guess, so it fails closed to NAV_NO_NODE
+// (→ OffNav / false at the callers, never a snapped guess; snapping is
+// nearest()'s job, §12 §3).
+nav_resolve_node :: proc(graph: ^Nav_Graph, layer: ^Tile_Layer, point: Vec2) -> int {
+	if node := nav_node_of(graph, point); node != NAV_NO_NODE {
+		return node
+	}
+	if layer == nil {
+		return NAV_NO_NODE
+	}
+	col, row := tilemap_cell_of(layer, point)
+	return nav_node_of(graph, tilemap_center_of(layer, col, row))
 }
 
 // nav_path searches the flat 4-neighbor graph for a route from node `from` to
@@ -253,19 +278,22 @@ eval_nav_method :: proc(
 		if !from_is_vec || !to_is_vec {
 			return nil, false, true
 		}
+		// The graph's 1:1 committed layer: path/reachable read its GEOMETRY for
+		// the §12 §2 containing-cell endpoint resolution (nil → exact-center
+		// only); los reads its OCCUPANCY for the supercover verdict.
+		layer := nav_layer_of_graph(interp, graph)
 		switch method {
 		case "path":
-			return nav_path_result(interp, graph, from_vec, to_vec), true, true
+			return nav_path_result(interp, graph, layer, from_vec, to_vec), true, true
 		case "reachable":
-			return nav_reachable(graph, from_vec, to_vec), true, true
+			return nav_reachable(graph, layer, from_vec, to_vec), true, true
 		case "los":
 			// The §12 §3 occupancy query: los never reads the graph (centers +
 			// adjacency are connectivity, not visibility) — it answers over the
-			// live committed tile state of the layer the graph keys 1:1 to (ADR
+			// live committed tile state of the 1:1 layer (ADR
 			// 2026-06-11-engine-los-reads-live-tilemap-occupancy). No committed
 			// layer (nil version, or a graph naming no layer) fails closed —
 			// never a guessed true into a line-of-fire gate.
-			layer := nav_layer_of_graph(interp, graph)
 			if layer == nil {
 				return nil, false, true
 			}
@@ -303,14 +331,15 @@ nav_layer_of_graph :: proc(interp: ^Interp, graph: ^Nav_Graph) -> ^Tile_Layer {
 }
 
 // nav_reachable answers §12 reachable(from, to) over a loaded graph: whether a
-// route exists at all, without materializing waypoints. Both endpoints are
-// resolved to walkable nodes by EXACT center match — an off-nav endpoint is NOT
-// an error here (reachable returns a Bool, not a Result), so it reads false. With
-// both endpoints valid, the answer reuses nav_path and discards the route: the
-// BFS-reachability bool alone. Pure over (graph, from, to) — bit-stable.
-nav_reachable :: proc(graph: ^Nav_Graph, from, to: Vec2) -> bool {
-	from_node := nav_node_of(graph, from)
-	to_node := nav_node_of(graph, to)
+// route exists at all, without materializing waypoints. Endpoints take the §12
+// §2 containing-cell resolution (nav_resolve_node) — an off-nav endpoint is NOT
+// an error here (reachable returns a Bool, not a Result), so it reads false.
+// With both endpoints valid, the answer reuses nav_path and discards the route:
+// the BFS-reachability bool alone. Pure over (graph, layer geometry, from, to)
+// — bit-stable.
+nav_reachable :: proc(graph: ^Nav_Graph, layer: ^Tile_Layer, from, to: Vec2) -> bool {
+	from_node := nav_resolve_node(graph, layer, from)
+	to_node := nav_resolve_node(graph, layer, to)
 	if from_node == NAV_NO_NODE || to_node == NAV_NO_NODE {
 		return false
 	}
@@ -563,13 +592,15 @@ nav_tuple2 :: proc(interp: ^Interp, a, b: Value) -> Value {
 }
 
 // nav_path_result runs path() over a resolved graph and boxes the
-// Result[Path, NavError]: OffNav for an endpoint that matches no walkable center
-// (checked first), Unreachable when both endpoints are valid but BFS exhausts the
-// reachable component without reaching `to`, else Ok(Path) with the route's cell
-// centers as `steps` and the per-edge distance sum as `cost`.
-nav_path_result :: proc(interp: ^Interp, graph: ^Nav_Graph, from, to: Vec2) -> Value {
-	from_node := nav_node_of(graph, from)
-	to_node := nav_node_of(graph, to)
+// Result[Path, NavError]: OffNav for an endpoint resolving to no walkable node
+// (§12 §2 containing-cell resolution — checked first), Unreachable when both
+// endpoints are valid but BFS exhausts the reachable component without reaching
+// `to`, else Ok(Path) with the route's cell centers as `steps` and the per-edge
+// distance sum as `cost`. A route from an off-center endpoint starts at its
+// containing cell's center — steps are always centers (§12 §5).
+nav_path_result :: proc(interp: ^Interp, graph: ^Nav_Graph, layer: ^Tile_Layer, from, to: Vec2) -> Value {
+	from_node := nav_resolve_node(graph, layer, from)
+	to_node := nav_resolve_node(graph, layer, to)
 	if from_node == NAV_NO_NODE || to_node == NAV_NO_NODE {
 		return nav_err_value(interp, "OffNav")
 	}
