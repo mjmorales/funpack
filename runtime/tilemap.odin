@@ -200,6 +200,134 @@ floor_div_i64 :: proc(a, b: i64) -> i64 {
 	return q
 }
 
+// --- The §12 §3 los occupancy kernel (segment supercover vs solids) --------
+
+// SEGMENT_COORD_LIMIT bounds the anchored segment coordinates (and the cell
+// size) tilemap_segment_clear admits: 2^62 raw Q32.32 bits = 2^30 world units,
+// far past any level while keeping every intermediate product inside i128
+// (worst term: a clamped window numerator times the v-delta, < 2^63 · 2^63;
+// the guarded sum stays under 2^127). A coordinate past the limit fails closed
+// — total and deterministic, never a wrapped product.
+SEGMENT_COORD_LIMIT: i128 : 1 << 62
+
+// tilemap_segment_clear is the §12 §3 engine-los verdict over one committed
+// tile layer: true iff NO solid cell's CLOSED cell box intersects the closed
+// segment from→to — the conservative supercover the spec pins (a lattice-corner
+// crossing checks all four incident cells, a segment grazing a wall's face
+// reads blocked, from == to degenerates to the point's touched cells). Solids
+// block; tile-less cells and the out-of-grid void do not (solidity is a
+// property of a tile — tilemap_solid_at's totality), so sight crosses a chasm
+// feet cannot (§12 §3: los is sight, reachable is feet).
+//
+// The sweep is exact integer arithmetic over anchored Q32.32 coordinates — no
+// division of coordinates, no float, no iteration-order dependence: for each
+// column whose closed x-band the segment touches (closed-box bounds: c from
+// ceil(u_min/S)-1 through floor(u_max/S), clamped to the grid), the segment's
+// v-extent inside that band is formed as RATIONALS over the common denominator
+// du (numerators v0·du + p·dv at the clamped window ends p), and the touched
+// row range comes from the same closed-box floor/ceil bounds cross-multiplied
+// by the denominator — i128 throughout, so every comparison is exact and the
+// verdict is bit-identical on every machine (§10.5).
+tilemap_segment_clear :: proc(layer: ^Tile_Layer, from, to: Vec2) -> bool {
+	cell := i128(i64(to_fixed(layer.cell_size))) // S, > 0 (gated at load)
+	u0 := i128(i64(from.x)) - i128(i64(layer.top_left.x))
+	v0 := i128(i64(layer.top_left.y)) - i128(i64(from.y)) // row grows -y (§17)
+	u1 := i128(i64(to.x)) - i128(i64(layer.top_left.x))
+	v1 := i128(i64(layer.top_left.y)) - i128(i64(to.y))
+	if !segment_coord_ok(u0) ||
+	   !segment_coord_ok(v0) ||
+	   !segment_coord_ok(u1) ||
+	   !segment_coord_ok(v1) ||
+	   cell > SEGMENT_COORD_LIMIT {
+		return false // out of the exactness envelope: refuse, never wrap
+	}
+	if u1 < u0 {
+		u0, u1 = u1, u0
+		v0, v1 = v1, v0 // direction is immaterial to the touched-cell set
+	}
+	du := u1 - u0 // >= 0 after the swap
+	dv := v1 - v0
+	// The common denominator of the per-column v-extent rationals: du for a
+	// genuinely sloped/horizontal segment, 1 for a vertical one (where the
+	// v-extent is the whole segment in every touched column).
+	den: i128 = 1
+	if du != 0 {
+		den = du
+	}
+	row_den := cell * den
+	c_lo := ceil_div_i128(u0, cell) - 1 // closed box: an exact-boundary u touches both columns
+	c_hi := floor_div_i128(u1, cell)
+	if c_lo < 0 {
+		c_lo = 0
+	}
+	if c_hi > i128(layer.cols - 1) {
+		c_hi = i128(layer.cols - 1) // solids exist only in-grid; the void blocks nothing
+	}
+	for c := c_lo; c <= c_hi; c += 1 {
+		vmin_num, vmax_num: i128
+		if du == 0 {
+			vmin_num = min(v0, v1)
+			vmax_num = max(v0, v1)
+		} else {
+			// The segment's parameter window inside this column's closed x-band,
+			// as numerators p over the denominator du (p ∈ [0, du]).
+			p_enter := c * cell - u0
+			if p_enter < 0 {
+				p_enter = 0
+			}
+			p_exit := (c + 1) * cell - u0
+			if p_exit > du {
+				p_exit = du
+			}
+			va := v0 * du + p_enter * dv
+			vb := v0 * du + p_exit * dv
+			vmin_num = min(va, vb)
+			vmax_num = max(va, vb)
+		}
+		r_lo := ceil_div_i128(vmin_num, row_den) - 1 // closed box, as the column bounds
+		r_hi := floor_div_i128(vmax_num, row_den)
+		if r_lo < 0 {
+			r_lo = 0
+		}
+		if r_hi > i128(layer.rows - 1) {
+			r_hi = i128(layer.rows - 1)
+		}
+		for r := r_lo; r <= r_hi; r += 1 {
+			if tilemap_solid_at(layer, int(c), int(r)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// segment_coord_ok admits one anchored coordinate into the i128 exactness
+// envelope (|coord| <= SEGMENT_COORD_LIMIT) — the tilemap_segment_clear guard.
+segment_coord_ok :: proc(coord: i128) -> bool {
+	return coord >= -SEGMENT_COORD_LIMIT && coord <= SEGMENT_COORD_LIMIT
+}
+
+// floor_div_i128 / ceil_div_i128 are exact floor/ceiling division over i128 —
+// the closed-box cell-range bounds of tilemap_segment_clear. Odin's `/`
+// truncates toward zero; the corrections read both signs so the helpers are
+// sound stand-alone (divisors here are positive: cell sizes gate > 0 at load
+// and the denominator is normalized > 0).
+floor_div_i128 :: proc(a, b: i128) -> i128 {
+	q := a / b
+	if a % b != 0 && (a < 0) != (b < 0) {
+		q -= 1
+	}
+	return q
+}
+
+ceil_div_i128 :: proc(a, b: i128) -> i128 {
+	q := a / b
+	if a % b != 0 && (a < 0) == (b < 0) {
+		q += 1
+	}
+	return q
+}
+
 // --- The TilemapHandle method dispatch (the behavior-call surface) ---------
 
 // eval_tilemap_method lowers the §18 §4 queries reached as value-methods on a

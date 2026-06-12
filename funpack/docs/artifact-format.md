@@ -1109,6 +1109,14 @@ navedge A B
 - The §12 §1 **hierarchical decomposition is invisible** in the wire format: one
   **flat** graph per layer, no tiers — the runtime path-finds the flat node/edge
   list directly.
+- The section carries **no occupancy** — `los` is deliberately *not* computable
+  from `[nav]`. Line-of-sight is an occupancy query, not a connectivity query:
+  the engine answers it over the layer's **live committed tile state** (the 1:1
+  `[tilemaps]` record this section keys to — same `NAME` token, same slice
+  position), never over a baked solids copy that could drift from the §12 §1
+  single source of truth (ADR
+  `2026-06-11-engine-los-reads-live-tilemap-occupancy`). Centers + adjacency
+  stay the section's whole surface.
 - A **level-less** artifact has no tile layers, so this section is the constant
   empty tail `[nav 0]` — the §3 fixed-tail precedent the level-less `[tilemaps 0]`
   set. Every level-less artifact moves to v13 by the version stamp plus this

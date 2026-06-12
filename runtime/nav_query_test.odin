@@ -7,14 +7,15 @@
 //     warren_game.fun:212-250 (Nav.of dash / Nav.fail fails-every-query).
 //   - the ENGINE machine (NavHandle → loaded Nav_Graph): reachable is BFS
 //     reachability, nearest is the closest-center scan (ascending-index tie),
-//     los FAILS CLOSED (needs occupancy the [nav] format omits, ADR
-//     2026-06-11-engine-los-needs-occupancy-not-in-nav-format).
+//     los is the §12 §3 OCCUPANCY verdict — the segment supercover over the
+//     graph's 1:1 committed tile layer (tilemap_segment_clear; ADR
+//     2026-06-11-engine-los-reads-live-tilemap-occupancy), failing closed only
+//     when no committed layer resolves.
 //   - advance(path, pos, arrive) is a Path-RECORD method fold (Option[Vec2], Path).
 //
 // Raw-bits equality throughout (the arrival radius pinned through the kernel
-// vec2_length, never a float tolerance — Lore #13); the engine-los fail-closed
-// test documents the deferred seam loudly. The emitted-warren end-to-end golden
-// is the SEPARATE deferred leaf (runtime-nav-golden-end-to-end / engine-los leaf).
+// vec2_length, never a float tolerance — Lore #13). The emitted-warren end-to-end
+// golden is the SEPARATE deferred leaf (runtime-nav-golden-end-to-end).
 package funpack_runtime
 
 import "core:testing"
@@ -452,17 +453,173 @@ test_engine_nearest_empty_graph_is_none :: proc(t: ^testing.T) {
 	testing.expect_value(t, opt.case_name, "None")
 }
 
-// --- the ENGINE los FAILS CLOSED (the deferred seam, documented loudly) ------
+// --- the ENGINE los over the graph's 1:1 committed tile layer ----------------
+//
+// The §12 §3 occupancy verdict (ADR 2026-06-11-engine-los-reads-live-tilemap-
+// occupancy): los resolves the graph's same-name committed layer and answers
+// the conservative closed-box supercover — never the graph, never the bake.
+// The layer fixture mirrors nav_grid_graph's geometry exactly: a 3×3 cell-16
+// grid anchored at top-left (0, 48) with the CENTER cell solid — the same
+// world the eight walkable centers imply.
+
+// los_grid_layer hand-builds the 3×3 tile layer nav_grid_graph's topology
+// derives from: palette [wall(solid), floor], all floor except the center cell
+// (1,1). Named "ground" so the graph's 1:1 NAME keying resolves it.
+los_grid_layer :: proc() -> Tile_Layer {
+	palette := make([]Tile_Def, 2, context.temp_allocator)
+	palette[0] = Tile_Def{name = "wall", solid = true}
+	palette[1] = Tile_Def{name = "floor", solid = false}
+	cells := make([]int, 9, context.temp_allocator)
+	copy(cells, []int{1, 1, 1, 1, 0, 1, 1, 1, 1})
+	return Tile_Layer {
+		name      = "ground",
+		cell_size = 16,
+		cols      = 3,
+		rows      = 3,
+		top_left  = Vec2{x = to_fixed(0), y = to_fixed(48)},
+		palette   = palette,
+		cells     = cells,
+	}
+}
+
+// los_version wraps one layer as a committed World_Version (the slice on the
+// temp arena, Lore #11) — the version the los read resolves through.
+los_version :: proc(layer: Tile_Layer) -> World_Version {
+	tilemaps := make([]Tile_Layer, 1, context.temp_allocator)
+	tilemaps[0] = layer
+	return World_Version{tilemaps = tilemaps}
+}
+
+// los_interp builds the engine-los world: the graph in the Program, the layer
+// committed on a World_Version the interp's version points at.
+los_interp :: proc(program: ^Program, version: ^World_Version) -> Interp {
+	return new_interp(program, version, nil, empty(), tilemap_time_resource(), context.temp_allocator)
+}
+
+// eval_engine_los drives `nav.los(from, to)` through the real dispatch over the
+// grid graph + the supplied committed version.
+eval_engine_los :: proc(version: ^World_Version, from, to: Vec2) -> (result: Value, ok: bool) {
+	graph := nav_grid_graph()
+	program := Program{}
+	program.navs = nav_one_graph(graph)
+	interp := los_interp(&program, version)
+	return nav_eval_method(&interp, nav_handle_value("ground"), "los", from, to)
+}
 
 @(test)
-test_engine_los_fails_closed :: proc(t: ^testing.T) {
-	// AC (engine los fails closed): los over a REAL loaded graph returns ok=false —
-	// NEVER a guessed true. Line-of-sight needs the per-cell occupancy the [nav]
-	// format (centers + adjacency, §12 §5) does not carry, so there is no honest
-	// answer; refused, deferred to the engine-los leaf
-	// (engine-los-over-a-baked-nav-gr) pending a §12 / [nav]-format decision (ADR
-	// 2026-06-11-engine-los-needs-occupancy-not-in-nav-format). This test documents
-	// the deferred seam loudly — a future implementation flips it to a real verdict.
+test_engine_los_clear_corridor :: proc(t: ^testing.T) {
+	// AC (engine los, clear): a horizontal segment along the walkable top row —
+	// node 0 (8,40) to node 2 (40,40) — touches cells (0..2, 0) only, all floor →
+	// true.
+	version := los_version(los_grid_layer())
+	result, ok := eval_engine_los(&version, Vec2{x = to_fixed(8), y = to_fixed(40)}, Vec2{x = to_fixed(40), y = to_fixed(40)})
+	testing.expect(t, ok)
+	testing.expect_value(t, result.(bool), true)
+}
+
+@(test)
+test_engine_los_solid_blocks :: proc(t: ^testing.T) {
+	// AC (engine los, blocked): the middle row crosses the solid center — node 3
+	// (8,24) to node 4 (40,24) passes through cell (1,1) = wall → false. Graph
+	// adjacency would call these nodes disconnected; los answers from occupancy,
+	// and the wall stands in the way.
+	version := los_version(los_grid_layer())
+	result, ok := eval_engine_los(&version, Vec2{x = to_fixed(8), y = to_fixed(24)}, Vec2{x = to_fixed(40), y = to_fixed(24)})
+	testing.expect(t, ok)
+	testing.expect_value(t, result.(bool), false)
+}
+
+@(test)
+test_engine_los_corner_crossing_is_conservative :: proc(t: ^testing.T) {
+	// AC (engine los, lattice corner): the grid diagonal node 5 (8,8) → node 2
+	// (40,40) passes EXACTLY through the lattice corners (16,16)/(32,32) in grid
+	// space — cell centers sit on grid diagonals, so corner hits are the common
+	// case, not the edge case. The closed-box supercover checks all four incident
+	// cells at a corner; the solid center (1,1) is incident to both crossings →
+	// false (no line-of-fire through a kissing-corner seam, §12 §3).
+	version := los_version(los_grid_layer())
+	result, ok := eval_engine_los(&version, Vec2{x = to_fixed(8), y = to_fixed(8)}, Vec2{x = to_fixed(40), y = to_fixed(40)})
+	testing.expect(t, ok)
+	testing.expect_value(t, result.(bool), false)
+}
+
+@(test)
+test_engine_los_chasm_and_void_clear :: proc(t: ^testing.T) {
+	// AC (engine los, sight over the void): tile-less cells and out-of-grid space
+	// block nothing — solidity is a property of a tile (§12 §3: you can SEE across
+	// a chasm you cannot WALK). The center becomes a chasm (TILE_CELL_EMPTY) and
+	// the middle row reads clear; a segment running past the grid's left edge
+	// (off-grid u < 0) also reads clear.
+	layer := los_grid_layer()
+	layer.cells[4] = TILE_CELL_EMPTY // the wall becomes a chasm
+	version := los_version(layer)
+	over_chasm, ok := eval_engine_los(&version, Vec2{x = to_fixed(8), y = to_fixed(24)}, Vec2{x = to_fixed(40), y = to_fixed(24)})
+	testing.expect(t, ok)
+	testing.expect_value(t, over_chasm.(bool), true)
+	off_grid, off_ok := eval_engine_los(&version, Vec2{x = to_fixed(-24), y = to_fixed(40)}, Vec2{x = to_fixed(8), y = to_fixed(40)})
+	testing.expect(t, off_ok)
+	testing.expect_value(t, off_grid.(bool), true)
+}
+
+@(test)
+test_engine_los_endpoint_in_solid_blocks :: proc(t: ^testing.T) {
+	// AC (engine los, endpoint occupancy): the closed segment includes its
+	// endpoints, so standing inside the wall — from the solid center (24,24) to
+	// node 0 (8,40) — reads false, and the degenerate from == to point inside the
+	// wall reads false while the same point on open floor reads true.
+	version := los_version(los_grid_layer())
+	from_wall, ok := eval_engine_los(&version, Vec2{x = to_fixed(24), y = to_fixed(24)}, Vec2{x = to_fixed(8), y = to_fixed(40)})
+	testing.expect(t, ok)
+	testing.expect_value(t, from_wall.(bool), false)
+	point_wall, pw_ok := eval_engine_los(&version, Vec2{x = to_fixed(24), y = to_fixed(24)}, Vec2{x = to_fixed(24), y = to_fixed(24)})
+	testing.expect(t, pw_ok)
+	testing.expect_value(t, point_wall.(bool), false)
+	point_floor, pf_ok := eval_engine_los(&version, Vec2{x = to_fixed(8), y = to_fixed(40)}, Vec2{x = to_fixed(8), y = to_fixed(40)})
+	testing.expect(t, pf_ok)
+	testing.expect_value(t, point_floor.(bool), true)
+}
+
+@(test)
+test_engine_los_grazing_wall_face_blocks_by_one_bit :: proc(t: ^testing.T) {
+	// AC (engine los, closed-box graze): a segment running EXACTLY along the
+	// wall's top face — y = 32 is the row 0/1 boundary, whose closed boxes both
+	// contain it — touches the solid (1,1) → false; the same segment one raw bit
+	// higher (y = 32 + 1 bit) lies strictly inside row 0 → true. The conservative
+	// boundary rule is bit-exact, not a tolerance.
+	version := los_version(los_grid_layer())
+	grazing, ok := eval_engine_los(&version, Vec2{x = to_fixed(8), y = to_fixed(32)}, Vec2{x = to_fixed(40), y = to_fixed(32)})
+	testing.expect(t, ok)
+	testing.expect_value(t, grazing.(bool), false)
+	one_bit_up := Fixed(i64(to_fixed(32)) + 1)
+	above, above_ok := eval_engine_los(&version, Vec2{x = to_fixed(8), y = one_bit_up}, Vec2{x = to_fixed(40), y = one_bit_up})
+	testing.expect(t, above_ok)
+	testing.expect_value(t, above.(bool), true)
+}
+
+@(test)
+test_engine_los_reads_the_committed_version :: proc(t: ^testing.T) {
+	// AC (engine los, dynamic terrain): los answers over the version the interp
+	// reads — the §12 §3 SetTile promise. The same top-row segment is clear on the
+	// pre-wall version and blocked on a version whose (1,0) cell became wall (the
+	// committed state a SetTile fold would produce), while the bake-static graph
+	// never changed.
+	version_pre := los_version(los_grid_layer())
+	clear_pre, ok := eval_engine_los(&version_pre, Vec2{x = to_fixed(8), y = to_fixed(40)}, Vec2{x = to_fixed(40), y = to_fixed(40)})
+	testing.expect(t, ok)
+	testing.expect_value(t, clear_pre.(bool), true)
+	walled := los_grid_layer()
+	walled.cells[1] = 0 // (1,0) becomes wall — the post-SetTile committed state
+	version_post := los_version(walled)
+	blocked_post, post_ok := eval_engine_los(&version_post, Vec2{x = to_fixed(8), y = to_fixed(40)}, Vec2{x = to_fixed(40), y = to_fixed(40)})
+	testing.expect(t, post_ok)
+	testing.expect_value(t, blocked_post.(bool), false)
+}
+
+@(test)
+test_engine_los_no_committed_layer_fails_closed :: proc(t: ^testing.T) {
+	// AC (engine los fails closed): with NO committed version (nil — no layer to
+	// answer from) los returns ok=false, never a guessed true into a line-of-fire
+	// gate. The only remaining fail-closed arm of the engine-los surface.
 	graph := nav_grid_graph()
 	program := Program{}
 	program.navs = nav_one_graph(graph)

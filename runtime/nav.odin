@@ -8,12 +8,17 @@
 // apply_impulse / TilemapHandle method-dispatch mold (interp_call.odin →
 // eval_nav_method here).
 //
-// The graph is BAKE-STATIC for path(): unlike tile state (committed world state
-// that folds SetTile each tick), the nav graph is decoded once into the Program
-// and read straight from there — there is no World_Version COW chain for nav.
-// §12 §1's "SetTile re-derives the affected nav incrementally" is DYNAMIC TERRAIN,
-// a separate concern; this file leaves that seam un-built (path() reads
-// program.navs, not a per-version table).
+// The graph is BAKE-STATIC for the GRAPH queries (path/reachable/nearest):
+// unlike tile state (committed world state that folds SetTile each tick), the
+// nav graph is decoded once into the Program and read straight from there —
+// there is no World_Version COW chain for nav. §12 §1's "SetTile re-derives the
+// affected nav incrementally" is DYNAMIC TERRAIN, a separate concern; this file
+// leaves that seam un-built (path() reads program.navs, not a per-version
+// table; tracked as the settile-driven-incremental-nav task). los is the
+// deliberate exception: it is an OCCUPANCY query, not a graph query, and
+// answers over the live committed tile state of the layer the graph keys 1:1
+// to (ADR 2026-06-11-engine-los-reads-live-tilemap-occupancy) — so a SetTile
+// wall blocks sight from the next tick even while path() still routes the bake.
 //
 // Determinism (§10.5, the tilemap.odin invariant): path() is a pure function of
 // (graph, from, to). The search is a uniform-cost BFS over the flat 4-neighbor
@@ -195,8 +200,7 @@ nav_route_cost :: proc(graph: ^Nav_Graph, route: []int) -> Fixed {
 // `nav.path(self.pos, goal)` calling convention (the TilemapHandle /
 // apply_impulse mold) — over a REAL loaded Nav_Graph. This is the engine side
 // of the §12 surface (the fixture side is eval_nav_fixture_method over the
-// Nav_Value arm). `path`, `reachable`, `nearest` land here; `los` over a real
-// graph FAILS CLOSED (see below). A member outside these arms falls through
+// Nav_Value arm). A member outside these arms falls through
 // (is_nav_method=false) to the next receiver arm.
 //
 //   - path(from, to)      → Result[Path, NavError] over the loaded graph (exact
@@ -208,13 +212,12 @@ nav_route_cost :: proc(graph: ^Nav_Graph, route: []int) -> Fixed {
 //   - nearest(point)      → Option[Vec2]: the closest walkable center by squared
 //                           distance, ascending-index tie-break; empty graph →
 //                           None.
-//   - los(from, to)       → FAILS CLOSED (ok=false). Line-of-sight needs the
-//                           per-cell occupancy the [nav] format does not carry
-//                           (centers + adjacency only); a guessed `true` would
-//                           silently corrupt a line-of-fire gate. Deferred to
-//                           the engine-los leaf (engine-los-over-a-baked-nav-gr)
-//                           pending a §12 / [nav]-format decision (ADR
-//                           2026-06-11-engine-los-needs-occupancy-not-in-nav-format).
+//   - los(from, to)       → Bool: the §12 §3 occupancy verdict — the segment's
+//                           supercover over the graph's 1:1 tile layer contains
+//                           no solid cell (tilemap_segment_clear), read from the
+//                           COMMITTED version like every TilemapHandle query
+//                           (ADR 2026-06-11-engine-los-reads-live-tilemap-
+//                           occupancy). No committed layer → fail closed.
 //
 // A malformed receiver (unknown graph, non-Vec2 arg) or wrong call arity fails
 // closed (ok=false), never a guessed result.
@@ -256,13 +259,17 @@ eval_nav_method :: proc(
 		case "reachable":
 			return nav_reachable(graph, from_vec, to_vec), true, true
 		case "los":
-			// FAIL CLOSED. The engine line-of-sight query needs per-cell occupancy
-			// that the [nav] format (centers + adjacency, §12 §5) does not carry, so
-			// there is no honest answer to return. Refused, NEVER a guessed true —
-			// deferred to the engine-los leaf (engine-los-over-a-baked-nav-gr) pending
-			// a §12 / [nav]-format decision (ADR
-			// 2026-06-11-engine-los-needs-occupancy-not-in-nav-format).
-			return nil, false, true
+			// The §12 §3 occupancy query: los never reads the graph (centers +
+			// adjacency are connectivity, not visibility) — it answers over the
+			// live committed tile state of the layer the graph keys 1:1 to (ADR
+			// 2026-06-11-engine-los-reads-live-tilemap-occupancy). No committed
+			// layer (nil version, or a graph naming no layer) fails closed —
+			// never a guessed true into a line-of-fire gate.
+			layer := nav_layer_of_graph(interp, graph)
+			if layer == nil {
+				return nil, false, true
+			}
+			return tilemap_segment_clear(layer, from_vec, to_vec), true, true
 		}
 	case "nearest":
 		// nearest(point): the call node is `field(point)` — receiver-method field
@@ -282,6 +289,17 @@ eval_nav_method :: proc(
 		return nav_nearest(interp, graph, point), true, true
 	}
 	return nil, false, false
+}
+
+// nav_layer_of_graph resolves the committed tile layer a baked graph keys 1:1
+// to — the same NAME token and slice position as its [tilemaps] record
+// (docs/artifact-format.md §18) — against the interp's version: the tick's
+// ENTERING version, the identical read every TilemapHandle query takes
+// (tilemap_of_handle), so a SetTile wall is first visible to the NEXT tick's
+// los (§18 §4). nil when no version is committed or the layer is absent — the
+// caller fails closed.
+nav_layer_of_graph :: proc(interp: ^Interp, graph: ^Nav_Graph) -> ^Tile_Layer {
+	return version_tilemap(interp.version, graph.name)
 }
 
 // nav_reachable answers §12 reachable(from, to) over a loaded graph: whether a
