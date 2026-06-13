@@ -48,9 +48,12 @@ import "core:testing"
 // (debug + todo) are pinned together on one decl. The names share no substring
 // with any pristine pong decl, so a per-name find answers exactly one record.
 // The @break behavior is FIRST so it is the source-order first probed
-// declaration the release ban names. (A probe ARGUMENT is emitted as a node
-// forest, not typechecked — §28 §2 — so the predicate/expression need only
-// parse.)
+// declaration the release ban names. (A probe ARGUMENT is BOTH typechecked
+// against its carrying scope — §05 §5 / §28 §4, check_probe_args — AND emitted as
+// a node forest, never live-compiled source, §28 §2. Every arg here is well-typed
+// in its carrying scope: the behavior probes' `self` is the step's `self: Ball`,
+// and the field @watch's `self.bias` reads DebugBoard's own `bias` field through
+// the field-probe `self`-bound scope — so the addendum dev-builds clean.)
 // The behavior step bodies are deliberately DISTINCT (the duplication gate
 // scores a behavior's `step` body — two structurally-identical bodies modulo
 // alpha-renaming collide on dup_class, §29): each carries a different `with`

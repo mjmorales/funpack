@@ -30,9 +30,11 @@ import "core:testing"
 // [probes] walk across the AST's declaration sequence. Each carries a distinct
 // node-forest body shape — @break a `binary gt` predicate, @log a field access,
 // @watch a field access, @trace none — so the emitted bodies exercise the
-// emit_expr forest end to end. (A probe ARGUMENT is emitted as a node forest, not
-// typechecked against the carrier's scope — §28 §2 — so `base`/`DRIFT.x` need
-// only parse, not resolve, exactly as the prior fn/let-carried forms did.) The
+// emit_expr forest end to end. A probe ARGUMENT is BOTH typechecked against its
+// carrying scope (§05 §5 / §28 §4, check_probe_args) AND emitted as a node forest
+// (never live-compiled source, §28 §2), so each arg must RESOLVE in its carrier's
+// scope: @break(self.pos.x > 70.0) and @watch(self.pos) read the step's
+// `self: DebugMarker`, and @log(DRIFT.x) reads the module-level `let DRIFT`. The
 // behaviors step on a thing and are wired into the pipeline so the schedule
 // references them. NOTE: the artifact [probes] EMIT (collect_probe_records) lifts
 // only declaration-prefix probes today, so the §28 §4 sub-declaration positions
@@ -61,7 +63,7 @@ FOUR_PROBE_SOURCE ::
 	// carries a different `with` field/value, and the @trace behavior's bare
 	// `return self` is unique among them.
 	"@doc(\"A breakpoint probe pausing when the serve threshold is crossed.\")\n" +
-	"@break(base > 70.0)\n" +
+	"@break(self.pos.x > 70.0)\n" +
 	"behavior debug_serve_threshold on DebugMarker {\n" +
 	"  fn step(self: DebugMarker) -> DebugMarker {\n" +
 	"    return self with { pos: self.vel }\n" +
@@ -139,9 +141,10 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 	// AC (dev build, the EMIT half): the probed tree built in Dev mode (the no-flag
 	// default) is exit 0 and writes the artifact, whose [probes] section carries one
 	// `probe KIND TARGET body_count` record per in-code directive in source-
-	// declaration order — break on the fn, log on the let, watch on the thing, trace
-	// on the behavior — each non-@trace body a §2.7 node forest (NEVER funpack
-	// source) and @trace body-less. The section count reconciles under the funpack
+	// declaration order — break/log/watch/trace each on its carrying BEHAVIOR (the
+	// declaration-prefix position collect_probe_records lifts) — each non-@trace
+	// body a §2.7 node forest (NEVER funpack source) and @trace body-less. The
+	// section count reconciles under the funpack
 	// reader (probe is a top-level keyword; the `node` body lines are sub-records),
 	// proving the lead-line discipline shapes the variable-length records.
 	root, ok := write_four_probe_tree(t)
@@ -171,10 +174,12 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 	testing.expect(t, strings.contains(artifact, "funpack-artifact 18\n"))
 	testing.expect(t, strings.contains(artifact, "[probes 4]\n"))
 
-	// @break: the predicate `base > 70.0` rides as a node forest (binary gt over a
-	// name and a fixed literal) under `probe break debug_serve_threshold 1` — the
-	// probe target is the carrying BEHAVIOR.
-	testing.expect(t, strings.contains(artifact, "probe break debug_serve_threshold 1\nnode binary gt 2\nnode name base 0\nnode fixed 300647710720 0\n"))
+	// @break: the predicate `self.pos.x > 70.0` rides as a node forest (binary gt
+	// over a nested field-access chain and a fixed literal) under `probe break
+	// debug_serve_threshold 1` — the probe target is the carrying BEHAVIOR, and
+	// `self.pos.x` resolves the step's `self: DebugMarker` (the typecheck the arg
+	// now passes, check_probe_args).
+	testing.expect(t, strings.contains(artifact, "probe break debug_serve_threshold 1\nnode binary gt 2\nnode field x 1\nnode field pos 1\nnode name self 0\nnode fixed 300647710720 0\n"))
 	// @log: `DRIFT.x` is a field access node forest under `probe log debug_drift_bias 1`.
 	testing.expect(t, strings.contains(artifact, "probe log debug_drift_bias 1\nnode field x 1\nnode name DRIFT 0\n"))
 	// @watch on a behavior (the On-table's behavior position): `self.pos` is a field
@@ -184,7 +189,7 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 	testing.expect(t, strings.contains(artifact, "probe trace debug_trace_marker 0\n"))
 
 	// The bodies are node forests, never funpack source: no raw predicate text leaks.
-	testing.expect(t, !strings.contains(artifact, "base > 70.0"))
+	testing.expect(t, !strings.contains(artifact, "self.pos.x > 70.0"))
 
 	// The section reconciles under the funpack reader — every section's lead-line
 	// count equals its declared N, including [probes] with its mixed probe/node run.
