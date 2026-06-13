@@ -123,6 +123,7 @@ test_golden_artifact_section_counts :: proc(t: ^testing.T) {
 		"tilemaps",
 		"nav",
 		"assets",
+		"probes",
 	}
 	testing.expect_value(t, len(doc.sections), len(expected_order))
 	for name, i in expected_order {
@@ -147,6 +148,7 @@ test_golden_artifact_section_counts :: proc(t: ^testing.T) {
 	expect_section_count(t, doc, "tilemaps", 0) // pong has no tile layer (v11 constant tail)
 	expect_section_count(t, doc, "nav", 0) // pong has no level, so no nav graph (v13 constant tail)
 	expect_section_count(t, doc, "assets", 0) // pong has no sprite assets (v16 constant tail)
+	expect_section_count(t, doc, "probes", 0) // pong carries no debug directive (v18 constant tail)
 }
 
 expect_section_count :: proc(t: ^testing.T, doc: Artifact_Doc, name: string, want: int) {
