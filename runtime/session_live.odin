@@ -457,6 +457,87 @@ text_rects :: proc(text: string, at: Vec2, cell: Vec2, color: Draw_Color, alloca
 
 when #config(FUNPACK_LIVE, false) {
 
+	// Atlas_Texture_Cache holds one GPU texture per distinct §19 atlas IMAGE,
+	// keyed by the image's content hash (the same dedup key Asset_Image carries),
+	// uploaded ONCE at session start and reused for every blit of every tick. The
+	// resolved draw commands address their art by image hash + pixel rect
+	// (Sprite_Texture / Tile_Texture), so a textured present looks the texture up by
+	// hash here and blits the rect — no per-tick upload, no per-sprite texture
+	// create. It is a present-boundary resource (impure, render-only); nothing it
+	// holds re-enters the sim fold. The textures are destroyed at session teardown
+	// (destroy_atlas_texture_cache), paired with creation like the device handles.
+	Atlas_Texture_Cache :: struct {
+		textures: map[string]^sdl.Texture,
+	}
+
+	// new_atlas_texture_cache uploads every decoded §19 image in the program to a
+	// GPU texture, ONCE — one CreateTexture + UpdateTexture per distinct image hash.
+	//
+	// PIXEL FORMAT (the channel-order seam): Asset_Image.pixels is byte-order
+	// R,G,B,A row-major (import_image's canonical RGBA8). SDL's PixelFormatEnum names
+	// the PACKED 32-bit word order, so its byte order in memory is endianness-
+	// dependent. ABGR8888 packs A in the high byte → on a little-endian machine the
+	// bytes in memory are R,G,B,A — exactly our buffer (and SDL's own RGBA32 alias
+	// resolves to ABGR8888 on little-endian for this same reason, the
+	// platform-correct "byte-order R,G,B,A" choice). Using RGBA8888 instead would
+	// channel-swap every pixel (its byte order is A,B,G,R on little-endian). The
+	// platform alias `.RGBA32` is byte-order R,G,B,A on BOTH endiannesses, so it is
+	// the portable choice. STATIC access (the image never changes after upload); the
+	// pitch is width*4 bytes (the canonical RGBA8 stride). BLEND mode so a sprite's
+	// alpha composites over the background (the dungeon's transparent sprite edges).
+	// A failed CreateTexture for one image is skipped (that hash resolves to no
+	// texture, so a sprite/tile referencing it falls back to the untextured stand-in
+	// the same way an unresolved one does) — never a fault, the present stays total.
+	new_atlas_texture_cache :: proc(
+		renderer: ^sdl.Renderer,
+		program: ^Program,
+		allocator := context.allocator,
+	) -> Atlas_Texture_Cache {
+		cache := Atlas_Texture_Cache{textures = make(map[string]^sdl.Texture, allocator)}
+		for &image in program.assets.images {
+			if image.width <= 0 || image.height <= 0 || len(image.pixels) == 0 {
+				continue
+			}
+			texture := sdl.CreateTexture(
+				renderer,
+				.RGBA32, // byte-order R,G,B,A on every endianness (ABGR8888 on little-endian) — matches Asset_Image.pixels
+				.STATIC,
+				i32(image.width),
+				i32(image.height),
+			)
+			if texture == nil {
+				continue
+			}
+			sdl.SetTextureBlendMode(texture, .BLEND)
+			// pitch = width*4: the canonical RGBA8 row stride (4 bytes per pixel).
+			sdl.UpdateTexture(texture, nil, raw_data(image.pixels), i32(image.width * 4))
+			cache.textures[image.hash] = texture
+		}
+		return cache
+	}
+
+	// atlas_texture_for looks one image's uploaded GPU texture up by content hash, or
+	// nil when no texture was uploaded for it (an image that failed CreateTexture, or
+	// a hash the program never decoded). A nil return drops the blit to the untextured
+	// stand-in — the same fail-closed fallback an unresolved Sprite_Texture takes.
+	atlas_texture_for :: proc(cache: ^Atlas_Texture_Cache, hash: string) -> ^sdl.Texture {
+		texture, present := cache.textures[hash]
+		if !present {
+			return nil
+		}
+		return texture
+	}
+
+	// destroy_atlas_texture_cache destroys every uploaded GPU texture and frees the
+	// map backing — paired with new_atlas_texture_cache at session teardown, the same
+	// open/close discipline live_device_close applies to the window/renderer.
+	destroy_atlas_texture_cache :: proc(cache: ^Atlas_Texture_Cache) {
+		for _, texture in cache.textures {
+			sdl.DestroyTexture(texture)
+		}
+		delete(cache.textures)
+	}
+
 	// run_live_session is the live session entry main() dispatches to under
 	// FUNPACK_LIVE. It parses the CLI (os.args[1] = artifact path, os.args[2] =
 	// optional replay out path), loads the artifact retaining its raw bytes for the
@@ -528,6 +609,12 @@ when #config(FUNPACK_LIVE, false) {
 			fmt.eprintln("error: SDL device open failed (no display/GPU?)")
 			return 1
 		}
+
+		// Upload the §19 atlas images to GPU textures ONCE, keyed by content hash —
+		// the present pass blits a resolved sprite/tile from these by its image hash.
+		// An asset-less game (pong/snake/hunt/yard) yields the empty cache and presents
+		// exactly as before (every draw command falls back to the fill stand-in).
+		texture_cache := new_atlas_texture_cache(device.renderer, &program)
 
 		// The §22 live audio boundary: open the scene→device reconciler alongside the
 		// render device. FAIL-CLOSED like every other audio open here — a machine with
@@ -664,7 +751,7 @@ when #config(FUNPACK_LIVE, false) {
 			// (incl. any slice-bearing Draw3_Rigged pose/handle values) — they never alias
 			// the committed version.
 			draw := render_version(&program, version, snapshot, time, scratch_alloc)
-			present_frame(device.renderer, draw, board, window)
+			present_frame(device.renderer, &texture_cache, draw, board, window)
 			// Project the COMMITTED tick's §22 keyed audio scene off the same version
 			// the render projection reads, and reconcile the live voice table against
 			// it (§22 §1 level-triggered start/stop/bend). Like render, this reads the
@@ -703,6 +790,10 @@ when #config(FUNPACK_LIVE, false) {
 		} else {
 			fmt.printfln("wrote replay log %s", out_path)
 		}
+		// Destroy the uploaded atlas textures BEFORE the renderer they belong to —
+		// each texture is a renderer-owned GPU resource, so it is released ahead of
+		// live_device_close's DestroyRenderer.
+		destroy_atlas_texture_cache(&texture_cache)
 		live_device_close(device)
 		// Tear down the live audio backend alongside the render device: stop every
 		// sounding voice (pause + close each device) and quit SDL's audio subsystem.
@@ -769,10 +860,20 @@ when #config(FUNPACK_LIVE, false) {
 	// then per Draw_Text emit its center-anchored block-glyph run through the same
 	// camera projection in the command's own color, then RenderPresent. The Camera
 	// command itself paints nothing — it is the world↔screen state, not a primitive.
+	//
+	// TEXTURED PRESENT (the §19 atlas blit): a Draw_Sprite with a RESOLVED texture
+	// (resolve_sprite_textures bound an image hash + pixel rect) and a Draw_Tilemap's
+	// resolved per-palette cells blit their atlas pixels through `cache` — the GPU
+	// textures uploaded once by image hash. An UNRESOLVED sprite (resolved=false) keeps
+	// the tinted-rect stand-in, and an unresolved/atlas-less tile keeps the Gray solid
+	// stand-in, so an asset-less game (empty cache) presents exactly as before. The
+	// blit is STRICTLY presentation — it reads the resolved reference the digest
+	// already pinned headlessly and never feeds back into the sim (§10.5).
+	//
 	// The board and window come from the artifact's declared logical extent. Pixel
 	// conversion happens ONLY here at the present boundary; nothing it computes ever
 	// re-enters the sim fold (§10.5).
-	present_frame :: proc(renderer: ^sdl.Renderer, draw: Draw_List, board: Vec2, window: Window_Px) {
+	present_frame :: proc(renderer: ^sdl.Renderer, cache: ^Atlas_Texture_Cache, draw: Draw_List, board: Vec2, window: Window_Px) {
 		sdl.SetRenderDrawColor(renderer, 0, 0, 0, 255)
 		sdl.RenderClear(renderer)
 
@@ -816,36 +917,115 @@ when #config(FUNPACK_LIVE, false) {
 			case Draw_Tilemap:
 				// The §18 §3 batched layer paints per-CELL only here, at the present
 				// boundary (the sim-side draw-LIST carries the one batched command —
-				// the §18 §3 batching is about commands, never pixels). A deliberate
-				// untextured stand-in: solid tiles fill Gray (walls read as mass),
-				// passable tiles stay unpainted (floor reads as background) — the
-				// atlas-textured tile draw is a later asset story; the layer's full
-				// CONTENT is already in the determinism digest.
-				present_tile_layer(renderer, c.layer, camera, board, window)
+				// the §18 §3 batching is about commands, never pixels). Each cell blits
+				// its palette tile's RESOLVED atlas pixels (present_tile_layer indexes
+				// c.palette_textures by the cell's palette index); a cell whose tile did
+				// not resolve (no atlas, a palette-less layer) falls back to the Gray
+				// solid stand-in. The layer's full CONTENT is already in the
+				// determinism digest — this is the textured present of it.
+				present_tile_layer(renderer, cache, c.layer, c.palette_textures, camera, board, window)
 			case Draw_Sprite:
-				// The §18 §1 entity sprite paints an untextured tinted stand-in: a
-				// center-anchored rect at its `at`/`size` in the sprite's `tint`. The
-				// atlas-textured cell draw needs the §19 atlas asset (the assets epic);
-				// until that resolves the atlas name to a texture + the cell to a uv
-				// region, the present shows the sprite's extent and tint — the same
-				// deliberate untextured flattening Draw3_Plane/Draw_Tilemap use. The
-				// sprite's FULL state (atlas name, cell, flip, layer) is already in the
-				// determinism digest; only the textured PRESENT is deferred.
-				fill_world_rect(renderer, c.at, c.size, c.tint, camera, board, window)
+				// The §18 §1 entity sprite: a RESOLVED sprite blits its atlas cell
+				// pixels (blit_sprite slices c.texture's pixel rect from the GPU texture
+				// the cache holds for its image hash, honoring `flip` + `tint`); an
+				// UNRESOLVED sprite (resolved=false — no atlas/cell answered the §19
+				// resolution) keeps the tinted-rect stand-in. The sprite's FULL state
+				// (atlas, cell, flip, tint, layer) AND the resolved texture reference are
+				// already in the determinism digest; this is the textured present of it.
+				if c.texture.resolved {
+					blit_sprite(renderer, cache, c, camera, board, window)
+				} else {
+					fill_world_rect(renderer, c.at, c.size, c.tint, camera, board, window)
+				}
 			}
 		}
 		sdl.RenderPresent(renderer)
 	}
 
-	// present_tile_layer fills one world rect per SOLID tile of a batched §18 §3
-	// layer — the untextured present stand-in. Cell centers come from the same
-	// tilemap_center_of kernel the §18 §4 queries answer with, so the painted
-	// terrain sits exactly where collision says it is; the extent is the layer's
-	// cell size on both axes. Walks rows then columns (row-major, the decoded
-	// table's order); present-boundary only, nothing re-enters the sim.
+	// blit_sprite paints one RESOLVED §18 §1 sprite by copying its atlas cell pixels
+	// onto the sprite's destination window rect. The SOURCE rect is the resolved
+	// Sprite_Texture's pixel window into the atlas image (px_x/px_y/px_w/px_h); the
+	// DEST rect is the sprite's center-anchored `at`/`size` projected through the same
+	// camera + letterbox geometry fill_world_rect uses (world_rect_to_pixels), so a
+	// textured sprite lands exactly where its untextured stand-in would. `flip` orients
+	// the quad (the §20 None|X|Y|XY mirror enum → RendererFlip) and `tint` modulates
+	// the source color (SetTextureColorMod — White is the identity, so an untinted
+	// sprite blits its art unchanged). A missing GPU texture for the resolved hash (a
+	// CreateTexture that failed at upload) drops to the tinted stand-in — fail-closed,
+	// never a fault. Render-boundary-only; nothing re-enters the sim (§10.5).
+	blit_sprite :: proc(renderer: ^sdl.Renderer, cache: ^Atlas_Texture_Cache, sprite: Draw_Sprite, camera: Camera_View, board: Vec2, window: Window_Px) {
+		texture := atlas_texture_for(cache, sprite.texture.image_hash)
+		if texture == nil {
+			fill_world_rect(renderer, sprite.at, sprite.size, sprite.tint, camera, board, window)
+			return
+		}
+		src := sdl.Rect {
+			x = i32(sprite.texture.px_x),
+			y = i32(sprite.texture.px_y),
+			w = i32(sprite.texture.px_w),
+			h = i32(sprite.texture.px_h),
+		}
+		dst := world_rect_to_pixels(sprite.at, sprite.size, camera, board, window)
+		// Tint modulates the source pixels (White = identity, the untinted sprite's
+		// art unchanged); the present's named palette lowers to the same RGBA8 a
+		// filled rect would paint, so a tinted sprite reads in its §20 tint.
+		rgba := draw_color_to_rgba(sprite.tint)
+		sdl.SetTextureColorMod(texture, rgba.r, rgba.g, rgba.b)
+		sdl.RenderCopyEx(renderer, texture, &src, &dst, 0, nil, flip_token_to_sdl(sprite.flip))
+	}
+
+	// flip_token_to_sdl maps the §20 sprite-mirroring Flip token (the case name
+	// carried verbatim on Draw_Sprite.flip — None | X | Y | XY) onto SDL's
+	// RenderCopyEx flip flag. X mirrors on the X axis (a horizontal flip), Y on the Y
+	// axis (vertical), XY both (the OR of the two C flag bits — RendererFlip is a
+	// plain c.int enum, so the combined facing is the bitwise union 0x3). An
+	// unrecognized token reads as no flip (None) — the closed §20 set is the contract;
+	// a malformed flip never faults the present, it blits unflipped.
+	flip_token_to_sdl :: proc(flip: string) -> sdl.RendererFlip {
+		switch flip {
+		case "X":
+			return .HORIZONTAL
+		case "Y":
+			return .VERTICAL
+		case "XY":
+			return sdl.RendererFlip(i32(sdl.RendererFlip.HORIZONTAL) | i32(sdl.RendererFlip.VERTICAL))
+		}
+		return .NONE
+	}
+
+	// world_rect_to_pixels projects a §20 center-anchored world rect into the integer
+	// window destination rect — the SAME camera + letterbox geometry fill_world_rect
+	// applies, factored out so the textured blit (RenderCopy dest) and the untextured
+	// fill land a sprite/tile at the identical pixels. `at` is the CENTER (§20 anchor),
+	// so the top-left corner is at − size/2 projected through camera_world_to_pixel
+	// (recenter + zoom + letterbox); the extent takes only the camera zoom (a relative
+	// extent, never the recenter) before the world_to_pixel ratio. Exact-integer
+	// throughout (no float, §10.5); render-boundary-only.
+	world_rect_to_pixels :: proc(at: Vec2, size: Vec2, camera: Camera_View, board: Vec2, window: Window_Px) -> sdl.Rect {
+		half := Vec2{fixed_div(size.x, to_fixed(2)), fixed_div(size.y, to_fixed(2))}
+		corner := Vec2{fixed_sub(at.x, half.x), fixed_sub(at.y, half.y)}
+		top_left := camera_world_to_pixel(corner, camera, board, window)
+		extent := world_to_pixel(vec2_scale(size, camera.zoom), board, window)
+		return sdl.Rect{x = top_left.x, y = top_left.y, w = extent.x, h = extent.y}
+	}
+
+	// present_tile_layer paints one batched §18 §3 layer per-CELL at the present
+	// boundary. Each NON-EMPTY cell resolves its palette tile's RESOLVED §19 texture
+	// (palette_textures indexed by the cell's palette index) and blits that atlas cell
+	// rect onto the cell's world rect — the textured terrain. A cell whose tile did NOT
+	// resolve (a palette-less/atlas-less layer, or a missing GPU texture) falls back to
+	// the untextured stand-in: a SOLID tile fills Gray (walls read as mass), a passable
+	// tile stays unpainted (floor reads as background) — the exact prior behavior, so an
+	// asset-less or unresolved layer presents as before. Cell centers come from the same
+	// tilemap_center_of kernel the §18 §4 queries answer with, so the painted terrain
+	// sits exactly where collision says it is; the extent is the layer's cell size on
+	// both axes. Walks rows then columns (row-major, the decoded table's order);
+	// present-boundary only, nothing re-enters the sim.
 	present_tile_layer :: proc(
 		renderer: ^sdl.Renderer,
+		cache: ^Atlas_Texture_Cache,
 		layer: Tile_Layer,
+		palette_textures: []Tile_Texture,
 		camera: Camera_View,
 		board: Vec2,
 		window: Window_Px,
@@ -854,11 +1034,32 @@ when #config(FUNPACK_LIVE, false) {
 		walk := layer
 		for row in 0 ..< layer.rows {
 			for col in 0 ..< layer.cols {
-				if !tilemap_solid_at(&walk, col, row) {
-					continue
+				index := layer.cells[row * layer.cols + col]
+				if index == TILE_CELL_EMPTY || index < 0 || index >= len(layer.palette) {
+					continue // a tile-less cell paints nothing (the void is background)
 				}
 				at := tilemap_center_of(&walk, i64(col), i64(row))
-				fill_world_rect(renderer, at, cell_extent, .Gray, camera, board, window)
+				// Resolved texture for this palette tile → blit the atlas cell pixels.
+				if index < len(palette_textures) && palette_textures[index].resolved {
+					tex := palette_textures[index]
+					texture := atlas_texture_for(cache, tex.image_hash)
+					if texture != nil {
+						src := sdl.Rect {
+							x = i32(tex.px_x),
+							y = i32(tex.px_y),
+							w = i32(tex.px_w),
+							h = i32(tex.px_h),
+						}
+						dst := world_rect_to_pixels(at, cell_extent, camera, board, window)
+						sdl.RenderCopy(renderer, texture, &src, &dst)
+						continue
+					}
+				}
+				// Unresolved (or no GPU texture): the untextured stand-in — Gray for a
+				// solid tile, nothing for a passable one (the prior behavior).
+				if layer.palette[index].solid {
+					fill_world_rect(renderer, at, cell_extent, .Gray, camera, board, window)
+				}
 			}
 		}
 	}
@@ -906,18 +1107,9 @@ when #config(FUNPACK_LIVE, false) {
 	// matched to the zoomed position projection. The whole conversion is
 	// render-boundary-only integer arithmetic; no result feeds back into the sim.
 	fill_world_rect :: proc(renderer: ^sdl.Renderer, at: Vec2, size: Vec2, color: Draw_Color, camera: Camera_View, board: Vec2, window: Window_Px) {
-		half := Vec2{fixed_div(size.x, to_fixed(2)), fixed_div(size.y, to_fixed(2))}
-		corner := Vec2{fixed_sub(at.x, half.x), fixed_sub(at.y, half.y)}
-		top_left := camera_world_to_pixel(corner, camera, board, window)
-		extent := world_to_pixel(vec2_scale(size, camera.zoom), board, window)
+		rect := world_rect_to_pixels(at, size, camera, board, window)
 		rgba := draw_color_to_rgba(color)
 		sdl.SetRenderDrawColor(renderer, rgba.r, rgba.g, rgba.b, rgba.a)
-		rect := sdl.Rect {
-			x = top_left.x,
-			y = top_left.y,
-			w = extent.x,
-			h = extent.y,
-		}
 		sdl.RenderFillRect(renderer, &rect)
 	}
 
