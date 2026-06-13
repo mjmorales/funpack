@@ -143,7 +143,7 @@ test_settile_refusals_are_named :: proc(t: ^testing.T) {
 // the tick's ENTERING terrain, so it sees the dig's write exactly one tick
 // later. Section order follows the §3 contract (tilemaps after entrypoint,
 // the yard golden's order).
-SETTILE_ARTIFACT :: "funpack-artifact 16\n" +
+SETTILE_ARTIFACT :: "funpack-artifact 17\n" +
 	"[meta 2]\n" +
 	"project settile\n" +
 	"version L5:0.1.0\n" +
@@ -197,9 +197,9 @@ SETTILE_ARTIFACT :: "funpack-artifact 16\n" +
 	"[entrypoint 1]\n" +
 	"entrypoint main pipeline:Dig tick_hz:60 logical:160x120 bindings:bindings\n" +
 	"[tilemaps 1]\n" +
-	"tilemap terrain 16 4 3 0 206158430208 2\n" +
-	"tile wall true\n" +
-	"tile floor false\n" +
+	"tilemap terrain 16 4 3 0 206158430208 - 2\n" +
+	"tile wall true 0 0\n" +
+	"tile floor false 1 0\n" +
 	"row 0 0 0 0\n" +
 	"row 0 - 1 -\n" +
 	"row 0 - 0 0\n"

@@ -547,20 +547,22 @@ load_index_reqs :: proc(
 // --- §17 tilemaps (schema v12) ----------------------------------------------
 
 // load_tilemaps reads each §17 tile-layer record: the lead line `tilemap NAME
-// CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y PALETTE_COUNT` (v12 — the anchor is
-// the world point of the grid's top-left corner as two raw Q32.32 Fixed
-// fields, the authoritative grid→world mapping datum the bake emitted from its
-// level bounds), then exactly PALETTE_COUNT `tile NAME SOLID` palette lines
-// (legend order, each carrying its §18 §2 baked collision verdict), then
-// exactly ROWS `row …` lines of COLS cells — a decimal palette index into THIS
-// record's palette or `-` for a tile-less cell. Every shape violation is the
-// fail-closed .Bad_Field refusal the section molds share: a non-positive
-// dimension or cell size, a malformed anchor, a sub-record run that does not
-// split exactly into the declared palette+row counts, a malformed palette
-// line, a row of the wrong arity, or a cell index outside the palette — never
-// a best-effort partial layer. The anchor is READ, never derived: the v11
-// derivation (0, rows*cell_size) — exact only for a grid spanning its bounds
-// from the origin — retired with the v12 carry (the tilemap-anchor ADR).
+// CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT` (v12 anchor; v17
+// ATLAS — the anchor is the world point of the grid's top-left corner as two
+// raw Q32.32 Fixed fields, the authoritative grid→world mapping datum the bake
+// emitted from its level bounds; ATLAS is the layer's tileset atlas handle name,
+// the same name the [assets] atlas record is keyed by, `-` for a degenerate
+// palette-less layer), then exactly PALETTE_COUNT `tile NAME SOLID CELL_X CELL_Y`
+// palette lines (legend order, each carrying its §18 §2 baked collision verdict +
+// atlas-cell coordinate, v17), then exactly ROWS `row …` lines of COLS cells — a
+// decimal palette index into THIS record's palette or `-` for a tile-less cell.
+// Every shape violation is the fail-closed .Bad_Field refusal the section molds
+// share: a non-positive dimension or cell size, a malformed anchor, a sub-record
+// run that does not split exactly into the declared palette+row counts, a
+// malformed palette line, a row of the wrong arity, or a cell index outside the
+// palette — never a best-effort partial layer. The anchor is READ, never derived:
+// the v11 derivation (0, rows*cell_size) — exact only for a grid spanning its
+// bounds from the origin — retired with the v12 carry (the tilemap-anchor ADR).
 load_tilemaps :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -571,8 +573,8 @@ load_tilemaps :: proc(
 	out := make([]Tile_Layer, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y PALETTE_COUNT
-		if len(f) != 8 || f[0] != "tilemap" {
+		// tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT
+		if len(f) != 9 || f[0] != "tilemap" {
 			return nil, .Bad_Field
 		}
 		cell_size, cs_ok := strconv.parse_i64(f[2])
@@ -580,7 +582,12 @@ load_tilemaps :: proc(
 		rows, r_ok := strconv.parse_int(f[4])
 		anchor_x, ax_ok := strconv.parse_i64(f[5])
 		anchor_y, ay_ok := strconv.parse_i64(f[6])
-		palette_count, p_ok := strconv.parse_int(f[7])
+		// f[7] is the ATLAS handle name (v17): the layer's tileset atlas, the same
+		// name the [assets] atlas record is keyed by. The wire `-` is the degenerate
+		// palette-less layer (no atlas) — carried as the empty string, so the textured
+		// tile pass fail-closes its resolution (no atlas to resolve against).
+		atlas := f[7] == "-" ? "" : strings.clone(f[7], allocator)
+		palette_count, p_ok := strconv.parse_int(f[8])
 		if !cs_ok || !c_ok || !r_ok || !ax_ok || !ay_ok || !p_ok {
 			return nil, .Bad_Field
 		}
@@ -606,6 +613,7 @@ load_tilemaps :: proc(
 			// off the lead line ARE the grid's top-left world corner — the
 			// bake's (bounds_min.x, bounds_max.y).
 			top_left  = Vec2{x = Fixed(anchor_x), y = Fixed(anchor_y)},
+			atlas     = atlas,
 			palette   = palette,
 			cells     = cells,
 		}
@@ -613,9 +621,12 @@ load_tilemaps :: proc(
 	return out, .None
 }
 
-// load_tile_palette reads a run of `tile NAME SOLID` sub-records (§17) — the
-// layer's legend-order tile types, each with its baked §18 §2 collision
-// verdict. The line is exactly three tokens; SOLID is the §2.5 bare bool.
+// load_tile_palette reads a run of `tile NAME SOLID CELL_X CELL_Y` sub-records
+// (§17) — the layer's legend-order tile types, each with its baked §18 §2
+// collision verdict and its §18 §2 atlas-cell coordinate (v17). The line is
+// exactly five tokens; SOLID is the §2.5 bare bool, CELL_X/CELL_Y the decimal
+// §2.2 tileset cell coordinate the textured render pass resolves the tile's
+// pixel rect from (against the layer's atlas, the same §19 art a sprite draws).
 load_tile_palette :: proc(
 	subs: []string,
 	allocator := context.allocator,
@@ -626,16 +637,20 @@ load_tile_palette :: proc(
 	out := make([]Tile_Def, len(subs), allocator)
 	for sub, i in subs {
 		sf := strings.fields(sub, context.temp_allocator)
-		if len(sf) != 3 || sf[0] != "tile" {
+		if len(sf) != 5 || sf[0] != "tile" {
 			return nil, .Bad_Field
 		}
 		solid, ok := decode_bool(sf[2])
-		if !ok {
+		cell_x, cx_ok := strconv.parse_int(sf[3])
+		cell_y, cy_ok := strconv.parse_int(sf[4])
+		if !ok || !cx_ok || !cy_ok || cell_x < 0 || cell_y < 0 {
 			return nil, .Bad_Field
 		}
 		out[i] = Tile_Def {
-			name  = strings.clone(sf[1], allocator),
-			solid = solid,
+			name   = strings.clone(sf[1], allocator),
+			solid  = solid,
+			cell_x = cell_x,
+			cell_y = cell_y,
 		}
 	}
 	return out, .None

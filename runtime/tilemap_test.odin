@@ -11,28 +11,31 @@ import "core:testing"
 
 // --- fixtures ---------------------------------------------------------------
 
-// TILEMAP_FIXTURE_ARTIFACT is a minimal v12 artifact carrying a 4×3 layer
+// TILEMAP_FIXTURE_ARTIFACT is a minimal v17 artifact carrying a 4×3 layer
 // with two palette entries and the three cell classes (tile, tile-less, tile)
 // — the same layer shape funpack's emit_tilemap_test pins byte-for-byte. The
 // lead line's anchor (0, 48·2^32) is the grid's top-left world corner the v12
-// carry makes authoritative.
+// carry makes authoritative; the v17 ATLAS is `-` (this fixture is atlas-less —
+// texture_layer below carries the atlas-bearing texture-resolution case), and
+// each palette tile carries its v17 atlas-cell coordinate (wall (0,0), floor (1,0)).
 TILEMAP_FIXTURE_ARTIFACT ::
-	"funpack-artifact 16\n" +
+	"funpack-artifact 17\n" +
 	"[tilemaps 1]\n" +
-	"tilemap terrain 16 4 3 0 206158430208 2\n" +
-	"tile wall true\n" +
-	"tile floor false\n" +
+	"tilemap terrain 16 4 3 0 206158430208 - 2\n" +
+	"tile wall true 0 0\n" +
+	"tile floor false 1 0\n" +
 	"row 0 0 0 0\n" +
 	"row 0 - 1 -\n" +
 	"row 0 - 0 0\n"
 
 // fixture_layer hand-builds the same 4×3 layer the artifact fixture decodes
 // to — the query fixtures' direct subject (cell 16; the carried anchor puts
-// the grid's top-left at world (0, 48)).
+// the grid's top-left at world (0, 48)). Atlas-less (the `-` wire), with each
+// palette tile's v17 atlas-cell coordinate.
 fixture_layer :: proc() -> Tile_Layer {
 	palette := make([]Tile_Def, 2, context.temp_allocator)
-	palette[0] = Tile_Def{name = "wall", solid = true}
-	palette[1] = Tile_Def{name = "floor", solid = false}
+	palette[0] = Tile_Def{name = "wall", solid = true, cell_x = 0, cell_y = 0}
+	palette[1] = Tile_Def{name = "floor", solid = false, cell_x = 1, cell_y = 0}
 	cells := make([]int, 12, context.temp_allocator)
 	copy(cells, []int{0, 0, 0, 0, 0, TILE_CELL_EMPTY, 1, TILE_CELL_EMPTY, 0, TILE_CELL_EMPTY, 0, 0})
 	return Tile_Layer {
@@ -41,6 +44,7 @@ fixture_layer :: proc() -> Tile_Layer {
 		cols      = 4,
 		rows      = 3,
 		top_left  = Vec2{x = to_fixed(0), y = to_fixed(48)},
+		atlas     = "",
 		palette   = palette,
 		cells     = cells,
 	}
@@ -53,7 +57,7 @@ fixture_layer :: proc() -> Tile_Layer {
 // the fixture small.
 dungeon_layer :: proc() -> Tile_Layer {
 	palette := make([]Tile_Def, 1, context.temp_allocator)
-	palette[0] = Tile_Def{name = "floor", solid = false}
+	palette[0] = Tile_Def{name = "floor", solid = false, cell_x = 0, cell_y = 0}
 	cells := make([]int, 16 * 9, context.temp_allocator)
 	return Tile_Layer {
 		name      = "terrain",
@@ -61,6 +65,7 @@ dungeon_layer :: proc() -> Tile_Layer {
 		cols      = 16,
 		rows      = 9,
 		top_left  = Vec2{x = to_fixed(0), y = to_fixed(144)},
+		atlas     = "",
 		palette   = palette,
 		cells     = cells,
 	}
@@ -86,9 +91,10 @@ test_load_tilemaps_populated_decodes :: proc(t: ^testing.T) {
 	testing.expect_value(t, layer.rows, 3)
 	testing.expect_value(t, layer.top_left.x, to_fixed(0))
 	testing.expect_value(t, layer.top_left.y, to_fixed(48))
+	testing.expect_value(t, layer.atlas, "") // the `-` wire = atlas-less
 	testing.expect_value(t, len(layer.palette), 2)
-	testing.expect_value(t, layer.palette[0], Tile_Def{name = "wall", solid = true})
-	testing.expect_value(t, layer.palette[1], Tile_Def{name = "floor", solid = false})
+	testing.expect_value(t, layer.palette[0], Tile_Def{name = "wall", solid = true, cell_x = 0, cell_y = 0})
+	testing.expect_value(t, layer.palette[1], Tile_Def{name = "floor", solid = false, cell_x = 1, cell_y = 0})
 	expected_cells := []int{0, 0, 0, 0, 0, TILE_CELL_EMPTY, 1, TILE_CELL_EMPTY, 0, TILE_CELL_EMPTY, 0, 0}
 	testing.expect_value(t, len(layer.cells), len(expected_cells))
 	for cell, i in expected_cells {
@@ -103,7 +109,7 @@ test_load_tilemaps_populated_decodes :: proc(t: ^testing.T) {
 test_load_tilemaps_empty_section_still_loads :: proc(t: ^testing.T) {
 	// The `[tilemaps 0]` tail every level-less artifact emits keeps loading
 	// clean with zero layers (the pre-decode behavior, unchanged).
-	program, err := load_program("funpack-artifact 16\n[tilemaps 0]\n", context.temp_allocator)
+	program, err := load_program("funpack-artifact 17\n[tilemaps 0]\n", context.temp_allocator)
 	testing.expect_value(t, err, Artifact_Error.None)
 	testing.expect_value(t, len(program.tilemaps), 0)
 }
@@ -113,35 +119,44 @@ test_load_tilemaps_malformed_refused :: proc(t: ^testing.T) {
 	// AC (refusals): every malformed [tilemaps] record fails closed with
 	// .Bad_Field — the coverage the wave-2 reviewer flagged. Each case bends
 	// exactly one §17 shape rule of the well-formed fixture.
+	// The v17 well-formed baseline each case bends one rule of: lead line
+	// `tilemap terrain 16 2 1 0 0 - 1` (9 tokens, ATLAS `-`), palette
+	// `tile wall true 0 0` (5 tokens), one `row 0 0`.
 	malformed := [?]string {
-		// lead line: the retired v11 arity (no anchor fields)
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 4 3 2\ntile wall true\nrow 0 0 0 0\n",
+		// lead line: the retired v12 arity (no ATLAS field, the v17 8-token shape)
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 4 3 0 0 2\ntile wall true 0 0\ntile floor false 1 0\nrow 0 0 0 0\nrow 0 0 0 0\nrow 0 0 0 0\n",
 		// lead line: non-numeric anchor
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 y 1\ntile wall true\nrow 0 0\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 y - 1\ntile wall true 0 0\nrow 0 0\n",
 		// lead line: zero cell size (cell_of divides by it)
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 0 2 1 0 0 1\ntile wall true\nrow 0 0\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 0 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
 		// lead line: zero cols
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 0 1 0 0 1\ntile wall true\nrow\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 0 1 0 0 - 1\ntile wall true 0 0\nrow\n",
 		// lead line: non-numeric rows
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 x 0 0 1\ntile wall true\nrow 0 0\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 x 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
+		// lead line: missing ATLAS token (v17 — the 8-token degenerate is a mismatch)
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true 0 0\nrow 0 0\n",
 		// sub-record run: a missing row line (declared ROWS=2, one present)
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 2 0 0 1\ntile wall true\nrow 0 0\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 2 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
 		// sub-record run: a surplus palette line (declared 1, two present)
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\ntile floor false\nrow 0 0\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\ntile floor false 1 0\nrow 0 0\n",
 		// palette: a row line where a tile line is declared (the windows split positionally)
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\nrow 0 0\ntile wall true\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\nrow 0 0\ntile wall true 0 0\n",
 		// palette: non-bool SOLID
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall yes\nrow 0 0\n",
-		// palette: wrong arity (missing SOLID)
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall\nrow 0 0\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall yes 0 0\nrow 0 0\n",
+		// palette: wrong arity (missing the v17 cell coords — the v12 3-token shape)
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true\nrow 0 0\n",
+		// palette: non-numeric CELL_X (v17)
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true x 0\nrow 0 0\n",
+		// palette: negative CELL_Y (v17 — a cell coordinate is non-negative)
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 -1\nrow 0 0\n",
 		// row: wrong arity (one cell on a 2-col grid)
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\nrow 0\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0\n",
 		// row: a palette index past the declared palette
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\nrow 0 1\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 1\n",
 		// row: a negative palette index (the `-` form is the only tile-less spelling)
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\nrow 0 -2\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 -2\n",
 		// row: a non-numeric cell
-		"funpack-artifact 16\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true\nrow 0 z\n",
+		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 z\n",
 	}
 	for artifact in malformed {
 		_, err := load_program(artifact, context.temp_allocator)
@@ -480,7 +495,17 @@ test_render_emits_one_batched_tilemap_command :: proc(t: ^testing.T) {
 	cmd, is_tilemap := draw.cmds[0].(Draw_Tilemap)
 	testing.expect(t, is_tilemap)
 	testing.expect(t, tile_layers_equal(cmd.layer, fixture_layer()))
-	testing.expect(t, draw_cmd_equal(draw.cmds[0], Draw_Tilemap{layer = fixture_layer()}))
+	// The atlas-less fixture resolves each palette entry fail-closed (resolved=false,
+	// the no-texture fallback) — two entries, one per palette tile, so the resolution
+	// pass ran and left the deterministic miss the present pass paints untextured.
+	testing.expect_value(t, len(cmd.palette_textures), 2)
+	for tex in cmd.palette_textures {
+		testing.expect(t, !tex.resolved)
+	}
+	// A second projection of the same committed layer reproduces the same command
+	// (layer geometry + resolved textures) bit-identically — the determinism floor.
+	again := render_version(&program, version, empty(), tilemap_time_resource(), context.temp_allocator)
+	testing.expect(t, draw_cmd_equal(draw.cmds[0], again.cmds[0]))
 }
 
 @(test)
@@ -531,4 +556,170 @@ test_tilemap_digest_deterministic_and_content_sensitive :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, !identical)
+}
+
+// --- the §17/§19 textured TILE resolution (v17) -------------------------------
+
+// texture_atlas hand-builds a 4×2 grid atlas (16px cells) matching the dungeon's
+// DungeonAtlas geometry — the tileset row (floor/wall/water/rubble at row 0) the
+// textured-tile resolution resolves a layer's palette against. Built directly (not
+// decoded) so the resolution test is independent of the [assets] load path.
+texture_atlas :: proc() -> Asset_Set {
+	regions := make([]Asset_Region, 4, context.temp_allocator)
+	regions[0] = Asset_Region{name = "floor", px_x = 0, px_y = 0, px_w = 16, px_h = 16}
+	regions[1] = Asset_Region{name = "wall", px_x = 16, px_y = 0, px_w = 16, px_h = 16}
+	regions[2] = Asset_Region{name = "water", px_x = 32, px_y = 0, px_w = 16, px_h = 16}
+	regions[3] = Asset_Region{name = "rubble", px_x = 48, px_y = 0, px_w = 16, px_h = 16}
+	images := make([]Asset_Image, 1, context.temp_allocator)
+	images[0] = Asset_Image{hash = "sha256:tiles", width = 64, height = 32, pixels = nil}
+	atlases := make([]Asset_Atlas, 1, context.temp_allocator)
+	atlases[0] = Asset_Atlas{name = "dungeon_atlas", image_hash = "sha256:tiles", regions = regions}
+	return Asset_Set{images = images, atlases = atlases}
+}
+
+// textured_layer is a 2×2 layer bound to the `dungeon_atlas` tileset, its palette
+// mapping floor/wall/water/rubble to their §18 §2 atlas-cell coordinates — the v17
+// per-tile cell the textured-tile pass resolves to a pixel rect.
+textured_layer :: proc() -> Tile_Layer {
+	palette := make([]Tile_Def, 4, context.temp_allocator)
+	palette[0] = Tile_Def{name = "floor", solid = false, cell_x = 0, cell_y = 0}
+	palette[1] = Tile_Def{name = "wall", solid = true, cell_x = 1, cell_y = 0}
+	palette[2] = Tile_Def{name = "water", solid = false, cell_x = 2, cell_y = 0}
+	palette[3] = Tile_Def{name = "rubble", solid = true, cell_x = 3, cell_y = 0}
+	cells := make([]int, 4, context.temp_allocator)
+	copy(cells, []int{0, 1, 2, 3})
+	return Tile_Layer {
+		name      = "terrain",
+		cell_size = 16,
+		cols      = 2,
+		rows      = 2,
+		top_left  = Vec2{x = to_fixed(0), y = to_fixed(32)},
+		atlas     = "dungeon_atlas",
+		palette   = palette,
+		cells     = cells,
+	}
+}
+
+@(test)
+test_tilemap_textures_resolve_palette_to_atlas_cell_rects :: proc(t: ^testing.T) {
+	// AC (Deliverable C, the headless textured-tile proof): a layer bound to the
+	// dungeon_atlas resolves each palette tile's atlas-cell COORDINATE to its pixel
+	// rect through the resolution pass — the §17/§19 coordinate→rect twin of the
+	// by-name sprite resolution. The cell dims come from any region (uniform 16×16),
+	// so floor (0,0)→(0,0,16,16), wall (1,0)→(16,0,16,16), water (2,0)→(32,0,16,16),
+	// rubble (3,0)→(48,0,16,16) — exactly the DungeonAtlas region rects, the proof
+	// the textured terrain resolves to the correct atlas pixels deterministically.
+	context.allocator = context.temp_allocator
+	layers := make([]Tile_Layer, 1, context.temp_allocator)
+	layers[0] = textured_layer()
+	program := Program{assets = texture_atlas()}
+	version := World_Version{tilemaps = layers}
+	draw := render_version(&program, version, empty(), tilemap_time_resource(), context.temp_allocator)
+
+	testing.expect_value(t, len(draw.cmds), 1)
+	cmd := draw.cmds[0].(Draw_Tilemap)
+	testing.expect_value(t, len(cmd.palette_textures), 4)
+
+	expected := [4][4]int{{0, 0, 16, 16}, {16, 0, 16, 16}, {32, 0, 16, 16}, {48, 0, 16, 16}}
+	for tex, i in cmd.palette_textures {
+		testing.expect(t, tex.resolved)
+		testing.expect_value(t, tex.image_hash, "sha256:tiles") // all four cells share the one tileset image (dedup)
+		testing.expect_value(t, tex.px_x, expected[i][0])
+		testing.expect_value(t, tex.px_y, expected[i][1])
+		testing.expect_value(t, tex.px_w, expected[i][2])
+		testing.expect_value(t, tex.px_h, expected[i][3])
+	}
+}
+
+@(test)
+test_tilemap_texture_resolution_is_in_the_digest :: proc(t: ^testing.T) {
+	// AC (digest): the resolved tile textures are INSIDE the comparison surface
+	// (v9) — two folds of the same resolved layer digest identically, and a layer
+	// whose palette resolves to a DIFFERENT atlas cell (rubble bumped to (3,1))
+	// digests differently. So the textured terrain resolution is the determinism
+	// proof, not a present-only concern.
+	context.allocator = context.temp_allocator
+	program := Program{assets = texture_atlas()}
+
+	layers := make([]Tile_Layer, 1, context.temp_allocator)
+	layers[0] = textured_layer()
+	version := World_Version{tilemaps = layers}
+	draw := render_version(&program, version, empty(), tilemap_time_resource(), context.temp_allocator)
+	first := frame_bytes(World_Version{}, draw, context.temp_allocator)
+	second := frame_bytes(World_Version{}, draw, context.temp_allocator)
+	testing.expect_value(t, len(first), len(second))
+	for b, i in first {
+		testing.expect_value(t, second[i], b)
+	}
+
+	// Move rubble to atlas cell (3,1): its resolved rect shifts to (48,16,16,16), so
+	// the digest moves — the resolution is folded.
+	moved_layers := make([]Tile_Layer, 1, context.temp_allocator)
+	moved := textured_layer()
+	moved_palette := make([]Tile_Def, len(moved.palette), context.temp_allocator)
+	copy(moved_palette, moved.palette)
+	moved_palette[3].cell_y = 1
+	moved.palette = moved_palette
+	moved_layers[0] = moved
+	moved_draw := render_version(&program, World_Version{tilemaps = moved_layers}, empty(), tilemap_time_resource(), context.temp_allocator)
+	moved_bytes := frame_bytes(World_Version{}, moved_draw, context.temp_allocator)
+	identical := len(moved_bytes) == len(first)
+	if identical {
+		for b, i in first {
+			if moved_bytes[i] != b {
+				identical = false
+				break
+			}
+		}
+	}
+	testing.expect(t, !identical)
+}
+
+@(test)
+test_tilemap_texture_resolution_fail_closed :: proc(t: ^testing.T) {
+	// AC (fail-closed): a palette-less / atlas-less layer (the `-` wire, atlas="")
+	// resolves NO texture — every palette entry carries resolved=false with a zero
+	// hash/rect, the no-texture fallback, never a crash and never a guessed rect.
+	// And an UNKNOWN atlas (no [assets] entry under the name) is equally
+	// fail-closed. This is the same asset_region fail-closed mold the sprite seam
+	// uses, threaded into the tile pass.
+	context.allocator = context.temp_allocator
+
+	// atlas-less layer over an asset-bearing program: no atlas to resolve against.
+	atlasless_layers := make([]Tile_Layer, 1, context.temp_allocator)
+	atlasless_layers[0] = fixture_layer() // atlas = ""
+	atlasless_program := Program{assets = texture_atlas()}
+	draw := render_version(&atlasless_program, World_Version{tilemaps = atlasless_layers}, empty(), tilemap_time_resource(), context.temp_allocator)
+	cmd := draw.cmds[0].(Draw_Tilemap)
+	testing.expect_value(t, len(cmd.palette_textures), 2)
+	for tex in cmd.palette_textures {
+		testing.expect(t, !tex.resolved)
+		testing.expect_value(t, tex.image_hash, "")
+		testing.expect_value(t, tex.px_w, 0)
+	}
+
+	// a layer naming an atlas no [assets] section registers: still fail-closed.
+	unknown_layers := make([]Tile_Layer, 1, context.temp_allocator)
+	unknown := textured_layer()
+	unknown.atlas = "no_such_atlas"
+	unknown_layers[0] = unknown
+	unknown_draw := render_version(&atlasless_program, World_Version{tilemaps = unknown_layers}, empty(), tilemap_time_resource(), context.temp_allocator)
+	unknown_cmd := unknown_draw.cmds[0].(Draw_Tilemap)
+	for tex in unknown_cmd.palette_textures {
+		testing.expect(t, !tex.resolved)
+		testing.expect_value(t, tex.px_w, 0)
+	}
+}
+
+@(test)
+test_atlas_cell_dims_zero_region_atlas_fails_closed :: proc(t: ^testing.T) {
+	// FRICTION GUARD: atlas_cell_dims derives the uniform cell size from any region
+	// — a ZERO-REGION atlas has no region to read it from, so it fails closed
+	// (ok=false), never a guessed cell size. Every textured atlas the bake emits has
+	// regions (a tileset slices a grid), so this is the degenerate-atlas defense, not
+	// a real corpus case; if it ever fired on a real artifact it would be a funpack
+	// [assets] gap (a grid-dims carry), surfaced — not guessed around.
+	empty_atlas := Asset_Atlas{name = "empty", image_hash = "sha256:x", regions = nil}
+	_, _, ok := atlas_cell_dims(&empty_atlas)
+	testing.expect(t, !ok)
 }

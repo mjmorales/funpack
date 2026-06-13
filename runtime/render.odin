@@ -140,8 +140,41 @@ Draw3_Rigged :: struct {
 // outlives its projection), so the command is a view, not a copy; the digest
 // folds the layer's full content (name, geometry, anchor, palette, cells) so
 // the drawn terrain is inside the comparison surface bit-exactly.
+//
+// `palette_textures` is the v17 RESOLVED tile art: one Tile_Texture per palette
+// entry (parallel to layer.palette), bound by resolve_tilemap_textures AFTER the
+// engine emits the command — each palette tile's atlas-cell coordinate resolves
+// through tile_cell_rect against the layer's atlas to its image hash + pixel rect,
+// the same §19 [assets] art a sprite resolves through (the by-coordinate twin of
+// the by-name sprite resolution). The render present pass blits a cell's pixels by
+// indexing this slice with the cell's palette index; the digest folds it (v9 §19),
+// so the resolved terrain art is inside the comparison surface, the same proof the
+// sprite seam carries. A nil/empty slice is the pre-resolution shape (the engine
+// emits names + coords, the pass binds pixels); an unresolved tile (no atlas, or a
+// zero-region atlas) carries resolved=false — the no-texture fallback.
 Draw_Tilemap :: struct {
-	layer: Tile_Layer,
+	layer:            Tile_Layer,
+	palette_textures: []Tile_Texture, // one resolved §19 texture per palette entry (v17), parallel to layer.palette
+}
+
+// Tile_Texture is one palette tile's RESOLVED §19 texture reference — the
+// content-addressed image hash and the cell's pixel rect, the `(atlas, cell coord)
+// → (image, rect)` resolve_tilemap_textures folds through tile_cell_rect. It is the
+// tile twin of Sprite_Texture: `resolved` discriminates a hit (the layer's atlas
+// registered, with regions to read the cell dims from) from the fail-closed miss (a
+// palette-less layer's empty atlas, or a zero-region atlas) — an unresolved tile
+// carries resolved=false with a zero hash/rect, the no-texture fallback the present
+// pass paints untextured, never a crash and never a guessed rect. The resolution is
+// on the determinism path: the digest folds it (frame digest v9), so a tile
+// resolving to a different cell moves the digest — the proof the terrain resolved to
+// the correct atlas pixels deterministically.
+Tile_Texture :: struct {
+	resolved:   bool, // true when the tile's (atlas, cell coord) resolved to a registered grid cell
+	image_hash: string, // the §19 §2 content hash of the resolved image (the dedup key)
+	px_x:       int, // the cell's pixel rect into the image — the present pass's UV window
+	px_y:       int,
+	px_w:       int,
+	px_h:       int,
 }
 
 // Draw_Sprite is the §20 §1 / §18 §1 atlas sprite: a named atlas region drawn as a
@@ -165,13 +198,37 @@ Draw_Tilemap :: struct {
 // render-boundary-only and never re-enters the sim. A new arm is a deliberate
 // schema-version bump (§04 closed-enum; FRAME_DIGEST_SCHEMA_VERSION).
 Draw_Sprite :: struct {
-	atlas: string, // the atlas handle NAME — the present pass resolves the §19 asset
-	cell:  string, // the §18 §1 named region key
-	at:    Vec2, // the CENTER of the extent (§20 §1 anchor)
-	size:  Vec2, // the extent, reaching size/2 out on each axis
-	tint:  Draw_Color, // the closed §20 palette tint
-	flip:  string, // the §18 §1 flip token (a Flip:: case name)
-	layer: i64, // the §18 §1 draw-order layer
+	atlas:   string, // the atlas handle NAME — resolved against §19 [assets] by the resolution pass
+	cell:    string, // the §18 §1 named region key
+	at:      Vec2, // the CENTER of the extent (§20 §1 anchor)
+	size:    Vec2, // the extent, reaching size/2 out on each axis
+	tint:    Draw_Color, // the closed §20 palette tint
+	flip:    string, // the §18 §1 flip token (a Flip:: case name)
+	layer:   i64, // the §18 §1 draw-order layer
+	texture: Sprite_Texture, // the resolved §19 image hash + pixel rect (resolved=false when unresolved)
+}
+
+// Sprite_Texture is a `Draw_Sprite`'s RESOLVED §19 texture reference: the
+// content-addressed image hash (the dedup key the present pass loads pixels by) and
+// the cell's pixel rect into that image — the `(atlas, cell) → (image, rect)` the
+// resolution pass folds through asset_region. `resolved` discriminates a hit from
+// the fail-closed miss: an unresolved sprite (the [assets] section registers no
+// atlas under the handle name, or no such cell) carries `resolved=false` with a
+// zero hash/rect — a deliberate NO-TEXTURE fallback the present pass paints as the
+// untextured stand-in, NEVER a crash and never a guessed rect. The resolution is on
+// the determinism path: the digest folds this reference (Cmd_Tag.Sprite, frame
+// digest v9), so two folds of the same committed sprite resolve to the SAME texture
+// bit-identically and a sprite that resolves to a different region (a moved chest
+// flipping closed→open) moves the digest. Carrying the resolution into the digest is
+// what PROVES the sprite resolved to the correct atlas pixels deterministically,
+// rather than deferring the resolution to the impure present boundary.
+Sprite_Texture :: struct {
+	resolved:   bool, // true when (atlas, cell) resolved to a registered region
+	image_hash: string, // the §19 §2 content hash of the resolved image (the dedup key)
+	px_x:       int, // the cell's pixel rect into the image — the present pass's UV window
+	px_y:       int,
+	px_w:       int,
+	px_h:       int,
 }
 
 // Draw_Cmd is the closed set of §20 draw commands a render behavior emits. A new
@@ -247,9 +304,24 @@ draw_cmd_equal :: proc(a, b: Draw_Cmd) -> bool {
 		)
 	case Draw_Tilemap:
 		// The batched layer carries slices (palette, cells), so the arm
-		// compares structurally — tile_layers_equal walks both element-wise.
+		// compares structurally — tile_layers_equal walks both element-wise — and
+		// the v17 resolved palette_textures compare element-wise too (a
+		// Tile_Texture is simply-comparable: the image_hash string by value, the
+		// rect ints by value), so two layers resolving the same terrain art are
+		// equal and a re-resolved tile is unequal.
 		y, ok := b.(Draw_Tilemap)
-		return ok && tile_layers_equal(x.layer, y.layer)
+		if !ok || !tile_layers_equal(x.layer, y.layer) {
+			return false
+		}
+		if len(x.palette_textures) != len(y.palette_textures) {
+			return false
+		}
+		for tex, i in x.palette_textures {
+			if tex != y.palette_textures[i] {
+				return false
+			}
+		}
+		return true
 	case Draw_Sprite:
 		// A sprite carries only simply-comparable fields (atlas/cell/flip strings,
 		// at/size Vec2 by raw bits, tint ordinal, layer i64), so `==` is total over
@@ -305,7 +377,96 @@ render_version :: proc(
 		}
 		render_behavior_over_instances(&interp, behavior, &cmds, allocator)
 	}
+	resolve_sprite_textures(program, cmds[:])
+	resolve_tilemap_textures(program, cmds[:], allocator)
 	return Draw_List{cmds = cmds[:]}
+}
+
+// resolve_tilemap_textures runs the §17/§19 textured-TILE resolution pass over the
+// built draw-list: every Draw_Tilemap's palette resolves through tile_cell_rect
+// against the layer's atlas to a parallel `palette_textures` slice — each palette
+// tile's atlas-cell coordinate to its content-addressed image hash + pixel rect (the
+// by-coordinate twin of resolve_sprite_textures' by-name resolution). It runs ONCE
+// per render projection AFTER the engine emits the layers (the lowering carries the
+// atlas name + per-tile cell coords; this pass binds the pixels), so the resolved
+// terrain art is inside the §20 draw-list the frame digest folds — the determinism
+// PROOF that the terrain resolved to the correct atlas cells. Assets are bake-static
+// (Program.assets, never the COW version chain), so resolution is a pure function of
+// (atlas name, the palette coords, the program's decode): two projections of the
+// same committed layer resolve to the SAME textures bit-identically. A miss (a
+// palette-less layer with no atlas, or a zero-region atlas with no cell dims) is
+// fail-closed per palette entry — resolved stays false, the no-texture fallback —
+// never a crash, never a guessed rect. Non-tilemap commands are untouched.
+resolve_tilemap_textures :: proc(program: ^Program, cmds: []Draw_Cmd, allocator := context.allocator) {
+	for &cmd in cmds {
+		tilemap, is_tilemap := &cmd.(Draw_Tilemap)
+		if !is_tilemap {
+			continue
+		}
+		// One resolved texture per palette entry (parallel to layer.palette): the
+		// present pass blits a cell by indexing this slice with the cell's palette
+		// index. An empty palette yields an empty slice (a degenerate layer).
+		textures := make([]Tile_Texture, len(tilemap.layer.palette), allocator)
+		for tile, i in tilemap.layer.palette {
+			image, region, ok := tile_cell_rect(program, tilemap.layer.atlas, tile.cell_x, tile.cell_y)
+			if !ok {
+				// Fail-closed: no atlas under the layer's name, or an atlas with no
+				// regions to read the cell dims from — the no-texture fallback. The
+				// tile's coordinate is still carried (in layer.palette); the digest
+				// folds resolved=false, a stable deterministic miss.
+				textures[i] = Tile_Texture{}
+				continue
+			}
+			textures[i] = Tile_Texture {
+				resolved   = true,
+				image_hash = image.hash,
+				px_x       = region.px_x,
+				px_y       = region.px_y,
+				px_w       = region.px_w,
+				px_h       = region.px_h,
+			}
+		}
+		tilemap.palette_textures = textures
+	}
+}
+
+// resolve_sprite_textures runs the §19 texture-resolution pass over the built
+// draw-list: every Draw_Sprite's (atlas, cell) handle pair resolves through
+// asset_region against the program's baked [assets] section to its content-addressed
+// image hash and pixel rect, written into the command's Sprite_Texture. It runs ONCE
+// per render projection AFTER the behaviors emit their sprites (the lowering carries
+// the NAMES; this pass binds the pixels), so the resolved reference is inside the §20
+// draw-list the frame digest folds — the determinism PROOF that a sprite resolved to
+// the correct atlas region. Assets are bake-static (Program.assets, never the COW
+// version chain), so resolution is a pure function of (atlas name, cell name, the
+// program's decode): two projections of the same committed sprite resolve to the SAME
+// texture bit-identically. A miss (no atlas registered under the handle name, or no
+// such cell) is fail-closed — Sprite_Texture.resolved stays false, the no-texture
+// fallback — never a crash, never a guessed rect. Non-sprite commands are untouched.
+resolve_sprite_textures :: proc(program: ^Program, cmds: []Draw_Cmd) {
+	for &cmd in cmds {
+		sprite, is_sprite := &cmd.(Draw_Sprite)
+		if !is_sprite {
+			continue
+		}
+		image, region, ok := asset_region(program, sprite.atlas, sprite.cell)
+		if !ok {
+			// Fail-closed: an unresolved sprite keeps the zero Sprite_Texture
+			// (resolved=false) — the deliberate no-texture fallback the present pass
+			// paints as the untextured stand-in. The handle name is carried verbatim
+			// (the digest still folds it), but no atlas/cell answered the resolution.
+			sprite.texture = Sprite_Texture{}
+			continue
+		}
+		sprite.texture = Sprite_Texture {
+			resolved   = true,
+			image_hash = image.hash,
+			px_x       = region.px_x,
+			px_y       = region.px_y,
+			px_w       = region.px_w,
+			px_h       = region.px_h,
+		}
+	}
 }
 
 // render_behavior_over_instances runs one render behavior once per instance of
@@ -461,8 +622,10 @@ draw_command_from_record :: proc(record: Record_Value) -> (cmd: Draw_Cmd, ok: bo
 		// token + layer (Int). Every field is REQUIRED — a missing one, an
 		// out-of-palette tint (record_color ok=false), or a malformed atlas/flip
 		// REFUSES with ok=false: the documented fail-closed mold drops the command
-		// rather than mispainting. The atlas resolves to a NAME only (the present
-		// pass loads the §19 asset); the digest carries the name verbatim.
+		// rather than mispainting. The lowering carries the atlas/cell NAMES and
+		// leaves Sprite_Texture zero (resolved=false); the post-emit
+		// resolve_sprite_textures pass binds the §19 image hash + pixel rect through
+		// asset_region, so the resolved reference enters the digest.
 		atlas, atlas_ok := record_handle_name(record, "atlas")
 		cell, cell_ok := record_text(record, "cell")
 		at, at_ok := record_vec2(record, "at")

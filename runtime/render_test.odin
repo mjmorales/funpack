@@ -343,7 +343,7 @@ test_draw_command_unknown_color_does_not_lower :: proc(t: ^testing.T) {
 //   (d) write_draw_cmd / frame_digest folds the sprite under Cmd_Tag.Sprite (=8): two
 //       folds identical, a one-bit field change moves the digest, and a sprite-bearing
 //       list digests differently from an empty list;
-//   (e) FRAME_DIGEST_SCHEMA_VERSION == 8.
+//   (e) FRAME_DIGEST_SCHEMA_VERSION == 9.
 @(test)
 test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -456,8 +456,9 @@ test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
 	testing.expect(t, len(sprite_bytes) > tag_offset)
 	testing.expect_value(t, sprite_bytes[tag_offset], u8(Cmd_Tag.Sprite))
 
-	// (e) the comparability stamp advanced to v8 for this append.
-	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 8)
+	// (e) the comparability stamp advanced to v9 (v8 appended the Sprite arm; v9
+	// appended the resolved Sprite_Texture fields to it).
+	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 9)
 }
 
 // sprite_record builds the Draw::Sprite record the dungeon's draw_hero/draw_slime/

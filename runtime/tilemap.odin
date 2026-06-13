@@ -34,12 +34,18 @@ package funpack_runtime
 TILE_CELL_EMPTY :: -1
 
 // Tile_Def is one palette entry of a baked tile layer: the project-global tile
-// name and its §18 §2 baked collision verdict — the (name, solid) pair the
-// artifact's `tile NAME SOLID` sub-records carry. The bake already resolved
-// the name through the tileset table, so both fields are final here.
+// name, its §18 §2 baked collision verdict, and its §18 §2 ATLAS-CELL COORDINATE
+// — the (name, solid, cell_x, cell_y) the artifact's `tile NAME SOLID CELL_X
+// CELL_Y` sub-records carry (v17). The bake already resolved the name through the
+// tileset table, so all four fields are final here. The coordinate addresses the
+// tile's cell in the layer's atlas (Tile_Layer.atlas): the textured render pass
+// resolves a tile's pixel rect through tile_cell_rect (the cell coord × the
+// region-derived cell dims), the same §19 [assets] art a sprite resolves against.
 Tile_Def :: struct {
-	name:  string,
-	solid: bool,
+	name:   string,
+	solid:  bool,
+	cell_x: int, // the tile's atlas-cell column (v17, §18 §2)
+	cell_y: int, // the tile's atlas-cell row (v17, §18 §2)
 }
 
 // Tile_Layer is one decoded [tilemaps] record (§17): the layer name (also the
@@ -60,7 +66,8 @@ Tile_Layer :: struct {
 	cols:      int, // grid width in cells (> 0)
 	rows:      int, // grid height in cells (> 0)
 	top_left:  Vec2, // world point of the grid's top-left corner (Q32.32)
-	palette:   []Tile_Def, // legend-order tile types with baked solid verdicts
+	atlas:     string, // the layer's tileset atlas handle name (v17, §17) — "" for a degenerate palette-less layer (the wire `-`); the textured render pass resolves a tile's pixels through asset_region(atlas, cell coord)
+	palette:   []Tile_Def, // legend-order tile types with baked solid verdicts + atlas-cell coords
 	cells:     []int, // row-major palette index per cell; TILE_CELL_EMPTY = no tile
 }
 
@@ -103,7 +110,8 @@ tile_layers_equal :: proc(a, b: Tile_Layer) -> bool {
 	   a.cell_size != b.cell_size ||
 	   a.cols != b.cols ||
 	   a.rows != b.rows ||
-	   a.top_left != b.top_left {
+	   a.top_left != b.top_left ||
+	   a.atlas != b.atlas {
 		return false
 	}
 	if len(a.palette) != len(b.palette) || len(a.cells) != len(b.cells) {

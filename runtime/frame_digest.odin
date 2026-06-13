@@ -128,7 +128,39 @@ import "core:slice"
 // session seeded from the frozen FRAME_SESSION_SEED, not this version) are
 // byte-unchanged under the v8 bump even though the comparability stamp advances. Only a
 // sprite-carrying draw-list produces the new (correct) bytes.
-FRAME_DIGEST_SCHEMA_VERSION :: 8
+// v9 folds the §19 RESOLVED TEXTURE references into BOTH the Sprite and the Tilemap
+// arms (the §19 textured-render comparison surface).
+//   - SPRITE arm: the post-emit resolve_sprite_textures pass binds each Draw_Sprite's
+//     (atlas, cell) NAME pair through asset_region against the baked [assets] section
+//     to its content-addressed image hash + pixel rect, and write_draw_cmd folds that
+//     Sprite_Texture — the `resolved` flag, the image hash, and the four pixel-rect
+//     fields — AFTER the existing sprite fields. The Sprite tag ordinal is UNCHANGED
+//     (Sprite=8); only the bytes the arm emits grow.
+//   - TILEMAP arm: the v17 [tilemaps] carries the per-tile atlas-cell coordinate
+//     (folded after each palette tile's solid byte) and the layer ATLAS name (folded
+//     after the palette), and the post-emit resolve_tilemap_textures pass binds each
+//     palette tile's coordinate through tile_cell_rect to its image hash + pixel rect,
+//     folded as the parallel palette_textures run AFTER the cells. The Tilemap tag
+//     ordinal is UNCHANGED (Tilemap=7); only the bytes the arm emits grow.
+// This puts the texture resolution INSIDE the comparison surface: two folds of the
+// same committed sprite/layer resolve to the SAME atlas pixels bit-identically, and a
+// sprite/tile resolving to a different cell (a chest flipping closed→open, a tile
+// rebound to a different atlas cell) moves the digest. An unresolved sprite/tile (no
+// atlas under the name, or a zero-region atlas) folds resolved=false + an empty hash +
+// a zero rect — a stable, deterministic miss, never a guess. The stamp bumps as the
+// comparability marker (§04).
+//
+// COMMITTED-GOLDEN INVARIANCE under v9: the four 2D/3D goldens (pong/snake/hunt/yard)
+// and krognid emit Rect/Text/Camera/Draw3 — NO Draw_Sprite and NO Draw_Tilemap — so
+// every committed pong/snake/hunt/yard/krognid CONTENT digest (per-tick AND session,
+// the session seeded from the frozen FRAME_SESSION_SEED, not this version) is
+// byte-unchanged under the v9 bump. The DUNGEON is the only corpus emitting a
+// Draw_Tilemap (and, with the v17 cross-boundary links landed, RESOLVED Draw_Sprites),
+// and it carries NO committed .digest/.replay golden (its acceptance is the
+// self-consistent live-vs-refold over the embedded artifact), so the Tilemap-arm and
+// resolved-sprite bytes growing moves no committed golden. Only a sprite/tilemap-bearing
+// draw-list produces the new (correct) bytes.
+FRAME_DIGEST_SCHEMA_VERSION :: 9
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
@@ -181,8 +213,8 @@ Cmd_Tag :: enum u8 {
 	Draw3_Light  = 4, // a Draw3_Light: dir (Vec3), color ordinal
 	Draw3_Plane  = 5, // a Draw3_Plane: at (Vec3), size (Vec2), color ordinal
 	Draw3_Rigged = 6, // a Draw3_Rigged: skeleton/parts handles, pose, at (Vec3)
-	Tilemap      = 7, // a Draw_Tilemap: the full §18 §3 batched layer (name, geometry, anchor, palette, cells)
-	Sprite       = 8, // a Draw_Sprite: atlas name, cell key, at/size (Vec2), tint ordinal, flip token, layer (Int)
+	Tilemap      = 7, // a Draw_Tilemap: the full §18 §3 batched layer (name, geometry, anchor, palette + per-tile cell coords, atlas, cells) + the v9 resolved palette textures (resolved flag, image hash, pixel rect per palette entry)
+	Sprite       = 8, // a Draw_Sprite: atlas name, cell key, at/size (Vec2), tint ordinal, flip token, layer (Int), + the v9 resolved Sprite_Texture (resolved flag, image hash, pixel rect)
 }
 
 // Frame_Digest is one committed tick's digest: the tick ordinal it was taken at
@@ -585,10 +617,29 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		for tile in c.layer.palette {
 			write_length_prefixed(buf, tile.name)
 			append(buf, u8(1) if tile.solid else u8(0))
+			// The v17 per-tile atlas-cell coordinate (the §18 §2 tileset cell) folds
+			// after the solid byte — a tile drawing from a different cell moves the
+			// digest. Appended within the existing Tilemap arm (the v9 §19 carry), so
+			// the Tilemap=7 ordinal is unchanged.
+			put_u64_le(buf, u64(i64(tile.cell_x)))
+			put_u64_le(buf, u64(i64(tile.cell_y)))
 		}
+		// The v17 layer ATLAS name folds after the palette — a layer rebound to a
+		// different tileset atlas moves the digest.
+		write_length_prefixed(buf, c.layer.atlas)
 		put_u64_le(buf, u64(len(c.layer.cells)))
 		for cell in c.layer.cells {
 			put_u64_le(buf, u64(i64(cell)))
+		}
+		// The v9 §19 RESOLVED palette textures fold after the cells (parallel to the
+		// palette): each tile's resolved image hash + pixel rect, so the terrain art
+		// resolution is inside the comparison surface — a tile resolving to a
+		// different atlas cell moves the digest, an unresolved tile (resolved=false)
+		// folds a stable deterministic miss. Appended within the Tilemap arm, so the
+		// Tilemap=7 ordinal is unchanged; only the bytes the arm emits grow.
+		put_u64_le(buf, u64(len(c.palette_textures)))
+		for tex in c.palette_textures {
+			write_tile_texture(buf, tex)
 		}
 	case Draw_Sprite:
 		// The §20 §1 / §18 §1 atlas sprite folds its COMPLETE state: the atlas
@@ -609,7 +660,49 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		append(buf, u8(c.tint))
 		write_length_prefixed(buf, c.flip)
 		put_u64_le(buf, u64(c.layer))
+		write_sprite_texture(buf, c.texture)
 	}
+}
+
+// write_sprite_texture folds the §19 RESOLVED texture reference appended to the
+// Sprite arm (frame digest v9): the `resolved` flag as one 0/1 byte, then the
+// content-addressed image hash (length-prefixed) and the four pixel-rect fields as
+// raw i64 little-endian bits. An UNRESOLVED sprite (resolved=false) folds the false
+// byte + the empty-string hash + a zero rect — a stable, deterministic miss the same
+// across every fold, so a fail-closed sprite digests identically run to run (never a
+// guessed rect that would diverge). A resolved sprite folds its real hash + rect, so
+// a sprite resolving to a DIFFERENT region (a chest's closed→open cell flip moving its
+// pixel rect) changes the digest — the resolution is inside the comparison surface.
+// The pixel-rect ints are world-invariant decode constants (the §19 grid-coord
+// lowering), so no float and no host nondeterminism reaches the bytes.
+@(private = "file")
+write_sprite_texture :: proc(buf: ^[dynamic]u8, tex: Sprite_Texture) {
+	append(buf, tex.resolved ? u8(1) : u8(0))
+	write_length_prefixed(buf, tex.image_hash)
+	put_u64_le(buf, u64(i64(tex.px_x)))
+	put_u64_le(buf, u64(i64(tex.px_y)))
+	put_u64_le(buf, u64(i64(tex.px_w)))
+	put_u64_le(buf, u64(i64(tex.px_h)))
+}
+
+// write_tile_texture folds one palette tile's §19 RESOLVED texture reference (frame
+// digest v9, the tile twin of write_sprite_texture): the `resolved` flag as one 0/1
+// byte, the content-addressed image hash (length-prefixed), and the four pixel-rect
+// fields as raw i64 little-endian bits. An UNRESOLVED tile (resolved=false) folds the
+// false byte + the empty-string hash + a zero rect — a stable deterministic miss the
+// same across every fold (never a guessed rect). A resolved tile folds its real hash
+// + rect, so a layer whose palette resolves to DIFFERENT atlas cells changes the
+// digest — the terrain art resolution is inside the comparison surface. The pixel-rect
+// ints are world-invariant decode constants (the §19 grid lowering), so no float and
+// no host nondeterminism reaches the bytes.
+@(private = "file")
+write_tile_texture :: proc(buf: ^[dynamic]u8, tex: Tile_Texture) {
+	append(buf, tex.resolved ? u8(1) : u8(0))
+	write_length_prefixed(buf, tex.image_hash)
+	put_u64_le(buf, u64(i64(tex.px_x)))
+	put_u64_le(buf, u64(i64(tex.px_y)))
+	put_u64_le(buf, u64(i64(tex.px_w)))
+	put_u64_le(buf, u64(i64(tex.px_h)))
 }
 
 // write_vec3 writes a Vec3 as its three Fixed components' raw Q32.32 bits in

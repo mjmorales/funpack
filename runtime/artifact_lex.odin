@@ -221,7 +221,40 @@ import "core:strings"
 // are layout changes: 15 → 16 (funpack/docs/artifact-format.md §1, §19). An
 // asset-less game writes the constant `[assets 0]` tail and moves by the version
 // stamp alone (the v7 stamp-only restamp / `[nav 0]` tail precedent).
-ARTIFACT_SCHEMA_VERSION :: 16
+//
+// v17 carries the §19 CROSS-BOUNDARY LINKS that bind a sprite/tile REFERENCE to
+// the v16 pixels — v16 carried the atlas/image art but NO bridge from a reference
+// to it, so every real dungeon sprite and tile fail-closed to no texture. Three
+// coupled layout changes ride it, no new section and no new sub-record keyword:
+//   (a) the [assets] `atlas` record is keyed by the manifest HANDLE name — `atlas
+//       dungeon_atlas IMAGE_HASH CELL_COUNT`, the same name a `Draw_Sprite{atlas:
+//       assets.dungeon_atlas, cell}` references through its AtlasHandle const, NOT
+//       the `.atlas`-file-declared name (`DungeonAtlas`) v16 emitted (which no
+//       reference names), so `asset_region(handle, cell)` resolves from the
+//       artifact alone. Only the atlas record's NAME token changes — assets.odin
+//       reads it unchanged.
+//   (b) the WHOLE-MODULE const carry + bare-name lowering — the entrypoint reaches
+//       its handle const through a whole-module import (`import assets`, then
+//       `assets.dungeon_atlas`), which binds no bare name, so the v6/v15 brace-group
+//       carry missed it and the handle const never reached [functions]. The emitter
+//       now carries each whole-module-referenced handle const into [functions] as a
+//       `function NAME const 0 return:KINDHandle … span:assets:LINE` record (the §26
+//       typed handle value `AtlasHandle`/`SoundHandle`/`MeshHandle`/`TextureHandle`),
+//       and the body refs LOWER to a bare `node name dungeon_atlas` — so this runtime
+//       resolves the handle by the SAME bare-name const path that resolves `terrain`
+//       (program_function → eval_const → the AtlasHandle record), no `assets`-receiver
+//       interception needed.
+//   (c) the [tilemaps] PER-LAYER ATLAS + PER-TILE atlas-cell — the lead line gains the
+//       layer's tileset atlas handle name between ANCHOR_Y and PALETTE_COUNT (`tilemap
+//       NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT`, `-` for a
+//       degenerate palette-less layer), and each palette `tile` sub-record gains the
+//       atlas-cell coordinate (`tile NAME SOLID CELL_X CELL_Y`, the §18 §2 tileset cell
+//       v16 read but dropped), so the runtime resolves a tile's texture through the
+//       same region-derived cell dims a sprite resolves through. The `tile` keyword is
+//       unchanged (a wider line); `atlas` stays the §19 lead keyword.
+// All three are widened populations / a changed NAME token, never new node KINDs: 16
+// → 17 (funpack/docs/artifact-format.md §1, §17, §19).
+ARTIFACT_SCHEMA_VERSION :: 17
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
@@ -242,7 +275,7 @@ SUB_RECORD_KEYWORDS :: [?]string {
 	"node",
 	"migrate", // a [data] record's §05 §6 rename/retype carry (v8, §6)
 	"index", // a [queries] record's §05 §3 @index/@spatial requirement (v9, §16)
-	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (v11 framing, §17)
+	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID CELL_X CELL_Y` (v11 framing; atlas-cell coord v17, §17)
 	"row", // a [tilemaps] record's row-major cell line `row …` (v11 framing, §17)
 	"navnode", // a [nav] record's walkable-cell center `navnode FIXED_X FIXED_Y` (v13, §12)
 	"navedge", // a [nav] record's 4-neighbor adjacency `navedge A B` (v13, §12)

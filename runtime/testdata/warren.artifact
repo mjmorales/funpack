@@ -1,4 +1,4 @@
-funpack-artifact 16
+funpack-artifact 17
 [meta 2]
 project warren
 version L5:0.1.0
@@ -418,9 +418,9 @@ set pos =vec2 498216206336 85899345920
 entrypoint main pipeline:WarrenGame tick_hz:60 logical:128x96 bindings:bindings
 [queries 0]
 [tilemaps 1]
-tilemap maze 8 16 12 0 412316860416 2
-tile wall true
-tile floor false
+tilemap maze 8 16 12 0 412316860416 warren 2
+tile wall true 1 0
+tile floor false 0 0
 row 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 row 0 - 1 1 1 1 0 1 1 1 1 1 1 0 - 0
 row 0 1 0 0 0 1 0 1 0 0 0 0 1 0 1 0
@@ -597,6 +597,6 @@ navedge 77 78
 navedge 78 79
 [assets 2]
 image sha256:aaa6bd705bb8a404e72bf3c4e3f3e68993a6d26b96195b0134ff72db55142fc4 16 8 b64:bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/bpZa/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/26WWv9ullr/bpZa/26WWv9ullr/bpZa/26WWv9ullr/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf9GNy3/Rjct/0Y3Lf8=
-atlas Warren sha256:aaa6bd705bb8a404e72bf3c4e3f3e68993a6d26b96195b0134ff72db55142fc4 2
+atlas warren sha256:aaa6bd705bb8a404e72bf3c4e3f3e68993a6d26b96195b0134ff72db55142fc4 2
 region floor 0 0 8 8
 region wall 8 0 8 8

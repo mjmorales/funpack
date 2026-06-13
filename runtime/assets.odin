@@ -134,6 +134,67 @@ asset_region :: proc(
 	return nil, {}, false
 }
 
+// atlas_cell_dims derives an atlas's uniform grid cell size (cell_w, cell_h) from
+// its regions — the §19 atlas is a uniform grid (px rects are cell_x×cell_w,
+// cell_y×cell_h), so every region's px_w/px_h IS the cell dimension. The textured
+// TILE resolution needs this: a tile addresses its art by atlas-cell COORDINATE
+// (cell_x, cell_y), not by region NAME, so its pixel rect is the coordinate × the
+// cell dims — and the cell dims come from any region (they are uniform across the
+// grid). ok=false when the atlas has ZERO regions (no region to read the cell dims
+// from): a deliberate fail-closed refusal, NEVER a guessed cell size. Every
+// TEXTURED atlas the bake emits has regions (a sprite/tile atlas slices a grid), so
+// a zero-region atlas reaching here is a degenerate/empty atlas — the textured tile
+// pass fails its resolution closed, the same no-texture fallback a missing atlas
+// takes.
+atlas_cell_dims :: proc(atlas: ^Asset_Atlas) -> (cell_w: int, cell_h: int, ok: bool) {
+	if atlas == nil || len(atlas.regions) == 0 {
+		return 0, 0, false
+	}
+	// Any region's px_w/px_h is the uniform grid cell size (the §19 grid lowering:
+	// px_w = grid_w, px_h = grid_h for every cell). The first region suffices.
+	r := atlas.regions[0]
+	return r.px_w, r.px_h, true
+}
+
+// tile_cell_rect resolves a TILE's atlas-cell COORDINATE `(cell_x, cell_y)` to its
+// pixel rect into the atlas's image — the §17/§19 textured-tile resolution, the
+// coordinate twin of asset_region's by-NAME sprite resolution. A tile addresses its
+// art by grid coordinate (the §18 §2 tileset cell), so its rect is `(cell_x*cell_w,
+// cell_y*cell_h, cell_w, cell_h)` where the cell dims come from atlas_cell_dims (any
+// region — the grid is uniform). ok=false when the atlas, its image, or the cell
+// dims are absent — the textured tile pass fails closed (no texture), never a
+// guessed rect. The image is returned for the present pass's pixel load (the same
+// content-addressed dedup a sprite resolves through).
+tile_cell_rect :: proc(
+	program: ^Program,
+	atlas_name: string,
+	cell_x: int,
+	cell_y: int,
+) -> (
+	image: ^Asset_Image,
+	region: Asset_Region,
+	ok: bool,
+) {
+	atlas := program_atlas(program, atlas_name)
+	if atlas == nil {
+		return nil, {}, false
+	}
+	img := program_image(program, atlas.image_hash)
+	if img == nil {
+		return nil, {}, false
+	}
+	cell_w, cell_h, dims_ok := atlas_cell_dims(atlas)
+	if !dims_ok {
+		return nil, {}, false
+	}
+	return img, Asset_Region {
+			px_x = cell_x * cell_w,
+			px_y = cell_y * cell_h,
+			px_w = cell_w,
+			px_h = cell_h,
+		}, true
+}
+
 // asset_sets_equal compares two decoded sets structurally — the loader
 // determinism assertion (same artifact ⇒ same assets). Images compare by hash,
 // dims, and pixel bytes; atlases by name, image hash, and region rects, all in
