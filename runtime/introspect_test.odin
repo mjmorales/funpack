@@ -20,7 +20,7 @@ import "core:testing"
 // record-valued columns (stats/home) so the value encoding renders composite
 // blackboards, not just scalars.
 @(private = "file")
-INTROSPECT_FIXTURE :: "funpack-artifact 17\n" +
+INTROSPECT_FIXTURE :: "funpack-artifact 18\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
 	"version L5:0.1.0\n" +
@@ -201,6 +201,79 @@ test_introspect_draw_list_dump :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(response, "Text(at=Vec2("), "pong tick 0 must dump the score Text")
 }
 
+// screenshot is the §28.3 render-crossing TWIN of draw_list — explicitly NOT
+// sim-pure (§28 §2). In the HEADLESS default build (no display, no FUNPACK_LIVE)
+// the command ROUTES but reports the defined "requires live present" boundary
+// refusal: the offscreen capture seam (session_capture_frame) is the no-display
+// stub here. This pins the headless contract the deterministic suite can assert;
+// the on-screen frame capture itself is verifiable only under FUNPACK_LIVE with a
+// display (the same boundary the live present pass sits behind, type-checked by
+// `task lint-live`).
+@(test)
+test_introspect_screenshot_requires_live_present :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+	response := session_request(&s, `{"id":40,"cmd":"screenshot","args":{"tick":0}}`)
+	testing.expect(t, strings.contains(response, `"ok":false`), "headless screenshot must refuse — no display")
+	testing.expect(t, strings.contains(response, `"cmd":"screenshot"`), "the refusal must name the screenshot command")
+	testing.expect(
+		t,
+		strings.contains(response, "render/present boundary"),
+		"the refusal must name the render/present boundary it cannot cross headless",
+	)
+	testing.expect(
+		t,
+		strings.contains(response, "FUNPACK_LIVE"),
+		"the refusal must point at the FUNPACK_LIVE build that serves the capture",
+	)
+}
+
+// THE WARRANTY DISTINCTION (§28 §2): draw_list is the sim-pure draw-list dump that
+// NEVER crosses the render/present boundary; screenshot is its render-crossing twin
+// and is NOT sim-pure. Over ONE session at the SAME tick, draw_list succeeds with
+// the deterministic draw-list (it serves headless) while screenshot refuses (its
+// pixel capture needs the impure present path) — the split that IS the warranty.
+@(test)
+test_introspect_draw_list_screenshot_distinction :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+
+	draw_resp := session_request(&s, `{"id":41,"cmd":"draw_list","args":{"tick":0}}`)
+	testing.expect(t, strings.contains(draw_resp, `"ok":true`), "sim-pure draw_list serves headless")
+	testing.expect(t, strings.contains(draw_resp, "Rect(at=Vec2("), "draw_list dumps the deterministic draw-list")
+
+	shot_resp := session_request(&s, `{"id":42,"cmd":"screenshot","args":{"tick":0}}`)
+	testing.expect(
+		t,
+		strings.contains(shot_resp, `"ok":false`),
+		"the render-crossing screenshot refuses headless — it is NOT sim-pure",
+	)
+}
+
+// screenshot validates its args through the SAME observe-addressing path draw_list
+// uses (tick required, branch resolved, tick range checked) — every reject is a
+// well-formed refusal envelope, never a crash and never a partial capture.
+@(test)
+test_introspect_screenshot_arg_refusals :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+
+	cases := [?]struct {
+		request:  string,
+		fragment: string,
+	} {
+		{`{"id":43,"cmd":"screenshot"}`, `missing args.tick`},
+		{`{"id":44,"cmd":"screenshot","args":{"tick":99999}}`, `tick out of range`},
+		{`{"id":45,"cmd":"screenshot","args":{"tick":-2}}`, `tick out of range`},
+		{`{"id":46,"cmd":"screenshot","args":{"tick":0,"branch":"branch"}}`, `unknown branch`},
+	}
+	for entry in cases {
+		response := session_request(&s, entry.request)
+		testing.expect(t, strings.contains(response, `"ok":false`), "a refused screenshot must answer ok:false")
+		testing.expect(t, strings.contains(response, entry.fragment), entry.fragment)
+	}
+}
+
 // reference_unobserved_capture folds the golden run with NO session and NO
 // observe tap — the production seam verbatim — capturing per-tick digests and
 // the final committed version. It is the ground truth the digest pin compares
@@ -254,6 +327,21 @@ test_introspect_observe_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 	for request in battery {
 		response := session_request(&s, request)
 		testing.expect(t, strings.contains(response, `"ok":true`), "every observe in the battery must succeed")
+	}
+
+	// screenshot rides the SAME non-perturbing battery: it re-projects the committed
+	// tick to a draw-list (render_version — a pure post-commit projection) before it
+	// crosses into present, so even though the headless capture refuses, the
+	// re-projection writes nothing to the canonical chain. It is in the battery
+	// SEPARATELY (it answers ok:false headless) — the digest pin below proves it left
+	// no trace, the warranty that screenshot, though not sim-pure, is non-perturbing.
+	screenshots := [?]string {
+		`{"id":20,"cmd":"screenshot","args":{"tick":0}}`,
+		`{"id":21,"cmd":"screenshot","args":{"tick":599,"include_drawlist":true}}`,
+	}
+	for request in screenshots {
+		response := session_request(&s, request)
+		testing.expect(t, strings.contains(response, `"ok":false`), "headless screenshot refuses but must not perturb")
 	}
 
 	observed := session_capture(&s)

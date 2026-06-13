@@ -26,6 +26,7 @@ test_parse_warden_command_totality :: proc(t: ^testing.T) {
 	names := [Warden_Command]string {
 		.Find     = "find",
 		.Holes    = "holes",
+		.Probes   = "probes",
 		.Debt     = "debt",
 		.Graph    = "graph",
 		.Tags     = "tags",

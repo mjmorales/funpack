@@ -208,7 +208,8 @@ time_reset :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -
 
 // time_status reports the session shape: load state, cursor position, the
 // recording's extent, seededness, the ring's fixed constants and live
-// occupancy, and whether a control branch is live. Field order is fixed —
+// occupancy, whether a control branch is live, and the §28 §3 active lineage
+// (canonical until a `checkout` makes the branch active). Field order is fixed —
 // byte-stable for the session log, like every envelope.
 @(private = "file")
 time_status :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -> string {
@@ -244,7 +245,15 @@ time_status :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) 
 	} else {
 		strings.write_string(&b, "null")
 	}
-	fmt.sbprintf(&b, "}},\"branch\":{{\"live\":%s}}}}}}", s.has_branch ? "true" : "false")
+	// §28 §3: status reports the active branch — canonical when none is checked
+	// out, the forked branch once it is. `live` is whether a fork exists; `active`
+	// is which lineage observe/time read by default.
+	fmt.sbprintf(
+		&b,
+		"}},\"branch\":{{\"live\":%s,\"active\":\"%s\"}}}}}}",
+		s.has_branch ? "true" : "false",
+		s.active_branch && s.has_branch ? "branch" : "canonical",
+	)
 	return strings.to_string(b)
 }
 

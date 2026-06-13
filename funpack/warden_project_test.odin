@@ -119,6 +119,37 @@ test_warden_holes_predicate_is_stub :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_warden_probes_predicate_is_debug_presence :: proc(t: ^testing.T) {
+	// probes ⇔ a non-empty `debug` field: the §05 §5 probe-name presence alone
+	// decides — a stub, a debt gtag, a todo, or any other field never makes a
+	// decl probed, and a probe-free decl's mandatory-present empty `debug` is
+	// not a match (the §29 §2 absence-is-empty-list shape). The empty-but-
+	// present [] is the probe-free case the empty-projection golden rides.
+	probed := decl_record_fixture(.Fn) // fixture stamps debug = ["probe"]
+	probed.stub = false
+	testing.expect(t, warden_probes_predicate(probed, ""))
+
+	multi := decl_record_fixture(.Behavior)
+	multi.stub = false
+	two := make([]string, 2, context.temp_allocator)
+	two[0], two[1] = "break", "log" // one decl, two probes — never deduped (§28 §4)
+	multi.debug = two
+	testing.expect(t, warden_probes_predicate(multi, ""))
+
+	// A stubbed, debt-tagged, todo-carrying decl with NO probe is not probed —
+	// the debug field is the sole discriminator, disjoint from holes/debt.
+	unprobed := decl_record_fixture(.Data)
+	unprobed.stub = true
+	unprobed.todo = true
+	unprobed.debug = nil
+	testing.expect(t, !warden_probes_predicate(unprobed, ""))
+
+	empty_present := decl_record_fixture(.Fn)
+	empty_present.debug = make([]string, 0, context.temp_allocator)
+	testing.expect(t, !warden_probes_predicate(empty_present, ""))
+}
+
+@(test)
 test_warden_debt_predicate_todo_or_debt_gtag :: proc(t: ^testing.T) {
 	// debt ⇔ todo == true OR "debt" ∈ gtags — each half alone matches, both
 	// together match (once), neither leaves the record out, and a non-debt
@@ -146,9 +177,10 @@ test_warden_debt_predicate_todo_or_debt_gtag :: proc(t: ^testing.T) {
 @(test)
 test_warden_verb_exit_empty_projection_zero :: proc(t: ^testing.T) {
 	// Empty-result-is-success at the verb tier: the planted fixture stream
-	// (data Board / signal Goal / fn add — no stubs, no gtags) matches
-	// neither query, and both commands still exit 0 printing nothing. The
-	// warden has no exit-1 tier; an empty projection is a clean verdict.
+	// (data Board / signal Goal / fn add — no stubs, no gtags, no probes)
+	// matches none of these queries, and each command still exits 0 printing
+	// nothing. The warden has no exit-1 tier; an empty projection is a clean
+	// verdict.
 	root, stream, _, _, ok := warden_stream_fixture(t)
 	if !ok {
 		return
@@ -158,8 +190,9 @@ test_warden_verb_exit_empty_projection_zero :: proc(t: ^testing.T) {
 		return
 	}
 	testing.expect_value(t, warden_verb_exit(root, .Holes), 0)
+	testing.expect_value(t, warden_verb_exit(root, .Probes), 0)
 	testing.expect_value(t, warden_verb_exit(root, .Debt), 0)
-	log.infof("warden projection: an empty holes/debt result exits 0 — empty output is success")
+	log.infof("warden projection: an empty holes/probes/debt result exits 0 — empty output is success")
 }
 
 @(test)

@@ -70,6 +70,7 @@ parse_build_mode :: proc(args: []string) -> (mode: Build_Mode, ok: bool) {
 Warden_Command :: enum {
 	Find,
 	Holes,
+	Probes,
 	Debt,
 	Graph,
 	Tags,
@@ -100,6 +101,8 @@ parse_warden_command :: proc(args: []string) -> (cmd: Warden_Command, arg: strin
 		cmd = .Find
 	case "holes":
 		cmd = .Holes
+	case "probes":
+		cmd = .Probes
 	case "debt":
 		cmd = .Debt
 	case "graph":
@@ -296,5 +299,5 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|fmt [--check]|warden <find [<name-query>] [--kind <kind>] [--gtag <tag>]|holes|debt|graph [<qualified_name>]|tags|pipeline>>")
+	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|fmt [--check]|warden <find [<name-query>] [--kind <kind>] [--gtag <tag>]|holes|probes|debt|graph [<qualified_name>]|tags|pipeline>>")
 }

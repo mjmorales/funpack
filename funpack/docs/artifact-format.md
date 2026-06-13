@@ -1,4 +1,4 @@
-# funpack artifact format — v17
+# funpack artifact format — v18
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 17
+funpack-artifact 18
 ```
 
-- `schema_version` is the integer after the space (here `17`).
+- `schema_version` is the integer after the space (here `18`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -292,7 +292,38 @@ funpack-artifact 17
   atlas record's NAME token change, plus a widened `[functions]` population); the
   three are field/keying/population layout changes: 16 → 17. A single-module,
   asset-less, level-less artifact (pong) moves by the version stamp alone (the v7
-  stamp-only restamp precedent).
+  stamp-only restamp precedent). v18 carries the **§28 §4 probe section** through to
+  the runtime — the in-code `@break`/`@watch`/`@log`/`@trace` directives a **live**
+  debug session honors. The §29 §2 Index Contract is the funpack-side record of every
+  probe (for operator review) and does **not** reach the runtime; for a live session
+  to honor an in-code probe the directive must ride the thing the runtime executes
+  (§28 §4 "Probes ride the executable artifact"). One layout change rides it: one new
+  section, `[probes P]` (§21), appended after `[assets]` as the new fixed §3 section
+  **tail** (the `[assets]`/`[nav]` tail precedent). Each record is one top-level kind
+  plus the existing §2.7 `node` body run: `probe KIND TARGET body_count` — `KIND` is
+  the closed §05 §5 directive family lowercased (`break`/`log`/`watch`/`trace`, the
+  **same** token the index `debug` field carries); `TARGET` is the probed
+  declaration's name (the §28 §2 "addressing reuses index identity" the runtime
+  resolves the probe against); `body_count` is `1` for a `@break`/`@log`/`@watch`
+  (whose predicate/expression rides as the single §2.7 node-forest subtree that
+  follows — **never** funpack source, §28 §2: the body is compiled funpack-side to a
+  node forest the runtime's interpreter folds when the probe is honored) and `0` for a
+  `@trace` (which carries no argument). `probe` is a new **top-level** record keyword,
+  **not** a sub-record keyword, so the §2.1 sub-record keyword set is unchanged: the
+  body `node` lines are the existing sub-records, so a probe-with-body is a
+  variable-length top-level record read by the **same** lead-line discipline as a
+  `[functions]` record. The section is **dev-only by construction**: the §29 §3
+  release debug-directive ban refuses the **whole** build before emission whenever any
+  declaration carries a probe under `--release` — exactly the v7 hole-ban / `stub`-node
+  precedent (a release artifact never carries a `stub` because the hole-ban refuses the
+  holed tree first), so a `--release` artifact's AST is probe-free and the emitter —
+  which stays mode-blind — writes the constant `[probes 0]` tail for it, the same
+  stamp-only move the `[assets 0]`/`[nav 0]` tails make. "Release artifacts hold no
+  introspection machinery" (§28) is therefore satisfied: a release artifact's `[probes]`
+  section is always empty. A new section is a layout change: 17 → 18. Every probe-free
+  artifact (every release artifact, plus a probe-free dev build) moves to v18 by the
+  version stamp plus this constant tail (the v7 stamp-only restamp / `[nav 0]` tail
+  precedent).
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -548,7 +579,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 17
+funpack-artifact 18
 [meta 2]
 …
 [enums N]
@@ -581,10 +612,15 @@ funpack-artifact 17
 …
 [assets N]
 …
+[probes N]
+…
 ```
 
 Sections with no records still emit their header with `N = 0` and no body lines,
-so a parser always reads a fixed sequence of headers.
+so a parser always reads a fixed sequence of headers. `[probes]` (§21) is the new
+fixed tail; it is **dev-only** content (§28 §4) but always emits its header — a
+release artifact and a probe-free dev build both write the constant `[probes 0]`
+tail, so the header sequence stays fixed and a reader never needs the build mode.
 
 ---
 
@@ -1354,6 +1390,67 @@ region NAME PX_X PX_Y PX_W PX_H
 
 ---
 
+## 21. `[probes]` — in-code debug directives (§28 §4, §05 §5, schema v18)
+
+The in-code `@break`/`@watch`/`@log`/`@trace` directives a **live** debug session
+honors. The §29 §2 Index Contract is the **funpack-side** record of every probe
+(for operator review) and does not reach the runtime; for a live session to honor
+an in-code probe the directive must ride the thing the runtime executes (§28 §4
+"Probes ride the executable artifact"). `[probes]` is the fixed final section of
+the §3 order (the new tail, after `[assets]`). One top-level record kind plus the
+existing §2.7 `node` body run:
+
+```
+probe KIND TARGET body_count
+node …
+…
+```
+
+- `probe KIND TARGET body_count` is one in-code directive, in **source-declaration
+  order** (the same `ast.decls` walk the §29 §2 index emits and the §29 §3 release
+  ban scans, then directive order within one declaration): `KIND` is the closed §05
+  §5 directive family lowercased — `break` (`@break(<pred>)`, pause when the
+  predicate holds), `log` (`@log(<expr>)`, emit the structured value each step),
+  `watch` (`@watch(<expr>)`, fire `watch_fired` on change), `trace` (`@trace`, record
+  the per-step transition) — the **same** token the index `debug` field carries, so
+  the two probe surfaces name a probe identically. `TARGET` is the probed
+  declaration's **name** (a name field, §2.6) — the behavior, stage, `data` field,
+  or other declaration the directive is attached to; the runtime addresses it by the
+  same §28 §2 index identity static structure and live state share. `body_count` is
+  the number of body `node` subtrees that follow: `1` for `@break`/`@log`/`@watch`
+  and `0` for `@trace`.
+- The body (when `body_count` is `1`) is the directive's predicate/expression as a
+  single §2.7 **node-forest** subtree — `@break`'s predicate over `self`/signals/
+  resources, `@log`/`@watch`'s value expression — encoded through the **same** `node`
+  run a `[functions]` body uses (§2.7), **never** as funpack source (§28 §2: the
+  runtime owns no funpack compiler; the body is compiled funpack-side to a node
+  forest the runtime's interpreter folds when the probe is honored). `@trace` carries
+  no argument, so its `body_count` is `0` and no body follows.
+- `probe` is a **top-level** record keyword, not a sub-record keyword (§2.1), so the
+  closed sub-record keyword set is unchanged; the body `node` lines are the existing
+  `node` sub-records, so a probe-with-body is a variable-length top-level record read
+  by the **single lead-line discipline** (§2.1) exactly like a `[functions]` record.
+- **Dev-only by construction.** A probe is **release-forbidden** (§28 §4: a
+  `@break`/`@log` in a `--release` build is a compile error), so the §29 §3 release
+  debug-directive ban refuses the **whole** build before any emission whenever a
+  declaration carries a probe under `--release` — exactly the v7 hole-ban / `stub`-node
+  precedent (a release artifact never carries a `stub` because the hole-ban refuses the
+  holed tree first). A `--release` artifact's checked AST is therefore probe-free, and
+  the emitter — which stays **mode-blind** — writes the constant empty tail `[probes
+  0]` for it. A probe-free **dev** build likewise writes `[probes 0]`. So "release
+  artifacts hold no introspection machinery" (§28) holds: a release artifact's
+  `[probes]` section is always empty, yet the header always emits, so a reader reads a
+  fixed §3 header sequence and never needs the build mode (which it cannot learn from
+  the artifact — §4 carries no build/platform field).
+- **funpack emits** the probe section into a dev-build artifact (this section); **the
+  runtime loads it and honors every probe** in a live session — that load+honor half
+  is a downstream task, not this format-side emission.
+- **Purity (§29).** The walk is source-declaration order over `ast.decls` (never map
+  order) and the body is the deterministic §2.7 node serialization, so two emissions
+  are byte-identical.
+
+---
+
 ## 20. Parsing recipe (runtime, zero funpack imports)
 
 A runtime parses an artifact thus, reading top-to-bottom, never seeking:
@@ -1382,8 +1479,8 @@ A runtime parses an artifact thus, reading top-to-bottom, never seeking:
    bodies, behaviors with their step bodies, the flattened pipeline, the routing
    map, the spawn batch, the binding table, the entrypoint, the query
    declarations with their index requirements, the tile layers, the nav graphs,
-   the sprite assets) and interpret the carried checked-AST nodes per the §09
-   canonical semantics.
+   the sprite assets, the debug probes) and interpret the carried checked-AST nodes
+   per the §09 canonical semantics.
 
 Because every section's `N` is the lead-line count, every record shapes its
 sub-records by declared scalar counts, every body `node` declares its `child_count`,

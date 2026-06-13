@@ -40,11 +40,14 @@ Session_Branch :: struct {
 	has_rng:         bool,
 }
 
-// control_request dispatches one control command. Every arm forks first
-// (ensure_branch — an implicit fork at the canonical head when no branch is
-// live), perturbs ONLY the branch, and answers with the branch position plus
-// `"warranted":false` (§28 §2: a control lineage is never warranted). The
-// canonical chain is read-only throughout.
+// control_request dispatches one control command. The PERTURBING arms
+// (branch / inject_input / set / spawn / emit / reload) fork first (ensure_branch
+// — an implicit fork at the canonical head when no branch is live), perturb ONLY
+// the branch, and answer with the branch position plus `"warranted":false` (§28
+// §2: a control lineage is never warranted). `checkout` is the lone NON-perturbing
+// arm: it forks nothing and only switches which already-committed lineage observe
+// reads (§28 §2 active-lineage selector). The canonical chain is read-only
+// throughout — every arm forks or navigates, none mutates the trunk.
 control_request :: proc(
 	s: ^Debug_Session,
 	id: i64,
@@ -55,6 +58,8 @@ control_request :: proc(
 	switch cmd {
 	case "branch":
 		return control_branch(s, id, args, allocator)
+	case "checkout":
+		return control_checkout(s, id, args, allocator)
 	case "inject_input":
 		return control_inject_input(s, id, args, allocator)
 	case "set":
@@ -161,6 +166,60 @@ control_branch :: proc(
 		return error_response(id, "branch", "tick out of range", allocator)
 	}
 	return control_ok_response(s, id, "branch", "", allocator)
+}
+
+// control_checkout switches the session's ACTIVE lineage (§28 §2: observe reads
+// the canonical chain by default, or the active branch once checked out). It is
+// the git-like `checkout` paired with `branch`'s fork: `branch` creates the
+// lineage, `checkout` makes it the one observe/time read WITHOUT a per-call
+// `branch` arg. The target is the live branch (default, or `target:"branch"`) or
+// `target:"canonical"`. Checking out the branch when NONE is live fails closed —
+// there is no such lineage to navigate to ("navigation among already-existing
+// lineages"). UNLIKE every other control command, checkout is NON-PERTURBING: it
+// forks nothing and mutates no recorded state, it only flips which already-
+// committed lineage the resolver reads, so the determinism warranty is untouched.
+@(private = "file")
+control_checkout :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	args: json.Object,
+	allocator := context.allocator,
+) -> string {
+	target := "branch"
+	if requested, has_target := json_string_field(args, "target"); has_target {
+		target = requested
+	}
+	switch target {
+	case "canonical":
+		s.active_branch = false
+		return checkout_ok_response(s, id, allocator)
+	case "branch":
+		if !s.has_branch {
+			return error_response(id, "checkout", "no branch to checkout — branch first", allocator)
+		}
+		s.active_branch = true
+		return checkout_ok_response(s, id, allocator)
+	}
+	return error_response(id, "checkout", "unknown checkout target (branch|canonical)", allocator)
+}
+
+// checkout_ok_response renders the checkout success: the now-active lineage and
+// the lineage's warranty (the canonical trunk is warranted; a forked branch is
+// not, §28 §2). Field order is fixed — byte-stable for the session log.
+@(private = "file")
+checkout_ok_response :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	allocator := context.allocator,
+) -> string {
+	b := strings.builder_make(allocator)
+	fmt.sbprintf(&b, "{{\"v\":%d,\"id\":%d,\"ok\":true,\"cmd\":\"checkout\",\"result\":{{\"active\":", INTROSPECT_PROTOCOL_VERSION, id)
+	if s.active_branch {
+		fmt.sbprintf(&b, "\"branch\",\"warranted\":false,\"branch\":{{\"base_tick\":%d,\"ticks\":%d}}}}}}", s.branch.base_tick, s.branch.ticks)
+	} else {
+		strings.write_string(&b, "\"canonical\",\"warranted\":true}}")
+	}
+	return strings.to_string(b)
 }
 
 // control_inject_input feeds the §23 action-snapshot path on the branch: the
@@ -543,16 +602,3 @@ control_reload :: proc(
 	return control_ok_response(s, id, "reload", ",\"swapped\":true", allocator)
 }
 
-// json_array_field reads one array field off a parsed request object.
-@(private = "file")
-json_array_field :: proc(object: json.Object, key: string) -> (values: json.Array, ok: bool) {
-	field, has := object[key]
-	if !has {
-		return nil, false
-	}
-	entries, is_array := field.(json.Array)
-	if !is_array {
-		return nil, false
-	}
-	return entries, true
-}

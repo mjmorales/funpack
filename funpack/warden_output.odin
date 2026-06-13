@@ -30,6 +30,8 @@ warden_command_output :: proc(
 		return warden_find_output(index, find, allocator)
 	case .Holes:
 		return warden_project_decls(index.decls, warden_holes_predicate, "", allocator)
+	case .Probes:
+		return warden_project_decls(index.decls, warden_probes_predicate, "", allocator)
 	case .Debt:
 		return warden_project_decls(index.decls, warden_debt_predicate, "", allocator)
 	case .Graph:

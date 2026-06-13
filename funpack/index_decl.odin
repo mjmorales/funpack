@@ -41,12 +41,18 @@
 //     carries the FLAG only — the parsed message/window stay AST-side, since
 //     §29 §2 names `todo` without content (a richer projection is a contract
 //     reshape, not this derivation).
-//   - debug          — the §05 §5 debug-probe directive names the parser
-//     records on every directive-carrying declaration node (node.probes):
-//     one lowercase directive name per probe ("break"/"log"/"watch"/"trace")
-//     in authored order, never deduped — the §28 §4 task-registration surface
-//     reports EVERY outstanding probe. [] on a probe-free decl and on a test
-//     block (the parser attaches no probes to a test).
+//   - debug          — the §05 §5 debug-probe directive names the declaration
+//     carries across ALL THREE §28 §4 probe positions: its declaration-prefix
+//     probes (node.probes) plus, for a data/thing/signal, every field's @watch
+//     (Field_Decl.probes — decl_probes_with_fields) and, for a pipeline, every
+//     stage's @trace (Pipeline_Stage.probes — decl_probes_with_stages). One
+//     lowercase directive name per probe ("break"/"log"/"watch"/"trace") in
+//     source order (declaration-prefix first, then fields/stages), never
+//     deduped — the §28 §4 task-registration surface reports EVERY outstanding
+//     probe, so a field @watch or a stage @trace surfaces on its carrying
+//     declaration's record, never unindexed. [] on a probe-free decl. A test
+//     block carries a probe only when one is mis-placed before it (the §28 §4
+//     placement gate then refuses the build, so a valid tree's test is []).
 //   - exposed        — the §05 §4 @expose flag the parser records on every
 //     directive-carrying declaration node (node.exposed, v5): true exactly
 //     when the declaration is published into the package/mod external
@@ -92,16 +98,16 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 		switch ref.kind {
 		case .Data:
 			decl := ast.datas[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields), decl.exposed))
+			append(&records, body_less_decl(module, decl.name, .Data, decl.line, decl.doc, decl.gtags, decl.todos, decl_probes_with_fields(decl.probes, decl.fields), fields_hold_stub(decl.fields), decl.exposed))
 		case .Enum:
 			decl := ast.enums[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, variants_hold_stub(decl.variants), decl.exposed))
+			append(&records, body_less_decl(module, decl.name, .Enum, decl.line, decl.doc, decl.gtags, decl.todos, decl_probes_with_variant_fields(decl.probes, decl.variants), variants_hold_stub(decl.variants), decl.exposed))
 		case .Thing:
 			decl := ast.things[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields), decl.exposed))
+			append(&records, body_less_decl(module, decl.name, .Thing, decl.line, decl.doc, decl.gtags, decl.todos, decl_probes_with_fields(decl.probes, decl.fields), fields_hold_stub(decl.fields), decl.exposed))
 		case .Signal:
 			decl := ast.signals[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, fields_hold_stub(decl.fields), decl.exposed))
+			append(&records, body_less_decl(module, decl.name, .Signal, decl.line, decl.doc, decl.gtags, decl.todos, decl_probes_with_fields(decl.probes, decl.fields), fields_hold_stub(decl.fields), decl.exposed))
 		case .Fn:
 			append(&records, fn_decl_record(module, ast.fns[ref.index]))
 		case .Query:
@@ -110,9 +116,12 @@ derive_decl_records :: proc(module: string, typed: Typed_Ast, flat: Flattened_Pi
 			append(&records, behavior_decl_record(module, ast.behaviors[ref.index], typed.env, flat.routes))
 		case .Pipeline:
 			// A pipeline declares stage names only — no expression position, so it
-			// can never hole.
+			// can never hole. Its `debug` field carries its own declaration-prefix
+			// probes plus every stage's @trace (decl_probes_with_stages), the §28 §4
+			// On-table's stage probe position, so a stage @trace surfaces on the
+			// pipeline's record.
 			decl := ast.pipelines[ref.index]
-			append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, false, decl.exposed))
+			append(&records, body_less_decl(module, decl.name, .Pipeline, decl.line, decl.doc, decl.gtags, decl.todos, decl_probes_with_stages(decl.probes, decl.stages), false, decl.exposed))
 		case .Let:
 			decl := ast.lets[ref.index]
 			append(&records, body_less_decl(module, decl.name, .Let, decl.line, decl.doc, decl.gtags, decl.todos, decl.probes, expr_holds_stub(decl.value), decl.exposed))
@@ -293,8 +302,11 @@ behavior_decl_record :: proc(
 // but a §15 StubExpr expression-position hole may stand in any assert/let
 // expression, so stub derives from the body walk (body_holds_stub, gates.odin
 // — the same walker the release hole-ban reads). The parser attaches no @todo
-// notes, no debug probes, and no @expose to a test block, so todo stays
-// false, debug [], and exposed false.
+// notes and no @expose to a test block, so todo stays false and exposed false.
+// A test is not in the §28 §4 On-table, so any probe before it is a placement
+// gate refusal (the parser carries it only so the gate can name the test) — a
+// valid tree's test is probe-free and its debug field is the mandatory-present
+// empty.
 test_decl_record :: proc(module: string, decl: Test_Node) -> Decl_Record {
 	return Decl_Record {
 		schema_version = INDEX_SCHEMA_VERSION,
@@ -552,6 +564,76 @@ probe_names :: proc(probes: []Debug_Probe) -> []string {
 		names[i] = probe_directive_name(probe.kind)
 	}
 	return names
+}
+
+// decl_probes_with_fields builds the per-declaration probe set a data/thing/
+// signal declaration projects into its `debug` index field: its own
+// declaration-prefix probes (decl.probes) FOLLOWED by every field's §05 §5
+// probe (Field_Decl.probes — the §28 §4 On-table admits a @watch on a `data`
+// field). The §29 §2 `debug` list is per-declaration, so a field @watch is the
+// SAME declaration's residue and must surface on the data decl's record — else
+// a field @watch slips through the index unseen (the §28 §4 task-registration
+// mandate: the operator sees every outstanding probe). Source order is
+// declaration-prefix first, then fields in declaration order — the order the
+// probes appear in source. In a valid tree the declaration-prefix set is empty
+// for these kinds (the §28 §4 placement gate rejects a decl-prefix probe on a
+// non-behavior), so this is in practice the field-probe list; concatenating
+// decl.probes keeps the derivation total and source-ordered regardless.
+decl_probes_with_fields :: proc(decl_probes: []Debug_Probe, fields: []Field_Decl) -> []Debug_Probe {
+	combined := make([dynamic]Debug_Probe, 0, len(decl_probes) + len(fields), context.temp_allocator)
+	for probe in decl_probes {
+		append(&combined, probe)
+	}
+	for field in fields {
+		for probe in field.probes {
+			append(&combined, probe)
+		}
+	}
+	return combined[:]
+}
+
+// decl_probes_with_variant_fields is decl_probes_with_fields for an enum: an
+// enum's only field positions are its struct-payload variants' fields. A
+// variant field never carries a probe in a parseable tree (a variant body is
+// not a `data` body, so parse_field_list rejects a field @watch there), so this
+// is in practice the declaration-prefix list; it stays total so a future
+// admitted variant-field probe surfaces on the enum's record without re-editing
+// the derivation.
+decl_probes_with_variant_fields :: proc(decl_probes: []Debug_Probe, variants: []Variant_Decl) -> []Debug_Probe {
+	combined := make([dynamic]Debug_Probe, 0, len(decl_probes), context.temp_allocator)
+	for probe in decl_probes {
+		append(&combined, probe)
+	}
+	for variant in variants {
+		for field in variant.fields {
+			for probe in field.probes {
+				append(&combined, probe)
+			}
+		}
+	}
+	return combined[:]
+}
+
+// decl_probes_with_stages builds the per-declaration probe set a pipeline
+// declaration projects into its `debug` index field: its own
+// declaration-prefix probes FOLLOWED by every stage's §05 §5 probe
+// (Pipeline_Stage.probes — the §28 §4 On-table admits a @trace on a stage), in
+// stage order. A stage @trace is the pipeline declaration's residue, so it must
+// surface on the pipeline's record — else a stage @trace slips through the
+// index unseen. In a valid tree the declaration-prefix set is empty (the
+// placement gate rejects a decl-prefix probe on a pipeline), so this is in
+// practice the stage-probe list.
+decl_probes_with_stages :: proc(decl_probes: []Debug_Probe, stages: []Pipeline_Stage) -> []Debug_Probe {
+	combined := make([dynamic]Debug_Probe, 0, len(decl_probes) + len(stages), context.temp_allocator)
+	for probe in decl_probes {
+		append(&combined, probe)
+	}
+	for stage in stages {
+		for probe in stage.probes {
+			append(&combined, probe)
+		}
+	}
+	return combined[:]
 }
 
 // probe_directive_name maps a closed Debug_Probe_Kind onto its source-authored

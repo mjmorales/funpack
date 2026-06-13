@@ -19,7 +19,7 @@ import "core:testing"
 // texture_layer below carries the atlas-bearing texture-resolution case), and
 // each palette tile carries its v17 atlas-cell coordinate (wall (0,0), floor (1,0)).
 TILEMAP_FIXTURE_ARTIFACT ::
-	"funpack-artifact 17\n" +
+	"funpack-artifact 18\n" +
 	"[tilemaps 1]\n" +
 	"tilemap terrain 16 4 3 0 206158430208 - 2\n" +
 	"tile wall true 0 0\n" +
@@ -109,7 +109,7 @@ test_load_tilemaps_populated_decodes :: proc(t: ^testing.T) {
 test_load_tilemaps_empty_section_still_loads :: proc(t: ^testing.T) {
 	// The `[tilemaps 0]` tail every level-less artifact emits keeps loading
 	// clean with zero layers (the pre-decode behavior, unchanged).
-	program, err := load_program("funpack-artifact 17\n[tilemaps 0]\n", context.temp_allocator)
+	program, err := load_program("funpack-artifact 18\n[tilemaps 0]\n", context.temp_allocator)
 	testing.expect_value(t, err, Artifact_Error.None)
 	testing.expect_value(t, len(program.tilemaps), 0)
 }
@@ -124,39 +124,39 @@ test_load_tilemaps_malformed_refused :: proc(t: ^testing.T) {
 	// `tile wall true 0 0` (5 tokens), one `row 0 0`.
 	malformed := [?]string {
 		// lead line: the retired v12 arity (no ATLAS field, the v17 8-token shape)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 4 3 0 0 2\ntile wall true 0 0\ntile floor false 1 0\nrow 0 0 0 0\nrow 0 0 0 0\nrow 0 0 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 4 3 0 0 2\ntile wall true 0 0\ntile floor false 1 0\nrow 0 0 0 0\nrow 0 0 0 0\nrow 0 0 0 0\n",
 		// lead line: non-numeric anchor
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 y - 1\ntile wall true 0 0\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 y - 1\ntile wall true 0 0\nrow 0 0\n",
 		// lead line: zero cell size (cell_of divides by it)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 0 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 0 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
 		// lead line: zero cols
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 0 1 0 0 - 1\ntile wall true 0 0\nrow\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 0 1 0 0 - 1\ntile wall true 0 0\nrow\n",
 		// lead line: non-numeric rows
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 x 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 x 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
 		// lead line: missing ATLAS token (v17 — the 8-token degenerate is a mismatch)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true 0 0\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 1\ntile wall true 0 0\nrow 0 0\n",
 		// sub-record run: a missing row line (declared ROWS=2, one present)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 2 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 2 0 0 - 1\ntile wall true 0 0\nrow 0 0\n",
 		// sub-record run: a surplus palette line (declared 1, two present)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\ntile floor false 1 0\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\ntile floor false 1 0\nrow 0 0\n",
 		// palette: a row line where a tile line is declared (the windows split positionally)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\nrow 0 0\ntile wall true 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\nrow 0 0\ntile wall true 0 0\n",
 		// palette: non-bool SOLID
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall yes 0 0\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall yes 0 0\nrow 0 0\n",
 		// palette: wrong arity (missing the v17 cell coords — the v12 3-token shape)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true\nrow 0 0\n",
 		// palette: non-numeric CELL_X (v17)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true x 0\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true x 0\nrow 0 0\n",
 		// palette: negative CELL_Y (v17 — a cell coordinate is non-negative)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 -1\nrow 0 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 -1\nrow 0 0\n",
 		// row: wrong arity (one cell on a 2-col grid)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0\n",
 		// row: a palette index past the declared palette
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 1\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 1\n",
 		// row: a negative palette index (the `-` form is the only tile-less spelling)
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 -2\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 -2\n",
 		// row: a non-numeric cell
-		"funpack-artifact 17\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 z\n",
+		"funpack-artifact 18\n[tilemaps 1]\ntilemap terrain 16 2 1 0 0 - 1\ntile wall true 0 0\nrow 0 z\n",
 	}
 	for artifact in malformed {
 		_, err := load_program(artifact, context.temp_allocator)

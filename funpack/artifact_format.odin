@@ -285,7 +285,37 @@ import "core:strings"
 // are field/keying/population layout changes: 16 → 17 (§1). A single-module, asset-less,
 // level-less artifact (pong) moves by the version stamp alone (the v7 stamp-only restamp
 // precedent). ADR 2026-06-12-v17-textured-render-cross-boundary-links.
-ARTIFACT_SCHEMA_VERSION :: 17
+//
+// Version 18 carries the §28 §4 PROBE SECTION through to the runtime — the in-code
+// @break/@watch/@log/@trace directives a LIVE debug session honors. The §29 §2 index
+// contract is the funpack-side record of every probe (for operator review) and does
+// NOT reach the runtime; for a live session to honor an in-code probe the directive
+// must ride the thing the runtime executes, so the dev-build artifact gains a probe
+// section (spec §28 §4 "Probes ride the executable artifact"). One layout change rides
+// it: one new section, `[probes P]`, appended after [assets] as the new fixed §3 section
+// TAIL (the [assets]/[nav] tail precedent). Each record is one top-level kind plus the
+// existing `node` body run: `probe KIND TARGET body_count` — KIND is the closed §05 §5
+// directive family lowercased (`break`/`log`/`watch`/`trace`, the same token the index
+// `debug` field carries); TARGET is the probed declaration's NAME (the §28 §2 "addressing
+// reuses index identity" the runtime resolves the probe against); body_count is 1 for a
+// @break/@log/@watch (whose predicate/expression rides as the single §2.7 node-forest
+// subtree that follows — NEVER funpack source, §28 §2: the body is compiled funpack-side
+// to a node forest and folded by the runtime's interpreter when the probe is honored) and
+// 0 for a @trace (which carries no argument). `probe` is a new TOP-LEVEL record keyword,
+// NOT a sub-record keyword, so SUB_RECORD_KEYWORDS is unchanged: the body `node` lines are
+// the existing sub-records, so a probe-with-body is a variable-length top-level record read
+// by the SAME lead-line discipline as a [functions] record. The section is DEV-ONLY by
+// construction: the §29 §3 release debug-directive ban (Build_Error.Debug_Directive) refuses
+// the WHOLE build before emission whenever any declaration carries a probe under --release —
+// exactly the v7 hole-ban / `stub`-node precedent (a release artifact never carries a `stub`
+// because the hole-ban refuses the holed tree first). So a --release artifact's AST is
+// probe-free, and the emitter — which stays mode-blind — writes the constant `[probes 0]`
+// tail for it, the same stamp-only move the [assets 0]/[nav 0] tails make. A probe-free dev
+// build likewise writes `[probes 0]`. A new section is a layout change: 17 → 18 (§1). Every
+// probe-free artifact (every release artifact, plus a probe-free dev build) moves to v18 by
+// the version stamp plus this constant tail (the v7 stamp-only restamp / [nav 0] tail
+// precedent). ADRs 2026-06-12-probes-ride-the-artifact, 2026-06-12-28-value-language-node-forests.
+ARTIFACT_SCHEMA_VERSION :: 18
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

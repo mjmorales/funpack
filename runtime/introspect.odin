@@ -64,11 +64,29 @@ Debug_Session :: struct {
 	// mutated). At most one live branch; a `branch` command re-forks it.
 	has_branch: bool,
 	branch:     Session_Branch,
+	// The §28 §2 active-lineage selector: false = the canonical chain is the
+	// observe/time default, true = the live branch is. A `checkout` command flips
+	// it to the branch ("navigation among already-existing lineages"), so
+	// subsequent observe/time commands read the branch WITHOUT a per-call `branch`
+	// arg; `checkout{canonical}` flips it back. Observe is non-perturbing whether
+	// canonical or branch — checkout mutates no recorded state, only which already-
+	// committed lineage the resolver reads.
+	active_branch: bool,
 	// The §28 §3 time-travel cursor (introspect_time.odin): the load/run/pause/
 	// step/rewind/reset/status position over the recorded timeline, with its
 	// bounded fixed-cadence snapshot ring. Observe-class — it never writes the
 	// canonical chain.
 	cursor:     Time_Cursor,
+	// The §28 §3 live break/watch registry (introspect_break.odin): the
+	// dynamically-set break/watch probes a session sets over the wire — the live
+	// counterpart to the artifact-carried @break/@watch (§28 §4). Each carries a
+	// stable session handle so `clear` removes it by id. OBSERVE-CLASS: a live
+	// break/watch is honored by re-folding the recording with these probes armed
+	// (the SAME honor seam in-code probes ride, probes.odin), which builds its own
+	// scratch chain and never touches the canonical chain — so setting a live probe
+	// is non-perturbing, exactly like an in-code one.
+	live_probes:  [dynamic]Live_Probe,
+	next_handle:  int, // monotonic per-session handle minted for each live probe
 }
 
 // open_debug_session folds a recorded run once through the production seam
@@ -124,11 +142,92 @@ open_debug_session :: proc(
 	return session
 }
 
-// session_version_at resolves a tick ordinal onto the retained committed chain:
+// Read_Lineage is the §28 §2 observe-addressing selector: the canonical version
+// chain, or the live forked branch. It is a CLOSED two-value set — the model
+// holds at most one live branch, so "a forked branch" collapses to "the branch".
+Read_Lineage :: enum {
+	Canonical,
+	Branch,
+}
+
+// session_read_lineage resolves which lineage an observe command reads: an
+// explicit per-call `branch` arg (§28 §2: "an optional `branch` argument") wins,
+// otherwise the session default (the active-lineage selector a `checkout` flips).
+// `branch:"canonical"` forces the trunk for one call even while checked out;
+// `branch:"branch"` forces the fork. An unknown selector, or naming the branch
+// when none is live, is ok=false — the request layer turns it into a refusal.
+session_read_lineage :: proc(
+	s: ^Debug_Session,
+	args: json.Object,
+) -> (
+	lineage: Read_Lineage,
+	ok: bool,
+) {
+	if name, has := json_string_field(args, "branch"); has {
+		switch name {
+		case "canonical":
+			return .Canonical, true
+		case "branch":
+			if !s.has_branch {
+				return .Canonical, false
+			}
+			return .Branch, true
+		}
+		return .Canonical, false
+	}
+	if s.active_branch && s.has_branch {
+		return .Branch, true
+	}
+	return .Canonical, true
+}
+
+// observe_refold_on_canonical guards the re-fold observe commands (signals /
+// trace / replay_behavior): a re-fold replays a RECORDED tick from its retained
+// snapshot, which only the canonical chain has — a branch tick advanced through
+// control folds, not the recording, so it has no snapshot to re-fold. The guard
+// returns true only when the addressed lineage is canonical (no `branch` arg and
+// not checked out, or `branch:"canonical"` explicitly); a branch address fails
+// closed at the caller rather than silently re-folding the trunk.
+observe_refold_on_canonical :: proc(s: ^Debug_Session, args: json.Object) -> bool {
+	lineage, ok := session_read_lineage(s, args)
+	return ok && lineage == .Canonical
+}
+
+// session_version_at resolves a tick ordinal onto the SESSION-DEFAULT lineage's
+// retained committed chain (canonical, or the active branch once checked out):
 // -1 is the post-startup version (the state tick 0 folds from), 0..n-1 the
 // committed result of that tick. Out-of-range is ok=false — the request layer
 // turns it into a refusal, never a crash.
 session_version_at :: proc(s: ^Debug_Session, tick: int) -> (version: World_Version, ok: bool) {
+	default := s.active_branch && s.has_branch ? Read_Lineage.Branch : Read_Lineage.Canonical
+	return session_version_on(s, default, tick)
+}
+
+// session_version_on resolves a tick ordinal on a NAMED lineage. The canonical
+// arm reads the retained trunk chain. The branch arm reads the fork: a branch
+// retains its pre-fork history shared with canonical (it forked off the trunk at
+// base_tick — structural sharing makes ticks ≤ base_tick value-identical) and its
+// current committed head at the branch's logical tip. Ticks strictly between the
+// fork point and the tip are NOT retained on the branch (the branch holds only
+// its head), so they are ok=false — the resolver fails closed rather than reading
+// a stale trunk version while the branch is the addressed lineage.
+session_version_on :: proc(
+	s: ^Debug_Session,
+	lineage: Read_Lineage,
+	tick: int,
+) -> (
+	version: World_Version,
+	ok: bool,
+) {
+	if lineage == .Branch && s.has_branch {
+		if tick <= s.branch.base_tick {
+			return session_version_on(s, .Canonical, tick)
+		}
+		if tick == branch_tip_tick(s) {
+			return s.branch.head, true
+		}
+		return {}, false
+	}
 	if tick == -1 {
 		return s.startup, true
 	}
@@ -136,6 +235,13 @@ session_version_at :: proc(s: ^Debug_Session, tick: int) -> (version: World_Vers
 		return {}, false
 	}
 	return s.versions[tick], true
+}
+
+// branch_tip_tick is the logical tick ordinal of the live branch's committed
+// head — the canonical numbering continued past the fork point by the branch's
+// own commits (the §28 §2 forked lineage's current position).
+branch_tip_tick :: proc(s: ^Debug_Session) -> int {
+	return s.branch.base_tick + s.branch.ticks
 }
 
 // session_capture digests the session's retained canonical chain exactly as the
@@ -341,11 +447,15 @@ session_request :: proc(
 		return observe_replay_behavior(s, id, args, allocator)
 	case "draw_list":
 		return observe_draw_list(s, id, args, allocator)
+	case "screenshot":
+		return observe_screenshot(s, id, args, allocator)
 	case "load", "run", "pause", "step", "rewind", "reset", "status":
 		return time_request(s, id, cmd, args, allocator)
+	case "break", "watch", "clear":
+		return break_request(s, id, cmd, args, allocator)
 	case "capture_test":
 		return capture_test_request(s, id, args, allocator)
-	case "branch", "inject_input", "set", "spawn", "emit", "reload":
+	case "branch", "checkout", "inject_input", "set", "spawn", "emit", "reload":
 		return control_request(s, id, cmd, args, allocator)
 	}
 	return error_response(id, cmd, "unknown command", allocator)
@@ -389,6 +499,9 @@ observe_signals :: proc(
 	tick, has_tick := json_int_field(args, "tick")
 	if !has_tick {
 		return error_response(id, "signals", "missing args.tick", allocator)
+	}
+	if !observe_refold_on_canonical(s, args) {
+		return error_response(id, "signals", "branch refold unsupported — signals re-folds a recorded tick (canonical only)", allocator)
 	}
 	obs := new_tick_observe(allocator)
 	if _, ok := session_refold_tick(s, int(tick), &obs, allocator); !ok {
@@ -437,6 +550,9 @@ observe_trace :: proc(
 	behavior_name, has_behavior := json_string_field(args, "behavior")
 	if !has_tick || !has_behavior {
 		return error_response(id, "trace", "missing args.tick or args.behavior", allocator)
+	}
+	if !observe_refold_on_canonical(s, args) {
+		return error_response(id, "trace", "branch refold unsupported — trace re-folds a recorded tick (canonical only)", allocator)
 	}
 	behavior := program_behavior(s.program, behavior_name)
 	if behavior == nil {
@@ -520,8 +636,12 @@ observe_diff :: proc(
 	if !has_from || !has_to {
 		return error_response(id, "diff", "missing args.from or args.to", allocator)
 	}
-	from_version, from_ok := session_version_at(s, int(from_tick))
-	to_version, to_ok := session_version_at(s, int(to_tick))
+	lineage, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return error_response(id, "diff", "unknown branch — checkout an existing lineage", allocator)
+	}
+	from_version, from_ok := session_version_on(s, lineage, int(from_tick))
+	to_version, to_ok := session_version_on(s, lineage, int(to_tick))
 	if !from_ok || !to_ok {
 		return error_response(id, "diff", "tick out of range", allocator)
 	}
@@ -679,6 +799,9 @@ observe_replay_behavior :: proc(
 	if !has_tick || !has_behavior {
 		return error_response(id, "replay_behavior", "missing args.tick or args.behavior", allocator)
 	}
+	if !observe_refold_on_canonical(s, args) {
+		return error_response(id, "replay_behavior", "branch refold unsupported — replay_behavior re-folds a recorded tick (canonical only)", allocator)
+	}
 	behavior := program_behavior(s.program, behavior_name)
 	if behavior == nil {
 		return error_response(id, "replay_behavior", "unknown behavior", allocator)
@@ -743,12 +866,22 @@ observe_draw_list :: proc(
 	if !has_tick {
 		return error_response(id, "draw_list", "missing args.tick", allocator)
 	}
-	version, ok := session_version_at(s, int(tick))
+	lineage, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return error_response(id, "draw_list", "unknown branch — checkout an existing lineage", allocator)
+	}
+	version, ok := session_version_on(s, lineage, int(tick))
 	if !ok || int(tick) < 0 {
 		return error_response(id, "draw_list", "tick out of range", allocator)
 	}
+	// The recorded snapshot drives render-behavior input on the canonical chain;
+	// a branch tick at-or-beyond the fork carries no recorded snapshot (the branch
+	// advanced through control folds, not the recording), so the projection reads
+	// empty input there — render is a pure post-commit projection of the committed
+	// world, so this is the deterministic branch-tip draw list.
+	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
-	draw := render_version(s.program, version, s.snapshots[int(tick)], time, allocator)
+	draw := render_version(s.program, version, input, time, allocator)
 	b := strings.builder_make(allocator)
 	ok_response_open(&b, id, "draw_list")
 	fmt.sbprintf(&b, "{{\"tick\":%d,\"commands\":[", tick)
@@ -761,6 +894,97 @@ observe_draw_list :: proc(
 		write_json_string(&b, strings.to_string(encoded))
 	}
 	strings.write_string(&b, "]}}")
+	return strings.to_string(b)
+}
+
+// observe_screenshot is the §28 §3 render-crossing TWIN of draw_list — and the one
+// observe command that is explicitly NOT sim-pure (§28 §2). draw_list dumps the
+// deterministic draw-list and stops at it; screenshot CROSSES the render/present
+// boundary to capture the presented frame as pixels (§28: "the lone visual artifact,
+// requested programmatically"). The pixel surface is rasterized/letterboxed/post —
+// §20 §5 "pixels are not deterministic and need not be" — so it is bound to the
+// impure FUNPACK_LIVE present path; the headless default build (no display) routes
+// the command but returns a defined "requires live present" refusal rather than a
+// crash. Both commands re-project the SAME committed version (render is a pure
+// post-commit projection, so re-projecting commits nothing — the canonical chain is
+// untouched and the observe-non-perturbing warranty holds for both).
+//
+// The §20 §5 deterministic half rides along on demand: `include_drawlist:true`
+// appends the draw-list as data (the SAME render_draw_cmd_text encoding draw_list
+// emits) — "screenshot{include_drawlist} returns it as data". Default false: the lean
+// visual-only capture.
+//
+// The pixel capture + its QOI encoding live ENTIRELY behind the FUNPACK_LIVE gate
+// (session_capture_frame returns the base64-QOI string directly): the codec
+// (core:image/qoi → core:compress) is an impure present-boundary dependency, so it
+// stays out of the always-compiled deterministic translation unit (which would
+// otherwise pull a heavy codec graph into the headless test binary). This keeps the
+// runtime's pure core import-clean and matches capture_test's inline-artifact
+// convention: the runtime writes no file, the client persists the returned artifact.
+@(private = "file")
+observe_screenshot :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	args: json.Object,
+	allocator := context.allocator,
+) -> string {
+	tick, has_tick := json_int_field(args, "tick")
+	if !has_tick {
+		return error_response(id, "screenshot", "missing args.tick", allocator)
+	}
+	lineage, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return error_response(id, "screenshot", "unknown branch — checkout an existing lineage", allocator)
+	}
+	version, ok := session_version_on(s, lineage, int(tick))
+	if !ok || int(tick) < 0 {
+		return error_response(id, "screenshot", "tick out of range", allocator)
+	}
+	// Re-project the committed tick to the draw-list (the SAME projection draw_list
+	// reads): a branch tick past the fork carries no recorded snapshot, so it projects
+	// empty input there — render is a pure post-commit projection of the committed
+	// world (identical to observe_draw_list's branch-tip handling).
+	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
+	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
+	draw := render_version(s.program, version, input, time, allocator)
+
+	// CROSS THE PRESENT BOUNDARY: capture the rasterized frame as base64-encoded QOI
+	// (the Odin-first lossless encoder; core:image/png is decode-only in this
+	// toolchain). Under FUNPACK_LIVE this paints the draw-list through an offscreen
+	// software surface, reads the pixels back, and encodes them; the headless build
+	// has no display, so the capture fails closed and the command reports the defined
+	// boundary refusal — never a crash, never a silent empty frame (the §28 contract:
+	// screenshot needs the impure present path).
+	encoded, width, height, captured := session_capture_frame(s.program, draw, allocator)
+	if !captured {
+		return error_response(
+			id,
+			"screenshot",
+			"screenshot crosses the render/present boundary — requires a FUNPACK_LIVE build with a display (use draw_list for the sim-pure, headless draw-list dump)",
+			allocator,
+		)
+	}
+
+	b := strings.builder_make(allocator)
+	ok_response_open(&b, id, "screenshot")
+	fmt.sbprintf(&b, "{{\"tick\":%d,\"width\":%d,\"height\":%d,\"format\":\"qoi\",\"pixels\":", tick, width, height)
+	write_json_string(&b, encoded)
+	// §20 §5: the deterministic draw-list rides along when the client asks for it —
+	// screenshot{include_drawlist} returns it as data, the SAME encoding draw_list
+	// emits. The default (absent/false) is the lean visual-only capture.
+	if include, _ := json_bool_field(args, "include_drawlist"); include {
+		strings.write_string(&b, ",\"commands\":[")
+		for cmd, i in draw.cmds {
+			if i > 0 {
+				strings.write_byte(&b, ',')
+			}
+			cmd_text := strings.builder_make(allocator)
+			render_draw_cmd_text(&cmd_text, cmd)
+			write_json_string(&b, strings.to_string(cmd_text))
+		}
+		strings.write_byte(&b, ']')
+	}
+	strings.write_string(&b, "}}")
 	return strings.to_string(b)
 }
 
@@ -851,6 +1075,37 @@ json_string_field :: proc(object: json.Object, key: string) -> (value: string, o
 	return text, true
 }
 
+// json_bool_field reads one boolean field off a parsed request object — an absent
+// or non-boolean field is ok=false (the caller's default), so an optional flag like
+// screenshot's `include_drawlist` defaults off when the arg is omitted.
+json_bool_field :: proc(object: json.Object, key: string) -> (value: bool, ok: bool) {
+	field, has := object[key]
+	if !has {
+		return false, false
+	}
+	flag, is_bool := field.(json.Boolean)
+	if !is_bool {
+		return false, false
+	}
+	return flag, true
+}
+
+// json_array_field reads one array field off a parsed request object — an absent or
+// non-array field is ok=false. Shared by the control side (inject_input's
+// pressed/held/values/axes entry lists) and the break group (break/watch's `body`
+// node-forest line array).
+json_array_field :: proc(object: json.Object, key: string) -> (values: json.Array, ok: bool) {
+	field, has := object[key]
+	if !has {
+		return nil, false
+	}
+	entries, is_array := field.(json.Array)
+	if !is_array {
+		return nil, false
+	}
+	return entries, true
+}
+
 // --- The funpack value encoding (the §28 §2 "funpack values as strings") ----
 
 // write_encoded_value JSON-quotes one interpreter Value rendered in the artifact
@@ -899,8 +1154,10 @@ write_encoded_blackboard :: proc(
 }
 
 // sorted_blackboard_names returns a blackboard's field names in sorted order —
-// the deterministic render order (map iteration order is not).
-@(private = "file")
+// the deterministic render order (map iteration order is not). Package-visible:
+// the §28 §4 probe-honor serialization (probes.odin) reuses it to dump the
+// breakpoint_hit/trace blackboard payload in the same deterministic order the
+// observe trace renders.
 sorted_blackboard_names :: proc(
 	fields: map[string]Field_Value,
 	allocator := context.allocator,

@@ -1324,6 +1324,201 @@ test_parse_trace_probe_with_arg_rejected :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Parse_Error.Probe_Unexpected_Arg)
 }
 
+// Field-/stage-granular debug probes (spec §28 §4 On-table): @watch prefixes a
+// `data` FIELD and @trace prefixes a pipeline STAGE entry — the grammar puts
+// Annotation* on FieldDecl and StageEntry (fun.ebnf §5/§9), and the probe is
+// carried onto the field/stage the same way a declaration-prefix probe is.
+
+@(test)
+test_parse_watch_probe_on_data_field :: proc(t: ^testing.T) {
+	// `@watch(<expr>)` on a `data` field (spec §28 §4 On-table): the field
+	// carries the probe; an unprefixed sibling carries none. The argument is the
+	// same funpack expression the declaration-prefix @watch takes — here a
+	// member access, asserted by shape.
+	source := "data Board {\n" +
+		"  @watch(self.score)\n" +
+		"  score: Int\n" +
+		"  high: Int\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	if err != .None {
+		return
+	}
+	fields := ast.datas[0].fields
+	testing.expect_value(t, len(fields), 2)
+	testing.expect_value(t, len(fields[0].probes), 1)
+	if len(fields[0].probes) == 1 {
+		probe := fields[0].probes[0]
+		testing.expect_value(t, probe.kind, Debug_Probe_Kind.Watch)
+		testing.expect_value(t, probe.line, 2)
+		_, is_member := probe.arg.(^Member_Expr)
+		testing.expect(t, is_member)
+	}
+	testing.expect_value(t, len(fields[1].probes), 0)
+}
+
+@(test)
+test_parse_watch_probe_on_data_field_inline :: proc(t: ^testing.T) {
+	// The grammar puts no line break between a field's directives and its name
+	// (fun.ebnf §5: Annotation* LOWER_IDENT), so the inline spelling parses too —
+	// attached to the field that follows, the inline-@migrate mold.
+	source := "data Board { @watch(score) score: Int }\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	if err != .None {
+		return
+	}
+	field := ast.datas[0].fields[0]
+	testing.expect_value(t, len(field.probes), 1)
+	if len(field.probes) == 1 {
+		testing.expect_value(t, field.probes[0].kind, Debug_Probe_Kind.Watch)
+	}
+}
+
+@(test)
+test_parse_trace_probe_on_pipeline_stage :: proc(t: ^testing.T) {
+	// `@trace` on a pipeline stage entry (spec §28 §4 On-table): the stage
+	// carries the probe with a nil arg (@trace takes none); a bordering
+	// unprefixed stage carries none, and the stage's value form (behavior list
+	// or battery) is unaffected.
+	source := "pipeline Game {\n" +
+		"  @trace\n" +
+		"  control: [move]\n" +
+		"  render:  [draw]\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	if err != .None {
+		return
+	}
+	stages := ast.pipelines[0].stages
+	testing.expect_value(t, len(stages), 2)
+	testing.expect_value(t, stages[0].name, "control")
+	testing.expect_value(t, len(stages[0].probes), 1)
+	if len(stages[0].probes) == 1 {
+		probe := stages[0].probes[0]
+		testing.expect_value(t, probe.kind, Debug_Probe_Kind.Trace)
+		testing.expect(t, probe.arg == nil)
+		testing.expect_value(t, probe.line, 2)
+	}
+	testing.expect_value(t, len(stages[0].behaviors), 1)
+	testing.expect_value(t, len(stages[1].probes), 0)
+}
+
+@(test)
+test_parse_trace_probe_on_battery_stage :: proc(t: ^testing.T) {
+	// @trace rides the bare-battery stage form too (`physics: solve`), not only
+	// a behavior-list stage — the carry is on the stage entry, independent of
+	// its value shape.
+	source := "pipeline Yard {\n" +
+		"  @trace\n" +
+		"  physics: solve\n" +
+		"}\n"
+	ast, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.None)
+	if err != .None {
+		return
+	}
+	stage := ast.pipelines[0].stages[0]
+	testing.expect(t, stage.is_battery)
+	testing.expect_value(t, stage.battery, "solve")
+	testing.expect_value(t, len(stage.probes), 1)
+	if len(stage.probes) == 1 {
+		testing.expect_value(t, stage.probes[0].kind, Debug_Probe_Kind.Trace)
+	}
+}
+
+@(test)
+test_parse_watch_probe_on_thing_field_rejected :: proc(t: ^testing.T) {
+	// The On-table admits @watch on a `data` field, NOT a `thing` field — a
+	// `thing`/`singleton`/`signal` field is not a `data` record field (spec §03
+	// §1, §06). A field @watch outside a `data` body is the keyed
+	// Probe_Wrong_Target verdict, the `data`-only gate @migrate uses.
+	source := "thing Marker {\n" +
+		"  @watch(self.pos)\n" +
+		"  pos: Int\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Wrong_Target)
+}
+
+@(test)
+test_parse_field_break_probe_rejected :: proc(t: ^testing.T) {
+	// @break/@log/@trace observe a behavior or a stage, never a field (spec §28
+	// §4 On-table) — a field-position @break is the keyed Probe_Wrong_Target
+	// verdict, never a silently dropped probe or a generic token error.
+	source := "data Board {\n" +
+		"  @break(score > 9)\n" +
+		"  score: Int\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Wrong_Target)
+}
+
+@(test)
+test_parse_field_watch_dangling_rejected :: proc(t: ^testing.T) {
+	// A @watch with no field following it watches nothing — dangling at the
+	// body's close is Probe_Wrong_Target (the dangling-@migrate mold).
+	source := "data Board {\n" +
+		"  score: Int\n" +
+		"  @watch(self.score)\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Wrong_Target)
+}
+
+@(test)
+test_parse_field_watch_missing_arg_rejected :: proc(t: ^testing.T) {
+	// A field @watch with no `(expr)` names nothing to watch — the same
+	// Probe_Missing_Arg verdict the declaration-prefix form gives, parsed
+	// through the field body's @watch arm.
+	source := "data Board {\n" +
+		"  @watch\n" +
+		"  score: Int\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Missing_Arg)
+}
+
+@(test)
+test_parse_stage_watch_probe_rejected :: proc(t: ^testing.T) {
+	// The On-table admits @trace on a stage, NOT @watch (a field/behavior probe)
+	// — a stage-position @watch is the keyed Probe_Wrong_Target verdict.
+	source := "pipeline Game {\n" +
+		"  @watch(self.x)\n" +
+		"  control: [move]\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Wrong_Target)
+}
+
+@(test)
+test_parse_stage_trace_unexpected_arg_rejected :: proc(t: ^testing.T) {
+	// `@trace(expr)` on a stage is malformed — @trace takes no argument (spec
+	// §05 §5; fun.ebnf §1 DebugDirective) — the named Probe_Unexpected_Arg
+	// verdict, the declaration-prefix @trace mold.
+	source := "pipeline Game {\n" +
+		"  @trace(self.x)\n" +
+		"  control: [move]\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Probe_Unexpected_Arg)
+}
+
+@(test)
+test_parse_stage_migrate_rejected :: proc(t: ^testing.T) {
+	// @migrate is a `data`-field / type-declaration directive (spec §05 §6); a
+	// stage entry is neither, so a non-probe @-form there is the generic token
+	// error, mirroring the field-body default for non-@migrate/@watch forms.
+	source := "pipeline Game {\n" +
+		"  @migrate(from: \"old\")\n" +
+		"  control: [move]\n" +
+		"}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
+}
+
 @(test)
 test_parse_todo_all_duration_units :: proc(t: ^testing.T) {
 	// The relative-duration window `<int>` + unit (spec §05 §2, §29 §4)
