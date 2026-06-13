@@ -64,6 +64,14 @@ Debug_Session :: struct {
 	// mutated). At most one live branch; a `branch` command re-forks it.
 	has_branch: bool,
 	branch:     Session_Branch,
+	// The §28 §2 active-lineage selector: false = the canonical chain is the
+	// observe/time default, true = the live branch is. A `checkout` command flips
+	// it to the branch ("navigation among already-existing lineages"), so
+	// subsequent observe/time commands read the branch WITHOUT a per-call `branch`
+	// arg; `checkout{canonical}` flips it back. Observe is non-perturbing whether
+	// canonical or branch — checkout mutates no recorded state, only which already-
+	// committed lineage the resolver reads.
+	active_branch: bool,
 	// The §28 §3 time-travel cursor (introspect_time.odin): the load/run/pause/
 	// step/rewind/reset/status position over the recorded timeline, with its
 	// bounded fixed-cadence snapshot ring. Observe-class — it never writes the
@@ -124,11 +132,92 @@ open_debug_session :: proc(
 	return session
 }
 
-// session_version_at resolves a tick ordinal onto the retained committed chain:
+// Read_Lineage is the §28 §2 observe-addressing selector: the canonical version
+// chain, or the live forked branch. It is a CLOSED two-value set — the model
+// holds at most one live branch, so "a forked branch" collapses to "the branch".
+Read_Lineage :: enum {
+	Canonical,
+	Branch,
+}
+
+// session_read_lineage resolves which lineage an observe command reads: an
+// explicit per-call `branch` arg (§28 §2: "an optional `branch` argument") wins,
+// otherwise the session default (the active-lineage selector a `checkout` flips).
+// `branch:"canonical"` forces the trunk for one call even while checked out;
+// `branch:"branch"` forces the fork. An unknown selector, or naming the branch
+// when none is live, is ok=false — the request layer turns it into a refusal.
+session_read_lineage :: proc(
+	s: ^Debug_Session,
+	args: json.Object,
+) -> (
+	lineage: Read_Lineage,
+	ok: bool,
+) {
+	if name, has := json_string_field(args, "branch"); has {
+		switch name {
+		case "canonical":
+			return .Canonical, true
+		case "branch":
+			if !s.has_branch {
+				return .Canonical, false
+			}
+			return .Branch, true
+		}
+		return .Canonical, false
+	}
+	if s.active_branch && s.has_branch {
+		return .Branch, true
+	}
+	return .Canonical, true
+}
+
+// observe_refold_on_canonical guards the re-fold observe commands (signals /
+// trace / replay_behavior): a re-fold replays a RECORDED tick from its retained
+// snapshot, which only the canonical chain has — a branch tick advanced through
+// control folds, not the recording, so it has no snapshot to re-fold. The guard
+// returns true only when the addressed lineage is canonical (no `branch` arg and
+// not checked out, or `branch:"canonical"` explicitly); a branch address fails
+// closed at the caller rather than silently re-folding the trunk.
+observe_refold_on_canonical :: proc(s: ^Debug_Session, args: json.Object) -> bool {
+	lineage, ok := session_read_lineage(s, args)
+	return ok && lineage == .Canonical
+}
+
+// session_version_at resolves a tick ordinal onto the SESSION-DEFAULT lineage's
+// retained committed chain (canonical, or the active branch once checked out):
 // -1 is the post-startup version (the state tick 0 folds from), 0..n-1 the
 // committed result of that tick. Out-of-range is ok=false — the request layer
 // turns it into a refusal, never a crash.
 session_version_at :: proc(s: ^Debug_Session, tick: int) -> (version: World_Version, ok: bool) {
+	default := s.active_branch && s.has_branch ? Read_Lineage.Branch : Read_Lineage.Canonical
+	return session_version_on(s, default, tick)
+}
+
+// session_version_on resolves a tick ordinal on a NAMED lineage. The canonical
+// arm reads the retained trunk chain. The branch arm reads the fork: a branch
+// retains its pre-fork history shared with canonical (it forked off the trunk at
+// base_tick — structural sharing makes ticks ≤ base_tick value-identical) and its
+// current committed head at the branch's logical tip. Ticks strictly between the
+// fork point and the tip are NOT retained on the branch (the branch holds only
+// its head), so they are ok=false — the resolver fails closed rather than reading
+// a stale trunk version while the branch is the addressed lineage.
+session_version_on :: proc(
+	s: ^Debug_Session,
+	lineage: Read_Lineage,
+	tick: int,
+) -> (
+	version: World_Version,
+	ok: bool,
+) {
+	if lineage == .Branch && s.has_branch {
+		if tick <= s.branch.base_tick {
+			return session_version_on(s, .Canonical, tick)
+		}
+		if tick == branch_tip_tick(s) {
+			return s.branch.head, true
+		}
+		return {}, false
+	}
 	if tick == -1 {
 		return s.startup, true
 	}
@@ -136,6 +225,13 @@ session_version_at :: proc(s: ^Debug_Session, tick: int) -> (version: World_Vers
 		return {}, false
 	}
 	return s.versions[tick], true
+}
+
+// branch_tip_tick is the logical tick ordinal of the live branch's committed
+// head — the canonical numbering continued past the fork point by the branch's
+// own commits (the §28 §2 forked lineage's current position).
+branch_tip_tick :: proc(s: ^Debug_Session) -> int {
+	return s.branch.base_tick + s.branch.ticks
 }
 
 // session_capture digests the session's retained canonical chain exactly as the
@@ -345,7 +441,7 @@ session_request :: proc(
 		return time_request(s, id, cmd, args, allocator)
 	case "capture_test":
 		return capture_test_request(s, id, args, allocator)
-	case "branch", "inject_input", "set", "spawn", "emit", "reload":
+	case "branch", "checkout", "inject_input", "set", "spawn", "emit", "reload":
 		return control_request(s, id, cmd, args, allocator)
 	}
 	return error_response(id, cmd, "unknown command", allocator)
@@ -389,6 +485,9 @@ observe_signals :: proc(
 	tick, has_tick := json_int_field(args, "tick")
 	if !has_tick {
 		return error_response(id, "signals", "missing args.tick", allocator)
+	}
+	if !observe_refold_on_canonical(s, args) {
+		return error_response(id, "signals", "branch refold unsupported — signals re-folds a recorded tick (canonical only)", allocator)
 	}
 	obs := new_tick_observe(allocator)
 	if _, ok := session_refold_tick(s, int(tick), &obs, allocator); !ok {
@@ -437,6 +536,9 @@ observe_trace :: proc(
 	behavior_name, has_behavior := json_string_field(args, "behavior")
 	if !has_tick || !has_behavior {
 		return error_response(id, "trace", "missing args.tick or args.behavior", allocator)
+	}
+	if !observe_refold_on_canonical(s, args) {
+		return error_response(id, "trace", "branch refold unsupported — trace re-folds a recorded tick (canonical only)", allocator)
 	}
 	behavior := program_behavior(s.program, behavior_name)
 	if behavior == nil {
@@ -520,8 +622,12 @@ observe_diff :: proc(
 	if !has_from || !has_to {
 		return error_response(id, "diff", "missing args.from or args.to", allocator)
 	}
-	from_version, from_ok := session_version_at(s, int(from_tick))
-	to_version, to_ok := session_version_at(s, int(to_tick))
+	lineage, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return error_response(id, "diff", "unknown branch — checkout an existing lineage", allocator)
+	}
+	from_version, from_ok := session_version_on(s, lineage, int(from_tick))
+	to_version, to_ok := session_version_on(s, lineage, int(to_tick))
 	if !from_ok || !to_ok {
 		return error_response(id, "diff", "tick out of range", allocator)
 	}
@@ -679,6 +785,9 @@ observe_replay_behavior :: proc(
 	if !has_tick || !has_behavior {
 		return error_response(id, "replay_behavior", "missing args.tick or args.behavior", allocator)
 	}
+	if !observe_refold_on_canonical(s, args) {
+		return error_response(id, "replay_behavior", "branch refold unsupported — replay_behavior re-folds a recorded tick (canonical only)", allocator)
+	}
 	behavior := program_behavior(s.program, behavior_name)
 	if behavior == nil {
 		return error_response(id, "replay_behavior", "unknown behavior", allocator)
@@ -743,12 +852,22 @@ observe_draw_list :: proc(
 	if !has_tick {
 		return error_response(id, "draw_list", "missing args.tick", allocator)
 	}
-	version, ok := session_version_at(s, int(tick))
+	lineage, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return error_response(id, "draw_list", "unknown branch — checkout an existing lineage", allocator)
+	}
+	version, ok := session_version_on(s, lineage, int(tick))
 	if !ok || int(tick) < 0 {
 		return error_response(id, "draw_list", "tick out of range", allocator)
 	}
+	// The recorded snapshot drives render-behavior input on the canonical chain;
+	// a branch tick at-or-beyond the fork carries no recorded snapshot (the branch
+	// advanced through control folds, not the recording), so the projection reads
+	// empty input there — render is a pure post-commit projection of the committed
+	// world, so this is the deterministic branch-tip draw list.
+	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
-	draw := render_version(s.program, version, s.snapshots[int(tick)], time, allocator)
+	draw := render_version(s.program, version, input, time, allocator)
 	b := strings.builder_make(allocator)
 	ok_response_open(&b, id, "draw_list")
 	fmt.sbprintf(&b, "{{\"tick\":%d,\"commands\":[", tick)
