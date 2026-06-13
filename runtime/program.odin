@@ -154,6 +154,37 @@ Behavior_Decl :: struct {
 	body:     []Node, // body_count step-body statement subtrees, source order
 }
 
+// --- Debug probes (§28 §4, schema v18) -----------------------------------
+
+// Probe_Kind is the closed §05 §5 / §28 §4 debug-directive family the [probes]
+// section carries: a `@break` predicate pause, a `@log` structured-value emit, a
+// `@watch` change-fire, or a `@trace` per-step transition record. It mirrors the
+// lowercased directive token the artifact's `probe KIND …` lead line carries (the
+// SAME token the §29 §2 index `debug` field uses), so one fixed vocabulary names a
+// probe on both surfaces. An unknown tag is a schema mismatch the loader refuses.
+Probe_Kind :: enum {
+	Break, // `@break(<pred>)`: pause when the predicate holds (fires breakpoint_hit)
+	Log, // `@log(<expr>)`: emit the structured, serialized value each step
+	Watch, // `@watch(<expr>)`: fire watch_fired when the value changes
+	Trace, // `@trace`: record the full per-step (in → out) transition (no body)
+}
+
+// Probe_Decl is one §28 §4 in-code debug directive lifted off the artifact: its
+// closed kind, the NAME of the declaration it is attached to (the §28 §2 "addressing
+// reuses index identity" target — a behavior, stage, or `data` field name the
+// runtime resolves the probe against), and its predicate/expression body as a §2.7
+// node forest (NEVER funpack source — §28 §2: the body is compiled funpack-side and
+// folded by THIS interpreter when the probe is honored). The body is exactly one
+// statement subtree for @break/@log/@watch (body_count 1) and empty for @trace
+// (body_count 0, no argument). The runtime honors each probe in a live debug
+// session; a release artifact carries none (the §29 §3 debug-directive ban refuses
+// a probed tree before emission, so the release [probes] tail is always empty).
+Probe_Decl :: struct {
+	kind:   Probe_Kind,
+	target: string, // the probed declaration's index-identity name (§28 §2)
+	body:   []Node, // body_count node-forest statement subtrees (1 for break/log/watch, 0 for trace)
+}
+
 // --- Pipeline, routing, setup, bindings, entrypoint (§11–§15) ------------
 
 // Pipeline_Step is one position in the one total order (§11). `ordinal` is the
@@ -278,6 +309,15 @@ Program :: struct {
 	// art, not committed world state). An asset-less game decodes to the empty set
 	// (the [assets 0] tail).
 	assets:         Asset_Set,
+	// probes is the §28 §4 in-code debug directives (v18 [probes], the new fixed §3
+	// section TAIL after [assets]). Each is a @break/@watch/@log/@trace lifted off
+	// the artifact with its predicate/expression body as a node forest the
+	// interpreter folds when the probe is HONORED in a live debug session
+	// (probes.odin). Bake-static like navs/assets — read straight from the Program,
+	// never folded per tick. A release artifact (or an in-code-probe-free dev build)
+	// decodes to the empty slice (the constant [probes 0] tail). Runtime CONSUMES
+	// the format; funpack DEFINES it (Lore #9).
+	probes:         []Probe_Decl,
 }
 
 // program_query finds a §16 query declaration by name, or nil. The query call

@@ -109,6 +109,15 @@ build_program :: proc(
 			// constant `[assets 0]`. Runtime CONSUMES the format; funpack DEFINES
 			// it (Lore #9).
 			program.assets = load_assets(section, allocator) or_return
+		case "probes":
+			// v18 §28 §4 debug directives decode into the Probe_Decl slice the live
+			// debug session HONORS (probes.odin): one `probe KIND TARGET body_count`
+			// record per in-code @break/@watch/@log/@trace, each predicate/expression
+			// body a §2.7 node forest the interpreter folds (NEVER funpack source). The
+			// new fixed §3 section TAIL (after [assets]); a release artifact — or an
+			// in-code-probe-free dev build — carries the constant `[probes 0]`. Runtime
+			// CONSUMES the format; funpack DEFINES it (Lore #9).
+			program.probes = load_probes(section, allocator) or_return
 		case:
 			return {}, .Malformed_Header // an unknown section is a schema mismatch
 		}
@@ -460,6 +469,72 @@ load_functions :: proc(
 		}
 	}
 	return out, .None
+}
+
+// --- §28 §4 probes (schema v18) ---------------------------------------------
+
+// load_probes reads each §28 §4 probe record: the `probe KIND TARGET body_count`
+// lead line, then its predicate/expression body as a §2.7 node forest (the `node`
+// sub-record run, NEVER funpack source) shaped by the declared body_count — the
+// SAME body-forest parse load_functions runs, since a probe-with-body is read by
+// the lead-line discipline a [functions] record is (`probe` is a top-level keyword,
+// `node` lines are sub-records). KIND maps to the closed Probe_Kind; TARGET is the
+// probed declaration's §28 §2 index-identity name. body_count is 1 for @break/@log/
+// @watch (the single predicate/expression subtree) and 0 for @trace (no argument),
+// so a @trace record has an empty `node` run and an empty body forest. An unknown
+// KIND, a malformed lead line, or a body run that does not split into exactly
+// body_count subtrees is the fail-closed .Bad_Field/.Body_Count_Mismatch refusal the
+// section molds share — never a best-effort partial probe.
+load_probes :: proc(
+	section: Artifact_Section,
+	allocator := context.allocator,
+) -> (
+	probes: []Probe_Decl,
+	err: Artifact_Error,
+) {
+	out := make([]Probe_Decl, len(section.records), allocator)
+	for rec, i in section.records {
+		f := record_fields(rec)
+		// probe KIND TARGET body_count
+		if len(f) != 4 || f[0] != "probe" {
+			return nil, .Bad_Field
+		}
+		kind, kind_ok := probe_kind_from_tag(f[1])
+		if !kind_ok {
+			return nil, .Bad_Field
+		}
+		body_count, bc_ok := strconv.parse_int(f[3])
+		if !bc_ok || body_count < 0 {
+			return nil, .Bad_Field
+		}
+		// The whole sub-record run is the body's `node` forest — exactly body_count
+		// statement subtrees, no leftover (parse_node_forest refuses an over- or
+		// under-shaped run). @trace's body_count 0 yields an empty forest.
+		body := parse_node_forest(rec.subs, body_count, allocator) or_return
+		out[i] = Probe_Decl {
+			kind   = kind,
+			target = strings.clone(f[2], allocator),
+			body   = body,
+		}
+	}
+	return out, .None
+}
+
+// probe_kind_from_tag maps the §28 §4 / §05 §5 directive token (the lowercased
+// family name the `probe KIND …` lead line carries) to its closed Probe_Kind. An
+// unknown tag is a schema mismatch — refused, never guessed.
+probe_kind_from_tag :: proc(tag: string) -> (kind: Probe_Kind, ok: bool) {
+	switch tag {
+	case "break":
+		return .Break, true
+	case "log":
+		return .Log, true
+	case "watch":
+		return .Watch, true
+	case "trace":
+		return .Trace, true
+	}
+	return .Break, false
 }
 
 // --- §16 queries (schema v9) ------------------------------------------------

@@ -254,7 +254,42 @@ import "core:strings"
 //       unchanged (a wider line); `atlas` stays the §19 lead keyword.
 // All three are widened populations / a changed NAME token, never new node KINDs: 16
 // → 17 (funpack/docs/artifact-format.md §1, §17, §19).
-ARTIFACT_SCHEMA_VERSION :: 17
+//
+// v18 carries the §28 §4 PROBE SECTION through to this runtime — the in-code
+// @break/@watch/@log/@trace debug directives that ride the executable artifact so
+// a LIVE debug session can honor them (§28 §4 "Probes ride the executable
+// artifact": the §29 §2 index contract is the funpack-side record of every probe
+// for operator review and never reaches the runtime, so the directive must travel
+// in the thing the runtime executes). One layout change rides it: one new section,
+// `[probes P]`, appended after [assets] as the new fixed §3 section TAIL (the
+// [assets] tail precedent). Its records are a single new TOP-LEVEL keyword `probe`
+// plus the EXISTING §2.7 `node` sub-records: a `probe KIND TARGET body_count` lead
+// line — KIND the closed §05 §5 directive family lowercased (break/log/watch/trace,
+// the same token the §29 §2 index `debug` field carries), TARGET the §28 §2 index
+// identity the runtime addresses the probe against (the probed declaration's name),
+// body_count 1 for @break/@log/@watch (the predicate/expression body as ONE §2.7
+// node-forest subtree, the `node` sub-record run, NEVER funpack source — §28 §2: the
+// body is compiled funpack-side and folded by the interpreter when the probe is
+// honored) and 0 for @trace (no argument). `probe` is NOT a sub-record keyword, so
+// SUB_RECORD_KEYWORDS is unchanged and a probe-with-body reads by the SAME lead-line
+// discipline a [functions] record does. This runtime DECODES the section into a
+// Probe_Decl slice (load_probes, the load_functions body-forest mold) and HONORS
+// every probe in a live debug session — @break pauses on its predicate, @watch fires
+// the `watch_fired` async event on value change, @log emits its structured value,
+// @trace records the per-step (in → out) transition — folding each body as a NODE
+// FOREST via the existing interpreter (§09), the foundation the live break/watch/
+// clear command group builds on. Honoring is OBSERVE-CLASS / non-perturbing: a
+// predicate/expression body is a pure interpreter fold (it reads the bound behavior
+// scope, never writes), so a probed session's canonical digest is bit-identical to
+// the unprobed run (the determinism warranty, §28 §2 "observation can never change
+// behavior — no heisenbugs"). A new section is a layout change: 17 → 18
+// (funpack/docs/artifact-format.md §1, §21). A `--release` artifact carries NO probe
+// section content — the §29 §3 debug-directive ban refuses a probed tree before
+// emission — so the release tail is the constant `[probes 0]`, and an in-code-probe-
+// free dev build likewise writes `[probes 0]` (the [assets 0]/[nav 0] tail
+// precedent): the header always emits, so a reader reads a fixed §3 header sequence
+// and never needs the build mode (which the artifact cannot carry).
+ARTIFACT_SCHEMA_VERSION :: 18
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"
