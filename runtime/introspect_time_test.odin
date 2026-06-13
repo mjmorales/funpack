@@ -63,7 +63,7 @@ test_time_load_and_status_envelopes :: proc(t: ^testing.T) {
 	expected_unloaded :=
 		`{"v":1,"id":1,"ok":true,"cmd":"status","result":{"loaded":false,"tick":null,` +
 		`"ticks_recorded":600,"seeded":false,"cadence":16,` +
-		`"ring":{"slots":32,"occupied":0,"oldest":null,"newest":null},"branch":{"live":false}}}`
+		`"ring":{"slots":32,"occupied":0,"oldest":null,"newest":null},"branch":{"live":false,"active":"canonical"}}}`
 	testing.expect_value(t, unloaded, expected_unloaded)
 
 	loaded := session_request(&s, `{"id":2,"cmd":"load"}`)
@@ -73,7 +73,7 @@ test_time_load_and_status_envelopes :: proc(t: ^testing.T) {
 	expected_armed :=
 		`{"v":1,"id":3,"ok":true,"cmd":"status","result":{"loaded":true,"tick":-1,` +
 		`"ticks_recorded":600,"seeded":false,"cadence":16,` +
-		`"ring":{"slots":32,"occupied":0,"oldest":null,"newest":null},"branch":{"live":false}}}`
+		`"ring":{"slots":32,"occupied":0,"oldest":null,"newest":null},"branch":{"live":false,"active":"canonical"}}}`
 	testing.expect_value(t, armed, expected_armed)
 }
 
