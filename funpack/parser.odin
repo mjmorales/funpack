@@ -56,6 +56,14 @@ Test_Node :: struct {
 	doc:  string, // the @doc directive preceding this test ("" when absent)
 	body: []Statement,
 	line: int,    // 1-based source line of the `test` keyword (artifact-format §9 span provenance)
+	// probes carries the §05 §5 debug prefix that preceded the test block. A
+	// test is NOT in the §28 §4 On-table — no debug probe is admitted on it —
+	// so this field exists only to make a mis-placed probe VISIBLE: the .Test
+	// arm of parse_declaration carries the pending probes here instead of
+	// dropping them silently, and the §28 §4 placement gate
+	// (probe_placement_gate.odin) names the test (Probe_Wrong_Placement). Empty
+	// on the ordinary probe-free test.
+	probes: []Debug_Probe,
 }
 
 // Type_Ref is the parse-only syntactic type the declaration grammar
@@ -716,6 +724,11 @@ parse_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directives) -> 
 	case .Test:
 		node := parse_test(p) or_return
 		node.doc = pending.doc
+		// A test admits @doc only (§05 §1). A §05 §5 debug probe is NOT in the
+		// §28 §4 On-table for a test, so a pending probe is carried onto the
+		// node — never dropped silently — so the §28 §4 placement gate
+		// (probe_placement_gate.odin) names the test (Probe_Wrong_Placement).
+		node.probes = pending.probes[:]
 		append(&out.tests, node)
 		sink_mark(out, .Test)
 	case:

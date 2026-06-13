@@ -1656,13 +1656,27 @@ Probe_Record :: struct {
 }
 
 // collect_probe_records walks the checked AST's source-ordered declaration
-// sequence (`ast.decls`) and lifts every §05 §5 debug probe onto its declaration's
-// name, in (declaration order, then directive order within a declaration) — the
-// SAME walk release_debug_decl (gates.odin) uses, so the [probes] section order is
-// the deterministic index order. A declaration with no probes contributes nothing;
-// a test block carries no probes (the parser attaches none, §05 §5). The result is
-// a pure function of the AST: no map iteration, no host bytes, so two emissions are
-// byte-identical (§29).
+// sequence (`ast.decls`) and lifts every DECLARATION-PREFIX §05 §5 debug probe
+// onto its declaration's name, in (declaration order, then directive order
+// within a declaration) — the same declaration walk release_debug_decl
+// (gates.odin) uses, so the [probes] section order is the deterministic index
+// order. A declaration with no declaration-prefix probe contributes nothing.
+//
+// SCOPE: this lifts only the declaration-prefix position. The §28 §4 On-table's
+// sub-declaration probe positions — a @watch on a `data` field
+// (Field_Decl.probes), a @trace on a pipeline stage (Pipeline_Stage.probes) —
+// are NOT lifted here: their artifact record needs a sub-declaration TARGET
+// encoding (the `data` field / the stage, not the bare declaration name, §28
+// §4) that the `probe KIND TARGET body_count` record grammar does not yet carry,
+// so emitting them with the declaration name as TARGET would be wrong. Those
+// probes are governed by the release-ban and the index (which DO walk the
+// field/stage positions); carrying them in the dev artifact for live honoring is
+// a separate artifact-format extension. A test block reaching here is probe-free
+// (the §28 §4 placement gate refuses a probe-before-a-test before emit), so the
+// .Test arm lifts nothing.
+//
+// The result is a pure function of the AST: no map iteration, no host bytes, so
+// two emissions are byte-identical (§29).
 collect_probe_records :: proc(ast: Ast, allocator := context.allocator) -> []Probe_Record {
 	out := make([dynamic]Probe_Record, 0, 4, allocator)
 	for ref in ast.decls {
@@ -1700,7 +1714,8 @@ collect_probe_records :: proc(ast: Ast, allocator := context.allocator) -> []Pro
 			probes = ast.extern_types[ref.index].probes
 			name = ast.extern_types[ref.index].name
 		case .Test:
-		// A test block carries no probes (§05 §5) — nothing to lift.
+		// A test reaching emit is probe-free (the §28 §4 placement gate refuses
+		// a probe before a test before emit runs) — nothing to lift.
 		}
 		for probe in probes {
 			append(&out, Probe_Record{kind = probe_directive_name(probe.kind), target = name, body = probe.arg})

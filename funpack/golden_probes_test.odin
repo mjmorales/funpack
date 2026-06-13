@@ -37,28 +37,47 @@ import "core:strings"
 import "core:testing"
 
 // PROBED_GOVERNANCE_ADDITION is the four-probe governance addendum appended to
-// the copied pong source: each §05 §5 directive once, each on a different
-// declaration kind — @break(pred) on a fn, @log(expr) on a let, @watch(expr)
-// on a thing, @trace on a behavior — and one §05 §2 @todo (the recommended
-// Task_Ref window form) stacked on the traced behavior, so the v3 contract's
-// two live derivations (debug + todo) are pinned together on one decl. The
-// names share no substring with any pristine pong decl, so a per-name find
-// answers exactly one record.
+// the copied pong source, EVERY probe on a §28 §4 On-table-legal placement so
+// the addendum clears the §28 §4 placement gate (probe_placement_gate.odin):
+// @break(pred) and @log(expr) on behaviors (the behavior-only directives),
+// @watch(expr) on a `data` FIELD (the On-table's @watch-on-a-data-field
+// position — the folded-in field-probe case: a field @watch must be
+// release-banned AND indexed onto its carrying `data` decl), and @trace on a
+// behavior — plus one §05 §2 @todo (the recommended Task_Ref window form)
+// stacked on the traced behavior, so the contract's two live derivations
+// (debug + todo) are pinned together on one decl. The names share no substring
+// with any pristine pong decl, so a per-name find answers exactly one record.
+// The @break behavior is FIRST so it is the source-order first probed
+// declaration the release ban names. (A probe ARGUMENT is emitted as a node
+// forest, not typechecked — §28 §2 — so the predicate/expression need only
+// parse.)
+// The behavior step bodies are deliberately DISTINCT (the duplication gate
+// scores a behavior's `step` body — two structurally-identical bodies modulo
+// alpha-renaming collide on dup_class, §29): each carries a different `with`
+// field/value so the three probed behaviors never collide with each other nor
+// with a pristine pong behavior, and the @trace behavior's bare `return self`
+// is unique among them.
 PROBED_GOVERNANCE_ADDITION ::
 	"\n@doc(\"Debug fixture: a breakpoint probe pausing when the serve threshold is crossed.\")\n" +
-	"@break(base > 70.0)\n" +
-	"fn debug_serve_threshold(base: Fixed) -> Fixed {\n" +
-	"  return base + 1.0\n" +
+	"@break(self.pos.x > 70.0)\n" +
+	"behavior debug_break_ball on Ball {\n" +
+	"  fn step(self: Ball) -> Ball {\n" +
+	"    return self with { pos: self.vel }\n" +
+	"  }\n" +
 	"}\n" +
 	"\n" +
-	"@doc(\"Debug fixture: the drift bias under live observation, logged each step.\")\n" +
-	"@log(BOARD.w)\n" +
-	"let DEBUG_DRIFT_BIAS: Fixed = 0.25\n" +
+	"@doc(\"Debug fixture: a ball observer logged each step.\")\n" +
+	"@log(self.pos)\n" +
+	"behavior debug_log_ball on Ball {\n" +
+	"  fn step(self: Ball) -> Ball {\n" +
+	"    return self with { vel: self.pos }\n" +
+	"  }\n" +
+	"}\n" +
 	"\n" +
-	"@doc(\"Debug fixture: a marker thing whose position is watched for changes.\")\n" +
-	"@watch(self.pos)\n" +
-	"thing DebugMarker {\n" +
-	"  pos: Vec2\n" +
+	"@doc(\"Debug fixture: a board whose drift bias data field is watched for changes.\")\n" +
+	"data DebugBoard {\n" +
+	"  @watch(self.bias)\n" +
+	"  bias: Fixed\n" +
 	"}\n" +
 	"\n" +
 	"@doc(\"Debug fixture: a traced ball observer, with the @todo that retires the whole fixture.\")\n" +
@@ -70,10 +89,12 @@ PROBED_GOVERNANCE_ADDITION ::
 	"  }\n" +
 	"}\n"
 
-// PROBED_DECL_NAMES is the fixture's four probed declarations in their
-// directive order (@break, @log, @watch, @trace) — the per-name find sweep's
-// query list. Single-module pong qualifies decls to their bare names.
-PROBED_DECL_NAMES :: [4]string{"debug_serve_threshold", "DEBUG_DRIFT_BIAS", "DebugMarker", "debug_trace_ball"}
+// PROBED_DECL_NAMES is the fixture's four probed declarations in source order —
+// the @break behavior, the @log behavior, the @watch-carrying `data` decl (the
+// field-probe case, projected onto the DebugBoard record), and the @trace
+// behavior — the per-name find sweep's query list. Single-module pong qualifies
+// decls to their bare names.
+PROBED_DECL_NAMES :: [4]string{"debug_break_ball", "debug_log_ball", "DebugBoard", "debug_trace_ball"}
 
 // amend_probed_pong_root copies the live pong tree into a fresh temp root and
 // appends the four-probe addendum to its source BEFORE any build — the
@@ -144,20 +165,24 @@ test_golden_probed_pong_dev_build_indexes_all_four_probes :: proc(t: ^testing.T)
 	testing.expect(t, os.exists(build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)))
 	testing.expect(t, os.exists(build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)))
 
-	break_line, break_found := index_decl_line(stream, "debug_serve_threshold")
+	break_line, break_found := index_decl_line(stream, "debug_break_ball")
 	testing.expect(t, break_found)
-	testing.expect(t, strings.contains(break_line, "\"kind\":\"Fn\""))
+	testing.expect(t, strings.contains(break_line, "\"kind\":\"Behavior\""))
 	testing.expect(t, strings.contains(break_line, "\"debug\":[\"break\"]"))
 	testing.expect(t, strings.contains(break_line, "\"todo\":false"))
 
-	log_line, log_found := index_decl_line(stream, "DEBUG_DRIFT_BIAS")
+	log_line, log_found := index_decl_line(stream, "debug_log_ball")
 	testing.expect(t, log_found)
-	testing.expect(t, strings.contains(log_line, "\"kind\":\"Let\""))
+	testing.expect(t, strings.contains(log_line, "\"kind\":\"Behavior\""))
 	testing.expect(t, strings.contains(log_line, "\"debug\":[\"log\"]"))
 
-	watch_line, watch_found := index_decl_line(stream, "DebugMarker")
+	// The field @watch (the folded-in field-probe case) projects onto its
+	// carrying `data` declaration's record — DebugBoard's debug field carries
+	// "watch", derived from Field_Decl.probes (decl_probes_with_fields), so a
+	// field @watch is no more unindexed than a declaration-prefix probe.
+	watch_line, watch_found := index_decl_line(stream, "DebugBoard")
 	testing.expect(t, watch_found)
-	testing.expect(t, strings.contains(watch_line, "\"kind\":\"Thing\""))
+	testing.expect(t, strings.contains(watch_line, "\"kind\":\"Data\""))
 	testing.expect(t, strings.contains(watch_line, "\"debug\":[\"watch\"]"))
 
 	trace_line, trace_found := index_decl_line(stream, "debug_trace_ball")
@@ -180,16 +205,16 @@ test_golden_probed_pong_release_build_and_check_refuse :: proc(t: ^testing.T) {
 	// with a Debug_Directive verdict NAMING the first probed declaration and
 	// writing NEITHER product, and the check verb adjudicates dev 0 / release 2
 	// with no `.funpack/` after either verdict. The offender is
-	// debug_serve_threshold: release_debug_decl walks the Ast's source-ordered
+	// debug_break_ball: release_debug_decl walks the Ast's source-ordered
 	// declaration sequence (the same order the index emits), the addendum
 	// appends after every pristine (probe-free) pong decl, and the @break-probed
-	// fn is the addendum's FIRST declaration — so it precedes the probed
-	// let/thing/behavior, and single-module pong qualifies it bare (lore #11).
-	// The refusal line is pinned byte-for-byte for determinism — stdout/stderr
-	// stay advisory (§29 §3, the machine contract is the exit code), but the
-	// NAME in the message is the deliverable. Never a counted failure: neither
-	// verb has an exit-1 tier. Pong is hole-free, so the refusal is the debug
-	// ban's own — not the hole-ban firing first.
+	// behavior is the addendum's FIRST declaration — so it precedes the probed
+	// log-behavior/data/trace-behavior, and single-module pong qualifies it bare
+	// (lore #11). The refusal line is pinned byte-for-byte for determinism —
+	// stdout/stderr stay advisory (§29 §3, the machine contract is the exit
+	// code), but the NAME in the message is the deliverable. Never a counted
+	// failure: neither verb has an exit-1 tier. Pong is hole-free, so the
+	// refusal is the debug ban's own — not the hole-ban firing first.
 	root, ok := amend_probed_pong_root(t)
 	if !ok {
 		return
@@ -198,15 +223,15 @@ test_golden_probed_pong_release_build_and_check_refuse :: proc(t: ^testing.T) {
 
 	_, verdict := stage_build(root, .Release, context.temp_allocator)
 	testing.expect_value(t, verdict.err, Build_Error.Debug_Directive)
-	testing.expect_value(t, verdict.offender, "debug_serve_threshold")
-	testing.expect_value(t, build_refusal_message(verdict, context.temp_allocator), "Debug_Directive: debug_serve_threshold")
+	testing.expect_value(t, verdict.offender, "debug_break_ball")
+	testing.expect_value(t, build_refusal_message(verdict, context.temp_allocator), "Debug_Directive: debug_break_ball")
 	testing.expect(t, !os.exists(build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)))
 	testing.expect(t, !os.exists(build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)))
 
 	testing.expect_value(t, run_check_verb(root, .Dev), 0)
 	testing.expect_value(t, run_check_verb(root, .Release), 2)
 	testing.expect(t, !os.exists(scratch_join({root, FUNPACK_BUILD_DIR})))
-	log.infof("golden probes release: build refuses naming the offender (Debug_Directive: debug_serve_threshold) with no product and check adjudicates dev 0 / release 2 — debug residue cannot ship")
+	log.infof("golden probes release: build refuses naming the offender (Debug_Directive: debug_break_ball) with no product and check adjudicates dev 0 / release 2 — debug residue cannot ship")
 }
 
 @(test)
@@ -273,9 +298,9 @@ test_golden_probed_pong_warden_projects_probes :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, len(probe_names), 4)
 	if len(probe_names) == 4 {
-		testing.expect_value(t, probe_names[0], "debug_serve_threshold")
-		testing.expect_value(t, probe_names[1], "DEBUG_DRIFT_BIAS")
-		testing.expect_value(t, probe_names[2], "DebugMarker")
+		testing.expect_value(t, probe_names[0], "debug_break_ball")
+		testing.expect_value(t, probe_names[1], "debug_log_ball")
+		testing.expect_value(t, probe_names[2], "DebugBoard")
 		testing.expect_value(t, probe_names[3], "debug_trace_ball")
 	}
 	testing.expect_value(

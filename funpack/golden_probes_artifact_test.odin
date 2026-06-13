@@ -22,39 +22,66 @@ import "core:strings"
 import "core:testing"
 
 // FOUR_PROBE_SOURCE is the minimal compileable module (MINI_SOURCE's empty
-// pipeline + deviceless bindings) plus all four §05 §5 / §28 §4 debug directives,
-// each on a different declaration kind so the [probes] walk crosses the AST's
-// declaration sequence: @break(pred) on a fn, @log(expr) on a let, @watch(expr)
-// on a thing, @trace on a behavior. Each carries a distinct node-forest body shape
-// — @break a `binary gt` predicate, @log a field access, @watch a field access,
-// @trace none — so the emitted bodies exercise the emit_expr forest end to end. The
-// behavior steps on the watched thing and is wired into the pipeline through an
-// explicit `mark:` stage so the schedule references it. Distinct from build_test's
-// single-@log PROBED_SOURCE: this fixture spreads all four KINDs to pin each token
-// and body shape in the [probes] section.
+// pipeline + deviceless bindings) plus all four §05 §5 / §28 §4 debug directives.
+// Every probe rides a BEHAVIOR — the one declaration kind the §28 §4 On-table
+// admits for all four directives (@break/@log behavior-only; @watch behavior or
+// `data` field; @trace behavior or stage) — so the fixture is On-table-legal and
+// clears the §28 §4 placement gate while the four behaviors still spread the
+// [probes] walk across the AST's declaration sequence. Each carries a distinct
+// node-forest body shape — @break a `binary gt` predicate, @log a field access,
+// @watch a field access, @trace none — so the emitted bodies exercise the
+// emit_expr forest end to end. (A probe ARGUMENT is emitted as a node forest, not
+// typechecked against the carrier's scope — §28 §2 — so `base`/`DRIFT.x` need
+// only parse, not resolve, exactly as the prior fn/let-carried forms did.) The
+// behaviors step on a thing and are wired into the pipeline so the schedule
+// references them. NOTE: the artifact [probes] EMIT (collect_probe_records) lifts
+// only declaration-prefix probes today, so the §28 §4 sub-declaration positions
+// (@watch on a `data` field, @trace on a stage) are deliberately NOT exercised
+// here — those ride the release-ban + index walks (golden_probes_test.odin), not
+// this emit golden. Distinct from build_test's single-@log PROBED_SOURCE: this
+// fixture spreads all four KINDs to pin each token and body shape in [probes].
 FOUR_PROBE_SOURCE ::
-	"@doc(\"Minimal probed module: an empty pipeline, a deviceless bindings fn, and the four debug directives.\")\n" +
+	"@doc(\"Minimal probed module: a watched thing, four probed behaviors, a deviceless bindings fn, and a schedule.\")\n" +
 	"\n" +
 	"import engine.input.{Bindings}\n" +
 	"import engine.math.{Fixed, Vec2}\n" +
 	"\n" +
-	"@doc(\"A breakpoint probe pausing when the serve threshold is crossed.\")\n" +
-	"@break(base > 70.0)\n" +
-	"fn debug_serve_threshold(base: Fixed) -> Fixed {\n" +
-	"  return base + 1.0\n" +
+	"@doc(\"The marker thing the probed behaviors step on.\")\n" +
+	"thing DebugMarker {\n" +
+	"  pos: Vec2 = Vec2{x: 0.0, y: 0.0}\n" +
+	"  vel: Vec2 = Vec2{x: 0.0, y: 0.0}\n" +
 	"}\n" +
-	"\n" +
-	"@doc(\"The drift bias under live observation, logged each step.\")\n" +
-	"@log(DRIFT.x)\n" +
-	"let DEBUG_DRIFT_BIAS: Fixed = 0.25\n" +
 	"\n" +
 	"@doc(\"The level origin a log probe reads a field off.\")\n" +
 	"let DRIFT: Vec2 = Vec2{x: 0.0, y: 0.0}\n" +
 	"\n" +
-	"@doc(\"A marker thing whose position is watched for changes.\")\n" +
+	// The four behavior step bodies are DISTINCT so they never collide on the
+	// duplication gate (§29: the gate hashes a behavior's `step` body; four
+	// identical `return self` bodies would overshoot MAX_DUPLICATE_UNITS) — each
+	// carries a different `with` field/value, and the @trace behavior's bare
+	// `return self` is unique among them.
+	"@doc(\"A breakpoint probe pausing when the serve threshold is crossed.\")\n" +
+	"@break(base > 70.0)\n" +
+	"behavior debug_serve_threshold on DebugMarker {\n" +
+	"  fn step(self: DebugMarker) -> DebugMarker {\n" +
+	"    return self with { pos: self.vel }\n" +
+	"  }\n" +
+	"}\n" +
+	"\n" +
+	"@doc(\"The drift bias under live observation, logged each step.\")\n" +
+	"@log(DRIFT.x)\n" +
+	"behavior debug_drift_bias on DebugMarker {\n" +
+	"  fn step(self: DebugMarker) -> DebugMarker {\n" +
+	"    return self with { vel: self.pos }\n" +
+	"  }\n" +
+	"}\n" +
+	"\n" +
+	"@doc(\"A marker observer whose position is watched for changes.\")\n" +
 	"@watch(self.pos)\n" +
-	"thing DebugMarker {\n" +
-	"  pos: Vec2 = Vec2{x: 0.0, y: 0.0}\n" +
+	"behavior debug_marker_watch on DebugMarker {\n" +
+	"  fn step(self: DebugMarker) -> DebugMarker {\n" +
+	"    return self with { pos: self.pos }\n" +
+	"  }\n" +
 	"}\n" +
 	"\n" +
 	"@doc(\"A traced marker observer.\")\n" +
@@ -70,9 +97,9 @@ FOUR_PROBE_SOURCE ::
 	"  return Bindings.empty()\n" +
 	"}\n" +
 	"\n" +
-	"@doc(\"The schedule that runs the traced marker behavior.\")\n" +
+	"@doc(\"The schedule that runs the four probed behaviors.\")\n" +
 	"pipeline Loop {\n" +
-	"  mark: [debug_trace_marker]\n" +
+	"  mark: [debug_serve_threshold, debug_drift_bias, debug_marker_watch, debug_trace_marker]\n" +
 	"}\n"
 
 // FOUR_PROBE_ENTRYPOINT wires the probed module's pipeline + bindings (the
@@ -145,12 +172,14 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 	testing.expect(t, strings.contains(artifact, "[probes 4]\n"))
 
 	// @break: the predicate `base > 70.0` rides as a node forest (binary gt over a
-	// name and a fixed literal) under `probe break debug_serve_threshold 1`.
+	// name and a fixed literal) under `probe break debug_serve_threshold 1` — the
+	// probe target is the carrying BEHAVIOR.
 	testing.expect(t, strings.contains(artifact, "probe break debug_serve_threshold 1\nnode binary gt 2\nnode name base 0\nnode fixed 300647710720 0\n"))
-	// @log: `DRIFT.x` is a field access node forest under `probe log DEBUG_DRIFT_BIAS 1`.
-	testing.expect(t, strings.contains(artifact, "probe log DEBUG_DRIFT_BIAS 1\nnode field x 1\nnode name DRIFT 0\n"))
-	// @watch: `self.pos` is a field access under `probe watch DebugMarker 1`.
-	testing.expect(t, strings.contains(artifact, "probe watch DebugMarker 1\nnode field pos 1\nnode name self 0\n"))
+	// @log: `DRIFT.x` is a field access node forest under `probe log debug_drift_bias 1`.
+	testing.expect(t, strings.contains(artifact, "probe log debug_drift_bias 1\nnode field x 1\nnode name DRIFT 0\n"))
+	// @watch on a behavior (the On-table's behavior position): `self.pos` is a field
+	// access under `probe watch debug_marker_watch 1`.
+	testing.expect(t, strings.contains(artifact, "probe watch debug_marker_watch 1\nnode field pos 1\nnode name self 0\n"))
 	// @trace: no argument — body_count 0, no body lines follow.
 	testing.expect(t, strings.contains(artifact, "probe trace debug_trace_marker 0\n"))
 
