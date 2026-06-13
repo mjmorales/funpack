@@ -212,12 +212,14 @@ test_golden_dungeon_project_compiles_and_inline_tests_pass :: proc(t: ^testing.T
 @(test)
 test_golden_dungeon_build_carries_tile_layer_in_both_products :: proc(t: ^testing.T) {
 	// AC (both products): stage_build over the live dungeon tree emits BOTH
-	// products — the v13 artifact whose [tilemaps] section carries the terrain
-	// layer with its anchor lead line (`tilemap terrain 16 16 9 0
-	// 618475290624 4`: cell 16, 16×9, anchored at the level bounds' top-left
-	// (0, 144·2^32), four palette entries) and whose [nav] section carries the
-	// §12 §1 nav graph derived from that same layer, and the Index Contract
-	// NDJSON. Emission is deterministic: two builds of the same tree are
+	// products — the v17 artifact whose [tilemaps] section carries the terrain
+	// layer with its anchor + atlas lead line (`tilemap terrain 16 16 9 0
+	// 618475290624 dungeon_atlas 4`: cell 16, 16×9, anchored at the level bounds'
+	// top-left (0, 144·2^32), the §19 textured-render layer atlas handle name
+	// `dungeon_atlas`, four palette entries) whose palette `tile` lines carry the
+	// v17 atlas-cell coordinate (`tile rubble true 3 0`) and whose [nav] section
+	// carries the §12 §1 nav graph derived from that same layer, and the Index
+	// Contract NDJSON. Emission is deterministic: two builds of the same tree are
 	// byte-identical (§29).
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
@@ -238,9 +240,13 @@ test_golden_dungeon_build_carries_tile_layer_in_both_products :: proc(t: ^testin
 	section, found := artifact_find_section(doc, "tilemaps")
 	testing.expect(t, found)
 	testing.expect_value(t, section.count, 1)
-	testing.expect(t, artifact_has_line(product.artifact, "tilemap terrain 16 16 9 0 618475290624 4"))
-	testing.expect(t, artifact_has_line(product.artifact, "tile wall true"))
-	testing.expect(t, artifact_has_line(product.artifact, "tile rubble true"))
+	testing.expect(t, artifact_has_line(product.artifact, "tilemap terrain 16 16 9 0 618475290624 dungeon_atlas 4"))
+	// The palette `tile` lines now carry the v17 atlas-cell coordinate (the §18 §2
+	// tileset cell): floor (0,0), wall (1,0), water (2,0), rubble (3,0) — the same
+	// grid coords the [assets] DungeonAtlas regions lower from, so a tile resolves
+	// to the same pixels through asset_region("dungeon_atlas", cell) as a sprite.
+	testing.expect(t, artifact_has_line(product.artifact, "tile wall true 1 0"))
+	testing.expect(t, artifact_has_line(product.artifact, "tile rubble true 3 0"))
 
 	// The v13 [nav] section carries the §12 §1 nav graph derived from the same
 	// terrain layer: one flat graph (count == 1), keyed 1:1 to the tilemap. The
@@ -270,7 +276,9 @@ test_golden_dungeon_build_carries_populated_assets_section :: proc(t: ^testing.T
 	// This is the N>0 path the asset-less pong/empty-tail goldens never exercise.
 	// Exact structure (the golden-count discipline — never a range): [assets 2] =
 	// one `image` record (dungeon.png, deduped by content hash) + one `atlas`
-	// record (DungeonAtlas), and the atlas carries 8 `region` cell rects
+	// record keyed by the manifest HANDLE name (`dungeon_atlas`, v17 — NOT the
+	// .atlas-declared `DungeonAtlas`, so a sprite's `assets.dungeon_atlas` resolves),
+	// and the atlas carries 8 `region` cell rects
 	// (floor/wall/water/rubble + hero/slime/chest_closed/chest_open). The whole
 	// section round-trips through the funpack-side parse_artifact with the section
 	// count reconciled against the lead-line discipline (image+atlas are lead
@@ -311,8 +319,11 @@ test_golden_dungeon_build_carries_populated_assets_section :: proc(t: ^testing.T
 	DUNGEON_IMAGE_HASH :: "sha256:9091f089c41ac7720fe139b9adfd1b488e7d141a5fc56b9f44b69d50320216d9"
 	testing.expect(t, artifact_has_line_prefix(product.artifact, strings.concatenate({"image ", DUNGEON_IMAGE_HASH, " 64 32 b64:"}, context.temp_allocator)))
 
-	// The atlas references the image by hash and declares its 8 cell regions.
-	testing.expect(t, artifact_has_line(product.artifact, strings.concatenate({"atlas DungeonAtlas ", DUNGEON_IMAGE_HASH, " 8"}, context.temp_allocator)))
+	// The atlas record is keyed by the manifest HANDLE name `dungeon_atlas` (v17 —
+	// the name a `Draw_Sprite{atlas: assets.dungeon_atlas, cell}` references), NOT the
+	// .atlas-file-declared `DungeonAtlas`, references the image by hash, and declares
+	// its 8 cell regions.
+	testing.expect(t, artifact_has_line(product.artifact, strings.concatenate({"atlas dungeon_atlas ", DUNGEON_IMAGE_HASH, " 8"}, context.temp_allocator)))
 
 	// The cell rects: the §19 grid-coord×cell-size lowering (px = grid_coord *
 	// 16, w/h = 16). Row 0 is terrain (y=0), row 1 the actors/props (y=16).
@@ -403,7 +414,12 @@ test_golden_dungeon_setup_folds_level_batch :: proc(t: ^testing.T) {
 	// its DECLARED Int type (`=5`, not raw Q32.32 bits). The imported `terrain`
 	// const reaches [functions] as a v15 carried const record with the SEAM
 	// module's span (dungeon.gen.fun line 7), so the behaviors' bare-name
-	// terrain reads resolve; [functions 17] = the 16 own records + the carry.
+	// terrain reads resolve. The v17 textured-render whole-module carry adds the
+	// `dungeon_atlas` AtlasHandle const the draw behaviors reach through `import
+	// assets` then `assets.dungeon_atlas` — carried from the assets seam (line 8)
+	// with the §26 AtlasHandle KIND read from its declared type, and the body refs
+	// lowered to bare `dungeon_atlas` — so [functions 18] = the 16 own records + the
+	// terrain carry + the dungeon_atlas carry.
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP golden dungeon setup fold: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
@@ -435,7 +451,7 @@ test_golden_dungeon_setup_folds_level_batch :: proc(t: ^testing.T) {
 
 	functions, functions_found := artifact_find_section(doc, "functions")
 	testing.expect(t, functions_found)
-	testing.expect_value(t, functions.count, 17)
+	testing.expect_value(t, functions.count, 18)
 	terrain_const :=
 		"function terrain const 0 return:TilemapHandle 1 span:dungeon:7\n" +
 		"node return 1\n" +
@@ -443,7 +459,19 @@ test_golden_dungeon_setup_folds_level_batch :: proc(t: ^testing.T) {
 		"node recfield name 1\n" +
 		"node string L7:terrain 0\n"
 	testing.expect(t, strings.contains(product.artifact, terrain_const))
-	log.infof("golden dungeon setup fold: the 4-row level batch and the carried terrain const ride the v15 artifact")
+	// The v17 whole-module carry: the `dungeon_atlas` AtlasHandle const the draw
+	// behaviors reach through `import assets`, carried with the §26 AtlasHandle KIND
+	// (read from the seam's declared type, NOT hardcoded) and the assets seam's span
+	// (line 8). The body refs are lowered to bare `dungeon_atlas`, so this carried
+	// record is what the runtime's bare-name lookup resolves them against.
+	dungeon_atlas_const :=
+		"function dungeon_atlas const 0 return:AtlasHandle 1 span:assets:8\n" +
+		"node return 1\n" +
+		"node record AtlasHandle 1 1\n" +
+		"node recfield name 1\n" +
+		"node string L13:dungeon_atlas 0\n"
+	testing.expect(t, strings.contains(product.artifact, dungeon_atlas_const))
+	log.infof("golden dungeon setup fold: the 4-row level batch, the carried terrain const, and the v17 dungeon_atlas handle carry ride the artifact")
 }
 
 // ── Warren: the seam product ─────────────────────────────────────────────────

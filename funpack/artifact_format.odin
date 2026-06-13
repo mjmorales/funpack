@@ -247,7 +247,45 @@ import "core:strings"
 // version stamp alone (the v7 stamp-only restamp / [nav 0] tail precedent). A new
 // section and one new sub-record keyword are layout changes: 15 → 16 (§1). ADR
 // 2026-06-12-assets-section-base64-content-addressed.
-ARTIFACT_SCHEMA_VERSION :: 16
+//
+// Version 17 carries the §19 TEXTURED-RENDER cross-boundary links the runtime needs
+// to actually TEXTURE the dungeon — the v16 pixel pipeline carried the sprite art,
+// but the artifact held no bridge from a sprite/tile reference to those pixels, so
+// every real dungeon sprite and tile fail-closed to no texture (the runtime-confirmed
+// Stage-2b gap). Three coupled layout changes ride it, all on the EXACT-MATCH side of
+// the contract (committed runtime/testdata pins moved at v16, so the window is CLOSED
+// and any byte movement is a bump, lore #20). (1) the [assets] `atlas` record is keyed
+// by the manifest HANDLE name — `atlas dungeon_atlas IMAGE_HASH CELL_COUNT`, the same
+// name a `Draw_Sprite{atlas: assets.dungeon_atlas, cell}` references through its
+// AtlasHandle const, NOT the .atlas-file-declared name (`DungeonAtlas`) v16 emitted,
+// which no reference names — so asset_region(handle, cell) resolves from the artifact
+// alone. (2) the WHOLE-MODULE const carry + bare-name lowering — the entrypoint
+// reaches its handle const through a whole-module import (`import assets`, then
+// `assets.dungeon_atlas`), which binds no bare name, so the v6/v15 brace-group carry
+// missed it and the handle const never reached [functions]. The emitter now carries
+// each whole-module-referenced handle const into [functions] as a `function NAME
+// const` record (the v15 imported-const form, the seam module's span, the source's
+// §26 typed handle value — AtlasHandle / SoundHandle / MeshHandle / TextureHandle,
+// the kind READ from the declared type, never hardcoded) AND lowers every
+// `assets.NAME` body member-expr to a bare `node name NAME` (the v6 qualified→bare
+// lowering), so the runtime resolves it by bare name with no special-case. A bare-name
+// collision with an own-module declaration refuses the build (the v6 disambiguation).
+// (3) the [tilemaps] per-layer ATLAS + per-tile atlas-CELL — the lead line gains the
+// layer's tileset atlas handle name between ANCHOR_Y and PALETTE_COUNT (`tilemap NAME
+// CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT`, `-` for a degenerate
+// palette-less layer), and each palette `tile` sub-record gains the atlas-cell
+// coordinate (`tile NAME SOLID CELL_X CELL_Y`, the §18 §2 tileset cell the v16 emit
+// READ but DROPPED). The bake READS this off the tileset already; v17 carries it, so
+// the runtime resolves a tile's texture through asset_region(atlas, cell) exactly as a
+// sprite does. A layer whose palette mixes tilesets with different atlases is the
+// Tileset_Atlas_Conflict bake gate (one atlas per layer, refused rather than silently
+// picked). No new section and no new sub-record KEYWORD (the `atlas` lead keyword and
+// the `tile`/`row` sub-record keywords already exist — only their token shapes and the
+// atlas record's NAME token change, plus a widened [functions] population); the three
+// are field/keying/population layout changes: 16 → 17 (§1). A single-module, asset-less,
+// level-less artifact (pong) moves by the version stamp alone (the v7 stamp-only restamp
+// precedent). ADR 2026-06-12-v17-textured-render-cross-boundary-links.
+ARTIFACT_SCHEMA_VERSION :: 17
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
@@ -312,7 +350,7 @@ SUB_RECORD_KEYWORDS := []string{
 	"node", // a body checked-AST node line (§2.7) — every fn/step/const/bindings/setup body is a run of these
 	"migrate", // a [data] record's §05 §6 rename/retype carry (§6, schema v8) — after a `field` line for that field, before any `field` line for the renamed type
 	"index", // a [queries] record's §05 §3 @index/@spatial requirement `index KIND THING FIELD` (§16, schema v9)
-	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID` (§17, schema v12)
+	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID CELL_X CELL_Y` (§17, schema v12; the v17 atlas-cell coords CELL_X CELL_Y joined the line — the §19 textured-render link)
 	"row", // a [tilemaps] record's row-major cell line `row …` (§17, schema v12)
 	"navnode", // a [nav] record's walkable-cell center `navnode FIXED_X FIXED_Y` (§18, schema v13)
 	"navedge", // a [nav] record's 4-neighbor adjacency `navedge A B` (§18, schema v13)

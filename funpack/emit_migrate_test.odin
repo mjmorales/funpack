@@ -88,7 +88,7 @@ test_migrate_sub_record_frames_under_lead_line_reader :: proc(t: ^testing.T) {
 	testing.expect(t, is_sub_record_line("migrate old_pos -"))
 	testing.expect(t, is_sub_record_line("migrate - lift"))
 	doc_text :=
-		"funpack-artifact 16\n" +
+		"funpack-artifact 17\n" +
 		"[data 2]\n" +
 		"data Player 1 false\n" +
 		"field pos Int -\n" +

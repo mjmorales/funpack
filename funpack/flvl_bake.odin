@@ -54,6 +54,7 @@ Bake_Error :: enum {
 	Unknown_Tile_Name,        // a legend tile name absent from the project-global tile table (§18 §5)
 	Tile_Name_Collision,      // two tilesets declare the same tile name (one name, one tile — the ADR's cross-tileset gate, §18 §3)
 	Cell_Outside_Grid,        // a `cell(col, row)` anchor outside the grid — or in a level with no grid (§18 §5)
+	Tileset_Atlas_Conflict,   // one layer's palette mixes tiles from tilesets with DIFFERENT atlases (the §19 textured-render v17 per-layer-atlas link needs one atlas per layer; a mixed-atlas layer cannot carry a single atlas, so it is refused rather than silently picking one)
 }
 
 // Baked_Coord is one resolved placement coordinate: fixed-point components in
@@ -169,10 +170,14 @@ Baked_Level :: struct {
 // resolves through (the tilemap-legend ADR / spec §18 §3): every `.tiles`
 // tileset contributes its tiles to one flat name set — a tilemap names no
 // tileset. The entry carries the owning tileset (collision provenance), the
-// §18 §2 baked collision verdict, the atlas cell, and the tags.
+// owning tileset's ATLAS handle name (the §19 textured-render link, v17 — the
+// same handle name the [assets] atlas record is keyed by, so the runtime resolves
+// a tile's texture through asset_region(atlas, cell) like a sprite), the §18 §2
+// baked collision verdict, the atlas cell, and the tags.
 Project_Tile :: struct {
 	name:    string,
 	tileset: string, // the owning tileset's UPPER_IDENT name
+	atlas:   string, // the owning tileset's atlas HANDLE name (the §19 texture link, v17)
 	solid:   bool,
 	cell_x:  i64,
 	cell_y:  i64,
@@ -198,6 +203,7 @@ project_tile_table :: proc(tilesets: []Tileset_Asset, allocator := context.alloc
 			append(&entries, Project_Tile{
 				name    = tile.name,
 				tileset = tileset.name,
+				atlas   = tileset.atlas,
 				solid   = tile.solid,
 				cell_x  = tile.cell_x,
 				cell_y  = tile.cell_y,
@@ -220,11 +226,17 @@ find_project_tile :: proc(table: []Project_Tile, name: string) -> (tile: Project
 }
 
 // Baked_Tile is one palette entry of a baked tile layer: the project-global
-// tile name and its §18 §2 collision verdict — the (name, solid) pair the
-// artifact's `tile` sub-records carry and the runtime renders/collides from.
+// tile name, its §18 §2 collision verdict, and its ATLAS-CELL coordinate (the
+// §19 textured-render link, v17 — the grid coordinate into the layer's atlas the
+// tile draws from). The (name, solid) pair the runtime renders/collides from is
+// joined by (cell_x, cell_y), so the runtime resolves the tile's pixels through
+// the layer's atlas exactly as a sprite resolves through asset_region(atlas, cell).
+// The artifact's `tile NAME SOLID CELL_X CELL_Y` sub-record carries all four.
 Baked_Tile :: struct {
-	name:  string,
-	solid: bool,
+	name:   string,
+	solid:  bool,
+	cell_x: i64,
+	cell_y: i64,
 }
 
 // Baked_Tile_Layer is one lowered `tilemap` layer (spec §18 §3): the layer
@@ -248,6 +260,15 @@ Baked_Tile_Layer :: struct {
 	rows:      int,
 	anchor_x:  Fixed, // world x of the grid's top-left corner (bounds_min.x)
 	anchor_y:  Fixed, // world y of the grid's top-left corner (bounds_max.y)
+	// atlas is the layer's tileset atlas HANDLE name (the §19 textured-render link,
+	// v17) — the same handle name the [assets] atlas record is keyed by, so the
+	// runtime resolves each palette tile's (cell_x, cell_y) into pixels through
+	// asset_region(atlas, cell) the way a sprite does. Every palette tile in a layer
+	// shares one atlas (the §18 §3 layer draws from one tileset's atlas — a layer
+	// mixing tilesets with different atlases is the Tileset_Atlas_Conflict bake gate,
+	// so a single per-layer atlas is always well-defined). "" only for the degenerate
+	// empty-palette layer (an all-`empty`/all-marker layer paints no terrain).
+	atlas:     string,
 	palette:   []Baked_Tile,
 	cells:     []int, // row-major palette index per cell; TILE_LAYER_EMPTY_CELL = no tile
 }
@@ -953,8 +974,13 @@ expand_tilemap :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, tilemap: Flvl_Til
 	// The palette: the legend's tile binds in LEGEND order, de-duplicated by
 	// name (two chars may bind one tile), each resolved through the
 	// project-global table — an unresolved name is the §18 §5 gate whether or
-	// not the grid uses the char.
+	// not the grid uses the char. Each palette tile carries its atlas-cell
+	// coordinate (the §19 textured-render link, v17), and the layer's single atlas
+	// is resolved from the palette: every tile shares one atlas (the §18 §3 layer
+	// draws from one tileset's atlas), so a palette mixing atlases is the
+	// Tileset_Atlas_Conflict gate — refused, never silently resolved to one atlas.
 	palette := make([dynamic]Baked_Tile, 0, len(tilemap.legend), context.temp_allocator)
+	layer_atlas := ""
 	for entry in tilemap.legend {
 		if entry.kind != .Tile {
 			continue
@@ -963,8 +989,13 @@ expand_tilemap :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, tilemap: Flvl_Til
 		if !found {
 			return .Unknown_Tile_Name
 		}
+		if layer_atlas == "" {
+			layer_atlas = tile.atlas
+		} else if tile.atlas != layer_atlas {
+			return .Tileset_Atlas_Conflict
+		}
 		if palette_index(palette[:], tile.name) < 0 {
-			append(&palette, Baked_Tile{name = tile.name, solid = tile.solid})
+			append(&palette, Baked_Tile{name = tile.name, solid = tile.solid, cell_x = tile.cell_x, cell_y = tile.cell_y})
 		}
 	}
 
@@ -1002,6 +1033,9 @@ expand_tilemap :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, tilemap: Flvl_Til
 		// self-describing (v12, the tilemap-anchor ADR).
 		anchor_x  = bounds_min.x,
 		anchor_y  = bounds_max.y,
+		// The layer's single tileset atlas (the §19 textured-render link, v17) —
+		// "" only for a degenerate all-empty/all-marker layer with no tile palette.
+		atlas     = layer_atlas,
 		palette   = palette[:],
 		cells     = cells,
 	})

@@ -732,9 +732,12 @@ nav_cell_walkable :: proc(layer: Baked_Tile_Layer, cell: int) -> bool {
 clone_tile_layer :: proc(layer: Baked_Tile_Layer, allocator := context.allocator) -> Baked_Tile_Layer {
 	cloned := layer
 	cloned.name = strings.clone(layer.name, allocator)
+	// The §19 textured-render link (v17): the layer atlas and each palette tile's
+	// atlas-cell coordinate ride the clone so they outlive the bake's temp scratch.
+	cloned.atlas = strings.clone(layer.atlas, allocator)
 	palette := make([]Baked_Tile, len(layer.palette), allocator)
 	for tile, i in layer.palette {
-		palette[i] = Baked_Tile{name = strings.clone(tile.name, allocator), solid = tile.solid}
+		palette[i] = Baked_Tile{name = strings.clone(tile.name, allocator), solid = tile.solid, cell_x = tile.cell_x, cell_y = tile.cell_y}
 	}
 	cells := make([]int, len(layer.cells), allocator)
 	copy(cells, layer.cells)

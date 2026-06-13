@@ -99,6 +99,13 @@ Emit_Error :: enum {
 	Contract_Failed,
 	Flatten_Failed,
 	Entrypoint_Failed,
+	// Whole_Module_Collision is the v17 textured-render lowering's refusal: a
+	// whole-module-imported handle const's bare name collides with an own-module
+	// declaration (the v6 disambiguation), so lowering it to a bare name would put
+	// two [functions] records under one name. The build refuses before writing any
+	// product — the same exit-2 compile class as the other emission floors (the
+	// build verb maps it to Compile_Failed), never a silently ambiguous artifact.
+	Whole_Module_Collision,
 }
 
 // stage_emit is the single-source → artifact seam: it runs the full checked
@@ -199,13 +206,28 @@ stage_emit_indexed :: proc(
 	if sel_err != .None {
 		return "", .Entrypoint_Failed
 	}
+	// The §19 textured-render whole-module const carry + bare-name lowering (v17):
+	// carry the handle consts the entrypoint reaches through a WHOLE-MODULE import
+	// (`import assets`, `assets.dungeon_atlas`) into [functions] BEFORE lowering the
+	// AST (the carry reads the qualified `module.NAME` refs the lowering then strips
+	// to bare names). The two together make `assets.dungeon_atlas` resolve by bare
+	// name at runtime, no runtime special-case. A bare-name collision (the v6
+	// disambiguation) refuses the build, surfaced as Typecheck_Failed (the
+	// pre-emission compile class), naming nothing further here — the offending name
+	// is in the verdict, kept for the build verb's refusal line.
+	whole_module_consts := collect_whole_module_const_records(ast, module_asts)
+	if lower_verdict := lower_whole_module_refs(&ast, module_asts); lower_verdict.err != .None {
+		return "", .Whole_Module_Collision
+	}
+	imported_fns := collect_imported_fn_records(ast, module_asts)
+	imported_fns = concat_function_records(imported_fns, whole_module_consts)
 	input := Emit_Input {
 		ast            = ast,
 		flat           = verdict.flat,
 		module         = module,
 		project        = project,
 		entrypoint     = entrypoint,
-		imported_fns   = collect_imported_fn_records(ast, module_asts),
+		imported_fns   = imported_fns,
 		imported_decls = collect_imported_decls(ast, module_asts),
 		tilemaps       = tilemaps,
 		nav_graphs     = nav_graphs,
@@ -1411,16 +1433,20 @@ index_directive_tag :: proc(kind: Index_Directive_Kind) -> string {
 // ───────────────────────────────────────────────────────────────────────────
 
 // emit_tilemaps writes one record per baked tile layer in level declaration
-// order (schema v12): the lead line `tilemap NAME CELL_SIZE COLS ROWS
-// ANCHOR_X ANCHOR_Y PALETTE_COUNT` — the anchor is the world point of the
+// order (schema v17): the lead line `tilemap NAME CELL_SIZE COLS ROWS
+// ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT` — the anchor is the world point of the
 // grid's top-left corner as two raw Q32.32 Fixed fields (§2.3), the v12
-// authoritative grid→world mapping datum (the tilemap-anchor ADR) — then the
-// palette's `tile NAME SOLID` lines (legend order, each carrying its §18 §2
-// baked collision verdict), then ROWS `row` lines of COLS space-separated
-// cells — a decimal palette index or `-` for a tile-less cell (an `empty`
-// legend bind or a marker cell; markers ride the spawn machinery, never this
-// section). Every walk is slice-order over the baked model, so two emissions
-// are byte-identical.
+// authoritative grid→world mapping datum (the tilemap-anchor ADR), and ATLAS is
+// the layer's tileset atlas HANDLE name (the §19 textured-render link, v17 — the
+// same handle name the [assets] atlas record is keyed by, or `-` for a degenerate
+// palette-less layer) — then the palette's `tile NAME SOLID CELL_X CELL_Y` lines
+// (legend order, each carrying its §18 §2 baked collision verdict and its v17
+// atlas-cell coordinate), then ROWS `row` lines of COLS space-separated cells — a
+// decimal palette index or `-` for a tile-less cell (an `empty` legend bind or a
+// marker cell; markers ride the spawn machinery, never this section). Together the
+// per-layer atlas + per-tile cell let the runtime resolve a tile's texture through
+// asset_region(atlas, cell), the same lookup a textured Draw_Sprite uses. Every walk
+// is slice-order over the baked model, so two emissions are byte-identical.
 emit_tilemaps :: proc(b: ^strings.Builder, layers: []Baked_Tile_Layer) {
 	emit_header(b, "tilemaps", len(layers))
 	for layer in layers {
@@ -1437,10 +1463,23 @@ emit_tilemaps :: proc(b: ^strings.Builder, layers: []Baked_Tile_Layer) {
 		strings.write_byte(b, ' ')
 		strings.write_string(b, encode_fixed(layer.anchor_y, context.temp_allocator))
 		strings.write_byte(b, ' ')
+		// The layer atlas handle name (v17); `-` for a degenerate palette-less layer
+		// (no tile draws, so there is no atlas), keeping the lead line's field count
+		// fixed and the token non-empty (the `-` sentinel the row/marker lines use).
+		strings.write_string(b, layer.atlas == "" ? "-" : layer.atlas)
+		strings.write_byte(b, ' ')
 		strings.write_int(b, len(layer.palette))
 		emit_line(b, "")
 		for tile in layer.palette {
-			emit_line(b, "tile ", tile.name, " ", encode_bool(tile.solid))
+			strings.write_string(b, "tile ")
+			strings.write_string(b, tile.name)
+			strings.write_byte(b, ' ')
+			strings.write_string(b, encode_bool(tile.solid))
+			strings.write_byte(b, ' ')
+			strings.write_int(b, int(tile.cell_x))
+			strings.write_byte(b, ' ')
+			strings.write_int(b, int(tile.cell_y))
+			emit_line(b, "")
 		}
 		for r in 0 ..< layer.rows {
 			strings.write_string(b, "row")
@@ -1524,10 +1563,13 @@ Baked_Image :: struct {
 	pixels: []byte,
 }
 
-// Baked_Atlas is one atlas the [assets] section carries: its registered name (the
-// token a `Draw_Sprite{atlas, cell}` carries), the hash of the image it slices
-// (the dedup reference into images), and its cell regions in source order — the
-// pixel rects (atlas-name, cell-name) → (image pixels, rect) resolves through.
+// Baked_Atlas is one atlas the [assets] section carries: its registered HANDLE
+// name (the manifest [name] block the asset is registered under — the SAME name a
+// `Draw_Sprite{atlas: assets.dungeon_atlas, cell}` references through its
+// AtlasHandle const, schema v17, NOT the .atlas-file-declared name), the hash of
+// the image it slices (the dedup reference into images), and its cell regions in
+// source order — the pixel rects (atlas-handle-name, cell-name) → (image pixels,
+// rect) resolves through, the same lookup the runtime's asset_region keys on.
 Baked_Atlas :: struct {
 	name:       string,
 	image_hash: string,

@@ -1,4 +1,4 @@
-# funpack artifact format — v16
+# funpack artifact format — v17
 
 This document is the **process-boundary data contract** between `funpack` (the
 pure `source → artifact` compiler) and the **runtime** (the impure native
@@ -25,10 +25,10 @@ A golden fixture conforming to this v1 layout lives at
 The first line of every artifact is the schema stamp:
 
 ```
-funpack-artifact 16
+funpack-artifact 17
 ```
 
-- `schema_version` is the integer after the space (here `16`).
+- `schema_version` is the integer after the space (here `17`).
 - **Any** change to a section, field, ordering, or encoding **bumps the version**
   — there are no optional fields and no minor/compatible tier.
 - **Version history.** v1 was the initial gameplay-golden format (the pong
@@ -258,7 +258,41 @@ funpack-artifact 16
   slice-order over the baked model, never map order). A new section and one new
   sub-record keyword are layout changes: 15 → 16. An asset-less game writes the
   constant `[assets 0]` tail and moves by the version stamp alone (the v7
-  stamp-only restamp / `[nav 0]` tail precedent).
+  stamp-only restamp / `[nav 0]` tail precedent). v17 carries the **§19
+  textured-render cross-boundary links** the runtime needs to actually **texture**
+  the dungeon — v16's pixel pipeline carried the sprite art, but the artifact held
+  no bridge from a sprite/tile **reference** to those pixels, so every real dungeon
+  sprite and tile fail-closed to no texture. Three coupled layout changes ride it:
+  (a) the `[assets]` `atlas` record is keyed by the manifest **HANDLE name** —
+  `atlas dungeon_atlas IMAGE_HASH CELL_COUNT`, the same name a `Draw_Sprite{atlas:
+  assets.dungeon_atlas, cell}` references through its `AtlasHandle` const, **not**
+  the `.atlas`-file-declared name (`DungeonAtlas`) v16 emitted, which no reference
+  names — so `asset_region(handle, cell)` resolves from the artifact alone. (b) the
+  **whole-module const carry + bare-name lowering** — the entrypoint reaches its
+  handle const through a whole-module import (`import assets`, then
+  `assets.dungeon_atlas`), which binds no bare name, so the v6/v15 brace-group carry
+  missed it and the handle const never reached `[functions]`. The emitter now
+  carries each whole-module-referenced handle const into `[functions]` as a
+  `function NAME const` record (the v15 imported-const form, the seam module's span,
+  the source's §26 typed handle value — `AtlasHandle`/`SoundHandle`/`MeshHandle`/
+  `TextureHandle`, the kind **read** from the declared type, never hardcoded) **and**
+  lowers every `assets.NAME` body member-expr to a bare `node name NAME` (the v6
+  qualified→bare lowering), so the runtime resolves it by bare name with no
+  special-case; a bare-name collision with an own-module declaration refuses the
+  build. (c) the `[tilemaps]` **per-layer atlas + per-tile atlas-cell** — the lead
+  line gains the layer's tileset atlas handle name between `ANCHOR_Y` and
+  `PALETTE_COUNT` (`tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS
+  PALETTE_COUNT`, `-` for a degenerate palette-less layer), and each palette `tile`
+  sub-record gains the atlas-cell coordinate (`tile NAME SOLID CELL_X CELL_Y`, the
+  §18 §2 tileset cell v16 read but dropped), so the runtime resolves a tile's texture
+  through `asset_region(atlas, cell)` exactly as a sprite does; a layer whose palette
+  mixes tilesets with different atlases is refused (one atlas per layer). No new
+  section and no new sub-record **keyword** (the `atlas` lead keyword and the
+  `tile`/`row` sub-record keywords already exist — only their token shapes and the
+  atlas record's NAME token change, plus a widened `[functions]` population); the
+  three are field/keying/population layout changes: 16 → 17. A single-module,
+  asset-less, level-less artifact (pong) moves by the version stamp alone (the v7
+  stamp-only restamp precedent).
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -514,7 +548,7 @@ Each is a `[name N]` header followed by `N` records. A runtime reads them
 sequentially; the order is part of the contract.
 
 ```
-funpack-artifact 16
+funpack-artifact 17
 [meta 2]
 …
 [enums N]
@@ -774,7 +808,15 @@ fns (v6) and imported module-level consts (v15, the level seam's `terrain:
 TilemapHandle`) — appends **after** the entrypoint module's own records, in
 import-declaration order then brace-group member order, each record keyed to
 its own SEAM module's span; the carried records are outside the KIND grouping
-(the v6 appended-after rule). The function **body** is the serialized
+(the v6 appended-after rule). The v17 **whole-module const carry** extends this to
+the whole-module import form: a const reached through `import assets` then
+`assets.dungeon_atlas` (which binds no bare name, so the brace-group carry misses
+it) is carried as the same `function NAME const` record with the §26 typed handle
+value read from the seam's declared type (`AtlasHandle`/`SoundHandle`/`MeshHandle`/
+`TextureHandle`), appended after the brace-group carries; the entrypoint's
+`assets.NAME` body refs are **lowered to bare `node name NAME`** so the runtime
+resolves them against this record by bare name (no qualified member-expr survives
+to the artifact). The function **body** is the serialized
 checked AST, carried **in** the record as a run of `node` lines (§2.7) — never a
 span reference into source the runtime can never read. The record opens with the
 signature and a body statement count; the `param` lines and the `node` body run
@@ -1139,7 +1181,7 @@ node …
 
 ---
 
-## 17. `[tilemaps]` — baked tile layers (§18 §3, schema v12)
+## 17. `[tilemaps]` — baked tile layers (§18 §3, schema v12; atlas+cell v17)
 
 One record per baked tilemap layer, in **level declaration order** (a
 multi-level tree contributes its levels in sorted authoring-filename order,
@@ -1150,8 +1192,8 @@ runtime renders it **batched** and collides against it — never per-tile
 spawn machinery like every placement, so this section carries terrain only.
 
 ```
-tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y PALETTE_COUNT
-tile NAME SOLID
+tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT
+tile NAME SOLID CELL_X CELL_Y
 …
 row C0 C1 … C{COLS-1}
 …
@@ -1164,12 +1206,21 @@ row C0 C1 … C{COLS-1}
   grid's top-left corner as two raw Q32.32 `Fixed` fields (§2.3), emitted by
   the bake from the level bounds (`bounds_min.x`, `bounds_max.y`) and
   **authoritative**: a reader takes the anchor as final, never re-derives it
-  from the grid's extent (v12); `PALETTE_COUNT` is the number of `tile` lines
-  that follow.
-- `tile NAME SOLID` is one palette entry: the project-global tile name and its
-  §18 §2 **baked collision verdict** (`true`/`false`, §2.5) — the bake already
-  resolved the name through the tileset table, so a reader takes both tokens
-  as final. Entries follow the legend's declaration order.
+  from the grid's extent (v12); `ATLAS` is the layer's tileset **atlas handle
+  name** (v17) — the same name the `[assets]` `atlas` record is keyed by, so the
+  runtime resolves a tile's texture through `asset_region(ATLAS, cell)` exactly
+  as a textured `Draw_Sprite` does (`-` for a degenerate palette-less layer, which
+  paints no terrain); `PALETTE_COUNT` is the number of `tile` lines that follow.
+  Every palette tile in a layer shares one atlas — a layer mixing tilesets with
+  different atlases is a bake error (one atlas per layer), so `ATLAS` is always
+  well-defined.
+- `tile NAME SOLID CELL_X CELL_Y` is one palette entry: the project-global tile
+  name, its §18 §2 **baked collision verdict** (`true`/`false`, §2.5), and its
+  **atlas-cell coordinate** (`CELL_X CELL_Y`, decimal §2.2 — the §18 §2 tileset
+  cell the tile draws from, v17) — the bake already resolved the name through the
+  tileset table, so a reader takes all four tokens as final. The runtime resolves
+  the tile's pixels through `asset_region(ATLAS, (CELL_X, CELL_Y))` the way a sprite
+  resolves through its atlas. Entries follow the legend's declaration order.
 - Exactly `ROWS` `row` lines follow the palette, top row first (the grid is
   read as a picture: row 0 is the level's TOP edge). Each carries exactly
   `COLS` space-separated cells: a decimal **palette index** (0-based into this
@@ -1226,7 +1277,8 @@ navedge A B
   — never an 8-neighbor diagonal toggle without a spec decision.
 - **Walkable = non-solid.** A cell is a `navnode` iff it is **not solid** — the
   walkability verdict is derived from the tilemap palette's `solid` flag (the
-  `tile NAME SOLID` line, §17), the §12 §1 **single source of truth**. A solid
+  `tile NAME SOLID CELL_X CELL_Y` line, §17), the §12 §1 **single source of
+  truth**. A solid
   cell contributes no node and no incident edge; the nav graph never re-decides
   collision.
 - The §12 §1 **hierarchical decomposition is invisible** in the wire format: one
@@ -1247,7 +1299,7 @@ navedge A B
 
 ---
 
-## 19. `[assets]` — baked sprite pixels + atlas slice rects (§19, schema v16)
+## 19. `[assets]` — baked sprite pixels + atlas slice rects (§19, schema v16; handle-keyed atlas v17)
 
 The decoded atlas/image art a textured render needs — the pixels a
 `Draw_Sprite{atlas, cell}` blits and which an artifact-blind runtime could not
@@ -1274,9 +1326,16 @@ region NAME PX_X PX_Y PX_W PX_H
   the blob **once** (the content-hash dedup) — each references it by `HASH`, never
   by repeating the pixels.
 - `atlas NAME IMAGE_HASH CELL_COUNT` is one registered atlas, in committed-registry
-  order: `NAME` is the atlas's registered name (the token a `Draw_Sprite{atlas,
-  cell}` carries); `IMAGE_HASH` is the `image` record it slices (the dedup key);
-  `CELL_COUNT` is the number of `region` sub-records that follow.
+  order: `NAME` is the atlas's registered **HANDLE name** (v17) — the manifest
+  `[name]` block the asset is registered under (`dungeon_atlas`), the **same** token
+  a `Draw_Sprite{atlas: assets.dungeon_atlas, cell}` carries through its
+  `AtlasHandle` const, **not** the `.atlas`-file-declared name (`DungeonAtlas`),
+  which no sprite reference names; keying by the handle name is what lets
+  `asset_region(NAME, cell)` resolve a sprite or tile to its pixels. `IMAGE_HASH` is
+  the `image` record it slices (the dedup key); `CELL_COUNT` is the number of
+  `region` sub-records that follow. The handle const itself rides `[functions]` as a
+  `function NAME const` record (the v15/v17 const carry), so the runtime resolves the
+  sprite's `atlas` field to this `NAME` and then this record by it.
 - `region NAME PX_X PX_Y PX_W PX_H` is one atlas cell's **pixel rectangle** into
   its image, in atlas source-declaration order: `NAME` is the cell name a sprite
   draw addresses; the rect is the §19 grid-coord×cell-size lowering —

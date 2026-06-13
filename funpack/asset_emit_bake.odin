@@ -64,7 +64,7 @@ bake_tree_assets :: proc(root: string, allocator := context.allocator) -> (asset
 		if entry.kind != .Atlas {
 			continue
 		}
-		baked_atlas, atlas_err, atlas_detail := bake_atlas_assets(root, entry.source, &images, allocator)
+		baked_atlas, atlas_err, atlas_detail := bake_atlas_assets(root, entry.name, entry.source, &images, allocator)
 		if atlas_err != .None {
 			return Baked_Assets{}, atlas_err, atlas_detail
 		}
@@ -83,7 +83,17 @@ bake_tree_assets :: proc(root: string, allocator := context.allocator) -> (asset
 // §19 §2 content-address dedup), so a second atlas sharing the image adds no blob.
 // The atlas record references the image by that hash. fail-closed on an unreadable
 // atlas/image source or an importer reject, naming the offending file.
-bake_atlas_assets :: proc(root: string, atlas_source: string, images: ^[dynamic]Baked_Image, allocator := context.allocator) -> (atlas: Baked_Atlas, err: Asset_Bake_Error, detail: string) {
+//
+// The atlas record is keyed by handle_name — the manifest [name] block the asset
+// is REGISTERED under (`dungeon_atlas`), NOT the .atlas-file-declared name
+// (`atlas DungeonAtlas …`), schema v17. A `Draw_Sprite{atlas: assets.dungeon_atlas,
+// cell}` references the atlas by its handle name (the AtlasHandle const's `name`
+// field, baked from the same manifest entry), so keying the [assets] record by the
+// handle name is what lets the runtime's asset_region("dungeon_atlas", cell) resolve.
+// The .atlas-declared name stays the atlas's internal documentation; only the
+// record's lead NAME is the handle name. (v16 keyed by the .atlas-declared name,
+// which no sprite reference names — the resolution gap this bump closes.)
+bake_atlas_assets :: proc(root: string, handle_name: string, atlas_source: string, images: ^[dynamic]Baked_Image, allocator := context.allocator) -> (atlas: Baked_Atlas, err: Asset_Bake_Error, detail: string) {
 	atlas_path, _ := filepath.join({root, "assets", atlas_source}, context.temp_allocator)
 	atlas_bytes, read_err := os.read_entire_file_from_path(atlas_path, context.temp_allocator)
 	if read_err != nil {
@@ -121,7 +131,7 @@ bake_atlas_assets :: proc(root: string, atlas_source: string, images: ^[dynamic]
 	}
 
 	return Baked_Atlas {
-			name = strings.clone(parsed.name, allocator),
+			name = strings.clone(handle_name, allocator),
 			image_hash = image.hash,
 			regions = regions,
 		},
