@@ -62,6 +62,14 @@ Probe_Honor :: struct {
 	// the same instance ran, so the first observation of an instance never fires
 	// (there is no prior to differ from).
 	watch_state: map[Watch_Key]Value,
+	// live is the §28 §3 SESSION-SET break/watch group (introspect_break.odin): the
+	// dynamically-set probes a live session set over the wire, folded at the SAME
+	// behavior-step seam as the artifact's in-code probes — a live break/watch IS the
+	// same honor, just session-set instead of [probes]-carried. Empty when the
+	// session has set none (the in-code-probe-only fold). Their @watch running-prior
+	// is keyed off a probe index past the program's probes (live_watch_key), so a
+	// live @watch never collides with an in-code @watch's prior.
+	live:        []Live_Probe,
 	allocator:   Runtime_Allocator,
 }
 
@@ -139,6 +147,7 @@ new_probe_honor :: proc(program: ^Program, allocator := context.allocator) -> Pr
 		logs        = make([dynamic]Log_Emit, allocator),
 		traces      = make([dynamic]Trace_Record, allocator),
 		watch_state = make(map[Watch_Key]Value, allocator),
+		live        = nil, // seeded by the live break/watch group (introspect_break.odin)
 		allocator   = allocator,
 	}
 }
@@ -176,6 +185,39 @@ honor_behavior_step :: proc(
 			honor_trace(honor, interp, probe, behavior, self_row, env, result, ok, tick)
 		}
 	}
+	// The §28 §3 SESSION-SET break/watch group rides the SAME seam (introspect_break.
+	// odin): a live break{when:<pred>}/watch is folded against the bound env exactly
+	// as an in-code @break/@watch, reusing honor_break/honor_watch. A live @watch's
+	// running-prior is keyed off an index PAST the program's probes (live_watch_key),
+	// so it never collides with an in-code @watch's prior. A live break{on_signal}
+	// carries an empty body and a non-empty on_signal — it is honored over the signal
+	// routes, not the behavior-step seam (honor_live_signal_breaks), so it is skipped
+	// here. @log/@trace are §28 §4 in-code-only directives, never live-set, so the
+	// live group is break/watch only.
+	for live, live_idx in honor.live {
+		if live.on_signal != "" {
+			continue // a signal break fires on a routed signal, not a behavior step
+		}
+		if !probe_honored_at(live.probe, behavior) {
+			continue
+		}
+		#partial switch live.probe.kind {
+		case .Break:
+			honor_break(honor, interp, live.probe, behavior, self_row, env, tick)
+		case .Watch:
+			honor_watch(honor, interp, live.probe, live_watch_key(honor, live_idx), behavior, self_row, env, tick)
+		}
+	}
+}
+
+// live_watch_key maps a live @watch's registry index onto a Watch_Key probe index
+// that cannot collide with an in-code @watch's index: it lands the live watch's
+// running-prior past the program's probe slice, so a live @watch on the same
+// behavior as an in-code @watch tracks its own prior (the per-instance change
+// detection stays independent). Stable across the re-fold (the live registry order
+// is fixed for the fold), so the key is replayable like every other firing key.
+live_watch_key :: proc(honor: ^Probe_Honor, live_idx: int) -> int {
+	return len(honor.program.probes) + live_idx
 }
 
 // probe_honored_at reports whether a probe fires at THIS behavior step (spec §28 §4
@@ -452,6 +494,11 @@ session_honor_probes :: proc(
 	final: World_Version,
 ) {
 	honor = new_probe_honor(s.program, allocator)
+	// Arm the session's live break/watch probes (§28 §3, introspect_break.odin)
+	// alongside the artifact's in-code probes: the SAME fold honors both, so a live
+	// break/watch fires exactly as an in-code @break/@watch would. Empty when the
+	// session set none (the in-code-only fold).
+	honor.live = s.live_probes[:]
 	prior := s.startup
 	tick_hz := s.program.entrypoint.tick_hz
 	for snapshot, i in s.snapshots {
