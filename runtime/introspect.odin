@@ -437,6 +437,8 @@ session_request :: proc(
 		return observe_replay_behavior(s, id, args, allocator)
 	case "draw_list":
 		return observe_draw_list(s, id, args, allocator)
+	case "screenshot":
+		return observe_screenshot(s, id, args, allocator)
 	case "load", "run", "pause", "step", "rewind", "reset", "status":
 		return time_request(s, id, cmd, args, allocator)
 	case "capture_test":
@@ -883,6 +885,97 @@ observe_draw_list :: proc(
 	return strings.to_string(b)
 }
 
+// observe_screenshot is the §28 §3 render-crossing TWIN of draw_list — and the one
+// observe command that is explicitly NOT sim-pure (§28 §2). draw_list dumps the
+// deterministic draw-list and stops at it; screenshot CROSSES the render/present
+// boundary to capture the presented frame as pixels (§28: "the lone visual artifact,
+// requested programmatically"). The pixel surface is rasterized/letterboxed/post —
+// §20 §5 "pixels are not deterministic and need not be" — so it is bound to the
+// impure FUNPACK_LIVE present path; the headless default build (no display) routes
+// the command but returns a defined "requires live present" refusal rather than a
+// crash. Both commands re-project the SAME committed version (render is a pure
+// post-commit projection, so re-projecting commits nothing — the canonical chain is
+// untouched and the observe-non-perturbing warranty holds for both).
+//
+// The §20 §5 deterministic half rides along on demand: `include_drawlist:true`
+// appends the draw-list as data (the SAME render_draw_cmd_text encoding draw_list
+// emits) — "screenshot{include_drawlist} returns it as data". Default false: the lean
+// visual-only capture.
+//
+// The pixel capture + its QOI encoding live ENTIRELY behind the FUNPACK_LIVE gate
+// (session_capture_frame returns the base64-QOI string directly): the codec
+// (core:image/qoi → core:compress) is an impure present-boundary dependency, so it
+// stays out of the always-compiled deterministic translation unit (which would
+// otherwise pull a heavy codec graph into the headless test binary). This keeps the
+// runtime's pure core import-clean and matches capture_test's inline-artifact
+// convention: the runtime writes no file, the client persists the returned artifact.
+@(private = "file")
+observe_screenshot :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	args: json.Object,
+	allocator := context.allocator,
+) -> string {
+	tick, has_tick := json_int_field(args, "tick")
+	if !has_tick {
+		return error_response(id, "screenshot", "missing args.tick", allocator)
+	}
+	lineage, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return error_response(id, "screenshot", "unknown branch — checkout an existing lineage", allocator)
+	}
+	version, ok := session_version_on(s, lineage, int(tick))
+	if !ok || int(tick) < 0 {
+		return error_response(id, "screenshot", "tick out of range", allocator)
+	}
+	// Re-project the committed tick to the draw-list (the SAME projection draw_list
+	// reads): a branch tick past the fork carries no recorded snapshot, so it projects
+	// empty input there — render is a pure post-commit projection of the committed
+	// world (identical to observe_draw_list's branch-tip handling).
+	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
+	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
+	draw := render_version(s.program, version, input, time, allocator)
+
+	// CROSS THE PRESENT BOUNDARY: capture the rasterized frame as base64-encoded QOI
+	// (the Odin-first lossless encoder; core:image/png is decode-only in this
+	// toolchain). Under FUNPACK_LIVE this paints the draw-list through an offscreen
+	// software surface, reads the pixels back, and encodes them; the headless build
+	// has no display, so the capture fails closed and the command reports the defined
+	// boundary refusal — never a crash, never a silent empty frame (the §28 contract:
+	// screenshot needs the impure present path).
+	encoded, width, height, captured := session_capture_frame(s.program, draw, allocator)
+	if !captured {
+		return error_response(
+			id,
+			"screenshot",
+			"screenshot crosses the render/present boundary — requires a FUNPACK_LIVE build with a display (use draw_list for the sim-pure, headless draw-list dump)",
+			allocator,
+		)
+	}
+
+	b := strings.builder_make(allocator)
+	ok_response_open(&b, id, "screenshot")
+	fmt.sbprintf(&b, "{{\"tick\":%d,\"width\":%d,\"height\":%d,\"format\":\"qoi\",\"pixels\":", tick, width, height)
+	write_json_string(&b, encoded)
+	// §20 §5: the deterministic draw-list rides along when the client asks for it —
+	// screenshot{include_drawlist} returns it as data, the SAME encoding draw_list
+	// emits. The default (absent/false) is the lean visual-only capture.
+	if include, _ := json_bool_field(args, "include_drawlist"); include {
+		strings.write_string(&b, ",\"commands\":[")
+		for cmd, i in draw.cmds {
+			if i > 0 {
+				strings.write_byte(&b, ',')
+			}
+			cmd_text := strings.builder_make(allocator)
+			render_draw_cmd_text(&cmd_text, cmd)
+			write_json_string(&b, strings.to_string(cmd_text))
+		}
+		strings.write_byte(&b, ']')
+	}
+	strings.write_string(&b, "}}")
+	return strings.to_string(b)
+}
+
 // --- The envelope builders ---------------------------------------------------
 
 // ok_response_open writes the success envelope up to the `result` value — the
@@ -968,6 +1061,21 @@ json_string_field :: proc(object: json.Object, key: string) -> (value: string, o
 		return "", false
 	}
 	return text, true
+}
+
+// json_bool_field reads one boolean field off a parsed request object — an absent
+// or non-boolean field is ok=false (the caller's default), so an optional flag like
+// screenshot's `include_drawlist` defaults off when the arg is omitted.
+json_bool_field :: proc(object: json.Object, key: string) -> (value: bool, ok: bool) {
+	field, has := object[key]
+	if !has {
+		return false, false
+	}
+	flag, is_bool := field.(json.Boolean)
+	if !is_bool {
+		return false, false
+	}
+	return flag, true
 }
 
 // --- The funpack value encoding (the §28 §2 "funpack values as strings") ----
