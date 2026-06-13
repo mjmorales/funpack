@@ -39,6 +39,7 @@ Gate_Error :: enum {
 	Duplicate_Declaration,  // two declaration units normalize to the same AST hash
 	Query_Missing_Index,    // a query whose body runs a spatial combinator over all[T] without declaring @spatial(T.*) on that query (spec §08 §3: a query needing an index must declare it)
 	Query_Unused_Index,     // a declared @index/@spatial no read in the query's body uses — dead code (spec §08 §3 / §01 P5)
+	Probe_Wrong_Placement,  // a §05 §5 debug probe on a declaration the §28 §4 On-table does not admit — a declaration-prefix @break/@log/@watch/@trace sits only on a behavior (the field/stage positions @watch/@trace also admit are sub-declaration sites the parser already gates); a decl-prefix probe on a data/enum/thing/signal/fn/query/pipeline/let/extern_type/test declaration is this verdict (probe_placement_gate.odin)
 }
 
 // Gate_Unit is one declaration body the structural gates score: a test
@@ -335,30 +336,42 @@ expr_holds_stub :: proc(expr: Expr) -> bool {
 // Declarations walk in the Ast's source-ordered declaration sequence — the
 // same order derive_decl_records emits and release_holed_decl walks — so a
 // multi-probe source always names the same first offender deterministically,
-// and that offender is the first probed declaration in INDEX order. A test
-// block is skipped: the parser attaches no probes to a test (§05 §5), so it
-// has nothing to check.
+// and that offender is the first probed declaration in INDEX order.
+//
+// A probe rides one of THREE AST positions and the ban is placement-BLIND
+// across all of them (residue cannot ship even when mis-placed — the §28 §4
+// placement gate refuses a mis-placed probe separately, but a release build
+// must never carry a probe at any position): a declaration prefix
+// (decl.probes), a `data`-field prefix (Field_Decl.probes — the §28 §4 On-table
+// admits @watch there), or a pipeline-stage prefix (Pipeline_Stage.probes — the
+// On-table admits @trace there). A declaration whose own prefix is probe-free
+// but which carries a field or stage probe is still the offender, named by the
+// declaration the probe rides, so a field @watch or a stage @trace can no more
+// slip through a --release build than a declaration-prefix probe. A test block
+// carries a probe only when one is mis-placed before it (the parser carries it
+// so the placement gate names the test); the ban catches it too, since debug
+// residue cannot ship even on a test.
 release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
 	for ref in ast.decls {
 		switch ref.kind {
 		case .Data:
 			decl := ast.datas[ref.index]
-			if len(decl.probes) > 0 {
+			if len(decl.probes) > 0 || fields_hold_probe(decl.fields) {
 				return decl.name, true
 			}
 		case .Enum:
 			decl := ast.enums[ref.index]
-			if len(decl.probes) > 0 {
+			if len(decl.probes) > 0 || variants_hold_probe(decl.variants) {
 				return decl.name, true
 			}
 		case .Thing:
 			decl := ast.things[ref.index]
-			if len(decl.probes) > 0 {
+			if len(decl.probes) > 0 || fields_hold_probe(decl.fields) {
 				return decl.name, true
 			}
 		case .Signal:
 			decl := ast.signals[ref.index]
-			if len(decl.probes) > 0 {
+			if len(decl.probes) > 0 || fields_hold_probe(decl.fields) {
 				return decl.name, true
 			}
 		case .Fn:
@@ -378,7 +391,7 @@ release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
 			}
 		case .Pipeline:
 			decl := ast.pipelines[ref.index]
-			if len(decl.probes) > 0 {
+			if len(decl.probes) > 0 || stages_hold_probe(decl.stages) {
 				return decl.name, true
 			}
 		case .Let:
@@ -387,7 +400,10 @@ release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
 				return decl.name, true
 			}
 		case .Test:
-			// The parser attaches no probes to a test block — nothing to check.
+			decl := ast.tests[ref.index]
+			if len(decl.probes) > 0 {
+				return decl.name, true
+			}
 		case .Extern_Type:
 			decl := ast.extern_types[ref.index]
 			if len(decl.probes) > 0 {
@@ -396,6 +412,48 @@ release_debug_decl :: proc(ast: Ast) -> (declaration: string, probed: bool) {
 		}
 	}
 	return "", false
+}
+
+// fields_hold_probe reports whether any field of a data/thing/signal
+// declaration carries a §05 §5 debug probe — the §28 §4 On-table admits a
+// @watch on a `data` field, and the release ban must catch it too (a field
+// @watch cannot ship). A `thing`/`signal` field never carries a probe in a
+// parseable tree (parse_field_list admits a field @watch only in a `data`
+// body), so the walk reports false for them; it stays total so a future
+// admitted field probe is caught without re-editing the ban.
+fields_hold_probe :: proc(fields: []Field_Decl) -> bool {
+	for field in fields {
+		if len(field.probes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// variants_hold_probe reports whether any struct-payload variant field of an
+// enum declaration carries a debug probe — the one field position an enum
+// declaration owns. A variant field never carries a probe in a parseable tree
+// (parse_field_list for a variant body is not a `data` body), so this reports
+// false; it stays total for the same reason fields_hold_probe is.
+variants_hold_probe :: proc(variants: []Variant_Decl) -> bool {
+	for variant in variants {
+		if fields_hold_probe(variant.fields) {
+			return true
+		}
+	}
+	return false
+}
+
+// stages_hold_probe reports whether any stage of a pipeline declaration carries
+// a §05 §5 debug probe — the §28 §4 On-table admits a @trace on a stage, and
+// the release ban must catch it too (a stage @trace cannot ship).
+stages_hold_probe :: proc(stages: []Pipeline_Stage) -> bool {
+	for stage in stages {
+		if len(stage.probes) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Gate_Verdict pairs a gate failure with the declaration body it indicts, so
@@ -454,6 +512,16 @@ gate_verdict :: proc(ast: Ast) -> Gate_Verdict {
 	// (query_index_gate.odin) — per-query, so it rides the same
 	// first-offender discipline as the per-unit budgets above.
 	if verdict := check_query_index_gate(ast); verdict.err != .None {
+		return verdict
+	}
+	// The §28 §4 probe-placement gate validates every declaration's §05 §5
+	// debug probes against the On-table (probe_placement_gate.odin) — a
+	// declaration-prefix probe is admitted only on a behavior; the field/stage
+	// positions @watch/@trace also admit are sub-declaration sites the parser
+	// already gates. It walks the Ast's source-ordered declaration sequence, so
+	// it names the first mis-placed probe's declaration the same way the
+	// release debug-ban does.
+	if verdict := check_probe_placement_gate(ast); verdict.err != .None {
 		return verdict
 	}
 	if err := gate_duplication(units); err != .None {
