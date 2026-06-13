@@ -82,7 +82,13 @@ Type_Ref :: struct {
 // has_default is false. migrate is the field's §05 §6 @migrate prefix —
 // rename/retype evolution metadata only a `data` field may carry (the parser
 // rejects it elsewhere); meaningless when has_migrate is false, mirroring
-// has_default.
+// has_default. probes carries the field's §05 §5 debug prefix — the §28 §4
+// On-table admits a `@watch(expr)` on a `data` field (fire watch_fired when
+// the value changes); the grammar puts Annotation* on FieldDecl (fun.ebnf §5),
+// and the field carries the parsed probe the same way a declaration does. The
+// On-table admits ONLY @watch here, so parse_field_list rejects every other
+// debug directive (and every non-@migrate/@watch @-form) with a keyed verdict,
+// the @migrate field-body mold. Empty when the field carries no probe.
 Field_Decl :: struct {
 	name:        string,
 	type:        Type_Ref,
@@ -90,6 +96,7 @@ Field_Decl :: struct {
 	has_default: bool,
 	migrate:     Migrate_Node,
 	has_migrate: bool,
+	probes:      []Debug_Probe,
 }
 
 // Variant_Decl is one enum variant (spec §03 §2): plain (`Left`),
@@ -334,11 +341,19 @@ Behavior_Node :: struct {
 // user behaviors. is_battery discriminates the two; the unused slice/field is
 // empty. The battery name is not validated here — the surface/typecheck story
 // owns that.
+// probes carries the stage's §05 §5 debug prefix — the §28 §4 On-table admits
+// a `@trace` on a pipeline stage (record the full per-step (in -> out)
+// transition); the grammar puts Annotation* on StageEntry (fun.ebnf §9), and
+// the stage carries the parsed probe the same way a declaration does. The
+// On-table admits ONLY @trace here, so parse_pipeline_stage rejects every other
+// @-form with a keyed verdict, the @migrate field-body mold. Empty when the
+// stage carries no probe.
 Pipeline_Stage :: struct {
 	name:       string,
 	behaviors:  []string, // behavior-list stage: the member behavior names
 	battery:    string,   // single-battery stage: the bare battery name
 	is_battery: bool,      // true for the bare-battery stage form
+	probes:     []Debug_Probe,
 }
 
 Pipeline_Node :: struct {
@@ -465,6 +480,7 @@ Parse_Error :: enum {
 	Missing_Else,         // an if-EXPRESSION with no `else` arm (spec §02 §5): both arms are required in value position, so a missing alternate has no type to unify against — never a silent fallback (grammar/fun.ebnf §15 IfExpr)
 	Probe_Missing_Arg,    // a @break/@log/@watch debug probe without its mandatory `(expr)` argument (spec §05 §5: the predicate/expression is the probe's whole content)
 	Probe_Unexpected_Arg, // a @trace carrying an argument — @trace takes none (spec §05 §5; grammar/fun.ebnf §1 DebugDirective)
+	Probe_Wrong_Target,   // a well-formed debug probe in a sub-declaration position the §28 §4 On-table does not admit — only @watch prefixes a `data` field and only @trace prefixes a pipeline stage; every other probe there (a @break/@log/@trace on a field, a @break/@log/@watch on a stage) names a behavior/declaration target, never this one — the Migrate_Wrong_Target mold
 	Malformed_Todo_Window, // a @todo whose mandatory window is missing or matches none of the four §05 §2 forms (unknown unit, mis-shaped/out-of-range ISO date, quoted or lowercase task ref)
 	Malformed_Migrate,     // a @migrate whose argument list matches none of the three closed §05 §6 forms (missing/empty parens, unknown or duplicated key, with-before-from order, unquoted from, empty prior name, trailing junk) — or a second @migrate on one target
 	Migrate_Wrong_Target,  // a well-formed @migrate where the spec admits none (spec §05 §6): prefixing a non-`data` declaration, a field outside a `data` body, a retype (`with:`) form on a type declaration (a type admits the rename form only), or dangling with no field to attach to
@@ -1264,9 +1280,11 @@ parse_data :: proc(p: ^Parser) -> (node: Data_Node, err: Parse_Error) {
 	name := expect_type_name(p) or_return
 	type_params := parse_type_params(p) or_return
 	kind := parse_optional_kind(p) or_return
-	// A data body is the one field list whose fields may carry a §05 §6
-	// @migrate prefix — the name-keyed schema is the evolution channel.
-	fields := parse_field_list(p, allow_migrate = true) or_return
+	// A data body is the one field list whose fields may carry the `data`-only
+	// field directives — the §05 §6 @migrate prefix (the name-keyed schema is
+	// the evolution channel) and the §28 §4 @watch probe (a `data` field is the
+	// On-table's watchable field).
+	fields := parse_field_list(p, is_data_body = true) or_return
 	return Data_Node{name = name, kind = kind, type_params = type_params, fields = fields, line = data_tok.line}, .None
 }
 
@@ -1352,39 +1370,77 @@ parse_optional_kind :: proc(p: ^Parser) -> (kind: string, err: Parse_Error) {
 // data/thing/singleton/signal declarations (spec §03 §1). Fields are
 // newline- or comma-separated (the body is a block, so the lexer kept the
 // newlines); a defaulted field carries `= expr` (spec §03 §1: a defaulted
-// field may be omitted from a literal). allow_migrate is true only for a
-// `data` body: a field there may carry a §05 §6 @migrate prefix (on its own
-// line or inline before the field), consumed by the field that follows it —
-// elsewhere a @migrate is the named Migrate_Wrong_Target verdict (the
-// schema-evolution channel is the name-keyed `data` schema, spec §09 §4), as
-// is one left dangling with no field to attach to.
-parse_field_list :: proc(p: ^Parser, allow_migrate := false) -> (fields: []Field_Decl, err: Parse_Error) {
+// field may be omitted from a literal). is_data_body is true only for a `data`
+// body, which alone admits the `data`-only field directives — a §05 §6
+// @migrate prefix (the name-keyed schema is the evolution channel) and the §28
+// §4 @watch probe (a `data` field is the On-table's watchable field). Both ride
+// on their own line or inline before the field, consumed by the field that
+// follows them; elsewhere @migrate is the named Migrate_Wrong_Target verdict
+// (the schema-evolution channel is the name-keyed `data` schema, spec §09 §4)
+// and a field @watch is Probe_Wrong_Target, as is either left dangling with no
+// field to attach to. A field @break/@log/@trace is Probe_Wrong_Target: the
+// On-table places those on a behavior or a stage, never a field.
+parse_field_list :: proc(p: ^Parser, is_data_body := false) -> (fields: []Field_Decl, err: Parse_Error) {
 	expect(p, .L_Brace) or_return
 	skip_field_separators(p)
 	list := make([dynamic]Field_Decl, 0, 8, context.temp_allocator)
 	pending_migrate := Migrate_Node{}
 	has_pending_migrate := false
+	// pending_probes accumulates the §05 §5 debug prefix that attaches to the
+	// field which follows — the field-level @migrate carry mold, for the one
+	// probe the §28 §4 On-table admits on a `data` field (@watch). The grammar
+	// puts Annotation* on FieldDecl (fun.ebnf §5), a star, so several @watch
+	// lines stack the same way declaration-prefix probes accumulate.
+	pending_probes := make([dynamic]Debug_Probe, 0, 2, context.temp_allocator)
 	for {
 		if peek_kind(p) == .At {
 			at_tok := advance(p) or_return
 			directive := expect(p, .Ident) or_return
-			if directive.text != "migrate" {
-				// @migrate is the one directive a field admits here (spec §05
-				// §6); any other @-form in a field body stays the generic
-				// token error.
+			switch directive.text {
+			case "migrate":
+				if !is_data_body {
+					return nil, .Migrate_Wrong_Target
+				}
+				if has_pending_migrate {
+					// A second @migrate before one field — never a silent
+					// overwrite.
+					return nil, .Malformed_Migrate
+				}
+				pending_migrate = parse_migrate_args(p, at_tok.line) or_return
+				has_pending_migrate = true
+			case "watch":
+				// @watch(expr) is the ONE debug probe the §28 §4 On-table admits
+				// on a field, and only on a `data` field (a `thing`/`singleton`/
+				// `signal` field is not a `data` record field, §03 §1) — the
+				// `data`-only gate @migrate uses. The argument is mandatory and
+				// is ordinary funpack (the value whose change fires watch_fired),
+				// parsed exactly as the declaration-prefix @watch arm does, so a
+				// missing/empty `(expr)` is the shared Probe_Missing_Arg verdict.
+				if !is_data_body {
+					return nil, .Probe_Wrong_Target
+				}
+				if peek_kind(p) != .L_Paren {
+					return nil, .Probe_Missing_Arg
+				}
+				p.pos += 1
+				if peek_kind(p) == .R_Paren {
+					return nil, .Probe_Missing_Arg
+				}
+				arg := parse_expression(p) or_return
+				expect(p, .R_Paren) or_return
+				append(&pending_probes, Debug_Probe{kind = .Watch, arg = arg, line = at_tok.line})
+			case "break", "log", "trace":
+				// Well-formed debug probes the On-table places on a behavior or a
+				// stage, never a field (spec §28 §4) — the keyed wrong-target
+				// verdict, never a silently dropped probe or a generic token error.
+				return nil, .Probe_Wrong_Target
+			case:
+				// @migrate/@watch are the only field-body directives (spec §05
+				// §6, §28 §4); every other @-form stays the generic token error,
+				// the prior field-body default.
 				return nil, .Unexpected_Token
 			}
-			if !allow_migrate {
-				return nil, .Migrate_Wrong_Target
-			}
-			if has_pending_migrate {
-				// A second @migrate before one field — never a silent
-				// overwrite.
-				return nil, .Malformed_Migrate
-			}
-			pending_migrate = parse_migrate_args(p, at_tok.line) or_return
-			has_pending_migrate = true
-			// The directive may sit on its own line above its field; commas
+			// A field directive may sit on its own line above its field; commas
 			// stay field separators, so only newlines are skipped here.
 			skip_newlines(p)
 			continue
@@ -1407,14 +1463,23 @@ parse_field_list :: proc(p: ^Parser, allow_migrate := false) -> (fields: []Field
 		}
 		field.migrate = pending_migrate
 		field.has_migrate = has_pending_migrate
+		if len(pending_probes) > 0 {
+			field.probes = pending_probes[:]
+		}
 		pending_migrate = Migrate_Node{}
 		has_pending_migrate = false
+		pending_probes = make([dynamic]Debug_Probe, 0, 2, context.temp_allocator)
 		append(&list, field)
 		skip_field_separators(p)
 	}
 	if has_pending_migrate {
 		// A @migrate with no field following it migrates nothing.
 		return nil, .Migrate_Wrong_Target
+	}
+	if len(pending_probes) > 0 {
+		// A @watch with no field following it watches nothing — the
+		// dangling-@migrate mold (spec §28 §4: a probe needs its target).
+		return nil, .Probe_Wrong_Target
 	}
 	expect(p, .R_Brace) or_return
 	return list[:], .None
@@ -1845,13 +1910,54 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 // Stage order is the contract, so stages keep source order. A stage value is
 // either a `[behavior, …]` list or a single bare battery name (`physics:
 // solve`); a leading `[` selects the list form, a bare ident the battery form.
+// A stage entry may carry a leading §28 §4 @trace probe (the grammar puts
+// Annotation* on StageEntry, fun.ebnf §9), consumed by the stage that follows
+// it — the field-level @migrate carry mold. @trace is the ONE probe the
+// On-table admits on a stage, so a misplaced @break/@log/@watch is
+// Probe_Wrong_Target and every other @-form is the generic token error.
 parse_pipeline :: proc(p: ^Parser) -> (node: Pipeline_Node, err: Parse_Error) {
 	pipeline_tok := expect(p, .Pipeline) or_return
 	name := expect_type_name(p) or_return
 	expect(p, .L_Brace) or_return
 	skip_field_separators(p)
 	stages := make([dynamic]Pipeline_Stage, 0, 8, context.temp_allocator)
-	for peek_kind(p) == .Ident {
+	// pending_probes accumulates the @trace prefix that attaches to the stage
+	// which follows — the field-level @migrate carry mold. Annotation* is a
+	// star, so several @trace lines stack the way declaration-prefix probes do.
+	pending_probes := make([dynamic]Debug_Probe, 0, 2, context.temp_allocator)
+	for {
+		if peek_kind(p) == .At {
+			at_tok := advance(p) or_return
+			directive := expect(p, .Ident) or_return
+			switch directive.text {
+			case "trace":
+				// @trace takes NO argument (spec §05 §5; fun.ebnf §1
+				// DebugDirective): it records the stage's full per-step
+				// (in -> out) transition. A parenthesized argument is the named
+				// Probe_Unexpected_Arg verdict, the declaration-prefix @trace mold.
+				if peek_kind(p) == .L_Paren {
+					return node, .Probe_Unexpected_Arg
+				}
+				append(&pending_probes, Debug_Probe{kind = .Trace, line = at_tok.line})
+			case "break", "log", "watch":
+				// Well-formed debug probes the On-table places on a behavior or a
+				// `data` field, never a stage (spec §28 §4) — the keyed
+				// wrong-target verdict, never a silently dropped probe.
+				return node, .Probe_Wrong_Target
+			case:
+				// @trace is the only stage-entry directive (spec §28 §4); every
+				// other @-form stays the generic token error, mirroring the
+				// field-body default.
+				return node, .Unexpected_Token
+			}
+			// A stage directive may sit on its own line above its stage; commas
+			// stay stage separators, so only newlines are skipped here.
+			skip_newlines(p)
+			continue
+		}
+		if peek_kind(p) != .Ident {
+			break
+		}
 		sname := advance(p) or_return
 		// Stage names are documentary value names — snake_case (spec §07).
 		if sname.class != .Snake_Case {
@@ -1859,8 +1965,17 @@ parse_pipeline :: proc(p: ^Parser) -> (node: Pipeline_Node, err: Parse_Error) {
 		}
 		expect(p, .Colon) or_return
 		stage := parse_pipeline_stage(p, sname.text) or_return
+		if len(pending_probes) > 0 {
+			stage.probes = pending_probes[:]
+		}
+		pending_probes = make([dynamic]Debug_Probe, 0, 2, context.temp_allocator)
 		append(&stages, stage)
 		skip_field_separators(p)
+	}
+	if len(pending_probes) > 0 {
+		// A @trace with no stage following it traces nothing — the
+		// dangling-@migrate mold (spec §28 §4: a probe needs its target).
+		return node, .Probe_Wrong_Target
 	}
 	expect(p, .R_Brace) or_return
 	return Pipeline_Node{name = name, stages = stages[:], line = pipeline_tok.line}, .None
