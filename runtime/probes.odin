@@ -26,15 +26,27 @@
 // change behavior — no heisenbugs." The honor tap rides the SAME tick fold every
 // driver runs (set on Tick_State, read at the behavior-step seam), nil off a fold.
 //
-// HONOR TARGET MAP (spec §28 §4 On-table + §05 §5). The live honor surface is
-// behavior-step-centric: a probe whose TARGET is a behavior folds its body against
-// that behavior's bound env at every step; a @watch whose TARGET is a `data`/thing
-// FIELD is honored at each behavior step whose on_thing owns the field (the field's
-// value diffed across the step). A probe targeting a fn/let/query/enum/signal/
-// pipeline — the broader §05 §5 parse breadth — rides the artifact for the §29 §2
-// index review but has no per-tick behavior step to fold against, so it is loaded
-// but not honored live here (see the run reasoning log, runtime-2.2-honor-target-
-// resolution).
+// HONOR TARGET MAP (spec §28 §4 On-table + §28 §2 `Owner.member` addressing). The
+// live honor surface is behavior-step-centric, and a TARGET is one of two shapes:
+//
+//   - a BARE declaration name — a §28 §4 declaration-prefix @break/@log/@watch/@trace
+//     on a BEHAVIOR; its body folds against that behavior's bound env at every step.
+//   - a QUALIFIED `<owner>.<member>` site — the §28 §4 sub-declaration positions a
+//     stage @trace (`<pipeline>.<stage>`) and a field @watch (`<data>.<field>`) carry
+//     (the funpack emitter's qualify_probe_site, the spec's `Snake.eat` form). A stage
+//     @trace IS honored: it resolves the pipeline prefix to the entrypoint's one
+//     pipeline and the stage member to a step's stage, then records the per-step
+//     (in → out) transition for every behavior the stage schedules (probe_honored_at).
+//
+// A field @watch on a QUALIFIED `<data>.<field>` site is loaded and resolvable but has
+// NO live honor site, so it fails closed: a `data` is a §03 §1 VALUE record with no
+// rows and no runtime identity (it lives only embedded on a thing's blackboard), and
+// the @watch body binds `self` to the data VALUE — never a thing row a behavior step
+// binds — so the spec gives the addressing but not which embedding a live watch diffs
+// (see the run reasoning log, runtime-field-stage-probe-honor). A probe targeting a
+// fn/let/query/enum/signal name with no per-tick behavior step is likewise loaded but
+// not honored — the broader §05 §5 parse breadth rides the artifact for the §29 §2
+// index review (see runtime-2.2-honor-target-resolution).
 package funpack_runtime
 
 import "core:fmt"
@@ -171,7 +183,7 @@ honor_behavior_step :: proc(
 	ok: bool,
 ) {
 	for &probe, idx in honor.program.probes {
-		if !probe_honored_at(probe, behavior) {
+		if !probe_honored_at(honor.program, probe, behavior) {
 			continue
 		}
 		switch probe.kind {
@@ -198,7 +210,7 @@ honor_behavior_step :: proc(
 		if live.on_signal != "" {
 			continue // a signal break fires on a routed signal, not a behavior step
 		}
-		if !probe_honored_at(live.probe, behavior) {
+		if !probe_honored_at(honor.program, live.probe, behavior) {
 			continue
 		}
 		#partial switch live.probe.kind {
@@ -221,21 +233,71 @@ live_watch_key :: proc(honor: ^Probe_Honor, live_idx: int) -> int {
 }
 
 // probe_honored_at reports whether a probe fires at THIS behavior step (spec §28 §4
-// On-table). A probe whose target is the behavior's NAME is honored against the
-// behavior's bound env every step. A @watch whose target is a `data`/thing FIELD is
-// honored at every step of a behavior writing that field's owning thing — resolved
-// by matching the watched field's thing to the behavior's on_thing. Every other
-// target (a fn/let/query/etc. name with no per-tick step) is not honored here.
-probe_honored_at :: proc(probe: Probe_Decl, behavior: ^Behavior_Decl) -> bool {
+// On-table). The two live honor sites are:
+//
+//   1. A probe whose target is the behavior's NAME (a §28 §4 declaration-prefix
+//      @break/@log/@watch/@trace on a behavior) — honored against the behavior's
+//      bound env every step.
+//   2. A @trace whose target is the QUALIFIED `<pipeline>.<stage>` site (the §28 §4
+//      stage position, §28 §2 `Owner.member` addressing) — honored at every behavior
+//      step running IN that stage, so the stage's per-step (in → out) transitions are
+//      recorded across the behaviors the stage schedules. Resolved by matching the
+//      target's pipeline prefix to the entrypoint's one pipeline and its stage member
+//      to this step's stage (qualified_target_is_stage).
+//
+// Every OTHER target is loaded but NOT honored at a behavior step (§28 §4 On-table is
+// the live-honor authority; the broader §05 §5 parse breadth rides the artifact for
+// the §29 §2 index review only — see runtime-2.2-honor-target-resolution). In
+// particular a @watch on a QUALIFIED `<data>.<field>` site is loaded and resolvable
+// but has NO live behavior-step honor site: a `data` is a §03 §1 VALUE record with no
+// rows and no runtime identity (it lives only embedded on a thing's blackboard), and
+// the field @watch's emitted body binds `self` to the data VALUE — never a thing row
+// a behavior step binds — so there is no instance to diff the field across. This is
+// the field-@watch honor-site limitation surfaced for the driver (see
+// runtime-field-stage-probe-honor); the resolution fails closed here.
+probe_honored_at :: proc(program: ^Program, probe: Probe_Decl, behavior: ^Behavior_Decl) -> bool {
 	if probe.target == behavior.name {
 		return true
 	}
-	// A @watch may prefix a `data` field (§05 §5); its target is the field's owning
-	// thing, honored at each step of a behavior writing that thing.
-	if probe.kind == .Watch && probe.target == behavior.on_thing {
+	// A @trace on a QUALIFIED `<pipeline>.<stage>` site honors at every behavior step
+	// scheduled in that stage of the entrypoint's pipeline (§28 §4 stage position).
+	if probe.kind == .Trace && qualified_target_is_stage(program, probe.target, behavior.stage) {
 		return true
 	}
 	return false
+}
+
+// qualified_target_is_stage reports whether a §28 §2 qualified `Owner.member` target
+// addresses THIS behavior step's pipeline stage — the funpack emitter's `<pipeline>.
+// <stage>` form for a stage @trace (qualify_probe_site). The owner must be the
+// entrypoint's one pipeline (§15 wires exactly one) and the member must equal the
+// step's stage, so a `Loop.mark` @trace fires at every behavior the `mark` stage of
+// the `Loop` pipeline schedules. A target that is not `pipeline.stage`, names a
+// different pipeline, or names a stage no step runs in matches nothing — the
+// fail-closed reading for an unknown stage target. The split is on the FIRST `.`
+// (a stage name is one identifier, so there is at most one separator); a target with
+// no `.` is a bare declaration name, never a stage site.
+@(private = "file")
+qualified_target_is_stage :: proc(program: ^Program, target: string, stage: string) -> bool {
+	owner, member, qualified := split_qualified_target(target)
+	if !qualified {
+		return false
+	}
+	return owner == program.entrypoint.pipeline && member == stage
+}
+
+// split_qualified_target splits a §28 §2 `Owner.member` addressing target into its
+// owner prefix and member at the FIRST `.` — the inverse of the emitter's
+// qualify_probe_site (`<owner>.<member>`). `qualified` is false for a bare name (no
+// `.`, a declaration-prefix probe's target) so a caller distinguishes the two TARGET
+// shapes the [probes] section carries. The owner and member are sub-slices of the
+// input (no allocation), valid for the target's lifetime.
+split_qualified_target :: proc(target: string) -> (owner: string, member: string, qualified: bool) {
+	dot := strings.index_byte(target, '.')
+	if dot < 0 {
+		return "", "", false
+	}
+	return target[:dot], target[dot + 1:], true
 }
 
 // honor_break evaluates a @break predicate against the behavior's bound env; when it
