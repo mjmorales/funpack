@@ -77,6 +77,16 @@ Debug_Session :: struct {
 	// bounded fixed-cadence snapshot ring. Observe-class — it never writes the
 	// canonical chain.
 	cursor:     Time_Cursor,
+	// The §28 §3 live break/watch registry (introspect_break.odin): the
+	// dynamically-set break/watch probes a session sets over the wire — the live
+	// counterpart to the artifact-carried @break/@watch (§28 §4). Each carries a
+	// stable session handle so `clear` removes it by id. OBSERVE-CLASS: a live
+	// break/watch is honored by re-folding the recording with these probes armed
+	// (the SAME honor seam in-code probes ride, probes.odin), which builds its own
+	// scratch chain and never touches the canonical chain — so setting a live probe
+	// is non-perturbing, exactly like an in-code one.
+	live_probes:  [dynamic]Live_Probe,
+	next_handle:  int, // monotonic per-session handle minted for each live probe
 }
 
 // open_debug_session folds a recorded run once through the production seam
@@ -441,6 +451,8 @@ session_request :: proc(
 		return observe_screenshot(s, id, args, allocator)
 	case "load", "run", "pause", "step", "rewind", "reset", "status":
 		return time_request(s, id, cmd, args, allocator)
+	case "break", "watch", "clear":
+		return break_request(s, id, cmd, args, allocator)
 	case "capture_test":
 		return capture_test_request(s, id, args, allocator)
 	case "branch", "checkout", "inject_input", "set", "spawn", "emit", "reload":
@@ -1076,6 +1088,22 @@ json_bool_field :: proc(object: json.Object, key: string) -> (value: bool, ok: b
 		return false, false
 	}
 	return flag, true
+}
+
+// json_array_field reads one array field off a parsed request object — an absent or
+// non-array field is ok=false. Shared by the control side (inject_input's
+// pressed/held/values/axes entry lists) and the break group (break/watch's `body`
+// node-forest line array).
+json_array_field :: proc(object: json.Object, key: string) -> (values: json.Array, ok: bool) {
+	field, has := object[key]
+	if !has {
+		return nil, false
+	}
+	entries, is_array := field.(json.Array)
+	if !is_array {
+		return nil, false
+	}
+	return entries, true
 }
 
 // --- The funpack value encoding (the §28 §2 "funpack values as strings") ----

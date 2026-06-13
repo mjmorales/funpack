@@ -602,16 +602,3 @@ control_reload :: proc(
 	return control_ok_response(s, id, "reload", ",\"swapped\":true", allocator)
 }
 
-// json_array_field reads one array field off a parsed request object.
-@(private = "file")
-json_array_field :: proc(object: json.Object, key: string) -> (values: json.Array, ok: bool) {
-	field, has := object[key]
-	if !has {
-		return nil, false
-	}
-	entries, is_array := field.(json.Array)
-	if !is_array {
-		return nil, false
-	}
-	return entries, true
-}
