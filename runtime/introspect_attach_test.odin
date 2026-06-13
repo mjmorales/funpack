@@ -275,6 +275,63 @@ test_attach_control_state_persists_across_requests :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `"warranted":false`), "the forked control lineage is non-warranted")
 }
 
+// test_attach_args_artifact_only pins the minimal `attach <artifact>` verb: the
+// artifact is bound, no replay log, and the port defaults to ATTACH_DEFAULT_PORT. The
+// parse is pure (no IO), so the operator-facing verb surface is proven headless even
+// though the server it feeds is FUNPACK_LIVE-gated.
+@(test)
+test_attach_args_artifact_only :: proc(t: ^testing.T) {
+	parsed, ok := parse_attach_args({"funpack-live", "attach", "game.artifact"})
+	testing.expect(t, ok, "attach with an artifact must parse")
+	testing.expect_value(t, parsed.artifact, "game.artifact")
+	testing.expect(t, !parsed.has_replay, "no second positional means no replay log")
+	testing.expect_value(t, parsed.port, ATTACH_DEFAULT_PORT)
+}
+
+// test_attach_args_replay_and_port pins the full verb surface: a second positional is
+// the recorded replay log (§28 §3 attach over a recorded run) and `--port N` overrides
+// the default loopback port.
+@(test)
+test_attach_args_replay_and_port :: proc(t: ^testing.T) {
+	parsed, ok := parse_attach_args({"funpack-live", "attach", "game.artifact", "run.replay", "--port", "9000"})
+	testing.expect(t, ok, "attach with a replay log and a port must parse")
+	testing.expect_value(t, parsed.artifact, "game.artifact")
+	testing.expect(t, parsed.has_replay, "the second positional is the replay log")
+	testing.expect_value(t, parsed.replay_log, "run.replay")
+	testing.expect_value(t, parsed.port, 9000)
+
+	// --port=N (the equals form) parses identically.
+	eq, eq_ok := parse_attach_args({"funpack-live", "attach", "game.artifact", "--port=9000"})
+	testing.expect(t, eq_ok, "the --port=N form must parse")
+	testing.expect_value(t, eq.port, 9000)
+	testing.expect(t, !eq.has_replay, "a flag is not a positional — no replay log here")
+}
+
+// test_attach_args_refusals pins the usage-error fail-closed cases: no artifact, an
+// unknown flag, a malformed/out-of-range port, a --port with no value, and a third
+// positional are each ok=false — the caller prints usage and exits non-zero rather
+// than guessing.
+@(test)
+test_attach_args_refusals :: proc(t: ^testing.T) {
+	_, no_artifact := parse_attach_args({"funpack-live", "attach"})
+	testing.expect(t, !no_artifact, "attach with no artifact is a usage error")
+
+	_, unknown_flag := parse_attach_args({"funpack-live", "attach", "game.artifact", "--bogus"})
+	testing.expect(t, !unknown_flag, "an unknown flag is a usage error, never silently ignored")
+
+	_, bad_port := parse_attach_args({"funpack-live", "attach", "game.artifact", "--port", "nope"})
+	testing.expect(t, !bad_port, "a non-numeric port is a usage error")
+
+	_, oob_port := parse_attach_args({"funpack-live", "attach", "game.artifact", "--port", "70000"})
+	testing.expect(t, !oob_port, "an out-of-range port is a usage error")
+
+	_, dangling_port := parse_attach_args({"funpack-live", "attach", "game.artifact", "--port"})
+	testing.expect(t, !dangling_port, "--port with no value is a usage error")
+
+	_, third_positional := parse_attach_args({"funpack-live", "attach", "a", "b", "c"})
+	testing.expect(t, !third_positional, "a third positional is a usage error")
+}
+
 // test_attach_handshake_carries_version pins the handshake envelope is versioned
 // exact-match like every §28 envelope (§28 §2) and a foreign-version auth line is
 // refused — the §29 index-contract discipline applied to the transport pre-amble.

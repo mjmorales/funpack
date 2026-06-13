@@ -18,8 +18,17 @@ MAIN_OS_ALIVE :: os.Error
 // exits with its return code; the default (headless/test/CI) build keeps the no-op
 // stub so the deterministic suite links no SDL symbol. The when-clause is the
 // single dispatch — the live entry exists only when the define compiles its block.
+//
+// The one localized verb arm: `funpack-live attach <artifact> …` opens a §28
+// introspection session and serves it on the auth-gated loopback port
+// (run_attach_session, gated in introspect_attach.odin) instead of the SDL window —
+// the §28.2 remote-attach CLI entry. Every other argv runs the live SDL session
+// unchanged, so the verb is a single localized branch, never a CLI restructure.
 when #config(FUNPACK_LIVE, false) {
 	main :: proc() {
+		if len(os.args) >= 2 && os.args[1] == "attach" {
+			os.exit(run_attach_session(os.args))
+		}
 		os.exit(run_live_session(os.args))
 	}
 } else {

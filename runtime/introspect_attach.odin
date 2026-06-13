@@ -34,6 +34,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 
 // ATTACH_AUTH_ENV is the deployment-config env var carrying the default
@@ -310,6 +311,85 @@ transport_send_line :: proc(transport: Line_Transport, line: string, allocator :
 	return transport.send(transport.userdata, transmute([]byte)framed)
 }
 
+// --- The `attach` CLI arg parse (pure; the operator-facing verb surface) ----
+
+// ATTACH_FRESH_TICKS is the recorded-input window an `attach` session WITHOUT a
+// replay log pre-folds: a small fixed budget of empty-input ticks so the operator's
+// time group (`run{until:N}` / `step`) has a navigable timeline the instant they
+// attach, rather than a zero-length recording every `run` would refuse as "tick out
+// of range". A dev-only convenience budget (the session is the observe/control
+// surface over THIS recording); a replay-log attach overrides it with the log's real
+// recorded snapshots. Fixed, not a flag — the operator drives depth over the wire.
+ATTACH_FRESH_TICKS :: 64
+
+// Attach_Args is the parsed `attach` verb surface: the artifact to open, an OPTIONAL
+// recorded replay log to source the session's snapshots+seed from, and the loopback
+// port. `has_replay` distinguishes "attach over the recorded run" (real inputs, the
+// log's pinned seed — §28 §3 "sessions are themselves replayable") from a fresh
+// attach over an empty-input window (the ATTACH_FRESH_TICKS default).
+Attach_Args :: struct {
+	artifact:    string,
+	replay_log:  string,
+	has_replay:  bool,
+	port:        int,
+}
+
+// parse_attach_args parses the `attach` verb tail into Attach_Args. The grammar is
+//
+//   attach <artifact> [recorded.replay] [--port N]
+//
+// `args` is the WHOLE process argv (args[0] = program, args[1] = "attach"); the
+// parse walks args[2:]. The first non-flag positional is the artifact (required); a
+// second non-flag positional is the optional replay log. `--port N` (or `--port=N`)
+// overrides ATTACH_DEFAULT_PORT; a missing/malformed/out-of-range port is ok=false.
+// ok=false on no artifact, an unknown flag, or a third positional — the caller then
+// prints usage and exits non-zero rather than guessing. Pure (no IO), so the verb
+// surface is headless-tested even though the server it feeds is FUNPACK_LIVE-gated.
+parse_attach_args :: proc(args: []string) -> (parsed: Attach_Args, ok: bool) {
+	result := Attach_Args{port = ATTACH_DEFAULT_PORT}
+	positionals := 0
+	i := 2 // args[0]=program, args[1]="attach"
+	for i < len(args) {
+		arg := args[i]
+		switch {
+		case arg == "--port":
+			if i + 1 >= len(args) {
+				return {}, false
+			}
+			port, port_ok := strconv.parse_int(args[i + 1])
+			if !port_ok || port <= 0 || port > 65535 {
+				return {}, false
+			}
+			result.port = port
+			i += 2
+		case strings.has_prefix(arg, "--port="):
+			port, port_ok := strconv.parse_int(arg[len("--port="):])
+			if !port_ok || port <= 0 || port > 65535 {
+				return {}, false
+			}
+			result.port = port
+			i += 1
+		case strings.has_prefix(arg, "--"):
+			return {}, false // an unknown flag is a usage error, never silently ignored
+		case positionals == 0:
+			result.artifact = arg
+			positionals += 1
+			i += 1
+		case positionals == 1:
+			result.replay_log = arg
+			result.has_replay = true
+			positionals += 1
+			i += 1
+		case:
+			return {}, false // a third positional is a usage error
+		}
+	}
+	if positionals == 0 {
+		return {}, false // the artifact is required
+	}
+	return result, true
+}
+
 // --- The core:net socket loop (when-gated: the ONLY blocking-IO code here) ---
 
 when #config(FUNPACK_LIVE, false) {
@@ -355,6 +435,100 @@ when #config(FUNPACK_LIVE, false) {
 			serve_attach_connection(s, auth, transport)
 			net.close(client)
 		}
+	}
+
+	// run_attach_session is the §28.2 operator-facing `attach` CLI entry — the thin
+	// FUNPACK_LIVE arm session_driver.odin foretold ("a thin FUNPACK_LIVE CLI arm can
+	// call ... the run_attach_server when-gated thin-adapter shape"). It (1) loads the
+	// artifact, (2) opens a Debug_Session over a recording, and (3) serves the §28
+	// introspection contract on the auth-gated loopback port via run_attach_server
+	// (FUNPACK_ATTACH_TOKEN required — the auth floor run_attach_server enforces, never
+	// re-checked here). It is when-gated because run_attach_server's core:net loop is.
+	//
+	// THE RECORDING the session folds (the §28 §3 time-travel substrate) is sourced two
+	// ways, mirroring replay.odin's identity-gated path:
+	//   - WITH a replay log (attach over a recorded run): read_replay_file parses the
+	//     real per-tick inputs + the pinned seed; the SAME §09 §5 identity check replay
+	//     gates with (an every-field Replay_Identity compare) refuses a log recorded
+	//     against a different build or seed BEFORE opening — never fold mismatched
+	//     inputs. The seed rides through to open_debug_session, so a seeded run (snake)
+	//     reproduces its RNG-driven setup.
+	//   - WITHOUT one (a fresh attach): an ATTACH_FRESH_TICKS window of empty inputs,
+	//     seedless (NO_SEED). A seeded artifact attached fresh has no recorded seed, so
+	//     its RNG-driven setup is not populated — the recorded-log path is the one that
+	//     pins a seed (noted: the limitation of a seedless fresh attach).
+	//
+	// DETERMINISM WARRANTY UNTOUCHED (§28 §2): attach activates a TRANSPORT over the
+	// unchanged observe/control session — open_debug_session folds the recording through
+	// the same production seam every driver uses, and the served session is
+	// non-perturbing on the canonical chain. Returns a process exit code (non-zero on a
+	// usage, load, replay-identity, or listen failure).
+	run_attach_session :: proc(args: []string) -> int {
+		parsed, args_ok := parse_attach_args(args)
+		if !args_ok {
+			fmt.eprintln("usage: funpack-live attach <artifact-path> [recorded.replay] [--port N]")
+			return 2
+		}
+
+		artifact_bytes, read_err := os.read_entire_file_from_path(parsed.artifact, context.allocator)
+		if read_err != nil {
+			fmt.eprintfln("error: cannot read artifact %s", parsed.artifact)
+			return 1
+		}
+		program := new(Program, context.allocator)
+		loaded, load_err := load_program(string(artifact_bytes), context.allocator)
+		if load_err != .None {
+			fmt.eprintfln("error: malformed artifact %s (%v)", parsed.artifact, load_err)
+			return 1
+		}
+		program^ = loaded
+
+		// The recording the session pre-folds. A replay log supplies the real recorded
+		// inputs + seed (identity-gated against the loaded build, exactly as replay does);
+		// absent one, an empty-input window seedless.
+		snapshots: []Input
+		run_seed := NO_SEED
+		if parsed.has_replay {
+			log, log_ok, io_ok := read_replay_file(parsed.replay_log, context.allocator)
+			if !io_ok {
+				fmt.eprintfln("error: cannot read replay log %s", parsed.replay_log)
+				return 1
+			}
+			if !log_ok {
+				fmt.eprintfln("error: malformed replay log %s", parsed.replay_log)
+				return 1
+			}
+			// The §09 §5 identity gate: refuse a log recorded against a different build or
+			// seed BEFORE opening, so the session never folds inputs shaped for another
+			// artifact. The seed rides from the log so a seeded run reproduces its setup.
+			// The recorded identity is rebuilt from the loaded artifact under the log's
+			// OWN seed (identity_from_program_seeded folds the seed into the fingerprint),
+			// so a build-or-seed mismatch is a plain Replay_Identity inequality — the same
+			// every-field check replay.odin gates with, over the struct's public fields.
+			if log.identity.has_seed {
+				run_seed = seeded_run(log.identity.seed)
+			}
+			loaded_identity :=
+				log.identity.has_seed ? identity_from_program_seeded(program^, string(artifact_bytes), log.identity.seed) : identity_from_program(program^, string(artifact_bytes))
+			if log.identity != loaded_identity {
+				fmt.eprintfln(
+					"error: replay log %s does not match artifact %s (different build or seed)",
+					parsed.replay_log,
+					parsed.artifact,
+				)
+				return 1
+			}
+			snapshots = log.snapshots
+		} else {
+			fresh := make([]Input, ATTACH_FRESH_TICKS, context.allocator)
+			for i in 0 ..< ATTACH_FRESH_TICKS {
+				fresh[i] = empty()
+			}
+			snapshots = fresh
+		}
+
+		session := open_debug_session(program, snapshots, run_seed, context.allocator)
+		return run_attach_server(&session, parsed.port)
 	}
 
 	// attach_socket_transport builds the Line_Transport over a connected core:net
