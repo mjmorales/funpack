@@ -1414,11 +1414,19 @@ node …
   `watch` (`@watch(<expr>)`, fire `watch_fired` on change), `trace` (`@trace`, record
   the per-step transition) — the **same** token the index `debug` field carries, so
   the two probe surfaces name a probe identically. `TARGET` is the probed
-  declaration's **name** (a name field, §2.6) — the behavior, stage, `data` field,
-  or other declaration the directive is attached to; the runtime addresses it by the
-  same §28 §2 index identity static structure and live state share. `body_count` is
-  the number of body `node` subtrees that follow: `1` for `@break`/`@log`/`@watch`
-  and `0` for `@trace`.
+  **site** (a name field, §2.6) — the §28 §2 index identity static structure and
+  live state share. It takes two shapes, both that one addressing namespace
+  (`Snake`, `Snake.eat`). A **declaration-prefix** probe (a behavior
+  `@break`/`@log`/`@watch`/`@trace`) carries the **bare declaration name**
+  (`debug_serve_threshold`). A **sub-declaration** probe carries the **qualified
+  `Owner.member` site**: a `@watch` on a `data` field is `<data>.<field>`
+  (`DriftLog.bias`), a `@trace` on a pipeline stage is `<pipeline>.<stage>`
+  (`Loop.mark`). The owner prefix disambiguates a field from a stage of the same
+  bare name (top-level declaration names share one namespace), so the runtime
+  resolves the prefix to a declaration, then the member within it. The qualifier is
+  one space-free token, so it rides this same name-field slot with no record-grammar
+  change. `body_count` is the number of body `node` subtrees that follow: `1` for
+  `@break`/`@log`/`@watch` and `0` for `@trace`.
 - The body (when `body_count` is `1`) is the directive's predicate/expression as a
   single §2.7 **node-forest** subtree — `@break`'s predicate over `self`/signals/
   resources, `@log`/`@watch`'s value expression — encoded through the **same** `node`
