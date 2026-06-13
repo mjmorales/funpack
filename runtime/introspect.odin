@@ -1126,8 +1126,10 @@ write_encoded_blackboard :: proc(
 }
 
 // sorted_blackboard_names returns a blackboard's field names in sorted order —
-// the deterministic render order (map iteration order is not).
-@(private = "file")
+// the deterministic render order (map iteration order is not). Package-visible:
+// the §28 §4 probe-honor serialization (probes.odin) reuses it to dump the
+// breakpoint_hit/trace blackboard payload in the same deterministic order the
+// observe trace renders.
 sorted_blackboard_names :: proc(
 	fields: map[string]Field_Value,
 	allocator := context.allocator,

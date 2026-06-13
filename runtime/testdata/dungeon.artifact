@@ -1,4 +1,4 @@
-funpack-artifact 17
+funpack-artifact 18
 [meta 2]
 project dungeon
 version L5:0.1.0
@@ -897,3 +897,4 @@ region hero 0 16 16 16
 region slime 16 16 16 16
 region chest_closed 32 16 16 16
 region chest_open 48 16 16 16
+[probes 0]

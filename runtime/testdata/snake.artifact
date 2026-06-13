@@ -1,4 +1,4 @@
-funpack-artifact 17
+funpack-artifact 18
 [meta 2]
 project snake
 version L5:0.1.0
@@ -611,3 +611,4 @@ entrypoint main pipeline:Snake tick_hz:8 logical:160x160 bindings:bindings
 [tilemaps 0]
 [nav 0]
 [assets 0]
+[probes 0]

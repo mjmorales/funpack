@@ -142,6 +142,18 @@ Tick_State :: struct {
 	// non-perturbation warranty; the introspect digest-pin test holds it). nil
 	// (every production driver) costs one pointer compare per tap site.
 	observe:          ^Tick_Observe,
+	// honor is the §28 §4 PROBE-honor tap (probes.odin) — the probe-side twin of
+	// observe. When non-nil, the fold evaluates every behavior-targeted @break/
+	// @watch/@log/@trace against the step's bound env and APPENDS its firing into
+	// the honor buffer as it folds — a pure read of the bound scope (predicate/
+	// expression bodies fold the artifact's node forest, NEVER source, and never
+	// write tick state), so an honored fold commits bit-identical state to an
+	// un-honored one (the §28 §2 non-perturbation warranty). nil (every production
+	// driver) costs one pointer compare per tap site. The current tick ordinal it
+	// stamps firings with is carried here too (the §28 §2 tick context), since the
+	// fold seam has the env but not the tick number.
+	honor:            ^Probe_Honor,
+	honor_tick:       int,
 }
 
 // Pending_Spawn is one queued Spawn command awaiting the tick-boundary batch: the
@@ -891,6 +903,8 @@ step_tick :: proc(
 	rng: ^Rng = nil,
 	indices: ^Index_State = nil,
 	observe: ^Tick_Observe = nil,
+	honor: ^Probe_Honor = nil,
+	honor_tick: int = 0,
 ) -> World_Version {
 	// The plain (bounded) driver runs eval and commit on ONE allocator — the caller's
 	// wholesale temp-free at the end reclaims everything, so there is no scratch/persist
@@ -902,6 +916,10 @@ step_tick :: proc(
 	// The §28 observe tap rides the SAME fold every driver runs — set here, read at
 	// the capture sites (behavior step / signal route), never written by the fold.
 	state.observe = observe
+	// The §28 §4 probe-honor tap rides the same fold, fired at the behavior-step
+	// seam with the tick ordinal it stamps firings with (nil off a honored session).
+	state.honor = honor
+	state.honor_tick = honor_tick
 	prior_version := prior
 	interp := new_interp(program, &prior_version, &state, input, time, allocator)
 
@@ -995,6 +1013,14 @@ run_behavior_over_instances :: proc(
 		// unchanged whether the tap fired or not.
 		if state.observe != nil {
 			observe_behavior_step(state.observe, step, behavior, self_row, env, result, ok)
+		}
+		// The §28 §4 probe-honor tap rides the SAME seam: it folds every behavior-
+		// targeted @break/@watch/@log/@trace against the bound env (a pure read — the
+		// predicate/expression node forests fold without writing tick state) and
+		// appends firings to the honor buffer. Like observe, the fold below is
+		// unchanged whether the tap fired or not (non-perturbing by construction).
+		if state.honor != nil {
+			honor_behavior_step(state.honor, interp, state.honor_tick, behavior, self_row, &env, result, ok)
 		}
 		if !ok {
 			continue
