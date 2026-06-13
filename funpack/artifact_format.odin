@@ -296,12 +296,18 @@ import "core:strings"
 // TAIL (the [assets]/[nav] tail precedent). Each record is one top-level kind plus the
 // existing `node` body run: `probe KIND TARGET body_count` — KIND is the closed §05 §5
 // directive family lowercased (`break`/`log`/`watch`/`trace`, the same token the index
-// `debug` field carries); TARGET is the probed declaration's NAME (the §28 §2 "addressing
-// reuses index identity" the runtime resolves the probe against); body_count is 1 for a
-// @break/@log/@watch (whose predicate/expression rides as the single §2.7 node-forest
-// subtree that follows — NEVER funpack source, §28 §2: the body is compiled funpack-side
-// to a node forest and folded by the runtime's interpreter when the probe is honored) and
-// 0 for a @trace (which carries no argument). `probe` is a new TOP-LEVEL record keyword,
+// `debug` field carries); TARGET is the §28 §2 addressing site (the "addressing reuses
+// index identity" the runtime resolves the probe against) — a BARE declaration name for a
+// behavior probe, or a QUALIFIED `Owner.member` site for a §28 §4 sub-declaration probe (a
+// `data` field @watch → `<data>.<field>`, a pipeline stage @trace → `<pipeline>.<stage>`),
+// one space-free name-field token either way (the qualified form rides the same free-string
+// TARGET slot with no record-grammar change — it is NOT a separate bump; the format always
+// accommodated a name field whose internal spelling it does not constrain, the §8
+// path-projection open-window discipline applied to a value the format does not pin);
+// body_count is 1 for a @break/@log/@watch (whose predicate/expression rides as the single
+// §2.7 node-forest subtree that follows — NEVER funpack source, §28 §2: the body is compiled
+// funpack-side to a node forest and folded by the runtime's interpreter when the probe is
+// honored) and 0 for a @trace (which carries no argument). `probe` is a new TOP-LEVEL record keyword,
 // NOT a sub-record keyword, so SUB_RECORD_KEYWORDS is unchanged: the body `node` lines are
 // the existing sub-records, so a probe-with-body is a variable-length top-level record read
 // by the SAME lead-line discipline as a [functions] record. The section is DEV-ONLY by

@@ -22,28 +22,30 @@ import "core:strings"
 import "core:testing"
 
 // FOUR_PROBE_SOURCE is the minimal compileable module (MINI_SOURCE's empty
-// pipeline + deviceless bindings) plus all four §05 §5 / §28 §4 debug directives.
-// Every probe rides a BEHAVIOR — the one declaration kind the §28 §4 On-table
-// admits for all four directives (@break/@log behavior-only; @watch behavior or
-// `data` field; @trace behavior or stage) — so the fixture is On-table-legal and
-// clears the §28 §4 placement gate while the four behaviors still spread the
-// [probes] walk across the AST's declaration sequence. Each carries a distinct
-// node-forest body shape — @break a `binary gt` predicate, @log a field access,
-// @watch a field access, @trace none — so the emitted bodies exercise the
+// pipeline + deviceless bindings) plus SIX §05 §5 / §28 §4 debug directives across
+// all THREE On-table positions, so the [probes] EMIT exercises every TARGET shape.
+// (1) Four DECLARATION-PREFIX probes on BEHAVIORS (@break/@log behavior-only;
+// @watch and @trace also admit a behavior) → a bare-name TARGET. (2) one
+// SUB-DECLARATION @watch on a `data` FIELD (the On-table's @watch-on-a-data-field
+// position) → the qualified `<data>.<field>` TARGET. (3) one SUB-DECLARATION
+// @trace on a pipeline STAGE → the qualified `<pipeline>.<stage>` TARGET. So the
+// fixture is On-table-legal, clears the §28 §4 placement gate, and spreads the
+// [probes] walk across declaration-prefix AND sub-declaration sites. Each probe
+// carries a distinct node-forest body shape — @break a `binary gt` predicate, @log
+// a field access, the behavior @watch a field access, the field @watch a field
+// access off the data row, @trace none — so the emitted bodies exercise the
 // emit_expr forest end to end. A probe ARGUMENT is BOTH typechecked against its
 // carrying scope (§05 §5 / §28 §4, check_probe_args) AND emitted as a node forest
 // (never live-compiled source, §28 §2), so each arg must RESOLVE in its carrier's
-// scope: @break(self.pos.x > 70.0) and @watch(self.pos) read the step's
-// `self: DebugMarker`, and @log(DRIFT.x) reads the module-level `let DRIFT`. The
-// behaviors step on a thing and are wired into the pipeline so the schedule
-// references them. NOTE: the artifact [probes] EMIT (collect_probe_records) lifts
-// only declaration-prefix probes today, so the §28 §4 sub-declaration positions
-// (@watch on a `data` field, @trace on a stage) are deliberately NOT exercised
-// here — those ride the release-ban + index walks (golden_probes_test.odin), not
-// this emit golden. Distinct from build_test's single-@log PROBED_SOURCE: this
-// fixture spreads all four KINDs to pin each token and body shape in [probes].
+// scope: @break(self.pos.x > 70.0) and the behavior @watch(self.pos) read the
+// step's `self: DebugMarker`, @log(DRIFT.x) reads the module-level `let DRIFT`, and
+// the field @watch(self.bias) reads DriftLog's own `bias` through the field-probe
+// `self`-bound scope. The behaviors step on a thing and are wired into the pipeline
+// so the schedule references them. Distinct from build_test's single-@log
+// PROBED_SOURCE: this fixture spreads all four KINDs AND all three TARGET shapes to
+// pin each token, body shape, and qualified-site encoding in [probes].
 FOUR_PROBE_SOURCE ::
-	"@doc(\"Minimal probed module: a watched thing, four probed behaviors, a deviceless bindings fn, and a schedule.\")\n" +
+	"@doc(\"Minimal probed module: a watched thing, a watched data field, four probed behaviors, a deviceless bindings fn, and a traced schedule.\")\n" +
 	"\n" +
 	"import engine.input.{Bindings}\n" +
 	"import engine.math.{Fixed, Vec2}\n" +
@@ -52,6 +54,12 @@ FOUR_PROBE_SOURCE ::
 	"thing DebugMarker {\n" +
 	"  pos: Vec2 = Vec2{x: 0.0, y: 0.0}\n" +
 	"  vel: Vec2 = Vec2{x: 0.0, y: 0.0}\n" +
+	"}\n" +
+	"\n" +
+	"@doc(\"A drift-log data record whose bias field is watched (the §28 §4 field-probe position).\")\n" +
+	"data DriftLog {\n" +
+	"  @watch(self.bias)\n" +
+	"  bias: Fixed\n" +
 	"}\n" +
 	"\n" +
 	"@doc(\"The level origin a log probe reads a field off.\")\n" +
@@ -99,8 +107,9 @@ FOUR_PROBE_SOURCE ::
 	"  return Bindings.empty()\n" +
 	"}\n" +
 	"\n" +
-	"@doc(\"The schedule that runs the four probed behaviors.\")\n" +
+	"@doc(\"The schedule that runs the four probed behaviors, with a traced stage (the §28 §4 stage-probe position).\")\n" +
 	"pipeline Loop {\n" +
+	"  @trace\n" +
 	"  mark: [debug_serve_threshold, debug_drift_bias, debug_marker_watch, debug_trace_marker]\n" +
 	"}\n"
 
@@ -141,12 +150,14 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 	// AC (dev build, the EMIT half): the probed tree built in Dev mode (the no-flag
 	// default) is exit 0 and writes the artifact, whose [probes] section carries one
 	// `probe KIND TARGET body_count` record per in-code directive in source-
-	// declaration order — break/log/watch/trace each on its carrying BEHAVIOR (the
-	// declaration-prefix position collect_probe_records lifts) — each non-@trace
-	// body a §2.7 node forest (NEVER funpack source) and @trace body-less. The
-	// section count reconciles under the funpack
-	// reader (probe is a top-level keyword; the `node` body lines are sub-records),
-	// proving the lead-line discipline shapes the variable-length records.
+	// declaration order — the four behavior probes (the declaration-prefix position,
+	// bare-name TARGET), the `data` field @watch (the sub-declaration position,
+	// qualified `DriftLog.bias` TARGET), and the pipeline stage @trace (the
+	// sub-declaration position, qualified `Loop.mark` TARGET) — each non-@trace body
+	// a §2.7 node forest (NEVER funpack source) and @trace body-less. The section
+	// count reconciles under the funpack reader (probe is a top-level keyword; the
+	// `node` body lines are sub-records), proving the lead-line discipline shapes the
+	// variable-length records.
 	root, ok := write_four_probe_tree(t)
 	if !ok {
 		return
@@ -170,9 +181,16 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 	}
 	artifact := string(artifact_bytes)
 
-	// The new v18 stamp and the [probes] section with all four records.
+	// The v18 stamp and the [probes] section with all SIX records (four behavior
+	// probes + the field @watch + the stage @trace).
 	testing.expect(t, strings.contains(artifact, "funpack-artifact 18\n"))
-	testing.expect(t, strings.contains(artifact, "[probes 4]\n"))
+	testing.expect(t, strings.contains(artifact, "[probes 6]\n"))
+
+	// The §28 §4 FIELD-PROBE position: @watch(self.bias) on DriftLog's `bias` field
+	// rides under the QUALIFIED `DriftLog.bias` TARGET (the §28 §2 `Owner.member`
+	// addressing), its `self.bias` body a field access off the data row. DriftLog is
+	// the source-order-first probed declaration, so this record leads the section.
+	testing.expect(t, strings.contains(artifact, "probe watch DriftLog.bias 1\nnode field bias 1\nnode name self 0\n"))
 
 	// @break: the predicate `self.pos.x > 70.0` rides as a node forest (binary gt
 	// over a nested field-access chain and a fixed literal) under `probe break
@@ -183,10 +201,15 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 	// @log: `DRIFT.x` is a field access node forest under `probe log debug_drift_bias 1`.
 	testing.expect(t, strings.contains(artifact, "probe log debug_drift_bias 1\nnode field x 1\nnode name DRIFT 0\n"))
 	// @watch on a behavior (the On-table's behavior position): `self.pos` is a field
-	// access under `probe watch debug_marker_watch 1`.
+	// access under `probe watch debug_marker_watch 1` — the bare-name TARGET.
 	testing.expect(t, strings.contains(artifact, "probe watch debug_marker_watch 1\nnode field pos 1\nnode name self 0\n"))
-	// @trace: no argument — body_count 0, no body lines follow.
+	// @trace on a behavior: no argument — body_count 0, no body lines follow.
 	testing.expect(t, strings.contains(artifact, "probe trace debug_trace_marker 0\n"))
+
+	// The §28 §4 STAGE-PROBE position: @trace on the `Loop` pipeline's `mark` stage
+	// rides under the QUALIFIED `Loop.mark` TARGET, body-less (body_count 0). Loop is
+	// the last declaration, so this record tails the section.
+	testing.expect(t, strings.contains(artifact, "probe trace Loop.mark 0\n"))
 
 	// The bodies are node forests, never funpack source: no raw predicate text leaks.
 	testing.expect(t, !strings.contains(artifact, "self.pos.x > 70.0"))
@@ -198,19 +221,22 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 	testing.expect_value(t, doc.schema_version, ARTIFACT_SCHEMA_VERSION)
 	section, found := artifact_find_section(doc, "probes")
 	testing.expect(t, found)
-	testing.expect_value(t, section.count, 4)
-	log.infof("dev build probes: artifact [probes 4] carries break/log/watch/trace with node-forest bodies, section reconciles under the reader")
+	testing.expect_value(t, section.count, 6)
+	log.infof("dev build probes: artifact [probes 6] carries four behavior probes + the DriftLog.bias field @watch + the Loop.mark stage @trace with node-forest bodies, section reconciles under the reader")
 }
 
 @(test)
 test_release_build_refuses_probed_tree_emitting_no_artifact :: proc(t: ^testing.T) {
 	// AC (release ban): the SAME probed tree under --release is the exit-2 compile
 	// error — stage_build refuses with Debug_Directive naming the first probed
-	// declaration (debug_serve_threshold, the addendum's first decl in source order)
-	// and writes NO artifact, so a release artifact can never carry a [probes]
-	// section. The ban fires before emission, exactly the hole-ban's sibling tier
-	// (§28 §4: a @break in a --release build is a compile error). Never a counted
-	// failure: there is no exit-1 tier.
+	// declaration in source order. That is now DriftLog — the `data` carrying the
+	// field @watch is decl #2, BEFORE the probed behaviors — proving the field-probe
+	// position is release-banned exactly like a declaration-prefix probe (a field
+	// @watch can no more ship than a behavior @break). It writes NO artifact, so a
+	// release artifact can never carry a [probes] section. The ban fires before
+	// emission, exactly the hole-ban's sibling tier (§28 §4: a @break/@watch in a
+	// --release build is a compile error). Never a counted failure: there is no
+	// exit-1 tier.
 	root, ok := write_four_probe_tree(t)
 	if !ok {
 		return
@@ -219,11 +245,11 @@ test_release_build_refuses_probed_tree_emitting_no_artifact :: proc(t: ^testing.
 
 	_, verdict := stage_build(root, .Release, context.temp_allocator)
 	testing.expect_value(t, verdict.err, Build_Error.Debug_Directive)
-	testing.expect_value(t, verdict.offender, "debug_serve_threshold")
+	testing.expect_value(t, verdict.offender, "DriftLog")
 	testing.expect(t, !os.exists(build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)))
 	testing.expect_value(t, run_check_verb(root, .Dev), 0)
 	testing.expect_value(t, run_check_verb(root, .Release), 2)
-	log.infof("release build probes: the probed tree refuses (Debug_Directive: debug_serve_threshold) with no artifact — a release artifact holds no probe section")
+	log.infof("release build probes: the probed tree refuses (Debug_Directive: DriftLog, the field-probe carrier) with no artifact — a release artifact holds no probe section")
 }
 
 @(test)
@@ -282,18 +308,21 @@ test_emit_probe_bodies_round_trip_well_formed :: proc(t: ^testing.T) {
 	if !found {
 		return
 	}
-	testing.expect_value(t, section.count, 4)
+	testing.expect_value(t, section.count, 6)
 	// Every probe's body run is a well-formed pre-order forest: a non-@trace record
 	// declares body_count 1 (one statement subtree), a @trace record body_count 0,
 	// and the `node` lines after each `probe` line are exactly that subtree with no
-	// leftover — read through the same body-forest reader the §2.7 bodies use.
+	// leftover — read through the same body-forest reader the §2.7 bodies use. The
+	// field @watch (DriftLog.bias) and the stage @trace (Loop.mark) ride the same
+	// count-driven discipline as the behavior probes — a qualified TARGET does not
+	// change the lead-line shape.
 	expect_probe_bodies_well_formed(t, section)
 
 	// Emission is a pure function of its inputs — two calls, identical bytes (§29).
 	second, second_err := stage_emit(FOUR_PROBE_SOURCE, "mini", identity, FOUR_PROBE_ENTRYPOINT, context.temp_allocator)
 	testing.expect_value(t, second_err, Emit_Error.None)
 	testing.expect(t, artifact == second)
-	log.infof("emit probes round-trip: [probes 4] body forests are well-formed and emission is byte-identical twice")
+	log.infof("emit probes round-trip: [probes 6] body forests (incl. the DriftLog.bias field @watch + Loop.mark stage @trace) are well-formed and emission is byte-identical twice")
 }
 
 // expect_probe_bodies_well_formed walks a [probes] section's body lines and asserts
