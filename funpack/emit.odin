@@ -264,6 +264,7 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_tilemaps(&b, input.tilemaps)
 	emit_navs(&b, input.nav_graphs)
 	emit_assets(&b, input.assets)
+	emit_probes(&b, input.ast)
 
 	return strings.to_string(b)
 }
@@ -1630,6 +1631,115 @@ emit_assets :: proc(b: ^strings.Builder, assets: Baked_Assets) {
 			strings.write_byte(b, ' ')
 			strings.write_int(b, region.px_h)
 			emit_line(b, "")
+		}
+	}
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// [probes] — the §28 §4 in-code debug directives (docs/artifact-format.md §21,
+// schema v18)
+// ───────────────────────────────────────────────────────────────────────────
+
+// Probe_Record is one §05 §5 / §28 §4 debug directive lifted to the
+// artifact-emit shape: its closed kind (the lowercased directive family token the
+// [probes] record leads with — `probe_directive_name`, the SAME token the §29 §2
+// index `debug` field carries, so the two probe surfaces name a probe identically),
+// the NAME of the declaration it is attached to (the §28 §2 "addressing reuses index
+// identity" target the runtime resolves the probe against), and the probe's
+// predicate/expression body — a single Expr subtree for @break/@log/@watch, nil for
+// @trace (which carries no argument). It is the pure projection of a parser
+// Debug_Probe onto its declaration's name.
+Probe_Record :: struct {
+	kind:   string,
+	target: string,
+	body:   Expr,
+}
+
+// collect_probe_records walks the checked AST's source-ordered declaration
+// sequence (`ast.decls`) and lifts every §05 §5 debug probe onto its declaration's
+// name, in (declaration order, then directive order within a declaration) — the
+// SAME walk release_debug_decl (gates.odin) uses, so the [probes] section order is
+// the deterministic index order. A declaration with no probes contributes nothing;
+// a test block carries no probes (the parser attaches none, §05 §5). The result is
+// a pure function of the AST: no map iteration, no host bytes, so two emissions are
+// byte-identical (§29).
+collect_probe_records :: proc(ast: Ast, allocator := context.allocator) -> []Probe_Record {
+	out := make([dynamic]Probe_Record, 0, 4, allocator)
+	for ref in ast.decls {
+		probes: []Debug_Probe
+		name: string
+		switch ref.kind {
+		case .Let:
+			probes = ast.lets[ref.index].probes
+			name = ast.lets[ref.index].name
+		case .Data:
+			probes = ast.datas[ref.index].probes
+			name = ast.datas[ref.index].name
+		case .Enum:
+			probes = ast.enums[ref.index].probes
+			name = ast.enums[ref.index].name
+		case .Thing:
+			probes = ast.things[ref.index].probes
+			name = ast.things[ref.index].name
+		case .Signal:
+			probes = ast.signals[ref.index].probes
+			name = ast.signals[ref.index].name
+		case .Fn:
+			probes = ast.fns[ref.index].probes
+			name = ast.fns[ref.index].name
+		case .Query:
+			probes = ast.queries[ref.index].probes
+			name = ast.queries[ref.index].name
+		case .Behavior:
+			probes = ast.behaviors[ref.index].probes
+			name = ast.behaviors[ref.index].name
+		case .Pipeline:
+			probes = ast.pipelines[ref.index].probes
+			name = ast.pipelines[ref.index].name
+		case .Extern_Type:
+			probes = ast.extern_types[ref.index].probes
+			name = ast.extern_types[ref.index].name
+		case .Test:
+		// A test block carries no probes (§05 §5) — nothing to lift.
+		}
+		for probe in probes {
+			append(&out, Probe_Record{kind = probe_directive_name(probe.kind), target = name, body = probe.arg})
+		}
+	}
+	return out[:]
+}
+
+// emit_probes writes the [probes] section (docs/artifact-format.md §21, schema
+// v18): one `probe KIND TARGET body_count` top-level record per in-code §28 §4
+// debug directive, each followed by its predicate/expression body as a §2.7 node
+// forest (the `node` sub-record run emit_expr produces) — never funpack source
+// (§28 §2: the body is compiled funpack-side to a node forest the runtime folds).
+// body_count is 1 for @break/@log/@watch (the single predicate/expression subtree
+// rides next) and 0 for @trace (no argument, nil body). The walk is source order
+// (collect_probe_records), so two emissions are byte-identical (§29).
+//
+// The section is DEV-ONLY by construction: the §29 §3 release debug-directive ban
+// refuses the whole build (Build_Error.Debug_Directive) before emission whenever a
+// declaration carries a probe under --release, so a release artifact's AST is
+// probe-free and this writes the constant `[probes 0]` tail — the v7 stub-node
+// precedent (a release artifact never carries a stub because the hole-ban refuses
+// the holed tree first). The emitter stays mode-blind: it emits exactly the probes
+// the AST carries, which the upstream ban guarantees is none in release. A
+// probe-free dev build likewise writes `[probes 0]`.
+emit_probes :: proc(b: ^strings.Builder, ast: Ast) {
+	records := collect_probe_records(ast, context.temp_allocator)
+	emit_header(b, "probes", len(records))
+	for record in records {
+		has_body := record.body != nil
+		strings.write_string(b, "probe ")
+		strings.write_string(b, record.kind)
+		strings.write_byte(b, ' ')
+		strings.write_string(b, record.target)
+		strings.write_byte(b, ' ')
+		strings.write_int(b, 1 if has_body else 0)
+		emit_line(b, "")
+		if has_body {
+			emit_expr(b, record.body)
 		}
 	}
 }
