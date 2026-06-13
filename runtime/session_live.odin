@@ -31,7 +31,11 @@
 // symbol. run_live_session is the entry main() dispatches to under the define.
 package funpack_runtime
 
+import "core:bytes"
+import "core:encoding/base64"
 import "core:fmt"
+import "core:image"
+import qoi "core:image/qoi"
 import "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
@@ -65,6 +69,19 @@ SESSION_LIVE_FMT_ALIVE :: fmt.Info
 // without an outside reference -vet reads the import as unused. The alias is
 // dead-stripped, so the default binary carries nothing extra.
 SESSION_LIVE_VIRTUAL_ALIVE :: virtual.Arena
+
+// SESSION_LIVE_{BYTES,BASE64,IMAGE,QOI}_ALIVE keep the §28.3 screenshot capture's
+// image-codec imports referenced outside the when-gated block for the same reason:
+// session_capture_frame's QOI encode (core:image/qoi over a core:image.Image, the
+// bytes.Buffer it fills, and the base64 transport) is FUNPACK_LIVE-only, so a
+// headless build's -vet would read all four imports as unused. Each alias is a
+// dead-stripped type reference (bare type usage, which does not pull the codec's
+// codegen into the headless test binary — only the FUNPACK_LIVE arm's actual
+// save_to_buffer call does), so the default binary carries nothing extra.
+SESSION_LIVE_BYTES_ALIVE :: bytes.Buffer
+SESSION_LIVE_BASE64_ALIVE :: base64.PADDING
+SESSION_LIVE_IMAGE_ALIVE :: image.Image
+SESSION_LIVE_QOI_ALIVE :: qoi.Error
 
 // --- replay out-path / save-root derivation (pure, compiled in every build) ---
 
@@ -451,6 +468,134 @@ text_rects :: proc(text: string, at: Vec2, cell: Vec2, color: Draw_Color, alloca
 		cursor.x = fixed_add(cursor.x, advance)
 	}
 	return rects[:]
+}
+
+// --- the §28.3 screenshot capture seam (the render-crossing twin of draw_list) ---
+
+// session_capture_frame is the impure half of the §28.3 screenshot command: it
+// CROSSES the render/present boundary that draw_list never touches (§28 §2). The
+// observe side (introspect.odin) re-projects a committed tick to the §20 draw-list
+// (the deterministic artifact) and hands it here; this paints that draw-list through
+// the SAME present pass the live window uses, but onto an OFFSCREEN software surface,
+// reads the rasterized RGBA8 pixels back, and encodes them to base64-QOI. The capture
+// is decoupled from the live window loop (the Debug_Session holds no renderer) —
+// screenshot is an observe command over the RECORDING, so it captures a re-projected
+// frame whether or not a window session is running.
+//
+// The result is the base64-encoded QOI bytes of the frame at the artifact's declared
+// §15 logical extent scaled to the live window size (live_window_for — the same
+// per-artifact geometry the window uses), plus its width/height. QOI is the Odin-first
+// lossless encoder (core:image/qoi); core:image/png is decode-only in this toolchain.
+// The encoding lives HERE, behind the gate, ON PURPOSE: the codec pulls core:compress,
+// an impure present-boundary dependency that must NOT enter the always-compiled
+// deterministic translation unit (the headless test binary, whose threaded test runner
+// trips an Odin checker assertion when that codec graph is in scope).
+//
+// Build split (the main.odin / audio.odin discipline): under -define:FUNPACK_LIVE the
+// live arm does the offscreen SDL render + readback + encode; the default headless
+// build has NO display, so the else arm returns ok=false and the command reports the
+// defined "requires live present" refusal (introspect.odin) — never a crash. Pixels
+// are non-deterministic/visual (§20 §5), so they are never on the determinism path;
+// this reads the committed version and writes nothing back, so the observe warranty
+// holds.
+when #config(FUNPACK_LIVE, false) {
+	session_capture_frame :: proc(
+		program: ^Program,
+		draw: Draw_List,
+		allocator := context.allocator,
+	) -> (
+		encoded: string,
+		width: int,
+		height: int,
+		ok: bool,
+	) {
+		// SDL video must be up for the offscreen renderer; a live session already
+		// initialized it (idempotent), a capture-only session initializes it here. No
+		// window is created — the target is a surface, so this works headless-of-window
+		// but still requires the SDL video subsystem (a true no-display host fails the
+		// Init and the command falls to its boundary refusal).
+		if .VIDEO not_in sdl.WasInit(sdl.INIT_VIDEO) {
+			if sdl.Init(sdl.INIT_VIDEO) != 0 {
+				return "", 0, 0, false
+			}
+		}
+
+		// The capture extent is the artifact's declared §15 logical draw space scaled to
+		// the live window — the SAME geometry present_frame projects through, so a
+		// captured frame matches what the window shows pixel-for-pixel.
+		window := live_window_for(program.entrypoint.logical_w, program.entrypoint.logical_h)
+		board := board_extent(program.entrypoint.logical_w, program.entrypoint.logical_h)
+
+		// An offscreen RGBA32 surface + a software renderer over it: the present pass
+		// paints into the surface, RenderPresent flushes to it. .RGBA32 is byte-order
+		// R,G,B,A on every endianness (the same format the atlas cache uploads), so the
+		// readback bytes need no channel swap.
+		surface := sdl.CreateRGBSurfaceWithFormat(0, window.w, window.h, 32, u32(sdl.PixelFormatEnum.RGBA32))
+		if surface == nil {
+			return "", 0, 0, false
+		}
+		defer sdl.FreeSurface(surface)
+		renderer := sdl.CreateSoftwareRenderer(surface)
+		if renderer == nil {
+			return "", 0, 0, false
+		}
+		defer sdl.DestroyRenderer(renderer)
+
+		// Upload the §19 atlas images to textures owned by THIS renderer (a texture is
+		// renderer-bound, so the live window's cache cannot be reused), paint the
+		// draw-list through the shared present pass, then tear the textures down before
+		// their renderer.
+		cache := new_atlas_texture_cache(renderer, program, allocator)
+		defer destroy_atlas_texture_cache(&cache)
+		present_frame(renderer, &cache, draw, board, window)
+
+		// Read the rasterized frame back into a tight RGBA8 buffer: naming the
+		// destination pitch (window.w*4) makes RenderReadPixels write row-major with no
+		// padding, so the buffer is exactly channels*w*h — the shape QOI demands.
+		pitch := int(window.w) * 4
+		rgba := make([]u8, pitch * int(window.h), allocator)
+		defer delete(rgba, allocator)
+		if sdl.RenderReadPixels(renderer, nil, u32(sdl.PixelFormatEnum.RGBA32), raw_data(rgba), i32(pitch)) != 0 {
+			return "", 0, 0, false
+		}
+
+		// Encode the RGBA8 frame to QOI, then base64 it for the NDJSON envelope (the
+		// same base64 transport §19 RGBA8 buffers ride). QOI requires depth 8, 4
+		// channels, channels*w*h == len(pixels) — the readback buffer is exactly that.
+		img := image.Image {
+			width    = int(window.w),
+			height   = int(window.h),
+			channels = 4,
+			depth    = 8,
+		}
+		bytes.buffer_init(&img.pixels, rgba)
+		qoi_buf: bytes.Buffer
+		if encode_err := qoi.save_to_buffer(&qoi_buf, &img, qoi.Options{}, allocator); encode_err != nil {
+			return "", 0, 0, false
+		}
+		defer bytes.buffer_destroy(&qoi_buf)
+		out := base64.encode(bytes.buffer_to_bytes(&qoi_buf), base64.ENC_TABLE, allocator)
+		return out, int(window.w), int(window.h), true
+	}
+} else {
+	// Headless default build: no display, no SDL, no image codec. The screenshot
+	// command routes (introspect.odin's dispatch is always compiled) but this stub
+	// reports the capture is unavailable, so the command returns its defined "requires
+	// live present" refusal instead of crossing a boundary that does not exist here.
+	// The sim-pure draw_list remains the headless draw-list surface.
+	session_capture_frame :: proc(
+		program: ^Program,
+		draw: Draw_List,
+		allocator := context.allocator,
+	) -> (
+		encoded: string,
+		width: int,
+		height: int,
+		ok: bool,
+	) {
+		_, _, _ = program, draw, allocator
+		return "", 0, 0, false
+	}
 }
 
 // --- the live session driver (when-gated: the ONLY SDL-calling code here) ---
