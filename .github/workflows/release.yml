@@ -1,0 +1,82 @@
+name: Release
+
+# Tag-triggered release build of the two funpack bins:
+#   funpack       — the compiler/toolchain CLI (headless, no runtime deps)
+#   funpack-live  — the runtime, FUNPACK_LIVE (links vendor:sdl2; needs SDL2 at runtime)
+# Native matrix runners per OS/arch (no cross-compile — SDL2 links natively per arch).
+# Managed by OpenTofu (cloud-infra github/files/funpack-release.yml); edit the source there.
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write   # create the release + upload assets
+
+env:
+  # arduino/setup-task has no Node 24 release yet; force it forward ahead of
+  # the runner default flipping (mirrors funpack-ci.yml).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: build ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    os: linux, arch: x64 }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
+          - { runner: macos-13,         os: macos, arch: x64 }
+          - { runner: macos-latest,     os: macos, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: dev-2026-05
+      - name: Install SDL2 (the runtime links vendor:sdl2)
+        run: |
+          if [ "${{ matrix.os }}" = "linux" ]; then
+            sudo apt-get update && sudo apt-get install -y libsdl2-dev
+          else
+            brew install sdl2
+          fi
+      - name: Prepare Odin flake retry wrapper
+        # The pinned Odin dev-2026-05 typechecker crashes nondeterministically
+        # (check_type.cpp 'tuple != nullptr', exit 133) before codegen; identical
+        # trees pass on re-run. Retry ONCE on exit 133 only — every other code
+        # propagates unretried. Remove when the pin moves past the upstream fix.
+        # (mirrors funpack-ci.yml)
+        run: |
+          cat > "$RUNNER_TEMP/retry-odin.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          "$@"
+          code=$?
+          if [ "$code" -ne 133 ]; then exit "$code"; fi
+          echo "::warning::odin exited 133 (known dev-2026-05 typechecker flake) - retrying once"
+          exec "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/retry-odin.sh"
+      - name: Build funpack (compiler)
+        working-directory: funpack
+        run: '"$RUNNER_TEMP/retry-odin.sh" odin build . -out:funpack'
+      - name: Build funpack-live (runtime, FUNPACK_LIVE + SDL2)
+        working-directory: runtime
+        run: '"$RUNNER_TEMP/retry-odin.sh" odin build . -define:FUNPACK_LIVE=true -out:funpack-live'
+      - name: Package
+        run: |
+          dist="funpack-${GITHUB_REF_NAME}-${{ matrix.os }}-${{ matrix.arch }}"
+          mkdir -p "$dist"
+          cp funpack/funpack runtime/funpack-live "$dist"/
+          cp README.md LICENSE "$dist"/ 2>/dev/null || true
+          tar -czf "${dist}.tar.gz" "$dist"
+          echo "ASSET=${dist}.tar.gz" >> "$GITHUB_ENV"
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          fail_on_unmatched_files: true
