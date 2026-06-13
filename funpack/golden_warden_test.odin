@@ -82,16 +82,17 @@ build_pong_index_root :: proc(t: ^testing.T) -> (root: string, stream: string, o
 	return build_warden_index_root(t, resolve_pong_dir(), "pong-warden", "FUNPACK_PONG_DIR")
 }
 
-// expect_six_command_byte_determinism acquires the same written index TWICE —
+// expect_every_command_byte_determinism acquires the same written index TWICE —
 // two full read_warden_index decodes of the same bytes, the in-process analog
 // of two CLI invocations — and asserts every Warden_Command's projection is
 // byte-identical across the runs AND that the integrated dispatch exits 0 for
 // each (the whole-stream success tier; an empty projection included). The
 // command list is derived from the closed enum, never written out by hand, so
-// a future seventh command automatically joins the sweep. find_query keeps the
-// find arm a real lookup per fixture (the zero query is find's defensive
-// early-out, which would make its identity vacuous).
-expect_six_command_byte_determinism :: proc(t: ^testing.T, root: string, find_query: Warden_Find_Query) {
+// a new command automatically joins the sweep (the `probes` member did so when
+// it was added). find_query keeps the find arm a real lookup per fixture (the
+// zero query is find's defensive early-out, which would make its identity
+// vacuous).
+expect_every_command_byte_determinism :: proc(t: ^testing.T, root: string, find_query: Warden_Find_Query) {
 	index_a, refusal_a := read_warden_index(root, context.temp_allocator)
 	testing.expect_value(t, refusal_a.err, Warden_Read_Error.None)
 	index_b, refusal_b := read_warden_index(root, context.temp_allocator)
@@ -161,24 +162,25 @@ test_golden_warden_round_trip_typed_decode :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_golden_warden_drift_six_command_byte_determinism :: proc(t: ^testing.T) {
+test_golden_warden_drift_every_command_byte_determinism :: proc(t: ^testing.T) {
 	// BYTE-DETERMINISM (live drift): two acquisitions of the same written
 	// index project byte-identically on EVERY command — the input stream is
 	// byte-stable, so every projection must be (§29 §1). Non-vacuity pins for
 	// the decl-side commands ride the live data: holes projects exactly the
 	// two stub lines, find `damped` answers one record, graph carries the
 	// damped→drag call edge set, tags carries the one-entry registry. Drift's
-	// pipeline_flattened is faithfully [] (the empty hole-first schedule), so
-	// the pipeline (and tags-at-scale) identity is made non-vacuous by the
-	// pong sweep below — here it pins that the empty projection is stably
-	// empty.
+	// pipeline_flattened is faithfully [] (the empty hole-first schedule) and it
+	// authors no probe, so the pipeline AND probes projections are empty here —
+	// made non-vacuous by the pong sweep (pipeline/tags) and the probed-pong
+	// golden (probes) respectively; here they pin that the empty projection is
+	// stably empty.
 	root, _, ok := build_drift_index_root(t)
 	if !ok {
 		return
 	}
 	defer remove_scratch_tree(root)
 
-	expect_six_command_byte_determinism(t, root, Warden_Find_Query{name = "damped"})
+	expect_every_command_byte_determinism(t, root, Warden_Find_Query{name = "damped"})
 
 	index, refusal := read_warden_index(root, context.temp_allocator)
 	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
@@ -186,15 +188,16 @@ test_golden_warden_drift_six_command_byte_determinism :: proc(t: ^testing.T) {
 		return
 	}
 	testing.expect_value(t, len(ndjson_lines(warden_command_output(index, .Holes, allocator = context.temp_allocator))), 2)
+	testing.expect_value(t, warden_command_output(index, .Probes, allocator = context.temp_allocator), "")
 	testing.expect_value(t, len(ndjson_lines(warden_command_output(index, .Find, find = Warden_Find_Query{name = "damped"}, allocator = context.temp_allocator))), 1)
 	testing.expect(t, warden_command_output(index, .Graph, allocator = context.temp_allocator) != "")
 	testing.expect_value(t, len(ndjson_lines(warden_command_output(index, .Tags, allocator = context.temp_allocator))), 1)
 	testing.expect_value(t, warden_command_output(index, .Pipeline, allocator = context.temp_allocator), "")
-	log.infof("golden warden drift determinism: all six projections are byte-identical across two acquisitions of the written index")
+	log.infof("golden warden drift determinism: every projection is byte-identical across two acquisitions of the written index (holes=2, probes empty, pipeline empty)")
 }
 
 @(test)
-test_golden_warden_pong_six_command_byte_determinism :: proc(t: ^testing.T) {
+test_golden_warden_pong_every_command_byte_determinism :: proc(t: ^testing.T) {
 	// BYTE-DETERMINISM (live pong — the non-empty project record): pong's
 	// index records the eleven-step §07 §3 depth-first total order and the
 	// ten-tag authored registry, so here `warden pipeline` and `warden tags`
@@ -209,7 +212,7 @@ test_golden_warden_pong_six_command_byte_determinism :: proc(t: ^testing.T) {
 	}
 	defer remove_scratch_tree(root)
 
-	expect_six_command_byte_determinism(t, root, Warden_Find_Query{name = "paddle"})
+	expect_every_command_byte_determinism(t, root, Warden_Find_Query{name = "paddle"})
 
 	index, refusal := read_warden_index(root, context.temp_allocator)
 	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
@@ -289,6 +292,31 @@ test_golden_warden_debt_empty_projection_is_success :: proc(t: ^testing.T) {
 	testing.expect_value(t, warden_command_output(index, .Debt, allocator = context.temp_allocator), "")
 	testing.expect_value(t, warden_verb_exit(root, .Debt), 0)
 	log.infof("golden warden debt: the empty drift projection exits 0 — emptiness is success, never a failure tier")
+}
+
+@(test)
+test_golden_warden_probes_empty_projection_is_success :: proc(t: ^testing.T) {
+	// EMPTY-IS-SUCCESS (probes): drift authors no §05 §5 debug directive — no
+	// drift decl carries @break/@log/@watch/@trace, so every record's
+	// AST-derived `debug` field is the mandatory-present empty list — so
+	// `warden probes` projects ZERO bytes and the integrated dispatch exits 0:
+	// an empty answer is an answer (§29 §1), and the warden has no exit-1 tier
+	// to mistake it for. The live-probe counterpart is the probed-pong golden
+	// (golden_probes_test.odin), which pins the non-empty enumeration.
+	root, _, ok := build_drift_index_root(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	index, refusal := read_warden_index(root, context.temp_allocator)
+	testing.expect_value(t, refusal.err, Warden_Read_Error.None)
+	if refusal.err != .None {
+		return
+	}
+	testing.expect_value(t, warden_command_output(index, .Probes, allocator = context.temp_allocator), "")
+	testing.expect_value(t, warden_verb_exit(root, .Probes), 0)
+	log.infof("golden warden probes: the empty drift projection exits 0 — a probe-free tree enumerates zero probes, success not failure")
 }
 
 // overwrite_scratch_tree_file rewrites one file of a copied scratch tree —

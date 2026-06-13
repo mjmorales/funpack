@@ -104,6 +104,21 @@ warden_holes_predicate :: proc(decl: Decl_Record, needle: string) -> bool {
 	return decl.stub
 }
 
+// warden_probes_predicate is `funpack warden probes` (§29 §4, §28 §4): a
+// declaration is probed exactly when its contract `debug` field carries at
+// least one §05 §5 debug-probe name ("break"/"log"/"watch"/"trace") — the
+// AST-derived probe_names the producer stamps per parsed @break/@log/@watch/
+// @trace directive (index_decl.odin), in authored order and never deduped, so
+// every outstanding probe registers (§28 §4). The presence test mirrors holes'
+// `decl.stub`: the probe verdict was the compiler's, the projection only
+// enumerates it — one row per probed decl, never the bare debug-field bytes a
+// `find` query incidentally exposes. needle is unused — probes takes no
+// argument.
+warden_probes_predicate :: proc(decl: Decl_Record, needle: string) -> bool {
+	_ = needle
+	return len(decl.debug) > 0
+}
+
 // warden_debt_predicate is `funpack warden debt` (§29 §4): a declaration is
 // debt when its contract `todo` field is true OR its gtags carry the
 // registered `debt` tag. Both halves are LIVE producer data: the gtag half
