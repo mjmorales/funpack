@@ -18,15 +18,17 @@
 // release verdict to the probes alone. When a spec example authors the
 // directives, these pins move to the pristine tree.
 //
-// WARDEN SURFACE: the §29 enumeration has NO probes-specific projection —
-// `holes` projects @stub debt and `debt` projects @todo/@gtag(debt) — so a
-// probe is visible exactly as its decl record's `debug` field bytes through
-// `find` (and any record-projecting command). This golden pins that REAL
-// surface: find answers each probed decl byte-identical to its producer line,
-// debt projects the @todo-carrying traced behavior, holes stays empty, and
-// all six commands are byte-deterministic over the probed tree. Like the
-// other goldens it resolves the sibling checkout (or FUNPACK_PONG_DIR) and
-// SKIPs loudly when absent — a skipped golden is a warning, never a pass.
+// WARDEN SURFACE: `funpack warden probes` is the §29 §4 / §28 §4 first-class
+// enumeration of every probed declaration — exactly as `holes` enumerates
+// @stub debt and `debt` enumerates @todo/@gtag(debt), a single index
+// projection of one row per probed decl, never the bare `debug`-field bytes a
+// `find` query incidentally exposes. This golden pins that REAL surface: probes
+// enumerates the four probed decls byte-identical to their producer lines in
+// stream order, find still answers each probed decl on demand, debt projects
+// the @todo-carrying traced behavior, holes stays empty (probes are not stub
+// debt), and all seven commands are byte-deterministic over the probed tree.
+// Like the other goldens it resolves the sibling checkout (or FUNPACK_PONG_DIR)
+// and SKIPs loudly when absent — a skipped golden is a warning, never a pass.
 package funpack
 
 import "core:log"
@@ -210,15 +212,17 @@ test_golden_probed_pong_release_build_and_check_refuse :: proc(t: ^testing.T) {
 @(test)
 test_golden_probed_pong_warden_projects_probes :: proc(t: ^testing.T) {
 	// AC (warden projection): the probes are visible through the §29 projection
-	// surface exactly as producer bytes — there is no probes-specific command,
-	// so the pins ride what the six commands REALLY show over a probed tree.
-	// The decoded records carry each directive name typed (debug=["break"|"log"|
-	// "watch"|"trace"], todo=true on the traced behavior); a per-name `find`
-	// answers each probed decl byte-identical to its producer line (the
-	// positional rebuild: decls[i] ↔ line i+1, never a re-emission the test
-	// computed); `debt` projects exactly the @todo-carrying behavior; `holes`
-	// stays empty (probes are not stub debt); and all six commands are
-	// byte-deterministic across two acquisitions, each exiting 0.
+	// surface as a FIRST-CLASS enumeration — `funpack warden probes` lists one
+	// row per probed decl, byte-identical to the producer lines, exactly as
+	// holes enumerates @stub and debt enumerates @todo/@gtag(debt). The decoded
+	// records carry each directive name typed (debug=["break"|"log"|"watch"|
+	// "trace"], todo=true on the traced behavior); `probes` projects the four
+	// probed decls in stream order; a per-name `find` still answers each probed
+	// decl byte-identical to its producer line (the positional rebuild: decls[i]
+	// ↔ line i+1, never a re-emission the test computed); `debt` projects exactly
+	// the @todo-carrying behavior; `holes` stays empty (probes are not stub
+	// debt); and all seven commands are byte-deterministic across two
+	// acquisitions, each exiting 0.
 	root, stream, ok := build_probed_pong_root(t)
 	if !ok {
 		return
@@ -251,6 +255,36 @@ test_golden_probed_pong_warden_projects_probes :: proc(t: ^testing.T) {
 	if len(lines) != len(index.decls) + 1 {
 		return
 	}
+
+	// FIRST-CLASS PROBES ENUMERATION: `warden probes` is byte-identical to the
+	// producer's own four probed lines in stream order. The expectation is
+	// rebuilt POSITIONALLY from the written stream through the production
+	// predicate (decls[i] ↔ line i+1) — the holes golden's byte-identity applied
+	// to probes — so the assert is against the file funpack wrote, never the
+	// PROBED_DECL_NAMES order assumed. The four probed-name set is pinned exactly
+	// so a missed or extra row turns the test loud.
+	expected_probes := make([dynamic]string, 0, len(index.decls), context.temp_allocator)
+	probe_names := make([dynamic]string, 0, len(index.decls), context.temp_allocator)
+	for decl, i in index.decls {
+		if warden_probes_predicate(decl, "") {
+			append(&expected_probes, strings.concatenate({lines[i + 1], "\n"}, context.temp_allocator))
+			append(&probe_names, decl.qualified_name)
+		}
+	}
+	testing.expect_value(t, len(probe_names), 4)
+	if len(probe_names) == 4 {
+		testing.expect_value(t, probe_names[0], "debug_serve_threshold")
+		testing.expect_value(t, probe_names[1], "DEBUG_DRIFT_BIAS")
+		testing.expect_value(t, probe_names[2], "DebugMarker")
+		testing.expect_value(t, probe_names[3], "debug_trace_ball")
+	}
+	testing.expect_value(
+		t,
+		warden_command_output(index, .Probes, allocator = context.temp_allocator),
+		strings.concatenate(expected_probes[:], context.temp_allocator),
+	)
+	testing.expect_value(t, warden_verb_exit(root, .Probes), 0)
+
 	for name in names {
 		expected, found := probed_producer_line(index, lines, name)
 		testing.expect(t, found)
@@ -274,8 +308,8 @@ test_golden_probed_pong_warden_projects_probes :: proc(t: ^testing.T) {
 	testing.expect_value(t, warden_command_output(index, .Holes, allocator = context.temp_allocator), "")
 	testing.expect_value(t, warden_verb_exit(root, .Holes), 0)
 
-	expect_six_command_byte_determinism(t, root, Warden_Find_Query{name = "debug_trace_ball"})
-	log.infof("golden probes warden: each probed decl answers find byte-identical to its producer line, debt projects the @todo behavior, holes stays empty")
+	expect_every_command_byte_determinism(t, root, Warden_Find_Query{name = "debug_trace_ball"})
+	log.infof("golden probes warden: probes enumerates the four probed decls byte-identical to their producer lines, find answers each on demand, debt projects the @todo behavior, holes stays empty")
 }
 
 // probed_producer_line rebuilds one decl's producer line (with its trailing
