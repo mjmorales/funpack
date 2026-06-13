@@ -717,7 +717,7 @@ check_assert :: proc(ctx: Check_Ctx, node: Assert_Node) -> Type_Error {
 // behavior's bound env, where `self` is the field's owning thing/data value — a
 // bare field name never binds there, only `self.<field>`. Typing the field @watch
 // against `self: <the carrying data>` is therefore the fail-closed reading w.r.t.
-// the failure this task removes (a debugger crash at honor time): it blesses
+// the failure this check removes (a debugger crash at honor time): it blesses
 // exactly the form the runtime can fold, never a bare-field spelling the
 // interpreter cannot resolve. It also matches every committed field-@watch fixture
 // (`@watch(self.bias)`), so no fixture respells.
