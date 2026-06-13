@@ -121,6 +121,15 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index, importer_root := 
 	check_expose_closure(ast, bindings, index) or_return
 	check_bodies(bindings, env, index, ast, importer_root) or_return
 	check_tests(bindings, env, index, ast, importer_root) or_return
+	// The §05 §5 / §28 §4 debug-probe ARGUMENTS are ordinary funpack expressions
+	// (a @break predicate, a @log/@watch value) evaluated against the carrying
+	// declaration's scope at debug time — so an ill-typed probe arg must be a dev
+	// compile error here, not a latent debugger crash at honor time (§28 §4: the
+	// runtime folds the probe body against the behavior's bound env). It runs as a
+	// body-typing-class check (it threads the same bindings/env/index a body sweep
+	// uses, since a probe arg resolves the same names a step body does), after the
+	// bodies type clean.
+	check_probe_args(bindings, env, index, ast, importer_root) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
 }
 
@@ -672,6 +681,131 @@ check_assert :: proc(ctx: Check_Ctx, node: Assert_Node) -> Type_Error {
 		return .Assert_Not_Bool
 	}
 	return .None
+}
+
+// check_probe_args types every §05 §5 / §28 §4 debug-probe ARGUMENT expression
+// against its carrying declaration's scope (spec §05 §5: "the argument is
+// ordinary funpack, not a debugger DSL", evaluated against the declaration scope
+// at debug time). Today a probe arg only PARSES — typecheck never touches it — so
+// an ill-typed arg (a @watch over a name that is not in the carrying scope) dev-
+// builds green and would crash the debugger at honor time, when §28 §4 folds the
+// probe body against the behavior's bound env. This pass closes that hole: an
+// ill-typed probe arg is a dev COMPILE error, surfaced through expr_check's own
+// precise verdict (Unresolved_Name for an out-of-scope name, Type_Mismatch for a
+// type error) so the agent's write→check→fix loop names the exact fault, exactly
+// as a @stub(T, fallback) approximation's ill-typed expression does.
+//
+// THE PER-KIND SCOPE RULES (the §28 §4 On-table the placement gate fixes — the
+// placement gate runs in stage_gates BEFORE typecheck, so only legal placements
+// reach here):
+//
+//   | Placement                       | Carrying scope                        |
+//   |---------------------------------|---------------------------------------|
+//   | a probe PREFIXING a behavior    | the behavior's `step` scope (its       |
+//   |   (@break/@log/@watch/@trace)   |   params — `self`/signals/resources)   |
+//   | a @watch on a `data` FIELD      | `self` bound to the carrying `data`    |
+//   |                                 |   value (the field's owning record)    |
+//   | a @trace on a pipeline STAGE    | none — @trace carries no value arg     |
+//
+// A @trace carries no argument (Debug_Probe.arg is nil exactly when kind is
+// .Trace), at the behavior prefix AND the stage position alike, so the walk skips
+// every nil arg — "check consistently" means one uniform walk, with nothing to
+// type for the argument-less probe.
+//
+// SCOPE CHOICE — the field @watch binds `self`, not bare fields. The §28 §4
+// runtime contract (runtime/probes.odin) folds a field @watch's body against the
+// behavior's bound env, where `self` is the field's owning thing/data value — a
+// bare field name never binds there, only `self.<field>`. Typing the field @watch
+// against `self: <the carrying data>` is therefore the fail-closed reading w.r.t.
+// the failure this task removes (a debugger crash at honor time): it blesses
+// exactly the form the runtime can fold, never a bare-field spelling the
+// interpreter cannot resolve. It also matches every committed field-@watch fixture
+// (`@watch(self.bias)`), so no fixture respells.
+check_probe_args :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "") -> Type_Error {
+	// Behavior-prefix probes type against the behavior's `step` scope — its
+	// params are its reads (spec §06 §3), the same scope the step body types in
+	// (fn_body_ctx), so a @break(self.pos.x > 70.0) / @log(self.pos) resolves
+	// `self` and any signal/View/resource param exactly as the body does. A
+	// declaration-prefix probe survives the placement gate ONLY on a behavior
+	// (every other declaration-prefix probe is Probe_Wrong_Placement), so the
+	// behavior loop is the whole declaration-prefix surface.
+	for behavior in ast.behaviors {
+		ctx := fn_body_ctx(bindings, env, index, behavior.step, importer_root)
+		for probe in behavior.probes {
+			check_one_probe_arg(ctx, probe) or_return
+		}
+	}
+	// A `data` FIELD @watch types against `self` bound to the carrying `data`
+	// value — the field's owning record (see SCOPE CHOICE above). The parser
+	// admits a field probe ONLY on a `data` body field, so the datas loop is the
+	// whole field-probe surface; a thing/signal field never carries one.
+	for decl in ast.datas {
+		ctx := probe_field_ctx(bindings, env, index, decl.name, importer_root)
+		for field in decl.fields {
+			for probe in field.probes {
+				check_one_probe_arg(ctx, probe) or_return
+			}
+		}
+	}
+	// Pipeline-stage probes are @trace only (the parser admits nothing else on a
+	// stage), and @trace carries no argument — so there is nothing to type here.
+	// The loop is kept for the closed-walk discipline: a future stage probe that
+	// DID carry an argument would type against its stage scope here, never slip
+	// through unchecked.
+	for pipeline in ast.pipelines {
+		for stage in pipeline.stages {
+			for probe in stage.probes {
+				check_stage_probe_arg(probe) or_return
+			}
+		}
+	}
+	return .None
+}
+
+// check_one_probe_arg types one probe's argument expression in the given carrying
+// scope. A @trace carries no argument (arg is nil), so there is nothing to type;
+// every other probe's arg must typecheck — the value is discarded (the typing
+// pass cares only that the expression GROUNDS in the scope, since the runtime
+// folds whatever it produces), and the precise verdict propagates on a fault.
+check_one_probe_arg :: proc(ctx: Check_Ctx, probe: Debug_Probe) -> Type_Error {
+	if probe.arg == nil {
+		return .None
+	}
+	_ = expr_check(ctx, probe.arg) or_return
+	return .None
+}
+
+// check_stage_probe_arg types a pipeline-stage probe's argument. The On-table
+// admits only @trace on a stage and @trace carries no argument, so the arg is
+// always nil here — but routing through check_one_probe_arg keeps one argument-
+// typing seam, so a stage probe that ever carried a value would not be silently
+// unchecked. A stage scope has no `self`/params (a stage names behaviors, it does
+// not bind a value), so the empty ctx is the right scope: an argument referencing
+// any name would be Unresolved_Name, the fail-closed verdict for an undefined
+// stage-probe scope.
+check_stage_probe_arg :: proc(probe: Debug_Probe) -> Type_Error {
+	ctx := Check_Ctx{scope = make(Scope, context.temp_allocator)}
+	return check_one_probe_arg(ctx, probe)
+}
+
+// probe_field_ctx seeds the body-sweep context a `data` field @watch types in:
+// `self` bound to the carrying `data` value (a User_Type over the data's name),
+// so `self.<field>` reads the data's own schema field exactly as a behavior step's
+// `self.<field>` reads its thing — the §28 §4 runtime contract's bound env in the
+// type domain. The import/env/index triple threads through so a field whose type
+// names a sibling-module type still resolves (member_check → ctx_record_schema
+// reads the local env first, the project index second). No expected_return and no
+// query context — a @watch is a value read, not a body.
+probe_field_ctx :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, data_name: string, importer_root := "") -> Check_Ctx {
+	ctx := Check_Ctx {
+		bindings      = bindings,
+		env           = env,
+		index         = index,
+		scope         = make(Scope, context.temp_allocator),
+		importer_root = importer_root,
+	}
+	ctx.scope["self"] = user_type_of(data_name, .Data)
+	return ctx
 }
 
 expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) {
