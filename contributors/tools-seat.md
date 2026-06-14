@@ -3,13 +3,13 @@ schema_version: 1
 provenance:
   created_by: null
   created_at: 2026-06-05T02:40:17.481Z
-  last_modified_by: null
-  last_modified_at: 2026-06-05T02:40:17.481Z
+  last_modified_by: ct-manuel-morales-1b03670f-5de8-4cd6-ba5b-a6e5d94f61d6
+  last_modified_at: 2026-06-14T18:02:58.556Z
 contributor:
   id: ct-tools-seat-2bdf87ea-e246-46ca-b5aa-7c3b5baf55b6
   slug: tools-seat
   status: active
-  display_name: Tools & Pipeline Engineer
+  display_name: "Tools & Pipeline Engineer"
   github: null
   email: null
 ---

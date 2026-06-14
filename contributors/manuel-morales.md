@@ -3,13 +3,13 @@ schema_version: 1
 provenance:
   created_by: null
   created_at: 2026-06-04T13:46:19.657Z
-  last_modified_by: null
-  last_modified_at: 2026-06-04T13:46:19.657Z
+  last_modified_by: ct-manuel-morales-1b03670f-5de8-4cd6-ba5b-a6e5d94f61d6
+  last_modified_at: 2026-06-14T06:13:06.122Z
 contributor:
   id: ct-manuel-morales-1b03670f-5de8-4cd6-ba5b-a6e5d94f61d6
   slug: manuel-morales
   status: active
-  display_name: Manuel Morales
+  display_name: null
   github: mjmorales
   email: morales.jmanuel16@gmail.com
 ---

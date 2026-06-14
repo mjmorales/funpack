@@ -3,8 +3,8 @@ schema_version: 1
 provenance:
   created_by: null
   created_at: 2026-06-05T02:40:17.367Z
-  last_modified_by: null
-  last_modified_at: 2026-06-05T02:40:17.367Z
+  last_modified_by: ct-manuel-morales-1b03670f-5de8-4cd6-ba5b-a6e5d94f61d6
+  last_modified_at: 2026-06-14T18:02:58.354Z
 contributor:
   id: ct-semantics-seat-c17dfd55-65eb-42c6-8b53-81404a81d88e
   slug: semantics-seat
