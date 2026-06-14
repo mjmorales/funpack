@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.6.1] - 2026-06-14
+
+### Fixes
+- fix(runtime): implement missing engine.math builtins in the interpreter (15c6611)
+
 ## [0.6.0] - 2026-06-14
 
 ### Features
