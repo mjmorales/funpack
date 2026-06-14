@@ -155,6 +155,25 @@ build_funpack_cli :: proc(allocator := context.allocator) -> ^Cli_Command {
 		},
 		allocator,
 	)
+	run := cli_new_command(
+		Cli_Command {
+			use = "run",
+			short = "Build the project and run it with the funpack-live runtime",
+			long = "Build the §14 project tree (like `funpack build`), then launch the built artifact with the separate funpack-live runtime — the one-command build-and-play path. The optional [name] selects an entrypoint (§14 §6); any further positionals are forwarded to funpack-live (e.g. a replay-out path). funpack stays the pure compiler: run only spawns the runtime, never links it.",
+			flags = slice.clone(
+				[]Cli_Flag {
+					{
+						name = "release",
+						kind = .Bool,
+						usage = "Build in release mode (ban typed holes and debug directives) before running",
+					},
+				},
+				allocator,
+			),
+			run = cli_run_run,
+		},
+		allocator,
+	)
 	check := cli_new_command(
 		Cli_Command {
 			use = "check",
@@ -200,7 +219,7 @@ build_funpack_cli :: proc(allocator := context.allocator) -> ^Cli_Command {
 			short = "The funpack source → artifact compiler",
 			long = "funpack compiles a §14 project tree to its versioned artifacts: a runnable game artifact and the Index Contract NDJSON. Pure — no clock, no DB, no network in scope.",
 			subcommands = slice.clone(
-				[]^Cli_Command{version, test, build, check, fmt_cmd, warden},
+				[]^Cli_Command{version, test, build, run, check, fmt_cmd, warden},
 				allocator,
 			),
 		},
@@ -240,6 +259,15 @@ cli_run_build :: proc(inv: ^Cli_Invocation) -> int {
 
 cli_run_check :: proc(inv: ^Cli_Invocation) -> int {
 	return run_check_verb(".", cli_build_mode(inv))
+}
+
+// cli_run_run adapts the `funpack run` invocation onto run_run_verb: the
+// `--release` flag maps to the build mode (the same cli_build_mode build/check
+// share), the first positional is the optional [name] entrypoint pick, and every
+// later positional is forwarded verbatim to funpack-live (cli_run_name /
+// cli_run_extra_args). run_run_verb owns the {1, 2, child-code} exit contract.
+cli_run_run :: proc(inv: ^Cli_Invocation) -> int {
+	return run_run_verb(cli_run_name(inv), cli_run_extra_args(inv), cli_build_mode(inv))
 }
 
 cli_run_fmt :: proc(inv: ^Cli_Invocation) -> int {
@@ -291,6 +319,29 @@ cli_build_mode :: proc(inv: ^Cli_Invocation) -> Build_Mode {
 // verdict-only Check face, absent is the in-place Write face.
 cli_fmt_mode :: proc(inv: ^Cli_Invocation) -> Fmt_Mode {
 	return .Check if cli_flag_bool(inv, "check") else .Write
+}
+
+// cli_run_name reads `funpack run`'s optional [name] entrypoint pick — the FIRST
+// positional, "" when none was given (the implicit single-entrypoint default per
+// §14 §6). The remaining positionals are funpack-live's forwarded args
+// (cli_run_extra_args), so the name and the forwarded args partition the positional
+// list at index 0.
+cli_run_name :: proc(inv: ^Cli_Invocation) -> string {
+	if len(inv.args) == 0 {
+		return ""
+	}
+	return inv.args[0]
+}
+
+// cli_run_extra_args reads the positionals AFTER the optional [name] — the args
+// forwarded verbatim to funpack-live (e.g. a replay-out path). With no positionals
+// the slice is empty; with one it is empty (that one is the name); with more it is
+// the tail past the name.
+cli_run_extra_args :: proc(inv: ^Cli_Invocation) -> []string {
+	if len(inv.args) <= 1 {
+		return {}
+	}
+	return inv.args[1:]
 }
 
 // cli_warden_find_query projects the find invocation onto its Warden_Find_Query:

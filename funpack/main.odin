@@ -111,10 +111,16 @@ run_build_verb :: proc(mode: Build_Mode) -> int {
 		return 2
 	}
 	if product.artifact_path == "" {
-		// A package: the Index Contract is its single product.
+		// A package: the Index Contract is its single product. No artifact means
+		// nothing to run, so no signpost line.
 		fmt.printfln("funpack build: wrote %s", product.index_path)
 	} else {
 		fmt.printfln("funpack build: wrote %s and %s", product.artifact_path, product.index_path)
+		// A game build is runnable — point the newcomer at the runner so a fresh
+		// `funpack build` is self-documenting about how to play the result. The
+		// one-command path (funpack run) leads; the direct funpack-live invocation
+		// (the runner the dist also ships) follows for when funpack is unavailable.
+		fmt.printfln("  run it with: funpack run   (or directly: %s %s)", FUNPACK_LIVE_BIN, product.artifact_path)
 	}
 	return 0
 }

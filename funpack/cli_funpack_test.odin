@@ -82,6 +82,50 @@ test_funpack_build_release_flag :: proc(t: ^testing.T) {
 	expect_funpack_reject(t, root, {"check", "--relase"})
 }
 
+// test_funpack_run_dispatch pins the `funpack run` verb-dispatch junction: the
+// verb resolves to its leaf, `--release` maps to the build mode (the seam build
+// and run share through cli_build_mode), and the positional list partitions into
+// the optional [name] (first positional) and the funpack-live forwarded tail
+// (cli_run_name / cli_run_extra_args). A misspelled flag is the usage tier — never
+// a silent wrong-mode build.
+@(test)
+test_funpack_run_dispatch :: proc(t: ^testing.T) {
+	root := build_funpack_cli(context.temp_allocator)
+
+	// Bare `run`: default Dev mode, no name, no forwarded args.
+	inv := expect_funpack_ok(t, root, {"run"})
+	testing.expect_value(t, inv.command.use, "run")
+	testing.expect_value(t, cli_build_mode(&inv), Build_Mode.Dev)
+	testing.expect_value(t, cli_run_name(&inv), "")
+	testing.expect_value(t, len(cli_run_extra_args(&inv)), 0)
+
+	// `run --release`: Release mode, still no positionals.
+	inv = expect_funpack_ok(t, root, {"run", "--release"})
+	testing.expect_value(t, cli_build_mode(&inv), Build_Mode.Release)
+	testing.expect_value(t, cli_run_name(&inv), "")
+
+	// `run main`: the single positional is the [name] pick, no forwarded args.
+	inv = expect_funpack_ok(t, root, {"run", "main"})
+	testing.expect_value(t, cli_run_name(&inv), "main")
+	testing.expect_value(t, len(cli_run_extra_args(&inv)), 0)
+
+	// `run main out.replay extra`: [name] = main, the tail is forwarded verbatim.
+	inv = expect_funpack_ok(t, root, {"run", "main", "out.replay", "extra"})
+	testing.expect_value(t, cli_run_name(&inv), "main")
+	extra := cli_run_extra_args(&inv)
+	testing.expect_value(t, len(extra), 2)
+	testing.expect_value(t, extra[0], "out.replay")
+	testing.expect_value(t, extra[1], "extra")
+
+	// `run --release out.replay`: the flag binds, the positional is the [name].
+	inv = expect_funpack_ok(t, root, {"run", "--release", "out.replay"})
+	testing.expect_value(t, cli_build_mode(&inv), Build_Mode.Release)
+	testing.expect_value(t, cli_run_name(&inv), "out.replay")
+
+	// A misspelled flag is the usage tier, never a silent Dev build.
+	expect_funpack_reject(t, root, {"run", "--relase"})
+}
+
 // test_funpack_fmt_check_flag pins the fmt `--check` seam: no flag is Write,
 // `--check` is Check, and a typo or trailing argument is the usage tier.
 @(test)
