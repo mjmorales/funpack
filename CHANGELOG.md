@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.4.0] - 2026-06-14
+
+### Features
+- feat(funpack): Cobra-shaped CLI framework replacing the per-verb dispatch (cdac685)
+
 ## [0.3.0] - 2026-06-14
 
 ### Features
