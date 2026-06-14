@@ -691,3 +691,85 @@ test_arm_coverage_flatten :: proc(t: ^testing.T) {
 	rec_diag := flatten_diagnostic(rec_verdict.err, rec_line, flatten_offender_name(rec_verdict))
 	expect_located_arm(t, rec_diag, "Recursive_Pipeline")
 }
+
+// ── assert-failure rendered byte pins ────────────────────────────────────────
+//
+// render_assert_failure is the EXIT-1 sibling of render_diagnostic: a PURE
+// function of (Assert_Failure, source), so these pin its rendered bytes
+// byte-for-byte. The machine contract (a failed assert is exit 1, never a
+// compile error) is unchanged; the rendered block is the added human body the
+// CLI prints beside the failed count. A wording/gutter/operand-shape change moves
+// these bytes and fails — the regression floor for the test verb's localization.
+
+// test_render_assert_failure_with_operands pins the full ==/!= block: the
+// `<path>:<line>: assertion failed (<test>): <expr>` header, the gutter-numbered
+// excerpt, and the left/right operand lines aligned under the excerpt gutter.
+@(test)
+test_render_assert_failure_with_operands :: proc(t: ^testing.T) {
+	source := "test \"len fails correctly\" {\n  assert len([1, 2]) == 3\n}\n"
+	f := Assert_Failure {
+		test_name    = "len fails correctly",
+		line         = 2,
+		expr_text    = "len([1, 2]) == 3",
+		op           = "==",
+		lhs_display  = "2",
+		rhs_display  = "3",
+		has_operands = true,
+		path         = "src/main.fun",
+	}
+	got := render_assert_failure(f, source, context.temp_allocator)
+	want := "src/main.fun:2: assertion failed (len fails correctly): len([1, 2]) == 3\n  2 |   assert len([1, 2]) == 3\n    | left:  2\n    | right: 3"
+	testing.expect_value(t, got, want)
+}
+
+// test_render_assert_failure_bare_predicate pins the no-operand form: a
+// bare-Bool assert (or one whose operands did not both evaluate) renders the
+// header and excerpt alone, no left/right lines.
+@(test)
+test_render_assert_failure_bare_predicate :: proc(t: ^testing.T) {
+	source := "test \"flag is set\" {\n  assert active\n}\n"
+	f := Assert_Failure {
+		test_name = "flag is set",
+		line      = 2,
+		expr_text = "active",
+		path      = "src/main.fun",
+	}
+	got := render_assert_failure(f, source, context.temp_allocator)
+	want := "src/main.fun:2: assertion failed (flag is set): active\n  2 |   assert active"
+	testing.expect_value(t, got, want)
+}
+
+// test_render_assert_failure_list_operands pins the composite-operand form: a
+// list ==/!= renders each side's full element display, so the agent sees which
+// element diverged.
+@(test)
+test_render_assert_failure_list_operands :: proc(t: ^testing.T) {
+	source := "test \"lists differ\" {\n  assert [1, 2, 3] == [1, 2, 4]\n}\n"
+	f := Assert_Failure {
+		test_name    = "lists differ",
+		line         = 2,
+		expr_text    = "[1, 2, 3] == [1, 2, 4]",
+		op           = "==",
+		lhs_display  = "[1, 2, 3]",
+		rhs_display  = "[1, 2, 4]",
+		has_operands = true,
+		path         = "src/main.fun",
+	}
+	got := render_assert_failure(f, source, context.temp_allocator)
+	want := "src/main.fun:2: assertion failed (lists differ): [1, 2, 3] == [1, 2, 4]\n  2 |   assert [1, 2, 3] == [1, 2, 4]\n    | left:  [1, 2, 3]\n    | right: [1, 2, 4]"
+	testing.expect_value(t, got, want)
+}
+
+// test_render_assert_failure_header_only is the fail-open coordinate: a line == 0
+// (a synthetic assert span) collapses to the one-line header, no excerpt and no
+// `:0:` position noise — the render_diagnostic header-only discipline.
+@(test)
+test_render_assert_failure_header_only :: proc(t: ^testing.T) {
+	f := Assert_Failure {
+		test_name = "synthetic",
+		expr_text = "x == y",
+		path      = "src/main.fun",
+	}
+	got := render_assert_failure(f, "", context.temp_allocator)
+	testing.expect_value(t, got, "src/main.fun: assertion failed (synthetic): x == y")
+}

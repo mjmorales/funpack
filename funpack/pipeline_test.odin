@@ -35,6 +35,66 @@ test_pipeline_failing_assert_counts_fail :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.exit_code, 1)
 }
 
+// The end-to-end Assert_Failure population: the test-runner pipeline fills the
+// localized body (test_name, source line, expression text, operator, evaluated
+// operand displays) from a LIVE source — the half the pure-renderer byte-pins in
+// diagnostics_test do not reach (those construct Assert_Failure by hand). One
+// per-failure row in evaluation order is the human body the CLI renders beside
+// the machine count.
+
+@(test)
+test_pipeline_failed_eq_assert_carries_localized_operands :: proc(t: ^testing.T) {
+	// A failing top-level == assert records ONE Assert_Failure with the test name,
+	// the assert's source line, the canonical expression text, the operator, and
+	// the evaluated LHS/RHS displays — populated end-to-end from the source.
+	source := "import engine.list.len\n" +
+		"test \"len fails correctly\" {\n  assert len([1, 2]) == 3\n}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.failed, 1)
+	testing.expect_value(t, len(report.failures), 1)
+	if len(report.failures) != 1 {
+		return
+	}
+	f := report.failures[0]
+	testing.expect_value(t, f.test_name, "len fails correctly")
+	testing.expect_value(t, f.line, 3) // import, test, assert
+	testing.expect_value(t, f.expr_text, "len([1, 2]) == 3")
+	testing.expect_value(t, f.has_operands, true)
+	testing.expect_value(t, f.op, "==")
+	testing.expect_value(t, f.lhs_display, "2")
+	testing.expect_value(t, f.rhs_display, "3")
+}
+
+@(test)
+test_pipeline_failed_bare_predicate_carries_no_operands :: proc(t: ^testing.T) {
+	// A bare-Bool assert (not a top-level ==/!=) records a failure with the
+	// expression text but no operands — the renderer shows the expression alone.
+	source := "test \"flag\" {\n  assert false\n}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.failed, 1)
+	testing.expect_value(t, len(report.failures), 1)
+	if len(report.failures) != 1 {
+		return
+	}
+	f := report.failures[0]
+	testing.expect_value(t, f.test_name, "flag")
+	testing.expect_value(t, f.expr_text, "false")
+	testing.expect_value(t, f.has_operands, false)
+}
+
+@(test)
+test_pipeline_passing_run_carries_no_failures :: proc(t: ^testing.T) {
+	// A clean run records zero failures — the failures slice is the human body
+	// beside the machine count, empty when nothing failed.
+	source := "test \"ok\" {\n  assert 1 == 1\n}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.failed, 0)
+	testing.expect_value(t, len(report.failures), 0)
+}
+
 @(test)
 test_pipeline_bool_literals_evaluate :: proc(t: ^testing.T) {
 	// §02 §2 Bool literals end to end: a Bool comparison asserts against
