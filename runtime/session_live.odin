@@ -707,8 +707,17 @@ when #config(FUNPACK_LIVE, false) {
 	// ever reaches sim state: pixel conversion happens only at the present boundary
 	// and never feeds back into resolve_tick/step_tick_persist.
 	run_live_session :: proc(args: []string) -> int {
+		// --help/-h is a request (usage to stdout, exit 0); no args is a usage
+		// error (usage to stderr, exit 2). Both print the same text so `funpack-live`
+		// is self-describing — the §28 attach subcommand (handled in main.odin) and
+		// the one-step `funpack run` path are named here so neither is undiscoverable.
+		usage := "usage:\n  funpack-live <artifact-path> [replay-out-path]   run a built game artifact\n  funpack-live attach <artifact-path>              open an introspection session\n  funpack-live --help                              show this help\n\nThe artifact is produced by `funpack build` (at .funpack/artifact); `funpack run` builds and launches it in one step."
+		if len(args) >= 2 && (args[1] == "--help" || args[1] == "-h") {
+			fmt.println(usage)
+			return 0
+		}
 		if len(args) < 2 {
-			fmt.eprintln("usage: funpack-live <artifact-path> [replay-out-path]")
+			fmt.eprintln(usage)
 			return 2
 		}
 		artifact_path := args[1]
