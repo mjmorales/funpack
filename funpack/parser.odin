@@ -512,8 +512,64 @@ Parser :: struct {
 	no_record_brace: bool,
 }
 
+// Parse_Verdict pairs a parse failure with the offending token's 1-based
+// line/col — the fix-criteria diagnostic anchor (spec §15). The parser uses
+// single-token lookahead, so at the moment any production rejects, p.pos points
+// at (peek-reject) or just past (post-advance reject) the offending token; the
+// token at clamp(p.pos, last) is the deterministic "where parsing stopped"
+// anchor every single-token-lookahead parser reports. line/col are 0 only when
+// err is None (no fault) or the token stream is empty (no token to anchor at).
+Parse_Verdict :: struct {
+	err:  Parse_Error,
+	line: int,
+	col:  int,
+}
+
+// stage_parse_located is stage_parse plus the offending token's span — the
+// diagnostic-bearing entry the pipeline driver consumes (run_module_pipeline_named
+// builds a Parse-stage Diagnostic from it). It runs the same parse over a fresh
+// Parser and, on a fault, reads the token at the parser's stop position as the
+// anchor. The bare stage_parse stays the form every other caller (emit, index,
+// fmt) consumes — they need the error class, not the span — so this is an additive
+// sibling, not a signature change to the ~50 existing call sites.
+stage_parse_located :: proc(tokens: []Token) -> (ast: Ast, verdict: Parse_Verdict) {
+	p := Parser{tokens = tokens}
+	parsed, err := parse_module(&p)
+	if err == .None {
+		return parsed, Parse_Verdict{}
+	}
+	line, col := parser_stop_span(&p)
+	return parsed, Parse_Verdict{err = err, line = line, col = col}
+}
+
+// parser_stop_span returns the 1-based line/col of the token the parser stopped
+// at — p.tokens[clamp(p.pos, 0, last)], the single-token-lookahead anchor. On an
+// empty stream there is no token, so it reports (0, 0) — no position. Pure (a
+// function of parser state alone) so the same source always anchors at the same
+// token.
+parser_stop_span :: proc(p: ^Parser) -> (line: int, col: int) {
+	if len(p.tokens) == 0 {
+		return 0, 0
+	}
+	idx := p.pos
+	if idx >= len(p.tokens) {
+		idx = len(p.tokens) - 1
+	}
+	tok := p.tokens[idx]
+	return tok.line, tok.col
+}
+
 stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 	p := Parser{tokens = tokens}
+	return parse_module(&p)
+}
+
+// parse_module is the shared parse loop both stage_parse (bare error) and
+// stage_parse_located (error + offending-token span) drive over a caller-owned
+// Parser, so the located entry can read p.pos for the diagnostic anchor after a
+// fault. Factoring the loop out keeps the two entries from drifting — they parse
+// the identical grammar, differing only in what they surface on a reject.
+parse_module :: proc(p: ^Parser) -> (ast: Ast, err: Parse_Error) {
 	out := Decl_Sink {
 		imports   = make([dynamic]Import_Node, 0, 8, context.temp_allocator),
 		decls     = make([dynamic]Decl_Ref, 0, 32, context.temp_allocator),
@@ -532,18 +588,18 @@ stage_parse :: proc(tokens: []Token) -> (ast: Ast, err: Parse_Error) {
 	module_doc := ""
 	seen_decl := false
 	pending := empty_directives()
-	skip_newlines(&p)
-	for !at_end(&p) {
-		if peek_kind(&p) == .At {
-			parse_directive(&p, &module_doc, &pending, seen_decl) or_return
-			skip_newlines(&p)
+	skip_newlines(p)
+	for !at_end(p) {
+		if peek_kind(p) == .At {
+			parse_directive(p, &module_doc, &pending, seen_decl) or_return
+			skip_newlines(p)
 			continue
 		}
-		parse_declaration(&p, &out, &pending) or_return
+		parse_declaration(p, &out, &pending) or_return
 		seen_decl = true
 		// Each declaration consumes its leading directives.
 		pending = empty_directives()
-		skip_newlines(&p)
+		skip_newlines(p)
 	}
 	return Ast {
 			module_doc = module_doc,

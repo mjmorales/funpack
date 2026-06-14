@@ -62,40 +62,48 @@ check_probe_placement_gate :: proc(ast: Ast) -> Gate_Verdict {
 			// A behavior is the one declaration every probe in the On-table
 			// admits, so its declaration-prefix probes are always legal.
 		case .Data:
-			if len(ast.datas[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.datas[ref.index].name}
+			decl := ast.datas[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Enum:
-			if len(ast.enums[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.enums[ref.index].name}
+			decl := ast.enums[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Thing:
-			if len(ast.things[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.things[ref.index].name}
+			decl := ast.things[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Signal:
-			if len(ast.signals[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.signals[ref.index].name}
+			decl := ast.signals[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Fn:
-			if len(ast.fns[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.fns[ref.index].name}
+			decl := ast.fns[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Query:
-			if len(ast.queries[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.queries[ref.index].name}
+			decl := ast.queries[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Pipeline:
 			// A pipeline declaration's own prefix admits no probe (the @trace
 			// the On-table places "on a stage" rides Pipeline_Stage.probes, not
 			// the Pipeline_Node prefix), so a declaration-prefix probe here is
 			// mis-placed.
-			if len(ast.pipelines[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.pipelines[ref.index].name}
+			decl := ast.pipelines[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Let:
-			if len(ast.lets[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.lets[ref.index].name}
+			decl := ast.lets[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Test:
 			// A test block is not in the On-table, so a probe before a test is
@@ -103,12 +111,14 @@ check_probe_placement_gate :: proc(ast: Ast) -> Gate_Verdict {
 			// node (parser.odin) precisely so this gate SEES them and names the
 			// test — a probe before a test is a named diagnostic here, never the
 			// silent drop the .Test arm would otherwise be.
-			if len(ast.tests[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.tests[ref.index].name}
+			decl := ast.tests[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		case .Extern_Type:
-			if len(ast.extern_types[ref.index].probes) > 0 {
-				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = ast.extern_types[ref.index].name}
+			decl := ast.extern_types[ref.index]
+			if len(decl.probes) > 0 {
+				return Gate_Verdict{err = .Probe_Wrong_Placement, declaration = decl.name, line = decl.line}
 			}
 		}
 	}

@@ -58,6 +58,7 @@ package funpack
 Expose_Closure_Verdict :: struct {
 	declaration: string, // the @expose'd declaration — the exposed end
 	type_name:   string, // the non-@expose'd user type it references — the unexposed end
+	line:        int,    // 1-based source line of the @expose'd declaration — the decl-line diagnostic anchor (col 0)
 	violation:   bool,
 }
 
@@ -65,8 +66,13 @@ Expose_Closure_Verdict :: struct {
 // of expose_closure_verdict (the stage_gates/gate_verdict split), so
 // stage_typecheck_indexed composes it with or_return while the named-both-ends
 // diagnostic stays reachable through the verdict function for the refusal line.
-check_expose_closure :: proc(ast: Ast, bindings: Bindings, index: Module_Index) -> Type_Error {
-	if expose_closure_verdict(ast, bindings, index).violation {
+check_expose_closure :: proc(ast: Ast, bindings: Bindings, index: Module_Index, site: ^Type_Diag_Site = nil) -> Type_Error {
+	verdict := expose_closure_verdict(ast, bindings, index)
+	if verdict.violation {
+		// Anchor on the @expose'd declaration's line (col 0) — the closure offender
+		// is the open-signatured declaration, the gate-offender decl-line shape the
+		// membership checks share. stamp_decl is a no-op on a nil sink (the bare path).
+		stamp_decl(site, verdict.declaration, verdict.line)
 		return .Expose_Closure_Violation
 	}
 	return .None
@@ -87,49 +93,49 @@ expose_closure_verdict :: proc(ast: Ast, bindings: Bindings, index: Module_Index
 			decl := ast.datas[ref.index]
 			if decl.exposed {
 				if name, open := fields_unexposed_ref(decl.fields, local, bindings, index); open {
-					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, violation = true}
+					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, line = decl.line, violation = true}
 				}
 			}
 		case .Thing:
 			decl := ast.things[ref.index]
 			if decl.exposed {
 				if name, open := fields_unexposed_ref(decl.fields, local, bindings, index); open {
-					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, violation = true}
+					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, line = decl.line, violation = true}
 				}
 			}
 		case .Signal:
 			decl := ast.signals[ref.index]
 			if decl.exposed {
 				if name, open := fields_unexposed_ref(decl.fields, local, bindings, index); open {
-					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, violation = true}
+					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, line = decl.line, violation = true}
 				}
 			}
 		case .Enum:
 			decl := ast.enums[ref.index]
 			if decl.exposed {
 				if name, open := variants_unexposed_ref(decl.variants, local, bindings, index); open {
-					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, violation = true}
+					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, line = decl.line, violation = true}
 				}
 			}
 		case .Fn:
 			decl := ast.fns[ref.index]
 			if decl.exposed {
 				if name, open := signature_unexposed_ref(decl.params, decl.return_type, local, bindings, index); open {
-					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, violation = true}
+					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, line = decl.line, violation = true}
 				}
 			}
 		case .Query:
 			decl := ast.queries[ref.index]
 			if decl.exposed {
 				if name, open := signature_unexposed_ref(decl.params, decl.return_type, local, bindings, index); open {
-					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, violation = true}
+					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, line = decl.line, violation = true}
 				}
 			}
 		case .Let:
 			decl := ast.lets[ref.index]
 			if decl.exposed {
 				if name, open := type_ref_unexposed(decl.type, local, bindings, index); open {
-					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, violation = true}
+					return Expose_Closure_Verdict{declaration = decl.name, type_name = name, line = decl.line, violation = true}
 				}
 			}
 		case .Behavior, .Pipeline, .Test:

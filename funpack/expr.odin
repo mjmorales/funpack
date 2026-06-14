@@ -37,12 +37,72 @@ Expr :: union {
 	^All_Expr,
 }
 
+// expr_span is the one pure accessor returning any Expr arm's stamped span —
+// the §15 line/col of the construct's first byte (the leftmost-byte convention
+// every arm follows; see the Int_Lit_Expr note). It is the frontend's
+// provenance interface: the typecheck stage calls it to point a diagnostic at
+// the offending expression without reaching into each arm's struct. A nil Expr
+// (a hole the parser left empty) reports (0, 0) — no position — never a crash.
+expr_span :: proc(e: Expr) -> (line: int, col: int) {
+	switch n in e {
+	case ^Int_Lit_Expr:
+		return n.line, n.col
+	case ^Fixed_Lit_Expr:
+		return n.line, n.col
+	case ^String_Lit_Expr:
+		return n.line, n.col
+	case ^Name_Expr:
+		return n.line, n.col
+	case ^Call_Expr:
+		return n.line, n.col
+	case ^Member_Expr:
+		return n.line, n.col
+	case ^Variant_Expr:
+		return n.line, n.col
+	case ^Record_Expr:
+		return n.line, n.col
+	case ^List_Expr:
+		return n.line, n.col
+	case ^Lambda_Expr:
+		return n.line, n.col
+	case ^Unary_Expr:
+		return n.line, n.col
+	case ^Binary_Expr:
+		return n.line, n.col
+	case ^With_Expr:
+		return n.line, n.col
+	case ^Match_Expr:
+		return n.line, n.col
+	case ^Tuple_Expr:
+		return n.line, n.col
+	case ^If_Expr:
+		return n.line, n.col
+	case ^Stub_Expr:
+		return n.line, n.col
+	case ^All_Expr:
+		return n.line, n.col
+	}
+	return 0, 0
+}
+
+// Every Expr arm carries `line`/`col` — the §15 diagnostic provenance of the
+// construct's FIRST byte (the token that opened the production). The span
+// anchors on the start of the whole expression, never the operator: a
+// `Binary_Expr a + b` reports `a`'s position, a `Unary_Expr -x` reports the
+// `-`'s position (the `-` IS the construct's first byte), so a single
+// convention — leftmost byte — locates every node. expr_span reads this pair
+// uniformly across the union; the typecheck stage uses it to point a
+// diagnostic at the offending expression.
 Int_Lit_Expr :: struct {
 	value: i64,
+	line:  int,
+	col:   int,
 }
 
 Fixed_Lit_Expr :: struct {
 	bits: Fixed,
+	line: int,
+	col:  int,
 }
 
 // String_Lit_Expr carries a string literal's raw inner text, including any
@@ -54,16 +114,22 @@ Fixed_Lit_Expr :: struct {
 // source bytes between the quotes.
 String_Lit_Expr :: struct {
 	text: string,
+	line: int,
+	col:  int,
 }
 
 Name_Expr :: struct {
 	name:  string,
 	class: Ident_Class,
+	line:  int,
+	col:   int,
 }
 
 Call_Expr :: struct {
 	callee: Expr,
 	args:   []Expr,
+	line:   int,
+	col:    int,
 }
 
 // Member_Expr covers field access, UFCS receivers, and a type's
@@ -73,6 +139,8 @@ Member_Expr :: struct {
 	receiver: Expr,
 	member:   string,
 	class:    Ident_Class,
+	line:     int,
+	col:      int,
 }
 
 // Variant_Expr is an enum-variant value selected with `::` (spec §02 §3).
@@ -88,6 +156,8 @@ Variant_Expr :: struct {
 	fields:      []Record_Field, // struct-payload named fields
 	has_payload: bool,           // true for a tuple-payload variant
 	has_fields:  bool,           // true for a struct-payload variant
+	line:        int,
+	col:         int,
 }
 
 Record_Field :: struct {
@@ -98,10 +168,14 @@ Record_Field :: struct {
 Record_Expr :: struct {
 	type_name: string,
 	fields:    []Record_Field,
+	line:      int,
+	col:       int,
 }
 
 List_Expr :: struct {
 	elements: []Expr,
+	line:     int,
+	col:      int,
 }
 
 // Tuple_Expr is a fixed-arity positional aggregate `(a, b, …)` (spec §02;
@@ -114,6 +188,8 @@ List_Expr :: struct {
 // grammar seam ships the parse node and its structural-gate scoring only.
 Tuple_Expr :: struct {
 	elements: []Expr,
+	line:     int,
+	col:      int,
 }
 
 // Lambda_Expr carries the single-return body form the golden surface
@@ -121,17 +197,29 @@ Tuple_Expr :: struct {
 Lambda_Expr :: struct {
 	params: []string,
 	body:   Expr,
+	line:   int,
+	col:    int,
 }
 
+// Unary_Expr/Binary_Expr already carry `op: Token`, but the explicit line/col
+// pair is added for a UNIFORM expr_span accessor across the whole union (no arm
+// is special-cased on `op`). For the unary form `op` is the construct's first
+// byte, so line/col equal op's; for the binary form the span anchors on the
+// LEAD OPERAND (`a` in `a + b`), the leftmost byte of the whole expression —
+// not the operator — matching the every-arm "first byte of the construct" rule.
 Unary_Expr :: struct {
 	op:      Token, // Minus, or the word operator `not`
 	operand: Expr,
+	line:    int,
+	col:     int,
 }
 
 Binary_Expr :: struct {
-	op:  Token, // glyph operators by kind; `and`/`or` as Ident tokens
-	lhs: Expr,
-	rhs: Expr,
+	op:   Token, // glyph operators by kind; `and`/`or` as Ident tokens
+	lhs:  Expr,
+	rhs:  Expr,
+	line: int,
+	col:  int,
 }
 
 // Pattern_Kind is the closed pattern taxonomy this parser admits (spec §02
@@ -186,6 +274,8 @@ Match_Arm :: struct {
 Match_Expr :: struct {
 	scrutinee: Expr,
 	arms:      []Match_Arm,
+	line:      int,
+	col:       int,
 }
 
 // If_Expr is the value-producing conditional `if cond { then } else { else }`
@@ -202,6 +292,8 @@ If_Expr :: struct {
 	cond:        Expr,
 	then_branch: Expr,
 	else_branch: Expr,
+	line:        int,
+	col:         int,
 }
 
 // Stub_Expr is a §05 §2 typed hole standing in EXPRESSION position
@@ -219,6 +311,8 @@ Stub_Expr :: struct {
 	hole_type:    Type_Ref,
 	fallback:     Expr,
 	has_fallback: bool,
+	line:         int,
+	col:          int,
 }
 
 // All_Expr is the §08 §3 world read `all[T]` — the whole table of a declared
@@ -232,6 +326,8 @@ Stub_Expr :: struct {
 // (LL(1) preserved: no other production begins `LOWER_IDENT '['`).
 All_Expr :: struct {
 	thing: string, // the read table's element thing — an UPPER_IDENT type name
+	line:  int,
+	col:   int,
 }
 
 // With_Expr is the record-update operator `value with { field: v, … }`
@@ -243,6 +339,8 @@ All_Expr :: struct {
 With_Expr :: struct {
 	base:   Expr,
 	fields: []Record_Field,
+	line:   int,
+	col:    int,
 }
 
 // Binding_Power is the one table ordering the ladder; the enum's
@@ -298,7 +396,10 @@ parse_binary :: proc(p: ^Parser, min_power: Binding_Power) -> (expr: Expr, err: 
 		// operator left-associative — the fold direction §10 depends on.
 		rhs := parse_binary(p, Binding_Power(int(power) + 1)) or_return
 		node := new(Binary_Expr, context.temp_allocator)
-		node^ = Binary_Expr{op = tok, lhs = lhs, rhs = rhs}
+		// The span anchors on the lead operand — the leftmost byte of `a + b`
+		// is `a`, not the operator (the every-arm first-byte rule).
+		lhs_line, lhs_col := expr_span(lhs)
+		node^ = Binary_Expr{op = tok, lhs = lhs, rhs = rhs, line = lhs_line, col = lhs_col}
 		lhs = node
 	}
 	return lhs, .None
@@ -311,7 +412,8 @@ parse_unary :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		tok := advance(p) or_return
 		operand := parse_unary(p) or_return
 		node := new(Unary_Expr, context.temp_allocator)
-		node^ = Unary_Expr{op = tok, operand = operand}
+		// The `-`/`not` operator token IS the construct's first byte.
+		node^ = Unary_Expr{op = tok, operand = operand, line = tok.line, col = tok.col}
 		return node, .None
 	}
 	return parse_with(p)
@@ -333,7 +435,9 @@ parse_with :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		fields := parse_with_fields(p) or_return
 		p.no_record_brace = saved
 		node := new(With_Expr, context.temp_allocator)
-		node^ = With_Expr{base = expr, fields = fields}
+		// `value with { … }` anchors on `value`, its leftmost byte.
+		base_line, base_col := expr_span(expr)
+		node^ = With_Expr{base = expr, fields = fields, line = base_line, col = base_col}
 		expr = node
 	}
 	return expr, .None
@@ -358,12 +462,17 @@ parse_postfix :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 				return nil, .Wrong_Case
 			}
 			node := new(Member_Expr, context.temp_allocator)
-			node^ = Member_Expr{receiver = expr, member = member.text, class = member.class}
+			// `a.b` anchors on the receiver `a`, the leftmost byte; a postfix
+			// chain `a.b.c` thus reports `a` at every level.
+			recv_line, recv_col := expr_span(expr)
+			node^ = Member_Expr{receiver = expr, member = member.text, class = member.class, line = recv_line, col = recv_col}
 			expr = node
 		case .L_Paren:
 			args := parse_call_args(p) or_return
 			node := new(Call_Expr, context.temp_allocator)
-			node^ = Call_Expr{callee = expr, args = args}
+			// `f(x)` anchors on the callee `f`, the leftmost byte.
+			callee_line, callee_col := expr_span(expr)
+			node^ = Call_Expr{callee = expr, args = args, line = callee_line, col = callee_col}
 			expr = node
 		case:
 			return expr, .None
@@ -376,34 +485,36 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	#partial switch tok.kind {
 	case .Int_Lit:
 		node := new(Int_Lit_Expr, context.temp_allocator)
-		node^ = Int_Lit_Expr{value = tok.int_value}
+		node^ = Int_Lit_Expr{value = tok.int_value, line = tok.line, col = tok.col}
 		return node, .None
 	case .Fixed_Lit:
 		node := new(Fixed_Lit_Expr, context.temp_allocator)
-		node^ = Fixed_Lit_Expr{bits = tok.fixed_bits}
+		node^ = Fixed_Lit_Expr{bits = tok.fixed_bits, line = tok.line, col = tok.col}
 		return node, .None
 	case .String_Lit:
 		// A string literal atom retains its raw inner text, interpolation
 		// holes and all (spec §02 §2).
 		node := new(String_Lit_Expr, context.temp_allocator)
-		node^ = String_Lit_Expr{text = tok.text}
+		node^ = String_Lit_Expr{text = tok.text, line = tok.line, col = tok.col}
 		return node, .None
 	case .L_Paren:
 		// A parenthesized form is either a grouping `(e)` or a tuple
 		// `(a, b, …)` — the comma after the first element discriminates the
 		// two (spec §02; §04 §1). A record literal inside is valid even within
-		// a match scrutinee, so the no-record-brace context is lifted here.
-		return parse_paren_atom(p)
+		// a match scrutinee, so the no-record-brace context is lifted here. The
+		// lead `(` is the construct's first byte (a grouping passes its inner
+		// expr's own span through; a tuple anchors on the `(`).
+		return parse_paren_atom(p, tok)
 	case .L_Bracket:
-		return parse_list_tail(p)
+		return parse_list_tail(p, tok)
 	case .Fn:
-		return parse_lambda(p)
+		return parse_lambda(p, tok)
 	case .Match:
-		return parse_match(p)
+		return parse_match(p, tok)
 	case .If:
-		return parse_if_expr(p)
+		return parse_if_expr(p, tok)
 	case .At:
-		return parse_stub_atom(p)
+		return parse_stub_atom(p, tok)
 	case .Ident:
 		return parse_name_atom(p, tok)
 	}
@@ -419,10 +530,11 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 // directive in expression position is an Unexpected_Token (parse_stub_parts'
 // name check): @doc/@gtag/@todo prefix declarations, and no other directive
 // names a value.
-parse_stub_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+parse_stub_atom :: proc(p: ^Parser, at_tok: Token) -> (expr: Expr, err: Parse_Error) {
 	hole_type, fallback, has_fallback := parse_stub_parts(p) or_return
 	node := new(Stub_Expr, context.temp_allocator)
-	node^ = Stub_Expr{hole_type = hole_type, fallback = fallback, has_fallback = has_fallback}
+	// The leading `@` is the hole's first byte.
+	node^ = Stub_Expr{hole_type = hole_type, fallback = fallback, has_fallback = has_fallback, line = at_tok.line, col = at_tok.col}
 	return node, .None
 }
 
@@ -434,13 +546,14 @@ parse_stub_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 // trailing comma after the last element is accepted, mirroring lists. The
 // no-record-brace context is lifted inside the parentheses (a record literal
 // is valid there even within a match scrutinee).
-parse_paren_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+parse_paren_atom :: proc(p: ^Parser, lparen: Token) -> (expr: Expr, err: Parse_Error) {
 	saved := p.no_record_brace
 	p.no_record_brace = false
 	defer p.no_record_brace = saved
 	first := parse_expression(p) or_return
 	if peek_kind(p) != .Comma {
-		// A single parenthesized expression is a grouping, not a tuple.
+		// A single parenthesized expression is a grouping, not a tuple — it
+		// passes through carrying its own inner-expr span, not the `(`.
 		expect(p, .R_Paren) or_return
 		return first, .None
 	}
@@ -456,7 +569,8 @@ parse_paren_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	}
 	expect(p, .R_Paren) or_return
 	node := new(Tuple_Expr, context.temp_allocator)
-	node^ = Tuple_Expr{elements = elements[:]}
+	// A tuple anchors on the leading `(`, its first byte.
+	node^ = Tuple_Expr{elements = elements[:], line = lparen.line, col = lparen.col}
 	return node, .None
 }
 
@@ -464,7 +578,7 @@ parse_paren_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 // §5). The match brace is a block context, so its arms are
 // newline-separated (the lexer kept those newlines); a `,` is also a
 // legal separator (Sep). Each arm body is a single expression.
-parse_match :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+parse_match :: proc(p: ^Parser, match_tok: Token) -> (expr: Expr, err: Parse_Error) {
 	// The scrutinee parses in the no-struct-literal context: a trailing
 	// `{` opens the match block, not a record literal off the scrutinee.
 	p.no_record_brace = true
@@ -489,7 +603,8 @@ parse_match :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	}
 	expect(p, .R_Brace) or_return
 	node := new(Match_Expr, context.temp_allocator)
-	node^ = Match_Expr{scrutinee = scrutinee, arms = arms[:]}
+	// The `match` keyword is the construct's first byte.
+	node^ = Match_Expr{scrutinee = scrutinee, arms = arms[:], line = match_tok.line, col = match_tok.col}
 	return node, .None
 }
 
@@ -502,7 +617,7 @@ parse_match :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 // arm is REQUIRED in expression position (a missing `else` is .Missing_Else,
 // never a silent fallback). The else arm is either a block or a chained `if`
 // (`else if …`), so an else-if ladder nests through parse_atom by construction.
-parse_if_expr :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+parse_if_expr :: proc(p: ^Parser, if_tok: Token) -> (expr: Expr, err: Parse_Error) {
 	saved := p.no_record_brace
 	p.no_record_brace = true
 	cond := parse_expression(p) or_return
@@ -524,7 +639,9 @@ parse_if_expr :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 		else_branch = parse_if_branch(p) or_return
 	}
 	node := new(If_Expr, context.temp_allocator)
-	node^ = If_Expr{cond = cond, then_branch = then_branch, else_branch = else_branch}
+	// The `if` keyword is the construct's first byte; a chained `else if` nests
+	// its OWN If_Expr through parse_expression, each anchored on its own `if`.
+	node^ = If_Expr{cond = cond, then_branch = then_branch, else_branch = else_branch, line = if_tok.line, col = if_tok.col}
 	return node, .None
 }
 
@@ -702,14 +819,14 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 	if p.no_record_brace && following == .L_Brace {
 		check_ident_case(tok, .Invalid) or_return
 		node := new(Name_Expr, context.temp_allocator)
-		node^ = Name_Expr{name = tok.text, class = tok.class}
+		node^ = Name_Expr{name = tok.text, class = tok.class, line = tok.line, col = tok.col}
 		return node, .None
 	}
 	// The §08 §3 world read `all[T]`: the contextual name `all` followed by a
 	// bracket is the one-token-lookahead atom (see All_Expr). `all` stays a
 	// legal value name everywhere else — only the immediate `[` selects.
 	if tok.text == "all" && following == .L_Bracket {
-		return parse_all_tail(p)
+		return parse_all_tail(p, tok)
 	}
 	check_ident_case(tok, following) or_return
 	#partial switch following {
@@ -722,7 +839,8 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 			return nil, .Wrong_Case
 		}
 		node := new(Variant_Expr, context.temp_allocator)
-		node^ = Variant_Expr{type_name = tok.text, variant = variant.text}
+		// The enum type name is the variant expression's first byte.
+		node^ = Variant_Expr{type_name = tok.text, variant = variant.text, line = tok.line, col = tok.col}
 		#partial switch peek_kind(p) {
 		case .L_Paren:
 			// Tuple-payload variant: Option::Some(v), MoveTo(Vec2)-style args.
@@ -743,10 +861,10 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 		}
 		return node, .None
 	case .L_Brace:
-		return parse_record_tail(p, tok.text)
+		return parse_record_tail(p, tok)
 	}
 	node := new(Name_Expr, context.temp_allocator)
-	node^ = Name_Expr{name = tok.text, class = tok.class}
+	node^ = Name_Expr{name = tok.text, class = tok.class, line = tok.line, col = tok.col}
 	return node, .None
 }
 
@@ -755,7 +873,7 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 // name — an UPPER_IDENT (lexical-core.ebnf §2), so a lowercase or mixed-case
 // head is the parser-wide Wrong_Case verdict; whether T names a declared
 // thing is the typechecker's membership rule (all_check), not grammar.
-parse_all_tail :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+parse_all_tail :: proc(p: ^Parser, all_tok: Token) -> (expr: Expr, err: Parse_Error) {
 	expect(p, .L_Bracket) or_return
 	thing := expect(p, .Ident) or_return
 	if !is_upper_ident(thing.class) {
@@ -763,17 +881,19 @@ parse_all_tail :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	}
 	expect(p, .R_Bracket) or_return
 	node := new(All_Expr, context.temp_allocator)
-	node^ = All_Expr{thing = thing.text}
+	// The `all` name is the read's first byte.
+	node^ = All_Expr{thing = thing.text, line = all_tok.line, col = all_tok.col}
 	return node, .None
 }
 
 // parse_record_tail parses `{ field: expr, … }` after the constructor
-// name and wraps it as a Record_Expr.
-parse_record_tail :: proc(p: ^Parser, type_name: string) -> (expr: Expr, err: Parse_Error) {
+// name and wraps it as a Record_Expr. The constructor-name token anchors the
+// span — `Vec2{…}` reports `Vec2`, its first byte.
+parse_record_tail :: proc(p: ^Parser, name_tok: Token) -> (expr: Expr, err: Parse_Error) {
 	expect(p, .L_Brace) or_return
 	fields := parse_record_fields(p) or_return
 	node := new(Record_Expr, context.temp_allocator)
-	node^ = Record_Expr{type_name = type_name, fields = fields[:]}
+	node^ = Record_Expr{type_name = name_tok.text, fields = fields[:], line = name_tok.line, col = name_tok.col}
 	return node, .None
 }
 
@@ -800,7 +920,7 @@ parse_record_fields :: proc(p: ^Parser) -> (fields: []Record_Field, err: Parse_E
 	return list[:], .None
 }
 
-parse_list_tail :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+parse_list_tail :: proc(p: ^Parser, lbracket: Token) -> (expr: Expr, err: Parse_Error) {
 	saved := p.no_record_brace
 	p.no_record_brace = false
 	defer p.no_record_brace = saved
@@ -820,7 +940,8 @@ parse_list_tail :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	}
 	expect(p, .R_Bracket) or_return
 	node := new(List_Expr, context.temp_allocator)
-	node^ = List_Expr{elements = elements[:]}
+	// The leading `[` is the list's first byte.
+	node^ = List_Expr{elements = elements[:], line = lbracket.line, col = lbracket.col}
 	return node, .None
 }
 
@@ -833,7 +954,7 @@ skip_list_separators :: proc(p: ^Parser) {
 	}
 }
 
-parse_lambda :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
+parse_lambda :: proc(p: ^Parser, fn_tok: Token) -> (expr: Expr, err: Parse_Error) {
 	expect(p, .L_Paren) or_return
 	params := make([dynamic]string, 0, 4, context.temp_allocator)
 	for peek_kind(p) == .Ident {
@@ -855,7 +976,8 @@ parse_lambda :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	skip_newlines(p)
 	expect(p, .R_Brace) or_return
 	node := new(Lambda_Expr, context.temp_allocator)
-	node^ = Lambda_Expr{params = params[:], body = body}
+	// The `fn` keyword is the lambda's first byte.
+	node^ = Lambda_Expr{params = params[:], body = body, line = fn_tok.line, col = fn_tok.col}
 	return node, .None
 }
 

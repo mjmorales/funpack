@@ -394,3 +394,26 @@ test_lex_no_comment_production :: proc(t: ^testing.T) {
 		.Slash, .Slash, .Ident, .Ident, .Ident, .Newline,
 	})
 }
+
+@(test)
+test_lex_stamps_col_and_offset :: proc(t: ^testing.T) {
+	// Every token carries its 1-based column (first byte within its line) and
+	// its 0-based source offset (first byte in source) — the §15 span
+	// coordinates beyond the line. A second line resets col to its line start
+	// (col = i - line_start + 1) while offset keeps climbing past the newline.
+	tokens := stage_lex("a + bb\nc\n")
+	expect_kinds(t, tokens, []Token_Kind{
+		.Ident, .Plus, .Ident, .Newline, .Ident, .Newline,
+	})
+	// Line 1: `a`@col1/off0, `+`@col3/off2, `bb`@col5/off4, `\n`@col7/off6.
+	cols := [?]int{1, 3, 5, 7, 1, 2}
+	offs := [?]int{0, 2, 4, 6, 7, 8}
+	for tok, i in tokens {
+		testing.expect_value(t, tok.col, cols[i])
+		testing.expect_value(t, tok.offset, offs[i])
+	}
+	// Line 2 resets col: `c` is the line's first byte (col 1) yet offset 7.
+	testing.expect_value(t, tokens[4].line, 2)
+	testing.expect_value(t, tokens[4].col, 1)
+	testing.expect_value(t, tokens[4].offset, 7)
+}

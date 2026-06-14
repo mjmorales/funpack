@@ -34,12 +34,12 @@ check_query_index_gate :: proc(ast: Ast) -> Gate_Verdict {
 		trace := query_body_trace(query.body)
 		for thing in trace.spatial_needs {
 			if !query_declares_index(query.indexes, .Spatial, thing) {
-				return Gate_Verdict{err = .Query_Missing_Index, declaration = query.name}
+				return Gate_Verdict{err = .Query_Missing_Index, declaration = query.name, line = query.line}
 			}
 		}
 		for directive in query.indexes {
 			if !query_directive_used(directive, trace) {
-				return Gate_Verdict{err = .Query_Unused_Index, declaration = query.name}
+				return Gate_Verdict{err = .Query_Unused_Index, declaration = query.name, line = query.line}
 			}
 		}
 	}

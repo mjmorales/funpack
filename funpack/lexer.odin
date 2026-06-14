@@ -123,6 +123,8 @@ Token :: struct {
 	int_value:  i64,         // Int_Lit value
 	fixed_bits: Fixed,       // Fixed_Lit value
 	line:       int,         // 1-based source line of the token's first byte (§15 diagnostic provenance)
+	col:        int,         // 1-based column of the token's first byte within its line (§15 diagnostic provenance)
+	offset:     int,         // 0-based byte offset of the token's first byte in source (§15 diagnostic provenance)
 }
 
 stage_lex :: proc(source: string) -> []Token {
@@ -136,13 +138,19 @@ stage_lex :: proc(source: string) -> []Token {
 	// stamped with the line of its first byte (§15 diagnostic provenance,
 	// artifact-format §9 span). scanned is the cursor position `line` is
 	// current for, so newlines crossed between tokens are counted exactly once.
+	// line_start advances alongside `line` to the byte offset just past the
+	// most recent '\n' (0 on the first line): the 1-based column of any token
+	// is then `i - line_start + 1` and its 0-based source offset is `i`, the
+	// two spatial coordinates a span needs beyond the line.
 	line := 1
 	scanned := 0
+	line_start := 0
 	i := 0
 	for i < len(source) {
 		for scanned < i {
 			if source[scanned] == '\n' {
 				line += 1
+				line_start = scanned + 1
 			}
 			scanned += 1
 		}
@@ -163,6 +171,8 @@ stage_lex :: proc(source: string) -> []Token {
 			tok, next = scan_punct(source, i)
 		}
 		tok.line = line
+		tok.col = i - line_start + 1
+		tok.offset = i
 		if tok.kind == .Newline && newline_suppressed(&nesting, source, next) {
 			i = next
 			continue

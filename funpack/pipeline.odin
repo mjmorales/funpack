@@ -114,7 +114,10 @@ run_test_pipeline :: proc(source: string) -> (report: Test_Report, err: Pipeline
 // name threaded through to the evaluator — the namespace half of an intra-module
 // const's cycle key, so a self/mutual const cycle within THIS module is caught
 // fail-closed by the evaluator's visited set. run_module_pipeline_evaled is the
-// nameless projection (module = "") the single-source path keeps using.
+// nameless projection (module = "") the single-source path keeps using. It is the
+// (report, err) projection of run_module_pipeline_diag — the form every test and
+// the single-source path consume, discarding the fix-criteria Diagnostic the
+// project pipeline keeps.
 run_module_pipeline_named :: proc(
 	source: string,
 	index: Module_Index,
@@ -125,31 +128,102 @@ run_module_pipeline_named :: proc(
 	report: Test_Report,
 	err: Pipeline_Error,
 ) {
+	report, err, _ = run_module_pipeline_diag(source, index, modules, module, importer_root)
+	return report, err
+}
+
+// run_module_pipeline_diag is run_module_pipeline_named plus the fix-criteria
+// Diagnostic for whichever stage failed — the diagnostic-bearing form the
+// project pipeline surfaces so the CLI renders a `file:line:col: rule: message`
+// block instead of a bare Pipeline_Error enum name. The coarse Pipeline_Error
+// stays the machine contract (the exit-code class); the Diagnostic is the added
+// human body. Each stage seam now surfaces its offender coordinates beside its
+// closed-enum arm (the located parse verdict, the gate/typecheck/contract/flatten
+// verdicts), so this driver maps (arm, line, col, declaration) through the
+// per-stage mapping proc (diagnostics.odin) into one Diagnostic. The Diagnostic's
+// `path` is left "" here — the source file is the CLI/project layer's fact, filled
+// from the failing module's path before render_diagnostic re-reads it.
+run_module_pipeline_diag :: proc(
+	source: string,
+	index: Module_Index,
+	modules: []Module_Eval,
+	module: string,
+	importer_root := "",
+) -> (
+	report: Test_Report,
+	err: Pipeline_Error,
+	diag: Diagnostic,
+) {
 	tokens := stage_lex(source)
-	ast, parse_err := stage_parse(tokens)
-	if parse_err != .None {
-		return Test_Report{}, .Parse_Failed
+	ast, parse_verdict := stage_parse_located(tokens)
+	if parse_verdict.err != .None {
+		return Test_Report{}, .Parse_Failed, parse_diagnostic(parse_verdict.err, parse_verdict.line, parse_verdict.col)
 	}
-	gate_err := stage_gates(ast)
-	if gate_err != .None {
-		return Test_Report{}, .Gate_Failed
+	if verdict := gate_verdict(ast); verdict.err != .None {
+		return Test_Report{}, .Gate_Failed, gate_diagnostic(verdict.err, verdict.line, verdict.declaration)
 	}
 	// importer_root is the module's own §30 package root ("" = a
 	// consuming-project module), so a path-dependency's source — compiled
 	// through the consumer's pipeline with the same gates (§30 §7) — types
 	// from its own vantage.
-	typed, type_err := stage_typecheck_indexed(ast, index, importer_root)
-	if type_err != .None {
-		return Test_Report{}, .Typecheck_Failed
+	typed, type_verdict := stage_typecheck_located(ast, index, importer_root)
+	if type_verdict.err != .None {
+		return Test_Report{}, .Typecheck_Failed, type_diagnostic(type_verdict.err, type_verdict.line, type_verdict.col, type_verdict.declaration)
 	}
 	if verdict := stage_contracts(typed); verdict.err != .None {
-		return Test_Report{}, .Contract_Failed
+		line := behavior_decl_line(typed.ast, verdict.behavior)
+		return Test_Report{}, .Contract_Failed, contract_diagnostic(verdict.err, line, verdict.behavior)
 	}
 	if verdict := stage_flatten(typed); verdict.err != .None {
-		return Test_Report{}, .Closure_Failed
+		offender := flatten_offender_name(verdict)
+		line := flatten_offender_line(typed.ast, verdict)
+		return Test_Report{}, .Closure_Failed, flatten_diagnostic(verdict.err, line, offender)
 	}
 	result := stage_evaluate_indexed(typed, modules, module)
-	return stage_report(result), .None
+	return stage_report(result), .None, Diagnostic{}
+}
+
+// behavior_decl_line returns the 1-based source line of the named behavior, or 0
+// when no behavior carries that name (a contract verdict over a battery name, or
+// a fn-in-a-slot the behaviors slice has no entry for) — the fail-open anchor so
+// a non-behavior contract offender renders header-only rather than at a wrong
+// line. It reads the ordered ast.behaviors slice, never an env map, so the line
+// is reproducible from source alone.
+behavior_decl_line :: proc(ast: Ast, name: string) -> int {
+	for behavior in ast.behaviors {
+		if behavior.name == name {
+			return behavior.line
+		}
+	}
+	return 0
+}
+
+// flatten_offender_name returns the declaration/signal a flatten verdict
+// indicts: the unclosed signal name on an Unclosed_Signal, "" on the structural
+// flatten faults (the verdict carries no member name — the offending member is
+// inside the flatten walk, not surfaced). The "" cases render header-only with
+// no declaration, the fail-open form for a flatten fault with no named offender.
+flatten_offender_name :: proc(verdict: Flatten_Verdict) -> string {
+	if verdict.err == .Unclosed_Signal {
+		return verdict.signal
+	}
+	return ""
+}
+
+// flatten_offender_line returns the 1-based source line of a flatten verdict's
+// offender: the unclosed signal's declaration line on an Unclosed_Signal, 0
+// otherwise (no named offender to anchor at). It reads the ordered ast.signals
+// slice so the line is reproducible from source alone.
+flatten_offender_line :: proc(ast: Ast, verdict: Flatten_Verdict) -> int {
+	if verdict.err != .Unclosed_Signal {
+		return 0
+	}
+	for signal in ast.signals {
+		if signal.name == verdict.signal {
+			return signal.line
+		}
+	}
+	return 0
 }
 
 // run_module_pipeline threads one module's source through the stage pipeline
@@ -197,6 +271,12 @@ Project_Report :: struct {
 	module_err:    Pipeline_Error,     // the first module's compile error (.None when every module compiled)
 	failed_path:   string,             // the source path of module_err (when set)
 	index_err:     Project_Pipeline_Error,
+	// diagnostic is the fix-criteria Diagnostic for module_err — the first
+	// failing module's stage rejection, with `path` = failed_path so the CLI
+	// re-reads the right source and render_diagnostic excerpts the offending
+	// line. Zero (rule = "") when no module failed (module_err = .None), so a
+	// clean run carries no diagnostic.
+	diagnostic:    Diagnostic,
 }
 
 // project_pipeline_sources is the source set the test verb compiles: the
@@ -234,9 +314,15 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 		if read_err != nil {
 			return Project_Report{index_err = .Index_Failed, failed_path = source.path}
 		}
-		ast, parse_err := stage_parse(stage_lex(string(bytes)))
-		if parse_err != .None {
-			return Project_Report{module_err = .Parse_Failed, failed_path = source.path}
+		// The located parse surfaces the offending token's span so the index-build
+		// parse floor carries a fix-criteria Parse Diagnostic (path = this source),
+		// not a bare Parse_Failed — the same diagnostic the per-module loop below
+		// would build, but here the module's AST never reaches that loop.
+		ast, parse_verdict := stage_parse_located(stage_lex(string(bytes)))
+		if parse_verdict.err != .None {
+			diag := parse_diagnostic(parse_verdict.err, parse_verdict.line, parse_verdict.col)
+			diag.path = source.path
+			return Project_Report{module_err = .Parse_Failed, failed_path = source.path, diagnostic = diag}
 		}
 		modules[i] = source.module
 		asts[i] = ast
@@ -255,11 +341,16 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 	for source, i in sources {
 		// The module's own §15 name threads to the evaluator so an intra-module
 		// const cycle in THIS module keys on its module (and a cross-module cycle
-		// shares the same visited set through the eval surface).
-		module_report, err := run_module_pipeline_named(source_texts[i], index, eval_modules, source.module, source.package_root)
+		// shares the same visited set through the eval surface). The diag-bearing
+		// driver carries the fix-criteria Diagnostic for whichever stage failed, so
+		// the CLI renders a `file:line:col: rule: message` block; path is stamped to
+		// this source so render_diagnostic re-reads the right file.
+		module_report, err, diag := run_module_pipeline_diag(source_texts[i], index, eval_modules, source.module, source.package_root)
 		if err != .None {
+			diag.path = source.path
 			report.module_err = err
 			report.failed_path = source.path
+			report.diagnostic = diag
 			return report
 		}
 		report.passed += module_report.passed

@@ -115,9 +115,18 @@ Build_Error :: enum {
 // declaration an agent must repair without stringly-typing the error kind: the
 // arm stays the closed enum, the name rides beside it. The zero value is the
 // clean verdict (err = .None, no offender).
+//
+// diagnostic is the inner fix-criteria Diagnostic the Compile_Failed arm carries
+// (path/line/col/rule/message) — the §15 stage rejection a checked-pipeline floor
+// surfaces, so the CLI renders a `file:line:col: rule: message` block instead of
+// a bare `Compile_Failed`. It is zero (rule = "") on every other arm: those arms
+// name their offender on the `offender` line (build_refusal_message), and only
+// the compile floor has an inner per-stage diagnostic to thread. The arm stays
+// the machine contract (exit 2); the diagnostic is the added human body.
 Build_Verdict :: struct {
-	err:      Build_Error,
-	offender: string,
+	err:        Build_Error,
+	offender:   string,
+	diagnostic: Diagnostic,
 }
 
 // build_refusal_message renders one Build_Verdict as the operator-facing
@@ -301,7 +310,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		emit_err: Emit_Error
 		artifact, emit_err = emit_tree_artifact(root, project, sources, allocator)
 		if emit_err != .None {
-			return Build_Product{}, Build_Verdict{err = .Compile_Failed}
+			return Build_Product{}, compile_failed_verdict(sources, allocator)
 		}
 		artifact_path = build_product_path(root, ARTIFACT_PRODUCT_NAME, allocator)
 	}
@@ -310,7 +319,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		return Build_Product{}, Build_Verdict{err = .Index_Failed}
 	}
 	if !compiled {
-		return Build_Product{}, Build_Verdict{err = .Compile_Failed}
+		return Build_Product{}, compile_failed_verdict(sources, allocator)
 	}
 	return Build_Product {
 			artifact      = artifact,
@@ -319,6 +328,25 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 			index_path    = build_product_path(root, INDEX_PRODUCT_NAME, allocator),
 		},
 		Build_Verdict{}
+}
+
+// compile_failed_verdict builds the Compile_Failed verdict carrying the inner
+// fix-criteria Diagnostic — the per-stage rejection (parse/gate/typecheck/
+// contract/closure) of the first failing module. The emit/index paths above
+// know ONLY that a checked-pipeline floor tripped (a coarse Emit_Error or
+// `compiled = false`); the diagnostic-bearing project pipeline re-derives WHICH
+// stage rejected WHERE, so the CLI renders `file:line:col: rule: message`
+// instead of a bare `Compile_Failed`. It runs over the SAME combined source set
+// the floor tripped on (own + §30 package_sources), so its first-failing-module
+// diagnostic is the same fault the floor surfaced. A defensive .None (the floor
+// said fail but the project pipeline finds none — an emit-only floor with no
+// checked-pipeline cause) still returns the closed Compile_Failed arm with an
+// empty diagnostic, so the exit-2 contract holds and the CLI falls back to the
+// bare arm name (build_refusal_message). The Diagnostic's path is the failing
+// module's source path so the CLI re-reads the right file.
+compile_failed_verdict :: proc(sources: []Source, allocator := context.allocator) -> Build_Verdict {
+	report := run_project_pipeline(sources)
+	return Build_Verdict{err = .Compile_Failed, diagnostic = report.diagnostic}
 }
 
 // project_holed_decl walks every §14 source for the first §05 typed-hole

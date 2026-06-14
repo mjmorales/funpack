@@ -530,3 +530,81 @@ test_expr_else_if_chain_nests :: proc(t: ^testing.T) {
 		testing.expect(t, inner_else_is_int)
 	}
 }
+
+@(test)
+test_expr_span_anchors_on_first_byte :: proc(t: ^testing.T) {
+	// expr_span returns the construct's FIRST byte (the leftmost-byte
+	// convention) for every arm — the §15 provenance the typecheck stage points
+	// a diagnostic at. A leading offset isolates the column: a 4-space indent
+	// puts the lead operand `a` at col 5 on line 1.
+	expr, err := parse_expr_text("    a + b * c")
+	testing.expect_value(t, err, Parse_Error.None)
+	// The whole binary `a + b * c` anchors on the lead operand `a`, NOT the `+`.
+	line, col := expr_span(expr)
+	testing.expect_value(t, line, 1)
+	testing.expect_value(t, col, 5)
+	bin, is_bin := expr.(^Binary_Expr)
+	testing.expect(t, is_bin)
+	if is_bin {
+		// The lead operand IS `a` — its own span equals the binary's anchor.
+		a_line, a_col := expr_span(bin.lhs)
+		testing.expect_value(t, a_line, 1)
+		testing.expect_value(t, a_col, 5)
+	}
+}
+
+@(test)
+test_expr_span_unary_anchors_on_operator :: proc(t: ^testing.T) {
+	// A unary expression's first byte IS its operator (the `-`/`not` opens the
+	// construct), so the span anchors there, unlike the binary lead-operand rule.
+	expr, err := parse_expr_text("  -x")
+	testing.expect_value(t, err, Parse_Error.None)
+	_, is_unary := expr.(^Unary_Expr)
+	testing.expect(t, is_unary)
+	line, col := expr_span(expr)
+	testing.expect_value(t, line, 1)
+	testing.expect_value(t, col, 3) // the `-` at column 3
+}
+
+@(test)
+test_expr_span_covers_every_arm :: proc(t: ^testing.T) {
+	// expr_span resolves a non-zero span for every Expr arm — the accessor is
+	// total over the union, so the typecheck stage can locate any offender. Each
+	// fixture's lead token sits at column 1, line 1.
+	fixtures := [?]string{
+		"42",                          // Int_Lit
+		"2.5",                         // Fixed
+		"\"s\"",                       // String_Lit
+		"name",                        // Name
+		"f(1)",                        // Call (anchors on callee `f`)
+		"a.b",                         // Member (anchors on receiver `a`)
+		"Option::None",                // Variant
+		"Vec2{x: 1.0}",                // Record
+		"[1, 2]",                      // List
+		"fn(a) { return a }",          // Lambda
+		"not p",                       // Unary
+		"a + b",                       // Binary (anchors on lead operand)
+		"v with { x: 1.0 }",           // With (anchors on base `v`)
+		"match x {\n  _ => 0\n}",      // Match
+		"(a, b)",                      // Tuple
+		"if c { 1 } else { 2 }",       // If
+		"@stub(Fixed)",                // Stub
+		"all[Paddle]",                 // All
+	}
+	for fixture in fixtures {
+		expr, err := parse_expr_text(fixture)
+		testing.expect_value(t, err, Parse_Error.None)
+		line, col := expr_span(expr)
+		testing.expect_value(t, line, 1)
+		testing.expect_value(t, col, 1)
+	}
+}
+
+@(test)
+test_expr_span_nil_reports_origin :: proc(t: ^testing.T) {
+	// A nil Expr (an empty hole) reports (0, 0) — no position — never a crash,
+	// so a caller can branch on the absent span.
+	line, col := expr_span(nil)
+	testing.expect_value(t, line, 0)
+	testing.expect_value(t, col, 0)
+}

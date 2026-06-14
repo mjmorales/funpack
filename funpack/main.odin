@@ -202,7 +202,7 @@ run_build_verb :: proc(mode: Build_Mode) -> int {
 	}
 	product, verdict := stage_build(".", mode, context.temp_allocator)
 	if verdict.err != .None {
-		fmt.eprintfln("funpack build: %s", build_refusal_message(verdict, context.temp_allocator))
+		eprint_build_refusal("funpack build", verdict)
 		return 2
 	}
 	if write_err := write_build_products(product, "."); write_err != .None {
@@ -241,11 +241,33 @@ run_build_verb :: proc(mode: Build_Mode) -> int {
 run_check_verb :: proc(root: string, mode: Build_Mode) -> int {
 	_, verdict := stage_build(root, mode, context.temp_allocator)
 	if verdict.err != .None {
-		fmt.eprintfln("funpack check: %s", build_refusal_message(verdict, context.temp_allocator))
+		eprint_build_refusal("funpack check", verdict)
 		return 2
 	}
 	fmt.println("funpack check: clean")
 	return 0
+}
+
+// eprint_build_refusal eprints a Build_Verdict refusal: a Compile_Failed arm
+// carrying an inner Diagnostic renders the fix-criteria block (re-reading the
+// failing module's source so render_diagnostic excerpts the offending line),
+// while every other arm (Malformed_Tree, Holed_Declaration, Debug_Directive,
+// Index_Failed, Asset_Bake_Failed) keeps its build_refusal_message line — those
+// arms name their offender on that line, only the compile floor has a per-stage
+// diagnostic. A Compile_Failed with no captured diagnostic (rule == "") falls
+// back to build_refusal_message too, so the exit-2 refusal always prints
+// something. The exit code (2) and the `<verb>:` framing are unchanged — the
+// machine contract holds; the rendered diagnostic is the added human body.
+eprint_build_refusal :: proc(verb: string, verdict: Build_Verdict) {
+	if verdict.err == .Compile_Failed && verdict.diagnostic.rule != "" {
+		source := ""
+		if bytes, read_err := os.read_entire_file_from_path(verdict.diagnostic.path, context.temp_allocator); read_err == nil {
+			source = string(bytes)
+		}
+		fmt.eprintfln("%s: %s", verb, render_diagnostic(verdict.diagnostic, source, context.temp_allocator))
+		return
+	}
+	fmt.eprintfln("%s: %s", verb, build_refusal_message(verdict, context.temp_allocator))
 }
 
 // run_test_verb runs every source of the §14 project tree at the working
@@ -267,11 +289,36 @@ run_test_verb :: proc() -> int {
 		return 2
 	}
 	if report.module_err != .None {
-		fmt.eprintfln("funpack test: %s: %v", report.failed_path, report.module_err)
+		// A module's compile error: render the inner fix-criteria Diagnostic (the
+		// per-stage rejection's file:line:col: rule: message block) instead of the
+		// bare Pipeline_Error name, so an agent's write→check→fix loop sees the
+		// offending construct and the fix direction. The `funpack test: <path>:`
+		// framing and the exit code (2) are unchanged — the machine contract holds;
+		// the rendered diagnostic is the added human body.
+		eprint_module_diagnostic("funpack test", report.failed_path, report.module_err, report.diagnostic)
 		return 2
 	}
 	fmt.printfln("funpack test: %d passed, %d failed", report.passed, report.failed)
 	return project_test_exit_code(report)
+}
+
+// eprint_module_diagnostic eprints a module compile error as its rendered
+// fix-criteria Diagnostic, falling back to the bare `<path>: <err>` line when no
+// diagnostic was captured (rule == "") or the source cannot be re-read — the
+// fail-open form so a compile error always prints SOMETHING actionable and the
+// exit-2 contract never hangs on a missing excerpt. The Diagnostic's `path` is
+// already the failing module's source path (set by run_project_pipeline), so the
+// re-read here is the file render_diagnostic excerpts the offending line from.
+eprint_module_diagnostic :: proc(verb: string, path: string, err: Pipeline_Error, diag: Diagnostic) {
+	if diag.rule == "" {
+		fmt.eprintfln("%s: %s: %v", verb, path, err)
+		return
+	}
+	source := ""
+	if bytes, read_err := os.read_entire_file_from_path(diag.path, context.temp_allocator); read_err == nil {
+		source = string(bytes)
+	}
+	fmt.eprintfln("%s: %s", verb, render_diagnostic(diag, source, context.temp_allocator))
 }
 
 // project_test_exit_code is the CLI exit contract over a project run: a compile

@@ -252,8 +252,8 @@ test_parse_match_bad_pattern_case_rejected :: proc(t: ^testing.T) {
 // delegates to parse_match — mirroring how parse_atom dispatches the
 // keyword, for a test that drives parse_match directly.
 parse_match_from_keyword :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
-	expect(p, .Match) or_return
-	return parse_match(p)
+	match_tok := expect(p, .Match) or_return
+	return parse_match(p, match_tok)
 }
 
 @(test)

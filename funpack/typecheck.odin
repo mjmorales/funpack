@@ -79,10 +79,70 @@ Check_Ctx :: struct {
 	// the import resolver used — a package module reading its own sibling
 	// never crosses the edge (spec §15 §5).
 	importer_root:   string,
+	// diag is the optional fix-criteria span sink (Type_Diag_Site) the located
+	// typecheck pass threads through every ctx: expr_check stamps the innermost
+	// offending expression's span into it on a fault (first-write-wins). nil on
+	// the bare stage_typecheck_indexed path — every existing caller — so stamping
+	// is a no-op there and behavior is unchanged.
+	diag:            ^Type_Diag_Site,
+}
+
+// Type_Diag_Site is the pointer-threaded span sink the located typecheck pass
+// fills: a body sweep stamps the offending expression's span (expr_span) and the
+// owning declaration's name into it on the way up, so the fix-criteria diagnostic
+// anchors at the exact construct that broke. line/col are stamped by expr_check
+// FIRST-WRITE-WINS — the innermost expr_check that produced the error stamps
+// before the recursion unwinds, so the deepest offending sub-expression (the `a`
+// in `a + b`, not the whole body) is the anchor; `set` guards that first write.
+// declaration is stamped by the body/test sweep that knows which declaration
+// failed (a function of the sweep loop, not the expression). A nil sink (the
+// stage_typecheck_indexed path, every existing caller) disables stamping entirely
+// — the located pass alone threads a non-nil one.
+Type_Diag_Site :: struct {
+	line:        int,
+	col:         int,
+	declaration: string,
+	set:         bool, // guards expr_check's first-write-wins span stamp
+}
+
+// Type_Verdict pairs a typecheck failure with the offending construct's span and
+// owning declaration — the fix-criteria diagnostic anchor (spec §15). It is the
+// located projection of stage_typecheck_indexed: the same checks, but a non-nil
+// span sink threaded through the body/test sweeps so the verdict carries the
+// offending expression's line/col (or the offending declaration's line for a
+// statement-level reject) and the declaration name. line/col/declaration are
+// 0/0/"" when err is None or the fault has no captured span (a synthetic node, a
+// membership check whose decl line was not threaded).
+Type_Verdict :: struct {
+	err:         Type_Error,
+	line:        int,
+	col:         int,
+	declaration: string,
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 	return stage_typecheck_indexed(ast, Module_Index{})
+}
+
+// stage_typecheck_located is stage_typecheck_indexed plus the offending
+// construct's span + declaration — the diagnostic-bearing form the pipeline
+// driver consumes (run_module_pipeline_diag builds a Typecheck-stage Diagnostic
+// from it). It runs the identical check sequence with a non-nil Type_Diag_Site
+// threaded through the body/test/probe sweeps: expr_check stamps the innermost
+// offending expression's span, the sweep stamps the declaration. The pure-AST
+// membership checks (layer registry, migrations, index paths, expose closure)
+// run BEFORE body typing and have no expression span — their offender is a
+// declaration, so they surface a header-only Diagnostic (line 0). The bare
+// stage_typecheck_indexed stays the form every other caller consumes, delegating
+// to stage_typecheck_sited with a nil sink so its behavior and every existing
+// test are unchanged.
+stage_typecheck_located :: proc(ast: Ast, index: Module_Index, importer_root := "") -> (typed: Typed_Ast, verdict: Type_Verdict) {
+	site := Type_Diag_Site{}
+	checked, err := stage_typecheck_sited(ast, index, importer_root, &site)
+	if err == .None {
+		return checked, Type_Verdict{}
+	}
+	return checked, Type_Verdict{err = err, line = site.line, col = site.col, declaration = site.declaration}
 }
 
 // stage_typecheck_indexed types a module against a project-wide Module_Index so a
@@ -98,29 +158,49 @@ stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
 // package-internal imports resolve and any reach beyond engine + its own
 // package is the named star-graph refusal (resolve_package_entry).
 stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index, importer_root := "") -> (typed: Typed_Ast, err: Type_Error) {
+	return stage_typecheck_sited(ast, index, importer_root, nil)
+}
+
+// stage_typecheck_sited is the shared check sequence both the bare and located
+// typecheck entries drive, with an OPTIONAL span sink: when `site` is non-nil the
+// body/test/probe sweeps stamp the offending expression's span and declaration
+// into it (the located pass), and when nil they stamp nothing (the bare path,
+// behavior-identical to before this seam). Factoring the sequence out keeps the
+// two entries from drifting — they run the identical checks in the identical
+// order, differing only in whether they collect the fix-criteria anchor. The
+// pure-AST membership checks (layer registry, migrations, index paths, expose
+// closure) are declaration-level — they own no expression span — so they do not
+// thread the sink; their verdict renders header-only (line 0).
+stage_typecheck_sited :: proc(ast: Ast, index: Module_Index, importer_root: string, site: ^Type_Diag_Site) -> (typed: Typed_Ast, err: Type_Error) {
 	bindings := resolve_imports_indexed(ast, index, importer_root) or_return
 	env := resolve_env(ast, bindings, index) or_return
 	// The §11 §5 layer registry is a pure-AST membership rule (it reads the
 	// CollisionLayer enums' variant sets, not resolved value types), so it runs
 	// BEFORE body/test typing — an unregistered layer surfaces as the precise
 	// Unregistered_Layer diagnostic rather than the generic Type_Mismatch the
-	// later variant check would raise for the same out-of-set reference.
-	check_layer_registry(ast) or_return
+	// later variant check would raise for the same out-of-set reference. The
+	// membership checks own no expression span (their offender is a declaration,
+	// not an expression), so they stamp the owning declaration's line/name into
+	// the located sink — the same decl-line anchor a gate offender carries (line
+	// set, col 0, declaration in the header). A nil sink (the bare path) is a no-op.
+	check_layer_registry(ast, site) or_return
 	// The §05 §6 @migrate admissibility rules are likewise pure-AST membership
 	// rules (live-name collision, declared-fn shape), so they run before body
-	// typing and surface their precise verdicts.
-	check_migrations(ast) or_return
+	// typing and surface their precise verdicts, anchored on the @migrate'd data.
+	check_migrations(ast, site) or_return
 	// The §05 §3 @index/@spatial FieldPath rules are pure-AST membership rules
 	// too (the path must name a declared thing and one of its fields), so they
-	// run before body typing and surface their precise verdicts.
-	check_index_paths(ast) or_return
+	// run before body typing and surface their precise verdicts, anchored on the
+	// query the directive prefixes.
+	check_index_paths(ast, site) or_return
 	// The §30 §6 / §27 §2 exposure closure is a signature-level membership rule
 	// over the resolved name surface (this module's own type declarations plus
 	// the import bindings against the project index), so it runs before body
-	// typing too and surfaces its precise verdict (expose_closure.odin).
-	check_expose_closure(ast, bindings, index) or_return
-	check_bodies(bindings, env, index, ast, importer_root) or_return
-	check_tests(bindings, env, index, ast, importer_root) or_return
+	// typing too and surfaces its precise verdict (expose_closure.odin), anchored
+	// on the @expose'd declaration whose signature is open.
+	check_expose_closure(ast, bindings, index, site) or_return
+	check_bodies(bindings, env, index, ast, importer_root, site) or_return
+	check_tests(bindings, env, index, ast, importer_root, site) or_return
 	// The §05 §5 / §28 §4 debug-probe ARGUMENTS are ordinary funpack expressions
 	// (a @break predicate, a @log/@watch value) evaluated against the carrying
 	// declaration's scope at debug time — so an ill-typed probe arg must be a dev
@@ -129,7 +209,7 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index, importer_root := 
 	// body-typing-class check (it threads the same bindings/env/index a body sweep
 	// uses, since a probe arg resolves the same names a step body does), after the
 	// bodies type clean.
-	check_probe_args(bindings, env, index, ast, importer_root) or_return
+	check_probe_args(bindings, env, index, ast, importer_root, site) or_return
 	return Typed_Ast{ast = ast, bindings = bindings, env = env}, .None
 }
 
@@ -145,26 +225,43 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index, importer_root := 
 // rather than the generic Type_Mismatch the later variant check would raise; it
 // adds only the registry rule the field schema cannot express (layer/mask type
 // as the nil unknown, since the enum is the user's, not the closed surface's).
-check_layer_registry :: proc(ast: Ast) -> Type_Error {
+check_layer_registry :: proc(ast: Ast, site: ^Type_Diag_Site = nil) -> Type_Error {
 	registry := collision_layer_registry(ast)
 	// A holed decl's body is empty, but its @stub(T, fallback) approximation is
 	// an expression position like any other — a Body literal inside a fallback
 	// is gated here, not exempted by the hole (spec §05 §2 holes are
-	// dev-first-class, §11 §5 has no dev tier).
+	// dev-first-class, §11 §5 has no dev tier). An unregistered-layer fault is
+	// anchored on the owning declaration's line (col 0) — the membership offender
+	// is the declaration carrying the bad Body, not an expression sub-span.
 	for fn in ast.fns {
-		layer_walk_body(fn.body, registry) or_return
+		if err := layer_walk_body(fn.body, registry); err != .None {
+			stamp_decl(site, fn.name, fn.line)
+			return err
+		}
 		if fn.has_fallback {
-			layer_walk_expr(fn.fallback, registry) or_return
+			if err := layer_walk_expr(fn.fallback, registry); err != .None {
+				stamp_decl(site, fn.name, fn.line)
+				return err
+			}
 		}
 	}
 	for behavior in ast.behaviors {
-		layer_walk_body(behavior.step.body, registry) or_return
+		if err := layer_walk_body(behavior.step.body, registry); err != .None {
+			stamp_decl(site, behavior.name, behavior.line)
+			return err
+		}
 		if behavior.step.has_fallback {
-			layer_walk_expr(behavior.step.fallback, registry) or_return
+			if err := layer_walk_expr(behavior.step.fallback, registry); err != .None {
+				stamp_decl(site, behavior.name, behavior.line)
+				return err
+			}
 		}
 	}
 	for test in ast.tests {
-		layer_walk_body(test.body, registry) or_return
+		if err := layer_walk_body(test.body, registry); err != .None {
+			stamp_decl(site, test.name, test.line)
+			return err
+		}
 	}
 	return .None
 }
@@ -202,9 +299,13 @@ collision_layer_registry :: proc(ast: Ast) -> []string {
 // IS the migration's claim about it, verified by the loader's schema-diff at
 // migration time. Walks the ordered ast slices only, never an env map, so the
 // verdict is reproducible from source alone.
-check_migrations :: proc(ast: Ast) -> Type_Error {
+check_migrations :: proc(ast: Ast, site: ^Type_Diag_Site = nil) -> Type_Error {
 	for decl in ast.datas {
+		// Every @migrate fault is anchored on the carrying `data` declaration's
+		// line (col 0) — a field-level @migrate's offender is still surfaced at the
+		// data decl, the gate-offender decl-line shape the membership checks share.
 		if decl.has_migrate && type_name_is_live(ast, decl.migrate.from) {
+			stamp_decl(site, decl.name, decl.line)
 			return .Migrate_From_Collision
 		}
 		for field in decl.fields {
@@ -214,12 +315,16 @@ check_migrations :: proc(ast: Ast) -> Type_Error {
 			if field.migrate.has_from {
 				for other in decl.fields {
 					if other.name == field.migrate.from {
+						stamp_decl(site, decl.name, decl.line)
 						return .Migrate_From_Collision
 					}
 				}
 			}
 			if field.migrate.has_with {
-				check_migrate_convert(ast, field) or_return
+				if err := check_migrate_convert(ast, field); err != .None {
+					stamp_decl(site, decl.name, decl.line)
+					return err
+				}
 			}
 		}
 	}
@@ -236,14 +341,19 @@ check_migrations :: proc(ast: Ast) -> Type_Error {
 // name a field that thing's schema declares (Index_Unknown_Field otherwise).
 // Walks the ordered ast slices only, never an env map, so the verdict is
 // reproducible from source alone.
-check_index_paths :: proc(ast: Ast) -> Type_Error {
+check_index_paths :: proc(ast: Ast, site: ^Type_Diag_Site = nil) -> Type_Error {
 	for query in ast.queries {
 		for directive in query.indexes {
+			// An @index/@spatial path fault anchors on the query the directive
+			// prefixes (col 0) — the directive sits in the query's header, so the
+			// query line is the decl-line anchor the membership checks share.
 			thing, declared := thing_by_name(ast, directive.thing)
 			if !declared {
+				stamp_decl(site, query.name, query.line)
 				return .Index_Unknown_Thing
 			}
 			if !fields_declare(thing.fields, directive.field) {
+				stamp_decl(site, query.name, query.line)
 				return .Index_Unknown_Field
 			}
 		}
@@ -463,7 +573,12 @@ check_layer_value :: proc(expr: Expr, registry: []string) -> Type_Error {
 // The index threads through so a body's param/return type naming a sibling
 // module's type (a behavior step over View[Switch] where Switch is imported)
 // resolves cross-module.
-check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "") -> Type_Error {
+// site (nil on the bare path) is the fix-criteria span sink: when a body sweep
+// rejects, the offending DECLARATION's name is stamped here (the sweep knows
+// which declaration failed; expr_check stamped the offending expression's
+// span). stamp_decl writes the name only when the sink is non-nil and a fault
+// fired — so a clean sweep leaves it untouched and the bare path never stamps.
+check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "", site: ^Type_Diag_Site = nil) -> Type_Error {
 	for fn in ast.fns {
 		// An `extern fn` (§26) has no body — its implementation is the engine's,
 		// not the source's — so there is nothing to type. Its signature is still
@@ -472,7 +587,10 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast
 		if fn.is_extern {
 			continue
 		}
-		check_fn_body(bindings, env, index, fn, importer_root) or_return
+		if err := check_fn_body(bindings, env, index, fn, importer_root, site); err != .None {
+			stamp_decl(site, fn.name, fn.line)
+			return err
+		}
 	}
 	for query in ast.queries {
 		// A query body types exactly like a fn body — params seed the scope,
@@ -482,12 +600,58 @@ check_bodies :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast
 		// admits no body-position hole on a query, so the synthesized node is
 		// never holed. The query CONTEXT (in_query + the declared requirement
 		// set) rides the ctx so `all[T]` and the spatial combinators resolve.
-		check_query_body(bindings, env, index, query, importer_root) or_return
+		if err := check_query_body(bindings, env, index, query, importer_root, site); err != .None {
+			stamp_decl(site, query.name, query.line)
+			return err
+		}
 	}
 	for behavior in ast.behaviors {
-		check_fn_body(bindings, env, index, behavior.step, importer_root) or_return
+		if err := check_fn_body(bindings, env, index, behavior.step, importer_root, site); err != .None {
+			// The behavior's OWN name/line anchors the diagnostic, not the
+			// reserved `step` — the offender the author wrote.
+			stamp_decl(site, behavior.name, behavior.line)
+			return err
+		}
 	}
 	return .None
+}
+
+// stamp_decl records the offending declaration's name (and its line as the
+// fallback anchor when expr_check captured no expression span — a body whose
+// fault is a declaration-level mismatch, not an expression) into the span sink,
+// only when the sink is non-nil. The name is always set on a fault; the line is
+// set only when no expression span was already stamped, so an expression-precise
+// span (the innermost offending expr) is never overwritten by the coarser
+// declaration line.
+stamp_decl :: proc(site: ^Type_Diag_Site, name: string, line: int) {
+	if site == nil {
+		return
+	}
+	site.declaration = name
+	if !site.set {
+		site.line = line
+		site.set = true
+	}
+}
+
+// stamp_expr stamps one expression's span into the ctx's sink first-write-wins —
+// the seam for a statement-level reject where the offending expression typed
+// CLEAN but failed a downstream comparison (a return value disagreeing with the
+// declared return, an `if` condition that is not Bool, an assert that is not
+// Bool, a stub fallback that does not produce the hole's T): expr_check stamped
+// nothing because expr_check itself returned .None, so the rejecting statement
+// names the construct. A nil sink or an already-set span is a no-op, so the
+// innermost expr_check span (when there was one) is never overwritten.
+stamp_expr :: proc(ctx: Check_Ctx, expr: Expr) {
+	if ctx.diag == nil || ctx.diag.set {
+		return
+	}
+	line, col := expr_span(expr)
+	if line != 0 {
+		ctx.diag.line = line
+		ctx.diag.col = col
+		ctx.diag.set = true
+	}
 }
 
 // query_as_fn projects a query declaration onto the Fn_Node window
@@ -512,8 +676,9 @@ query_as_fn :: proc(query: Query_Node) -> Fn_Node {
 // or a `step(self: Door, switches: View[Switch])` whose element is imported
 // grounds correctly). A §05 §2 typed hole standing in body position routes to
 // check_stub_hole — there is no statement sequence to walk.
-check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node, importer_root := "") -> Type_Error {
+check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn: Fn_Node, importer_root := "", site: ^Type_Diag_Site = nil) -> Type_Error {
 	ctx := fn_body_ctx(bindings, env, index, fn, importer_root)
+	ctx.diag = site
 	if fn.holed {
 		return check_stub_hole(ctx, fn)
 	}
@@ -525,8 +690,9 @@ check_fn_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, fn
 // the QUERY CONTEXT set: in_query admits the world read `all[T]`, and the
 // declared @index/@spatial requirement set rides query_indexes so the spatial
 // combinators (within/nearest_first) resolve the field they measure.
-check_query_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, query: Query_Node, importer_root := "") -> Type_Error {
+check_query_body :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, query: Query_Node, importer_root := "", site: ^Type_Diag_Site = nil) -> Type_Error {
 	ctx := fn_body_ctx(bindings, env, index, query_as_fn(query), importer_root)
+	ctx.diag = site
 	ctx.in_query = true
 	ctx.query_indexes = query.indexes
 	// §08 §3 value-param-only: a query is pure over (version, params) and
@@ -616,6 +782,7 @@ check_stub_hole :: proc(ctx: Check_Ctx, fn: Fn_Node) -> Type_Error {
 	if fn.has_fallback {
 		fallback := expr_check(ctx, fn.fallback) or_return
 		if !types_compatible(fallback, hole) {
+			stamp_expr(ctx, fn.fallback)
 			return .Type_Mismatch
 		}
 	}
@@ -636,11 +803,13 @@ check_statements :: proc(ctx: Check_Ctx, body: []Statement) -> Type_Error {
 		case Return_Node:
 			value := expr_check(ctx, node.value) or_return
 			if !types_compatible(value, ctx.expected_return) {
+				stamp_expr(ctx, node.value)
 				return .Type_Mismatch
 			}
 		case If_Node:
 			cond := expr_check(ctx, node.cond) or_return
 			if !is_ground(cond, .Bool) {
+				stamp_expr(ctx, node.cond)
 				return .Type_Mismatch
 			}
 			check_statements(ctx, node.body) or_return
@@ -656,16 +825,23 @@ check_statements :: proc(ctx: Check_Ctx, body: []Statement) -> Type_Error {
 // return-form literals reach the same expr_check the bodies use. The index
 // threads through so a test calling a cross-module fn (or constructing a
 // sibling-module type) resolves it.
-check_tests :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "") -> Type_Error {
+check_tests :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "", site: ^Type_Diag_Site = nil) -> Type_Error {
 	for test in ast.tests {
-		ctx := Check_Ctx{bindings = bindings, env = env, index = index, scope = make(Scope, context.temp_allocator), importer_root = importer_root}
+		ctx := Check_Ctx{bindings = bindings, env = env, index = index, scope = make(Scope, context.temp_allocator), importer_root = importer_root, diag = site}
 		for stmt in test.body {
 			switch node in stmt {
 			case Let_Node:
-				type := expr_check(ctx, node.value) or_return
+				type, err := expr_check(ctx, node.value)
+				if err != .None {
+					stamp_decl(site, test.name, test.line)
+					return err
+				}
 				ctx.scope[node.name] = type
 			case Assert_Node:
-				check_assert(ctx, node) or_return
+				if err := check_assert(ctx, node); err != .None {
+					stamp_decl(site, test.name, test.line)
+					return err
+				}
 			case Return_Node, If_Node:
 				// Return/If are fn-body statements, never present in a test
 				// block — the only statement sequence this sweep checks.
@@ -678,6 +854,7 @@ check_tests :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast:
 check_assert :: proc(ctx: Check_Ctx, node: Assert_Node) -> Type_Error {
 	type := expr_check(ctx, node.expr) or_return
 	if !is_ground(type, .Bool) {
+		stamp_expr(ctx, node.expr)
 		return .Assert_Not_Bool
 	}
 	return .None
@@ -721,7 +898,7 @@ check_assert :: proc(ctx: Check_Ctx, node: Assert_Node) -> Type_Error {
 // exactly the form the runtime can fold, never a bare-field spelling the
 // interpreter cannot resolve. It also matches every committed field-@watch fixture
 // (`@watch(self.bias)`), so no fixture respells.
-check_probe_args :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "") -> Type_Error {
+check_probe_args :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast: Ast, importer_root := "", site: ^Type_Diag_Site = nil) -> Type_Error {
 	// Behavior-prefix probes type against the behavior's `step` scope — its
 	// params are its reads (spec §06 §3), the same scope the step body types in
 	// (fn_body_ctx), so a @break(self.pos.x > 70.0) / @log(self.pos) resolves
@@ -731,8 +908,12 @@ check_probe_args :: proc(bindings: Bindings, env: Type_Env, index: Module_Index,
 	// behavior loop is the whole declaration-prefix surface.
 	for behavior in ast.behaviors {
 		ctx := fn_body_ctx(bindings, env, index, behavior.step, importer_root)
+		ctx.diag = site
 		for probe in behavior.probes {
-			check_one_probe_arg(ctx, probe) or_return
+			if err := check_one_probe_arg(ctx, probe); err != .None {
+				stamp_decl(site, behavior.name, behavior.line)
+				return err
+			}
 		}
 	}
 	// A `data` FIELD @watch types against `self` bound to the carrying `data`
@@ -741,9 +922,13 @@ check_probe_args :: proc(bindings: Bindings, env: Type_Env, index: Module_Index,
 	// whole field-probe surface; a thing/signal field never carries one.
 	for decl in ast.datas {
 		ctx := probe_field_ctx(bindings, env, index, decl.name, importer_root)
+		ctx.diag = site
 		for field in decl.fields {
 			for probe in field.probes {
-				check_one_probe_arg(ctx, probe) or_return
+				if err := check_one_probe_arg(ctx, probe); err != .None {
+					stamp_decl(site, decl.name, decl.line)
+					return err
+				}
 			}
 		}
 	}
@@ -808,7 +993,28 @@ probe_field_ctx :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, 
 	return ctx
 }
 
+// expr_check types one expression and, when the ctx carries a fix-criteria span
+// sink, stamps the offending expression's span into it on a fault — the
+// FIRST-WRITE-WINS anchor (diagnostics.odin): the innermost expr_check that
+// produced the error stamps before the recursion unwinds, so the deepest
+// offending sub-expression locates the diagnostic, not the whole body. The
+// stamping is a thin shell over expr_check_inner (the typing switch) so the
+// shell runs once per recursion level and the switch stays a pure typing
+// function; a nil sink (every non-located caller) makes the shell a no-op.
 expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) {
+	type, err = expr_check_inner(ctx, expr)
+	if err != .None && ctx.diag != nil && !ctx.diag.set {
+		line, col := expr_span(expr)
+		if line != 0 {
+			ctx.diag.line = line
+			ctx.diag.col = col
+			ctx.diag.set = true
+		}
+	}
+	return type, err
+}
+
+expr_check_inner :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) {
 	#partial switch e in expr {
 	case ^Int_Lit_Expr:
 		return Ground_Type.Int, .None

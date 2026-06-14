@@ -45,11 +45,16 @@ Gate_Error :: enum {
 // Gate_Unit is one declaration body the structural gates score: a test
 // block, a top-level fn, or a behavior's reserved `step`. Each carries its
 // declaration name (the diagnostic anchor — a gate verdict names the
-// declaration, never a test-block index) and its statement sequence. Every
-// gate folds over the same unit set with the same fixed budgets, so a fn body
-// and a test block are held to one ceiling (spec §01 P5: no per-site waiver).
+// declaration, never a test-block index), the declaration's 1-based source
+// line (the §15 span the fix-criteria diagnostic anchors the offending
+// declaration at — gate offenders are declaration-anchored, so this line, not
+// an expression column, locates the budget overshoot), and its statement
+// sequence. Every gate folds over the same unit set with the same fixed
+// budgets, so a fn body and a test block are held to one ceiling (spec §01 P5:
+// no per-site waiver).
 Gate_Unit :: struct {
 	name: string,
+	line: int,
 	body: []Statement,
 }
 
@@ -76,26 +81,28 @@ gate_units :: proc(ast: Ast) -> []Gate_Unit {
 		#partial switch ref.kind {
 		case .Test:
 			test := ast.tests[ref.index]
-			append(&units, Gate_Unit{name = test.name, body = test.body})
+			append(&units, Gate_Unit{name = test.name, line = test.line, body = test.body})
 		case .Fn:
 			fn := ast.fns[ref.index]
 			if fn.is_extern || fn.holed {
 				continue
 			}
-			append(&units, Gate_Unit{name = fn.name, body = fn.body})
+			append(&units, Gate_Unit{name = fn.name, line = fn.line, body = fn.body})
 		case .Query:
 			// A query body is a code unit like a fn body — the §01 P5 no-per-site-
 			// waiver rule holds it to the same fixed budgets. The grammar admits no
 			// body-position hole on a query (fun.ebnf §7: QueryDecl takes a Block,
 			// never a StubExpr), so there is no holed-skip arm here.
 			query := ast.queries[ref.index]
-			append(&units, Gate_Unit{name = query.name, body = query.body})
+			append(&units, Gate_Unit{name = query.name, line = query.line, body = query.body})
 		case .Behavior:
 			behavior := ast.behaviors[ref.index]
 			if behavior.step.holed {
 				continue
 			}
-			append(&units, Gate_Unit{name = behavior.name, body = behavior.step.body})
+			// The behavior's OWN line anchors the diagnostic (its declaration line,
+			// not the reserved `step`'s), matching the behavior-named offender.
+			append(&units, Gate_Unit{name = behavior.name, line = behavior.line, body = behavior.step.body})
 		}
 	}
 	return units[:]
@@ -461,10 +468,13 @@ stages_hold_probe :: proc(stages: []Pipeline_Stage) -> bool {
 // never a positional test-block index (spec §01 P5: the budget is a
 // per-declaration compiler constant). declaration is "" only when err is None,
 // or for the duplication gate, whose violation is a colliding PAIR of units,
-// not a single overshooting one.
+// not a single overshooting one. line is the offending declaration's 1-based
+// source line (unit.line — the §15 span the fix-criteria diagnostic anchors at),
+// 0 when no single declaration is named (None, or the duplication gate's pair).
 Gate_Verdict :: struct {
 	err:         Gate_Error,
 	declaration: string,
+	line:        int,
 }
 
 // stage_gates is the pipeline seam: it returns just the first gate error a
@@ -486,25 +496,25 @@ gate_verdict :: proc(ast: Ast) -> Gate_Verdict {
 	sets := closed_variant_sets(ast)
 	for unit in units {
 		if len(statements_count(unit.body)) > MAX_FN_STATEMENTS {
-			return Gate_Verdict{err = .Fn_Size_Exceeded, declaration = unit.name}
+			return Gate_Verdict{err = .Fn_Size_Exceeded, declaration = unit.name, line = unit.line}
 		}
 	}
 	for unit in units {
 		if err := gate_arity_unit(unit); err != .None {
-			return Gate_Verdict{err = err, declaration = unit.name}
+			return Gate_Verdict{err = err, declaration = unit.name, line = unit.line}
 		}
 	}
 	for unit in units {
 		if err := check_cyclomatic(unit); err != .None {
-			return Gate_Verdict{err = err, declaration = unit.name}
+			return Gate_Verdict{err = err, declaration = unit.name, line = unit.line}
 		}
 		if err := check_nesting(unit); err != .None {
-			return Gate_Verdict{err = err, declaration = unit.name}
+			return Gate_Verdict{err = err, declaration = unit.name, line = unit.line}
 		}
 	}
 	for unit in units {
 		if err := check_match_exhaustiveness_unit(unit, sets); err != .None {
-			return Gate_Verdict{err = err, declaration = unit.name}
+			return Gate_Verdict{err = err, declaration = unit.name, line = unit.line}
 		}
 	}
 	// The §08 §3 index-requirement gate pairs each query's declared
