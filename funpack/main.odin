@@ -11,6 +11,8 @@ main :: proc() {
 		os.exit(2)
 	}
 	switch os.args[1] {
+	case "version":
+		os.exit(run_version_verb())
 	case "test":
 		os.exit(run_test_verb())
 	case "build":
@@ -346,5 +348,5 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("usage: funpack <test|build [--release]|check [--release]|fmt [--check]|warden <find [<name-query>] [--kind <kind>] [--gtag <tag>]|holes|probes|debt|graph [<qualified_name>]|tags|pipeline>>")
+	fmt.eprintln("usage: funpack <version|test|build [--release]|check [--release]|fmt [--check]|warden <find [<name-query>] [--kind <kind>] [--gtag <tag>]|holes|probes|debt|graph [<qualified_name>]|tags|pipeline>>")
 }
