@@ -600,6 +600,30 @@ eval_named_call :: proc(
 		return builtin_length(interp, node, env)
 	case "sin":
 		return builtin_sin(interp, node, env)
+	case "cos":
+		return builtin_cos(interp, node, env)
+	case "sqrt":
+		return builtin_sqrt(interp, node, env)
+	case "max":
+		return builtin_max(interp, node, env)
+	case "lerp":
+		return builtin_lerp(interp, node, env)
+	case "floor":
+		return builtin_floor(interp, node, env)
+	case "round":
+		return builtin_round(interp, node, env)
+	case "trunc":
+		return builtin_trunc(interp, node, env)
+	case "checked_div":
+		return builtin_checked_div(interp, node, env)
+	case "to_fixed":
+		return builtin_to_fixed(interp, node, env)
+	case "dot":
+		return builtin_dot(interp, node, env)
+	case "cross":
+		return builtin_cross(interp, node, env)
+	case "normalize":
+		return builtin_normalize(interp, node, env)
 	case "mesh":
 		return builtin_mesh(interp, node, env)
 	case "rot_x":
@@ -732,9 +756,12 @@ builtin_clamp :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 // vec2_dot into fixed_sqrt (digit-by-digit binary restoring — bit-exact on a
 // perfect square, floor-rounded otherwise, no libm/float on the path, §10.5).
 // hunt's step_to reads `speed / length(delta)` and visible's perception
-// predicate reads `length(p.pos - from) <= SIGHT`, so the single arg is always a
-// Vec2; a non-Vec2 arg is ok=false (fail-closed — the magnitude of a scalar/list
-// is undefined, never coerced).
+// predicate reads `length(p.pos - from) <= SIGHT` (the Vec2 form). The surface
+// declares one overload per vector width (length(Vec2) -> Fixed AND length(Vec3)
+// -> Fixed), so the width is read off the runtime value (vec2_length / vec3_length,
+// both sqrt(dot(v, v)) over the kernel) — mirroring funpack/evaluate.odin's
+// `length` case. A non-vector arg is ok=false (fail-closed — the magnitude of a
+// scalar/list is undefined, never coerced).
 builtin_length :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -743,11 +770,13 @@ builtin_length :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value
 	if !arg_ok {
 		return nil, false
 	}
-	v, is_vec2 := arg.(Vec2)
-	if !is_vec2 {
-		return nil, false
+	if v2, is_vec2 := arg.(Vec2); is_vec2 {
+		return vec2_length(v2), true
 	}
-	return vec2_length(v), true
+	if v3, is_vec3 := arg.(Vec3); is_vec3 {
+		return vec3_length(v3), true
+	}
+	return nil, false
 }
 
 // builtin_sin is the §10 transcendental `sin(angle: Fixed) -> Fixed`: the
@@ -771,6 +800,299 @@ builtin_sin :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return nil, false
 	}
 	return fixed_sin(angle), true
+}
+
+// builtin_cos is the §10 transcendental `cos(angle: Fixed) -> Fixed`: the
+// fixed_cos polynomial over the saturating kernel, copied verbatim from the
+// funpack trig kernel (trig.odin) so the bits are identical — the SAME
+// determinism bet builtin_sin rides. Mirrors funpack/evaluate.odin's `cos` case
+// (eval_fixed_arg → fixed_cos). The single arg coerces through as_fixed (an Int
+// angle lifts to Fixed, matching the surface's Fixed-only signature); a
+// non-scalar arg is ok=false (fail-closed — the cosine of a non-scalar is
+// undefined).
+builtin_cos :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	angle, is_fixed := as_fixed(arg)
+	if !is_fixed {
+		return nil, false
+	}
+	return fixed_cos(angle), true
+}
+
+// builtin_sqrt is the §10 scalar square root `sqrt(x: Fixed) -> Fixed`: the
+// kernel's digit-by-digit integer sqrt (fixed_sqrt — bit-exact on a perfect
+// square, floor-rounded otherwise, no libm/float, §10.5), the SAME primitive
+// vec2_length/vec3_length route through. fixed_sqrt folds a non-positive arg to
+// zero (the saturating kernel's defined degenerate value), so the call is total.
+// A non-scalar arg is ok=false (fail-closed). funpack/evaluate.odin wires no
+// `sqrt` named-call case, so the runtime is the sole evaluator of this surface
+// name; the parity test pins the kernel any funpack `sqrt` impl must match.
+builtin_sqrt :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	x, is_fixed := as_fixed(arg)
+	if !is_fixed {
+		return nil, false
+	}
+	return fixed_sqrt(x), true
+}
+
+// builtin_max is the §10/§26 binary maximum `max(a, b) -> T`, kind-preserving over
+// the two surface overloads (max(Fixed, Fixed) -> Fixed AND max(Int, Int) -> Int)
+// — space-invaders' cannon_fire reads `max(self.cooldown - time.dt, 0.0)` (the
+// Fixed cooldown floor, the silent-step-drop bug this builtin closes) and the hud
+// reads `max(self.clock - 1, 0)` (an Int countdown). Mirrors funpack/evaluate.odin's
+// eval_max EXACTLY: the operands are NOT coerced across kinds (the surface admits
+// each overload only when the two sides already agree, spec §10), so the kind is
+// read off the actual runtime value — a Fixed pair compares on the raw Q32.32 bits,
+// an Int pair on the i64s — and a mixed or non-numeric pair is ok=false. The
+// >= tie-break (returns `a` on equality) matches eval_max bit-for-bit.
+builtin_max :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	a, a_ok := eval(interp, &node.children[1], env)
+	b, b_ok := eval(interp, &node.children[2], env)
+	if !a_ok || !b_ok {
+		return nil, false
+	}
+	if af, a_fixed := a.(Fixed); a_fixed {
+		bf, b_fixed := b.(Fixed)
+		if !b_fixed {
+			return nil, false
+		}
+		return (i64(af) >= i64(bf)) ? af : bf, true
+	}
+	if ai, a_int := a.(i64); a_int {
+		bi, b_int := b.(i64)
+		if !b_int {
+			return nil, false
+		}
+		return (ai >= bi) ? ai : bi, true
+	}
+	return nil, false
+}
+
+// builtin_lerp is the §10 Tier-2 interpolation `lerp(a, b, t: Fixed) -> Fixed`:
+// a + (b - a) * t over the saturating kernel (fixed_lerp, bit-identical to the
+// funpack copy). Mirrors funpack/evaluate.odin's `lerp` case (three eval_fixed_arg
+// reads → fixed_lerp). Each arg coerces through as_fixed (an Int lifts to Fixed,
+// matching the Fixed-only surface signature); a non-scalar arg is ok=false.
+builtin_lerp :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 4 {
+		return nil, false
+	}
+	a_val, a_ok := eval(interp, &node.children[1], env)
+	b_val, b_ok := eval(interp, &node.children[2], env)
+	t_val, t_ok := eval(interp, &node.children[3], env)
+	if !a_ok || !b_ok || !t_ok {
+		return nil, false
+	}
+	a, af := as_fixed(a_val)
+	b, bf := as_fixed(b_val)
+	t, tf := as_fixed(t_val)
+	if !af || !bf || !tf {
+		return nil, false
+	}
+	return fixed_lerp(a, b, t), true
+}
+
+// builtin_floor is the §10 `floor(x: Fixed) -> Int`: the largest Int <= x,
+// rounding toward negative infinity (fixed_floor, an arithmetic right shift over
+// the raw two's-complement bits — bit-identical to the funpack copy). Mirrors
+// funpack/evaluate.odin's `floor` case. The RESULT IS AN Int (i64), not a Fixed
+// — the surface types trunc/floor/round as (Fixed) -> Int — so a downstream
+// numeric position reads the whole-unit count, never a Fixed. A non-scalar arg is
+// ok=false.
+builtin_floor :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	x, ok2 := eval_single_fixed_arg(interp, node, env)
+	if !ok2 {
+		return nil, false
+	}
+	return fixed_floor(x), true
+}
+
+// builtin_round is the §10 `round(x: Fixed) -> Int`: round to nearest, ties away
+// from zero (fixed_round — bit-identical to the funpack copy). Mirrors
+// funpack/evaluate.odin's `round` case; the result is an Int (i64). A non-scalar
+// arg is ok=false.
+builtin_round :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	x, ok2 := eval_single_fixed_arg(interp, node, env)
+	if !ok2 {
+		return nil, false
+	}
+	return fixed_round(x), true
+}
+
+// builtin_trunc is the §10 `trunc(x: Fixed) -> Int`: round toward zero (drop the
+// fraction; fixed_trunc — bit-identical to the funpack copy). Mirrors
+// funpack/evaluate.odin's `trunc` case; the result is an Int (i64). A non-scalar
+// arg is ok=false.
+builtin_trunc :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	x, ok2 := eval_single_fixed_arg(interp, node, env)
+	if !ok2 {
+		return nil, false
+	}
+	return fixed_trunc(x), true
+}
+
+// builtin_checked_div is the §10 `checked_div(a, b: Fixed) -> Option[Fixed]`: the
+// quotient as Option::Some, or Option::None when b == 0 (fixed_checked_div
+// surfaces the zero divisor instead of saturating — bit-identical to the funpack
+// copy). Mirrors funpack/evaluate.odin's `checked_div` case, returning the
+// RUNTIME Option representation (Variant_Value "Option"/"Some"|"None" via
+// some_value/none_value — the same Option a match arm destructures). Each arg
+// coerces through as_fixed; a non-scalar arg is ok=false.
+builtin_checked_div :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	a_val, a_ok := eval(interp, &node.children[1], env)
+	b_val, b_ok := eval(interp, &node.children[2], env)
+	if !a_ok || !b_ok {
+		return nil, false
+	}
+	a, af := as_fixed(a_val)
+	b, bf := as_fixed(b_val)
+	if !af || !bf {
+		return nil, false
+	}
+	quotient, has_quotient := fixed_checked_div(a, b)
+	if !has_quotient {
+		return none_value(), true
+	}
+	return some_value(interp, quotient), true
+}
+
+// builtin_to_fixed is the spec-03 prelude conversion `to_fixed(n: Int) -> Fixed`:
+// the i64-to-Q32.32 lift (to_fixed in fixed.odin — bit-identical to the funpack
+// copy). Mirrors funpack/evaluate.odin's `to_fixed` case, which requires the arg
+// to be a genuine Int (the surface signature is (Int) -> Fixed): a non-Int arg is
+// ok=false. (NOT as_fixed here — to_fixed converts an Int, so an already-Fixed arg
+// is a type error the typechecker forbids, never a passthrough.)
+builtin_to_fixed :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	n, is_int := arg.(i64)
+	if !is_int {
+		return nil, false
+	}
+	return to_fixed(n), true
+}
+
+// builtin_dot is the §10 dot product `dot(a, b) -> Fixed`, one overload per vector
+// width (dot(Vec2, Vec2) -> Fixed AND dot(Vec3, Vec3) -> Fixed). Mirrors
+// funpack/evaluate.odin's `dot` case: the width is read off the actual runtime
+// value (a Vec2 pair routes vec2_dot, a Vec3 pair vec3_dot — both component-wise
+// over the saturating kernel), and a mixed-width or non-vector pair is ok=false.
+builtin_dot :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	a, a_ok := eval(interp, &node.children[1], env)
+	b, b_ok := eval(interp, &node.children[2], env)
+	if !a_ok || !b_ok {
+		return nil, false
+	}
+	if a2, is_vec2 := a.(Vec2); is_vec2 {
+		b2, b_vec2 := b.(Vec2)
+		if !b_vec2 {
+			return nil, false
+		}
+		return vec2_dot(a2, b2), true
+	}
+	if a3, is_vec3 := a.(Vec3); is_vec3 {
+		b3, b_vec3 := b.(Vec3)
+		if !b_vec3 {
+			return nil, false
+		}
+		return vec3_dot(a3, b3), true
+	}
+	return nil, false
+}
+
+// builtin_cross is the §10 cross product `cross(a, b: Vec3) -> Vec3`: Vec3-only
+// (the cross product has no 2D form — the surface declares the one overload).
+// Mirrors funpack/evaluate.odin's `cross` case (vec3_cross, component-wise over
+// the saturating kernel). A non-Vec3 arg is ok=false.
+builtin_cross :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	a, a_ok := eval(interp, &node.children[1], env)
+	b, b_ok := eval(interp, &node.children[2], env)
+	if !a_ok || !b_ok {
+		return nil, false
+	}
+	a3, a_vec3 := a.(Vec3)
+	b3, b_vec3 := b.(Vec3)
+	if !a_vec3 || !b_vec3 {
+		return nil, false
+	}
+	return vec3_cross(a3, b3), true
+}
+
+// builtin_normalize is the §10 unit-vector `normalize(v) -> v`, one overload per
+// vector width (normalize(Vec2) -> Vec2 AND normalize(Vec3) -> Vec3). The width is
+// read off the runtime value: a Vec2 routes vec2_normalize, a Vec3 vec3_normalize
+// (both scale v by 1/length over the kernel's checked-div, folding the zero vector
+// to the zero vector — the defined degenerate, no NaN, §10.5). The degenerate ok
+// flag is dropped HERE: the surface signature returns a plain Vec2/Vec3, not an
+// Option, so the zero vector normalizes to the zero vector (a total call). A
+// non-vector arg is ok=false. funpack/evaluate.odin wires no `normalize`
+// named-call case (and funpack/vector.odin has no vec*_normalize), so the runtime
+// is the sole evaluator of this surface name; the parity test pins it.
+builtin_normalize :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	if v2, is_vec2 := arg.(Vec2); is_vec2 {
+		unit, _ := vec2_normalize(v2)
+		return unit, true
+	}
+	if v3, is_vec3 := arg.(Vec3); is_vec3 {
+		unit, _ := vec3_normalize(v3)
+		return unit, true
+	}
+	return nil, false
+}
+
+// eval_single_fixed_arg reads the one Fixed arg of a `name(x)` builtin call — the
+// shared front half of floor/round/trunc (each a (Fixed) -> Int reduction). The
+// arity is exactly one arg (two node children: callee + arg); the arg coerces
+// through as_fixed (an Int lifts to Fixed, matching the established sin/clamp
+// convention, though the Fixed-only surface signature means the lift is
+// unreachable for a typechecked program). A wrong arity or a non-scalar arg is
+// ok=false.
+eval_single_fixed_arg :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (x: Fixed, ok: bool) {
+	if len(node.children) != 2 {
+		return Fixed(0), false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return Fixed(0), false
+	}
+	return as_fixed(arg)
 }
 
 // builtin_rot_x is the §16 §7 per-bone X-axis rotation builder `rot_x(angle: Fixed)

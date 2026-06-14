@@ -418,6 +418,23 @@ vec2_normalize :: proc(v: Vec2) -> (unit: Vec2, ok: bool) {
 	return Vec2{fixed_div(v.x, length), fixed_div(v.y, length)}, true
 }
 
+// vec3_normalize is the 3D twin of vec2_normalize: v scaled to unit length, or the
+// zero vector for the zero vector (the kernel's sqrt and div fold the degenerate
+// case to a defined value — no panic, no NaN, §10.5). ok is false exactly for the
+// zero vector. It lives here, beside vec2_normalize, NOT in vector3.odin: it
+// composes vector3.odin's bit-identical primitives (vec3_length, hence fixed_sqrt
+// over vec3_dot) but is a runtime-only seam — funpack/vector.odin declares no
+// vec*_normalize, so this is not a mirror-obligated copy (the §29/§09 bit-identity
+// obligation in vector3.odin's header binds the procs that DO have a funpack
+// counterpart). The §10 `normalize(Vec3)` builtin (interp_call.odin) reads it.
+vec3_normalize :: proc(v: Vec3) -> (unit: Vec3, ok: bool) {
+	length := vec3_length(v)
+	if length == 0 {
+		return Vec3{}, false
+	}
+	return Vec3{fixed_div(v.x, length), fixed_div(v.y, length), fixed_div(v.z, length)}, true
+}
+
 // --- Bit-identity comparison of two committed versions --------------------
 
 // world_versions_equal reports whether two committed versions are BIT-IDENTICAL:
