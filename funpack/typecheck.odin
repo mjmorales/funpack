@@ -172,8 +172,15 @@ stage_typecheck_indexed :: proc(ast: Ast, index: Module_Index, importer_root := 
 // closure) are declaration-level — they own no expression span — so they do not
 // thread the sink; their verdict renders header-only (line 0).
 stage_typecheck_sited :: proc(ast: Ast, index: Module_Index, importer_root: string, site: ^Type_Diag_Site) -> (typed: Typed_Ast, err: Type_Error) {
-	bindings := resolve_imports_indexed(ast, index, importer_root) or_return
-	env := resolve_env(ast, bindings, index) or_return
+	// The import-resolution arms (Unknown_Module / Unknown_Member /
+	// Package_Private / Package_Imports_Package) and the name-collection arms
+	// (Name_Collision / Reserved_Signal_Name) fire HERE — before any body sweep —
+	// so they own no expression span; the located sink threads into both passes so
+	// a fault anchors on the offending import keyword (resolve_imports_indexed,
+	// node.line/.col) or the offending declaration line (resolve_env, decl.line),
+	// not header-only at line 0. A nil sink (the bare path) is a no-op in both.
+	bindings := resolve_imports_indexed(ast, index, importer_root, site) or_return
+	env := resolve_env(ast, bindings, index, site) or_return
 	// The §11 §5 layer registry is a pure-AST membership rule (it reads the
 	// CollisionLayer enums' variant sets, not resolved value types), so it runs
 	// BEFORE body/test typing — an unregistered layer surfaces as the precise

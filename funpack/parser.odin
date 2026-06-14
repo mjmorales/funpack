@@ -49,6 +49,8 @@ Statement :: union {
 Import_Node :: struct {
 	segments: []string, // the dotted path as written, excluding any group
 	members:  []string, // brace-group members; nil for the groupless forms
+	line:     int,      // 1-based source line of the `import` keyword (artifact-format §9 span provenance) — the import-resolution typecheck arms' anchor
+	col:      int,      // 1-based column of the `import` keyword's first byte within its line (§15 diagnostic provenance)
 }
 
 Test_Node :: struct {
@@ -510,15 +512,44 @@ Parser :: struct {
 	// match block, so a name in scrutinee position must not consume it as
 	// a record literal. Set only while parsing the scrutinee.
 	no_record_brace: bool,
+	// err_line/err_col is the offending token's 1-based span, stamped by reject
+	// at the rejection site (where the offender is in hand) — the fix-criteria
+	// diagnostic anchor (spec §15). Zero = unset: a production that rejects
+	// WITHOUT a token in hand (a peek-reject, an end-of-input fault) leaves these
+	// 0, and stage_parse_located falls back to parser_stop_span, which stays
+	// correct there (p.pos already points at the offender). First-write-wins, so
+	// the INNERMOST reject — the real offender — survives any outer wrapper that
+	// re-returns the same error up the call stack.
+	err_line: int,
+	err_col:  int,
+}
+
+// reject stamps the offending token's span onto the parser FIRST-WRITE-WINS and
+// returns the error, so a rejection site that has the offender in hand anchors
+// the diagnostic on THAT token rather than wherever p.pos happened to stop.
+// First-write-wins is load-bearing: a post-`advance` casing reject already moved
+// p.pos one token PAST the offender, and an outer production may re-return the
+// same error after the inner one already stamped — keeping the first write means
+// the earliest (innermost, leftmost) offender wins, the deterministic
+// first-offender anchor. A site with NO token in hand returns the bare error and
+// leaves err_line/err_col 0, deferring to parser_stop_span's peek anchor.
+reject :: proc(p: ^Parser, tok: Token, err: Parse_Error) -> Parse_Error {
+	if p.err_line == 0 {
+		p.err_line = tok.line
+		p.err_col = tok.col
+	}
+	return err
 }
 
 // Parse_Verdict pairs a parse failure with the offending token's 1-based
-// line/col — the fix-criteria diagnostic anchor (spec §15). The parser uses
-// single-token lookahead, so at the moment any production rejects, p.pos points
-// at (peek-reject) or just past (post-advance reject) the offending token; the
-// token at clamp(p.pos, last) is the deterministic "where parsing stopped"
-// anchor every single-token-lookahead parser reports. line/col are 0 only when
-// err is None (no fault) or the token stream is empty (no token to anchor at).
+// line/col — the fix-criteria diagnostic anchor (spec §15). The span is the one
+// reject stamped at the rejection site (the offending token in hand), so a
+// post-`advance` casing reject anchors on the mis-cased identifier even though
+// p.pos has moved one token past it. When no site stamped (a peek-reject raised
+// BEFORE advance, an end-of-input fault), stage_parse_located falls back to
+// parser_stop_span — the token at clamp(p.pos, last), where p.pos already points
+// at the offender for a peek-reject. line/col are 0 only when err is None (no
+// fault) or the token stream is empty (no token to anchor at).
 Parse_Verdict :: struct {
 	err:  Parse_Error,
 	line: int,
@@ -538,7 +569,15 @@ stage_parse_located :: proc(tokens: []Token) -> (ast: Ast, verdict: Parse_Verdic
 	if err == .None {
 		return parsed, Parse_Verdict{}
 	}
-	line, col := parser_stop_span(&p)
+	// Prefer the offender's span captured at the rejection site (reject), which
+	// anchors on the actual offending token even when p.pos has advanced past it
+	// (every post-`advance` casing reject). Fall back to the parser's stop token
+	// only when no site stamped — a peek-reject raised BEFORE advance, where p.pos
+	// already points AT the offender, so parser_stop_span stays correct there.
+	line, col := p.err_line, p.err_col
+	if line == 0 {
+		line, col = parser_stop_span(&p)
+	}
 	return parsed, Parse_Verdict{err = err, line = line, col = col}
 }
 
@@ -903,7 +942,7 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		expect(p, .L_Paren) or_return
 		msg := expect(p, .String_Lit) or_return
 		if peek_kind(p) != .Comma {
-			return .Malformed_Todo_Window
+			return reject(p, at_tok, .Malformed_Todo_Window)
 		}
 		p.pos += 1
 		window := parse_todo_window(p) or_return
@@ -918,11 +957,11 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		// emit is malformed, reported by the named Probe_Missing_Arg verdict
 		// so an agent repairs the exact shape.
 		if peek_kind(p) != .L_Paren {
-			return .Probe_Missing_Arg
+			return reject(p, at_tok, .Probe_Missing_Arg)
 		}
 		p.pos += 1
 		if peek_kind(p) == .R_Paren {
-			return .Probe_Missing_Arg
+			return reject(p, at_tok, .Probe_Missing_Arg)
 		}
 		arg := parse_expression(p) or_return
 		expect(p, .R_Paren) or_return
@@ -946,7 +985,7 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		// accumulates: a second @migrate before one declaration is the named
 		// Malformed_Migrate verdict, never a silent overwrite.
 		if pending.has_migrate {
-			return .Malformed_Migrate
+			return reject(p, at_tok, .Malformed_Migrate)
 		}
 		node := parse_migrate_args(p, at_tok.line) or_return
 		terminate_statement(p) or_return
@@ -959,7 +998,7 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		// parenthesized argument is malformed — the named
 		// Probe_Unexpected_Arg verdict, never silently consumed.
 		if peek_kind(p) == .L_Paren {
-			return .Probe_Unexpected_Arg
+			return reject(p, at_tok, .Probe_Unexpected_Arg)
 		}
 		terminate_statement(p) or_return
 		append(&pending.probes, Debug_Probe{kind = .Trace, line = at_tok.line})
@@ -972,7 +1011,7 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		// idempotent: a repeated @expose sets it again, never an error — it
 		// marks a fact, not an accumulating family.
 		if peek_kind(p) == .L_Paren {
-			return .Expose_Unexpected_Arg
+			return reject(p, at_tok, .Expose_Unexpected_Arg)
 		}
 		terminate_statement(p) or_return
 		pending.exposed = true
@@ -992,8 +1031,9 @@ parse_directive :: proc(p: ^Parser, module_doc: ^string, pending: ^Directives, s
 		// §5 debug probes prefix a declaration. @stub in particular is NOT a
 		// prefix directive — it stands in body/expression position only
 		// (spec §05: parse_stub_body owns it), so a leading `@stub` is an
-		// Unexpected_Token here, never silently accepted.
-		return .Unexpected_Token
+		// Unexpected_Token here, never silently accepted. The offending
+		// directive name is in hand (consumed above), so anchor on it.
+		return reject(p, name, .Unexpected_Token)
 	}
 	return .None
 }
@@ -1019,8 +1059,9 @@ parse_todo_window :: proc(p: ^Parser) -> (window: Todo_Window, err: Parse_Error)
 		}
 		if peek_kind(p) != .Ident {
 			// A bare `<int>` names no unit — neither a duration nor a build
-			// count (spec §05 §2: one obvious spelling each).
-			return window, .Malformed_Todo_Window
+			// count (spec §05 §2: one obvious spelling each). Anchor on the
+			// window's lead count token, the malformed window's first byte.
+			return window, reject(p, lead, .Malformed_Todo_Window)
 		}
 		unit := advance(p) or_return
 		switch unit.text {
@@ -1029,18 +1070,18 @@ parse_todo_window :: proc(p: ^Parser) -> (window: Todo_Window, err: Parse_Error)
 		case "builds":
 			return Todo_Window{form = .Build_Count, amount = lead.int_value}, .None
 		case:
-			return window, .Malformed_Todo_Window
+			return window, reject(p, lead, .Malformed_Todo_Window)
 		}
 	case .Ident:
 		// Task ref `T-<digits>` — the recommended default. The lead is the
 		// literal uppercase `T`: a lowercase `t-0042` matches no form.
 		lead := advance(p) or_return
 		if lead.text != "T" || peek_kind(p) != .Minus {
-			return window, .Malformed_Todo_Window
+			return window, reject(p, lead, .Malformed_Todo_Window)
 		}
 		p.pos += 1
 		if peek_kind(p) != .Int_Lit {
-			return window, .Malformed_Todo_Window
+			return window, reject(p, lead, .Malformed_Todo_Window)
 		}
 		digits := advance(p) or_return
 		// The digits are kept as WRITTEN — `T-0042` keeps its zero padding —
@@ -1063,27 +1104,29 @@ parse_todo_window :: proc(p: ^Parser) -> (window: Todo_Window, err: Parse_Error)
 // evaluated as a pure function of (source, clock) downstream (spec §29 §4),
 // and the calendar belongs to that evaluator.
 parse_todo_date :: proc(p: ^Parser, year_tok: Token) -> (window: Todo_Window, err: Parse_Error) {
+	// Every date-shape fault anchors on the window's lead year token — the
+	// malformed window's first byte (the date components share one window span).
 	if len(year_tok.text) != 4 {
-		return window, .Malformed_Todo_Window
+		return window, reject(p, year_tok, .Malformed_Todo_Window)
 	}
 	p.pos += 1 // the first `-` (the caller peeked it)
 	if peek_kind(p) != .Int_Lit {
-		return window, .Malformed_Todo_Window
+		return window, reject(p, year_tok, .Malformed_Todo_Window)
 	}
 	month_tok := advance(p) or_return
 	if len(month_tok.text) != 2 || month_tok.int_value < 1 || month_tok.int_value > 12 {
-		return window, .Malformed_Todo_Window
+		return window, reject(p, year_tok, .Malformed_Todo_Window)
 	}
 	if peek_kind(p) != .Minus {
-		return window, .Malformed_Todo_Window
+		return window, reject(p, year_tok, .Malformed_Todo_Window)
 	}
 	p.pos += 1
 	if peek_kind(p) != .Int_Lit {
-		return window, .Malformed_Todo_Window
+		return window, reject(p, year_tok, .Malformed_Todo_Window)
 	}
 	day_tok := advance(p) or_return
 	if len(day_tok.text) != 2 || day_tok.int_value < 1 || day_tok.int_value > 31 {
-		return window, .Malformed_Todo_Window
+		return window, reject(p, year_tok, .Malformed_Todo_Window)
 	}
 	return Todo_Window {
 			form = .Date,
@@ -1124,7 +1167,7 @@ parse_migrate_args :: proc(p: ^Parser, line: int) -> (node: Migrate_Node, err: P
 		}
 		from := advance(p) or_return
 		if from.text == "" {
-			return node, .Malformed_Migrate
+			return node, reject(p, from, .Malformed_Migrate)
 		}
 		node.from = from.text
 		node.has_from = true
@@ -1168,7 +1211,7 @@ parse_migrate_with :: proc(p: ^Parser, node: ^Migrate_Node) -> Parse_Error {
 	convert := advance(p) or_return
 	// A fn name is snake_case (spec §02) — the parser-wide casing verdict.
 	if convert.class != .Snake_Case {
-		return .Wrong_Case
+		return reject(p, convert, .Wrong_Case)
 	}
 	node.with = convert.text
 	node.has_with = true
@@ -1199,7 +1242,7 @@ parse_index_path :: proc(p: ^Parser, kind: Index_Directive_Kind, line: int) -> (
 	// The path head is the indexed thing's type name — UPPER_IDENT
 	// (lexical-core.ebnf §5 FieldPath).
 	if !is_upper_ident(thing.class) {
-		return node, .Wrong_Case
+		return node, reject(p, thing, .Wrong_Case)
 	}
 	if peek_kind(p) != .Dot {
 		return node, .Malformed_Index_Path
@@ -1211,7 +1254,7 @@ parse_index_path :: proc(p: ^Parser, kind: Index_Directive_Kind, line: int) -> (
 	field := advance(p) or_return
 	// The path member is a field name — snake_case (spec §02).
 	if field.class != .Snake_Case {
-		return node, .Wrong_Case
+		return node, reject(p, field, .Wrong_Case)
 	}
 	if peek_kind(p) != .R_Paren {
 		return node, .Malformed_Index_Path
@@ -1223,7 +1266,7 @@ parse_index_path :: proc(p: ^Parser, kind: Index_Directive_Kind, line: int) -> (
 }
 
 parse_import :: proc(p: ^Parser) -> (node: Import_Node, err: Parse_Error) {
-	expect(p, .Import) or_return
+	import_tok := expect(p, .Import) or_return
 	segments := make([dynamic]string, 0, 4, context.temp_allocator)
 	members: []string
 	for {
@@ -1233,7 +1276,7 @@ parse_import :: proc(p: ^Parser) -> (node: Import_Node, err: Parse_Error) {
 			// (spec §02); the final segment may also be an UpperCamel
 			// type or UPPER_SNAKE constant member.
 			if tok.class != .Snake_Case {
-				return node, .Wrong_Case
+				return node, reject(p, tok, .Wrong_Case)
 			}
 			append(&segments, tok.text)
 			p.pos += 1
@@ -1244,13 +1287,23 @@ parse_import :: proc(p: ^Parser) -> (node: Import_Node, err: Parse_Error) {
 			continue
 		}
 		if tok.class == .Mixed {
-			return node, .Wrong_Case
+			return node, reject(p, tok, .Wrong_Case)
 		}
 		append(&segments, tok.text)
 		break
 	}
 	terminate_statement(p) or_return
-	return Import_Node{segments = segments[:], members = members}, .None
+	// line/col anchor on the `import` keyword — the import-resolution typecheck
+	// arms (Unknown_Module/Unknown_Member/Package_Private/Name_Collision) point at
+	// the offending import statement, which owns no expression span (artifact-format
+	// §9 span provenance, the decl `.line` mold).
+	return Import_Node {
+			segments = segments[:],
+			members = members,
+			line = import_tok.line,
+			col = import_tok.col,
+		},
+		.None
 }
 
 parse_import_group :: proc(p: ^Parser) -> (members: []string, err: Parse_Error) {
@@ -1260,7 +1313,7 @@ parse_import_group :: proc(p: ^Parser) -> (members: []string, err: Parse_Error) 
 	for peek_kind(p) == .Ident {
 		tok := advance(p) or_return
 		if tok.class == .Mixed {
-			return nil, .Wrong_Case
+			return nil, reject(p, tok, .Wrong_Case)
 		}
 		append(&list, tok.text)
 		// Members separate by `,` or newline, both legal (spec §02).
@@ -1308,7 +1361,7 @@ parse_let :: proc(p: ^Parser) -> (node: Let_Node, err: Parse_Error) {
 	// A binding name is a value name: snake_case, or UPPER_SNAKE for a
 	// module-level constant (spec §02).
 	if name.class != .Snake_Case && name.class != .Upper_Snake {
-		return node, .Wrong_Case
+		return node, reject(p, name, .Wrong_Case)
 	}
 	expect(p, .Eq) or_return
 	value := parse_expression(p) or_return
@@ -1325,7 +1378,7 @@ parse_let_decl :: proc(p: ^Parser) -> (node: Let_Decl_Node, err: Parse_Error) {
 	let_tok := expect(p, .Let) or_return
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case && name.class != .Upper_Snake {
-		return node, .Wrong_Case
+		return node, reject(p, name, .Wrong_Case)
 	}
 	expect(p, .Colon) or_return
 	type := parse_type_ref(p) or_return
@@ -1405,7 +1458,7 @@ parse_type_params :: proc(p: ^Parser) -> (params: []string, err: Parse_Error) {
 		}
 		tok := advance(p) or_return
 		if !is_upper_ident(tok.class) {
-			return nil, .Wrong_Case
+			return nil, reject(p, tok, .Wrong_Case)
 		}
 		append(&list, tok.text)
 		if peek_kind(p) == .Comma {
@@ -1468,12 +1521,12 @@ parse_field_list :: proc(p: ^Parser, is_data_body := false) -> (fields: []Field_
 			switch directive.text {
 			case "migrate":
 				if !is_data_body {
-					return nil, .Migrate_Wrong_Target
+					return nil, reject(p, at_tok, .Migrate_Wrong_Target)
 				}
 				if has_pending_migrate {
 					// A second @migrate before one field — never a silent
 					// overwrite.
-					return nil, .Malformed_Migrate
+					return nil, reject(p, at_tok, .Malformed_Migrate)
 				}
 				pending_migrate = parse_migrate_args(p, at_tok.line) or_return
 				has_pending_migrate = true
@@ -1486,14 +1539,14 @@ parse_field_list :: proc(p: ^Parser, is_data_body := false) -> (fields: []Field_
 				// parsed exactly as the declaration-prefix @watch arm does, so a
 				// missing/empty `(expr)` is the shared Probe_Missing_Arg verdict.
 				if !is_data_body {
-					return nil, .Probe_Wrong_Target
+					return nil, reject(p, at_tok, .Probe_Wrong_Target)
 				}
 				if peek_kind(p) != .L_Paren {
-					return nil, .Probe_Missing_Arg
+					return nil, reject(p, at_tok, .Probe_Missing_Arg)
 				}
 				p.pos += 1
 				if peek_kind(p) == .R_Paren {
-					return nil, .Probe_Missing_Arg
+					return nil, reject(p, at_tok, .Probe_Missing_Arg)
 				}
 				arg := parse_expression(p) or_return
 				expect(p, .R_Paren) or_return
@@ -1502,12 +1555,12 @@ parse_field_list :: proc(p: ^Parser, is_data_body := false) -> (fields: []Field_
 				// Well-formed debug probes the On-table places on a behavior or a
 				// stage, never a field (spec §28 §4) — the keyed wrong-target
 				// verdict, never a silently dropped probe or a generic token error.
-				return nil, .Probe_Wrong_Target
+				return nil, reject(p, at_tok, .Probe_Wrong_Target)
 			case:
 				// @migrate/@watch are the only field-body directives (spec §05
 				// §6, §28 §4); every other @-form stays the generic token error,
 				// the prior field-body default.
-				return nil, .Unexpected_Token
+				return nil, reject(p, at_tok, .Unexpected_Token)
 			}
 			// A field directive may sit on its own line above its field; commas
 			// stay field separators, so only newlines are skipped here.
@@ -1520,7 +1573,7 @@ parse_field_list :: proc(p: ^Parser, is_data_body := false) -> (fields: []Field_
 		fname := advance(p) or_return
 		// Field names are value names — snake_case (spec §02).
 		if fname.class != .Snake_Case {
-			return nil, .Wrong_Case
+			return nil, reject(p, fname, .Wrong_Case)
 		}
 		expect(p, .Colon) or_return
 		type := parse_type_ref(p) or_return
@@ -1598,21 +1651,21 @@ parse_enum :: proc(p: ^Parser) -> (node: Enum_Node, err: Parse_Error) {
 				// The schema-evolution channel targets data fields and renamed
 				// type declarations (spec §05 §6), never a variant — the
 				// directive-keyed verdict, mirroring parse_field_list.
-				return node, .Migrate_Wrong_Target
+				return node, reject(p, directive, .Migrate_Wrong_Target)
 			case "index", "spatial":
 				// §08 §3 places the data-plane index requirement on a `query`
 				// declaration only — the directive-keyed verdict.
-				return node, .Index_Wrong_Target
+				return node, reject(p, directive, .Index_Wrong_Target)
 			case "gtag", "todo", "expose", "break", "log", "watch", "trace":
 				// Well-formed declaration-family directives §05 admits on
 				// declarations but NOT on a variant (a variant is not a decl
 				// record — it carries no index entry to label, note, or
 				// publish, and no step to probe).
-				return node, .Variant_Directive_Wrong_Target
+				return node, reject(p, directive, .Variant_Directive_Wrong_Target)
 			case:
 				// Outside the closed §05 directive set entirely — the generic
 				// token error, matching parse_directive's default arm.
-				return node, .Unexpected_Token
+				return node, reject(p, directive, .Unexpected_Token)
 			}
 			continue
 		}
@@ -1641,7 +1694,7 @@ parse_variant :: proc(p: ^Parser) -> (variant: Variant_Decl, err: Parse_Error) {
 	name := expect(p, .Ident) or_return
 	// Variant names are UPPER_IDENT (lexical-core.ebnf §2).
 	if !is_upper_ident(name.class) {
-		return variant, .Wrong_Case
+		return variant, reject(p, name, .Wrong_Case)
 	}
 	variant.name = name.text
 	#partial switch peek_kind(p) {
@@ -1680,7 +1733,7 @@ parse_fn_decl :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 	fn_tok := expect(p, .Fn) or_return
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case {
-		return node, .Wrong_Case
+		return node, reject(p, name, .Wrong_Case)
 	}
 	fn := parse_fn_rest(p) or_return
 	fn.name = name.text
@@ -1722,7 +1775,12 @@ parse_extern_declaration :: proc(p: ^Parser, out: ^Decl_Sink, pending: ^Directiv
 		append(&out.extern_types, node)
 		sink_mark(out, .Extern_Type)
 	case:
-		return .Malformed_Extern
+		// A peek-reject: p.pos still points AT the stray follower (the `data` in
+		// `extern data …`), so the offender is in hand without an advance. Stamp it
+		// explicitly so the anchor survives a future refactor that consumes the
+		// token before rejecting; the bare token (Token{} at end of input) leaves
+		// the span 0 and falls back to parser_stop_span.
+		return reject(p, peek_tok(p), .Malformed_Extern)
 	}
 	return .None
 }
@@ -1740,7 +1798,7 @@ parse_extern_fn_decl :: proc(p: ^Parser, extern_line: int) -> (node: Fn_Node, er
 	expect(p, .Fn) or_return
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case {
-		return node, .Wrong_Case
+		return node, reject(p, name, .Wrong_Case)
 	}
 	params := parse_param_list(p) or_return
 	expect(p, .Arrow) or_return
@@ -1783,7 +1841,7 @@ parse_query :: proc(p: ^Parser) -> (node: Query_Node, err: Parse_Error) {
 	query_tok := expect(p, .Ident) or_return // `query`
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case {
-		return node, .Wrong_Case
+		return node, reject(p, name, .Wrong_Case)
 	}
 	params := parse_param_list(p) or_return
 	expect(p, .Arrow) or_return
@@ -1900,7 +1958,7 @@ parse_stub_body :: proc(p: ^Parser) -> (node: Fn_Node, err: Parse_Error) {
 parse_stub_parts :: proc(p: ^Parser) -> (hole_type: Type_Ref, fallback: Expr, has_fallback: bool, err: Parse_Error) {
 	name := expect(p, .Ident) or_return
 	if name.text != "stub" {
-		return hole_type, nil, false, .Unexpected_Token
+		return hole_type, nil, false, reject(p, name, .Unexpected_Token)
 	}
 	expect(p, .L_Paren) or_return
 	saved := p.no_record_brace
@@ -1948,7 +2006,7 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 	behavior_tok := expect(p, .Behavior) or_return
 	name := expect(p, .Ident) or_return
 	if name.class != .Snake_Case {
-		return node, .Wrong_Case
+		return node, reject(p, name, .Wrong_Case)
 	}
 	// `on` is a contextual keyword: it lexes as an Ident, so the header
 	// separator is recognized by text here (the same by-text recognition the
@@ -1956,7 +2014,7 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 	// `on` separator is an Unexpected_Token.
 	on_tok := expect(p, .Ident) or_return
 	if on_tok.text != "on" {
-		return node, .Unexpected_Token
+		return node, reject(p, on_tok, .Unexpected_Token)
 	}
 	target := expect_type_name(p) or_return
 	expect(p, .L_Brace) or_return
@@ -1966,7 +2024,7 @@ parse_behavior :: proc(p: ^Parser) -> (node: Behavior_Node, err: Parse_Error) {
 	if step_name.text != "step" {
 		// `step` is the built-in, reserved entry point (spec §06 §3); a
 		// behavior names no other.
-		return node, .Unexpected_Token
+		return node, reject(p, step_name, .Unexpected_Token)
 	}
 	step := parse_fn_rest(p) or_return
 	step.name = "step"
@@ -2005,19 +2063,19 @@ parse_pipeline :: proc(p: ^Parser) -> (node: Pipeline_Node, err: Parse_Error) {
 				// (in -> out) transition. A parenthesized argument is the named
 				// Probe_Unexpected_Arg verdict, the declaration-prefix @trace mold.
 				if peek_kind(p) == .L_Paren {
-					return node, .Probe_Unexpected_Arg
+					return node, reject(p, directive, .Probe_Unexpected_Arg)
 				}
 				append(&pending_probes, Debug_Probe{kind = .Trace, line = at_tok.line})
 			case "break", "log", "watch":
 				// Well-formed debug probes the On-table places on a behavior or a
 				// `data` field, never a stage (spec §28 §4) — the keyed
 				// wrong-target verdict, never a silently dropped probe.
-				return node, .Probe_Wrong_Target
+				return node, reject(p, directive, .Probe_Wrong_Target)
 			case:
 				// @trace is the only stage-entry directive (spec §28 §4); every
 				// other @-form stays the generic token error, mirroring the
 				// field-body default.
-				return node, .Unexpected_Token
+				return node, reject(p, directive, .Unexpected_Token)
 			}
 			// A stage directive may sit on its own line above its stage; commas
 			// stay stage separators, so only newlines are skipped here.
@@ -2030,7 +2088,7 @@ parse_pipeline :: proc(p: ^Parser) -> (node: Pipeline_Node, err: Parse_Error) {
 		sname := advance(p) or_return
 		// Stage names are documentary value names — snake_case (spec §07).
 		if sname.class != .Snake_Case {
-			return node, .Wrong_Case
+			return node, reject(p, sname, .Wrong_Case)
 		}
 		expect(p, .Colon) or_return
 		stage := parse_pipeline_stage(p, sname.text) or_return
@@ -2064,7 +2122,7 @@ parse_pipeline_stage :: proc(p: ^Parser, name: string) -> (stage: Pipeline_Stage
 	battery := expect(p, .Ident) or_return
 	// A battery name is a value name — snake_case (spec §07).
 	if battery.class != .Snake_Case {
-		return stage, .Wrong_Case
+		return stage, reject(p, battery, .Wrong_Case)
 	}
 	return Pipeline_Stage{name = name, battery = battery.text, is_battery = true}, .None
 }
@@ -2079,7 +2137,7 @@ parse_behavior_list :: proc(p: ^Parser) -> (names: []string, err: Parse_Error) {
 	for peek_kind(p) == .Ident {
 		bname := advance(p) or_return
 		if bname.class != .Snake_Case {
-			return nil, .Wrong_Case
+			return nil, reject(p, bname, .Wrong_Case)
 		}
 		append(&list, bname.text)
 		for peek_kind(p) == .Comma || peek_kind(p) == .Newline {
@@ -2119,7 +2177,7 @@ parse_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 	// Type names are UPPER_IDENT (spec §02; lexical-core.ebnf §2); the
 	// wrong-case verdict fires before the construct is built.
 	if !is_upper_ident(name.class) {
-		return type, .Wrong_Case
+		return type, reject(p, name, .Wrong_Case)
 	}
 	type.name = name.text
 	if peek_kind(p) == .L_Bracket {
@@ -2239,7 +2297,7 @@ expect_type_name :: proc(p: ^Parser) -> (name: string, err: Parse_Error) {
 	// A declared type name or kind/target ascription is UPPER_IDENT
 	// (lexical-core.ebnf §2).
 	if !is_upper_ident(tok.class) {
-		return "", .Wrong_Case
+		return "", reject(p, tok, .Wrong_Case)
 	}
 	return tok.text, .None
 }
@@ -2264,9 +2322,9 @@ skip_field_separators :: proc(p: ^Parser) {
 // constant. The casing verdict fires before the construct is parsed, so a
 // wrong-case name always reports Wrong_Case rather than a generic
 // Unexpected_Token.
-check_ident_case :: proc(tok: Token, following: Token_Kind) -> Parse_Error {
+check_ident_case :: proc(p: ^Parser, tok: Token, following: Token_Kind) -> Parse_Error {
 	if tok.class == .Mixed {
-		return .Wrong_Case
+		return reject(p, tok, .Wrong_Case)
 	}
 	#partial switch following {
 	case .L_Brace, .Colon_Colon:
@@ -2274,13 +2332,13 @@ check_ident_case :: proc(tok: Token, following: Token_Kind) -> Parse_Error {
 		// position — an UPPER_IDENT (lexical-core.ebnf §2), which admits a
 		// single-capital head as well as multi-word UpperCamel.
 		if !is_upper_ident(tok.class) {
-			return .Wrong_Case
+			return reject(p, tok, .Wrong_Case)
 		}
 	case .Dot, .L_Paren:
 		// A member-access receiver or a callee — any sanctioned class.
 	case:
 		if tok.class != .Snake_Case && tok.class != .Upper_Snake {
-			return .Wrong_Case
+			return reject(p, tok, .Wrong_Case)
 		}
 	}
 	return .None
@@ -2311,6 +2369,18 @@ peek_kind :: proc(p: ^Parser) -> Token_Kind {
 		return .Invalid
 	}
 	return p.tokens[p.pos].kind
+}
+
+// peek_tok returns the current token without consuming it — the offender a
+// peek-reject (a fault raised before `advance`) names. At end of input there is
+// no token, so it returns the zero Token (line/col 0), which reject leaves
+// unstamped, deferring to parser_stop_span. Used at the rare peek-reject sites
+// that want to stamp the offender explicitly rather than rely on the fallback.
+peek_tok :: proc(p: ^Parser) -> Token {
+	if at_end(p) {
+		return Token{}
+	}
+	return p.tokens[p.pos]
 }
 
 // advance consumes one token. It is the central choke point for the lexer's

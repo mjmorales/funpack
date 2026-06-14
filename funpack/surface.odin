@@ -570,6 +570,23 @@ resolve_imports :: proc(ast: Ast) -> (bindings: Bindings, err: Type_Error) {
 	return resolve_imports_indexed(ast, Module_Index{})
 }
 
+// stamp_import anchors the located span sink on the offending `import` node's
+// keyword line/col (Import_Node carries both, parser.odin) — the fix-criteria
+// anchor for the import-resolution arms (Unknown_Module / Unknown_Member /
+// Package_Private / Package_Imports_Package), which fire BEFORE any body sweep
+// and so own no expression span. It writes first-write-wins (the `set` guard),
+// like every other sink stamp, so the FIRST faulting import in source order is
+// the anchor. A nil sink (the bare resolve_imports path, every existing caller)
+// is a no-op, so import resolution's behavior is unchanged off the located pass.
+stamp_import :: proc(site: ^Type_Diag_Site, node: Import_Node) {
+	if site == nil || site.set {
+		return
+	}
+	site.line = node.line
+	site.col = node.col
+	site.set = true
+}
+
 // resolve_imports_indexed validates ast.imports against the stdlib surface AND a
 // project-wide Module_Index of sibling user modules, binding every imported name.
 // The prelude is pre-bound (spec §26); each import then resolves through the
@@ -583,14 +600,27 @@ resolve_imports :: proc(ast: Ast) -> (bindings: Bindings, err: Type_Error) {
 // user-module imports from its own vantage — package-internal names map onto
 // the consumer index's prefixed entries, and any import reaching outside the
 // package + engine is the §30 §2 star-graph refusal (resolve_package_entry).
-resolve_imports_indexed :: proc(ast: Ast, index: Module_Index, importer_root := "") -> (bindings: Bindings, err: Type_Error) {
+//
+// site is the optional located span sink: when non-nil, a faulting import stamps
+// its `import`-keyword line/col into it before the error unwinds (stamp_import),
+// so the import-resolution arms anchor on the offending import rather than render
+// header-only at line 0. nil (the bare resolve_imports / stage_typecheck_indexed
+// path) disables stamping — every existing caller is unchanged.
+resolve_imports_indexed :: proc(ast: Ast, index: Module_Index, importer_root := "", site: ^Type_Diag_Site = nil) -> (bindings: Bindings, err: Type_Error) {
 	bindings.names = make(map[string]Binding, context.temp_allocator)
 	prelude, _ := surface_module("engine.prelude")
 	for decl in prelude.decls {
 		bindings.names[decl.name] = Binding{module = prelude.path, kind = decl.kind}
 	}
 	for node in ast.imports {
-		resolve_import(&bindings, node, index, importer_root) or_return
+		// The offending import is the one in hand at the reject, so the loop
+		// stamps node.line/.col on a fault (the resolve_import arms return the
+		// coarse Type_Error without the node) — the import-resolution analogue of
+		// check_bodies stamping the offending declaration's line.
+		if import_err := resolve_import(&bindings, node, index, importer_root); import_err != .None {
+			stamp_import(site, node)
+			return bindings, import_err
+		}
 	}
 	return bindings, .None
 }

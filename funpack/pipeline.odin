@@ -171,7 +171,10 @@ run_module_pipeline_diag :: proc(
 		return Test_Report{}, .Typecheck_Failed, type_diagnostic(type_verdict.err, type_verdict.line, type_verdict.col, type_verdict.declaration)
 	}
 	if verdict := stage_contracts(typed); verdict.err != .None {
-		line := behavior_decl_line(typed.ast, verdict.behavior)
+		// A behavior arm resolves its line from the behavior name; the
+		// Unknown_Battery arm carries the enclosing pipeline line directly (no
+		// behavior to look up), so prefer the verdict's line when it is set.
+		line := verdict.line if verdict.line != 0 else behavior_decl_line(typed.ast, verdict.behavior)
 		return Test_Report{}, .Contract_Failed, contract_diagnostic(verdict.err, line, verdict.behavior)
 	}
 	if verdict := stage_flatten(typed); verdict.err != .None {
@@ -211,17 +214,27 @@ flatten_offender_name :: proc(verdict: Flatten_Verdict) -> string {
 }
 
 // flatten_offender_line returns the 1-based source line of a flatten verdict's
-// offender: the unclosed signal's declaration line on an Unclosed_Signal, 0
-// otherwise (no named offender to anchor at). It reads the ordered ast.signals
-// slice so the line is reproducible from source alone.
+// offender: the unclosed signal's declaration line on an Unclosed_Signal, and
+// the ROOT pipeline's declaration line on a structural flatten fault
+// (Unknown_Member / Recursive_Pipeline) — those faults live inside the pipeline
+// tree rooted at ast.pipelines[0] (stage_flatten flattens that root), so its
+// `pipeline` keyword line is the nearest real source position rather than a
+// header-only line 0. It reads the ordered ast.signals/ast.pipelines slices so
+// the line is reproducible from source alone. 0 only when no pipeline exists
+// (a flatten fault cannot fire there — the verdict is None).
 flatten_offender_line :: proc(ast: Ast, verdict: Flatten_Verdict) -> int {
-	if verdict.err != .Unclosed_Signal {
+	if verdict.err == .Unclosed_Signal {
+		for signal in ast.signals {
+			if signal.name == verdict.signal {
+				return signal.line
+			}
+		}
 		return 0
 	}
-	for signal in ast.signals {
-		if signal.name == verdict.signal {
-			return signal.line
-		}
+	// Unknown_Member / Recursive_Pipeline: anchor on the root pipeline the
+	// flatten walk started from — the offending stage member lives in its tree.
+	if len(ast.pipelines) > 0 {
+		return ast.pipelines[0].line
 	}
 	return 0
 }

@@ -51,10 +51,16 @@ Contract_Error :: enum {
 
 // Contract_Verdict pairs a contract failure with the behavior it indicts, so
 // the diagnostic points at the behavior (spec §06 §6), not the slot. behavior
-// is "" only when err is None.
+// is "" only when err is None. line carries a real source line ONLY for the
+// Unknown_Battery arm — whose offender is a pipeline BATTERY name, not a
+// declaration the behavior-decl-line lookup can find — anchoring it on the
+// enclosing `pipeline` keyword's line (the same decl-line discipline the
+// behavior arms get through behavior_decl_line); it is 0 for every behavior arm,
+// where the driver resolves the line from the behavior name instead.
 Contract_Verdict :: struct {
 	err:      Contract_Error,
 	behavior: string,
+	line:     int,
 }
 
 // stage_contracts is the behavior-contract node check's seam. It walks the
@@ -79,7 +85,11 @@ stage_contracts :: proc(typed: Typed_Ast) -> Contract_Verdict {
 			// are already walked.
 			if stage.is_battery {
 				if !is_engine_battery(stage.battery) {
-					return Contract_Verdict{err = .Unknown_Battery, behavior = stage.battery}
+					// The offender is the battery name (a free string), not a
+					// declaration — so the diagnostic anchors on the enclosing
+					// `pipeline` keyword line (the nearest real source position), not
+					// header-only at line 0.
+					return Contract_Verdict{err = .Unknown_Battery, behavior = stage.battery, line = pipeline.line}
 				}
 				continue
 			}

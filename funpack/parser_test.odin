@@ -88,6 +88,45 @@ test_parse_import_member_group :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_stage_parse_located_anchors_post_advance_offender :: proc(t: ^testing.T) {
+	// reject stamps the offending token at the rejection site, so a post-advance
+	// casing reject anchors on the mis-cased identifier even though p.pos has
+	// moved past it. `thing widget {` rejects on `widget` (line 1, col 7), NOT on
+	// the `{` (col 14) the prior parser_stop_span guess reported.
+	_, verdict := stage_parse_located(stage_lex("thing widget { x: Int }\n"))
+	testing.expect_value(t, verdict.err, Parse_Error.Wrong_Case)
+	testing.expect_value(t, verdict.line, 1)
+	testing.expect_value(t, verdict.col, 7)
+}
+
+@(test)
+test_stage_parse_located_peek_reject_falls_back_to_stop_span :: proc(t: ^testing.T) {
+	// A peek-reject leaves err_line/err_col unset, so stage_parse_located falls
+	// back to parser_stop_span — correct there, because p.pos already points AT
+	// the offender for a reject raised before advance. `extern data` rejects with
+	// Malformed_Extern anchored on the stray `data` follower (line 1, col 8).
+	_, verdict := stage_parse_located(stage_lex("extern data X\n"))
+	testing.expect_value(t, verdict.err, Parse_Error.Malformed_Extern)
+	testing.expect_value(t, verdict.line, 1)
+	testing.expect_value(t, verdict.col, 8)
+}
+
+@(test)
+test_parse_import_carries_keyword_provenance :: proc(t: ^testing.T) {
+	// Import_Node carries the `import` keyword's 1-based line/col — the
+	// provenance the import-resolution typecheck arms anchor on. The second
+	// import sits on line 2 with the keyword at col 1.
+	tokens := stage_lex("import assets\nimport engine.math.{Vec2}\n")
+	ast, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.None)
+	testing.expect_value(t, len(ast.imports), 2)
+	testing.expect_value(t, ast.imports[0].line, 1)
+	testing.expect_value(t, ast.imports[0].col, 1)
+	testing.expect_value(t, ast.imports[1].line, 2)
+	testing.expect_value(t, ast.imports[1].col, 1)
+}
+
+@(test)
 test_parse_import_group_newline_separated :: proc(t: ^testing.T) {
 	// Members separate by `,` or newline — both legal (spec §02).
 	tokens := stage_lex("import engine.math.{\n  Vec2\n  abs,\n  fold\n}\n")

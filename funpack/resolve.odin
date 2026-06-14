@@ -102,7 +102,7 @@ Type_Env :: struct {
 // imports, so a forward reference (a `data` field typed by a `thing`
 // declared later) still resolves — the whole type namespace is collected
 // before any ref is resolved.
-resolve_env :: proc(ast: Ast, bindings: Bindings, index: Module_Index = {}) -> (env: Type_Env, err: Type_Error) {
+resolve_env :: proc(ast: Ast, bindings: Bindings, index: Module_Index = {}, site: ^Type_Diag_Site = nil) -> (env: Type_Env, err: Type_Error) {
 	env.records = make(map[string]Record_Schema, context.temp_allocator)
 	env.enums = make(map[string]Enum_Schema, context.temp_allocator)
 	env.terms = make(map[string]Term_Schema, context.temp_allocator)
@@ -110,9 +110,11 @@ resolve_env :: proc(ast: Ast, bindings: Bindings, index: Module_Index = {}) -> (
 	// Pass 1 — collect every declared name into its slot, rejecting a
 	// collision with an import or an earlier user decl. Names are interned
 	// before any Type_Ref is resolved so forward references between user
-	// types resolve in pass 2.
-	collect_type_names(&env, ast, bindings) or_return
-	collect_term_names(&env, ast, bindings) or_return
+	// types resolve in pass 2. The optional located sink anchors a name-collection
+	// fault (Name_Collision / Reserved_Signal_Name) on the offending declaration's
+	// line — these arms fire before any body sweep, so they own no expression span.
+	collect_type_names(&env, ast, bindings, site) or_return
+	collect_term_names(&env, ast, bindings, site) or_return
 
 	// Pass 2 — resolve each declaration's field/parameter/return Type_Refs
 	// against the now-complete type namespace, the imports, and the
@@ -124,17 +126,25 @@ resolve_env :: proc(ast: Ast, bindings: Bindings, index: Module_Index = {}) -> (
 
 // collect_type_names interns thing/singleton/data/enum/signal names into
 // the type partition. Each name is checked against the imports and the
-// already-interned user names first: a clash is Name_Collision (spec §02).
-collect_type_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type_Error {
+// already-interned user names first: a clash is Name_Collision (spec §02). The
+// optional located sink anchors a fault on the offending declaration's line
+// (stamp_decl, typecheck.odin) — the decl in hand at the reject is the offender.
+collect_type_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings, site: ^Type_Diag_Site = nil) -> Type_Error {
 	for decl in ast.things {
-		claim_type_name(env, decl.name, bindings) or_return
+		if err := claim_type_name(env, decl.name, bindings); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
 		env.records[decl.name] = Record_Schema {
 			type_name = decl.name,
 			kind      = .Thing,
 		}
 	}
 	for decl in ast.datas {
-		claim_type_name(env, decl.name, bindings) or_return
+		if err := claim_type_name(env, decl.name, bindings); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
 		env.records[decl.name] = Record_Schema {
 			type_name = decl.name,
 			kind      = .Data,
@@ -145,15 +155,24 @@ collect_type_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type
 		// surfaces as the precise Reserved_Signal_Name diagnostic even when the
 		// engine.physics import would also have raised the generic Name_Collision
 		// — the same precision-first ordering the layer-registry gate uses.
-		check_reserved_signal_name(decl.name) or_return
-		claim_type_name(env, decl.name, bindings) or_return
+		if err := check_reserved_signal_name(decl.name); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
+		if err := claim_type_name(env, decl.name, bindings); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
 		env.records[decl.name] = Record_Schema {
 			type_name = decl.name,
 			kind      = .Signal,
 		}
 	}
 	for decl in ast.enums {
-		claim_type_name(env, decl.name, bindings) or_return
+		if err := claim_type_name(env, decl.name, bindings); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
 		variants := make([]string, len(decl.variants), context.temp_allocator)
 		for variant, i in decl.variants {
 			variants[i] = variant.name
@@ -176,24 +195,36 @@ collect_type_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type
 // test-invocation form (spec §04) reaches its step signature through this
 // key, so the behavior name is the term, not a synthetic `name.step`
 // string.
-collect_term_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings) -> Type_Error {
+collect_term_names :: proc(env: ^Type_Env, ast: Ast, bindings: Bindings, site: ^Type_Diag_Site = nil) -> Type_Error {
 	for decl in ast.lets {
-		claim_term_name(env, decl.name, bindings) or_return
+		if err := claim_term_name(env, decl.name, bindings); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
 		env.terms[decl.name] = Term_Schema{name = decl.name, kind = .Const}
 	}
 	for decl in ast.fns {
-		claim_term_name(env, decl.name, bindings) or_return
+		if err := claim_term_name(env, decl.name, bindings); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
 		env.terms[decl.name] = Term_Schema{name = decl.name, kind = .Fn}
 	}
 	for decl in ast.queries {
 		// A query is a value-position callable like a fn (spec §08 §3: "its
 		// derived read-set composes into callers"), so it claims a term name
 		// under the same one-name-one-meaning rule.
-		claim_term_name(env, decl.name, bindings) or_return
+		if err := claim_term_name(env, decl.name, bindings); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
 		env.terms[decl.name] = Term_Schema{name = decl.name, kind = .Query}
 	}
 	for decl in ast.behaviors {
-		claim_term_name(env, decl.name, bindings) or_return
+		if err := claim_term_name(env, decl.name, bindings); err != .None {
+			stamp_decl(site, decl.name, decl.line)
+			return err
+		}
 		env.terms[decl.name] = Term_Schema {
 			name   = decl.name,
 			kind   = .Behavior,

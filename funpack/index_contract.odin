@@ -386,7 +386,8 @@ derive_gate_results :: proc(typed: Typed_Ast, flat: Flattened_Pipeline) -> []Gat
 	results[Gate_Family.Fn_Size]        = Gate_Result{gate = .Fn_Size, passed = !any_unit_fails(units, check_fn_size)}
 	results[Gate_Family.Arity]          = Gate_Result{gate = .Arity, passed = !any_unit_fails(units, gate_arity_unit)}
 	results[Gate_Family.Exhaustiveness] = Gate_Result{gate = .Exhaustiveness, passed = !any_match_fails(units, sets)}
-	results[Gate_Family.Duplication]    = Gate_Result{gate = .Duplication, passed = gate_duplication(units) == .None}
+	dup_err, _, _ := gate_duplication(units)
+	results[Gate_Family.Duplication]    = Gate_Result{gate = .Duplication, passed = dup_err == .None}
 	results[Gate_Family.Effect_Closure] = Gate_Result{gate = .Effect_Closure, passed = !first_unclosed_holds(flat.routes)}
 	return results
 }

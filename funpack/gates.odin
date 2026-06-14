@@ -534,8 +534,12 @@ gate_verdict :: proc(ast: Ast) -> Gate_Verdict {
 	if verdict := check_probe_placement_gate(ast); verdict.err != .None {
 		return verdict
 	}
-	if err := gate_duplication(units); err != .None {
-		return Gate_Verdict{err = err}
+	if err, name, line := gate_duplication(units); err != .None {
+		// The duplicate unit (the SECOND-in-source occurrence that tripped the dup
+		// ceiling) is the named offender, so the diagnostic anchors on its
+		// declaration line (col 0, the decl-level gate shape) rather than rendering
+		// header-only at line 0.
+		return Gate_Verdict{err = err, declaration = name, line = line}
 	}
 	return Gate_Verdict{err = .None}
 }
@@ -1064,16 +1068,21 @@ arg_nesting_depth :: proc(arg: Expr) -> int {
 // unit: per-statement hashing would false-positive on legitimately similar
 // single statements (e.g. the golden file's repeated `assert a.slerp(b, …) ==
 // …` shapes, or two one-line `with`-update behaviors over different things).
-gate_duplication :: proc(units: []Gate_Unit) -> Gate_Error {
+// It returns the offending unit's name/line alongside the error so the
+// fix-criteria diagnostic anchors on the duplicate declaration: the unit in hand
+// at the reject is the SECOND-in-source occurrence (the source-order walk tripped
+// the ceiling on it), the one an author removes or differentiates. name/line are
+// "" / 0 on the clean (.None) verdict.
+gate_duplication :: proc(units: []Gate_Unit) -> (err: Gate_Error, name: string, line: int) {
 	seen := make(map[u64]int, context.temp_allocator)
 	for unit in units {
 		key := dup_class(unit.body)
 		seen[key] += 1
 		if seen[key] > MAX_DUPLICATE_UNITS {
-			return .Duplicate_Declaration
+			return .Duplicate_Declaration, unit.name, unit.line
 		}
 	}
-	return .None
+	return .None, "", 0
 }
 
 // dup_class hashes a declaration unit's normalized-AST string into the

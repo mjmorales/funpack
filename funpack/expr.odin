@@ -459,7 +459,7 @@ parse_postfix :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 			p.pos += 1
 			member := expect(p, .Ident) or_return
 			if member.class == .Mixed {
-				return nil, .Wrong_Case
+				return nil, reject(p, member, .Wrong_Case)
 			}
 			node := new(Member_Expr, context.temp_allocator)
 			// `a.b` anchors on the receiver `a`, the leftmost byte; a postfix
@@ -518,7 +518,9 @@ parse_atom :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	case .Ident:
 		return parse_name_atom(p, tok)
 	}
-	return nil, .Unexpected_Token
+	// `tok` was consumed above; it is the unexpected atom token, so anchor the
+	// diagnostic on it (post-advance — p.pos has moved past it).
+	return nil, reject(p, tok, .Unexpected_Token)
 }
 
 // parse_stub_atom parses a `@stub(T)` / `@stub(T, fallback)` typed hole in
@@ -624,9 +626,12 @@ parse_if_expr :: proc(p: ^Parser, if_tok: Token) -> (expr: Expr, err: Parse_Erro
 	p.no_record_brace = saved
 	then_branch := parse_if_branch(p) or_return
 	// The `else` arm is mandatory for the value form — the consequent's type
-	// has no counterpart to unify against without it (spec §02 §5).
+	// has no counterpart to unify against without it (spec §02 §5). A peek-reject:
+	// p.pos points at the token standing where `else` should be, so anchor the
+	// diagnostic on it (the missing-arm site); at end of input the zero token
+	// leaves the span unstamped and parser_stop_span clamps to the last token.
 	if peek_kind(p) != .Else {
-		return nil, .Missing_Else
+		return nil, reject(p, peek_tok(p), .Missing_Else)
 	}
 	p.pos += 1
 	// `else if …` chains as a nested If_Expr; a plain `else { … }` is a value
@@ -676,12 +681,12 @@ parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
 	// The remaining forms are variant patterns: an UPPER_IDENT enum type,
 	// `::`, then an UPPER_IDENT variant (lexical-core.ebnf §2).
 	if !is_upper_ident(tok.class) {
-		return pattern, .Wrong_Case
+		return pattern, reject(p, tok, .Wrong_Case)
 	}
 	expect(p, .Colon_Colon) or_return
 	variant := expect(p, .Ident) or_return
 	if !is_upper_ident(variant.class) {
-		return pattern, .Wrong_Case
+		return pattern, reject(p, variant, .Wrong_Case)
 	}
 	#partial switch peek_kind(p) {
 	case .L_Paren:
@@ -717,7 +722,7 @@ parse_struct_pattern_binders :: proc(p: ^Parser) -> (binders: []string, err: Par
 		name := expect(p, .Ident) or_return
 		// A field-pun binder is a value name — snake_case (spec §02).
 		if name.class != .Snake_Case {
-			return nil, .Wrong_Case
+			return nil, reject(p, name, .Wrong_Case)
 		}
 		append(&list, name.text)
 		if peek_kind(p) == .Comma || peek_kind(p) == .Newline {
@@ -817,7 +822,7 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 	// record-literal head, so neither the casing check nor the record
 	// branch claims the brace.
 	if p.no_record_brace && following == .L_Brace {
-		check_ident_case(tok, .Invalid) or_return
+		check_ident_case(p, tok, .Invalid) or_return
 		node := new(Name_Expr, context.temp_allocator)
 		node^ = Name_Expr{name = tok.text, class = tok.class, line = tok.line, col = tok.col}
 		return node, .None
@@ -828,7 +833,7 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 	if tok.text == "all" && following == .L_Bracket {
 		return parse_all_tail(p, tok)
 	}
-	check_ident_case(tok, following) or_return
+	check_ident_case(p, tok, following) or_return
 	#partial switch following {
 	case .Colon_Colon:
 		p.pos += 1
@@ -836,7 +841,7 @@ parse_name_atom :: proc(p: ^Parser, tok: Token) -> (expr: Expr, err: Parse_Error
 		// Enum variants are UPPER_IDENT (spec §02; lexical-core.ebnf §2),
 		// so a single-capital variant (Key::W, PlayerId::P1) is valid.
 		if !is_upper_ident(variant.class) {
-			return nil, .Wrong_Case
+			return nil, reject(p, variant, .Wrong_Case)
 		}
 		node := new(Variant_Expr, context.temp_allocator)
 		// The enum type name is the variant expression's first byte.
@@ -877,7 +882,7 @@ parse_all_tail :: proc(p: ^Parser, all_tok: Token) -> (expr: Expr, err: Parse_Er
 	expect(p, .L_Bracket) or_return
 	thing := expect(p, .Ident) or_return
 	if !is_upper_ident(thing.class) {
-		return nil, .Wrong_Case
+		return nil, reject(p, thing, .Wrong_Case)
 	}
 	expect(p, .R_Bracket) or_return
 	node := new(All_Expr, context.temp_allocator)
@@ -907,7 +912,7 @@ parse_record_fields :: proc(p: ^Parser) -> (fields: []Record_Field, err: Parse_E
 	for peek_kind(p) == .Ident {
 		fname := advance(p) or_return
 		if fname.class != .Snake_Case {
-			return nil, .Wrong_Case
+			return nil, reject(p, fname, .Wrong_Case)
 		}
 		expect(p, .Colon) or_return
 		value := parse_expression(p) or_return
@@ -961,7 +966,7 @@ parse_lambda :: proc(p: ^Parser, fn_tok: Token) -> (expr: Expr, err: Parse_Error
 		param := advance(p) or_return
 		// Parameters are value names — snake_case (spec §02).
 		if param.class != .Snake_Case {
-			return nil, .Wrong_Case
+			return nil, reject(p, param, .Wrong_Case)
 		}
 		append(&params, param.text)
 		if peek_kind(p) == .Comma {
