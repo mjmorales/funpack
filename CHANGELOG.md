@@ -7,6 +7,14 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.5.0] - 2026-06-14
+
+### Features
+- feat(funpack): evaluate behavior-step engine constructs and localize test failures (a07482e)
+
+### Other
+- docs: add "Tests and Fixes Are Foundational" directive to CLAUDE.md (b58b0fc)
+
 ## [0.4.0] - 2026-06-14
 
 ### Features
