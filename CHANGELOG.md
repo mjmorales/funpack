@@ -7,6 +7,12 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.6.0] - 2026-06-14
+
+### Features
+- feat(runtime): funpack-live --help prints usage (0274367)
+- feat(funpack): add `funpack run` verb that builds and launches the game (1fe890b)
+
 ## [0.5.0] - 2026-06-14
 
 ### Features
