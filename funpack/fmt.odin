@@ -100,6 +100,11 @@ fmt_verb_exit :: proc(root: string, mode: Fmt_Mode) -> int {
 		case .Check:
 			drifted += 1
 			fmt.printfln("funpack fmt: %s drifts from canonical form", source.path)
+			// The drifting hunks follow the verdict line (the gofmt -d / cargo
+			// fmt --check shape): on-disk is the `-` side, canonical the `+`
+			// side, so an agent reads the exact lines to change. Advisory body
+			// only — the machine contract is the exit code, unchanged.
+			fmt.print(unified_diff(source.path, string(bytes), canonical, context.temp_allocator))
 		}
 	}
 	if mode == .Check && drifted != 0 {
@@ -109,4 +114,206 @@ fmt_verb_exit :: proc(root: string, mode: Fmt_Mode) -> int {
 		fmt.println("funpack fmt: clean")
 	}
 	return 0
+}
+
+// DIFF_CONTEXT is the number of unchanged lines kept around each change run in
+// the unified-diff body, matching the gofmt/diff default of 3.
+DIFF_CONTEXT :: 3
+
+// Diff_Op is the closed edit-script verdict per line pair: Equal lines appear
+// as context (and bound hunks), Delete lines belong to the on-disk side (`-`),
+// Insert lines to the canonical side (`+`). The set is closed — a line-based
+// unified diff has exactly these three moves.
+Diff_Op :: enum {
+	Equal,
+	Delete,
+	Insert,
+}
+
+// Diff_Edit is one entry of the line edit-script: an op plus the line text
+// (trailing newline retained, since lines are split with split_after) and the
+// 0-based indices into the on-disk (`old`) and canonical (`new`) line slices.
+// The indices drive the unified-diff hunk headers' 1-based line numbers.
+Diff_Edit :: struct {
+	op:        Diff_Op,
+	text:      string,
+	old_index: int,
+	new_index: int,
+}
+
+// unified_diff renders a deterministic line-based unified diff of `old` (the
+// on-disk bytes) against `new` (the canonical projection), in the gofmt -d /
+// `diff -u` shape: a `--- <path>` / `+++ <path>` header, then `@@ -l,c +l,c @@`
+// hunks of `-`/`+`/context lines. The edit script is a longest-common-
+// subsequence diff (core: ships no diff helper — verified absent under
+// core/text and core/strings — so this minimal LCS is the Odin-first custom
+// fallback), keeping the output deterministic: identical (old, new) bytes
+// always yield identical diff text. Returns "" when the two are byte-identical
+// (the caller only diffs known-drifting sources, but the empty guard keeps the
+// helper total).
+unified_diff :: proc(path: string, old: string, new: string, allocator := context.allocator) -> string {
+	if old == new {
+		return ""
+	}
+	old_lines := strings.split_after(old, "\n", allocator)
+	new_lines := strings.split_after(new, "\n", allocator)
+	// split_after leaves a trailing empty element after a final newline (e.g.
+	// "a\n" → {"a\n", ""}); drop it so the line counts match the real lines.
+	old_lines = trim_trailing_empty(old_lines)
+	new_lines = trim_trailing_empty(new_lines)
+	edits := diff_lines(old_lines, new_lines, allocator)
+	b := strings.builder_make(allocator)
+	fmt.sbprintfln(&b, "--- %s", path)
+	fmt.sbprintfln(&b, "+++ %s", path)
+	write_diff_hunks(&b, edits)
+	return strings.to_string(b)
+}
+
+// trim_trailing_empty drops a single trailing empty line slice element — the
+// artifact split_after leaves after a string that ends in a newline — so the
+// line set holds only the real source lines.
+trim_trailing_empty :: proc(lines: []string) -> []string {
+	if len(lines) > 0 && lines[len(lines) - 1] == "" {
+		return lines[:len(lines) - 1]
+	}
+	return lines
+}
+
+// diff_lines computes the line edit-script of `old` → `new` via a longest-
+// common-subsequence DP table (the standard O(n·m) LCS), then walks the table
+// back to source order. Equal lines are the common subsequence; the rest are
+// Deletes (old-only) and Inserts (new-only). Deterministic: the same line
+// slices always produce the same script (ties in the backtrack prefer a Delete
+// before an Insert, a fixed rule).
+diff_lines :: proc(old: []string, new: []string, allocator := context.allocator) -> []Diff_Edit {
+	n := len(old)
+	m := len(new)
+	// lcs[i][j] = LCS length of old[i:] and new[j:]; the extra row/column of
+	// zeros is the empty-suffix base case.
+	lcs := make([][]int, n + 1, allocator)
+	for i in 0 ..= n {
+		lcs[i] = make([]int, m + 1, allocator)
+	}
+	for i := n - 1; i >= 0; i -= 1 {
+		for j := m - 1; j >= 0; j -= 1 {
+			if old[i] == new[j] {
+				lcs[i][j] = lcs[i + 1][j + 1] + 1
+			} else {
+				lcs[i][j] = max(lcs[i + 1][j], lcs[i][j + 1])
+			}
+		}
+	}
+	edits := make([dynamic]Diff_Edit, 0, n + m, allocator)
+	i, j := 0, 0
+	for i < n && j < m {
+		if old[i] == new[j] {
+			append(&edits, Diff_Edit{op = .Equal, text = old[i], old_index = i, new_index = j})
+			i += 1
+			j += 1
+		} else if lcs[i + 1][j] >= lcs[i][j + 1] {
+			// A Delete advances old; the >= tie-break (Delete before Insert)
+			// fixes the script so the output is deterministic.
+			append(&edits, Diff_Edit{op = .Delete, text = old[i], old_index = i, new_index = j})
+			i += 1
+		} else {
+			append(&edits, Diff_Edit{op = .Insert, text = new[j], old_index = i, new_index = j})
+			j += 1
+		}
+	}
+	for ; i < n; i += 1 {
+		append(&edits, Diff_Edit{op = .Delete, text = old[i], old_index = i, new_index = j})
+	}
+	for ; j < m; j += 1 {
+		append(&edits, Diff_Edit{op = .Insert, text = new[j], old_index = i, new_index = j})
+	}
+	return edits[:]
+}
+
+// write_diff_hunks groups the edit-script into unified-diff hunks — runs of
+// changes coalesced when their surrounding context (DIFF_CONTEXT lines each
+// side) touches or overlaps — and writes each with its `@@ -old_start,old_len
+// +new_start,new_len @@` header (1-based line numbers) followed by its `-`/`+`/
+// context line bodies. A line missing its trailing newline gets the `\ No
+// newline at end of file` marker, the `diff -u` convention, so the hunk is
+// faithful to the bytes.
+write_diff_hunks :: proc(b: ^strings.Builder, edits: []Diff_Edit) {
+	// change_at marks every edit index that is a Delete or Insert — a hunk is
+	// the union of a change run plus DIFF_CONTEXT context lines on each side.
+	start := 0
+	for start < len(edits) {
+		if edits[start].op == .Equal {
+			start += 1
+			continue
+		}
+		// Found a change run; extend it to absorb any following change whose
+		// gap of Equal lines is within 2·DIFF_CONTEXT (so two near runs share
+		// one hunk, the standard coalescing rule).
+		hunk_lo := max(0, start - DIFF_CONTEXT)
+		end := start
+		for {
+			// Advance end past the current change run.
+			for end < len(edits) && edits[end].op != .Equal {
+				end += 1
+			}
+			// Count the trailing Equal run; if a change follows within the
+			// context window, keep it in this hunk, else close here.
+			gap := end
+			for gap < len(edits) && edits[gap].op == .Equal {
+				gap += 1
+			}
+			if gap < len(edits) && gap - end <= 2 * DIFF_CONTEXT {
+				end = gap
+				continue
+			}
+			break
+		}
+		hunk_hi := min(len(edits), end + DIFF_CONTEXT)
+		write_one_hunk(b, edits[hunk_lo:hunk_hi])
+		start = hunk_hi
+	}
+}
+
+// write_one_hunk emits a single coalesced hunk: its `@@` header derived from
+// the first/last covered line indices, then each line as `-` (Delete), `+`
+// (Insert), or ` ` (Equal context). The no-trailing-newline marker rides each
+// line whose text lacks its `\n`.
+write_one_hunk :: proc(b: ^strings.Builder, hunk: []Diff_Edit) {
+	old_start, old_len, new_start, new_len := hunk_bounds(hunk)
+	fmt.sbprintfln(b, "@@ -%d,%d +%d,%d @@", old_start, old_len, new_start, new_len)
+	for edit in hunk {
+		switch edit.op {
+		case .Equal:
+			strings.write_byte(b, ' ')
+		case .Delete:
+			strings.write_byte(b, '-')
+		case .Insert:
+			strings.write_byte(b, '+')
+		}
+		strings.write_string(b, edit.text)
+		if !strings.has_suffix(edit.text, "\n") {
+			strings.write_string(b, "\n\\ No newline at end of file\n")
+		}
+	}
+}
+
+// hunk_bounds derives the unified-diff header's 1-based start lines and lengths
+// for one hunk: the old side counts Equal+Delete lines, the new side counts
+// Equal+Insert lines. The start is the 1-based index of the first covered line
+// on each side; an empty side (a pure-insert/pure-delete hunk at a boundary)
+// reports start 0, the `diff -u` convention.
+hunk_bounds :: proc(hunk: []Diff_Edit) -> (old_start: int, old_len: int, new_start: int, new_len: int) {
+	for edit in hunk {
+		switch edit.op {
+		case .Equal:
+			old_len += 1
+			new_len += 1
+		case .Delete:
+			old_len += 1
+		case .Insert:
+			new_len += 1
+		}
+	}
+	old_start = hunk[0].old_index + 1 if old_len > 0 else 0
+	new_start = hunk[0].new_index + 1 if new_len > 0 else 0
+	return old_start, old_len, new_start, new_len
 }

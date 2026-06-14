@@ -9,6 +9,7 @@ package funpack
 import "core:log"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 // fmt_source is the renderer applied to one source string — the pure
@@ -200,4 +201,62 @@ test_fmt_skips_generated_seams :: proc(t: ^testing.T) {
 	testing.expect(t, read_err == nil)
 	testing.expect_value(t, string(after), seam_bytes)
 	log.infof("fmt seam skip: the non-canonical gen/ seam is neither drift-counted nor rewritten — emitter-owned bytes")
+}
+
+@(test)
+test_unified_diff_emits_replacement_hunk :: proc(t: ^testing.T) {
+	// The drift body is the gofmt -d / diff -u shape: a `--- path` / `+++ path`
+	// header then a `@@ -l,c +l,c @@` hunk with `-` (on-disk) and `+`
+	// (canonical) lines around context. A one-line replacement in the middle
+	// keeps DIFF_CONTEXT context lines each side.
+	old := "a\nb\nc\nd\ne\n"
+	new := "a\nb\nX\nd\ne\n"
+	diff := unified_diff("src/x.fun", old, new, context.temp_allocator)
+	testing.expect(t, strings.contains(diff, "--- src/x.fun\n"))
+	testing.expect(t, strings.contains(diff, "+++ src/x.fun\n"))
+	testing.expect(t, strings.contains(diff, "@@ -1,5 +1,5 @@\n"))
+	testing.expect(t, strings.contains(diff, "-c\n"))
+	testing.expect(t, strings.contains(diff, "+X\n"))
+	// Context lines carry a leading space; the changed line c→X is the only
+	// `-`/`+` pair.
+	testing.expect(t, strings.contains(diff, " a\n"))
+	testing.expect(t, strings.contains(diff, " e\n"))
+}
+
+@(test)
+test_unified_diff_is_deterministic :: proc(t: ^testing.T) {
+	// Identical (old, new) bytes always yield byte-identical diff text — the
+	// LCS edit script has a fixed tie-break (Delete before Insert), so there is
+	// no run-to-run drift, the §29 determinism invariant the formatter holds.
+	old := "one\ntwo\nthree\n"
+	new := "one\n2\nthree\n"
+	first := unified_diff("p", old, new, context.temp_allocator)
+	second := unified_diff("p", old, new, context.temp_allocator)
+	testing.expect_value(t, first, second)
+	// Byte-identical inputs produce no diff.
+	testing.expect_value(t, unified_diff("p", old, old, context.temp_allocator), "")
+}
+
+@(test)
+test_unified_diff_marks_missing_final_newline :: proc(t: ^testing.T) {
+	// A line missing its trailing newline gets the `\ No newline at end of
+	// file` marker, the diff -u convention, so the hunk is faithful to the
+	// bytes — a final-newline drift is a real, visible change.
+	old := "x\ny"     // no trailing newline on `y`
+	new := "x\ny\n"   // canonical adds it
+	diff := unified_diff("p", old, new, context.temp_allocator)
+	testing.expect(t, strings.contains(diff, "\\ No newline at end of file\n"))
+}
+
+@(test)
+test_fmt_check_drift_prints_diff_body :: proc(t: ^testing.T) {
+	// The integration contract: a drifting source's --check verdict line is
+	// followed by its unified-diff body. MINI_SOURCE's blank-line drift renders
+	// at least one `@@` hunk against the canonical form — the human-facing body
+	// the bare exit code does not carry.
+	source, ok := fmt_source(MINI_SOURCE)
+	testing.expect_value(t, ok, Parse_Error.None)
+	diff := unified_diff("src/mini.fun", MINI_SOURCE, source, context.temp_allocator)
+	testing.expect(t, strings.contains(diff, "@@ "))
+	testing.expect(t, len(diff) > 0)
 }
