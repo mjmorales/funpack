@@ -26,10 +26,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Intel macOS (macos-13 / x64) is intentionally omitted: GitHub's Intel
+        # runners queue for hours, and Apple Silicon covers modern Macs.
         include:
           - { runner: ubuntu-latest,    os: linux, arch: x64 }
           - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
-          - { runner: macos-13,         os: macos, arch: x64 }
           - { runner: macos-latest,     os: macos, arch: arm64 }
     steps:
       - uses: actions/checkout@v6
