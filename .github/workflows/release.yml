@@ -81,3 +81,74 @@ jobs:
         with:
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true
+
+  # After every platform tarball is attached, hash them and rewrite the
+  # Homebrew formula (version + per-platform url/sha256) in mjmorales/homebrew-tap,
+  # pushing the bump directly to its main. HOMEBREW_TAP_TOKEN is the fine-grained
+  # PAT (managed in cloud-infra workflows.tf, shared with claude-env/keel).
+  bump-tap:
+    name: bump homebrew formula
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version from the tag
+        id: ver
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          {
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Download release tarballs and hash them
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p '*.tar.gz' -D dist
+          for plat in macos-arm64 linux-arm64 linux-x64; do
+            sha="$(sha256sum "dist/funpack-${tag}-${plat}.tar.gz" | awk '{print $1}')"
+            echo "${plat//-/_}=$sha" >> "$GITHUB_OUTPUT"
+          done
+      - name: Check out the Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: mjmorales/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Rewrite Formula/funpack.rb
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA_MAC_ARM: ${{ steps.sha.outputs.macos_arm64 }}
+          SHA_LNX_ARM: ${{ steps.sha.outputs.linux_arm64 }}
+          SHA_LNX_X64: ${{ steps.sha.outputs.linux_x64 }}
+        run: |
+          ruby -e '
+            f   = "tap/Formula/funpack.rb"
+            s   = File.read(f)
+            ver = ENV["VERSION"]; tag = ENV["TAG"]
+            s.sub!(/version "[^"]*"/, %Q{version "#{ver}"})
+            [
+              ["macos-arm64", ENV["SHA_MAC_ARM"]],
+              ["linux-arm64", ENV["SHA_LNX_ARM"]],
+              ["linux-x64",   ENV["SHA_LNX_X64"]],
+            ].each do |plat, sha|
+              url = "https://github.com/mjmorales/funpack/releases/download/#{tag}/funpack-#{tag}-#{plat}.tar.gz"
+              s.sub!(/url "[^"]*-#{plat}\.tar\.gz"(\s*\n\s*)sha256 "[0-9a-f]*"/m) { %Q{url "#{url}"#{$1}sha256 "#{sha}"} }
+            end
+            File.write(f, s)
+          '
+          git -C tap --no-pager diff
+      - name: Commit and push the bump
+        run: |
+          cd tap
+          if git diff --quiet; then
+            echo "Formula already at this version; nothing to push."
+            exit 0
+          fi
+          git config user.name "funpack-release"
+          git config user.email "actions@users.noreply.github.com"
+          git add Formula/funpack.rb
+          git commit -m "funpack ${{ steps.ver.outputs.version }} (formula bump from ${{ steps.ver.outputs.tag }})"
+          git push
