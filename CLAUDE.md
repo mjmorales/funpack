@@ -125,3 +125,11 @@ When you have analyzed a decision point and narrowed it to discrete options, pre
 - **Tool, not prose**: For any pre-analyzed decision with discrete options, call `AskUserQuestion`; instead of narrating the choices in text, surface them as selectable options.
 - **Recommendation first**: List your recommended option first and mark it `(Recommended)`; instead of presenting a neutral menu, lead with the choice your analysis favors.
 - **Every description states why**: Each option's description must give the tradeoff or consequence of choosing it; instead of restating what the option does, explain why one would pick it.
+
+## Tests and Fixes Are Foundational — No Workarounds, No Record-Keeping Tests
+
+Ship the durable fix and the deliberate test, never the stop-gap or the note-to-self.
+
+- When a decision, ADR, or bug touches a real seam that will cause user friction, fix it at the source; never ship an incomplete workaround that leaves the seam broken.
+- Write tests that exercise foundational junctions of real code as a living, evolving spec of the language; never write narrowly bug-specific or record-keeping tests (e.g. a "fixes" scratch file), and instead fold the case into the deliberate test that covers its junction.
+- Treat tests as load-bearing spec, not lesser notes; never use a test to log a fix or stand in for a record, and instead capture record-keeping in a scrum task, decision, or ADR.
