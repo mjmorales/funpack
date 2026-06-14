@@ -23,60 +23,17 @@ import "core:slice"
 import "core:strings"
 
 // Warden_Find_Query is the parsed find filter set. "" marks a filter as not
-// provided — parse_warden_find_args rejects an EMPTY filter value as usage
-// (an empty name-query would be a disguised index dump, an empty kind is not
-// a member name, an empty gtag names no registered tag), so the sentinel is
-// unambiguous. kind holds the validated Index_Decl_Kind member name verbatim;
-// the parse already exact-matched it against the closed enum, so downstream
+// provided — the CLI rejects an EMPTY filter value as usage before this struct
+// is built (cli_funpack.odin: cli_nonempty guards --gtag, cli_validate_index_-
+// decl_kind guards --kind, and cli_validate_warden_find rejects an empty
+// name-query and the filterless bare command), so the sentinel is unambiguous.
+// kind holds the validated Index_Decl_Kind member name verbatim; the flag
+// validator already exact-matched it against the closed enum, so downstream
 // reads never re-adjudicate.
 Warden_Find_Query :: struct {
 	name: string, // case-sensitive substring over qualified_name; "" = not provided
 	kind: string, // exact Index_Decl_Kind member name; "" = not provided
 	gtag: string, // exact gtags membership; "" = not provided
-}
-
-// parse_warden_find_args parses the tokens AFTER the `find` name into the
-// query — the per-command flag extension of parse_warden_command's seam
-// (argument text in, struct out, no host state). The grammar is strict: at
-// most one positional (the name-query), `--kind <name>` and `--gtag <tag>`
-// each at most once with a mandatory non-empty value, any other `--` token is
-// unknown, and a --kind value outside the closed Index_Decl_Kind member names
-// refuses right here (reflect.enum_from_name — the index_read decode_enum_name
-// exact-match idiom, never a fuzzy or case-folded match). A query with NO
-// filter at all is the same ok = false: the filterless gate fires at parse,
-// before any index read, so `funpack warden find` is usage exit 2 in any
-// directory — index present or not.
-parse_warden_find_args :: proc(args: []string) -> (query: Warden_Find_Query, ok: bool) {
-	i := 0
-	for i < len(args) {
-		switch token := args[i]; token {
-		case "--kind":
-			if query.kind != "" || i + 1 >= len(args) {
-				return {}, false
-			}
-			if _, known := reflect.enum_from_name(Index_Decl_Kind, args[i + 1]); !known {
-				return {}, false
-			}
-			query.kind = args[i + 1]
-			i += 2
-		case "--gtag":
-			if query.gtag != "" || i + 1 >= len(args) || args[i + 1] == "" {
-				return {}, false
-			}
-			query.gtag = args[i + 1]
-			i += 2
-		case:
-			if strings.has_prefix(token, "--") || query.name != "" || token == "" {
-				return {}, false
-			}
-			query.name = token
-			i += 1
-		}
-	}
-	if query == (Warden_Find_Query{}) {
-		return {}, false
-	}
-	return query, true
 }
 
 // warden_find_name_predicate is the name-query filter: a case-sensitive

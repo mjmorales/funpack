@@ -34,21 +34,6 @@ Fmt_Mode :: enum {
 	Check,
 }
 
-// parse_fmt_mode maps the fmt verb's arguments to its Fmt_Mode, mirroring
-// parse_build_mode: no argument is Write (the in-place formatter), exactly
-// `--check` is Check (verdict-only). Any other argument is a usage error
-// (ok = false → usage + exit 2), so a misspelled flag never silently rewrites
-// the tree.
-parse_fmt_mode :: proc(args: []string) -> (mode: Fmt_Mode, ok: bool) {
-	if len(args) == 0 {
-		return .Write, true
-	}
-	if len(args) == 1 && args[0] == "--check" {
-		return .Check, true
-	}
-	return .Write, false
-}
-
 // run_fmt_verb drives the fmt verb at the working directory. The body lives
 // in the root-parameterized fmt_verb_exit (the run_check_verb precedent) so
 // the exit contract is unit-tested against temp trees; main always passes ".".

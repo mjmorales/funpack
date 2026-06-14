@@ -43,22 +43,10 @@ expect_fmt_properties :: proc(t: ^testing.T, source: string, loc := #caller_loca
 	testing.expect_value(t, second, formatted, loc = loc)
 }
 
-@(test)
-test_parse_fmt_mode_flag_contract :: proc(t: ^testing.T) {
-	mode, ok := parse_fmt_mode({})
-	testing.expect(t, ok)
-	testing.expect_value(t, mode, Fmt_Mode.Write)
-
-	mode, ok = parse_fmt_mode({"--check"})
-	testing.expect(t, ok)
-	testing.expect_value(t, mode, Fmt_Mode.Check)
-
-	_, ok = parse_fmt_mode({"--chek"})
-	testing.expect(t, !ok)
-
-	_, ok = parse_fmt_mode({"--check", "extra"})
-	testing.expect(t, !ok)
-}
+// The fmt `--check` flag seam is now pinned in cli_funpack_test.odin (the CLI
+// tree maps `--check` to Fmt_Mode.Check and its absence to Write, and a typo'd
+// or trailing argument is the usage tier); the property and integration tests
+// below exercise the formatter itself.
 
 @(test)
 test_fmt_property_holds_over_fixture_battery :: proc(t: ^testing.T) {

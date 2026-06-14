@@ -5,70 +5,23 @@ package funpack
 import "core:fmt"
 import "core:os"
 
+// main builds the funpack command tree and hands the argument vector to the
+// framework's dispatch (cli_dispatch, cli_parse.odin): a usage error prints to
+// stderr and exits 2, `--help` prints to stdout and exits 0, and a resolved verb
+// runs and exits with ITS code. The dispatch never decides an exit number — each
+// verb's run_X_verb core owns its {0, 1, 2} contract (§29 §3). The tree is built
+// in the process allocator (lives until exit); transient parse state rides the
+// temp arena.
 main :: proc() {
-	if len(os.args) < 2 {
-		print_usage()
-		os.exit(2)
-	}
-	switch os.args[1] {
-	case "version":
-		os.exit(run_version_verb())
-	case "test":
-		os.exit(run_test_verb())
-	case "build":
-		mode, mode_ok := parse_build_mode(os.args[2:])
-		if !mode_ok {
-			print_usage()
-			os.exit(2)
-		}
-		os.exit(run_build_verb(mode))
-	case "check":
-		mode, mode_ok := parse_build_mode(os.args[2:])
-		if !mode_ok {
-			print_usage()
-			os.exit(2)
-		}
-		os.exit(run_check_verb(".", mode))
-	case "fmt":
-		mode, mode_ok := parse_fmt_mode(os.args[2:])
-		if !mode_ok {
-			print_usage()
-			os.exit(2)
-		}
-		os.exit(run_fmt_verb(mode))
-	case "warden":
-		cmd, arg, find, cmd_ok := parse_warden_command(os.args[2:])
-		if !cmd_ok {
-			print_usage()
-			os.exit(2)
-		}
-		os.exit(run_warden_verb(cmd, arg, find))
-	case:
-		print_usage()
-		os.exit(2)
-	}
-}
-
-// parse_build_mode maps the build verb's arguments to its Build_Mode: no
-// argument is Dev (the default — holes compile, §05), exactly `--release` is
-// Release (the §29 §4 hole-ban mode). Any other argument is a usage error
-// (ok = false → usage + exit 2), so a misspelled flag never silently builds in
-// the wrong mode. The mode is a pure flag — argument text in, enum out — with
-// no host state read.
-parse_build_mode :: proc(args: []string) -> (mode: Build_Mode, ok: bool) {
-	if len(args) == 0 {
-		return .Dev, true
-	}
-	if len(args) == 1 && args[0] == "--release" {
-		return .Release, true
-	}
-	return .Dev, false
+	os.exit(cli_dispatch(build_funpack_cli(), os.args[1:]))
 }
 
 // Warden_Command is the closed `funpack warden` subcommand set (§29 §1) — one
 // member per index query the sub-toolchain answers. The set is closed under
-// the usual enum discipline: a new query is a new member plus its
-// parse_warden_command name, never a stringly-dispatched extra.
+// the usual enum discipline: a new query is a new member plus its command node
+// and handler in the funpack tree (cli_funpack.odin), never a stringly
+// dispatched extra. The CLI framework parses the subcommand; this enum is the
+// projection key warden_command_output dispatches the decoded index on.
 Warden_Command :: enum {
 	Find,
 	Holes,
@@ -79,67 +32,13 @@ Warden_Command :: enum {
 	Pipeline,
 }
 
-// parse_warden_command maps the warden verb's arguments to its Warden_Command
-// plus the command's positional argument, mirroring parse_build_mode —
-// argument text in, enum out, no host state. The subcommand name must be a
-// recognized member; a missing name or an unknown name is a usage error
-// (ok = false → usage + exit 2), so a typo never silently runs a different
-// query. Arity is per-command: find owns the seam's flag extension — its
-// tail tokens parse into the Warden_Find_Query through
-// parse_warden_find_args (warden_find.odin), where the filterless bare
-// `find` and an unknown --kind name are the same ok = false usage tier,
-// adjudicated here at parse before any index read; graph admits one OPTIONAL
-// positional (the incident-edge filter, `funpack warden graph
-// [<qualified_name>]`); every other command stays strict zero-positional — a
-// trailing argument there is the same usage error. Per-command flags extend
-// this seam, not bypass it; arg is "" and find is the zero query whenever a
-// command does not carry them.
-parse_warden_command :: proc(args: []string) -> (cmd: Warden_Command, arg: string, find: Warden_Find_Query, ok: bool) {
-	if len(args) == 0 {
-		return .Find, "", {}, false
-	}
-	switch args[0] {
-	case "find":
-		cmd = .Find
-	case "holes":
-		cmd = .Holes
-	case "probes":
-		cmd = .Probes
-	case "debt":
-		cmd = .Debt
-	case "graph":
-		cmd = .Graph
-	case "tags":
-		cmd = .Tags
-	case "pipeline":
-		cmd = .Pipeline
-	case:
-		return .Find, "", {}, false
-	}
-	if cmd == .Find {
-		find, ok = parse_warden_find_args(args[1:])
-		if !ok {
-			return .Find, "", {}, false
-		}
-		return cmd, "", find, true
-	}
-	switch len(args) {
-	case 1:
-		return cmd, "", {}, true
-	case 2:
-		if cmd == .Graph {
-			return cmd, args[1], {}, true
-		}
-	}
-	return .Find, "", {}, false
-}
-
 // run_warden_verb drives a recognized warden subcommand at the working
 // directory. The body lives in the root-parameterized warden_verb_exit (the
 // project_test_exit_code precedent) so the exit contract is unit-tested
 // against temp roots without the process exit; main always queries ".".
-// arg is the command's parsed positional ("" when absent); find is find's
-// parsed filter set (the zero query on every other command).
+// arg is the command's positional ("" when absent — the handler reads it from
+// the resolved invocation, cli_funpack.odin); find is find's filter set (the
+// zero query on every other command).
 run_warden_verb :: proc(cmd: Warden_Command, arg: string, find: Warden_Find_Query) -> int {
 	return warden_verb_exit(".", cmd, arg, find)
 }
@@ -345,8 +244,4 @@ test_exit_code :: proc(err: Pipeline_Error, report: Test_Report) -> int {
 		return 1
 	}
 	return 0
-}
-
-print_usage :: proc() {
-	fmt.eprintln("usage: funpack <version|test|build [--release]|check [--release]|fmt [--check]|warden <find [<name-query>] [--kind <kind>] [--gtag <tag>]|holes|probes|debt|graph [<qualified_name>]|tags|pipeline>>")
 }

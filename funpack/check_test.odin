@@ -142,27 +142,10 @@ test_check_preexisting_funpack_untouched :: proc(t: ^testing.T) {
 	log.infof("check no-write: a pre-existing .funpack/ survives a clean check byte-untouched (neither overwritten nor deleted)")
 }
 
-// test_parse_build_mode_flag_contract pins the flag seam BOTH verbs ride
-// (`build` and `check` dispatch through the same parse_build_mode): no flag is
-// Dev, exactly `--release` is Release, and a misspelled flag or trailing
-// argument is ok = false — the path main maps to usage + exit 2, so a typo
-// never silently adjudicates in the wrong mode.
-@(test)
-test_parse_build_mode_flag_contract :: proc(t: ^testing.T) {
-	mode, ok := parse_build_mode({})
-	testing.expect(t, ok)
-	testing.expect_value(t, mode, Build_Mode.Dev)
-
-	mode, ok = parse_build_mode({"--release"})
-	testing.expect(t, ok)
-	testing.expect_value(t, mode, Build_Mode.Release)
-
-	_, ok = parse_build_mode({"--relase"})
-	testing.expect(t, !ok)
-
-	_, ok = parse_build_mode({"--release", "extra"})
-	testing.expect(t, !ok)
-}
+// The `--release` flag seam both build and check ride is now pinned in
+// cli_funpack_test.odin (the CLI tree maps `--release` to Build_Mode.Release and
+// its absence to Dev, and a typo'd or trailing argument is the usage tier); the
+// integration tests below exercise the resulting exit contract end-to-end.
 
 // ── live-tree goldens (resolve_spec_dir SKIP-warn protocol) ──────────────
 
