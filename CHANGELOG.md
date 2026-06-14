@@ -7,6 +7,14 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.3.0] - 2026-06-14
+
+### Features
+- feat(funpack): `funpack version` verb embedding the release VERSION mirror (5bf7974)
+
+### Other
+- docs(docs): regenerate CLAUDE.md for prove plugin v4.2.1 (9df4af4)
+
 ## [0.2.0] - 2026-06-14
 
 ### Features
