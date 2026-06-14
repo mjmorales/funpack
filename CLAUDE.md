@@ -1,9 +1,13 @@
 <!-- prove:managed:start -->
 # funpack
 
-<!-- prove:plugin-version:3.13.0 -->
-**Prove plugin v3.13.0** — if `claude-prove --version` does not match v3.13.0, run `/prove:update` to sync.
+<!-- prove:plugin-version:4.2.1 -->
+**Prove plugin v4.2.1** — if `claude-prove --version` does not match v4.2.1, run `/prove:update` to sync.
 
+
+## Structure
+
+- `docs/` — Documentation
 
 ## Validation
 
@@ -112,3 +116,12 @@ When the engine's contracts, the language's semantics, or the funpack-spec's nor
 - Never codify a contradiction into engine semantics to make a fixture pass; instead, surface the contradiction and resolve it at the source.
 - Never loosen a gate to force a case through; instead, escalate the gate conflict and review whether the case or the gate is wrong.
 - Never special-case around a spec clause; instead, raise the clause for review and align the implementation with its corrected normative intent.
+
+
+## Triaged Decisions — Route Through AskUserQuestion
+
+When you have analyzed a decision point and narrowed it to discrete options, present it through the `AskUserQuestion` tool, never as free-form prose.
+
+- **Tool, not prose**: For any pre-analyzed decision with discrete options, call `AskUserQuestion`; instead of narrating the choices in text, surface them as selectable options.
+- **Recommendation first**: List your recommended option first and mark it `(Recommended)`; instead of presenting a neutral menu, lead with the choice your analysis favors.
+- **Every description states why**: Each option's description must give the tradeoff or consequence of choosing it; instead of restating what the option does, explain why one would pick it.
