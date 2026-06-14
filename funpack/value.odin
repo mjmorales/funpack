@@ -5,6 +5,9 @@
 // tags, mirroring the type discipline of spec §10.
 package funpack
 
+import "core:fmt"
+import "core:strings"
+
 Value :: union {
 	Fixed,
 	i64,    // Int — counts and indices
@@ -118,15 +121,22 @@ Tilemap_Seed_Cell :: struct {
 }
 
 // Input_Value is the test-position Input snapshot: the set of (player, action)
-// button presses an inline test seeds via Input.empty().with_pressed(…). It is
-// a §23 §2 read surface — pressed/released/held query whether a button is in
-// the set; an absent (player, action) reads false. The set is identified by the
-// player and action VARIANT names (PlayerId::P1, Move::Down), matching the
-// evaluator's Enum_Value (type_name, variant) identity. value/axis read the
-// analog channels, which a with_pressed snapshot never seeds, so they read the
-// zero/zero-vector default — a behavior never faults on input.
+// button presses an inline test seeds via Input.empty().with_pressed(…), plus
+// the §23 §5 analog channels with_value/with_axis seed. It is a §23 §2 read
+// surface — pressed/released/held query whether a button is in the set; an
+// absent (player, action) reads false. The set is identified by the player and
+// action VARIANT names (PlayerId::P1, Move::Down), matching the evaluator's
+// Enum_Value (type_name, variant) identity. value(player, axis) reads the 1D
+// analog channel with_value seeds (a Fixed) and axis(player, axis) the 2D
+// channel with_axis seeds (a Vec2); a channel neither builder seeded reads the
+// zero / zero-vector default — a behavior never faults on input. The three
+// stores are DETERMINISTIC insert-ordered slices (never iterated maps): a
+// with_* builder appends a row, so the value an evaluation produces is
+// machine-identical, mirroring the `pressed` discipline.
 Input_Value :: struct {
-	pressed: []Input_Press,
+	pressed:  []Input_Press,        // the held buttons (with_pressed)
+	analog1d: []Input_Analog_Value, // the 1D axis samples (with_value, read by value)
+	analog2d: []Input_Analog_Axis,  // the 2D axis samples (with_axis, read by axis)
 }
 
 // Input_Press is one held button in an Input snapshot: the player and action
@@ -134,6 +144,25 @@ Input_Value :: struct {
 Input_Press :: struct {
 	player: string, // the PlayerId variant (e.g. "P1")
 	action: string, // the action variant (e.g. "Down")
+}
+
+// Input_Analog_Value is one §23 §5 1D analog channel sample with_value seeded:
+// the (player, axis) variant pair keyed to the Fixed deflection value(player,
+// axis) reads back. A later with_value on the same (player, axis) appends a new
+// row; value reads the LAST matching row, so a re-seed overwrites the read.
+Input_Analog_Value :: struct {
+	player: string, // the PlayerId variant (e.g. "P1")
+	axis:   string, // the axis-action variant (e.g. "Strafe")
+	value:  Fixed,  // the analog deflection sample
+}
+
+// Input_Analog_Axis is one §23 §5 2D analog channel sample with_axis seeded:
+// the (player, axis) variant pair keyed to the Vec2 deflection axis(player,
+// axis) reads back — the 2D twin of Input_Analog_Value.
+Input_Analog_Axis :: struct {
+	player: string,     // the PlayerId variant (e.g. "P1")
+	axis:   string,     // the axis-action variant (e.g. "Move")
+	value:  Vec2_Value, // the analog deflection sample
 }
 
 // Time_Value is the test-position Time resource: the fixed frame delta and the
@@ -367,4 +396,104 @@ record_field_value :: proc(fields: []Record_Field_Value, name: string) -> (value
 		}
 	}
 	return nil, false
+}
+
+// value_display renders a runtime Value to a DETERMINISTIC, human-readable
+// string — the LHS/RHS body a failed assert prints so the agent sees what the
+// two sides evaluated to. It is a pure function of the value alone (no clock, no
+// allocation-order dependence: lists/records render in construction order, which
+// is itself deterministic), so a golden pins it byte-for-byte. A Fixed renders
+// as its exact Q32.32 raw bits (`fixed(N)`) — there is no exact-decimal renderer
+// in the kernel and the raw bits are the unambiguous, machine-identical form. The
+// receiver-less surface values (Lambda/Input/Tilemap/Nav/Time/Transform/Pose/Quat)
+// — which a test never compares with `==` (value_equal returns false for them) —
+// render a bare type tag, enough to name the side without promising a structure
+// the language never compares.
+value_display :: proc(v: Value, allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
+	value_display_into(&b, v)
+	return strings.to_string(b)
+}
+
+// value_display_into is value_display's builder-threaded core, recursing into
+// the composite arms (Option payload, list/tuple elements, enum payload, record
+// fields) so a nested value renders fully.
+value_display_into :: proc(b: ^strings.Builder, v: Value) {
+	switch av in v {
+	case i64:
+		fmt.sbprintf(b, "%d", av)
+	case bool:
+		fmt.sbprint(b, "true" if av else "false")
+	case string:
+		fmt.sbprintf(b, "%q", av)
+	case Fixed:
+		fmt.sbprintf(b, "fixed(%d)", i64(av))
+	case Option_Value:
+		if !av.is_some {
+			fmt.sbprint(b, "Option::None")
+			return
+		}
+		fmt.sbprint(b, "Option::Some(")
+		value_display_into(b, av.payload^)
+		fmt.sbprint(b, ")")
+	case Vec2_Value:
+		fmt.sbprintf(b, "Vec2{{x: fixed(%d), y: fixed(%d)}}", i64(av.x), i64(av.y))
+	case Vec3_Value:
+		fmt.sbprintf(b, "Vec3{{x: fixed(%d), y: fixed(%d), z: fixed(%d)}}", i64(av.x), i64(av.y), i64(av.z))
+	case List_Value:
+		fmt.sbprint(b, "[")
+		for element, i in av.elements {
+			if i > 0 {
+				fmt.sbprint(b, ", ")
+			}
+			value_display_into(b, element)
+		}
+		fmt.sbprint(b, "]")
+	case Tuple_Value:
+		fmt.sbprint(b, "(")
+		for element, i in av.elements {
+			if i > 0 {
+				fmt.sbprint(b, ", ")
+			}
+			value_display_into(b, element)
+		}
+		fmt.sbprint(b, ")")
+	case Enum_Value:
+		fmt.sbprintf(b, "%s::%s", av.type_name, av.variant)
+		if av.payload != nil {
+			fmt.sbprint(b, "(")
+			value_display_into(b, av.payload^)
+			fmt.sbprint(b, ")")
+		}
+	case Record_Value:
+		fmt.sbprint(b, av.type_name)
+		if av.variant != "" {
+			fmt.sbprintf(b, "::%s", av.variant)
+		}
+		fmt.sbprint(b, "{")
+		for field, i in av.fields {
+			if i > 0 {
+				fmt.sbprint(b, ", ")
+			}
+			fmt.sbprintf(b, "%s: ", field.name)
+			value_display_into(b, field.value)
+		}
+		fmt.sbprint(b, "}")
+	case Quat_Value:
+		fmt.sbprintf(b, "Quat{{x: fixed(%d), y: fixed(%d), z: fixed(%d), w: fixed(%d)}}", i64(av.x), i64(av.y), i64(av.z), i64(av.w))
+	case Lambda_Value:
+		fmt.sbprint(b, "<fn>")
+	case Input_Value:
+		fmt.sbprint(b, "<Input>")
+	case Tilemap_Value:
+		fmt.sbprint(b, "<Tilemap>")
+	case Nav_Value:
+		fmt.sbprint(b, "<Nav>")
+	case Time_Value:
+		fmt.sbprint(b, "<Time>")
+	case Transform_Value:
+		fmt.sbprint(b, "<Transform>")
+	case Pose_Value:
+		fmt.sbprint(b, "<Pose>")
+	}
 }

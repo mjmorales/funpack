@@ -78,14 +78,38 @@ Typed_Ast :: struct {
 }
 
 Eval_Result :: struct {
-	passed: int,
-	failed: int,
+	passed:   int,
+	failed:   int,
+	failures: []Assert_Failure, // one per failed assert, in evaluation order
+}
+
+// Assert_Failure is the localized body of ONE failed `assert` — the human
+// fix-criteria the CLI renders beside the exit-1 failed-assertion count (the
+// machine contract is unchanged: a failed assert is exit 1, never a compile
+// error). It names the enclosing `test "…"` block, the assert's 1-based source
+// line (from the assert expression's span), the failing assert expression text
+// (the canonical formatter rendering of the expr), and — for a top-level `==` /
+// `!=` comparison — the evaluated LHS and RHS displays so the agent sees what
+// the two sides reduced to. `has_operands` is false for a non-comparison assert
+// (a bare Bool predicate) or one whose operands could not be evaluated, in which
+// case the LHS/RHS displays are omitted. The path is filled by the project layer
+// from the failing module's source (the Diagnostic.path discipline).
+Assert_Failure :: struct {
+	test_name:    string,
+	line:         int,    // 1-based source line of the assert expression; 0 = unknown
+	expr_text:    string, // the canonical rendering of the failing assert expression
+	op:           string, // the comparison operator ("==" / "!=") when has_operands; "" otherwise
+	lhs_display:  string, // value_display of the left operand (when has_operands)
+	rhs_display:  string, // value_display of the right operand (when has_operands)
+	has_operands: bool,   // true for a top-level ==/!= whose operands both evaluated
+	path:         string, // source file; filled by the CLI/project layer
 }
 
 Test_Report :: struct {
 	passed:    int,
 	failed:    int,
 	exit_code: int,
+	failures:  []Assert_Failure,
 }
 
 // Pipeline_Error distinguishes a source that failed to compile from a
@@ -290,6 +314,12 @@ Project_Report :: struct {
 	// line. Zero (rule = "") when no module failed (module_err = .None), so a
 	// clean run carries no diagnostic.
 	diagnostic:    Diagnostic,
+	// failures carries the localized body of every failed assert across the
+	// project's modules, in module-then-evaluation order, each stamped with its
+	// owning module's source path — the human fix-criteria the CLI renders beside
+	// the exit-1 failed count. Empty when no assert failed (the machine contract,
+	// `failed == 0`, is the authority; this is the added human body).
+	failures:      []Assert_Failure,
 }
 
 // project_pipeline_sources is the source set the test verb compiles: the
@@ -351,6 +381,7 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 	eval_modules := build_module_eval_surface(modules, asts, index, package_roots)
 
 	report := Project_Report{}
+	failures := make([dynamic]Assert_Failure, 0, 0, context.temp_allocator)
 	for source, i in sources {
 		// The module's own §15 name threads to the evaluator so an intra-module
 		// const cycle in THIS module keys on its module (and a cross-module cycle
@@ -368,7 +399,15 @@ run_project_pipeline :: proc(sources: []Source) -> Project_Report {
 		}
 		report.passed += module_report.passed
 		report.failed += module_report.failed
+		// Stamp each failed assert with its owning module's source path so the CLI
+		// re-reads the right file to excerpt the failing assert line.
+		for failure in module_report.failures {
+			stamped := failure
+			stamped.path = source.path
+			append(&failures, stamped)
+		}
 	}
+	report.failures = failures[:]
 	return report
 }
 
@@ -410,5 +449,10 @@ build_module_eval_surface :: proc(modules: []string, asts: []Ast, index: Module_
 
 stage_report :: proc(result: Eval_Result) -> Test_Report {
 	exit_code := 0 if result.failed == 0 else 1
-	return Test_Report{passed = result.passed, failed = result.failed, exit_code = exit_code}
+	return Test_Report {
+		passed = result.passed,
+		failed = result.failed,
+		exit_code = exit_code,
+		failures = result.failures,
+	}
 }

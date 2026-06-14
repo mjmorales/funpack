@@ -121,6 +121,7 @@ stage_evaluate :: proc(typed: Typed_Ast) -> Eval_Result {
 // from any test trips the guard rather than overflowing the stack.
 stage_evaluate_indexed :: proc(typed: Typed_Ast, modules: []Module_Eval, module: string) -> Eval_Result {
 	result := Eval_Result{}
+	failures := make([dynamic]Assert_Failure, 0, 0, context.temp_allocator)
 	visit := new(Const_Visit, context.temp_allocator)
 	visit.active = make(map[string]bool, context.temp_allocator)
 	ctx := Eval_Ctx {
@@ -146,6 +147,7 @@ stage_evaluate_indexed :: proc(typed: Typed_Ast, modules: []Module_Eval, module:
 					result.passed += 1
 				} else {
 					result.failed += 1
+					append(&failures, assert_failure(ctx, env, test.name, node))
 				}
 			case Return_Node, If_Node:
 				// Return/If are fn-body statements; a test block never holds
@@ -153,6 +155,7 @@ stage_evaluate_indexed :: proc(typed: Typed_Ast, modules: []Module_Eval, module:
 			}
 		}
 	}
+	result.failures = failures[:]
 	return result
 }
 
@@ -164,6 +167,48 @@ eval_assert :: proc(ctx: Eval_Ctx, env: ^Env, node: Assert_Node) -> bool {
 	}
 	passed, is_bool := value.(bool)
 	return is_bool && passed
+}
+
+// assert_failure builds the localized body of ONE failed assert: the enclosing
+// test name, the assert expression's source line and canonical text, and — for a
+// top-level `==` / `!=` comparison — the two operands' evaluated displays so the
+// fix-criteria names what each side reduced to. A non-comparison assert (a bare
+// Bool predicate) or one whose operands do not both evaluate carries no operands
+// (has_operands = false), so the renderer shows the expression alone. `path` is
+// left "" here — the project layer stamps the owning module's source path.
+assert_failure :: proc(ctx: Eval_Ctx, env: ^Env, test_name: string, node: Assert_Node) -> Assert_Failure {
+	line, _ := expr_span(node.expr)
+	failure := Assert_Failure {
+		test_name = test_name,
+		line      = line,
+		expr_text = expr_text(node.expr, context.temp_allocator),
+	}
+	// A top-level ==/!= is the comparison whose two sides the agent most needs:
+	// evaluate both and render their displays. The operator text is the token's
+	// own spelling, so the renderer prints the same `==`/`!=` the source used.
+	if binary, is_binary := node.expr.(^Binary_Expr); is_binary {
+		if binary.op.kind == .Eq_Eq || binary.op.kind == .Not_Eq {
+			lhs, lhs_ok := eval_expr(ctx, env, binary.lhs)
+			rhs, rhs_ok := eval_expr(ctx, env, binary.rhs)
+			if lhs_ok && rhs_ok {
+				failure.op = binary.op.text
+				failure.lhs_display = value_display(lhs, context.temp_allocator)
+				failure.rhs_display = value_display(rhs, context.temp_allocator)
+				failure.has_operands = true
+			}
+		}
+	}
+	return failure
+}
+
+// expr_text renders an expression to its canonical source text — the formatter's
+// fmt_expr, run into a fresh builder, so a failed assert prints the EXACT
+// canonical form (the same bytes `funpack fmt` would write) rather than a
+// re-spelling. The render is a pure function of the AST, so a golden pins it.
+expr_text :: proc(expr: Expr, allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
+	fmt_expr(&b, expr, 0)
+	return strings.to_string(b)
 }
 
 eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bool) {
@@ -612,14 +657,27 @@ eval_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> (value: Value,
 		return crossmod_value, crossmod_ok
 	}
 	// A §19 typed asset-handle literal (MeshHandle{name: "coin"}, SoundHandle{name:
-	// "coin_sfx"}): the only engine records the evaluator constructs — each named
-	// field evaluates into a tagged Record_Value carrying the handle's type name, so
-	// the typed seam constant compares equal to the string-constructor handle of the
-	// same name (the §19 golden's assets.coin_sfx == sound("coin_sfx")). Reached only
-	// for a handle name (surface_engine_record's handle arms); a non-handle engine
-	// record (Body, Save) never reaches construction in test position.
+	// "coin_sfx"}): each named field evaluates into a tagged Record_Value carrying
+	// the handle's type name, so the typed seam constant compares equal to the
+	// string-constructor handle of the same name (the §19 golden's assets.coin_sfx
+	// == sound("coin_sfx")). Kept distinct from the general engine-record arm below
+	// because a handle carries no defaulted field — its one String `name` is always
+	// supplied.
 	if _, _, is_handle := surface_engine_record(e.type_name); is_handle && is_asset_handle_name(e.type_name) {
 		return eval_asset_handle_literal(ctx, env, e)
+	}
+	// A §11 §2 / §24 §1-§2 engine command/signal/record literal (Body{…}, Trigger{},
+	// Save{slot}, Restore{slot}, ApplySettings{settings}, Settings{…}, AccessOpts{…}):
+	// each named field evaluates, then the schema's omitted fields fill from their
+	// spec-normative defaults read off the surface schema (slot.default), so a Body
+	// that omits `impulse` carries the zero Vec2 the apply_impulse accumulation
+	// builds on. The value is a
+	// Record_Value tagged with the engine type name — the SAME shape Despawn()/the
+	// struct-variant commands take — so value_equal compares two of them structurally
+	// (yard's `deliver.step(…) == ([Despawn()], [Delivered{}])`, the Save/ApplySettings
+	// command asserts). Reached after the asset-handle arm, so a handle never lands here.
+	if _, fields, is_engine := surface_engine_record(e.type_name); is_engine {
+		return eval_engine_record(ctx, env, e, fields)
 	}
 	// An imported STRUCTURAL stdlib record literal (engine.grid's `Cell{x: 5,
 	// y: 3}`, §26): plain stdlib data with no declared defaults, so the value
@@ -673,6 +731,37 @@ eval_asset_handle_literal :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr) -> 
 		fields[i] = Record_Field_Value{name = field.name, value = v}
 	}
 	return Record_Value{type_name = e.type_name, fields = fields}, true
+}
+
+// eval_engine_record builds a §11 §2 / §24 engine record/command value (Body,
+// Trigger, Save, Restore, ApplySettings, Settings, AccessOpts) from its literal:
+// every named field evaluates in the consumer env, then each schema field the
+// literal omitted fills from its spec-normative default read OFF THE SCHEMA
+// (slot.default when slot.has_default — the one surface table is the single
+// source of truth for both the field type and its spec `data` default). Field
+// order is the schema's, so two literals of the same type carry the same field
+// set in the same order regardless of which optional fields each named — and
+// value_equal (which matches by name) compares them equal. The result is a
+// Record_Value tagged with the engine type, the same shape the Despawn/struct-
+// variant commands take, so an engine command compares structurally. A field
+// with no schema default (a required field the typecheck demands) is never
+// missing from a checked literal, so it is simply skipped here.
+eval_engine_record :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Record_Expr, schema: []Surface_Field) -> (value: Value, ok: bool) {
+	fields := make([dynamic]Record_Field_Value, 0, len(schema), context.temp_allocator)
+	for field in e.fields {
+		v := eval_expr(ctx, env, field.value) or_return
+		append(&fields, Record_Field_Value{name = field.name, value = v})
+	}
+	for slot in schema {
+		if !slot.has_default {
+			continue
+		}
+		if _, present := record_field_value(fields[:], slot.name); present {
+			continue
+		}
+		append(&fields, Record_Field_Value{name = slot.name, value = slot.default})
+	}
+	return Record_Value{type_name = e.type_name, fields = fields[:]}, true
 }
 
 // eval_user_record builds a user thing/data/signal value: every field the
@@ -1363,6 +1452,8 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_concat(ctx, env, e)
 	case "is_empty":
 		return eval_is_empty(ctx, env, e)
+	case "len":
+		return eval_len(ctx, env, e)
 	case "get":
 		return eval_get(ctx, env, e)
 	case "map":
@@ -1379,6 +1470,35 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_asset_constructor(ctx, env, e, "SoundHandle")
 	case "atlas":
 		return eval_asset_constructor(ctx, env, e, "AtlasHandle")
+	case "Despawn":
+		// §04 the parameterless self-despawn command constructor. Represent it as
+		// a fieldless, variant-less Record_Value tagged "Despawn" — the same shape
+		// a nullary engine signal (Killed{}) takes — so value_equal's Record_Value
+		// arm compares two of them equal by (type_name, empty fields). A behavior
+		// that self-despawns (yard's deliver.step → ([Despawn()], [Delivered{}]),
+		// snake's despawn_eaten → [Despawn()]) is then unit-testable: an identical
+		// despawn command compares equal. "Despawn" is a reserved engine
+		// Type_Name (surface.odin engine.world), so no user record collides. The
+		// arity is checked: Despawn takes no argument.
+		if len(e.args) != 0 {
+			return nil, false
+		}
+		return Record_Value{type_name = "Despawn"}, true
+	case "Spawn":
+		// §04 Spawn(thing): the engine command that wraps a thing's blackboard into a
+		// spawn command (setup() returns `[Spawn(Player{…}), …]`). Represent it as a
+		// Record_Value tagged "Spawn" carrying its one `thing` field — the wrapped
+		// thing value — so two Spawn commands of the same thing compare equal (the
+		// Despawn/struct-variant command shape). "Spawn" is a reserved engine
+		// Type_Name (surface.odin engine.world), so no user record collides. The arity
+		// is checked: Spawn takes exactly one argument.
+		if len(e.args) != 1 {
+			return nil, false
+		}
+		thing := eval_expr(ctx, env, e.args[0]) or_return
+		fields := make([]Record_Field_Value, 1, context.temp_allocator)
+		fields[0] = Record_Field_Value{name = "thing", value = thing}
+		return Record_Value{type_name = "Spawn", fields = fields}, true
 	}
 	// A call to a user-declared top-level fn (advance, goal_side, add_goal) or
 	// a §08 §3 query — call_check admits both kinds at call position, so the
@@ -1836,6 +1956,17 @@ eval_is_empty :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value,
 	return len(elements) == 0, true
 }
 
+// eval_len lowers `len(list) -> Int` (spec §08): the element count as an Int
+// (Value arm i64, never Fixed — §10 forbids implicit promotion, so the count
+// compares only against another Int). The yard reads `len(self.cars)`; the
+// element count of a literal list equals itself and the literal length. The
+// shape mirrors eval_is_empty (the same list-arg materialization), differing
+// only in projecting the count instead of the emptiness predicate.
+eval_len :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 1) or_return
+	return i64(len(elements)), true
+}
+
 // eval_get lowers `get(list, i) -> Option[T]` (spec §08): the element at index i
 // wrapped in Option::Some, or Option::None when i is out of range — total, never
 // faulting (the hud preset test reads get(volume_presets, 1)). A negative index is
@@ -2073,11 +2204,37 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 		if record.type_name == "Path" && callee.member == "advance" {
 			return eval_path_advance(ctx, env, record, args)
 		}
+		// §11 §2 Body.apply_impulse(j): a behavior writes its OWN body's accumulated
+		// intent — apply_impulse returns a new Body with `impulse` += the Vec2, every
+		// other field preserved, so two pushes sum (b.apply_impulse(j).apply_impulse(k))
+		// and the result is itself a Body the chain continues on. No call into the
+		// solver, no hidden accumulator (the spec's deterministic Vec2 accumulation).
+		if record.type_name == "Body" && callee.member == "apply_impulse" {
+			return eval_body_apply_impulse(ctx, env, record, args)
+		}
 	}
 	// §12 a query on a fixture Nav handle (the Nav.of value: nav.path(from, to),
 	// nav.los(from, to), nav.reachable(from, to), nav.nearest(point)).
 	if nav, is_nav := receiver.(Nav_Value); is_nav {
 		return eval_nav_method(ctx, env, nav, callee.member, args)
+	}
+	// §08 the View reference surface on a materialized View (View.of(list) is a
+	// List_Value): ref(i) mints a typed Ref[T] to the i-th row, resolve(ref) reads
+	// it back to Option[T] (the arena gate behavior: `switches.resolve(self.gate)`
+	// over `switches.ref(0)`). A Ref is a Record_Value tagged "Ref" carrying its
+	// `index` Int, so it threads through a thing's `gate: Ref[Switch]` field and a
+	// `with`-update structurally. resolve reads the View's element at that index —
+	// Option::Some(elem) when in range, Option::None when the referent is gone (the
+	// despawn case the gate's match covers). These run before the stdlib-UFCS
+	// fallback (ref/resolve are View methods, not list free fns), so a list's own
+	// len/contains UFCS still wins for those names.
+	if list, is_list := receiver.(List_Value); is_list {
+		switch callee.member {
+		case "ref":
+			return eval_view_ref(ctx, env, args)
+		case "resolve":
+			return eval_view_resolve(ctx, env, list, args)
+		}
 	}
 	// A method call on a value receiver: the §23 §2 Input queries (an inline test
 	// seeds the snapshot via Input.empty().with_pressed(…) and reads it via
@@ -2096,31 +2253,42 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 	if pose, is_pose := receiver.(Pose_Value); is_pose {
 		return eval_pose_method(ctx, env, pose, callee.member, args)
 	}
-	q := receiver.(Quat_Value) or_return
-	switch callee.member {
-	case "rotate":
-		if len(args) != 1 {
-			return nil, false
+	if q, is_quat := receiver.(Quat_Value); is_quat {
+		switch callee.member {
+		case "rotate":
+			if len(args) != 1 {
+				return nil, false
+			}
+			arg := eval_expr(ctx, env, args[0]) or_return
+			v := arg.(Vec3_Value) or_return
+			return quat_rotate(q, v), true
+		case "mul":
+			if len(args) != 1 {
+				return nil, false
+			}
+			arg := eval_expr(ctx, env, args[0]) or_return
+			other := arg.(Quat_Value) or_return
+			return quat_mul(q, other), true
+		case "slerp":
+			if len(args) != 2 {
+				return nil, false
+			}
+			other_value := eval_expr(ctx, env, args[0]) or_return
+			other := other_value.(Quat_Value) or_return
+			t_value := eval_expr(ctx, env, args[1]) or_return
+			t := t_value.(Fixed) or_return
+			return quat_slerp(q, other, t), true
 		}
-		arg := eval_expr(ctx, env, args[0]) or_return
-		v := arg.(Vec3_Value) or_return
-		return quat_rotate(q, v), true
-	case "mul":
-		if len(args) != 1 {
-			return nil, false
-		}
-		arg := eval_expr(ctx, env, args[0]) or_return
-		other := arg.(Quat_Value) or_return
-		return quat_mul(q, other), true
-	case "slerp":
-		if len(args) != 2 {
-			return nil, false
-		}
-		other_value := eval_expr(ctx, env, args[0]) or_return
-		other := other_value.(Quat_Value) or_return
-		t_value := eval_expr(ctx, env, args[1]) or_return
-		t := t_value.(Fixed) or_return
-		return quat_slerp(q, other, t), true
+	}
+	// §02 §4 UFCS over a stdlib free fn — the evaluator twin of method_check's
+	// lowering: when the receiver is not handled by any value-method arm above and
+	// `member` names a stdlib free fn, run `recv.f(args)` as the free call
+	// `f(recv, args)` through the SAME eval_call path that runs `f(recv, args)`, so
+	// `[1,2].len()` evaluates exactly as `len([1,2])`. The typecheck already admitted
+	// this form (method_check), so reaching it here means the lowering types; the
+	// value-method arms ran first, so a receiver's own method (Pose.get) wins.
+	if is_stdlib_free_fn(callee.member) {
+		return eval_call(ctx, env, stdlib_ufcs_call(callee, args, callee.line, callee.col))
 	}
 	return nil, false
 }
@@ -2228,6 +2396,79 @@ none_value :: proc() -> Value {
 	return Option_Value{is_some = false, payload = nil}
 }
 
+// settings_defaults builds the §24 §2 factory-default Settings value (the Menu
+// singleton's `Settings.defaults()` seed). The surface types only `access`
+// among Settings' fields, so the value carries that one field — an AccessOpts
+// record at its reduce_motion=false default — the minimal deterministic value
+// yard reads (settings.access.reduce_motion) and toggle_motion `with`-updates.
+// The `access` AccessOpts is built through the SAME schema-defaulted path an
+// AccessOpts{} literal takes (engine_record_from_defaults over the surface
+// schema), so reduce_motion=false comes from the one surface-schema source — the
+// shape matches an AccessOpts engine-record literal exactly, so a toggle's
+// with-update over it threads structurally and the runtime's settings_defaults
+// mirror (runtime/interp_call.odin) seeds the same reduce_motion=false access.
+settings_defaults :: proc() -> Value {
+	access := engine_record_from_defaults("AccessOpts")
+	settings_fields := make([]Record_Field_Value, 1, context.temp_allocator)
+	settings_fields[0] = Record_Field_Value{name = "access", value = access}
+	return Record_Value{type_name = "Settings", fields = settings_fields}
+}
+
+// engine_record_from_defaults builds an engine record value carrying ONLY its
+// schema-defaulted fields (the all-fields-omitted construction), reading each
+// default off the surface schema (Surface_Field.default) — the same single
+// source eval_engine_record fills omitted literal fields from. It is the
+// no-named-fields shape behind a constructor like Settings.defaults()'s `access`
+// sub-record, so the value matches what an `AccessOpts{}` literal would build.
+engine_record_from_defaults :: proc(type_name: string) -> Value {
+	_, schema, found := surface_engine_record(type_name)
+	if !found {
+		return Record_Value{type_name = type_name}
+	}
+	fields := make([dynamic]Record_Field_Value, 0, len(schema), context.temp_allocator)
+	for slot in schema {
+		if !slot.has_default {
+			continue
+		}
+		append(&fields, Record_Field_Value{name = slot.name, value = slot.default})
+	}
+	return Record_Value{type_name = type_name, fields = fields[:]}
+}
+
+// eval_body_apply_impulse lowers §11 §2 Body.apply_impulse(j): the receiver Body
+// record's `impulse` field accumulates the Vec2 argument (impulse + j, the
+// component-wise saturating Fixed add), every other field preserved, and the
+// result is a new Body the chain continues on (b.apply_impulse(j).apply_impulse(k)
+// sums to j+k). A Body that omitted `impulse` carries the zero Vec2 default
+// (the surface schema's Body.impulse default), so the first push accumulates from
+// zero. ok is false on
+// a wrong arity or a non-Vec2 argument (the typecheck-rejected forms never reach a
+// passing program), or when the body has no impulse field (never, for a checked Body).
+eval_body_apply_impulse :: proc(ctx: Eval_Ctx, env: ^Env, body: Record_Value, args: []Expr) -> (value: Value, ok: bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	arg := eval_expr(ctx, env, args[0]) or_return
+	push, is_vec2 := arg.(Vec2_Value)
+	if !is_vec2 {
+		return nil, false
+	}
+	current, has_impulse := record_field_value(body.fields, "impulse")
+	if !has_impulse {
+		return nil, false
+	}
+	prior, is_prior_vec2 := current.(Vec2_Value)
+	if !is_prior_vec2 {
+		return nil, false
+	}
+	updated := make([]Record_Field_Value, len(body.fields), context.temp_allocator)
+	copy(updated, body.fields)
+	if !record_replace_field(updated, "impulse", vec2_add(prior, push)) {
+		return nil, false
+	}
+	return Record_Value{type_name = body.type_name, variant = body.variant, fields = updated}, true
+}
+
 // eval_audio_adder lowers a §22 self-first adder on a built Sound/Audio record:
 // .gain(g)/.pitch(p) replace the Fixed field, .bus(b) the Bus field, .at(pos) the
 // Option position. Each returns a new record with the one field replaced (the base
@@ -2332,6 +2573,18 @@ eval_resource_builder :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: strin
 			}
 			return Time_Value{dt = dt}, true
 		}
+	case "Settings":
+		// §24 §2 Settings.defaults(): the factory-default preferences the Menu
+		// singleton seeds with (yard `settings: Settings = Settings.defaults()`). The
+		// surface types only `access` (the one field yard reads/toggles), so the value
+		// carries exactly that field — a Settings record whose access is AccessOpts at
+		// its reduce_motion=false default. The other Settings fields (volume, binds,
+		// graphics) are out of the asserted scope (never read), so the deterministic
+		// minimal value omits them; the with-update at toggle_motion replaces `access`,
+		// keeping the field set stable, so a defaults() value compares equal to another.
+		if member == "defaults" && len(args) == 0 {
+			return settings_defaults(), true
+		}
 	case "View":
 		if member == "of" && len(args) == 1 {
 			source, source_ok := eval_expr(ctx, env, args[0])
@@ -2351,13 +2604,14 @@ eval_resource_builder :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: strin
 	return nil, false
 }
 
-// eval_input_method lowers a §23 §2 query on an Input snapshot value: pressed/
-// released/held read whether a (player, action) button is in the snapshot's held
-// set, with_pressed returns a new snapshot adding one held button, and value/axis
-// read the analog channels — which a with_pressed snapshot never seeds, so they
-// read the zero / zero-vector default (a behavior never faults on input). The
-// (player, action) pair is identified by its variant names (PlayerId::P1,
-// Move::Down), matching the snapshot's recorded press identity.
+// eval_input_method lowers a §23 §2/§5 query on an Input snapshot value:
+// pressed/released/held read whether a (player, action) button is in the held
+// set; with_pressed returns a new snapshot adding one held button; with_value /
+// with_axis seed the §23 §5 analog channels, and value / axis read them back —
+// a (player, axis) channel neither builder seeded reads the zero / zero-vector
+// default (a behavior never faults on input). The (player, action/axis) pair is
+// identified by its variant names (PlayerId::P1, Move::Down), matching the
+// snapshot's recorded identity.
 eval_input_method :: proc(ctx: Eval_Ctx, env: ^Env, input: Input_Value, member: string, args: []Expr) -> (value: Value, ok: bool) {
 	switch member {
 	case "with_pressed":
@@ -2368,7 +2622,38 @@ eval_input_method :: proc(ctx: Eval_Ctx, env: ^Env, input: Input_Value, member: 
 		next := make([]Input_Press, len(input.pressed) + 1, context.temp_allocator)
 		copy(next, input.pressed)
 		next[len(input.pressed)] = Input_Press{player = player, action = action}
-		return Input_Value{pressed = next}, true
+		return Input_Value{pressed = next, analog1d = input.analog1d, analog2d = input.analog2d}, true
+	case "with_value":
+		// §23 §5 the 1D analog producer (Input.empty().with_value(P1, Strafe, 0.0)):
+		// append a (player, axis) → Fixed row, preserving the other channels, so the
+		// snapshot threads through a chain of with_* builders deterministically.
+		player, axis, sample, args_ok := eval_input_analog_args(ctx, env, args)
+		if !args_ok {
+			return nil, false
+		}
+		f, is_fixed := sample.(Fixed)
+		if !is_fixed {
+			return nil, false
+		}
+		next := make([]Input_Analog_Value, len(input.analog1d) + 1, context.temp_allocator)
+		copy(next, input.analog1d)
+		next[len(input.analog1d)] = Input_Analog_Value{player = player, axis = axis, value = f}
+		return Input_Value{pressed = input.pressed, analog1d = next, analog2d = input.analog2d}, true
+	case "with_axis":
+		// §23 §5 the 2D analog producer (yard's drive test with_axis(P1, Move,
+		// Vec2{1,0})): the Vec2 twin of with_value.
+		player, axis, sample, args_ok := eval_input_analog_args(ctx, env, args)
+		if !args_ok {
+			return nil, false
+		}
+		v, is_vec2 := sample.(Vec2_Value)
+		if !is_vec2 {
+			return nil, false
+		}
+		next := make([]Input_Analog_Axis, len(input.analog2d) + 1, context.temp_allocator)
+		copy(next, input.analog2d)
+		next[len(input.analog2d)] = Input_Analog_Axis{player = player, axis = axis, value = v}
+		return Input_Value{pressed = input.pressed, analog1d = input.analog1d, analog2d = next}, true
 	case "pressed", "held":
 		player, action, args_ok := eval_input_button_args(ctx, env, args)
 		if !args_ok {
@@ -2384,21 +2669,126 @@ eval_input_method :: proc(ctx: Eval_Ctx, env: ^Env, input: Input_Value, member: 
 		}
 		return false, true
 	case "value":
-		// The analog 1D read of an unseeded channel is the zero default.
-		_, _, args_ok := eval_input_button_args(ctx, env, args)
+		// §23 §5 the 1D analog read: the last with_value sample on this (player,
+		// axis), or the zero default when no with_value seeded it (the read never
+		// faults — krognid's read_drive reads two axes off a seeded snapshot).
+		player, axis, args_ok := eval_input_button_args(ctx, env, args)
 		if !args_ok {
 			return nil, false
 		}
-		return Fixed(0), true
+		return input_analog_value(input, player, axis), true
 	case "axis":
-		// The analog 2D read of an unseeded channel is the zero vector default.
-		_, _, args_ok := eval_input_button_args(ctx, env, args)
+		// §23 §5 the 2D analog read: the last with_axis sample on this (player,
+		// axis), or the zero vector default (yard's drive reads the move axis off a
+		// with_axis-seeded snapshot).
+		player, axis, args_ok := eval_input_button_args(ctx, env, args)
 		if !args_ok {
 			return nil, false
 		}
-		return Vec2_Value{}, true
+		return input_analog_axis(input, player, axis), true
 	}
 	return nil, false
+}
+
+// eval_input_analog_args evaluates a with_value / with_axis (player, axis,
+// sample) triple — the (PlayerId, axis-action) variant pair plus the analog
+// sample value (a Fixed for with_value, a Vec2 for with_axis, checked by the
+// caller). ok is false on a wrong arity or a non-variant player/axis.
+eval_input_analog_args :: proc(ctx: Eval_Ctx, env: ^Env, args: []Expr) -> (player, axis: string, sample: Value, ok: bool) {
+	if len(args) != 3 {
+		return "", "", nil, false
+	}
+	player_value, p_ok := eval_expr(ctx, env, args[0])
+	axis_value, a_ok := eval_expr(ctx, env, args[1])
+	sample_value, s_ok := eval_expr(ctx, env, args[2])
+	if !p_ok || !a_ok || !s_ok {
+		return "", "", nil, false
+	}
+	player_variant, is_player := player_value.(Enum_Value)
+	axis_variant, is_axis := axis_value.(Enum_Value)
+	if !is_player || !is_axis {
+		return "", "", nil, false
+	}
+	return player_variant.variant, axis_variant.variant, sample_value, true
+}
+
+// input_analog_value reads the 1D analog deflection a snapshot holds for a
+// (player, axis) — the LAST with_value row that keyed it, so a re-seed
+// overwrites the read. An unseeded channel reads the zero default (a behavior
+// never faults on a missing analog channel, the §23 §2 input discipline).
+input_analog_value :: proc(input: Input_Value, player, axis: string) -> Fixed {
+	result := Fixed(0)
+	for sample in input.analog1d {
+		if sample.player == player && sample.axis == axis {
+			result = sample.value
+		}
+	}
+	return result
+}
+
+// input_analog_axis reads the 2D analog deflection a snapshot holds for a
+// (player, axis) — the LAST with_axis row that keyed it. An unseeded channel
+// reads the zero vector default, the input_analog_value discipline.
+input_analog_axis :: proc(input: Input_Value, player, axis: string) -> Vec2_Value {
+	result := Vec2_Value{}
+	for sample in input.analog2d {
+		if sample.player == player && sample.axis == axis {
+			result = sample.value
+		}
+	}
+	return result
+}
+
+// eval_view_ref mints a §08 Ref to the i-th row of a materialized View (the
+// arena producer `switches.ref(0)`): the value is a Record_Value tagged "Ref"
+// carrying its `index` as an Int, so it threads through a thing's `gate:
+// Ref[Switch]` field and a `with`-update exactly as a record does, and
+// eval_view_resolve reads the index back. The index is not range-checked here —
+// resolve handles an out-of-range ref as Option::None (a despawned referent), so
+// a ref outliving its row is a defined None, never a fault. ok is false on a
+// wrong arity or a non-Int index (the typecheck-rejected forms never reach a
+// passing program).
+eval_view_ref :: proc(ctx: Eval_Ctx, env: ^Env, args: []Expr) -> (value: Value, ok: bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	index_value := eval_expr(ctx, env, args[0]) or_return
+	index, is_int := index_value.(i64)
+	if !is_int {
+		return nil, false
+	}
+	fields := make([]Record_Field_Value, 1, context.temp_allocator)
+	fields[0] = Record_Field_Value{name = "index", value = index}
+	return Record_Value{type_name = "Ref", fields = fields}, true
+}
+
+// eval_view_resolve reads a §08 Ref back to its row on a materialized View
+// (`switches.resolve(self.gate)`): the Ref carries an `index` Int, and the View
+// is a List_Value, so resolve reads the element at that index as Option::Some
+// when in range or Option::None when out of range (the referent despawned — the
+// gate behavior's match covers None). ok is false on a wrong arity or a
+// non-Ref argument (the typecheck admits only a Ref[T] here).
+eval_view_resolve :: proc(ctx: Eval_Ctx, env: ^Env, view: List_Value, args: []Expr) -> (value: Value, ok: bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	ref_value := eval_expr(ctx, env, args[0]) or_return
+	ref, is_record := ref_value.(Record_Value)
+	if !is_record || ref.type_name != "Ref" {
+		return nil, false
+	}
+	index_value, has_index := record_field_value(ref.fields, "index")
+	if !has_index {
+		return nil, false
+	}
+	index, is_int := index_value.(i64)
+	if !is_int {
+		return nil, false
+	}
+	if index < 0 || index >= i64(len(view.elements)) {
+		return Option_Value{is_some = false, payload = nil}, true
+	}
+	return some_value(view.elements[index]), true
 }
 
 // eval_input_button_args evaluates an Input query's (player, action) argument

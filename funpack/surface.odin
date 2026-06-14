@@ -1509,18 +1509,25 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 				{name = "cost", type = Ground_Type.Fixed},
 			}), true
 	case "Body":
+		// §11 §2: `data Body { kind, shape, mass: Fixed = 1.0, restitution: Fixed
+		// = 0.0, friction: Fixed = 0.5, layer, mask, sensor: Bool = false, impulse:
+		// Vec2 = zero }`. Each defaulted field carries the spec `data` default
+		// VALUE here (the schema is the single source of truth for both the type
+		// and the default); the required fields (kind/shape/layer/mask) carry no
+		// default. friction's 0.5 is FIXED_ONE/2 (= 0.5 exact in fixed-point), the
+		// impulse zero is the empty Vec2 the apply_impulse accumulation builds on.
 		return engine_type_of(.Body), clone_fields({
 				{name = "kind", type = engine_type_of(.BodyKind)},
 				{name = "shape", type = engine_type_of(.Shape2)},
-				{name = "mass", type = Ground_Type.Fixed},
-				{name = "restitution", type = Ground_Type.Fixed},
-				{name = "friction", type = Ground_Type.Fixed},
+				{name = "mass", type = Ground_Type.Fixed, default = FIXED_ONE, has_default = true},
+				{name = "restitution", type = Ground_Type.Fixed, default = Fixed(0), has_default = true},
+				{name = "friction", type = Ground_Type.Fixed, default = FIXED_ONE / 2, has_default = true},
 				// layer/mask name the user's CollisionLayer enum — the nil unknown
 				// here, gated by the layer registry rather than the field schema.
 				{name = "layer", type = nil},
 				{name = "mask", type = nil},
-				{name = "sensor", type = Ground_Type.Bool},
-				{name = "impulse", type = Ground_Type.Vec2},
+				{name = "sensor", type = Ground_Type.Bool, default = false, has_default = true},
+				{name = "impulse", type = Ground_Type.Vec2, default = Vec2_Value{}, has_default = true},
 			}), true
 	case "Settings":
 		// §24 §2 Settings { volume, binds, graphics, access }. Only `access` is
@@ -1534,10 +1541,12 @@ surface_engine_record :: proc(name: string) -> (result: Type, fields: []Surface_
 				{name = "access", type = engine_type_of(.AccessOpts)},
 			}), true
 	case "AccessOpts":
-		// §24 §2 accessibility sub-record. reduce_motion is the one field yard
-		// reads and toggles; admit just it (the registry gate's "just enough").
+		// §24 §2 accessibility sub-record (`reduce_motion: Bool = false`).
+		// reduce_motion is the one field yard reads and toggles; admit just it (the
+		// registry gate's "just enough"), carrying its spec `data` default false so
+		// Settings.defaults() sources reduce_motion from this one schema row.
 		return engine_type_of(.AccessOpts), clone_fields({
-				{name = "reduce_motion", type = Ground_Type.Bool},
+				{name = "reduce_motion", type = Ground_Type.Bool, default = false, has_default = true},
 			}), true
 	case "Save":
 		return engine_type_of(.Save), clone_fields({
@@ -1708,11 +1717,20 @@ engine_kind_name :: proc(kind: Engine_Kind) -> string {
 	return ""
 }
 
-// Surface_Field is one named field of an engine struct-payload variant — the
-// field name and its expected value type the typing pass checks against.
+// Surface_Field is one named field of an engine struct-payload variant or
+// engine record — the field name, its expected value type the typing pass
+// checks against, and (for a §11 §2 / §24 §2 record field with a spec `data`
+// default) the value an omitted field takes. The schema is the SINGLE SOURCE OF
+// TRUTH for both the field's type AND its default, faithfully mirroring the spec
+// `data` declaration: the typechecker reads only `type` (it ignores the
+// default), and the evaluator reads `default` when `has_default` (eval_engine_record).
+// A field with no spec default (a required field, never omitted in a checked
+// literal) carries has_default = false.
 Surface_Field :: struct {
-	name: string,
-	type: Type,
+	name:        string,
+	type:        Type,
+	default:     Value,
+	has_default: bool,
 }
 
 // clone_fields copies a compound-literal field set into the temp allocator so

@@ -2575,7 +2575,77 @@ method_check :: proc(ctx: Check_Ctx, callee: ^Member_Expr, e: ^Call_Expr) -> (ty
 		}
 	}
 	receiver := expr_check(ctx, callee.receiver) or_return
-	return value_method_check(ctx, receiver, callee.member, e)
+	type, err = value_method_check(ctx, receiver, callee.member, e)
+	// §02 §4: a method call and a free-function call are the SAME function — a
+	// stdlib free fn whose first parameter accepts the receiver is reachable as
+	// `recv.f(args)`. The value-method arms (UFCS over user fns, then engine/ground
+	// methods) own the field/value-method resolution; when they find no method
+	// (.Unsupported_Expr) and `member` names a stdlib free fn (len/is_empty/
+	// contains/map/filter/…), lower `recv.f(args)` to the free call `f(recv, args)`
+	// and route it through the SAME free-call path that types `f(recv, args)` —
+	// so `[1,2].len()` types exactly as `len([1,2])`. The receiver value method
+	// wins first (Pose.get shadows the `get` combinator on a Pose), so the
+	// lowering only fires for a receiver with no value method (a list).
+	if err == .Unsupported_Expr && is_stdlib_free_fn(callee.member) {
+		return call_check(ctx, stdlib_ufcs_call(callee, e.args, e.line, e.col))
+	}
+	return type, err
+}
+
+// is_stdlib_free_fn reports whether `name` is a stdlib free function reachable
+// via §02 §4 UFCS — the complete closed set: the call-site-inferred combinators
+// (combinator_call_check's switch), the fixed-signature surface fns
+// (surface_signatures), and the §04 command constructors (surface_command). A
+// name outside this set is not lowered, so a genuine non-UFCS method keeps its
+// accurate value-method diagnostic rather than a misleading free-call error.
+is_stdlib_free_fn :: proc(name: string) -> bool {
+	switch name {
+	case "fold",
+	     "first",
+	     "last",
+	     "neighbors",
+	     "in_bounds",
+	     "within",
+	     "nearest_first",
+	     "or_else",
+	     "map",
+	     "filter",
+	     "concat",
+	     "contains",
+	     "prepend",
+	     "init",
+	     "is_empty",
+	     "len",
+	     "get",
+	     "pick",
+	     "grid_cells":
+		return true
+	}
+	if _, found := surface_signatures(name); found {
+		return true
+	}
+	if _, found := surface_command(name); found {
+		return true
+	}
+	return false
+}
+
+// stdlib_ufcs_call builds the §02 §4 lowering of `recv.f(args)` into the free
+// call `f(recv, args)`: a synthetic Call_Expr with a Name_Expr callee (the
+// member) and the receiver expression prepended to the original arguments. The
+// synthetic nodes carry the call/member's source span so a fault in the lowered
+// call still anchors on the method-form's offending construct. Shared by the
+// typecheck (method_check) and the evaluator (eval_method_call) so the type and
+// the value forms lower identically — the "same function" guarantee.
+stdlib_ufcs_call :: proc(callee: ^Member_Expr, member_args: []Expr, line: int, col: int) -> ^Call_Expr {
+	name := new(Name_Expr, context.temp_allocator)
+	name^ = Name_Expr{name = callee.member, line = callee.line, col = callee.col}
+	args := make([]Expr, len(member_args) + 1, context.temp_allocator)
+	args[0] = callee.receiver
+	copy(args[1:], member_args)
+	call := new(Call_Expr, context.temp_allocator)
+	call^ = Call_Expr{callee = name, args = args, line = line, col = col}
+	return call
 }
 
 // static_method_check handles a method whose receiver names a declaration,

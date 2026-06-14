@@ -10,13 +10,15 @@
 // FUNPACK_YARD_DIR) and SKIPs loudly when it is absent, so a missing checkout
 // never silently passes.
 //
-// SCOPE: yard's inline test ASSERTIONS exercise engine-value EXECUTION (Body
-// intent, Input sampling, Despawn/Save command equality, View, nested Settings
-// with-update) the funpack evaluator does not implement and the runtime owns, so
-// this golden pins parse + typecheck + the compile pipeline THROUGH flatten/
-// closure + EMISSION (the v5 story's deliverable), not full inline-assertion
-// evaluation (cf. the pong/snake pipeline goldens, whose assertions touch only
-// already-evaluable forms).
+// SCOPE: this golden pins parse + typecheck + the compile pipeline THROUGH
+// flatten/closure + EMISSION (the v5 story's deliverable) over the live yard
+// tree — it does NOT run the evaluator. yard's inline-assertion EVALUATION is
+// covered separately by the test-evaluator coverage (the funpack evaluator now
+// owns Body intent / apply_impulse, Input analog sampling, the §24 command
+// records, View.ref/resolve, and the nested Settings with-update — the whole
+// yard corpus passes `funpack test` end-to-end, see behavior_step_coverage_test.odin).
+// This golden stays an emission fingerprint, not an assertion check (cf. the
+// pong/snake pipeline goldens).
 package funpack
 
 import "core:log"

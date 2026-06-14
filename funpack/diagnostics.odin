@@ -121,6 +121,51 @@ source_line :: proc(source: string, line: int) -> string {
 	return lines[line - 1]
 }
 
+// render_assert_failure renders ONE failed `assert` as the deterministic
+// rustc/gofmt-flavored block — the EXIT-1 sibling of render_diagnostic (a compile
+// error is exit 2; the machine contract is unchanged, this is the added human
+// body for a failed assertion). Like render_diagnostic it is a PURE function of
+// (f, source) so a golden pins it byte-for-byte:
+//
+//   <path>:<line>: assertion failed (<test name>): <assert expression>
+//     <line> | <the offending source line>
+//            left:  <lhs display>
+//            right: <rhs display>
+//
+// The header carries the test name in parens (the declaration analogue of
+// render_diagnostic's `(<declaration>)`), the §02 §4 assert expression text as
+// the body, and the source line as the gutter-numbered excerpt. The left/right
+// operand lines are shown only for a top-level `==`/`!=` whose both sides
+// evaluated (f.has_operands); a bare-predicate assert renders the expression and
+// excerpt alone. `line == 0` (a synthetic span) collapses to the header; a `line`
+// past the source prints the header and an empty excerpt, never crashes — the
+// fail-open coordinate discipline render_diagnostic holds.
+render_assert_failure :: proc(f: Assert_Failure, source: string, allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
+	fmt.sbprint(&b, f.path)
+	if f.line != 0 {
+		fmt.sbprintf(&b, ":%d", f.line)
+	}
+	fmt.sbprint(&b, ": assertion failed")
+	if f.test_name != "" {
+		fmt.sbprintf(&b, " (%s)", f.test_name)
+	}
+	fmt.sbprintf(&b, ": %s", f.expr_text)
+	if f.line != 0 {
+		excerpt := source_line(source, f.line)
+		number := fmt.tprintf("%d", f.line)
+		fmt.sbprintf(&b, "\n  %s | %s", number, excerpt)
+		// The left/right gutter aligns under the excerpt gutter: blanks the width
+		// of the line number, then `| `, matching render_diagnostic's caret gutter.
+		if f.has_operands {
+			gutter := strings.repeat(" ", len(number), context.temp_allocator)
+			fmt.sbprintf(&b, "\n  %s | left:  %s", gutter, f.lhs_display)
+			fmt.sbprintf(&b, "\n  %s | right: %s", gutter, f.rhs_display)
+		}
+	}
+	return strings.to_string(b)
+}
+
 // parse_diagnostic builds a Diagnostic from a Parse_Error arm and the offending
 // token's line/col. The `rule` is the arm's own name; the `message` is the
 // fix-criteria sentence distilled from the arm's rich doc-comment in

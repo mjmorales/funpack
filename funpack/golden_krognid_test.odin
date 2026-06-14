@@ -230,21 +230,21 @@ test_krognid_seam_projection_derives_slots :: proc(t: ^testing.T) {
 }
 
 // KROGNID_EVALUABLE_ASSERTS is the count of stroll.fun inline asserts the FUNPACK
-// EVALUATOR owns end-to-end — the pure fixed-point pose/gait asserts: move_krognid's
-// deterministic forward step (a pure Vec3), advance_gait's phase accumulation
-// (== 3.0 via the `% tau` wrap), pose_walk's rest-crossing leg (the §16 §7 Pose/
-// Transform arms), and locomotion's silent-at-rest case (== [], a pure empty list).
-// locomotion's loop-while-moving case ALSO counts: the §22 Audio.track/.pitch/
-// .gain/.bus builder chain evaluates through the engine.audio constructor/adder
-// arms (the ui-audio surface story), so its equality assert is funpack-owned.
-// ONE assert is NOT counted — it exercises ENGINE-VALUE execution the RUNTIME
-// owns, not the funpack evaluator (the same View/Nav/Draw3 split the arena and
-// yard goldens draw, golden_arena_test.odin / golden_yard_test.odin): read_drive
-// reads `input.value(player, axis)` against a seeded with_value Input snapshot,
-// and the evaluator does not materialize Input axis state. The count is PINNED
-// exactly: a regression that drops an evaluable assert, or mis-evaluates one,
-// moves this number — never loosen it to a range.
-KROGNID_EVALUABLE_ASSERTS :: 5
+// EVALUATOR owns end-to-end — ALL SIX. The pure fixed-point pose/gait asserts:
+// move_krognid's deterministic forward step (a pure Vec3), advance_gait's phase
+// accumulation (== 3.0 via the `% tau` wrap), pose_walk's rest-crossing leg (the
+// §16 §7 Pose/Transform arms), and locomotion's silent-at-rest case (== [], a
+// pure empty list). locomotion's loop-while-moving case counts too: the §22
+// Audio.track/.pitch/.gain/.bus builder chain evaluates through the engine.audio
+// constructor/adder arms (the ui-audio surface story), so its equality assert is
+// funpack-owned. AND read_drive now counts: the §23 §5 Input analog channels
+// (with_value seeds a Fixed channel, value reads it) are funpack-evaluable, so
+// `read_drive.step(…, Input.empty().with_value(…)).intent == Vec2{x: 0.0, y:
+// 1.0}` runs in the evaluator (the 5 → 6 move — the evaluator now materializes
+// Input axis state, mirroring the View/Nav lifts the arena golden drew). The
+// count is PINNED exactly: a regression that drops an evaluable assert, or
+// mis-evaluates one, moves this number — never loosen it to a range.
+KROGNID_EVALUABLE_ASSERTS :: 6
 
 // test_krognid_project_reads_and_joins_seam pins the §17 seam-import path
 // (lore #10 seam #4) over the LIVE krognid tree: read_project discovers

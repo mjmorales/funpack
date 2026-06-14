@@ -200,7 +200,28 @@ run_test_verb :: proc() -> int {
 		return 2
 	}
 	fmt.printfln("funpack test: %d passed, %d failed", report.passed, report.failed)
+	// A failed assertion is exit 1 (never a compile error): the count line above is
+	// the machine contract; here each failure renders its localized fix-criteria
+	// body (test name, file:line, the assert expression, and for a ==/!= the
+	// evaluated operands) to stderr so an agent's write→check→fix loop sees what
+	// each side reduced to. The exit code (project_test_exit_code) is unchanged.
+	eprint_assert_failures(report.failures)
 	return project_test_exit_code(report)
+}
+
+// eprint_assert_failures renders every failed assert as its localized
+// fix-criteria block to stderr, re-reading each failure's owning source file so
+// render_assert_failure excerpts the offending assert line. A failure whose
+// source cannot be re-read renders header-only (the empty excerpt), the
+// fail-open form so the failed-count contract never hangs on a missing file.
+eprint_assert_failures :: proc(failures: []Assert_Failure) {
+	for failure in failures {
+		source := ""
+		if bytes, read_err := os.read_entire_file_from_path(failure.path, context.temp_allocator); read_err == nil {
+			source = string(bytes)
+		}
+		fmt.eprintfln("funpack test: %s", render_assert_failure(failure, source, context.temp_allocator))
+	}
 }
 
 // eprint_module_diagnostic eprints a module compile error as its rendered
