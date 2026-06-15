@@ -21,6 +21,7 @@ func New(logger zerolog.Logger) *mcp.Server {
 
 	registerHealth(srv, logger)
 	registerDocsGet(srv, logger)
+	registerDocsSearch(srv, logger)
 
 	return srv
 }
