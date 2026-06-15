@@ -7,11 +7,6 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
-## [0.6.2] - 2026-06-15
-
-### Other
-- refactor(build): consolidate funpack + funpack-live into a single binary (47b428b)
-
 ## [0.6.1] - 2026-06-14
 
 ### Fixes
