@@ -20,7 +20,7 @@ import "core:log"
 import "core:strings"
 import "core:testing"
 
-ARENA_DEFAULT_DIR :: "../funpack-spec/examples/arena"
+ARENA_DEFAULT_DIR :: "examples/arena"
 
 // resolve_arena_dir resolves the arena example tree: FUNPACK_ARENA_DIR override,
 // else the sibling-checkout default anchored at the main checkout (the worktree
@@ -71,7 +71,7 @@ test_multi_module_resolves_arena_imports :: proc(t: ^testing.T) {
 	// seam owns — isolated from the engine.* surface another seam owns.
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP multi-module arena: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling", dir)
+		log.warnf("SKIP multi-module arena: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	world_path := filepath.join({dir, "src", "arena_world.fun"}, context.temp_allocator) or_else ""

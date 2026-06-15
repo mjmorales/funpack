@@ -25,7 +25,7 @@ tree directly:
 Honor the non-negotiables: **fixed-point not float** (`Fixed` literals like `8.0`; no `f` in sim),
 **`Spawn( Thing{...} )` with parentheses**, **lambdas `fn(x){ … }` never `=>`**, **`@doc`/`@gtag`
 instead of comments**, **immutable `self with { … }` updates**, and **every emitted signal consumed**
-(effect closure). Model the starter on the funpack-spec `pong` example.
+(effect closure). Model the starter on the `pong` example.
 
 If `$2` is `3d`, set `logical` appropriately and use `engine.render3` (`Draw3`) + a `Draw3::Camera`
 in the render stage instead of 2D `Draw`.

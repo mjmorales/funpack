@@ -30,9 +30,9 @@ tools: Read, Edit, Write, Bash, AskUserQuestion
 
 Seat: **Language Lead** — grammar, spec alignment, and the Index Contract.
 
-- funpack-spec is doctrine; this repo is the machine that satisfies it. Never grammar-include what the compiler cannot run — a surface area is done only when the golden examples exercising it pass.
+- the in-repo spec is doctrine; the toolchain is the machine that satisfies it. Never grammar-include what the compiler cannot run — a surface area is done only when the golden examples exercising it pass.
 - Guard the purity boundary (spec §29): funpack is the pure source → artifact compiler. No clock, DB, network, or host nondeterminism enters `funpack/**`.
 - The Index Contract is this team's only exposed interface: schema-versioned, exact-match NDJSON. Any emission change is a contract reshape — bump the schema version, never silently drift. Reshapes are tripwire work under the trunk-based-development discipline.
 - The CLI exit contract is spec-bound: compile error 2, failed assertions 1, all-pass 0. A compile error is never a counted failure.
-- Golden harness resolves the `../funpack-spec` sibling checkout (`FUNPACK_NUMERICS_DIR` overrides) and SKIP-warns when absent — a skipped golden run is not a pass; confirm goldens actually executed before calling a surface done.
+- Golden harness resolves the in-repo examples tree (`FUNPACK_NUMERICS_DIR` overrides) and SKIP-warns when absent — a skipped golden run is not a pass; confirm goldens actually executed before calling a surface done.
 - Record Lore (tech_lead-only) for grammar and semantics decisions that change how a surface is interpreted, with the alternatives rejected.

@@ -1,12 +1,12 @@
 // The byte-exact krognid rig-seam golden: a fresh bake of models/krognid.fpm —
 // parsed (fpm_parser.odin), §16.7 rig-gated (fpm_rig_gates.odin), and projected to
 // a Rig_Seam (fpm_emit.odin) — emitted through emit_rig_seam, must reproduce the
-// committed exemplar funpack-spec/examples/krognid/gen/krognid.gen.fun
+// committed exemplar examples/krognid/gen/krognid.gen.fun
 // byte-for-byte. A stale committed seam is a build error, never a counted test
 // failure (the seam-compare harness contract, seam_compare.odin). Like the arena
 // gen-emit golden (gen_emit_test.odin), it resolves the live exemplar through the
-// capability reader (or FUNPACK_KROGNID_DIR) and SKIPs LOUDLY when the funpack-spec
-// sibling is absent — a skipped golden is a warning, NEVER a pass.
+// capability reader (or FUNPACK_KROGNID_DIR) and SKIPs LOUDLY when the in-repo
+// fixture is absent — a skipped golden is a warning, NEVER a pass.
 //
 // The "fresh bake" parses the live KROGNID_RIG source and projects it: the slot
 // bindings, mesh handle names, and mirror are DERIVED from the parsed rig, so the
@@ -25,7 +25,7 @@ import "core:testing"
 // KROGNID_DIR_DEFAULT_REL is the krognid exemplar tree's path relative to the main
 // checkout root (one level up from this package), resolved through resolve_spec_dir
 // so it survives an orchestrator task-worktree #directory infix.
-KROGNID_DIR_DEFAULT_REL :: "../funpack-spec/examples/krognid"
+KROGNID_DIR_DEFAULT_REL :: "examples/krognid"
 
 // KROGNID_MODULE is the krognid rig's seam module/namespace: the rig's lowercase
 // name, the prefix every bound mesh handle carries (`krognid_torso`) and the stem of
@@ -76,7 +76,7 @@ krognid_committed_seam_path :: proc(t: ^testing.T) -> (path: string, ok: bool) {
 	dir := resolve_krognid_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP krognid golden: %s not found — set FUNPACK_KROGNID_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP krognid golden: %s not found — set FUNPACK_KROGNID_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return "", false
@@ -260,7 +260,7 @@ test_krognid_project_reads_and_joins_seam :: proc(t: ^testing.T) {
 	dir := resolve_krognid_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP krognid project: %s not found — set FUNPACK_KROGNID_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP krognid project: %s not found — set FUNPACK_KROGNID_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return
@@ -355,7 +355,7 @@ test_krognid_whole_tree_green :: proc(t: ^testing.T) {
 	dir := resolve_krognid_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP krognid whole-tree: %s not found — set FUNPACK_KROGNID_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP krognid whole-tree: %s not found — set FUNPACK_KROGNID_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return

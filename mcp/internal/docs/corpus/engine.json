@@ -486,14 +486,14 @@
     "anchor": "engine/input#axis",
     "kind": "engine",
     "title": "input.Axis",
-    "text": "The kind for an enum of analog actions (e.g. Move, Strafe). Declare it: enum Drive: Axis { Strafe, Forward }.\n\nextern type Axis",
+    "text": "The role kind for an enum of analog actions (e.g. Move, Strafe). Ascription-only — written after the colon, enum Drive: Axis { Strafe, Forward }, never imported as a member.\n\nextern type Axis",
     "source": "engine/input.fun"
   },
   {
     "anchor": "engine/input#button",
     "kind": "engine",
     "title": "input.Button",
-    "text": "The kind for an enum of digital actions (e.g. Jump, Fire). Declare it: enum Act: Button { Jump }.\n\nextern type Button",
+    "text": "The role kind for an enum of digital actions (e.g. Jump, Fire). Ascription-only — written after the colon, enum Act: Button { Jump }, never imported as a member.\n\nextern type Button",
     "source": "engine/input.fun"
   },
   {
@@ -518,6 +518,20 @@
     "source": "engine/input.fun"
   },
   {
+    "anchor": "engine/input#padbutton",
+    "kind": "engine",
+    "title": "input.PadButton",
+    "text": "A gamepad digital button, used only inside bindings.\n\nenum PadButton { A, B, X, Y, Start, Back, LeftShoulder, RightShoulder, DpadUp, DpadDown, DpadLeft, DpadRight }",
+    "source": "engine/input.fun"
+  },
+  {
+    "anchor": "engine/input#mousebutton",
+    "kind": "engine",
+    "title": "input.MouseButton",
+    "text": "A mouse button, used only inside bindings.\n\nenum MouseButton { Left, Middle, Right }",
+    "source": "engine/input.fun"
+  },
+  {
     "anchor": "engine/input#input",
     "kind": "engine",
     "title": "input.Input",
@@ -535,28 +549,56 @@
     "anchor": "engine/input#keys-axis",
     "kind": "engine",
     "title": "input.keys_axis",
-    "text": "An axis source for bindings: two keys forming a -1..+1 axis (neg, pos).\n\nextern fn keys_axis(neg: Key, pos: Key) -\u003e AxisSource",
+    "text": "A 1D axis source: two keys forming a -1..+1 axis (neg, pos). Read via value.\n\nextern fn keys_axis(neg: Key, pos: Key) -\u003e AxisSource",
     "source": "engine/input.fun"
   },
   {
     "anchor": "engine/input#stick-x",
     "kind": "engine",
     "title": "input.stick_x",
-    "text": "An axis source: the horizontal component of a stick.\n\nextern fn stick_x(stick: Stick) -\u003e AxisSource",
+    "text": "A 1D axis source: the horizontal component of a stick. Read via value.\n\nextern fn stick_x(stick: Stick) -\u003e AxisSource",
     "source": "engine/input.fun"
   },
   {
     "anchor": "engine/input#stick-y",
     "kind": "engine",
     "title": "input.stick_y",
-    "text": "An axis source: the vertical component of a stick.\n\nextern fn stick_y(stick: Stick) -\u003e AxisSource",
+    "text": "A 1D axis source: the vertical component of a stick. Read via value.\n\nextern fn stick_y(stick: Stick) -\u003e AxisSource",
     "source": "engine/input.fun"
   },
   {
-    "anchor": "engine/input#key-2",
+    "anchor": "engine/input#wasd",
     "kind": "engine",
-    "title": "input.key",
-    "text": "A button source: a single key.\n\nextern fn key(k: Key) -\u003e ButtonSource",
+    "title": "input.wasd",
+    "text": "A 2D axis source: the WASD keys as a Vec2 (A/D drive x -/+, W/S drive y -/+, y-down). Read via axis.\n\nextern fn wasd() -\u003e AxisSource",
+    "source": "engine/input.fun"
+  },
+  {
+    "anchor": "engine/input#arrows",
+    "kind": "engine",
+    "title": "input.arrows",
+    "text": "A 2D axis source: the arrow keys as a Vec2 — the only arrow-key 2D path, keys_axis is 1D. Read via axis.\n\nextern fn arrows() -\u003e AxisSource",
+    "source": "engine/input.fun"
+  },
+  {
+    "anchor": "engine/input#stick-2",
+    "kind": "engine",
+    "title": "input.stick",
+    "text": "A 2D axis source: a full gamepad stick as a Vec2. Read via axis.\n\nextern fn stick(stick: Stick) -\u003e AxisSource",
+    "source": "engine/input.fun"
+  },
+  {
+    "anchor": "engine/input#pad",
+    "kind": "engine",
+    "title": "input.pad",
+    "text": "A button source: a gamepad digital button. A single keyboard key is the [Key::W] list literal passed to .button, not a helper.\n\nextern fn pad(button: PadButton) -\u003e ButtonSource",
+    "source": "engine/input.fun"
+  },
+  {
+    "anchor": "engine/input#mouse",
+    "kind": "engine",
+    "title": "input.mouse",
+    "text": "A button source: a mouse button.\n\nextern fn mouse(button: MouseButton) -\u003e ButtonSource",
     "source": "engine/input.fun"
   },
   {

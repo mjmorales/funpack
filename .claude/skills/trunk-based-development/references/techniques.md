@@ -62,7 +62,7 @@ Trunk-based development requires schema/shape changes to be managed as source-co
 2. **Migrate:** move readers/writers and backfill data in small green commits.
 3. **Contract:** remove the old shape once nothing depends on it.
 
-funpack mapping: the Index Contract is schema-versioned with all fields mandatory and exact-match — a reshape is a spec-side version bump plus an expand/migrate/contract sequence across `funpack` (producer) and `warden`/runtime (consumers), each step independently green and shippable. Divergence found mid-migration is a spec bug or implementation bug — file it against funpack-spec; never a silent fork.
+funpack mapping: the Index Contract is schema-versioned with all fields mandatory and exact-match — a reshape is a spec-side version bump plus an expand/migrate/contract sequence across `funpack` (producer) and `warden`/runtime (consumers), each step independently green and shippable. Divergence found mid-migration is a spec bug or implementation bug — file it in `spec/`; never a silent fork.
 
 ## Facilitating commits
 

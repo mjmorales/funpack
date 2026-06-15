@@ -5,7 +5,7 @@
 // purity). Like the seam-emit golden (asset_seam_emit_test.odin), the inputs are
 // built BY HAND here — never re-derived from the source — so the test pins the
 // report's byte contract, not a round-trip; it resolves the live exemplar (or
-// FUNPACK_ASSETS_REPORT) and SKIPs loudly when the funpack-spec sibling is absent.
+// FUNPACK_ASSETS_REPORT) and SKIPs loudly when the in-repo fixture is absent.
 package funpack
 
 import "core:log"
@@ -16,7 +16,7 @@ import "core:testing"
 // ASSETS_REPORT_DEFAULT_REL is the committed exemplar's path relative to the main
 // checkout root, resolved through resolve_spec_dir so it survives an orchestrator
 // task-worktree #directory (the same resolution the seam-emit golden uses).
-ASSETS_REPORT_DEFAULT_REL :: "../funpack-spec/examples/assets/assets/assets.report.txt"
+ASSETS_REPORT_DEFAULT_REL :: "examples/assets/assets/assets.report.txt"
 
 // resolve_assets_report_path resolves the committed assets.report.txt exemplar: the
 // FUNPACK_ASSETS_REPORT env override when set, else the sibling-checkout default
@@ -68,7 +68,7 @@ test_emit_asset_report_byte_matches_golden :: proc(t: ^testing.T) {
 	golden_bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
 	if read_err != nil {
 		log.warnf(
-			"SKIP assets report: %s not found — set FUNPACK_ASSETS_REPORT or check out funpack-spec as a sibling of the repo",
+			"SKIP assets report: %s not found — set FUNPACK_ASSETS_REPORT or ensure the in-repo fixture exists",
 			path,
 		)
 		return

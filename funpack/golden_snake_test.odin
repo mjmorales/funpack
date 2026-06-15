@@ -1,5 +1,5 @@
 // The §06/§07 grid-game golden: the snake example tree
-// (funpack-spec/examples/snake) is the live source the declaration grammar must
+// (examples/snake) is the live source the declaration grammar must
 // parse exactly and the full checked pipeline must compile and evaluate. The
 // full-file fixture pins snake's declaration inventory against that source — when
 // the spec evolves, the counts change in lockstep; never loosen them to ranges.
@@ -16,7 +16,7 @@ import "core:log"
 import "core:os"
 import "core:testing"
 
-SNAKE_DEFAULT_DIR :: "../funpack-spec/examples/snake"
+SNAKE_DEFAULT_DIR :: "examples/snake"
 
 @(test)
 test_golden_snake_full_file_parses :: proc(t: ^testing.T) {
@@ -137,7 +137,7 @@ test_golden_snake_full_pipeline_passes :: proc(t: ^testing.T) {
 snake_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_snake_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden snake: %s not found — set FUNPACK_SNAKE_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden snake: %s not found — set FUNPACK_SNAKE_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	project, read_err, _ := read_project(dir)

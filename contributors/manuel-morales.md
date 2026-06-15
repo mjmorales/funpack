@@ -19,7 +19,7 @@ contributor:
 ## Identity
 
 Manuel Morales — handle `mjmorales` — Studio Director / Operator of the funpack
-implementation; author of funpack-spec.
+implementation; author of the funpack spec.
 
 ## Focus
 

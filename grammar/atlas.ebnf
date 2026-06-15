@@ -1,0 +1,18 @@
+(* ============================================================================
+   funpack — atlas.ebnf
+   The sprite-sheet slice spec (.atlas): named texture regions + animation clips,
+   baked to an AtlasHandle (18 §1, 19). Imports lexical-core.ebnf. Comments: '//'.
+   LL(1): each member opens with a distinct keyword.
+   ============================================================================ *)
+
+Comment ::= LineComment_Slash
+
+AtlasUnit  ::= Directive* AtlasBlock
+AtlasBlock ::= 'atlas' UPPER_IDENT '{' AtlasMember (Sep AtlasMember)* Sep? '}'
+
+AtlasMember ::= 'image' String                              (* image "pickups.png" — a hash dependency *)
+             | 'grid'  INT INT                              (* grid 8 8 *)
+             | 'cell'  LOWER_IDENT 'at' '(' INT ',' INT ')' (* cell coin at (0, 0) *)
+             | 'clip'  LOWER_IDENT 'cells' CellList 'fps' INT   (* clip spin cells ["coin","gem","key"] fps 8 *)
+
+CellList ::= '[' String (',' String)* ']'

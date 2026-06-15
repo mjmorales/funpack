@@ -1,0 +1,12 @@
+// dungeon.tiles — the tileset the dungeon's tilemap layer draws from: each tile names its
+// atlas cell and carries its sim-side collision (18 §2). Collision is baked into the tile
+// layer, fixed-point and deterministic, so behaviors query it without per-tile things.
+// `rubble` is the destructible one — solid until a dig rewrites it to `floor` via SetTile.
+tileset Dungeon {
+  atlas dungeon_atlas
+
+  tile floor  { cell: (0, 0), solid: false }
+  tile wall   { cell: (1, 0), solid: true }
+  tile water  { cell: (2, 0), solid: false, tags: ["liquid"] }
+  tile rubble { cell: (3, 0), solid: true, tags: ["diggable"] }
+}

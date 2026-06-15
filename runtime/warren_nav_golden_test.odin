@@ -1,6 +1,6 @@
 // The §12 emitted-warren end-to-end nav golden: the runtime loads the
 // PRODUCER-REAL warren artifact (built by funpack stage_build from
-// funpack-spec/examples/warren — the cross-package byte seam
+// examples/warren — the cross-package byte seam
 // test_emit_warren_matches_runtime_testdata pins the committed copy to the
 // live emitter) and answers the whole engine nav surface over the baked maze
 // graph with EXACT pins — exact node/edge counts, exact route steps + cost,

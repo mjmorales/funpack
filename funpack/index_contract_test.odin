@@ -249,7 +249,7 @@ test_index_contract_snake_project_record :: proc(t: ^testing.T) {
 	// checkout (or FUNPACK_SNAKE_DIR) and SKIPs loudly when absent.
 	dir := resolve_snake_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP index contract snake: %s not found — set FUNPACK_SNAKE_DIR or check out funpack-spec as a sibling", dir)
+		log.warnf("SKIP index contract snake: %s not found — set FUNPACK_SNAKE_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	identity, project_err, _ := read_project(dir)
@@ -402,7 +402,7 @@ test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	// first data decl (Cell) and its kind are pinned against the golden source.
 	dir := resolve_snake_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP index contract snake decl records: %s not found — set FUNPACK_SNAKE_DIR or check out funpack-spec as a sibling", dir)
+		log.warnf("SKIP index contract snake decl records: %s not found — set FUNPACK_SNAKE_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	stream, err, compiled := read_index_project(dir, context.temp_allocator)
@@ -612,7 +612,7 @@ minimal_project_record :: proc() -> Project_Record {
 pong_index_line :: proc() -> (line: string, ok: bool) {
 	dir := resolve_pong_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP index contract pong: %s not found — set FUNPACK_PONG_DIR or check out funpack-spec as a sibling", dir)
+		log.warnf("SKIP index contract pong: %s not found — set FUNPACK_PONG_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	ndjson, err, compiled := read_index_project(dir, context.temp_allocator)

@@ -1,0 +1,13 @@
+// pickups.atlas — slices pickups.png into named cells and a spin clip. Source for the atlas
+// importer. Depends on the raw image (its hash is a dependency), so editing the PNG re-bakes
+// only this atlas and whatever references it.
+atlas Pickups {
+  image "pickups.png"
+  grid  8 8                               // each cell is 8x8 in the sheet
+
+  cell coin at (0, 0)
+  cell gem  at (1, 0)
+  cell key  at (2, 0)
+
+  clip spin cells ["coin", "gem", "key", "gem"] fps 8
+}

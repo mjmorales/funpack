@@ -18,8 +18,8 @@ prove governance.
 
 | Name | Role | Responsibilities |
 | ---- | ---- | ---------------- |
-| Manuel Morales | Studio Director / Operator | Direction, spec authorship (funpack-spec), architecture decisions, final review gate, milestone calls |
-| language-lead-seat | Language Lead | LL(1) grammar ownership, spec conformance, divergence filing against funpack-spec |
+| Manuel Morales | Studio Director / Operator | Direction, spec authorship (in-repo `spec/`), architecture decisions, final review gate, milestone calls |
+| language-lead-seat | Language Lead | LL(1) grammar ownership, spec conformance, divergence filing in `spec/` |
 | frontend-seat | Compiler Frontend Engineer | Lexer, parser, AST, formatter |
 | semantics-seat | Compiler Semantics Engineer | Typechecker, structural quality gates, fix-criteria diagnostics |
 | backend-seat | Compiler Backend Engineer | Artifact emission, Index Contract (schema-versioned, exact-match NDJSON), bit-identical determinism |

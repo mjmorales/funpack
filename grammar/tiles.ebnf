@@ -1,0 +1,19 @@
+(* ============================================================================
+   funpack — tiles.ebnf
+   The tileset DSL (.tiles): tile types (atlas cell + sim-side collision) baked
+   to a TilesetHandle (18 §2). Imports lexical-core.ebnf. Comments: '//'.
+   (confirmed against the example corpus — examples/dungeon and examples/warren
+   author real .tiles files conforming to this grammar; follows 18 §2.)
+   ============================================================================ *)
+
+Comment ::= LineComment_Slash
+
+TilesUnit    ::= Directive* TilesetBlock
+TilesetBlock ::= 'tileset' UPPER_IDENT '{' TilesMember (Sep TilesMember)* Sep? '}'
+
+TilesMember ::= 'atlas' LOWER_IDENT                                            (* atlas dungeon_atlas *)
+             | 'tile'  LOWER_IDENT '{' TileField (Sep TileField)* Sep? '}'     (* tile wall { cell: (1, 0), solid: true } *)
+
+TileField ::= 'cell'  ':' '(' INT ',' INT ')'
+            | 'solid' ':' BOOL                            (* fixed-point grid collision (18 §2) *)
+            | 'tags'  ':' '[' (String (',' String)*)? ']'

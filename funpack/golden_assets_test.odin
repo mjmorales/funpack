@@ -100,7 +100,7 @@ test_engine_assets_surface_resolves_all_names :: proc(t: ^testing.T) {
 // schemas (their `KINDHandle{name: "NAME"}` literals carry the schema's String
 // `name` field). The seam imports engine.assets ALONE (a stdlib partition), so the
 // single-source stage_typecheck resolves it — no project-wide index needed. It
-// resolves the sibling funpack-spec checkout (or FUNPACK_ASSETS_DIR) and SKIPs
+// resolves the in-repo examples tree (or FUNPACK_ASSETS_DIR) and SKIPs
 // loudly when absent, so a missing checkout never silently passes.
 @(test)
 test_golden_assets_gen_fun_seam_typechecks :: proc(t: ^testing.T) {
@@ -450,7 +450,7 @@ assets_gen_fun_source :: proc() -> (source: string, ok: bool) {
 	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
 	if read_err != nil {
 		log.warnf(
-			"SKIP golden assets seam: %s not found — set FUNPACK_ASSETS_GEN or check out funpack-spec as a sibling of the repo",
+			"SKIP golden assets seam: %s not found — set FUNPACK_ASSETS_GEN or ensure the in-repo fixture exists",
 			path,
 		)
 		return "", false
@@ -467,7 +467,7 @@ pickups_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_assets_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden assets pickups: %s not found — set FUNPACK_ASSETS_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden assets pickups: %s not found — set FUNPACK_ASSETS_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return "", false
@@ -490,7 +490,7 @@ pickups_path :: proc() -> (path: string, ok: bool) {
 	dir := resolve_assets_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden assets pickups: %s not found — set FUNPACK_ASSETS_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden assets pickups: %s not found — set FUNPACK_ASSETS_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return "", false

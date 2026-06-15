@@ -2,7 +2,7 @@
 // parsed+inferred Fui_Screen (fui_infer.odin's Inferred_Seam) → the committed
 // gen/<screen>.gen.fun seam. It is the UI analogue of flvl_emit.odin (levels) and
 // fpm_emit.odin (modeling) for the screen form examples/hud bakes, and the byte
-// target is the committed exemplars funpack-spec/examples/hud/gen/{hud,settings,
+// target is the committed exemplars examples/hud/gen/{hud,settings,
 // pause}.gen.fun.
 //
 // DISTINCT FROM gen_emit.odin: that emitter renders the `data`/`extern fn`

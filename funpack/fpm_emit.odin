@@ -3,7 +3,7 @@
 // gen/<stem>.gen.fun seam. It is the modeling analogue of gen_emit.odin (the
 // levels/assets seam emitter) for the rig form the krognid example bakes, and the
 // byte target is the committed exemplar
-// funpack-spec/examples/krognid/gen/krognid.gen.fun.
+// examples/krognid/gen/krognid.gen.fun.
 //
 // DISTINCT FROM gen_emit.odin: that emitter renders the `data`/`extern fn`
 // declaration shape the levels/assets seams use; the rig seam is two body-bearing

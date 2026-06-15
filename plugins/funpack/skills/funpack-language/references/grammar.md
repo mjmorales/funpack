@@ -1,7 +1,7 @@
 # funpack grammar reference
 
 The complete declaration/expression grammar and edge cases, for when `SKILL.md` isn't enough. Forms
-are quoted from the funpack-spec `grammar/` (`fun.ebnf`, `fun.ll1.md`, `lexical-core.ebnf`) and the
+are quoted from the in-repo `grammar/` (`fun.ebnf`, `fun.ll1.md`, `lexical-core.ebnf`) and the
 worked examples.
 
 ## Reserved & contextual keywords

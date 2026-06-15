@@ -217,7 +217,7 @@ test_index_read_drift_stream_round_trip :: proc(t: ^testing.T) {
 	// lossless, not just the hand-built fixtures.
 	dir := resolve_drift_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP index read drift: %s not found — set FUNPACK_DRIFT_DIR or check out funpack-spec as a sibling", dir)
+		log.warnf("SKIP index read drift: %s not found — set FUNPACK_DRIFT_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	stream, err, compiled := read_index_project(dir, context.temp_allocator)

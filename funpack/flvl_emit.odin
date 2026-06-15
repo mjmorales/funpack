@@ -6,7 +6,7 @@
 // resolved bake to the explicit byte-contract model, with NO emission of its own
 // (emit_gen_fun owns the bytes).
 //
-// The seam shape (exemplar funpack-spec/examples/arena/gen/arena.gen.fun):
+// The seam shape (exemplar examples/arena/gen/arena.gen.fun):
 //   - import engine.world.{Spawn, Ref}            — the seam's engine surface
 //   - import engine.tilemap.{TilemapHandle}       — only when the level carries a
 //                                                   §18 §3 tile layer

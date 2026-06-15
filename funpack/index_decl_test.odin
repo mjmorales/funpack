@@ -981,7 +981,7 @@ checkout_decl_records :: proc(
 	label: string,
 ) -> (records: []Decl_Record, ok: bool) {
 	if !os.is_dir(dir) {
-		log.warnf("SKIP index contract decl records %s: %s not found — set %s or check out funpack-spec as a sibling", label, dir, env_name)
+		log.warnf("SKIP index contract decl records %s: %s not found — set %s or ensure the in-repo fixture exists", label, dir, env_name)
 		return nil, false
 	}
 	identity, project_err, _ := read_project(dir)

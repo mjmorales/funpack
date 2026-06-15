@@ -1,0 +1,8 @@
+use pong.{Pong, bindings}
+
+entrypoint main {
+  pipeline = Pong
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}

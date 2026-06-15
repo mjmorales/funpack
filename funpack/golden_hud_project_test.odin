@@ -28,7 +28,7 @@
 //       yard's: an exact count per kind, never a range, so a surface drift fails
 //       loudly in lockstep with the source.
 //
-// All three resolve the sibling funpack-spec checkout (or FUNPACK_HUD_DIR via
+// All three resolve the in-repo examples tree (or FUNPACK_HUD_DIR via
 // resolve_hud_dir, shared with golden_hud_seam_test.odin) and SKIP LOUDLY when it
 // is absent — a skipped golden is a warning, NEVER a pass. A successful run logs an
 // execution trace so the acceptance gate can confirm the golden ran, not SKIPped.
@@ -71,7 +71,7 @@ test_golden_hud_all_seams_byte_match :: proc(t: ^testing.T) {
 	dir := resolve_hud_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden hud project: %s not found — set FUNPACK_HUD_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden hud project: %s not found — set FUNPACK_HUD_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return
@@ -140,7 +140,7 @@ test_golden_hud_whole_tree_evaluates :: proc(t: ^testing.T) {
 	dir := resolve_hud_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden hud project: %s not found — set FUNPACK_HUD_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden hud project: %s not found — set FUNPACK_HUD_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return
@@ -205,7 +205,7 @@ test_golden_hud_demo_declaration_inventory :: proc(t: ^testing.T) {
 	dir := resolve_hud_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden hud project: %s not found — set FUNPACK_HUD_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden hud project: %s not found — set FUNPACK_HUD_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return

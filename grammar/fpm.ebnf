@@ -1,0 +1,71 @@
+(* ============================================================================
+   funpack — fpm.ebnf
+   The modeling DSL (.fpm): imperative, float-tolerant, bake-time only (16).
+   Output is a content-hashed asset + a *.gen.fun seam; game code never sees it.
+   Imports lexical-core.ebnf. Comments: '//'. INT/FIXED are float-domain (16 §1).
+
+   NOT held to LL(1) (the spec claims LL(1) only for .fun). In particular calls
+   take NAMED arguments (pbr(color: teal, rough: 0.7)), so the labeled-vs-
+   positional peek (cf. fun.ll1.md §A) is taken freely.
+   ============================================================================ *)
+
+Comment ::= LineComment_Slash
+
+ModelUnit  ::= Decl (Sep Decl)* Sep?
+Decl       ::= Directive* (ModelBlock | RigBlock)
+ModelBlock ::= 'model' UPPER_IDENT '{' ModelMember (Sep ModelMember)* Sep? '}'
+RigBlock   ::= 'rig'   UPPER_IDENT '{' RigMember   (Sep RigMember)*   Sep? '}'
+
+
+(* Members (16 §2) *)
+
+ModelMember ::= ParamDecl | FnDecl
+             | 'emit'     Expr                  (* render geometry (Solid) -> MeshHandle *)
+             | 'anchor'   LOWER_IDENT '=' Expr  (* a named point/plane *)
+             | 'socket'   LOWER_IDENT '=' Expr  (* an attach point *)
+             | 'material' LOWER_IDENT '=' Expr  (* engine PBR; no user shaders *)
+             | 'collide'  LOWER_IDENT '=' Expr  (* a sim-side Shape3 proxy *)
+
+RigMember ::= ModelMember
+           | 'skeleton'  ':' SkeletonSpec                          (* skeleton: humanoid *)
+           | 'part'      LOWER_IDENT 'at' UPPER_IDENT '=' Expr      (* part torso at TORSO = torso_mesh()  — origin IS the bone pivot *)
+           | 'mirror'    UPPER_IDENT '->' UPPER_IDENT               (* mirror L -> R *)
+           | 'clearance' Number                                    (* warn-level minimum joint gap *)
+
+SkeletonSpec ::= LOWER_IDENT                      (* a named topology: humanoid | quadruped | robot (16 §7). An inline engine-defined bone tree is spec-permitted but unexemplified, so not grammar-included (01 §5). *)
+ParamDecl    ::= 'param' LOWER_IDENT ':' Type ('=' Expr)?
+
+
+(* Functions: imperative bodies (16 §1). Local mutation (`name = expr` via Assign)
+   and accumulating loops (`for x in <iterable> { … }`) are legal — none survives
+   into the sim. The spec licenses both (16 §1); no example exercises them. *)
+
+FnDecl    ::= 'fn' LOWER_IDENT '(' ParamList? ')' '->' Type Block
+ParamList ::= Param (',' Param)*
+Param     ::= LOWER_IDENT ':' Type
+
+Block ::= '{' (Stmt (Sep Stmt)* Sep?)? '}'
+Stmt  ::= 'let' LOWER_IDENT (':' Type)? '=' Expr
+        | 'return' Expr
+        | 'for' LOWER_IDENT 'in' Expr Block
+        | Assign
+        | Expr
+Assign     ::= LValuePath '=' Expr
+LValuePath ::= LOWER_IDENT ('.' LOWER_IDENT)*
+
+
+(* Types & expressions: the .fun operator ladder, PLUS named call arguments *)
+
+Type     ::= UPPER_IDENT TypeArgs? | '[' Type ']'
+TypeArgs ::= '[' Type (',' Type)* ']'
+
+Expr        ::= AddExpr
+AddExpr     ::= MulExpr (('+' | '-') MulExpr)*
+MulExpr     ::= UnaryExpr (('*' | '/' | '%') UnaryExpr)*
+UnaryExpr   ::= '-' UnaryExpr | PostfixExpr
+PostfixExpr ::= Atom PostfixOp*
+PostfixOp   ::= '.' LOWER_IDENT CallArgs? | CallArgs    (* .up(0)  .face("top")  .offset(z: 2) *)
+CallArgs    ::= '(' (Arg (',' Arg)*)? ')'
+Arg         ::= (LOWER_IDENT ':')? Expr                 (* named or positional: pbr(color: teal, rough: 0.7) ; capsule(r, h) *)
+Atom        ::= Number | String | LOWER_IDENT | UPPER_IDENT | '(' Expr ')'
+Number      ::= INT | FIXED | FLOAT                     (* float domain (16 §1) *)

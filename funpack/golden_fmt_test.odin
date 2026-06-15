@@ -1,5 +1,5 @@
 // The fmt idempotence golden sweep — the canonical-formatter epic's
-// surface-done proof across ALL TEN funpack-spec example trees plus the
+// surface-done proof across ALL TEN in-repo example trees plus the
 // stdlib surface files. Per tree (on a temp copy, the committed checkout
 // untouched): fmt writes exit 0, the written tree is canonical (`--check`
 // exits 0 — on-disk idempotence), every formatted source re-parses to an AST
@@ -30,9 +30,9 @@ import "core:slice"
 import "core:strings"
 import "core:testing"
 
-// STDLIB_DEFAULT_DIR is the stdlib surface tree in the funpack-spec sibling
+// STDLIB_DEFAULT_DIR is the stdlib surface tree in the in-repo fixture
 // checkout, resolved like every golden (FUNPACK_STDLIB_DIR overrides).
-STDLIB_DEFAULT_DIR :: "../funpack-spec/stdlib/engine"
+STDLIB_DEFAULT_DIR :: "stdlib/engine"
 
 // STDLIB_SURFACE_FILE_COUNT pins the stdlib/engine/*.fun file count; a new
 // or removed surface file moves this pin in lockstep.
@@ -166,7 +166,7 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 	// checkout SKIPs, loudly.
 	dir := resolve_stdlib_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden fmt stdlib: %s not found — set FUNPACK_STDLIB_DIR or check out funpack-spec as a sibling", dir)
+		log.warnf("SKIP golden fmt stdlib: %s not found — set FUNPACK_STDLIB_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	paths := make([dynamic]string, 0, STDLIB_SURFACE_FILE_COUNT, context.temp_allocator)

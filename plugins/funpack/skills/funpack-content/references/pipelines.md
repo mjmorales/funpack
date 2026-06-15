@@ -1,7 +1,7 @@
 # funpack bake pipelines — full reference
 
 Grammars, generated seams, gates, and worked slices for each authoring pipeline. Distilled from
-funpack-spec `spec/{16,17,18,19,21,22}.md`, `grammar/{atlas,flvl,fpm,fui,tiles,manifest}.ebnf`, and
+the spec `spec/{16,17,18,19,21,22}.md`, `grammar/{atlas,flvl,fpm,fui,tiles,manifest}.ebnf`, and
 the example projects. **[FLAG]** marks where examples/prose diverge or a detail is spec-only.
 
 ## The universal shape

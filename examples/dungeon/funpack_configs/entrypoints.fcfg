@@ -1,0 +1,8 @@
+use dungeon_game.{DungeonCrawl, bindings}
+
+entrypoint main {
+  pipeline = DungeonCrawl
+  tick     = 60hz
+  logical  = 256x144
+  bindings = bindings
+}

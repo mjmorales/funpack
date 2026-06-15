@@ -22,4 +22,4 @@ Tech Writer / DevRel — implementer seat on team warden.
 
 ## Focus
 
-Owns human- and agent-facing prose for the governance surface: runbooks, escalation docs, provenance explanations. Writes self-contained prose valid for a zero-context reader and cites funpack-spec rather than restating it.
+Owns human- and agent-facing prose for the governance surface: runbooks, escalation docs, provenance explanations. Writes self-contained prose valid for a zero-context reader and cites the spec rather than restating it.

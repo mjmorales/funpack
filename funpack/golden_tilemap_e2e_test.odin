@@ -1,5 +1,5 @@
 // The tilemaps-tiles capstone goldens over the LIVE dungeon/warren corpus
-// (funpack-spec/examples/dungeon, examples/warren): the §18 §3 tile layer in
+// (examples/dungeon, examples/warren): the §18 §3 tile layer in
 // BOTH build products, end-to-end.
 //
 //   DUNGEON — compiles end-to-end through parse → typecheck → bake → emit:
@@ -29,7 +29,7 @@
 //        a range), and stage_build emits both products. This is the warren
 //        pin FLIPPED — the navigation milestone's acceptance.
 //
-// All tests resolve the sibling funpack-spec checkout and SKIP LOUDLY when it
+// All tests resolve the in-repo examples tree and SKIP LOUDLY when it
 // is absent — a skipped golden is a warning, never a pass.
 package funpack
 
@@ -177,7 +177,7 @@ test_golden_dungeon_project_compiles_and_inline_tests_pass :: proc(t: ^testing.T
 	// it to a range.
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden dungeon e2e: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden dungeon e2e: %s not found — set FUNPACK_DUNGEON_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	project, read_err, read_detail := read_project(dir)
@@ -223,7 +223,7 @@ test_golden_dungeon_build_carries_tile_layer_in_both_products :: proc(t: ^testin
 	// byte-identical (§29).
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden dungeon build: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden dungeon build: %s not found — set FUNPACK_DUNGEON_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
@@ -287,7 +287,7 @@ test_golden_dungeon_build_carries_populated_assets_section :: proc(t: ^testing.T
 	// bake. Emission is deterministic (§29): two builds are byte-identical.
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden dungeon assets: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden dungeon assets: %s not found — set FUNPACK_DUNGEON_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
@@ -358,7 +358,7 @@ test_golden_dungeon_artifact_carries_imported_schema :: proc(t: ^testing.T) {
 	// deferred level-accessor extern), so the import-closure rule keeps it out.
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden dungeon carry: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden dungeon carry: %s not found — set FUNPACK_DUNGEON_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
@@ -422,7 +422,7 @@ test_golden_dungeon_setup_folds_level_batch :: proc(t: ^testing.T) {
 	// terrain carry + the dungeon_atlas carry.
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden dungeon setup fold: %s not found — set FUNPACK_DUNGEON_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden dungeon setup fold: %s not found — set FUNPACK_DUNGEON_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
@@ -525,7 +525,7 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 	// — never loosen it to a range.
 	dir := resolve_warren_example_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden warren nav pin: %s not found — set FUNPACK_WARREN_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden warren nav pin: %s not found — set FUNPACK_WARREN_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	project, read_err, _ := read_project(dir)
@@ -641,7 +641,7 @@ test_golden_warren_compiles_minus_nav_surface :: proc(t: ^testing.T) {
 test_emit_warren_matches_runtime_testdata :: proc(t: ^testing.T) {
 	dir := resolve_warren_example_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP warren testdata match: %s not found — check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP warren testdata match: %s not found — ensure the in-repo fixture exists", dir)
 		return
 	}
 	product, verdict := stage_build(dir, .Dev, context.temp_allocator)
@@ -693,7 +693,7 @@ test_emit_warren_matches_runtime_testdata :: proc(t: ^testing.T) {
 test_emit_dungeon_matches_runtime_testdata :: proc(t: ^testing.T) {
 	dir := resolve_dungeon_example_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP dungeon testdata match: %s not found — check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP dungeon testdata match: %s not found — ensure the in-repo fixture exists", dir)
 		return
 	}
 	product, verdict := stage_build(dir, .Dev, context.temp_allocator)

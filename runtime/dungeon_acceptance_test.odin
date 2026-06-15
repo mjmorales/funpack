@@ -1,6 +1,6 @@
 // The dungeon runtime golden (the warren mold): #load the PRODUCER-REAL
 // committed runtime/testdata/dungeon.artifact (built by funpack stage_build from
-// funpack-spec/examples/dungeon — the cross-package byte seam
+// examples/dungeon — the cross-package byte seam
 // test_emit_dungeon_matches_runtime_testdata pins the committed copy to the
 // live build) and tick the game LIVE through the real pipeline — run_startup
 // over the v15 level-backed [setup] batch, step_tick over scripted Input

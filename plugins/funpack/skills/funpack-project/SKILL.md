@@ -42,7 +42,7 @@ mygame/
 ```
 
 `gen/` and `.funpack/` are **gitignored and rebuilt on demand**; `funpack_configs/` is authored and
-committed. (The funpack-spec example repo commits `gen/`/`.funpack/` for illustration — a real
+committed. (The example trees commits `gen/`/`.funpack/` for illustration — a real
 project gitignores them.)
 
 ## The `.fcfg` config layer
@@ -198,4 +198,4 @@ opposite of npm/cargo: no resolver, no version ranges, no transitive sprawl, no 
 
 > The CLI verb to scaffold is **not part of the spec** — there is no documented `funpack new`/`init`.
 > Create the tree by writing the files above directly (which is what `/funpack:new` does). The exact
-> tree and `.fcfg` shapes are taken from the funpack-spec examples; verify against your toolchain.
+> tree and `.fcfg` shapes are taken from the in-repo examples; verify against your toolchain.

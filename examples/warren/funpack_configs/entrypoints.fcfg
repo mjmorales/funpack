@@ -1,0 +1,8 @@
+use warren_game.{WarrenGame, bindings}
+
+entrypoint main {
+  pipeline = WarrenGame
+  tick     = 60hz
+  logical  = 128x96
+  bindings = bindings
+}

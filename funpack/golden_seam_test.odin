@@ -34,7 +34,7 @@ arena_committed_seam_path :: proc(t: ^testing.T) -> (path: string, ok: bool) {
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP seam compare: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP seam compare: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return "", false

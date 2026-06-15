@@ -1,0 +1,57 @@
+(* ============================================================================
+   funpack — fui.ebnf
+   The UI template DSL (.fui): a single-file screen declaring what it READS
+   (-> a view-model data) and EMITS (-> a Msg enum), baked to a *.gen.fun seam
+   (21). Imports lexical-core.ebnf. Comments: '//'.
+
+   .fui-local lexer facts (21 §1 — "only @ / : / bind: are new tokens"):
+     - `bind:` is one token (two-way directive head).
+     - `@` is the EVENT token (@click=), not the .fun directive token; `:` binds
+       in. Interpolation holes are PATHS, not expressions (21 §5).
+   Expression sublanguage = paths and literals only (no operators or calls).
+   LL(1): yes — nodes and attributes are selected by one token.
+   ============================================================================ *)
+
+Comment       ::= LineComment_Slash
+Interpolation ::= '{' Path '}'        (* binds lexical-core §4's string hole (21 §5) *)
+
+UiUnit     ::= Directive* ScreenDecl
+ScreenDecl ::= 'screen' UPPER_IDENT '{' Node* '}'
+
+
+(* Nodes — FIRST sets disjoint: Widget keyword / String / 'if' / 'for' *)
+
+Node     ::= Element | TextNode | IfNode | ForNode
+Element  ::= Widget Attr* Block?
+Block    ::= '{' Node* '}'
+TextNode ::= String                    (* interpolated: "Score: {score}" *)
+Widget   ::= 'panel' | 'row' | 'col' | 'grid' | 'stack' | 'scroll' | 'spacer'   (* layout *)
+           | 'text' | 'image' | 'icon'                                           (* content *)
+           | 'button' | 'field' | 'slider' | 'toggle' | 'select'                 (* input *)
+
+
+(* Control flow — funpack's own, reused (21 §1); conditions are bare paths *)
+
+IfNode  ::= 'if' Path Block
+ForNode ::= 'for' LOWER_IDENT 'in' Path RowType? KeyAttr? Block
+RowType ::= ':' '{' RowField (',' RowField)* '}'   (* inline row-payload type: for opt in difficulties: { id: Ref[Difficulty] } { … } *)
+RowField::= LOWER_IDENT ':' Type
+KeyAttr ::= 'key' '=' Path                          (* stable list identity: for item in items key=item.id *)
+
+
+(* Attributes — the four directive kinds (21 §1).
+   FIRST disjoint: LOWER_IDENT / ':' / 'bind:' / '@'. *)
+
+Attr       ::= PlainAttr | BindInAttr | TwoWayAttr | EventAttr
+PlainAttr  ::= LOWER_IDENT '=' AttrValue            (* class="…"  placeholder="name"  min=0 *)
+BindInAttr ::= ':' LOWER_IDENT '=' Path             (* value in: :class=tone *)
+TwoWayAttr ::= 'bind:' LOWER_IDENT '=' Path         (* both: bind:value=volume *)
+EventAttr  ::= '@' LOWER_IDENT '=' MsgRef           (* message out: @click=Coin, @click=SetVolume(p.value) *)
+AttrValue  ::= String | INT | BOOL | Path
+MsgRef     ::= UPPER_IDENT ('(' Path ')')?          (* a Msg variant + optional payload path *)
+
+
+(* Expression sublanguage — paths and literals only (21 §5) *)
+
+Path ::= LOWER_IDENT ('.' LOWER_IDENT)*             (* score, p.value, item.id *)
+Type ::= UPPER_IDENT ('[' Type (',' Type)* ']')? | '[' Type ']'   (* a row-payload type: Ref[Difficulty], Int *)

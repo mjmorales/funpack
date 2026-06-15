@@ -1,0 +1,15 @@
+tags {
+  game
+  startup
+  render
+  input
+  player
+  crate
+  scenery
+  delivery
+  score
+  camera
+  menu
+  persist
+  settings
+}

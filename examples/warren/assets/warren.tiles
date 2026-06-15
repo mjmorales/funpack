@@ -1,0 +1,8 @@
+// warren.tiles — the two tile types the maze draws from. `solid` is the sim-side
+// collision baked into the tile layer (spec/18 §2); the nav graph derives from
+// exactly these solids (spec/12 §1), so the tileset is the maze's one truth.
+tileset Warren {
+  atlas warren
+  tile floor { cell: (0, 0), solid: false }
+  tile wall  { cell: (1, 0), solid: true }
+}

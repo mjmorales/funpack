@@ -1,0 +1,12 @@
+tags {
+  game
+  startup
+  render
+  snake
+  food
+  input
+  grid
+  rng
+  state
+  event
+}

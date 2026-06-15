@@ -137,7 +137,7 @@ test_warden_find_drift_live :: proc(t: ^testing.T) {
 	// not declare drops it to the empty answer.
 	dir := resolve_drift_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP warden find drift: %s not found — set FUNPACK_DRIFT_DIR or check out funpack-spec as a sibling", dir)
+		log.warnf("SKIP warden find drift: %s not found — set FUNPACK_DRIFT_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	stream, err, compiled := read_index_project(dir, context.temp_allocator)

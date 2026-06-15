@@ -12,7 +12,7 @@
 //     rest read (== rot_x(0.0)), blend at weight 0 (== rot_x(0.0)) / weight 1 (==
 //     up(0.3)), the disjoint-bone-set blend, layer overlay-wins (== up(0.5)) and
 //     base-shows-through (== rot_x(0.0)), and walk_weight's clamp (1.0 / 0.0).
-//   - funpack-spec/examples/krognid/src/stroll.fun's pose_idle/pose_walk/walk_weight
+//   - examples/krognid/src/stroll.fun's pose_idle/pose_walk/walk_weight
 //     bodies and draw_krognid's body (the full blend over a hand-built Krognid row).
 //
 // The proof exercises the INTERP DISPATCH PATH (eval_method_call →

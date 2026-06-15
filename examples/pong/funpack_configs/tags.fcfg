@@ -1,0 +1,12 @@
+tags {
+  game
+  startup
+  render
+  spatial
+  paddle
+  ball
+  input
+  score
+  board
+  event
+}

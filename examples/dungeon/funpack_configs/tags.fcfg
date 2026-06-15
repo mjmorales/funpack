@@ -1,0 +1,11 @@
+tags {
+  game
+  startup
+  input
+  render
+  actor
+  ai
+  terrain
+  loot
+  event
+}

@@ -1,0 +1,8 @@
+use pickups.{Pickups, bindings}
+
+entrypoint main {
+  pipeline = Pickups
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}

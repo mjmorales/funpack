@@ -1,0 +1,8 @@
+use arena_game.{ArenaGame, bindings}
+
+entrypoint main {
+  pipeline = ArenaGame
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}

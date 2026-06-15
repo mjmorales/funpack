@@ -1,0 +1,30 @@
+// krognid.fpm — a rig: parts + skeleton + their pivots. Bake-time, imperative, float-ok.
+// One part per bone; each part's origin (0,0,0) is the bone joint it pivots around.
+rig Krognid {
+  skeleton: humanoid
+
+  param torso_h: Length = 24
+  param torso_r: Length = 10
+  param head_r:  Length = 7
+  param limb_h:  Length = 16
+  param limb_r:  Length = 4
+
+  fn torso_mesh() -> Solid { return capsule(torso_r, torso_h).up(0) }    // origin at hips, extends +Z
+  fn head_mesh()  -> Solid { return sphere(head_r) }                     // origin at neck top
+  fn upper_arm()  -> Solid { return capsule(limb_r, limb_h).down(limb_h) }       // shoulder -> elbow, -Z
+  fn lower_arm()  -> Solid { return capsule(limb_r * 0.85, limb_h).down(limb_h) } // elbow -> wrist
+  fn upper_leg()  -> Solid { return capsule(limb_r * 1.2, limb_h).down(limb_h) }  // hip -> knee
+  fn lower_leg()  -> Solid { return capsule(limb_r, limb_h).down(limb_h) }        // knee -> ankle
+
+  part torso     at TORSO       = torso_mesh()
+  part head      at HEAD        = head_mesh()
+  part upper_arm at L_UPPER_ARM = upper_arm()
+  part lower_arm at L_LOWER_ARM = lower_arm()
+  part upper_leg at L_UPPER_LEG = upper_leg()
+  part lower_leg at L_LOWER_LEG = lower_leg()
+
+  mirror L -> R          // model the left side; the right is generated
+  clearance 1.5          // min joint gap; the bake warns below this
+
+  material body = pbr(color: teal, rough: 0.7)
+}

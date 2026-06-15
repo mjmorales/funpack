@@ -33,5 +33,5 @@ Seat: **Runtime Engineer** — deterministic artifact execution, fixed-point sim
 - The outcome bet is bit-identical simulation: same inputs + seed produce identical state on every machine. Anything machine-variant — float, map iteration order, thread scheduling, wall clock — must never reach sim state.
 - runtime is the execution-side impure consumer (spec §29, §09): it consumes the compiler's artifact over a process boundary and never links compiler internals or the grammar.
 - The Odin package is `funpack_runtime` because Odin reserves `runtime` (`base:runtime`); the directory and binary keep the product name. Don't rename either side.
-- The `engine.*` stdlib surface is measured against funpack-spec and the nine golden examples — implement only what a golden example exercises; surface area without a passing example is not done.
+- The `engine.*` stdlib surface is measured against the spec and the nine golden examples — implement only what a golden example exercises; surface area without a passing example is not done.
 - Record Lore (tech_lead-only) for execution-model decisions: scheduling, fixed-point semantics, engine surface shape, with alternatives rejected.

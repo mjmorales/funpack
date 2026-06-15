@@ -1,5 +1,5 @@
 // The §11/§20/§24 cross-epic golden: the yard example tree
-// (funpack-spec/examples/yard) is the live source the v5 surface and emitter
+// (examples/yard) is the live source the v5 surface and emitter
 // must parse, type, flatten, and emit exactly. yard is the first surface to reach
 // the physics solve battery (§11 §3), the camera draw command (§20 §3), the
 // persistence save/restore/settings commands (§24), CollisionLayer-kinded enums
@@ -26,7 +26,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-YARD_DEFAULT_DIR :: "../funpack-spec/examples/yard"
+YARD_DEFAULT_DIR :: "examples/yard"
 
 // test_golden_yard_full_file_parses pins yard's v5 declaration inventory: the
 // imports, the CollisionLayer-kinded Layer enum, the singleton-vs-thing split, and
@@ -423,7 +423,7 @@ find_stage :: proc(pipeline: Pipeline_Node, name: string) -> (Pipeline_Stage, bo
 yard_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_yard_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden yard: %s not found — set FUNPACK_YARD_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden yard: %s not found — set FUNPACK_YARD_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	project, read_err, _ := read_project(dir)

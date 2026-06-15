@@ -1,0 +1,10 @@
+// pause.fui — the pause menu. Reads nothing, so its view-model is empty — a deliberate edge case
+// for the seam. Its buttons navigate by emitting messages the update interprets as screen changes.
+screen Pause {
+  col class="overlay center gap-3 bg-scrim" {
+    text class="text-2xl" { "Paused" }
+    button class="btn-primary" @click=Resume { "Resume" }
+    button class="btn" @click=OpenSettings { "Settings" }
+    button class="btn" @click=Quit { "Quit to title" }
+  }
+}

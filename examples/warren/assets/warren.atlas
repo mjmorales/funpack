@@ -1,0 +1,10 @@
+// warren.atlas — slices warren.png into the two cells the tileset names. Source for
+// the atlas importer; the raw image's hash is a dependency, so editing the PNG
+// re-bakes only this atlas and whatever references it.
+atlas Warren {
+  image "warren.png"
+  grid  8 8
+
+  cell floor at (0, 0)
+  cell wall  at (1, 0)
+}

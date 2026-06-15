@@ -58,6 +58,6 @@ enforced project tree) is the one remaining slash command — it has no MCP equi
 
 ## Source
 
-Distilled from [funpack-spec](https://github.com/mjmorales/funpack-spec). The examples
+Distilled from the in-repo funpack spec (`spec/`). The examples
 (`pong`, `snake`, `hunt`, `yard`, `arena`, `dungeon`, `warren`, `krognid`, `hud`, `assets`,
 `numerics`, `drift`) are the normative idiom; a real compile is the tie-breaker.

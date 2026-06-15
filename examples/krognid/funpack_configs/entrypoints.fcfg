@@ -1,0 +1,8 @@
+use stroll.{Stroll, bindings}
+
+entrypoint main {
+  pipeline = Stroll
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}

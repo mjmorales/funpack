@@ -1,7 +1,7 @@
 // The §21 §2 UI-seam golden: each committed example screen
-// (funpack-spec/examples/hud/ui/{hud,settings,pause}.fui) is parsed, inferred, and
+// (examples/hud/ui/{hud,settings,pause}.fui) is parsed, inferred, and
 // emitted through emit_screen_seam, and the bytes must reproduce the committed seam
-// funpack-spec/examples/hud/gen/{hud,settings,pause}.gen.fun EXACTLY. Like the
+// examples/hud/gen/{hud,settings,pause}.gen.fun EXACTLY. Like the
 // arena seam golden (gen_emit_test.odin), the fixture resolves the sibling checkout
 // (or FUNPACK_HUD_DIR) and SKIPs loudly when it is absent — a skipped golden is a
 // warning, never a pass — and report_first_byte_diff locates any divergence.
@@ -25,7 +25,7 @@ import "core:testing"
 // root, resolved through resolve_spec_dir so it survives an orchestrator
 // task-worktree #directory (the worktree infix is stripped, anchoring at the real
 // checkout).
-HUD_DEFAULT_DIR :: "../funpack-spec/examples/hud"
+HUD_DEFAULT_DIR :: "examples/hud"
 
 // FUI_SCREEN_STEMS is the file-set the routing seam emits over, in sorted
 // authoring-path order — the order read_project collects ui/*.fui (slice.sort of
@@ -84,7 +84,7 @@ emit_committed_screen_seam :: proc(screen: string) -> (emitted: string, golden: 
 	dir := resolve_hud_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden hud-seam: %s not found — set FUNPACK_HUD_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden hud-seam: %s not found — set FUNPACK_HUD_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return "", "", false
@@ -215,7 +215,7 @@ hud_screens :: proc(t: ^testing.T) -> (screens: []Fui_Screen, ok: bool) {
 	dir := resolve_hud_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP hud screens seam: %s not found — set FUNPACK_HUD_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP hud screens seam: %s not found — set FUNPACK_HUD_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return nil, false

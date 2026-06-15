@@ -1,12 +1,12 @@
 // The §19 §3 asset-seam-emitter golden: a hand-built (manifest, docs) pair
-// corresponding to the committed exemplar funpack-spec/examples/assets/gen/
+// corresponding to the committed exemplar examples/assets/gen/
 // assets.gen.fun, emitted through emit_assets_gen_fun, must reproduce that
 // exemplar byte-for-byte, and emitting the same inputs twice must be byte-
 // identical (spec §09/§29 purity). Like the .flvl/arena seam golden
 // (gen_emit_test.odin), the inputs are built BY HAND here — never parsed from the
 // file — so the test pins the emitter's byte contract, not a round-trip; it
 // resolves the live exemplar (or FUNPACK_ASSETS_GEN) and SKIPs loudly when the
-// funpack-spec sibling is absent (a skipped golden is a warning, never a pass).
+// in-repo fixture is absent (a skipped golden is a warning, never a pass).
 //
 // WHY THE DOCS ARE HAND-BUILT: the manifest carries the registry (names, kinds,
 // order) but not the per-asset prose @doc strings — those are authored content no
@@ -23,7 +23,7 @@ import "core:testing"
 // ASSETS_GEN_DEFAULT_REL is the committed exemplar's path relative to the main
 // checkout root, resolved through resolve_spec_dir so it survives an orchestrator
 // task-worktree #directory (the same resolution the other goldens use).
-ASSETS_GEN_DEFAULT_REL :: "../funpack-spec/examples/assets/gen/assets.gen.fun"
+ASSETS_GEN_DEFAULT_REL :: "examples/assets/gen/assets.gen.fun"
 
 // resolve_assets_gen_path resolves the committed assets.gen.fun exemplar: the
 // FUNPACK_ASSETS_GEN env override when set, else the sibling-checkout default
@@ -70,7 +70,7 @@ test_emit_assets_gen_fun_byte_matches_golden :: proc(t: ^testing.T) {
 	golden_bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
 	if read_err != nil {
 		log.warnf(
-			"SKIP assets gen-emit: %s not found — set FUNPACK_ASSETS_GEN or check out funpack-spec as a sibling of the repo",
+			"SKIP assets gen-emit: %s not found — set FUNPACK_ASSETS_GEN or ensure the in-repo fixture exists",
 			path,
 		)
 		return

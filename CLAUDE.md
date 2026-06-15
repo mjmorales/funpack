@@ -111,7 +111,7 @@ Dispatch `/prove:index` describe-batch subagents on the **haiku** model at **med
 
 ## Surface Friction, Never Work Around It
 
-When the engine's contracts, the language's semantics, or the funpack-spec's normative text resist your implementation, that resistance is a stop-and-escalate signal — not an obstacle to route around. Before writing any code, bubble it up for a first-principles review with the operator. Three named instances, each a `never`/`instead`:
+When the engine's contracts, the language's semantics, or the spec's normative text resist your implementation, that resistance is a stop-and-escalate signal — not an obstacle to route around. Before writing any code, bubble it up for a first-principles review with the operator. Three named instances, each a `never`/`instead`:
 
 - Never codify a contradiction into engine semantics to make a fixture pass; instead, surface the contradiction and resolve it at the source.
 - Never loosen a gate to force a case through; instead, escalate the gate conflict and review whether the case or the gate is wrong.

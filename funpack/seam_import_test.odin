@@ -155,14 +155,14 @@ test_source_is_behavior_module_classifies :: proc(t: ^testing.T) {
 // test_seam_import_arena is the load-bearing positive acceptance: reading the
 // live arena tree merges gen/arena.gen.fun into the source set as module `arena`,
 // and that seam parses + typechecks importing schema + engine only (no behavior
-// import). It resolves the sibling funpack-spec checkout (or FUNPACK_ARENA_DIR)
+// import). It resolves the in-repo examples tree (or FUNPACK_ARENA_DIR)
 // and SKIPs loudly when absent, so a missing checkout never silently passes.
 @(test)
 test_seam_import_arena :: proc(t: ^testing.T) {
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP seam-import arena: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP seam-import arena: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return
@@ -229,7 +229,7 @@ test_seam_imports_behavior_rejects :: proc(t: ^testing.T) {
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP seam-imports-behavior: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP seam-imports-behavior: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return

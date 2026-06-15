@@ -35,7 +35,7 @@ krognid_emit :: proc(t: ^testing.T) -> (artifact: string, ok: bool) {
 	dir := resolve_krognid_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP krognid emit golden: %s not found — set FUNPACK_KROGNID_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP krognid emit golden: %s not found — set FUNPACK_KROGNID_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return "", false

@@ -26,9 +26,9 @@ import (
 
 // Roots holds the resolved absolute source directories for one generation run.
 type Roots struct {
-	SpecDir   string // funpack-spec repo root
-	SpecMD    string // funpack-spec/spec (NN-*.md prose)
-	EngineFun string // funpack-spec/stdlib/engine (*.fun signatures)
+	SpecDir   string // monorepo root (spec/ + stdlib/ now live in-repo)
+	SpecMD    string // <repo>/spec (NN-*.md prose)
+	EngineFun string // <repo>/stdlib/engine (*.fun signatures)
 	PluginDir string // <repo>/plugins/funpack (authoring skills)
 }
 
@@ -44,16 +44,16 @@ type Result struct {
 }
 
 // ResolveRoots locates the generator's source directories relative to moduleRoot
-// (the mcp/ module root), with FUNPACK_SPEC_DIR overriding the spec sibling-repo
-// default (<repo>/../funpack-spec). It stats each source root and errors when
-// one is missing, so a misconfigured FUNPACK_SPEC_DIR fails loudly rather than
-// emitting an empty corpus.
+// (the mcp/ module root), with FUNPACK_SPEC_DIR overriding the in-repo default
+// (the monorepo root, where spec/ and stdlib/ now live). It stats each source
+// root and errors when one is missing, so a misconfigured FUNPACK_SPEC_DIR fails
+// loudly rather than emitting an empty corpus.
 func ResolveRoots(moduleRoot string) (Roots, error) {
 	repoRoot := filepath.Dir(moduleRoot) // <repo>/ (mcp/ sits at repo root)
 
 	specDir := os.Getenv("FUNPACK_SPEC_DIR")
 	if specDir == "" {
-		specDir = filepath.Join(repoRoot, "..", "funpack-spec")
+		specDir = repoRoot
 	}
 	specDir, err := filepath.Abs(specDir)
 	if err != nil {
@@ -99,8 +99,8 @@ func Generate(r Roots) (Result, error) {
 		FunpackVersion: funVersion,
 		TotalSections:  len(specSecs) + len(engineSecs) + len(pluginSecs),
 		Sources: []docs.SourceRecord{
-			{Root: "funpack-spec/spec", Kind: docs.KindSpec, Ref: specRef, Sections: len(specSecs), ContentHash: specHash},
-			{Root: "funpack-spec/stdlib/engine", Kind: docs.KindEngine, Ref: specRef, Sections: len(engineSecs), ContentHash: engineHash},
+			{Root: "spec", Kind: docs.KindSpec, Ref: specRef, Sections: len(specSecs), ContentHash: specHash},
+			{Root: "stdlib/engine", Kind: docs.KindEngine, Ref: specRef, Sections: len(engineSecs), ContentHash: engineHash},
 			{Root: "plugins/funpack", Kind: docs.KindPlugin, Ref: funVersion, Sections: len(pluginSecs), ContentHash: pluginHash},
 		},
 	}

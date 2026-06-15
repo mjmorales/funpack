@@ -1,4 +1,4 @@
-// The warden consumer golden: the drift example tree (funpack-spec/examples/
+// The warden consumer golden: the drift example tree (examples/
 // drift) proves the producer→consumer contract end-to-end — funpack builds the
 // tree and writes `.funpack/index.ndjson`, and `funpack warden`'s acquisition
 // seam (read_warden_index) decodes the SAME bytes back onto the producer's own

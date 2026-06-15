@@ -1,4 +1,4 @@
-// The §06/§07 AI golden: the hunt example tree (funpack-spec/examples/hunt) is
+// The §06/§07 AI golden: the hunt example tree (examples/hunt) is
 // the live source the declaration grammar must parse exactly and the full checked
 // pipeline must compile and evaluate. The full-file fixture pins hunt's
 // declaration inventory against that source — when the spec evolves, the counts
@@ -19,7 +19,7 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-HUNT_DEFAULT_DIR :: "../funpack-spec/examples/hunt"
+HUNT_DEFAULT_DIR :: "examples/hunt"
 
 @(test)
 test_golden_hunt_full_file_parses :: proc(t: ^testing.T) {
@@ -216,7 +216,7 @@ hunt_emit_inputs :: proc(t: ^testing.T) -> (inputs: Pong_Emit_Inputs, ok: bool) 
 hunt_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_hunt_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden hunt: %s not found — set FUNPACK_HUNT_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden hunt: %s not found — set FUNPACK_HUNT_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	project, read_err, _ := read_project(dir)

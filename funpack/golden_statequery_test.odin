@@ -7,7 +7,7 @@
 // expr-holes goldens' precedent): NO COMMITTED SPEC EXAMPLE declares a query
 // or an @index/@spatial directive yet — none of the nine golden projects
 // exercises the §08 §3 surface, a MISSING-ACCEPTANCE-EXAMPLE GAP for the
-// operator to close in funpack-spec — so the fixture is the live PONG tree
+// operator to close in the in-repo spec — so the fixture is the live PONG tree
 // with the STATE_QUERY_ADDITION appended BEFORE the build, and every asserted
 // byte is what funpack really wrote over the amended tree, never a doctored
 // product. Pong is the base deliberately: it is query-free, single-module,

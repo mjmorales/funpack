@@ -432,7 +432,7 @@ cfg_parse_assignment :: proc(p: ^Cfg_Parser) -> (key: string, value: string, err
 // ── §14.4 builds.fcfg ──────────────────────────────────────────────────
 // The builds production of the §14 smaller config grammar: a sequence of
 // `build <name> { platform = desktop|wasm }` blocks (exemplar:
-// funpack-spec/examples/arena/funpack_configs/builds.fcfg, `build native {
+// examples/arena/funpack_configs/builds.fcfg, `build native {
 // platform = desktop }`). Each block's label is the build name and its sole
 // required key is `platform`, whose value is the closed §14.6 presentation set.
 // It rides the same lex_fcfg/Cfg_Parser machinery the project.fcfg production

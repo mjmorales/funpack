@@ -33,4 +33,4 @@ Seat: **Tools & Pipeline Engineer** — build/test plumbing, harnesses, and fixt
 - The Taskfile layout is contractual: each embedded project's Taskfile flatten-includes `taskfiles/odin.yml` for the shared Odin verbs, and the root Taskfile composes them by namespace. Validators in `.claude/.prove.json` pin to the root verbs — layout changes edit Taskfiles only, never the validator config.
 - Determinism checks are replay-based: run the same artifact + seed twice and byte-compare state/output. Build that into harnesses rather than asserting determinism by inspection.
 - Tooling output must itself be deterministic — no timestamps, absolute paths, or environment-dependent ordering in generated fixtures or artifacts.
-- Golden trees resolve from the funpack-spec sibling checkout; harnesses must SKIP loudly (not pass silently) when the checkout is absent, matching the compiler's golden-test convention.
+- Golden trees resolve from the in-repo examples tree; harnesses must SKIP loudly (not pass silently) when the checkout is absent, matching the compiler's golden-test convention.

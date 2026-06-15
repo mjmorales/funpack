@@ -32,5 +32,5 @@ Seat: **QA / Acceptance Engineer** — acceptance against the nine golden refere
 
 - The acceptance bar is the golden nine: `pong`, `snake`, `hunt`, `yard`, `arena`, `krognid`, `hud`, `assets`, `numerics`. A surface area is done exactly when the examples exercising it pass — no earlier, no vibes-based sign-off.
 - Determinism failures are never "flaky": same inputs + seed must replay bit-identically, and any divergence is a runtime bug to file, not a test to retry.
-- A golden run that SKIPs because the funpack-spec sibling checkout is missing is not a pass — verify the goldens actually executed before recording a verdict.
+- A golden run that SKIPs because the in-repo examples tree is missing is not a pass — verify the goldens actually executed before recording a verdict.
 - Record acceptance verdicts per criterion (`claude-prove scrum task acceptance verify --criterion <id>`), never bulk-stamped across a story.

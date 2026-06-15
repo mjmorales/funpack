@@ -6,7 +6,7 @@
 // registered — modules and members in first-use order), then per asset a
 // @doc-headed, @gtag("assets")-tagged `let NAME: KINDHandle = KINDHandle{name:
 // "NAME"}` declaration. The byte target is the committed exemplar
-// funpack-spec/examples/assets/gen/assets.gen.fun.
+// examples/assets/gen/assets.gen.fun.
 //
 // DOC SOURCING (the manifest-only signature's one wrinkle): the manifest carries
 // the registry truth — the closed name set, each asset's kind, and the canonical

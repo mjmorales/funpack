@@ -8,7 +8,7 @@
 // projection metadata, not AST content).
 //
 // Canonical-form rules the renderer fixes where §02 under-specifies (each
-// chosen to round-trip and to match the dominant funpack-spec example-corpus
+// chosen to round-trip and to match the dominant in-repo example corpus
 // spelling):
 //   - Declarations render in SOURCE ORDER (module @doc, imports, then the
 //     Ast's source-ordered declaration sequence): the author's cross-kind

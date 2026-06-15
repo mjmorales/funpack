@@ -76,6 +76,6 @@ Realized in sequence, each stage a floor the next builds on:
   semantics, or the spec's normative text resist an implementation, that resistance is
   a stop-and-escalate signal resolved at the source — never codified into a
   contradiction to make a case pass.
-- **The spec is doctrine.** funpack-spec is the source of truth; this repo is the
+- **The spec is doctrine.** the in-repo spec is the source of truth; this repo is the
   machine that satisfies it, measured against the spec, the golden examples, and the
   stdlib engine surface.

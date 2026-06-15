@@ -1,0 +1,8 @@
+use drift.{Drift, bindings}
+
+entrypoint main {
+  pipeline = Drift
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}

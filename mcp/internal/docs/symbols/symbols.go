@@ -26,7 +26,7 @@
 //     pipeline, query, test), distilled from the spec's grammar-only declaration
 //     inventory. These are the grammar productions the table carries.
 //
-// Diagnostics: the funpack-spec has no error-code or named-diagnostic registry
+// Diagnostics: the funpack spec has no error-code or named-diagnostic registry
 // (it favors "errors are values" over a numbered diagnostic catalog), so the
 // corpus yields no diagnostic identifiers and this table carries none. The
 // extractor scans for them anyway ([scanDiagnostics]); the category is therefore
@@ -362,7 +362,7 @@ func keywordSymbols(c *docs.Corpus) []Symbol {
 }
 
 // scanDiagnostics extracts named compiler diagnostics from the corpus. The
-// funpack-spec carries no diagnostic-code registry, so this returns nil today;
+// the funpack spec carries no diagnostic-code registry, so this returns nil today;
 // it exists so a future spec that adds one is picked up without an API change.
 func scanDiagnostics(_ *docs.Corpus) []Symbol {
 	return nil

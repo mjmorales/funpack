@@ -1,0 +1,51 @@
+(* ============================================================================
+   funpack — fcfg.ebnf
+   The configuration layer (.fcfg): project identity, entrypoint wiring, build
+   targets, the @gtag registry, and dependency declarations (14, 30 §3).
+   Imports lexical-core.ebnf. No comments (14 §2, P6).
+
+   Deliberately smaller than .fun: `key = value` + `use` refs, a fixed set of
+   block kinds, no expressions or control flow (14 §2). The tells `=` not `:`
+   and `use` not `import` say "config, not logic" on sight.
+
+   LL(1): trivial — each block opens with a distinct keyword (project |
+   entrypoint | build | tags | use) or a directive; lines are `key = value`.
+   ============================================================================ *)
+
+ConfigUnit ::= ConfigItem (Sep ConfigItem)* Sep?
+ConfigItem ::= Directive* (Block | UseDecl)
+Block      ::= ProjectBlock | EntrypointBlock | BuildBlock | TagsBlock
+
+
+(* Blocks (14 §4). The label IS the project name for `project`; the declaration
+   name for entrypoint/build; `tags` takes no label. *)
+
+ProjectBlock    ::= 'project'    LOWER_IDENT '{' AssignList? '}'   (* project pong { version = "0.1.0" } *)
+EntrypointBlock ::= 'entrypoint' LOWER_IDENT '{' AssignList? '}'   (* entrypoint main { pipeline = Pong, tick = 60hz, bindings = bindings } *)
+BuildBlock      ::= 'build'      LOWER_IDENT '{' AssignList? '}'   (* build native { platform = desktop } *)
+TagsBlock       ::= 'tags'                   '{' TagList?    '}'   (* tags { game  startup  render … } *)
+
+AssignList ::= Assignment (Sep Assignment)* Sep?
+Assignment ::= LOWER_IDENT '=' Value
+TagList    ::= TagName (Sep TagName)* Sep?
+TagName    ::= LOWER_IDENT
+
+
+(* Values: literals and name references only — no expressions (14 §2). The `net`
+   field is an ordinary Assignment whose value is a NameRef, including the
+   modifier form: net = authoritative | p2p | p2p(rollback) (25 §1). *)
+
+Value   ::= String | TICKRATE | RESOLUTION | INT | BOOL | NameRef
+NameRef ::= (UPPER_IDENT | LOWER_IDENT) ('::' UPPER_IDENT | '(' LOWER_IDENT ')')?
+            (* Pong | bindings | desktop | authoritative | p2p(rollback) *)
+
+
+(* use — two flavours, one keyword (15 §3 module refs; 30 §3 deps).
+   After `use NAME`: '.' ⇒ ModuleRef; version|path|url|hash ⇒ DepDecl; else a
+   bare dep. version/path/url/hash are contextual keywords. *)
+
+UseDecl   ::= 'use' UseTarget
+UseTarget ::= ModuleRef | DepDecl
+ModuleRef ::= PathSeg ('.' PathSeg)* ('.' '{' MemberName (Sep MemberName)* Sep? '}')?   (* use pong.{Pong, bindings} *)
+DepDecl   ::= LOWER_IDENT DepClause*                                                    (* use hexgrid version "0.4" hash "sha256:…" *)
+DepClause ::= 'version' String | 'path' String | 'url' String | 'hash' String

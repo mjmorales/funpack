@@ -686,7 +686,7 @@ test_gate_yard_fold_match_with_option_clears_budget :: proc(t: ^testing.T) {
 	// Result::Ok(_) => m with { status: Option::Some("saved") } ... } })`. Under
 	// the old metric this was depth 4 = combinator-call(1) + match-arm(1) +
 	// with(1) + Option::Some payload-variant(1), over the budget of 3 — but a
-	// canonical spec example (funpack-spec/examples/yard) must clear the fixed
+	// canonical spec example (examples/yard) must clear the fixed
 	// §01 P5 budget by construction, so the over-counting payload-variant level
 	// was the bug. With the variant treated as a transparent aggregate the chain
 	// is depth 3 = combinator(1, lambda level collapsed) + match-arm(1) + with(1),

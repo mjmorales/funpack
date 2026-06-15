@@ -1,5 +1,5 @@
 // The §18 §3 tilemap-layer goldens over the LIVE dungeon/warren corpus
-// (funpack-spec/examples/dungeon, examples/warren) plus the hand-built seam
+// (examples/dungeon, examples/warren) plus the hand-built seam
 // byte fixture. The corpus examples ship no committed gen/, so the seam byte
 // contract is pinned FIXTURE-SIDE here (the expected bytes are authored in the
 // test), while the corpus tests pin the parse → tile-table → bake lowering
@@ -8,7 +8,7 @@
 // centers, the cell() anchor, and the layer model. Counts and coordinates are
 // pinned EXACTLY against the live golden sources on purpose — when a source
 // evolves, these change in lockstep; never loosen them to ranges. All corpus
-// tests resolve the sibling funpack-spec checkout and SKIP LOUDLY when it is
+// tests resolve the in-repo examples tree and SKIP LOUDLY when it is
 // absent — a skipped golden is a warning, never a pass.
 package funpack
 
@@ -17,8 +17,8 @@ import "core:os"
 import "core:path/filepath"
 import "core:testing"
 
-DUNGEON_EXAMPLE_DEFAULT_DIR :: "../funpack-spec/examples/dungeon"
-WARREN_EXAMPLE_DEFAULT_DIR :: "../funpack-spec/examples/warren"
+DUNGEON_EXAMPLE_DEFAULT_DIR :: "examples/dungeon"
+WARREN_EXAMPLE_DEFAULT_DIR :: "examples/warren"
 
 resolve_dungeon_example_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_DUNGEON_DIR", DUNGEON_EXAMPLE_DEFAULT_DIR)
@@ -33,7 +33,7 @@ resolve_warren_example_dir :: proc() -> string {
 // file is absent — the resolve-or-skip discipline every golden shares.
 tilemap_golden_source :: proc(dir: string, segments: []string) -> (content: string, ok: bool) {
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden tilemap: %s not found — set FUNPACK_DUNGEON_DIR/FUNPACK_WARREN_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden tilemap: %s not found — set FUNPACK_DUNGEON_DIR/FUNPACK_WARREN_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	parts := make([]string, len(segments) + 1, context.temp_allocator)

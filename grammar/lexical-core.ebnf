@@ -1,0 +1,128 @@
+(* ============================================================================
+   funpack — lexical-core.ebnf
+   Token classes and lexical conventions shared by every funpack file type. Each
+   per-extension grammar imports these by name and adds only its own deltas
+   (a comment syntax, a literal flavour, extra punctuation).
+
+   Notation (W3C-EBNF, used in every grammar/*.ebnf):
+     A ::= …   rule        A B   sequence        A | B   alternation
+     ( )       group       A?    optional         A*  A+  repetition
+     'x'       terminal    UPPER token class     [a-z]  range (lexer only)
+   Commentary (paren-star blocks, like this header) is not funpack syntax.
+   ============================================================================ *)
+
+
+(* 1. Character classes ----------------------------------------------------- *)
+
+letter      ::= [a-z] | [A-Z]
+digit       ::= [0-9]
+ident_char  ::= letter | digit | '_'
+upper       ::= [A-Z]
+lower_start ::= [a-z] | '_'
+
+
+(* 2. Identifiers — TWO classes, by initial character.
+   Casing is a hard rule (02 §1: a wrong case is a compile error), so the LEXER
+   decides the class. Only the Upper/lower split is needed to parse; the three
+   style bands (UpperCamel / UPPER_SNAKE / snake_case) are a lint on top. The
+   split is load-bearing — see fun.ll1.md §1. ------------------------------- *)
+
+UPPER_IDENT ::= upper ident_char*        (* types, variants, type vars: Vec2, Snake, Some, T, BOARD *)
+LOWER_IDENT ::= lower_start ident_char*  (* values, fns, fields, modules, stages: self, paddle_move, dt *)
+
+
+(* 3. Numeric literals — type is directed by form, never by promotion (02 §2).
+   Literals are unsigned; a leading '-' is the unary operator. In .fpm the FIXED
+   token is interpreted in the float domain (16 §1) — same token, different
+   semantics. ------------------------------------------------------------- *)
+
+INT      ::= digit+
+FIXED    ::= digit+ '.' digit+
+FLOAT    ::= digit+ '.' digit+ 'f'       (* render/visual-only *)
+TICKRATE ::= digit+ 'hz'                 (* 60hz, 8hz — wired only in .fcfg (07 §1) *)
+RESOLUTION ::= digit+ 'x' digit+           (* 160x120 — the entrypoint logical draw space, wired only in .fcfg (15 §3) *)
+
+
+(* 4. Booleans, strings, chars ---------------------------------------------- *)
+
+BOOL ::= 'true' | 'false'
+
+(* A string is text with `{ hole }` interpolations; `\{` escapes a brace; strings
+   are never built with '+' (02 §2). The importing grammar fills the hole:
+   .fun -> '{' Expr '}', .fui -> '{' Path '}'. *)
+String       ::= '"' StringPart* '"'
+StringPart   ::= STRING_TEXT | EscapedBrace | Interpolation
+EscapedBrace ::= '\{' | '\}'
+STRING_TEXT  ::= (* any run excluding an unescaped '"' '{' '}' *)
+
+TripleString ::= '"""' ANY_CHAR* '"""'   (* extension: .flvl tilemap grids (18 §3) *)
+Char         ::= "'" CHAR_GLYPH "'"       (* extension: .flvl/.tiles legends *)
+
+
+(* 5. Directives — the CLOSED set (05); not user-definable. These METADATA
+   directives are shared (.fun and .fcfg) and their arguments are lexical-core
+   constructs. The DEBUG family (@break/@log/@watch/@trace) and the typed-hole
+   @stub take a host `Expr`/`Type`, so they live in fun.ebnf (`DebugDirective`,
+   `StubExpr`). (.fui reuses '@' for `@event=`, a different .fui-local token.) *)
+
+Directive ::= '@doc'     '(' String ')'
+            | '@gtag'    '(' String (',' String)* ')'
+            | '@todo'    '(' String ',' Window ')'
+            | '@index'   '(' FieldPath ')'
+            | '@spatial' '(' FieldPath ')'
+            | '@migrate' '(' MigrateArgs ')'
+            | '@expose' | '@server' | '@client'
+
+MigrateArgs ::= 'from' ':' String (',' 'with' ':' LOWER_IDENT)?   (* rename, optionally + retype: from: "old" [, with: convert] *)
+              | 'with' ':' LOWER_IDENT                              (* retype, same name: with: convert *)
+FieldPath   ::= UPPER_IDENT '.' LOWER_IDENT                        (* Thing.field — for @index / @spatial *)
+
+
+(* 6. @todo window — the four forms (05 §2, 29 §4). LL(1): disjoint by trailing
+   time-unit / a 'builds' suffix / two '-' / a leading 'T-'. ---------------- *)
+
+Window     ::= Duration | BuildCount | Date | TaskRef
+Duration   ::= INT ('h' | 'd' | 'w' | 'mo' | 'q' | 'y')   (* 30d, 72h, 2w *)
+BuildCount ::= INT 'builds'                               (* 50builds *)
+Date       ::= INT '-' INT '-' INT                        (* 2026-09-01 *)
+TaskRef    ::= 'T' '-' digit+                             (* T-0042 — the recommended default *)
+
+
+(* 7. Module-path atoms — shared by .fun `import` and .fcfg `use` (15 §3).
+   Rooted, absolute; no relative imports. --------------------------------- *)
+
+PathSeg    ::= LOWER_IDENT | UPPER_IDENT
+MemberName ::= LOWER_IDENT | UPPER_IDENT
+
+
+(* 8. Separators & newlines (02 §1).
+   Statement terminator is the newline; element separator is newline OR ','; a
+   trailing separator is legal. Both collapse to Sep. Which a newline IS (a
+   terminator vs a separator) is fixed by the enclosing brace.
+
+   IMPLICIT LINE JOINING — a newline does NOT terminate when:
+     (a) inside an unclosed '(' or '[';
+     (b) the next line begins with '.' ')' ']' '}' ',' 'with' or a binary op;
+     (c) the previous token cannot end a line: an open bracket, a binary op,
+         '=' ':' '->' '=>' '.' '::' ',' 'return' 'with'.
+   This joins the leading-dot builder chains (Bindings.empty()⏎.axis(…)). *)
+
+Sep     ::= ( NEWLINE | ',' )+
+NEWLINE ::= (* one or more line breaks, after implicit-join suppression *)
+
+
+(* 9. Comments — VARY BY FILE TYPE (the lexers differ; one reason the family is
+   split). Each importing grammar states its own Comment rule, or its absence. *)
+
+(*   .fun .gen.fun .fcfg   : (none)   02 §1, 01 P6
+     .fpm .flvl .tiles .atlas .fui : '//'  (LineComment_Slash)
+     .manifest             : '#'     (LineComment_Hash)                       *)
+
+LineComment_Slash ::= '//' ANY_CHAR_BUT_NEWLINE*
+LineComment_Hash  ::= '#'  ANY_CHAR_BUT_NEWLINE*
+
+
+(* 10. Whitespace — spaces/tabs between tokens, never significant. Line breaks
+   surface as NEWLINE (§8), not folded here. ------------------------------- *)
+
+WS ::= ( ' ' | #x09 )+

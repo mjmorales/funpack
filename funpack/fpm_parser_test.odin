@@ -8,7 +8,7 @@ import "core:testing"
 // shape demands (the live krognid.fpm example) — plus per-production unit checks
 // and the casing-rejection paths.
 
-// KROGNID_RIG mirrors the funpack-spec krognid.fpm example (§16 §7): a humanoid
+// KROGNID_RIG mirrors the krognid.fpm example (§16 §7): a humanoid
 // rig with five params, six mesh fns, six part bindings, one mirror, a clearance,
 // and a material. The counts are pinned exactly below; when the example evolves,
 // these counts change in lockstep.

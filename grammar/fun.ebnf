@@ -1,0 +1,204 @@
+(* ============================================================================
+   funpack — fun.ebnf
+   The .fun language (and .gen.fun, the same grammar — 15 §6). Imports the token
+   classes of lexical-core.ebnf.
+
+   LL(1): strictly. The statement/declaration layer opens every production with a
+   unique keyword (02 §1); expressions are an equivalent precedence cascade that
+   is also LL(1). Command-wrap is call syntax — Spawn(thing), Despawn() (§15.1) —
+   so a brace is always a record literal and there is no peek. FIRST/FOLLOW sets
+   and the predict table are in fun.ll1.md.
+
+   Relied on (fun.ll1.md §1): record literals are `UPPER_IDENT '{'`, and no
+   record literal appears in a control-flow head — so a value scrutinee or
+   condition (never a bare UPPER_IDENT) cannot be misread.
+
+   (spec-only) = normative in spec/ but unused by a current example.
+   ============================================================================ *)
+
+
+(* 1. Compilation unit ------------------------------------------------------ *)
+
+CompilationUnit ::= ModuleDoc? ImportDecl* DirectedDecl*
+ModuleDoc       ::= '@doc' '(' String ')'           (* documents the module by position (15 §2); see fun.ll1.md §B *)
+DirectedDecl    ::= Annotation* Declaration
+
+Annotation     ::= Directive | DebugDirective       (* metadata (lexical-core §5) + the .fun-only debug family (28 §4) *)
+DebugDirective ::= '@break' '(' Expr ')'             (* pause when the predicate holds *)
+                 | '@log'   '(' Expr ')'             (* emit the value each step *)
+                 | '@watch' '(' Expr ')'             (* fire on change (also prefixes a FieldDecl) *)
+                 | '@trace'                           (* full (in -> out) transition; no argument *)
+
+Declaration ::= LetDecl | DataDecl | EnumDecl | ThingDecl | SignalDecl
+              | BehaviorDecl | FnDecl | QueryDecl | PipelineDecl | TestDecl | ExternDecl
+(* All 12 open with a distinct keyword. `data enum thing singleton signal
+   behavior pipeline query test mut on` are CONTEXTUAL keywords (06 §1: `let
+   thing = …` stays legal); the top level holds only declarations, so the leading
+   keyword always selects. *)
+
+
+(* 2. Imports (15 §3 — absolute, rooted) ------------------------------------ *)
+
+ImportDecl ::= 'import' PathSeg ImportTail*
+ImportTail ::= '.' PathSeg
+             | '.' '{' MemberName (Sep MemberName)* Sep? '}'   (* member group is terminal *)
+(* import engine.math.{Vec2, abs, clamp} | import engine.math.max | import assets *)
+
+
+(* 3. let — the one binding form (module constant or local; 02 §6) ---------- *)
+
+LetDecl ::= 'let' LetName (':' Type)? '=' Expr
+LetName ::= UPPER_IDENT | LOWER_IDENT       (* UPPER_SNAKE constants (BOARD); locals & asset handles (dir, coin) *)
+
+
+(* 4. data / enum (03) ------------------------------------------------------ *)
+
+DataDecl ::= 'mut'? 'data' UPPER_IDENT TypeParams? KindAsc? RecordBody   (* `mut data` (03 §7); TypeParams engine-only *)
+EnumDecl ::= 'enum' UPPER_IDENT TypeParams? KindAsc? '{' Variant (Sep Variant)* Sep? '}'
+
+Variant        ::= Directive* UPPER_IDENT VariantPayload?    (* a directive may prefix a variant (05) *)
+VariantPayload ::= '(' Type (',' Type)* ')'                  (* tuple:  Some(T), Hud(HudMsg) *)
+                 | '{' FieldDecl (Sep FieldDecl)* Sep? '}'   (* struct: Rgb{r:Fixed,…} *)
+
+TypeParams ::= '[' UPPER_IDENT (',' UPPER_IDENT)* ']'        (* [T], [T, E], [K, V] *)
+KindAsc    ::= ':' UPPER_IDENT                               (* : Axis | Button | CollisionLayer | Num (03 §4) *)
+
+
+(* 5. thing / singleton / signal (06, 03 §6) -------------------------------- *)
+
+ThingDecl  ::= ('thing' | 'singleton') UPPER_IDENT RecordBody
+SignalDecl ::= 'signal' UPPER_IDENT RecordBody
+RecordBody ::= '{' (FieldDecl (Sep FieldDecl)* Sep?)? '}'    (* may be empty: thing Field {} *)
+FieldDecl  ::= Annotation* LOWER_IDENT ':' Type ('=' Expr)?  (* type + optional default; a field may carry @migrate / @watch / @doc *)
+
+
+(* 6. behavior (06 §3) ------------------------------------------------------ *)
+
+BehaviorDecl ::= 'behavior' LOWER_IDENT 'on' UPPER_IDENT '{' StepMethod '}'
+StepMethod   ::= Directive* 'fn' LOWER_IDENT '(' ParamList? ')' '->' ReturnType Block
+(* the method name is the reserved entry point `step` — a semantic constraint *)
+
+
+(* 7. fn / query (04, 08 §3) ------------------------------------------------ *)
+
+FnDecl    ::= 'fn' LOWER_IDENT '(' ParamList? ')' '->' ReturnType FnBody
+FnBody    ::= Block | StubExpr                              (* a typed hole may stand in body position (05 §2) *)
+QueryDecl ::= 'query' LOWER_IDENT '(' ParamList? ')' '->' ReturnType Block   (* (spec-only) *)
+
+ParamList  ::= Param (Sep Param)* Sep?
+Param      ::= LOWER_IDENT ':' Type
+ReturnType ::= Type | TupleType
+TupleType  ::= '(' Type (',' Type)+ ')'                     (* return-position multi-value only (02 §8) *)
+
+
+(* 8. extern — native boundary (26) ----------------------------------------- *)
+
+ExternDecl ::= 'extern' (ExternFn | ExternType)
+ExternFn   ::= 'fn' LOWER_IDENT '(' ParamList? ')' '->' ReturnType    (* no body *)
+ExternType ::= 'type' UPPER_IDENT TypeParams?                         (* extern type View[T] *)
+
+
+(* 9. pipeline (07) --------------------------------------------------------- *)
+
+PipelineDecl ::= 'pipeline' UPPER_IDENT '{' StageEntry (Sep StageEntry)* Sep? '}'
+StageEntry   ::= Annotation* LOWER_IDENT ':' StageValue   (* a stage may carry @trace *)
+StageValue   ::= '[' (BehaviorRef (Sep BehaviorRef)* Sep?)? ']'   (* a behavior list *)
+               | LOWER_IDENT                                       (* an engine-stage symbol: solve *)
+               | UPPER_IDENT                                       (* a sub-pipeline name: Combat *)
+BehaviorRef  ::= LOWER_IDENT
+
+
+(* 10. test (04 §5) --------------------------------------------------------- *)
+
+TestDecl   ::= 'test' String '{' (TestStmt (Sep TestStmt)* Sep?)? '}'
+TestStmt   ::= LetStmt | AssertStmt | IfExpr | MatchExpr | ExprStmt
+AssertStmt ::= 'assert' Expr
+
+
+(* 11. Types (02 §3, 03 §3) ------------------------------------------------- *)
+
+Type      ::= NamedType | ListType | FnType
+NamedType ::= UPPER_IDENT TypeArgs?                         (* Option[T], Map[K,V], View[Paddle] *)
+TypeArgs  ::= '[' Type (',' Type)* ']'
+ListType  ::= '[' Type ']'                                  (* [Cell], [Spawn] *)
+FnType    ::= 'fn' '(' (Type (',' Type)*)? ')' '->' Type    (* fn(A, T) -> A *)
+
+
+(* 12. Statements & blocks (02 §6) — no for/while, no `?`, no implicit return - *)
+
+Block      ::= '{' (Statement (Sep Statement)* Sep?)? '}'
+Statement  ::= LetStmt | ReturnStmt | IfExpr | MatchExpr | ExprStmt
+LetStmt    ::= 'let' LOWER_IDENT (':' Type)? '=' Expr
+ReturnStmt ::= 'return' Expr
+ExprStmt   ::= Expr
+(* Dispatch: let | return | if | match | <else: Expr>. `if`/`match` are pulled
+   out of ExprStmt so they parse as the if/match constructs. *)
+
+
+(* 13. Patterns (02 §5, 03 §2) — disjoint FIRST by ident class -------------- *)
+
+Pattern    ::= '_'
+             | LOWER_IDENT                                  (* binder *)
+             | '(' Pattern (',' Pattern)* ')'               (* tuple: (Option::Some(wp), rest) *)
+             | UPPER_IDENT '::' UPPER_IDENT VariantPat?      (* variant: Option::Some(v), AppMsg::Hud(HudMsg::Coin) *)
+VariantPat ::= '(' Pattern (',' Pattern)* ')'               (* payload binders / nested patterns *)
+             | '{' LOWER_IDENT (',' LOWER_IDENT)* '}'        (* struct field-pun: Shape2::Box{size} *)
+
+
+(* 14. Expressions — precedence cascade, low → high (02 §3). Each level is
+   `next ( op next )*`; the loop continues iff the lookahead is an op of this
+   level (disjoint sets) → LL(1). ----------------------------------------- *)
+
+Expr        ::= OrExpr
+OrExpr      ::= AndExpr ('or' AndExpr)*
+AndExpr     ::= EqExpr  ('and' EqExpr)*
+EqExpr      ::= RelExpr (('==' | '!=') RelExpr)*
+RelExpr     ::= AddExpr (('<' | '<=' | '>' | '>=') AddExpr)*
+AddExpr     ::= MulExpr (('+' | '-') MulExpr)*
+MulExpr     ::= UnaryExpr (('*' | '/' | '%') UnaryExpr)*
+UnaryExpr   ::= ('not' | '-') UnaryExpr | WithExpr
+WithExpr    ::= PostfixExpr ('with' WithBody)*              (* self with { y: … } — always a field list *)
+WithBody    ::= '{' FieldInit (Sep FieldInit)* Sep? '}'
+
+PostfixExpr ::= Atom PostfixOp*
+PostfixOp   ::= '.' (LOWER_IDENT | UPPER_IDENT) CallArgs?   (* member / UFCS / assoc: .body  .apply_impulse(p)  .MAX *)
+             | '[' Expr ']'                                  (* index *)
+             | CallArgs                                       (* call: f(a, b) *)
+CallArgs    ::= '(' (Arg (Sep Arg)* Sep?)? ')'
+Arg         ::= Expr
+
+
+(* 15. Atoms (02 §2, §4, §5) ------------------------------------------------ *)
+
+Atom    ::= Literal | UpperAtom | LOWER_IDENT | ListLit | GroupOrTuple
+          | Lambda | IfExpr | MatchExpr | StubExpr
+Literal ::= INT | FIXED | FLOAT | String | BOOL | TICKRATE
+Interpolation ::= '{' Expr '}'              (* the .fun string hole (lexical-core §4): "score {m.score}" *)
+
+UpperAtom ::= UPPER_IDENT ( '::' UPPER_IDENT BracedInit? | BracedInit )?
+(* '::'⇒ variant value: nullary Side::Left; struct-payload Draw::Rect{…} (the
+        trailing BracedInit); tuple-payload Option::Some(x) (a CallArgs in §14).
+   '{' ⇒ a braced initializer (§15.1).
+   ε   ⇒ a bare type/constant: Fixed, Quat, BOARD. *)
+
+ListLit      ::= '[' (Expr (Sep Expr)* Sep?)? ']'          (* [a, b] | [] *)
+GroupOrTuple ::= '(' Expr ((',' Expr)+)? ')'               (* '(' Expr ')' grouping; extra commas ⇒ a tuple literal *)
+Lambda       ::= 'fn' '(' (LOWER_IDENT (',' LOWER_IDENT)*)? ')' '{' Statement '}'   (* params untyped (inferred); body is ONE statement — a single expression, an if-expression, or a `return` (02 §5). Complex logic belongs in a named fn, not a multi-statement lambda block. *)
+StubExpr     ::= '@stub' '(' Type (',' Expr)? ')'          (* a typed hole; the optional Expr is the dev fallback approximation (05 §2) *)
+
+IfExpr    ::= 'if' Expr Block ('else' (Block | IfExpr))?
+(* `else` is required as an expression, optional as a statement (a semantic
+   check). The head Expr is a condition, never a bare UPPER_IDENT — fun.ll1.md §C. *)
+
+MatchExpr ::= 'match' Expr '{' MatchArm (Sep MatchArm)* Sep? '}'
+MatchArm  ::= Pattern '=>' (Block | Expr)                  (* after '=>': '{'⇒Block, else Expr *)
+
+
+(* 15.1 BracedInit — a record literal (field list), always (fun.ll1.md §A).
+   A command-wrap is a CALL, not a brace: `Spawn(thing)`, `Despawn()` — parsed by
+   PostfixExpr/CallArgs (§14). So `UPPER_IDENT '{'` is unambiguously a record
+   literal, and `.fun` is strictly LL(1) with no peek. *)
+
+BracedInit ::= '{' FieldList? '}'                          (* Vec2{x: 1, y: 2} | Goal{side: x} | Save{slot: SLOT} | Snake{} *)
+FieldList  ::= FieldInit (Sep FieldInit)* Sep?
+FieldInit  ::= LOWER_IDENT ':' Expr

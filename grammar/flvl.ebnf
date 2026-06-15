@@ -1,0 +1,77 @@
+(* ============================================================================
+   funpack — flvl.ebnf
+   The level DSL (.flvl): a flat-text initial world that bakes to a *.gen.fun
+   seam (17). One format for 2D/3D; only coordinate arity changes. Tilemap layers
+   (the ASCII grid, 18 §3) are authored inside a level.
+   Imports lexical-core.ebnf. Comments: '//'. Adds `..` ranges (the only place in
+   the family, 02 §3), Char literals, and TripleString grids (18 §3).
+   NOT held to LL(1). Coordinates are fixed-point (17 §4).
+   ============================================================================ *)
+
+Comment ::= LineComment_Slash
+
+LevelUnit  ::= TopItem (Sep TopItem)* Sep?
+TopItem    ::= Directive* (LevelBlock | Include)
+Include    ::= 'include' String                     (* split across files (17 §4) *)
+LevelBlock ::= 'level' UPPER_IDENT Dim '{' LevelItem (Sep LevelItem)* Sep? '}'
+Dim        ::= '2d' | '3d'
+
+LevelItem ::= Bounds | Things | Prefab | Placement | ForLoop | Tilemap
+Bounds    ::= 'bounds' Coord Coord                  (* bounds (0, 0) (160, 120) *)
+Things    ::= 'things' LOWER_IDENT                  (* the schema module this level places *)
+Coord     ::= '(' Number (',' Number)* ')'          (* arity = Dim (semantic) *)
+Number    ::= INT | FIXED
+
+
+(* Placement (17 §1): place <Type> <name>? { params }? at <where> [facing <rot>].
+   `at` writes the reserved `pos`; `facing` writes `facing`. *)
+
+Placement  ::= 'place' UPPER_IDENT LOWER_IDENT? ParamBlock? 'at' AnchorExpr Facing?
+Facing     ::= 'facing' AnchorExpr
+ParamBlock ::= '{' ParamEntry (Sep ParamEntry)* Sep? '}'
+ParamEntry ::= ParamKey ':' AnchorExpr              (* a bare-name value resolves to a typed Ref[T]; a dotted key overrides a nested member *)
+ParamKey   ::= LOWER_IDENT ('.' LOWER_IDENT)*        (* field, or path into a prefab member: cannon.rate *)
+
+
+(* Prefab — a nestable bundle of placements (17 §1) *)
+
+Prefab     ::= 'prefab' UPPER_IDENT '{' PrefabItem (Sep PrefabItem)* Sep? '}'
+PrefabItem ::= Placement | ForLoop | Prefab
+
+(* Repetition — the `..` range (17 §1) *)
+
+ForLoop ::= 'for' LOWER_IDENT 'in' Range '{' (PrefabItem (Sep PrefabItem)* Sep?)? '}'
+Range   ::= Number '..' Number                      (* 0..5 *)
+
+
+(* Anchor expressions — positions without raw coordinates (17 §1): anchors
+   (center, left_edge), instance-relative (base.top, left_of(door, 2)), sockets
+   (table.socket("cup")), .offset(x:, y:), the cell(col, row) anchor (18 §3), and
+   integer arithmetic in offsets. Same shape as .fpm, including named args. *)
+
+AnchorExpr  ::= AddExpr
+AddExpr     ::= MulExpr (('+' | '-') MulExpr)*
+MulExpr     ::= UnaryExpr (('*' | '/') UnaryExpr)*
+UnaryExpr   ::= '-' UnaryExpr | PostfixExpr
+PostfixExpr ::= AnchorAtom PostfixOp*
+PostfixOp   ::= '.' LOWER_IDENT CallArgs? | CallArgs   (* .center  .offset(y: 6)  cell(5, 3) *)
+CallArgs    ::= '(' (Arg (',' Arg)*)? ')'
+Arg         ::= (LOWER_IDENT ':')? AnchorExpr
+AnchorAtom  ::= LOWER_IDENT | Number | String | '(' AnchorExpr ')'
+
+
+(* Tilemap — the ASCII grid layer (18 §3) *)
+
+Tilemap     ::= 'tilemap' LOWER_IDENT 'cell' INT '{' Sep? Legend Sep Grid Sep? '}'
+Legend      ::= 'legend' '{' LegendEntry (Sep LegendEntry)* Sep? '}'
+LegendEntry ::= Char LegendBind
+LegendBind  ::= LOWER_IDENT                          (* a tile, resolved through the project-global
+                                                        tile namespace (18 §3) — a tilemap names no
+                                                        tileset; cross-tileset name collision is a
+                                                        bake error *)
+              | 'spawn' UPPER_IDENT LOWER_IDENT?      (* a marker: 'g' spawn Goblin | 'P' spawn Player hero *)
+              | 'empty'
+Grid        ::= 'grid' TripleString                  (* a row-major rectangular block of legend chars;
+                                                        common leading indentation is stripped before the
+                                                        18 §5 rectangularity gate, so a grid indented to
+                                                        block depth carries no phantom legend columns *)

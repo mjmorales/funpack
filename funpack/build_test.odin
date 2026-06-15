@@ -327,7 +327,7 @@ test_build_multi_module_arena :: proc(t: ^testing.T) {
 test_index_stream_multi_module_order :: proc(t: ^testing.T) {
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP build multi-module order: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling", dir)
+		log.warnf("SKIP build multi-module order: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	stream, err, compiled := read_index_project(dir, context.temp_allocator)
@@ -810,7 +810,7 @@ copy_pong_tree_to_temp :: proc() -> (root: string, ok: bool) {
 // colliding.
 copy_spec_tree_to_temp :: proc(src: string, label: string, env_name: string) -> (root: string, ok: bool) {
 	if !os.is_dir(src) {
-		log.warnf("SKIP build %s: %s not found — set %s or check out funpack-spec as a sibling", label, src, env_name)
+		log.warnf("SKIP build %s: %s not found — set %s or ensure the in-repo fixture exists", label, src, env_name)
 		return "", false
 	}
 	root = scratch_join({scratch_base(), tprintf_seq(fmt.tprintf("funpack-build-%s", label))})

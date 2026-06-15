@@ -7,6 +7,6 @@
   "author": {
     "name": "Manuel Morales"
   },
-  "homepage": "https://github.com/mjmorales/funpack-spec",
+  "homepage": "https://github.com/mjmorales/funpack",
   "keywords": ["funpack", "game-development", "gamedev", "deterministic", "fixed-point", "agent-first", "language"]
 }

@@ -5,7 +5,7 @@
 // files — the `Screen` enum (one variant per screen) and the `AppMsg` tagged
 // union (one `Screen(ScreenMsg)` arm per screen), plus the import header pulling
 // each screen module's Msg type. The byte target is the committed exemplar
-// funpack-spec/examples/hud/gen/screens.gen.fun.
+// examples/hud/gen/screens.gen.fun.
 //
 // "The screens ARE the route table" (§21 §3): there is no route config — the SET
 // of templates generates both enums, so adding a .fui extends `Screen` AND

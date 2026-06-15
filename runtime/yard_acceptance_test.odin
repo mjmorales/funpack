@@ -76,7 +76,7 @@ import "core:testing"
 
 // YARD_ARTIFACT is the committed golden yard artifact, embedded at compile time
 // the same hermetic way the pong/hunt artifacts are — a byte-identical copy of the
-// compiler-emitted golden at funpack-spec/examples/yard/.funpack/artifact. It is
+// compiler-emitted golden at examples/yard/.funpack/artifact. It is
 // the ONE story that consumes the emitted artifact (Lore #7, #8): runtime does NOT
 // define the artifact format, it executes these bytes. It is the v5 stamp the
 // sibling compiler epic moved both version stamps to.

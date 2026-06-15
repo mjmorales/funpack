@@ -1,0 +1,34 @@
+// warren.flvl — a rabbit warren as a 2D maze. The tilemap's solid walls are the single
+// source the nav graph is derived from at bake (spec/12 §1): there is no graph to author
+// and none to drift. The picture IS the topology — corridors, dead ends, one open burrow
+// (O, reachable), and one sealed burrow (S, fully walled: path() to it is Unreachable).
+level Warren 2d {
+  bounds (0, 0) (128, 96)
+  things warren_world
+
+  tilemap maze cell 8 {
+    legend {
+      '#' wall
+      '.' floor
+      'R' spawn Rabbit doe
+      'F' spawn Ferret hob
+      'O' spawn Burrow den
+      'S' spawn Burrow sealed
+      ' ' empty
+    }
+    grid """
+      ################
+      #R....#......#O#
+      #.###.#.####.#.#
+      #.#...#........#
+      #.#.#######.####
+      #...#.....#....#
+      ###.#.###.####.#
+      #.......#....#.#
+      #.#####.####.#.#
+      #.#S#......#.#F#
+      #.###.####.#...#
+      ################
+    """
+  }
+}

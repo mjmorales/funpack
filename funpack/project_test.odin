@@ -559,7 +559,7 @@ test_derive_tree_capabilities_non_empty_levels_on :: proc(t: ^testing.T) {
 // the live arena exemplar tree parses builds.fcfg to one `desktop` target and
 // derives the §14.4 capability set — a non-empty levels/ ⇒ levels ON with the
 // expected gen/arena.gen.fun output, while the other three subsystem dirs
-// (absent) derive OFF. It resolves the sibling funpack-spec checkout (or
+// (absent) derive OFF. It resolves the in-repo examples tree (or
 // FUNPACK_ARENA_DIR) and SKIPs loudly when absent, so a missing checkout never
 // silently passes.
 @(test)
@@ -567,7 +567,7 @@ test_arena_builds_and_capabilities :: proc(t: ^testing.T) {
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP arena builds+capabilities: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP arena builds+capabilities: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return

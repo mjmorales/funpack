@@ -1,0 +1,28 @@
+// arena.flvl — a 2D arena as an initial world: a player, cover, a switch-gated door,
+// and two turrets. Flat text, bake-time. No raw coordinates except the bounds — everything
+// is placed against anchors, loops, prefabs, and references-by-name.
+level Arena 2d {
+  bounds (0, 0) (160, 120)
+  things arena_world                      // the module whose thing types this level places
+
+  prefab Turret {
+    place Base   base   at origin
+    place Cannon cannon { rate: 2.0 } at base.offset(y: 6)
+  }
+
+  place Player hero at center
+
+  place Hunter stalker at origin.offset(x: 12, y: 12)   // chases hero across the arena via the baked nav
+
+  place Switch plate at center.offset(y: 40)
+  place Door   exit  { gate: plate } at center.offset(y: -40)   // gate: Ref[Switch] resolved from the name `plate`
+
+  // a row of cover pillars — generated, not hand-listed
+  for i in 0..5 {
+    place Pillar at center.offset(x: -48 + i * 24, y: 0)
+  }
+
+  // two turrets from one prefab; the right one overrides a nested field by path
+  place Turret left_gun  at left_edge.center.offset(x: 12)
+  place Turret right_gun { cannon.rate: 4.0 } at right_edge.center.offset(x: -12)
+}

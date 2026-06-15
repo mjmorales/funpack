@@ -5,7 +5,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:testing"
 
-// The golden asset sources live in the funpack-spec sibling checkout's
+// The golden asset sources live in the in-repo examples tree's
 // examples/assets/assets/ dir (the same tree asset_manifest_test reads); the
 // importers parse those committed sources. resolve_assets_dir + the
 // resolve-or-skip discipline are shared with asset_manifest_test.odin so a
@@ -13,7 +13,7 @@ import "core:testing"
 golden_asset_source :: proc(filename: string) -> (content: string, ok: bool) {
 	dir := resolve_assets_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP asset importer: %s not found — set FUNPACK_ASSETS_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP asset importer: %s not found — set FUNPACK_ASSETS_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	path, _ := filepath.join({dir, "assets", filename}, context.temp_allocator)

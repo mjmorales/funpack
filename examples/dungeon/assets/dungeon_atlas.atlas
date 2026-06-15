@@ -1,0 +1,17 @@
+// dungeon_atlas.atlas — slices dungeon.png into named 16x16 cells: one column of terrain
+// tiles the tileset addresses by grid coordinate, and the actor/prop sprites the behaviors
+// draw by name. Depends on the raw image (its hash is a dependency).
+atlas DungeonAtlas {
+  image "dungeon.png"
+  grid  16 16
+
+  cell floor  at (0, 0)
+  cell wall   at (1, 0)
+  cell water  at (2, 0)
+  cell rubble at (3, 0)
+
+  cell hero         at (0, 1)
+  cell slime        at (1, 1)
+  cell chest_closed at (2, 1)
+  cell chest_open   at (3, 1)
+}

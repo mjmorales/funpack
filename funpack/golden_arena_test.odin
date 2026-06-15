@@ -1,5 +1,5 @@
 // The §17 cross-epic arena golden: the live arena example tree
-// (funpack-spec/examples/arena) is the leaf that closes the levels-bake pipeline
+// (examples/arena) is the leaf that closes the levels-bake pipeline
 // end-to-end. It proves three things against the real committed sources, never a
 // hand-built stand-in:
 //   1. BYTE MATCH — a fresh bake of levels/arena.flvl, projected onto the shared
@@ -21,7 +21,7 @@
 //      + the evaluable asserts, the same split yard draws between funpack-evaluable
 //      and runtime-owned assertions.
 //
-// All three resolve the sibling funpack-spec checkout (or FUNPACK_ARENA_DIR via
+// All three resolve the in-repo examples tree (or FUNPACK_ARENA_DIR via
 // resolve_arena_dir) and SKIP LOUDLY when it is absent — a skipped golden is a
 // warning, NEVER a pass.
 package funpack
@@ -33,7 +33,7 @@ import "core:testing"
 
 // ARENA_FILE_DOC / ARENA_PREFAB_DOC / ARENA_SYMBOLS_DOC / ARENA_SPAWNS_DOC /
 // ARENA_ACCESSOR_DOC are the committed seam's authored @doc strings, carried
-// verbatim from funpack-spec/examples/arena/gen/arena.gen.fun. They are bake
+// verbatim from examples/arena/gen/arena.gen.fun. They are bake
 // metadata (the seam's prose is not derivable from the bake alone — the same
 // pass-through contract the krognid rig golden uses for its digest docs), so a
 // faithful bake stamps them onto the projected Seam. The em-dash in
@@ -68,7 +68,7 @@ arena_fresh_bake :: proc(t: ^testing.T, allocator := context.allocator) -> (seam
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden arena: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden arena: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return Seam{}, false
@@ -201,7 +201,7 @@ test_golden_arena_project_typechecks :: proc(t: ^testing.T) {
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden arena: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden arena: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return
@@ -254,7 +254,7 @@ test_golden_arena_inline_tests_pass :: proc(t: ^testing.T) {
 	dir := resolve_arena_dir()
 	if !os.is_dir(dir) {
 		log.warnf(
-			"SKIP golden arena: %s not found — set FUNPACK_ARENA_DIR or check out funpack-spec as a sibling of the repo",
+			"SKIP golden arena: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists",
 			dir,
 		)
 		return

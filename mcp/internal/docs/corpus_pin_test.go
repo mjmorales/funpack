@@ -36,14 +36,14 @@ func moduleRoot(t *testing.T) string {
 }
 
 // regenOrSkip resolves the generator roots and regenerates the corpus in memory.
-// When the funpack-spec sources are unavailable (no FUNPACK_SPEC_DIR and no
+// When the spec sources are unavailable (no FUNPACK_SPEC_DIR and no
 // sibling checkout) it t.Skips, keeping the pin test hermetic in environments
 // without the spec — drift can only be asserted where the sources exist.
 func regenOrSkip(t *testing.T) gencore.Result {
 	t.Helper()
 	r, err := gencore.ResolveRoots(moduleRoot(t))
 	if err != nil {
-		t.Skipf("funpack-spec sources unavailable, skipping corpus pin check: %v", err)
+		t.Skipf("spec sources unavailable, skipping corpus pin check: %v", err)
 	}
 	res, err := gencore.Generate(r)
 	if err != nil {
@@ -131,9 +131,9 @@ func TestCorpusPinPerSourceHashes(t *testing.T) {
 	}
 
 	live := map[string]string{
-		"funpack-spec/spec":          gencore.HashSections(res.Spec),
-		"funpack-spec/stdlib/engine": gencore.HashSections(res.Engine),
-		"plugins/funpack":            gencore.HashSections(res.Plugin),
+		"spec":            gencore.HashSections(res.Spec),
+		"stdlib/engine":   gencore.HashSections(res.Engine),
+		"plugins/funpack": gencore.HashSections(res.Plugin),
 	}
 	for root, want := range committedByRoot {
 		got, ok := live[root]

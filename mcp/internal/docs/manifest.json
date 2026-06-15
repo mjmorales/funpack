@@ -1,28 +1,28 @@
 {
-  "spec_ref": "55b8a32",
-  "funpack_version": "funpack 0.6.1",
+  "spec_ref": "funpack-mcp-v0.2.0-2-g34f930d",
+  "funpack_version": "funpack 0.7.0",
   "sources": [
     {
-      "root": "funpack-spec/spec",
+      "root": "spec",
       "kind": "spec",
-      "ref": "55b8a32",
+      "ref": "funpack-mcp-v0.2.0-2-g34f930d",
       "sections": 233,
-      "content_hash": "d487c96347e983258b2544701a7ec764cfaaca811288a2dba15166b9e419d084"
+      "content_hash": "17123ec3bbcf5cc6d02b6389c97185e3bbfaf480338ff2564cdf5cb05586d284"
     },
     {
-      "root": "funpack-spec/stdlib/engine",
+      "root": "stdlib/engine",
       "kind": "engine",
-      "ref": "55b8a32",
-      "sections": 278,
-      "content_hash": "10d16509dd7be1f6f295f4de5b6d99f76ff160ae132d29947dfcf84719c8c5e0"
+      "ref": "funpack-mcp-v0.2.0-2-g34f930d",
+      "sections": 284,
+      "content_hash": "a76cbbe9e19e1d4966eea11529d8aef5c9ed716bbe9a66792432cb9719996520"
     },
     {
       "root": "plugins/funpack",
       "kind": "plugin",
-      "ref": "funpack 0.6.1",
+      "ref": "funpack 0.7.0",
       "sections": 144,
-      "content_hash": "c89e56849b4b7389e3f36772a95e4602ac132d2bf51bacd01788b89bf0728b16"
+      "content_hash": "360f38a99c476b278dd50b651317aeb75312829e02daab07556df5831668223e"
     }
   ],
-  "total_sections": 655
+  "total_sections": 661
 }

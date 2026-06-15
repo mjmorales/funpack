@@ -1,5 +1,5 @@
 // The §05 §2 typed-holes governance golden: the drift example tree
-// (funpack-spec/examples/drift) is the live fixture proving the whole @stub
+// (examples/drift) is the live fixture proving the whole @stub
 // surface end-to-end — a bare @stub(T) hole a caller typechecks against, a
 // @stub(T, fallback) hole whose approximation runs to its asserted value, the
 // Index Contract carrying stub=true for both holed declarations, and the §29
@@ -18,7 +18,7 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-DRIFT_DEFAULT_DIR :: "../funpack-spec/examples/drift"
+DRIFT_DEFAULT_DIR :: "examples/drift"
 
 resolve_drift_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_DRIFT_DIR", DRIFT_DEFAULT_DIR)
@@ -208,7 +208,7 @@ test_resolve_drift_dir_is_absolute :: proc(t: ^testing.T) {
 drift_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_drift_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden drift: %s not found — set FUNPACK_DRIFT_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden drift: %s not found — set FUNPACK_DRIFT_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	project, read_err, _ := read_project(dir)

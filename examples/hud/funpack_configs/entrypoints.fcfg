@@ -1,0 +1,8 @@
+use hud_demo.{Arcade, bindings}
+
+entrypoint main {
+  pipeline = Arcade
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}

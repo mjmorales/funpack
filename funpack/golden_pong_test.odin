@@ -1,5 +1,5 @@
 // The §06/§07 gameplay golden: the pong example tree
-// (funpack-spec/examples/pong) is the live source the declaration grammar
+// (examples/pong) is the live source the declaration grammar
 // must parse exactly. The full-file fixture pins the declaration counts
 // against that source — when the spec evolves, the counts change in
 // lockstep; never loosen them to ranges. Like the numerics golden, the
@@ -11,7 +11,7 @@ import "core:log"
 import "core:os"
 import "core:testing"
 
-PONG_DEFAULT_DIR :: "../funpack-spec/examples/pong"
+PONG_DEFAULT_DIR :: "examples/pong"
 
 @(test)
 test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
@@ -129,7 +129,7 @@ test_golden_pong_full_pipeline_passes :: proc(t: ^testing.T) {
 pong_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_pong_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden pong: %s not found — set FUNPACK_PONG_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden pong: %s not found — set FUNPACK_PONG_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	project, read_err, _ := read_project(dir)

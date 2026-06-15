@@ -19,13 +19,12 @@ gate whose diagnostics make agent write → check → fix loops converge.
 
 ## Mission
 
-Build the toolchain the [funpack-spec](https://github.com/mjmorales/funpack-spec) repo
-defines, for LLM agents and the operators who direct them: `funpack`, the pure
-source → artifact compiler emitting the versioned Index Contract — carrying the
-`funpack warden` governance sub-toolchain (a pure projection of the index) and the
-warden ethos; and the runtime that executes the artifact. The spec repo is the doctrine — this repo is the machine that
-satisfies it, measured against the spec, the nine golden examples, and the stdlib engine
-surface.
+Build the toolchain the in-repo specification ([`spec/`](spec/)) defines, for LLM agents and
+the operators who direct them: `funpack`, the pure source → artifact compiler emitting the
+versioned Index Contract — carrying the `funpack warden` governance sub-toolchain (a pure
+projection of the index) and the warden ethos; and the runtime that executes the artifact. The
+spec is the doctrine — the toolchain is the machine that satisfies it, measured against the
+spec, the golden examples, and the stdlib engine surface (all now co-located in this monorepo).
 
 ## Outcome Bet
 

@@ -6,10 +6,10 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// The golden assets tree lives in the funpack-spec sibling checkout; the
+// The golden assets tree lives in the in-repo examples tree; the
 // committed manifest is examples/assets/assets/assets.manifest (the inner
 // `assets/` is the bake's output dir, alongside the .fpm/.atlas sources).
-ASSETS_DEFAULT_DIR :: "../funpack-spec/examples/assets"
+ASSETS_DEFAULT_DIR :: "examples/assets"
 
 resolve_assets_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_ASSETS_DIR", ASSETS_DEFAULT_DIR)
@@ -22,7 +22,7 @@ resolve_assets_dir :: proc() -> string {
 golden_manifest :: proc() -> (content: string, ok: bool) {
 	dir := resolve_assets_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP assets manifest: %s not found — set FUNPACK_ASSETS_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP assets manifest: %s not found — set FUNPACK_ASSETS_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	manifest_path, _ := filepath.join({dir, "assets", "assets.manifest"}, context.temp_allocator)

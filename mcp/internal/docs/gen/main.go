@@ -2,17 +2,17 @@
 //
 // Invoked as `go run ./internal/docs/gen` (wired to `task docs-regen`). It is a
 // thin filesystem wrapper around internal/docs/gen/gencore: gencore.Generate
-// runs the three extractors (funpack-spec prose, the engine.* signature files,
-// the funpack plugin's authoring skills) and returns the corpus in memory; this
+// runs the three extractors (the in-repo spec/ prose, the engine.* signature
+// files, the funpack plugin's authoring skills) and returns the corpus in memory; this
 // command persists it as per-kind JSON shards under internal/docs/corpus/ plus
 // internal/docs/manifest.json. Those files are committed; the docs package
 // embeds them so the binary never reads the spec at runtime. The corpus pin
 // check (internal/docs/corpus_pin_test.go) imports the same gencore, so drift
 // detection and generation share one extraction path.
 //
-// Source resolution: the spec lives in a sibling repo, resolved from
-// FUNPACK_SPEC_DIR (default <module-root>/../funpack-spec). The plugin skills
-// live in the funpack repo at <repo-root>/plugins/funpack.
+// Source resolution: the spec/ and stdlib/ trees live in-repo at the monorepo
+// root, resolved from FUNPACK_SPEC_DIR (default: the repo root). The plugin
+// skills live in the funpack repo at <repo-root>/plugins/funpack.
 package main
 
 import (

@@ -80,7 +80,7 @@ import "core:testing"
 
 // HUNT_ARTIFACT is the committed golden hunt artifact, embedded at compile time
 // the same hermetic way GOLDEN_ARTIFACT (pong) is — a byte-identical copy of the
-// compiler-emitted golden at funpack-spec/examples/hunt/.funpack/artifact. It is
+// compiler-emitted golden at examples/hunt/.funpack/artifact. It is
 // the ONE story that consumes the emitted artifact (Lore #7, #8): runtime does
 // NOT define the artifact format, it executes these bytes.
 HUNT_ARTIFACT := #load("testdata/hunt.artifact", string)

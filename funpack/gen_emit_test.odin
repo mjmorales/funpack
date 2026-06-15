@@ -1,11 +1,11 @@
 // The .gen.fun seam-emitter golden: a hand-built Seam model corresponding to the
-// committed exemplar funpack-spec/examples/arena/gen/arena.gen.fun, emitted
+// committed exemplar examples/arena/gen/arena.gen.fun, emitted
 // through emit_gen_fun, must reproduce that exemplar byte-for-byte, and emitting
 // the same model twice must be byte-identical (spec §09/§29 purity). The model
 // is built BY HAND here — never parsed from the file — so the test pins the
 // emitter's byte contract, not a round-trip. Like the artifact golden
 // (golden_emit_test.odin), it resolves the live exemplar (or FUNPACK_ARENA_GEN)
-// and SKIPs loudly when the funpack-spec sibling is absent; a skipped golden is
+// and SKIPs loudly when the in-repo fixture is absent; a skipped golden is
 // a warning, never a pass.
 package funpack
 
@@ -17,7 +17,7 @@ import "core:testing"
 // ARENA_GEN_DEFAULT_REL is the committed exemplar's path relative to the main
 // checkout root (one level up from this package), resolved through
 // resolve_spec_dir so it survives an orchestrator task-worktree #directory.
-ARENA_GEN_DEFAULT_REL :: "../funpack-spec/examples/arena/gen/arena.gen.fun"
+ARENA_GEN_DEFAULT_REL :: "examples/arena/gen/arena.gen.fun"
 
 // arena_seam builds, by hand, the Seam model that corresponds exactly to the
 // committed arena.gen.fun exemplar: the file-leading @doc, the engine + schema
@@ -98,7 +98,7 @@ resolve_arena_gen_path :: proc() -> string {
 // arena Seam model, emitted through emit_gen_fun, reproduces the committed
 // arena.gen.fun exemplar byte-for-byte. A diff in any byte — a doc character,
 // an import member, a field-alignment space, the trailing newline — fails here.
-// SKIPs loudly when the funpack-spec sibling is absent (a skipped golden is not
+// SKIPs loudly when the in-repo fixture is absent (a skipped golden is not
 // a pass).
 @(test)
 test_gen_emit_arena_byte_exact :: proc(t: ^testing.T) {
@@ -106,7 +106,7 @@ test_gen_emit_arena_byte_exact :: proc(t: ^testing.T) {
 	golden_bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
 	if read_err != nil {
 		log.warnf(
-			"SKIP gen-emit arena: %s not found — set FUNPACK_ARENA_GEN or check out funpack-spec as a sibling of the repo",
+			"SKIP gen-emit arena: %s not found — set FUNPACK_ARENA_GEN or ensure the in-repo fixture exists",
 			path,
 		)
 		return

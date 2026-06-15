@@ -1,0 +1,8 @@
+use hunt.{Hunt, bindings}
+
+entrypoint main {
+  pipeline = Hunt
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}

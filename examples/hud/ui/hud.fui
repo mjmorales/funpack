@@ -1,0 +1,19 @@
+// hud.fui — the in-game HUD. One screen, one file: structure + style tokens + bindings, no logic.
+// Reads (score, time_left, game_over) form the view-model contract; events (Coin, Pause, Retry)
+// form the message contract. Both are generated into hud.gen.fun.
+screen Hud {
+  row class="top-bar p-3 gap-4 bg-panel" {
+    text class="font-bold" { "Score: {score}" }
+    text class="ml-auto" { "{time_left}" }
+    button class="btn" @click=Coin { "+1" }
+    button class="btn" @click=Pause { "II" }
+  }
+
+  if game_over {
+    col class="overlay center gap-3 bg-scrim" {
+      text class="text-2xl" { "Game Over" }
+      text { "You scored {score}" }
+      button class="btn-primary" @click=Retry { "Play again" }
+    }
+  }
+}

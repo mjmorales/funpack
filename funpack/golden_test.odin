@@ -6,17 +6,17 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// The golden numerics tree lives in the funpack-spec sibling checkout.
+// The golden numerics tree lives in the in-repo examples tree.
 // A relative FUNPACK_NUMERICS_DIR — and the documented default — resolves
 // against the repo root, not the cwd, so `task funpack:test` (cwd
 // funpack/) and a bare `odin test .` from anywhere behave identically.
-GOLDEN_DEFAULT_DIR :: "../funpack-spec/examples/numerics"
+GOLDEN_DEFAULT_DIR :: "examples/numerics"
 
 @(test)
 test_golden_numerics_full_file_parses :: proc(t: ^testing.T) {
 	dir := resolve_golden_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	project, read_err, _ := read_project(dir)
@@ -60,7 +60,7 @@ test_golden_numerics_full_pipeline_passes :: proc(t: ^testing.T) {
 	// evaluates to its golden value — 30 passed, 0 failed, bit-identical.
 	dir := resolve_golden_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
 	project, read_err, _ := read_project(dir)
@@ -82,7 +82,7 @@ test_golden_numerics_full_pipeline_passes :: proc(t: ^testing.T) {
 golden_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_golden_dir()
 	if !os.is_dir(dir) {
-		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	project, read_err, _ := read_project(dir)
@@ -143,14 +143,13 @@ resolve_golden_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_NUMERICS_DIR", GOLDEN_DEFAULT_DIR)
 }
 
-// resolve_spec_dir resolves a funpack-spec golden tree: the env override
-// when set, else the sibling-checkout default made absolute against the
-// MAIN checkout root. #directory compiled inside an orchestrator task
-// worktree (.claude/worktrees/<slug>-task-<id>/funpack) would resolve the
-// sibling default to .claude/worktrees/funpack-spec, which never exists —
-// golden coverage would silently SKIP out of every worktree validation
-// run — so the resolver strips the worktree infix and anchors at the real
-// checkout.
+// resolve_spec_dir resolves an in-repo golden tree (examples/…, stdlib/…): the
+// env override when set, else the repo-relative default made absolute against
+// this checkout's root. #directory is the funpack package dir, so the root is
+// one level up — the main checkout, or, inside an orchestrator task worktree
+// (.claude/worktrees/<slug>-task-<id>/funpack), that worktree's own root. The
+// fixtures are committed in-repo, so every worktree carries its own copy and
+// golden coverage reads worktree-local — no sibling checkout, no infix strip.
 resolve_spec_dir :: proc(env_name: string, default_rel: string) -> string {
 	dir, has_env := os.lookup_env(env_name, context.temp_allocator)
 	if !has_env || dir == "" {
@@ -159,39 +158,13 @@ resolve_spec_dir :: proc(env_name: string, default_rel: string) -> string {
 	if filepath.is_abs(dir) {
 		return dir
 	}
-	// #directory is this package dir; the repo root is one level up.
+	// #directory is this package dir; the checkout root is one level up.
 	root, _ := filepath.join({#directory, ".."}, context.temp_allocator)
-	resolved, _ := filepath.join({main_checkout_root(root), dir}, context.temp_allocator)
+	resolved, _ := filepath.join({root, dir}, context.temp_allocator)
 	return resolved
-}
-
-// main_checkout_root maps an orchestrator task-worktree root onto the main
-// checkout root: a root under .claude/worktrees/ anchors at the directory
-// holding .claude (the real repo, whose siblings exist); any other root is
-// already the main checkout.
-main_checkout_root :: proc(root: string) -> string {
-	marker := filepath.SEPARATOR_STRING + ".claude" + filepath.SEPARATOR_STRING + "worktrees" + filepath.SEPARATOR_STRING
-	idx := strings.index(root, marker)
-	if idx < 0 {
-		return root
-	}
-	return root[:idx]
 }
 
 @(test)
 test_resolve_golden_dir_is_absolute :: proc(t: ^testing.T) {
 	testing.expect(t, filepath.is_abs(resolve_golden_dir()))
-}
-
-@(test)
-test_main_checkout_root_strips_worktree_infix :: proc(t: ^testing.T) {
-	// A root inside an orchestrator task worktree anchors at the main
-	// checkout, so the ../funpack-spec sibling default resolves to the real
-	// sibling instead of .claude/worktrees/funpack-spec.
-	worktree := scratch_join({"/repos/funpack", ".claude", "worktrees", "slug-task-3"})
-	testing.expect_value(t, main_checkout_root(worktree), "/repos/funpack")
-	// A non-worktree root is already the main checkout — unchanged.
-	testing.expect_value(t, main_checkout_root("/repos/funpack"), "/repos/funpack")
-	// A .claude dir without the worktrees segment is not the infix.
-	testing.expect_value(t, main_checkout_root("/repos/funpack/.claude/settings"), "/repos/funpack/.claude/settings")
 }

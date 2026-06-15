@@ -1,0 +1,8 @@
+use yard.{Yard, bindings}
+
+entrypoint main {
+  pipeline = Yard
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}

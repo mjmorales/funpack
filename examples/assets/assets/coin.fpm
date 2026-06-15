@@ -1,0 +1,9 @@
+// coin.fpm — a spinnable coin: a thin gold disc. Source for the model importer.
+// Bakes to a content-hashed mesh + a MeshHandle in the generated seam.
+model Coin {
+  param radius:    Length = 4
+  param thickness: Length = 1
+
+  emit     cyl(radius, thickness)
+  material body = pbr(color: gold, rough: 0.3)
+}

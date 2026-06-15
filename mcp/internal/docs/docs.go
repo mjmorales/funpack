@@ -4,7 +4,7 @@
 // ./gen) extracts spec sections, engine.* signatures, and plugin-authoring
 // references into ./corpus/*.json plus ./manifest.json, all committed to the
 // repo. At runtime the loader reads those files through go:embed, so the binary
-// is self-contained — it never touches the funpack-spec sibling repo or any
+// is self-contained — it never touches the in-repo spec sources or any
 // other filesystem path. The symbol-table, passage-index, and docs MCP tools
 // build on Load/LoadManifest.
 package docs
@@ -23,7 +23,7 @@ import (
 type Kind string
 
 const (
-	// KindSpec is a heading-delimited passage from the funpack-spec prose
+	// KindSpec is a heading-delimited passage from the in-repo spec/ prose
 	// (spec/NN-*.md), anchored as "<file>#<heading-slug>".
 	KindSpec Kind = "spec"
 	// KindEngine is a single engine.* declaration (a function, type, data,
@@ -84,8 +84,8 @@ func (c *Corpus) ByKind(k Kind) []Section {
 // SourceRecord captures the provenance of one extracted source root: the git
 // ref or version it was read at and how many sections it yielded.
 type SourceRecord struct {
-	// Root is the logical source root (e.g. "funpack-spec/spec",
-	// "funpack-spec/stdlib/engine", "plugins/funpack").
+	// Root is the logical source root (e.g. "spec",
+	// "stdlib/engine", "plugins/funpack").
 	Root string `json:"root"`
 	// Kind is the corpus kind this root feeds.
 	Kind Kind `json:"kind"`

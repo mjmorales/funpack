@@ -2,7 +2,7 @@
 // (grammar/tiles.ebnf), the named §18 §2 semantic rejects, the §19 manifest
 // path the dungeon/warren corpus bakes through, and the TilesetHandle seam
 // emission + §26 engine.tilemap surface admission pins. Golden sources are the
-// REAL corpus files in the funpack-spec sibling checkout (examples/dungeon and
+// REAL corpus files in the in-repo examples tree (examples/dungeon and
 // examples/warren), resolved with the loud-SKIP discipline the asset battery's
 // tests share — a missing checkout warns, never silently passes.
 package funpack
@@ -12,11 +12,11 @@ import "core:os"
 import "core:path/filepath"
 import "core:testing"
 
-// The dungeon/warren golden asset dirs in the funpack-spec sibling checkout —
+// The dungeon/warren golden asset dirs in the in-repo examples tree —
 // each holds the committed .tiles source, its .atlas, and the assets.manifest
 // whose tileset entry deps-on the atlas (§19 §5).
-DUNGEON_ASSETS_DEFAULT_DIR :: "../funpack-spec/examples/dungeon/assets"
-WARREN_ASSETS_DEFAULT_DIR :: "../funpack-spec/examples/warren/assets"
+DUNGEON_ASSETS_DEFAULT_DIR :: "examples/dungeon/assets"
+WARREN_ASSETS_DEFAULT_DIR :: "examples/warren/assets"
 
 resolve_dungeon_assets_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_DUNGEON_ASSETS", DUNGEON_ASSETS_DEFAULT_DIR)
@@ -31,7 +31,7 @@ resolve_warren_assets_dir :: proc() -> string {
 // matching golden_asset_source's resolve-or-skip discipline.
 tiles_golden_source :: proc(dir: string, filename: string) -> (content: string, ok: bool) {
 	if !os.is_dir(dir) {
-		log.warnf("SKIP tiles importer: %s not found — set FUNPACK_DUNGEON_ASSETS/FUNPACK_WARREN_ASSETS or check out funpack-spec as a sibling of the repo", dir)
+		log.warnf("SKIP tiles importer: %s not found — set FUNPACK_DUNGEON_ASSETS/FUNPACK_WARREN_ASSETS or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
 	path, _ := filepath.join({dir, filename}, context.temp_allocator)

@@ -1,0 +1,34 @@
+// dungeon.flvl — a one-screen dungeon crawl authored as a picture (18 §3): the tilemap
+// layer paints the terrain and scatters the slimes; `place` pins the relational few.
+// Two rooms split by a wall whose rubble segments ('%') are the only way through — dig
+// them and the right room's chest is yours, if you skirt the chasm (the ' ' void).
+level Dungeon 2d {
+  bounds (0, 0) (256, 144)
+  things dungeon_world                    // the schema module this level places
+
+  tilemap terrain cell 16 {               // each cell is 16 logical units
+    legend {
+      '#' wall                            // a tile (static, solid)
+      '.' floor                           // a tile (passable)
+      '~' water                           // a tile (passable, tagged liquid)
+      '%' rubble                          // a tile (solid until dug — see the dig behavior)
+      'g' spawn Slime                     // an anonymous marker — repeats freely
+      'P' spawn Player hero               // a named marker — must appear exactly once
+      ' ' empty
+    }
+    grid """
+      ################
+      #......#.......#
+      #.P....#...g...#
+      #..~~..%.......#
+      #..~~..#..   ..#
+      #......%..   ..#
+      #..g...#.......#
+      #......#.......#
+      ################
+    """
+  }
+
+  // the relational few use explicit place + the cell() anchor (18 §3)
+  place Chest loot { gems: 5 } at cell(13, 4)
+}

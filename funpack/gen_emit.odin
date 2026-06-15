@@ -5,7 +5,7 @@
 // committed-exemplar bytes — file-leading @doc, the import list, then the
 // @doc-headed `data`/`extern fn` declarations in declaration order, blank-line
 // separated. The byte target is the committed exemplar
-// funpack-spec/examples/arena/gen/arena.gen.fun.
+// examples/arena/gen/arena.gen.fun.
 //
 // DISTINCT FROM emit.odin: that file is the binary artifact serializer (the
 // runtime loads its bytes). This file is source TEXT a human reads and a parser

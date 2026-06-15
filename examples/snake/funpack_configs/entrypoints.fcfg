@@ -1,0 +1,8 @@
+use snake.{Snake, bindings}
+
+entrypoint main {
+  pipeline = Snake
+  tick     = 8hz
+  logical  = 160x160
+  bindings = bindings
+}
