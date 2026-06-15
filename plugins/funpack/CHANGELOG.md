@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.3.0] - 2026-06-15
+
+### Features
+- feat(plugin): funpack:mcp skill — install/update/uninstall the MCP binary into persistent storage (a8c3864)
+
 ## [0.2.0] - 2026-06-15
 
 ### Features
