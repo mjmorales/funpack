@@ -298,6 +298,52 @@ test_introspect_screenshot_arg_refusals :: proc(t: ^testing.T) {
 	}
 }
 
+// THE include_drawlist TOGGLE ON THE SERVED PATH (§20 §5, §28 §3). screenshot crosses
+// the render/present boundary and serves the impure pixel capture; `include_drawlist:true`
+// makes the DETERMINISTIC §20 draw-list ride along in the SAME envelope as data — the
+// same render_draw_cmd_text encoding draw_list emits, so the served `commands` carry the
+// `Rect(at=Vec2(` literal alongside the qoi pixels. Both surfaces cross in one response:
+// the impure pixels AND the deterministic draw-list. Omitting the flag is the lean
+// default — pixels only, no draw-list data. This pins the toggle on the SERVED path,
+// which exists only under FUNPACK_LIVE (the codec-free default build refuses the crossing
+// before it can carry either surface), so the assertions are gated like the live-branch
+// arms of the sibling screenshot tests.
+@(test)
+test_introspect_screenshot_include_drawlist_served :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+
+	with_drawlist := session_request(&s, `{"id":47,"cmd":"screenshot","args":{"tick":0,"include_drawlist":true}}`)
+	pixels_only := session_request(&s, `{"id":48,"cmd":"screenshot","args":{"tick":0}}`)
+
+	when #config(FUNPACK_LIVE, false) {
+		// include_drawlist:true → BOTH surfaces in one envelope: the qoi pixels (the
+		// impure present crossing) and the deterministic draw-list data (the Rect literal
+		// the draw_list dump emits via the same render_draw_cmd_text encoding).
+		testing.expect(t, strings.contains(with_drawlist, `"ok":true`), "the served include_drawlist screenshot succeeds under FUNPACK_LIVE")
+		testing.expect(t, strings.contains(with_drawlist, `"format":"qoi"`), "include_drawlist carries the impure qoi pixel payload")
+		testing.expect(
+			t,
+			strings.contains(with_drawlist, "Rect(at=Vec2("),
+			"include_drawlist appends the deterministic draw-list as data — the same Rect encoding draw_list emits",
+		)
+
+		// No flag → the lean default: pixels cross, the draw-list does NOT ride along.
+		testing.expect(t, strings.contains(pixels_only, `"ok":true`), "the plain served screenshot succeeds under FUNPACK_LIVE")
+		testing.expect(t, strings.contains(pixels_only, `"format":"qoi"`), "the plain screenshot carries the qoi pixels")
+		testing.expect(
+			t,
+			!strings.contains(pixels_only, "Rect(at=Vec2("),
+			"the lean default screenshot carries pixels only — no draw-list data without the flag",
+		)
+	} else {
+		// The codec-free default build refuses the crossing before it can carry either
+		// surface, so neither response reaches the served shape this test pins.
+		testing.expect(t, strings.contains(with_drawlist, `"ok":false`), "the codec-free default build refuses the crossing — no served draw-list")
+		testing.expect(t, strings.contains(pixels_only, `"ok":false`), "the codec-free default build refuses the lean crossing too")
+	}
+}
+
 // reference_unobserved_capture folds the golden run with NO session and NO
 // observe tap — the production seam verbatim — capturing per-tick digests and
 // the final committed version. It is the ground truth the digest pin compares
