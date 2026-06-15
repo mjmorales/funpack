@@ -1,18 +1,18 @@
 {
-  "spec_ref": "beb6f83",
+  "spec_ref": "9a09d4e",
   "funpack_version": "funpack 0.6.1",
   "sources": [
     {
       "root": "funpack-spec/spec",
       "kind": "spec",
-      "ref": "beb6f83",
+      "ref": "9a09d4e",
       "sections": 233,
-      "content_hash": "581f3f0ce067f34a76ba58bb748b8ea23089d9fab39db99172ad8da84b3bd269"
+      "content_hash": "d487c96347e983258b2544701a7ec764cfaaca811288a2dba15166b9e419d084"
     },
     {
       "root": "funpack-spec/stdlib/engine",
       "kind": "engine",
-      "ref": "beb6f83",
+      "ref": "9a09d4e",
       "sections": 278,
       "content_hash": "10d16509dd7be1f6f295f4de5b6d99f76ff160ae132d29947dfcf84719c8c5e0"
     },
