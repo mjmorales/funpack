@@ -40,6 +40,19 @@ tasks:
       # when unset (empty), the generator defaults to ../funpack-spec.
       FUNPACK_SPEC_DIR: '{{.FUNPACK_SPEC_DIR}}'
 
+  docs-check:
+    desc: >-
+      Fail if the committed docs corpus has drifted from the pinned funpack-spec
+      ref. Regenerates in memory through the same generator and byte/hash-compares
+      against the committed snapshot. Skips cleanly (PASS) when FUNPACK_SPEC_DIR /
+      the sibling spec checkout is absent, so it is hermetic off-spec. The CI
+      invocation that pins the spec ref and runs this is wired separately by
+      cloud-infra (it tofu-pushes .github/); this target is the in-repo check logic.
+    cmds:
+      - go test ./internal/docs/ -run 'CorpusPin|MutatedManifest' -count=1
+    env:
+      FUNPACK_SPEC_DIR: '{{.FUNPACK_SPEC_DIR}}'
+
   tidy:
     desc: Tidy and verify module dependencies
     cmds:
