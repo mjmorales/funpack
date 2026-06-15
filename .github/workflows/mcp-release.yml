@@ -246,7 +246,7 @@ jobs:
           DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           PKG=github.com/mjmorales/funpack/mcp/internal/buildinfo
           LDFLAGS="-s -w -X ${PKG}.Version=${VERSION} -X ${PKG}.Commit=${COMMIT} -X ${PKG}.Date=${DATE}"
-          dist="funpack-mcp-${TAG}-${{ matrix.plat }}"
+          dist="${TAG}-${{ matrix.plat }}"
           mkdir -p "$dist"
           go build -trimpath -ldflags "$LDFLAGS" -o "$dist/funpack-mcp" .
           cp README.md "$dist"/ 2>/dev/null || true
@@ -280,7 +280,7 @@ jobs:
         run: |
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.tar.gz' -D dist
           for plat in macos-arm64 linux-arm64 linux-x64; do
-            sha="$(sha256sum "dist/funpack-mcp-${TAG}-${plat}.tar.gz" | awk '{print $1}')"
+            sha="$(sha256sum "dist/${TAG}-${plat}.tar.gz" | awk '{print $1}')"
             echo "${plat//-/_}=$sha" >> "$GITHUB_OUTPUT"
           done
       - name: Check out the Homebrew tap
@@ -307,18 +307,18 @@ jobs:
             on_macos do
               # Apple Silicon only — funpack-mcp publishes no Intel macOS build.
               on_arm do
-                url "${base}/funpack-mcp-${TAG}-macos-arm64.tar.gz"
+                url "${base}/${TAG}-macos-arm64.tar.gz"
                 sha256 "${SHA_MAC_ARM}"
               end
             end
 
             on_linux do
               on_arm do
-                url "${base}/funpack-mcp-${TAG}-linux-arm64.tar.gz"
+                url "${base}/${TAG}-linux-arm64.tar.gz"
                 sha256 "${SHA_LNX_ARM}"
               end
               on_intel do
-                url "${base}/funpack-mcp-${TAG}-linux-x64.tar.gz"
+                url "${base}/${TAG}-linux-x64.tar.gz"
                 sha256 "${SHA_LNX_X64}"
               end
             end
