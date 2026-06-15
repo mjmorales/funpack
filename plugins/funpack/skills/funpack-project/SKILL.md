@@ -172,8 +172,9 @@ opposite of npm/cargo: no resolver, no version ranges, no transitive sprawl, no 
   rides alongside for discovery). funpack never auto-upgrades; the pin is the lockfile.
 - **Vendored by default.** Dep source is fetched into `packages/<name>/`, committed, and reviewed in
   PRs — no opaque `node_modules`. Builds are hermetic (no network at build time) and deterministic,
-  so package builds are bit-identical. `funpack add` does the initial fetch; `funpack update <name>`
-  shows the source diff before changing the hash.
+  so package builds are bit-identical. The dependency lifecycle is fetch-then-pin: an initial fetch
+  vendors the source under `packages/<name>/`, and an update surfaces the source diff against your
+  vendored copy for review **before** the pinned `hash` changes.
 - **`@expose` is the one visibility primitive.** Within a project everything is importable (no
   `pub`); across a package edge, only `@expose`d declarations are importable, generating a
   `<name>.api.gen.fun` contract that can't drift. A game with no packages/mods writes zero `@expose`.

@@ -1,13 +1,14 @@
 ---
 name: funpack-determinism
-description: The funpack determinism contract, fixed-point numerics, the compiler's structural quality gates, @stub/@todo typed holes, and the user-facing `funpack` CLI. Use to understand why a build fails (a gate), how to stay deterministic, how Fixed-point math behaves, how to develop incrementally with typed holes, and which CLI verbs to run. Triggers on "fixed-point", "Fixed/Q32.32", "determinism", "why won't it compile", "quality gate", "effect closure", "exhaustive match", "@stub", "@todo", "--release", "funpack build/check/test/run", "funpack warden".
+description: The funpack determinism contract, fixed-point numerics, the compiler's structural quality gates, @stub/@todo typed holes, and which funpack-mcp tool drives each compile/test/index-query op. Use to understand why a build fails (a gate), how to stay deterministic, how Fixed-point math behaves, how to develop incrementally with typed holes, and which MCP tool to call to compile, test, or query the index. Triggers on "fixed-point", "Fixed/Q32.32", "determinism", "why won't it compile", "quality gate", "effect closure", "exhaustive match", "@stub", "@todo", "--release", "build the project", "run the tests", "compile to check", "query the index".
 ---
 
-# funpack determinism, gates, holes & CLI
+# funpack determinism, gates & holes
 
 funpack's compiler is a **quality gate**: structural problems are **errors, not warnings**, with
 fixed budgets and no per-site waiver. This is what makes the write → check → fix loop converge. This
-skill covers the rules an author lives under and the commands they run.
+skill covers the rules an author lives under. The ops that drive the loop (compile, test, query the
+index) are MCP tools — see the **Driving the loop** section below.
 
 ## The determinism contract
 
@@ -86,7 +87,7 @@ A build fails on any of these — they drive the write → check → fix loop. T
 | Nesting depth ≤ 3 | deep `if`/`match` pyramids | extract / flatten |
 | Function size ≤ 40 statements | one giant function | split |
 | Parameters ≤ 5 | a wide signature | group into a `data` |
-| **Duplication** | re-implementing an existing helper | reuse it (pre-empt with `funpack warden find`) |
+| **Duplication** | re-implementing an existing helper | reuse it (pre-empt with the `warden_find` MCP tool) |
 | **Exhaustive `match`** | an `Option`/`Result`/`enum` not fully covered | cover every arm |
 | **Effect closure** | emitting a signal nothing consumes (or dropping an IO result) | add the consuming stage downstream |
 | Behavior node check | a `step` whose params/return are illegal for its slot | conform the signature (see `funpack-game-model`) |
@@ -125,52 +126,41 @@ fn launch_speed(boost: Fixed) -> Fixed @stub(Fixed, boost + 6.0) // hole with a 
   NDJSON).
 
 The workflow: stub the signature → callers compile → add a `fallback` to keep playing → mark deferred
-work with `@todo(…, T-NNNN)` → query open holes/debt with `funpack warden holes`/`debt` → fill every
-hole before `--release` (the ban is the forcing function).
+work with `@todo(…, T-NNNN)` → query open holes/debt with the `warden_holes` / `warden_debt` MCP
+tools → fill every hole before a release build (the ban is the forcing function).
 
-## The user-facing `funpack` CLI
+## Driving the loop — the MCP tools
 
-The toolchain is **one binary over one versioned contract**; a verb's machine contract is its **exit
-code** (never parse the wording). Verbs **spelled exactly in the spec** (safe to run):
+The compile / test / query ops are **MCP tools** the bundled funpack-mcp server provides, not CLI
+invocations you shell out. The intent → tool map is in `../../references/mcp-tools.md`; the verbs you
+reach for here:
 
-| Verb | Does |
+- **Compile**: `build` (emit the artifact + `.funpack/index.ndjson`), `check` (the same verdict, no
+  product written), `export` (the optimized release build, hole-banned), `fmt` (format / check
+  formatting). A release build is the hole-ban mode — it rejects any `@stub` or debug directive.
+- **Test**: `test` runs every `test "…" { assert … }` block and returns a structured pass/fail
+  summary (counts + each failing test's name and detail).
+- **Look up the spec / engine API**: search the funpack docs with the `docs_search` MCP tool (then
+  `docs_get` on a hit's anchor) rather than relying on memorized prose.
+
+### `warden_*` — query your own project index
+
+Warden is **not a separate binary, process, or clock** — the `warden_*` MCP tools are pure
+projections over the `.funpack/index.ndjson` the `build` tool emits, and they **never write source**
+(the agent edits source; a recompile re-derives the projection). Use them for **reuse-before-write**
+and acceptance checks:
+
+| Tool | Reports |
 |---|---|
-| `funpack build` | Full pipeline + emit the artifact + `.funpack/index.ndjson`. Exit **0** clean / **2** any compile or write failure (never 1). `--target wasm` selects a platform. |
-| `funpack check` | `build`'s verdict with **no product written** — recompiles, writes nothing. Exit **0**/**2**, no exit-1 tier. `funpack check --release` applies the hole-ban. |
-| `funpack test` | Runs the `test "…" { assert … }` blocks. This owns **counted assertion failures**: **2** compile/gate error, **1** failed asserts, **0** all pass. |
-| `funpack run [name]` | Runs the artifact; `[name]` selects among committed entrypoints (inferred when one). |
-| `funpack serve --port 7777` | Runs the headless/server target with a deploy port. |
-| `funpack add` | Initial fetch + vendor of a registry/url dependency into `packages/<name>/`. |
-| `funpack update <name>` | Shows the source diff against your vendored copy before changing the hash. |
-| `funpack warden {find, holes, probes, debt, graph, tags, pipeline}` | Pure projections of your project index (see below). |
-
-`--release` is a compiler **mode** (gates holes + debug directives), not a config field.
-
-**Implied but NOT spelled** — do not assert these verbs exist:
-- **`funpack fmt`** — a canonical formatter is mandatory, but the spec never names its CLI verb.
-- **`funpack new` / `init`** — the layout is fixed/enforced, but there is no documented scaffolding
-  verb. Create a project by writing the tree directly (see `funpack-project` / `/funpack:new`).
-
-### `funpack warden` — query your own project index
-
-`warden` is **not a separate binary, process, or clock** — it is a pure projection over the index
-`funpack build` emits, and it **never writes source** (the agent edits source; recompilation
-re-derives the projection). Use it for **reuse-before-write** and acceptance checks:
-
-| Query | Reports |
-|---|---|
-| `funpack warden find` | a pre-hoc reuse check — does a helper already exist? (run before writing one) |
-| `funpack warden holes` | every open `@stub` declaration |
-| `funpack warden debt` | every `@todo` with its message + window |
-| `funpack warden probes` | every outstanding debug probe (`@break`/`@log`/…) |
-| `funpack warden graph` | the dependency/call graph projection |
-| `funpack warden tags` | declarations by `@gtag` (e.g. all behaviors tagged `combat`) |
-| `funpack warden pipeline` | the flattened pipeline projection |
+| `warden_find` | a pre-hoc reuse check — does a helper already exist? (run before writing one) |
+| `warden_holes` | every open `@stub` declaration |
+| `warden_debt` | every `@todo` with its message + window |
+| `warden_probes` | every outstanding debug probe (`@break`/`@log`/…) |
+| `warden_graph` | the dependency/call graph projection |
+| `warden_tags` | declarations by `@gtag` (e.g. all behaviors tagged `combat`) |
+| `warden_pipeline` | the flattened pipeline projection |
 
 A task's completion is **proven by recompile** — a named `test` passes, a `@gtag` query returns the
 expected cardinality, a structural gate clears — not self-attested.
 
-> Exit codes `0`/`2` are explicit for `build`/`check`; the `funpack test` `2/1/0` split is the
-> consistent reading (test owns counted failures; a compile error is never counted). For the
-> unspelled verbs, prefer the spelled ones or write files directly. funpack is under active design —
-> a real compile is the tie-breaker.
+> funpack is under active design — a real compile (the `build` / `test` tools) is the tie-breaker.

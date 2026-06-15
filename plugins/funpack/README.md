@@ -2,7 +2,8 @@
 
 Author deterministic, agent-first games in **funpack**. This plugin gives Claude the language
 priors — syntax, the engine surface, the runtime model, project layout, the bake pipelines, and the
-determinism contract — plus commands and agents for the authoring loop.
+determinism contract — plus the `/funpack:new` scaffolding command, the bundled **funpack-mcp**
+server for the ops loop, and author/reviewer agents.
 
 ## The 60-second model
 
@@ -45,6 +46,15 @@ behavior ball_move on Ball {
 
 See the bundled skills for depth; they auto-trigger by topic. The `funpack-author` agent writes
 code to these rules; `funpack-reviewer` audits against them.
+
+## The ops loop — MCP tools, not CLI
+
+The plugin bundles the **funpack-mcp** server (`.mcp.json`). The ops that drive the loop are its
+tools, not CLI invocations: `build` / `check` / `export` / `fmt`, `test`, the `warden_*` index
+projections, `docs_search` / `docs_get` for the spec and engine API, and the session-scoped
+`session_*` / `time_*` / `inspect_*` / `control_*` / self-heal tools that drive a live `funpack
+attach`. The intent → tool map is in `references/mcp-tools.md`. `/funpack:new` (scaffolding the
+enforced project tree) is the one remaining slash command — it has no MCP equivalent.
 
 ## Source
 
