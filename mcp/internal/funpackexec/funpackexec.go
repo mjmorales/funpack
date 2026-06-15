@@ -38,8 +38,18 @@ type Result struct {
 	Duration time.Duration
 }
 
-// Run executes `<bin.Path> args...` as a one-shot child process, capturing
-// stdout, stderr, and the exit code into a Result.
+// Run executes `<bin.Path> args...` as a one-shot child process in the caller's
+// working directory. It is RunInDir with an empty dir; see RunInDir for the full
+// capture and error contract.
+func Run(ctx context.Context, bin funpack.Binary, args ...string) (Result, error) {
+	return RunInDir(ctx, "", bin, args...)
+}
+
+// RunInDir executes `<bin.Path> args...` as a one-shot child process whose working
+// directory is dir, capturing stdout, stderr, and the exit code into a Result.
+// funpack verbs (build/check/fmt/test/warden) operate on the §14 project tree at
+// the process cwd — there is no project-path flag — so dir is how a tool points
+// funpack at a specific project. An empty dir inherits the MCP server's cwd.
 //
 // ctx cancels the child via exec.CommandContext: a cancelled or deadline-exceeded
 // context terminates the process and returns a CategoryExec error.
@@ -49,10 +59,11 @@ type Result struct {
 // the context was cancelled, a pipe broke) returns an *mcperr.Error of
 // CategoryExec; the partial Result (whatever was captured before the failure) is
 // returned alongside so a caller can still inspect captured output.
-func Run(ctx context.Context, bin funpack.Binary, args ...string) (Result, error) {
+func RunInDir(ctx context.Context, dir string, bin funpack.Binary, args ...string) (Result, error) {
 	start := time.Now()
 
 	cmd := exec.CommandContext(ctx, bin.Path, args...)
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
