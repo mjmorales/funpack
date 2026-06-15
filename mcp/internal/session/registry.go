@@ -18,8 +18,10 @@ package session
 import (
 	"context"
 	"net"
+	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -219,14 +221,44 @@ func OpenFake(ctx context.Context, artifact string, log zerolog.Logger) (*Sessio
 	cfg := Config{
 		Log:       log,
 		mintToken: func() (string, error) { return "fake-token", nil },
-		mintPort:  func() (int, error) { return 1, nil },
-		spawn: func(_, _ string, _ int, _ string) *exec.Cmd {
-			cmd := exec.Command("/bin/sh", "-c", "sleep 300")
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			return cmd
-		},
+		// The fake spawn stands in for the runtime: it writes a real free loopback
+		// port into the port-file (whole-file, trailing newline — the runtime's
+		// format) so Open's poll succeeds, then returns a long-running sleep child.
+		// The dial is faked, so the port only needs to parse; a real free port keeps
+		// the simulation faithful.
+		spawn:     fakePortFileSpawn,
 		dial:      func(context.Context, int) (net.Conn, error) { return clientConn, nil },
 		handshake: func(net.Conn, string) (int, error) { return contract.ProtocolVersion, nil },
 	}
 	return Open(ctx, funpack.Binary{Path: "/bin/sh"}, artifact, cfg)
+}
+
+// fakePortFileSpawn is the spawn seam OpenFake (and the in-package fake-runtime
+// tests) drive: it writes a real free loopback port into the port-file the way the
+// runtime would (whole-file truncating write + trailing newline) BEFORE the child
+// starts, so Open's poll resolves on its first probe, then returns a long-running
+// sleep child in its own process group standing in for `funpack attach`. Writing
+// the file in the seam (rather than from the child) keeps the simulation race-free
+// without parsing the contract's operator-facing stdout. A write failure leaves
+// the file absent and the poll times out — surfaced by Open, not swallowed here.
+func fakePortFileSpawn(_, _, portFile, _ string) *exec.Cmd {
+	_ = os.WriteFile(portFile, []byte(strconv.Itoa(fakeFreePort())+"\n"), 0o600)
+	cmd := exec.Command("/bin/sh", "-c", "sleep 300")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+// fakeFreePort claims a real free loopback port (listen :0, read the assigned
+// port, close) so the fake port-file carries a plausible value. The dial is faked,
+// so it need not actually be bound by the time Open dials — it only has to parse.
+func fakeFreePort() int {
+	l, err := net.Listen("tcp", net.JoinHostPort(loopbackHost, "0"))
+	if err != nil {
+		return 1 // any parseable value; the faked dial ignores it.
+	}
+	defer l.Close()
+	if addr, ok := l.Addr().(*net.TCPAddr); ok {
+		return addr.Port
+	}
+	return 1
 }

@@ -8,19 +8,23 @@
 // SECURITY FLOOR (spec §28.2), enforced by construction here:
 //
 //   - Auth is REQUIRED: a fresh per-session token is minted from crypto/rand and
-//     supplied to the child via FUNPACK_ATTACH_TOKEN (the only channel the attach
-//     contract exposes). [introspect.Handshake] refuses an empty token, so a
-//     session can never come up unauthenticated.
-//   - Loopback ONLY: the child binds 127.0.0.1 (runtime-enforced) and we dial
-//     127.0.0.1; no public interface is ever touched.
+//     handed to the child through a 0600 --token-file (which takes precedence over
+//     the env), never on the argv and never in the environment. [introspect.
+//     Handshake] refuses an empty token, so a session can never come up
+//     unauthenticated.
+//   - Loopback ONLY: the child binds 127.0.0.1 (runtime-enforced, --port 0 for a
+//     kernel-assigned ephemeral port) and reports the bound port through a port-
+//     file the supervisor polls and dials; no public interface is ever touched and
+//     no host-side port probe (and its TOCTOU) is involved.
 //   - The token and port are NEVER logged in cleartext — every log site routes
 //     them through mcperr.Redact / mcperr.RedactPort.
 //
-// TESTABILITY: the spawn, dial, port, and token steps are [Config] seams (proc
-// fields), so the full lifecycle — including "Close kills the process group" —
-// drives against a fake long-running command and an in-memory connection with no
-// live funpack runtime. See spawn.go for the default seam implementations and
-// the real-contract notes.
+// TESTABILITY: the spawn, dial, and token steps are [Config] seams (proc fields),
+// so the full lifecycle — including "the port-file poll" and "Close kills the
+// process group" — drives against a fake long-running command (which writes the
+// port-file the way the runtime would) and an in-memory connection with no live
+// funpack runtime. See spawn.go for the default seam implementations and the
+// real-contract notes.
 package session
 
 import (
@@ -56,10 +60,17 @@ var callSeq atomic.Int64
 // (closing the connection unblocks the demux read loop, which finalizes every
 // pending Await). Field access is read-only after Open returns.
 type Session struct {
-	id         string
-	cmd        *exec.Cmd
-	conn       net.Conn
-	demux      *introspect.Demux
+	id    string
+	cmd   *exec.Cmd
+	conn  net.Conn
+	demux *introspect.Demux
+	// waiter owns the child's single cmd.Wait (a process is Waited once); Close's
+	// group-reap observes its closed-channel broadcast rather than re-Waiting.
+	waiter *childWaiter
+	// files holds the per-session handshake temp paths (the 0600 token-file the
+	// child read at startup and the port-file it reported its bound port through).
+	// Both are removed on Close so a session leaves no temp litter.
+	files      handshakeFiles
 	negotiated int
 	// artifact is the built-game path this attach loads, retained so the registry
 	// can report it in non-secret SessionInfo without re-deriving it. It is NOT a
@@ -87,14 +98,15 @@ type Session struct {
 
 // Config injects the otherwise-IO seams of [Open] so the lifecycle is testable
 // without a live funpack runtime. A zero Config (or any nil field) falls back to
-// the production seam: spawn the real `funpack attach` child group, mint a
-// crypto/rand token + a kernel ephemeral port, and dial the real loopback
-// socket. Tests set the fields to drive a fake command and an in-memory conn.
+// the production seam: spawn the real `funpack attach --port 0 --port-file P
+// --token-file T` child group, mint a crypto/rand token, poll the port-file for
+// the kernel-assigned port, and dial the real loopback socket. Tests set the
+// fields to drive a fake command (which writes the port-file the runtime would)
+// and an in-memory conn.
 //
-// The seams mirror the discovered attach contract (see spawn.go): mintPort
-// approximates ephemeral binding the contract lacks, mintToken feeds the
-// env-only credential, spawn places the child in its own group, and dial reaches
-// the loopback port.
+// The seams mirror the file-handshake attach contract (see spawn.go): mintToken
+// feeds the 0600 token-file credential, spawn places the child in its own group
+// with the handshake-file paths on its argv, and dial reaches the polled port.
 type Config struct {
 	// Log receives lifecycle events. The token and port are NEVER logged through
 	// it in cleartext — they route through mcperr.Redact / RedactPort. A zero
@@ -103,15 +115,13 @@ type Config struct {
 
 	// mintToken returns the per-session auth token. Default: crypto/rand.
 	mintToken func() (string, error)
-	// mintPort claims a free loopback port for the child's --port. Default: a
-	// kernel ephemeral-port probe.
-	mintPort func() (int, error)
 	// spawn builds the (unstarted) child *exec.Cmd given the resolved binary,
-	// artifact, port, and minted token. Default: the own-process-group
-	// `funpack attach` command with FUNPACK_ATTACH_TOKEN in its env.
-	spawn func(bin, artifact string, port int, token string) *exec.Cmd
-	// dial connects to the child's loopback attach port. Default: a deadline TCP
-	// dial of 127.0.0.1:<port>.
+	// artifact, and the handshake-file paths. Default: the own-process-group
+	// `funpack attach --port 0 --port-file <portFile> --token-file <tokenFile>`
+	// command — the token rides the 0600 token-file, never argv or env.
+	spawn func(bin, artifact, portFile, tokenFile string) *exec.Cmd
+	// dial connects to the child's loopback attach port (the one polled from the
+	// port-file). Default: a deadline TCP dial of 127.0.0.1:<port>.
 	dial func(ctx context.Context, port int) (net.Conn, error)
 	// handshake performs the §28.2 auth+version handshake over conn. Default:
 	// introspect.Handshake. Injectable so a test drives the lifecycle without a
@@ -125,9 +135,6 @@ type Config struct {
 func (c Config) withDefaults() Config {
 	if c.mintToken == nil {
 		c.mintToken = mintToken
-	}
-	if c.mintPort == nil {
-		c.mintPort = mintPort
 	}
 	if c.spawn == nil {
 		c.spawn = buildCmd
@@ -143,20 +150,22 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// Open spawns a supervised `funpack attach` over artifact, dials its loopback
-// endpoint, performs the §28.2 handshake with a freshly-minted token, and starts
-// a demux over the connection. On success it returns a live *Session whose demux
-// is already running; on any failure it tears down whatever it had started (kill
-// the group, close the conn) and returns an *mcperr.Error of CategorySession.
+// Open spawns a supervised `funpack attach` over artifact, polls the runtime's
+// port-file for the kernel-assigned loopback port, dials it, performs the §28.2
+// handshake with a freshly-minted token, and starts a demux over the connection.
+// On success it returns a live *Session whose demux is already running; on any
+// failure it tears down whatever it had started (kill the group, close the conn,
+// clear the temp files) and returns an *mcperr.Error of CategorySession.
 //
-// The ctx governs only the dial and the demux Run loop lifetime; cancelling it
-// after a successful Open stops the read loop exactly as Close does (Close also
-// kills the group). The resolved bin.Path is the executable; artifact is the
-// built-game path `funpack attach` loads.
+// The ctx governs the port-file poll, the dial, and the demux Run loop lifetime;
+// cancelling it after a successful Open stops the read loop exactly as Close does
+// (Close also kills the group). The resolved bin.Path is the executable; artifact
+// is the built-game path `funpack attach` loads.
 //
 // SEQUENCE (each step a named checkpoint, each failure a CategorySession refusal):
 //
-//	mint token → mint port → spawn group → start child → dial loopback →
+//	mint token → write handshake files (0600 token-file) → spawn group →
+//	start child → poll port-file (racing child-exit) → dial loopback →
 //	handshake(token) → start demux → return Session
 func Open(ctx context.Context, bin funpack.Binary, artifact string, cfg Config) (*Session, error) {
 	cfg = cfg.withDefaults()
@@ -166,39 +175,59 @@ func Open(ctx context.Context, bin funpack.Binary, artifact string, cfg Config) 
 		return nil, err
 	}
 
-	port, err := cfg.mintPort()
+	// The child reads the token-file at startup, so it must exist at spawn. The
+	// port-file is left absent for the child to create when it binds.
+	files, err := newHandshakeFiles(token)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := cfg.spawn(bin.Path, artifact, port, token)
+	cmd := cfg.spawn(bin.Path, artifact, files.portFile, files.tokenFile)
 	if err := cmd.Start(); err != nil {
+		files.cleanup()
 		return nil, mcperr.Wrap(mcperr.CategorySession, "spawning funpack attach failed", err)
 	}
+	// One Wait goroutine owns the child's exit; the port-file poll races it (so a
+	// refuse-stub or auth failure surfaces fast) and Close's reap observes it.
+	waiter := watchChild(cmd)
 	cfg.Log.Info().
-		Str("attach_port", mcperr.RedactPort(port)).
 		Str("artifact", artifact).
 		Int("pid", cmd.Process.Pid).
 		Msg("spawned supervised funpack attach")
 
-	// From here a failure must reap the child group, or it leaks as an orphan.
+	// From here a failure must reap the child group and clear the temp files, or
+	// they leak as an orphan + temp litter.
+	port, err := awaitPortFile(ctx, files.portFile, waiter)
+	if err != nil {
+		killGroup(cmd, waiter)
+		files.cleanup()
+		return nil, err
+	}
+	cfg.Log.Info().
+		Str("attach_port", mcperr.RedactPort(port)).
+		Int("pid", cmd.Process.Pid).
+		Msg("supervised funpack attach reported its loopback port")
+
 	conn, err := cfg.dial(ctx, port)
 	if err != nil {
-		killGroup(cmd)
+		killGroup(cmd, waiter)
+		files.cleanup()
 		return nil, err
 	}
 
 	negotiated, err := cfg.handshake(conn, token)
 	if err != nil {
 		_ = conn.Close()
-		killGroup(cmd)
+		killGroup(cmd, waiter)
+		files.cleanup()
 		return nil, err
 	}
 
 	id, err := mintID()
 	if err != nil {
 		_ = conn.Close()
-		killGroup(cmd)
+		killGroup(cmd, waiter)
+		files.cleanup()
 		return nil, err
 	}
 
@@ -210,6 +239,8 @@ func Open(ctx context.Context, bin funpack.Binary, artifact string, cfg Config) 
 		cmd:        cmd,
 		conn:       conn,
 		demux:      demux,
+		waiter:     waiter,
+		files:      files,
 		negotiated: negotiated,
 		artifact:   artifact,
 		createdAt:  created,
@@ -303,17 +334,18 @@ func (s *Session) Call(ctx context.Context, cmd string, args json.RawMessage) (*
 }
 
 // Close tears the session down: it stops the demux read loop, closes the
-// loopback connection, and KILLS THE PROCESS GROUP (not just the immediate child,
-// so any grandchildren the attach process forked are reaped too). It is
-// idempotent — safe to call more than once and concurrently with in-flight Await
-// calls, which unblock when the connection close finalizes the demux. Returns the
-// connection-close error if any; the group kill is best-effort.
+// loopback connection, KILLS THE PROCESS GROUP (not just the immediate child, so
+// any grandchildren the attach process forked are reaped too), and clears the
+// per-session handshake temp files. It is idempotent — safe to call more than once
+// and concurrently with in-flight Await calls, which unblock when the connection
+// close finalizes the demux. Returns the connection-close error if any; the group
+// kill and temp-file removal are best-effort.
 func (s *Session) Close() error {
 	var closeErr error
 	s.closeMu.Do(func() {
 		// Stop the demux loop first so it does not observe the conn close as a
 		// protocol fault during teardown, then close the conn (unblocking any
-		// awaiter), then kill the whole child group.
+		// awaiter), then kill the whole child group, then clear the temp files.
 		if s.cancel != nil {
 			s.cancel()
 		}
@@ -321,7 +353,8 @@ func (s *Session) Close() error {
 			closeErr = s.conn.Close()
 		}
 		<-s.wait // the demux Run goroutine has returned; runErr is now stable.
-		killGroup(s.cmd)
+		killGroup(s.cmd, s.waiter)
+		s.files.cleanup()
 	})
 	return closeErr
 }
