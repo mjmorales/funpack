@@ -2,6 +2,11 @@
 
 All notable changes to funpack-mcp.
 
+## [0.2.1] - 2026-06-15
+
+### Fixes
+- fix(mcp): resolver mislabels a too-old/off-PATH funpack as "not found" (7c29e36)
+
 ## [0.2.0] - 2026-06-15
 
 ### Features
