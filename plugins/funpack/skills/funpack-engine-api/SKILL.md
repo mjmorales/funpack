@@ -145,5 +145,6 @@ content-authoring side (atlases, levels, models, UI templates) is the `funpack-c
 
 These signatures are distilled from the funpack-spec `stdlib/engine/*.fun` files and the worked
 examples. Where the signature files, the prose spec, and the examples diverge, `references/modules.md`
-flags it. funpack is under active design — for a load-bearing call, the tie-breaker is a real
-compile.
+flags it. funpack is under active design — to confirm a signature, search the docs corpus with the
+funpack-mcp `docs_search` tool (then `docs_get` on a hit); for a load-bearing call, the final
+tie-breaker is a real compile (`check`).

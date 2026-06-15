@@ -25,6 +25,9 @@ includes:
   cmd:
     taskfile: ./cmd/funpack
     dir: ./cmd/funpack
+  mcp:
+    taskfile: ./mcp
+    dir: ./mcp
 
 tasks:
   build:

@@ -69,8 +69,8 @@ test_funpack_tree_finalizes :: proc(t: ^testing.T) {
 }
 
 // test_funpack_top_level_verbs pins the compiler verb set: version and test take
-// no arguments (a trailing token is the usage tier), and the bare program and an
-// unknown verb are usage errors.
+// no positional arguments (a trailing token is the usage tier), and the bare
+// program and an unknown verb are usage errors.
 @(test)
 test_funpack_top_level_verbs :: proc(t: ^testing.T) {
 	root := build_compiler_test_root()
@@ -82,6 +82,25 @@ test_funpack_top_level_verbs :: proc(t: ^testing.T) {
 	expect_funpack_reject(t, root, {"bogus"})
 	expect_funpack_reject(t, root, {"version", "extra"})
 	expect_funpack_reject(t, root, {"test", "--flag"})
+}
+
+// test_funpack_version_json_flag pins the version `--json` seam: no flag is the
+// human face (cli_flag_bool false), `--json` selects the machine face (true), and
+// a typo'd or trailing positional is the usage tier — so a misspelled flag never
+// silently falls back to the wrong face, and `funpack version --json` keeps its
+// {0} exit contract through cli_run_version.
+@(test)
+test_funpack_version_json_flag :: proc(t: ^testing.T) {
+	root := build_compiler_test_root()
+
+	inv := expect_funpack_ok(t, root, {"version"})
+	testing.expect(t, !cli.cli_flag_bool(&inv, "json"), "bare version is the human face")
+
+	inv = expect_funpack_ok(t, root, {"version", "--json"})
+	testing.expect(t, cli.cli_flag_bool(&inv, "json"), "--json selects the machine face")
+
+	expect_funpack_reject(t, root, {"version", "--jsn"})
+	expect_funpack_reject(t, root, {"version", "--json", "extra"})
 }
 
 // test_funpack_build_release_flag pins the `--release` seam build and check

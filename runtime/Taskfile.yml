@@ -18,3 +18,15 @@ tasks:
     desc: Vet the FUNPACK_LIVE-gated runtime with strict style
     cmds:
       - odin check . -vet -strict-style -define:FUNPACK_LIVE=true -no-entry-point
+
+  # test-live RUNS the FUNPACK_LIVE-gated suite, including the headless offscreen
+  # screenshot capture proof (when #config(FUNPACK_LIVE) tests in session_live_test.odin).
+  # This LINKS vendor:sdl2's native lib (unlike lint-live, which only type-checks), so SDL2
+  # must be installed — the capture test drives the real software renderer headless via the
+  # dummy video driver. Deliberately NOT folded into the repo-root define-free `test`
+  # composition: the default suite stays SDL-free and deterministic; the driver wires any
+  # top-level/CI hook for this separately.
+  test-live:
+    desc: Run the FUNPACK_LIVE-gated runtime suite (headless offscreen capture proof)
+    cmds:
+      - odin test . -define:FUNPACK_LIVE=true

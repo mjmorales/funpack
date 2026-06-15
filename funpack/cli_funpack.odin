@@ -131,6 +131,16 @@ build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli
 		cli.Cli_Command {
 			use = "version",
 			short = "Print the toolchain version and schema surface",
+			flags = slice.clone(
+				[]cli.Cli_Flag {
+					{
+						name = "json",
+						kind = .Bool,
+						usage = "Emit the machine-readable JSON contract shape (for tooling)",
+					},
+				},
+				allocator,
+			),
 			args = cli.cli_no_args(),
 			run = cli_run_version,
 		},
@@ -212,8 +222,8 @@ build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli
 // makes that explicit); build/check/fmt/find/graph project the invocation onto
 // the verb's existing mode/query type through the mappers below.
 
-cli_run_version :: proc(_: ^cli.Cli_Invocation) -> int {
-	return run_version_verb()
+cli_run_version :: proc(inv: ^cli.Cli_Invocation) -> int {
+	return run_version_verb(cli.cli_flag_bool(inv, "json"))
 }
 
 cli_run_test :: proc(_: ^cli.Cli_Invocation) -> int {

@@ -194,7 +194,8 @@ language is small **on purpose**: power lives in the engine, and one-concept-per
 LL(1) so the next editor (usually an agent) reasons from priors, not novelty.
 
 > funpack is under active design and "the examples lead, the prose follows; a real compile is the
-> tie-breaker." Treat the grammar forms here as canonical, but verify a surprising edge case against
-> your toolchain. The normative idiom lives in the funpack-spec examples
+> tie-breaker." Treat the grammar forms here as canonical, but verify a surprising edge case with the
+> funpack-mcp `check` tool (or look it up with `docs_search`) rather than guessing. The normative idiom
+> lives in the funpack-spec examples
 > (`pong`, `snake`, `hunt`, `yard`, `arena`, `dungeon`, `warren`, `krognid`, `hud`, `assets`,
 > `numerics`, `drift`).

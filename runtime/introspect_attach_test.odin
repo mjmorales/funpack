@@ -16,6 +16,9 @@
 package funpack_runtime
 
 import "core:net"
+import "core:os"
+import "core:path/filepath"
+import "core:strconv"
 import "core:strings"
 import "core:testing"
 
@@ -348,4 +351,127 @@ test_attach_handshake_carries_version :: proc(t: ^testing.T) {
 
 	ok_line := attach_handshake_response(true, context.temp_allocator)
 	testing.expect(t, strings.contains(ok_line, `"v":1`), "the handshake response stamps the protocol version")
+}
+
+// test_attach_ephemeral_endpoint pins the §28.2 ephemeral-bind REQUEST: --port 0
+// resolves to a port-0 loopback endpoint, the POSIX wildcard the kernel reads as "any
+// free port". The bind decision is pure (no socket), so the ephemeral request is
+// proven headless even though the kernel assigns the real port only at bind time. This
+// is the host-side TOCTOU's fix at the decision layer: the server asks for 0 instead of
+// a host-probed "probably free" port.
+@(test)
+test_attach_ephemeral_endpoint :: proc(t: ^testing.T) {
+	ep := attach_listen_endpoint(ATTACH_EPHEMERAL_PORT)
+	addr, is_ip4 := ep.address.(net.IP4_Address)
+	testing.expect(t, is_ip4, "an ephemeral attach still binds an IPv4 loopback address")
+	testing.expect(t, addr == net.IP4_Loopback, "ephemeral attach binds 127.0.0.1, never a public address")
+	testing.expect_value(t, ep.port, 0)
+	testing.expect_value(t, ATTACH_EPHEMERAL_PORT, 0)
+}
+
+// test_attach_port_file_format pins the EXACT bytes the server writes to --port-file:
+// the bound port as a decimal ASCII integer with ONE trailing newline. The supervisor's
+// reader parses this form, so this test is the byte contract between the two — a change
+// here is a wire-format change the supervisor must mirror.
+@(test)
+test_attach_port_file_format :: proc(t: ^testing.T) {
+	contents := attach_port_file_contents(54231, context.temp_allocator)
+	testing.expect_value(t, contents, "54231\n")
+
+	// A trimmed parse recovers the integer regardless of the newline — the reader
+	// contract the supervisor follows.
+	port, ok := strconv.parse_int(strings.trim_space(contents))
+	testing.expect(t, ok, "the port-file contents parse as a decimal integer")
+	testing.expect_value(t, port, 54231)
+}
+
+// test_attach_args_file_handshake pins the two FILE-handshake flags parse into their
+// Attach_Args fields (both the spaced and =-joined forms), and that --port 0 is a valid
+// EPHEMERAL request (the parse no longer rejects 0 the way it rejects a negative port).
+// Pure, so the operator-facing verb surface is proven headless.
+@(test)
+test_attach_args_file_handshake :: proc(t: ^testing.T) {
+	parsed, ok := parse_attach_args(
+		{"funpack", "attach", "game.artifact", "--port", "0", "--port-file", "/tmp/p", "--token-file", "/tmp/t"},
+	)
+	testing.expect(t, ok, "attach with --port 0 and the file flags must parse")
+	testing.expect_value(t, parsed.port, ATTACH_EPHEMERAL_PORT)
+	testing.expect(t, parsed.has_port_file, "--port-file binds has_port_file")
+	testing.expect_value(t, parsed.port_file, "/tmp/p")
+	testing.expect(t, parsed.has_token_file, "--token-file binds has_token_file")
+	testing.expect_value(t, parsed.token_file, "/tmp/t")
+
+	// The =-joined forms parse identically.
+	eq, eq_ok := parse_attach_args(
+		{"funpack", "attach", "game.artifact", "--port=0", "--port-file=/tmp/p2", "--token-file=/tmp/t2"},
+	)
+	testing.expect(t, eq_ok, "the =-joined file flags must parse")
+	testing.expect_value(t, eq.port, ATTACH_EPHEMERAL_PORT)
+	testing.expect_value(t, eq.port_file, "/tmp/p2")
+	testing.expect_value(t, eq.token_file, "/tmp/t2")
+
+	// An empty file-flag value is a usage error — a path is required, never silently
+	// blank.
+	_, blank_port_file := parse_attach_args({"funpack", "attach", "game.artifact", "--port-file", ""})
+	testing.expect(t, !blank_port_file, "an empty --port-file value is a usage error")
+	_, blank_token_file := parse_attach_args({"funpack", "attach", "game.artifact", "--token-file="})
+	testing.expect(t, !blank_token_file, "an empty --token-file= value is a usage error")
+
+	// A NEGATIVE port is still a usage error (the only invalid low value now that 0 is
+	// the ephemeral wildcard).
+	_, neg_port := parse_attach_args({"funpack", "attach", "game.artifact", "--port", "-1"})
+	testing.expect(t, !neg_port, "a negative port is a usage error")
+}
+
+// test_attach_token_source_precedence pins the §28.2 token-SOURCE resolution: a
+// --token-file takes PRECEDENCE over the FUNPACK_ATTACH_TOKEN env, and the
+// auth-required floor holds from EITHER source — an empty token from the file or the
+// env still refuses to build a seam (NO secret ⇒ NO server). It writes a real temp
+// token file and toggles the env, restoring the env at the end so the global state does
+// not leak into sibling tests.
+@(test)
+test_attach_token_source_precedence :: proc(t: ^testing.T) {
+	// Snapshot + restore the env so this test's mutation is self-contained.
+	saved, had_saved := os.lookup_env(ATTACH_AUTH_ENV, context.temp_allocator)
+	defer {
+		if had_saved {
+			os.set_env(ATTACH_AUTH_ENV, saved)
+		} else {
+			os.unset_env(ATTACH_AUTH_ENV)
+		}
+	}
+
+	dir, dir_err := os.temp_dir(context.temp_allocator)
+	testing.expect(t, dir_err == nil, "a temp dir is available")
+	token_path, join_err := filepath.join({dir, "funpack-attach-token"}, context.temp_allocator)
+	testing.expect(t, join_err == nil, "the token-file path joins")
+	defer os.remove(token_path)
+
+	// FILE OVER ENV: with both present, the file token is the one resolved — the trailing
+	// newline (the `echo "$tok" > file` shape) is trimmed off.
+	testing.expect(t, os.set_env(ATTACH_AUTH_ENV, "env-token") == nil, "the env token sets")
+	testing.expect(
+		t,
+		os.write_entire_file_from_string(token_path, "file-token\n") == nil,
+		"the token file writes",
+	)
+	auth, ok := attach_auth_resolve(token_path, true)
+	testing.expect(t, ok, "a non-empty token file resolves an auth seam")
+	testing.expect(t, attach_auth_decide(auth, "file-token"), "the FILE token wins over the env token")
+	testing.expect(t, !attach_auth_decide(auth, "env-token"), "the env token is NOT the resolved secret when a file is given")
+
+	// EMPTY-FROM-FILE STILL REFUSES: a passed --token-file is the sole source, so a
+	// whitespace-only file refuses (the auth floor) — it does NOT fall back to the env.
+	testing.expect(t, os.write_entire_file_from_string(token_path, "   \n") == nil, "the empty token file writes")
+	_, empty_file_ok := attach_auth_resolve(token_path, true)
+	testing.expect(t, !empty_file_ok, "an empty token file refuses — the auth floor, no env fallback")
+
+	// ENV FALLBACK: with NO --token-file the env is the source.
+	_, no_file_ok := attach_auth_resolve("", false)
+	testing.expect(t, no_file_ok, "with no --token-file the env token resolves")
+
+	// EMPTY-FROM-ENV STILL REFUSES: clear the env, no file → no secret → no seam.
+	os.unset_env(ATTACH_AUTH_ENV)
+	_, empty_env_ok := attach_auth_resolve("", false)
+	testing.expect(t, !empty_env_ok, "an absent env token with no file refuses — the auth floor")
 }

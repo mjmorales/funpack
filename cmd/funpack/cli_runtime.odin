@@ -41,21 +41,33 @@ cli_run_live :: proc(inv: ^cli.Cli_Invocation) -> int {
 }
 
 // build_attach_command declares `funpack attach <artifact> [recorded.replay]
-// [--port N]` — open a §28 introspection session on the auth-gated loopback port.
-// The artifact is required; an optional replay log pre-folds recorded inputs;
-// --port overrides the default loopback port.
+// [--port N] [--port-file P] [--token-file T]` — open a §28 introspection session on
+// the auth-gated loopback port. The artifact is required; an optional replay log
+// pre-folds recorded inputs; --port overrides the loopback port (0 ⇒ ephemeral);
+// --port-file publishes the bound port out-of-band; --token-file sources the auth
+// token off-environment.
 build_attach_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 	return cli.cli_new_command(
 		cli.Cli_Command {
 			use = "attach",
 			short = "Open a §28 introspection session over a built artifact",
-			long = "Load a built artifact and serve an introspection session on the auth-gated loopback port (§28.2 remote-attach). The artifact path is required; an optional second positional is a recorded replay log to pre-fold; --port overrides the default loopback port.",
+			long = "Load a built artifact and serve an introspection session on the auth-gated loopback port (§28.2 remote-attach). The artifact path is required; an optional second positional is a recorded replay log to pre-fold. --port overrides the loopback port (pass 0 for a kernel-assigned ephemeral port). --port-file writes the actual bound port (bare decimal) so a supervisor can dial it without racing the bind. --token-file reads the per-session auth token from a file, taking precedence over FUNPACK_ATTACH_TOKEN so the secret stays off the inherited environment.",
 			flags = slice.clone(
 				[]cli.Cli_Flag {
 					{
 						name = "port",
 						kind = .Int,
-						usage = "Override the loopback port the introspection session serves on",
+						usage = "Override the loopback port the introspection session serves on (0 = ephemeral kernel-assigned)",
+					},
+					{
+						name = "port-file",
+						kind = .String,
+						usage = "Write the actual bound port (bare decimal) to this path before accepting, for the supervisor to read",
+					},
+					{
+						name = "token-file",
+						kind = .String,
+						usage = "Read the auth token from this file (precedence over FUNPACK_ATTACH_TOKEN)",
 					},
 				},
 				allocator,
@@ -67,19 +79,29 @@ build_attach_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command
 	)
 }
 
-// cli_run_attach marshals {artifact, [replay]} + --port into run_attach_session's
-// argv: parse_attach_args expects argv[1]=="attach", then the positionals and the
-// --port flag from argv[2:]. A --port the operator did not pass is left off, so the
-// runtime applies its own default; a passed --port is forwarded for the runtime's
-// own range validation.
+// cli_run_attach marshals {artifact, [replay]} + --port/--port-file/--token-file into
+// run_attach_session's argv: parse_attach_args expects argv[1]=="attach", then the
+// positionals and the flags from argv[2:]. Each flag the operator did NOT pass is left
+// off, so the runtime applies its own default and ONE code path parses every form; a
+// passed flag is forwarded verbatim for the runtime's own validation (the runtime owns
+// the port range and the auth-required floor). --port 0 is a real value the operator
+// passed (ephemeral request), so it relays as "0" — never elided as a default.
 cli_run_attach :: proc(inv: ^cli.Cli_Invocation) -> int {
-	attach_args := make([dynamic]string, 0, 4 + len(inv.args), context.temp_allocator)
+	attach_args := make([dynamic]string, 0, 8 + len(inv.args), context.temp_allocator)
 	append(&attach_args, "funpack")
 	append(&attach_args, "attach")
 	append(&attach_args, ..inv.args)
 	if _, passed := inv.flags["port"]; passed {
 		append(&attach_args, "--port")
 		append(&attach_args, fmt.tprintf("%d", cli.cli_flag_int(inv, "port")))
+	}
+	if _, passed := inv.flags["port-file"]; passed {
+		append(&attach_args, "--port-file")
+		append(&attach_args, cli.cli_flag_string(inv, "port-file"))
+	}
+	if _, passed := inv.flags["token-file"]; passed {
+		append(&attach_args, "--token-file")
+		append(&attach_args, cli.cli_flag_string(inv, "token-file"))
 	}
 	return funpack_runtime.run_attach_session(attach_args[:])
 }

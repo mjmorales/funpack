@@ -1,0 +1,50 @@
+{
+  "$comment": "SINGLE SOURCE OF TRUTH for the funpack (Odin) <-> funpack-mcp (Go) API boundary. Authored by hand; consumed by contract/gen which emits BOTH sides (mcp/internal/contract/*_gen.go and funpack/api_contract.gen.odin). This file owns SHAPE (field names, command/event taxonomy) and the MCP's supported version RANGES; the actual schema VALUES live in the Odin constants (ARTIFACT_SCHEMA_VERSION, INDEX_SCHEMA_VERSION, INTROSPECT_PROTOCOL_VERSION) and are pinned to this contract by a read-only sync test. See ADR 2026-06-15-funpack-api-contract-dual-codegen. Bumping funpack's schema is a deliberate edit of the matching supported range here, never a silent drift.",
+  "contract_version": 1,
+  "version_surface": {
+    "$comment": "Shape of `funpack version --json`. The MCP resolver consumes this JSON; it never parses the human `funpack version` report.",
+    "argv": ["version", "--json"],
+    "fields": {
+      "version": { "type": "string", "doc": "funpack toolchain semver, e.g. 0.6.1" },
+      "schemas": { "type": "map<string,int>", "doc": "schema-name -> emitted version; an absent key means the build does not expose that schema yet (not an error)" }
+    },
+    "schema_names": ["artifact", "index", "introspect"],
+    "supported": {
+      "$comment": "MCP compat policy: the funpack schema versions this MCP build accepts. Exact-match by default (the §29 Index-Contract discipline). Preflight refuses a PRESENT schema outside its range; an ABSENT schema (e.g. introspect before t-version-line lands) never refuses.",
+      "artifact": { "min": 18, "max": 18 },
+      "index": { "min": 6, "max": 6 },
+      "introspect": { "min": 1, "max": 1 }
+    }
+  },
+  "introspect": {
+    "$comment": "Spec §28 introspection contract (runtime -> agent), mirrored from runtime/introspect.odin. A read-only sync test pins protocol_version + commands + events against the Odin source; the Go §28 client (codec/handshake/demux) is generated from here, never re-declaring these.",
+    "protocol_version": 1,
+    "transport": "ndjson-duplex-loopback",
+    "envelopes": {
+      "$comment": "Three closed message kinds, each a fixed-order field tuple, versioned exact-match (every envelope stamps `v`; a consumer refuses a version or field-shape mismatch rather than best-effort parsing).",
+      "request": {
+        "fields": ["v", "id", "cmd", "args"],
+        "doc": "v=protocol version; id correlates the response; cmd is the command name; args is its argument object"
+      },
+      "response": {
+        "fields": ["v", "id", "ok", "cmd", "result", "error"],
+        "oneof": ["result", "error"],
+        "doc": "ok is the success boolean; exactly one of result (when ok) or error (otherwise) is present — never both, never neither"
+      },
+      "event": {
+        "fields": ["v", "event"],
+        "open_payload": true,
+        "doc": "unsolicited push correlated by `event` name (not id); breakpoint_hit and watch_fired carry probe payloads (target and value)"
+      }
+    },
+    "command_groups": {
+      "$comment": "The closed command set, grouped by surface and tagged with its determinism class. observe = non-perturbing (reads canonical chain by default; accepts an optional `branch` arg). control = perturbing -> forks a non-warranted branch off a snapshot.",
+      "time": { "class": "observe", "commands": ["load", "run", "pause", "step", "rewind", "reset", "status"] },
+      "break": { "class": "observe", "commands": ["break", "watch", "clear"] },
+      "inspect": { "class": "observe", "commands": ["signals", "pipeline", "trace", "diff", "replay_behavior", "draw_list", "screenshot"] },
+      "control": { "class": "control", "commands": ["inject_input", "set", "spawn", "despawn", "emit", "reload", "branch", "checkout"] },
+      "self_heal": { "class": "observe", "commands": ["capture_test", "audit"] }
+    },
+    "events": ["breakpoint_hit", "watch_fired", "diverged"]
+  }
+}

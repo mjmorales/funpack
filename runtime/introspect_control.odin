@@ -7,9 +7,9 @@
 // full control battery — the §28 §1 observe/control theorem made mechanical.
 //
 // Control is §08's CQRS write side exposed as a DEBUG-ONLY path: `set`, `spawn`,
-// and `emit` go through the ORDINARY transaction shapes (new_tick_state →
-// working-table write / spawn batch / mailbox route → commit_tick_state at the
-// boundary), never an ad-hoc version mutation; `inject_input` feeds the §23
+// `despawn`, and `emit` go through the ORDINARY transaction shapes (new_tick_state →
+// working-table write / spawn-despawn batch / mailbox route → commit_tick_state at
+// the boundary), never an ad-hoc version mutation; `inject_input` feeds the §23
 // action-snapshot path through the SAME step_tick fold a live device feeds; and
 // `reload` reuses hot_reload_swap — the §09 §3 gated atomic swap — on the BRANCH
 // program, keeping last-good code on any refusal. Because these writes happen
@@ -41,7 +41,7 @@ Session_Branch :: struct {
 }
 
 // control_request dispatches one control command. The PERTURBING arms
-// (branch / inject_input / set / spawn / emit / reload) fork first (ensure_branch
+// (branch / inject_input / set / spawn / despawn / emit / reload) fork first (ensure_branch
 // — an implicit fork at the canonical head when no branch is live), perturb ONLY
 // the branch, and answer with the branch position plus `"warranted":false` (§28
 // §2: a control lineage is never warranted). `checkout` is the lone NON-perturbing
@@ -66,6 +66,8 @@ control_request :: proc(
 		return control_set(s, id, args, allocator)
 	case "spawn":
 		return control_spawn(s, id, args, allocator)
+	case "despawn":
+		return control_despawn(s, id, args, allocator)
 	case "emit":
 		return control_emit(s, id, args, allocator)
 	case "reload":
@@ -501,6 +503,54 @@ control_spawn :: proc(
 	branch.ticks += 1
 	extras := fmt.aprintf(",\"instance\":%d", minted, allocator = allocator)
 	return control_ok_response(s, id, "spawn", extras, allocator)
+}
+
+// control_despawn removes one EXISTING instance on the branch — the inverse of
+// control_spawn — through the SAME tick-boundary batch (queue_despawn +
+// apply_spawn_batch, exactly as a behavior's [Despawn] emit lands at the
+// boundary, so no parallel removal path exists). It addresses a live row the way
+// `set` does — args.thing + args.instance, the Id observe rendered — and answers
+// that Id so the agent confirms which row left. The instance is pre-checked
+// against the working table because apply_spawn_batch treats an absent Id as a
+// silent no-op (population is fixed within a tick), so an unknown/already-absent
+// Id must refuse here rather than commit an empty batch.
+@(private = "file")
+control_despawn :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	args: json.Object,
+	allocator := context.allocator,
+) -> string {
+	ensure_branch(s)
+	branch := &s.branch
+	thing, has_thing := json_string_field(args, "thing")
+	if !has_thing {
+		return error_response(id, "despawn", "missing args.thing", allocator)
+	}
+	instance, has_instance := json_int_field(args, "instance")
+	if !has_instance {
+		return error_response(id, "despawn", "missing args.instance", allocator)
+	}
+	if program_thing(branch.program, thing) == nil {
+		return error_response(id, "despawn", "unknown thing", allocator)
+	}
+
+	target := Id{raw = Thing_Id(instance)}
+	state := new_tick_state(branch.head, allocator, allocator)
+	table := find_tick_table(state.tables, thing)
+	if table == nil {
+		return error_response(id, "despawn", "unknown thing", allocator)
+	}
+	if _, found := find_row_by_id(table.rows[:], target); !found {
+		return error_response(id, "despawn", "no instance with that id", allocator)
+	}
+
+	queue_despawn(&state, Ref{thing = thing, id = target})
+	apply_spawn_batch(&state)
+	branch.head = commit_tick_state(branch.head, &state, allocator)
+	branch.ticks += 1
+	extras := fmt.aprintf(",\"instance\":%d", instance, allocator = allocator)
+	return control_ok_response(s, id, "despawn", extras, allocator)
 }
 
 // control_emit injects one signal on the branch and folds a full pipeline tick

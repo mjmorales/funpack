@@ -457,7 +457,7 @@ session_request :: proc(
 		return capture_test_request(s, id, args, allocator)
 	case "audit":
 		return audit_request(s, id, args, allocator)
-	case "branch", "checkout", "inject_input", "set", "spawn", "emit", "reload":
+	case "branch", "checkout", "inject_input", "set", "spawn", "despawn", "emit", "reload":
 		return control_request(s, id, cmd, args, allocator)
 	}
 	return error_response(id, cmd, "unknown command", allocator)

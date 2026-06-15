@@ -30,6 +30,6 @@ instead of comments**, **immutable `self with { … }` updates**, and **every em
 If `$2` is `3d`, set `logical` appropriately and use `engine.render3` (`Draw3`) + a `Draw3::Camera`
 in the render stage instead of 2D `Draw`.
 
-After writing, summarize the tree, point out where to add gameplay, and note that `funpack build`
-then `funpack run` (or `funpack test`) compiles and runs it — but do **not** run any compiler unless
-the user has a funpack toolchain installed and asks.
+After writing, summarize the tree, point out where to add gameplay, and note that the funpack-mcp
+`build` then session tools (or the `test` tool) compile and run it — but do **not** invoke any
+compile/run tool unless the user has a funpack toolchain installed and asks.

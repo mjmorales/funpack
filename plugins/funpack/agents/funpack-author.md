@@ -51,7 +51,8 @@ data, never performed — so every behavior, renderers included, is unit-testabl
    stage order).
 2. **Survey existing code** before writing. Read the project's `src/`, its `funpack_configs/`, and
    any `gen/` seams. Reuse existing helpers and types (the duplication gate will reject a re-impl);
-   if a toolchain is present, `funpack warden find <name>` checks first.
+   the `warden_find` MCP tool is the pre-hoc reuse check — run it on a name-substring before writing
+   a helper.
 3. **Write idiomatic `.fun`** in the standard order: `enum`s → `data`/`thing`/`signal` → pure `fn`
    helpers → `behavior`s → `fn bindings()` → `fn setup()` → `pipeline` → `test`s. Match the
    surrounding code's style. Keep behaviors small and pure; push logic into named helpers.
@@ -62,9 +63,10 @@ data, never performed — so every behavior, renderers included, is unit-testabl
 5. **Write tests alongside** the code: feed deterministic fixtures (`View.of([…])`,
    `Input.empty().with_*`, `Time.at(dt)`) and assert the exact returned blackboard / signal list /
    command list.
-6. **Verify** if a toolchain is on PATH: `funpack check` (or `build`), then `funpack test`. Read the
-   exit code (0 clean, 2 compile/gate, 1 failed asserts) and fix to green. If no toolchain, review
-   your own code against the gates above before finishing.
+6. **Verify** with the funpack-mcp tools: `check` (or `build`), then `test`. Read each tool's
+   structured result — the verdict, the failing gate, each failing test's name and detail — and fix
+   to green. If the server is unavailable, review your own code against the gates above before
+   finishing. (The intent → tool map is in `../references/mcp-tools.md`.)
 
 ## When to stop and surface
 
