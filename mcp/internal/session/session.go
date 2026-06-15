@@ -27,16 +27,24 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/mjmorales/funpack/mcp/internal/contract"
 	"github.com/mjmorales/funpack/mcp/internal/funpack"
 	"github.com/mjmorales/funpack/mcp/internal/introspect"
 	"github.com/mjmorales/funpack/mcp/internal/mcperr"
 	"github.com/rs/zerolog"
 )
+
+// callSeq is the process-wide §28 request-id source. Ids only need to be unique
+// within a single session's in-flight set (each session owns its own demux and
+// sees only its own responses), and a monotonic global counter trivially is.
+var callSeq atomic.Int64
 
 // Session is a live supervised attach: the spawned child, the loopback
 // connection, the read-side demux, and the negotiated protocol version, behind
@@ -255,6 +263,22 @@ func (s *Session) Demux() *introspect.Demux { return s.demux }
 // envelopes through (introspect.EncodeRequest). Reads are owned by the demux —
 // callers MUST NOT read from this conn directly or they race the demux loop.
 func (s *Session) Conn() net.Conn { return s.conn }
+
+// Call issues one §28 request on the session and blocks for its correlated
+// response: it allocates a fresh request id, writes the request envelope to the
+// connection (introspect.EncodeRequest stamps the protocol version), and awaits
+// the matching response on the demux. It is the single seam the session-scoped
+// tools (time/inspect/control/self-heal) build every command on, so request-id
+// allocation and response correlation live in one place rather than three.
+// ctx bounds the wait; a closed stream or protocol fault surfaces as the demux's
+// error. args may be nil for a no-argument command.
+func (s *Session) Call(ctx context.Context, cmd string, args json.RawMessage) (*contract.Response, error) {
+	id := callSeq.Add(1)
+	if err := introspect.EncodeRequest(s.conn, contract.Request{ID: id, Cmd: cmd, Args: args}); err != nil {
+		return nil, err
+	}
+	return s.demux.Await(ctx, id)
+}
 
 // Close tears the session down: it stops the demux read loop, closes the
 // loopback connection, and KILLS THE PROCESS GROUP (not just the immediate child,
