@@ -1,0 +1,10 @@
+version: '3'
+
+# The cli package is the domain-free CLI framework (Cobra-shaped command tree,
+# pure parse, dispatch, usage render). It is a LIBRARY — no main, no binary —
+# imported by the funpack compiler package and the cmd/funpack entry package.
+# The shared odin.yml verbs (check / vet / test) are the whole surface.
+includes:
+  base:
+    taskfile: ../taskfiles/odin.yml
+    flatten: true

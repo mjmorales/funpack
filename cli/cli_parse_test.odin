@@ -4,7 +4,7 @@
 // end-of-flags terminator, and the full closed Cli_Parse_Error vocabulary. The
 // funpack tree's own argument contract is pinned separately in
 // cli_funpack_test.odin; this file proves the resolver in isolation.
-package funpack
+package cli
 
 import "core:slice"
 import "core:testing"

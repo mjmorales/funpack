@@ -1,55 +1,79 @@
-// The funpack command-tree contract tests: the argument grammar of the real tree
-// from build_funpack_cli, exercised through the pure cli_parse. Every accept maps
-// to the verb mode / query the handler reads; every reject is the usage tier
-// (exit 2). The verb EXIT contracts ({0, 1, 2}) stay pinned by build_test /
-// check_test / fmt_test / warden_test against the run_X_verb cores — this file
-// proves only the argument plumbing.
+// The funpack COMPILER command-tree contract tests: the argument grammar of the
+// compiler subtree (build_funpack_compiler_subtree), exercised through the pure
+// cli.cli_parse. Every accept maps to the verb mode / query the handler reads;
+// every reject is the usage tier (exit 2). The verb EXIT contracts ({0, 1, 2})
+// stay pinned by build_test / check_test / fmt_test / warden_test against the
+// run_X_verb cores — this file proves only the argument plumbing.
+//
+// The run/live/attach verbs live in the entry package (cmd/funpack) and are
+// tested there (cli_root_test.odin, cli_run_test.odin), because they depend on
+// funpack_runtime. Here the subtree is wrapped under a local test root so the
+// grammar parses against the same shape main composes, minus those runtime verbs.
 package funpack
 
+import "../cli"
 import "core:testing"
 
-// expect_funpack_ok parses argv against the funpack tree and asserts success.
+// build_compiler_test_root wraps the compiler subtree under a finalized root so
+// the grammar tests parse against the same shape the entry package composes
+// (minus the runtime verbs). It mirrors the entry package's build_root_cli: a
+// root node owning the compiler subtree, finalized to wire parent pointers.
+build_compiler_test_root :: proc(allocator := context.temp_allocator) -> ^cli.Cli_Command {
+	root := cli.cli_new_command(
+		cli.Cli_Command {
+			use = "funpack",
+			short = "The funpack source → artifact compiler",
+			subcommands = build_funpack_compiler_subtree(allocator),
+		},
+		allocator,
+	)
+	cli.cli_finalize(root)
+	return root
+}
+
+// expect_funpack_ok parses argv against the compiler tree and asserts success.
 expect_funpack_ok :: proc(
 	t: ^testing.T,
-	root: ^Cli_Command,
+	root: ^cli.Cli_Command,
 	argv: []string,
 	loc := #caller_location,
-) -> Cli_Invocation {
-	inv, err := cli_parse(root, argv, context.temp_allocator)
-	testing.expect_value(t, err.kind, Cli_Parse_Error_Kind.None, loc = loc)
+) -> cli.Cli_Invocation {
+	inv, err := cli.cli_parse(root, argv, context.temp_allocator)
+	testing.expect_value(t, err.kind, cli.Cli_Parse_Error_Kind.None, loc = loc)
 	return inv
 }
 
 // expect_funpack_reject parses argv and asserts a usage error of SOME closed kind
-// — the rejection battery cares that the shape is refused (the path main maps to
-// exit 2), not which specific kind, matching the old `ok = false` contract.
+// — the rejection battery cares that the shape is refused (the path the entry
+// package maps to exit 2), not which specific kind, matching the old `ok = false`
+// contract.
 expect_funpack_reject :: proc(
 	t: ^testing.T,
-	root: ^Cli_Command,
+	root: ^cli.Cli_Command,
 	argv: []string,
 	loc := #caller_location,
 ) {
-	_, err := cli_parse(root, argv, context.temp_allocator)
+	_, err := cli.cli_parse(root, argv, context.temp_allocator)
 	testing.expect(t, err.kind != .None, "expected a usage rejection", loc = loc)
 }
 
-// test_funpack_tree_finalizes pins that the authored tree is well-formed —
-// unique subcommand names, unique flag names/shorthands, every node runnable or a
-// parent — so build_funpack_cli's startup assert can never fire in a shipped
-// binary. A malformed tree is caught here, at test time.
+// test_funpack_tree_finalizes pins that the authored compiler subtree is
+// well-formed — unique subcommand names, unique flag names/shorthands, every node
+// runnable or a parent — so the entry package's startup assert can never fire on
+// the compiler half. A malformed subtree is caught here, at test time.
 @(test)
 test_funpack_tree_finalizes :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
-	ok, message := cli_finalize(root)
+	root := build_compiler_test_root()
+	ok, message := cli.cli_finalize(root)
 	testing.expect(t, ok, message)
 }
 
-// test_funpack_top_level_verbs pins the root's verb set: version and test take no
-// arguments (a trailing token is the usage tier), and the bare program and an
+// test_funpack_top_level_verbs pins the compiler verb set: version and test take
+// no arguments (a trailing token is the usage tier), and the bare program and an
 // unknown verb are usage errors.
 @(test)
 test_funpack_top_level_verbs :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
+	root := build_compiler_test_root()
 
 	testing.expect_value(t, expect_funpack_ok(t, root, {"version"}).command.use, "version")
 	testing.expect_value(t, expect_funpack_ok(t, root, {"test"}).command.use, "test")
@@ -66,7 +90,7 @@ test_funpack_top_level_verbs :: proc(t: ^testing.T) {
 // the wrong mode.
 @(test)
 test_funpack_build_release_flag :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
+	root := build_compiler_test_root()
 
 	inv := expect_funpack_ok(t, root, {"build"})
 	testing.expect_value(t, cli_build_mode(&inv), Build_Mode.Dev)
@@ -82,55 +106,11 @@ test_funpack_build_release_flag :: proc(t: ^testing.T) {
 	expect_funpack_reject(t, root, {"check", "--relase"})
 }
 
-// test_funpack_run_dispatch pins the `funpack run` verb-dispatch junction: the
-// verb resolves to its leaf, `--release` maps to the build mode (the seam build
-// and run share through cli_build_mode), and the positional list partitions into
-// the optional [name] (first positional) and the funpack-live forwarded tail
-// (cli_run_name / cli_run_extra_args). A misspelled flag is the usage tier — never
-// a silent wrong-mode build.
-@(test)
-test_funpack_run_dispatch :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
-
-	// Bare `run`: default Dev mode, no name, no forwarded args.
-	inv := expect_funpack_ok(t, root, {"run"})
-	testing.expect_value(t, inv.command.use, "run")
-	testing.expect_value(t, cli_build_mode(&inv), Build_Mode.Dev)
-	testing.expect_value(t, cli_run_name(&inv), "")
-	testing.expect_value(t, len(cli_run_extra_args(&inv)), 0)
-
-	// `run --release`: Release mode, still no positionals.
-	inv = expect_funpack_ok(t, root, {"run", "--release"})
-	testing.expect_value(t, cli_build_mode(&inv), Build_Mode.Release)
-	testing.expect_value(t, cli_run_name(&inv), "")
-
-	// `run main`: the single positional is the [name] pick, no forwarded args.
-	inv = expect_funpack_ok(t, root, {"run", "main"})
-	testing.expect_value(t, cli_run_name(&inv), "main")
-	testing.expect_value(t, len(cli_run_extra_args(&inv)), 0)
-
-	// `run main out.replay extra`: [name] = main, the tail is forwarded verbatim.
-	inv = expect_funpack_ok(t, root, {"run", "main", "out.replay", "extra"})
-	testing.expect_value(t, cli_run_name(&inv), "main")
-	extra := cli_run_extra_args(&inv)
-	testing.expect_value(t, len(extra), 2)
-	testing.expect_value(t, extra[0], "out.replay")
-	testing.expect_value(t, extra[1], "extra")
-
-	// `run --release out.replay`: the flag binds, the positional is the [name].
-	inv = expect_funpack_ok(t, root, {"run", "--release", "out.replay"})
-	testing.expect_value(t, cli_build_mode(&inv), Build_Mode.Release)
-	testing.expect_value(t, cli_run_name(&inv), "out.replay")
-
-	// A misspelled flag is the usage tier, never a silent Dev build.
-	expect_funpack_reject(t, root, {"run", "--relase"})
-}
-
 // test_funpack_fmt_check_flag pins the fmt `--check` seam: no flag is Write,
 // `--check` is Check, and a typo or trailing argument is the usage tier.
 @(test)
 test_funpack_fmt_check_flag :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
+	root := build_compiler_test_root()
 
 	inv := expect_funpack_ok(t, root, {"fmt"})
 	testing.expect_value(t, cli_fmt_mode(&inv), Fmt_Mode.Write)
@@ -149,7 +129,7 @@ test_funpack_fmt_check_flag :: proc(t: ^testing.T) {
 // adjudicated by the tree.
 @(test)
 test_funpack_warden_subcommand_totality :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
+	root := build_compiler_test_root()
 
 	argless := []string{"holes", "probes", "debt", "tags", "pipeline"}
 	for name in argless {
@@ -169,7 +149,7 @@ test_funpack_warden_subcommand_totality :: proc(t: ^testing.T) {
 // positional on a strict command (holes, pipeline) stays a usage error.
 @(test)
 test_funpack_warden_graph_positional :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
+	root := build_compiler_test_root()
 
 	inv := expect_funpack_ok(t, root, {"warden", "graph", "drift.damped"})
 	testing.expect_value(t, inv.command.use, "graph")
@@ -186,7 +166,7 @@ test_funpack_warden_graph_positional :: proc(t: ^testing.T) {
 // and together, and the mapper produces the expected query.
 @(test)
 test_funpack_warden_find_query :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
+	root := build_compiler_test_root()
 
 	inv := expect_funpack_ok(t, root, {"warden", "find", "damped"})
 	testing.expect_value(t, cli_warden_find_query(&inv), Warden_Find_Query{name = "damped"})
@@ -212,7 +192,7 @@ test_funpack_warden_find_query :: proc(t: ^testing.T) {
 // index read, so the rejection holds in any directory.
 @(test)
 test_funpack_warden_find_rejections :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
+	root := build_compiler_test_root()
 
 	rejected := [][]string {
 		{"warden", "find"}, // filterless — find is not the index dump
@@ -236,20 +216,20 @@ test_funpack_warden_find_rejections :: proc(t: ^testing.T) {
 // themselves, so dispatch renders that command's usage and exits 0.
 @(test)
 test_funpack_help_requested :: proc(t: ^testing.T) {
-	root := build_funpack_cli(context.temp_allocator)
+	root := build_compiler_test_root()
 
-	inv, err := cli_parse(root, {"--help"}, context.temp_allocator)
-	testing.expect_value(t, err.kind, Cli_Parse_Error_Kind.None)
+	inv, err := cli.cli_parse(root, {"--help"}, context.temp_allocator)
+	testing.expect_value(t, err.kind, cli.Cli_Parse_Error_Kind.None)
 	testing.expect(t, inv.help)
 	testing.expect_value(t, inv.command.use, "funpack")
 
-	inv, err = cli_parse(root, {"build", "-h"}, context.temp_allocator)
-	testing.expect_value(t, err.kind, Cli_Parse_Error_Kind.None)
+	inv, err = cli.cli_parse(root, {"build", "-h"}, context.temp_allocator)
+	testing.expect_value(t, err.kind, cli.Cli_Parse_Error_Kind.None)
 	testing.expect(t, inv.help)
 	testing.expect_value(t, inv.command.use, "build")
 
-	inv, err = cli_parse(root, {"warden", "--help"}, context.temp_allocator)
-	testing.expect_value(t, err.kind, Cli_Parse_Error_Kind.None)
+	inv, err = cli.cli_parse(root, {"warden", "--help"}, context.temp_allocator)
+	testing.expect_value(t, err.kind, cli.Cli_Parse_Error_Kind.None)
 	testing.expect(t, inv.help)
 	testing.expect_value(t, inv.command.use, "warden")
 }

@@ -708,10 +708,11 @@ when #config(FUNPACK_LIVE, false) {
 	// and never feeds back into resolve_tick/step_tick_persist.
 	run_live_session :: proc(args: []string) -> int {
 		// --help/-h is a request (usage to stdout, exit 0); no args is a usage
-		// error (usage to stderr, exit 2). Both print the same text so `funpack-live`
-		// is self-describing — the §28 attach subcommand (handled in main.odin) and
-		// the one-step `funpack run` path are named here so neither is undiscoverable.
-		usage := "usage:\n  funpack-live <artifact-path> [replay-out-path]   run a built game artifact\n  funpack-live attach <artifact-path>              open an introspection session\n  funpack-live --help                              show this help\n\nThe artifact is produced by `funpack build` (at .funpack/artifact); `funpack run` builds and launches it in one step."
+		// error (usage to stderr, exit 2). In the consolidated binary the CLI
+		// framework owns `funpack live`'s arity and --help, so this internal usage is
+		// a defensive fallback (run_live_session is also called by `funpack run` over
+		// a marshalled argv); it names the play / build-and-play paths in funpack terms.
+		usage := "usage:\n  funpack live <artifact-path> [replay-out-path]   play a built game artifact\n  funpack run                                       build and play in one step\n  funpack attach <artifact-path>                    open an introspection session\n\nThe artifact is produced by `funpack build` (at .funpack/artifact)."
 		if len(args) >= 2 && (args[1] == "--help" || args[1] == "-h") {
 			fmt.println(usage)
 			return 0
@@ -1293,5 +1294,19 @@ when #config(FUNPACK_LIVE, false) {
 				sdl.Delay(u32(ms - 1))
 			}
 		}
+	}
+} else {
+	// Headless/default build: no SDL, no window. run_live_session is still an
+	// ALWAYS-PRESENT symbol so the single-binary entry package (cmd/funpack) links
+	// against it in BOTH build modes — the real SDL session above when built with
+	// -define:FUNPACK_LIVE=true, this refuse-stub otherwise. A define-free funpack
+	// that still routed `run`/`live` here exits 2 with a clear message rather than
+	// silently no-op'ing, mirroring session_capture_frame's real/stub pair above.
+	run_live_session :: proc(args: []string) -> int {
+		_ = args
+		fmt.eprintln(
+			"funpack: this build has no live runtime (compiled without FUNPACK_LIVE); rebuild with -define:FUNPACK_LIVE=true",
+		)
+		return 2
 	}
 }

@@ -1,35 +1,58 @@
 version: '3'
 
-# Monorepo build orchestration. Each embedded project (funpack, runtime)
-# owns its Taskfile, which flatten-includes taskfiles/odin.yml for the
-# shared Odin verbs; this root file composes them by namespace and each
-# root verb aggregates the per-project ones. Validators in
-# .claude/.prove.json pin to the root verbs, so layout changes edit this
-# file only — never the validator config.
+# Monorepo build orchestration. Each embedded package (cli, funpack, runtime,
+# cmd/funpack) owns its Taskfile; the library packages flatten-include
+# taskfiles/odin.yml for the shared Odin verbs (cmd/funpack overrides them with
+# its own define-aware verbs). This root file composes them by namespace and each
+# root verb aggregates the per-package ones. Validators in .claude/.prove.json pin
+# to the root verbs, so layout changes edit this file only — never the validator
+# config.
+#
+# Topology: cli (domain-free framework) ← funpack (pure compiler) and runtime
+# (funpack_runtime, SDL-gated) are independent libraries; cmd/funpack is the SINGLE
+# binary that composes them and is the only build that links SDL.
 
 includes:
+  cli:
+    taskfile: ./cli
+    dir: ./cli
   funpack:
     taskfile: ./funpack
     dir: ./funpack
   runtime:
     taskfile: ./runtime
     dir: ./runtime
+  cmd:
+    taskfile: ./cmd/funpack
+    dir: ./cmd/funpack
 
 tasks:
   build:
-    desc: Type-check every embedded project
+    desc: Type-check every package (cmd/funpack in both define modes)
     cmds:
+      - task: cli:build
       - task: funpack:build
       - task: runtime:build
+      - task: cmd:build
 
   lint:
-    desc: Vet + strict-style check every embedded project
+    desc: Vet + strict-style every package (incl. the SDL-gated arms)
     cmds:
+      - task: cli:lint
       - task: funpack:lint
       - task: runtime:lint
+      - task: runtime:lint-live
+      - task: cmd:lint
 
   test:
-    desc: Run every embedded project's tests
+    desc: Run every package's tests (all define-free — no SDL linked)
     cmds:
+      - task: cli:test
       - task: funpack:test
       - task: runtime:test
+      - task: cmd:test
+
+  binary:
+    desc: Compile the single funpack binary (links vendor:sdl2 via FUNPACK_LIVE)
+    cmds:
+      - task: cmd:binary

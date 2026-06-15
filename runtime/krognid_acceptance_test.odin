@@ -90,12 +90,11 @@
 //       embedded with #load, so the reproduction needs no funpack source and no cwd —
 //       only the runtime package and the committed testdata/.
 //
-//   (2) LIVE SDL VISUAL GATE (the human visual check). Build the live binary and run
-//       the committed artifact under it:
+//   (2) LIVE SDL VISUAL GATE (the human visual check). Build the single binary and
+//       play the committed artifact with it:
 //
-//           cd runtime
-//           odin build . -define:FUNPACK_LIVE=true -out:funpack-live
-//           ./funpack-live testdata/krognid.artifact
+//           task binary   # builds cmd/funpack/funpack (links vendor:sdl2)
+//           cmd/funpack/funpack live runtime/testdata/krognid.artifact
 //
 //       EXPECT a window (the largest integer scale of the artifact's 160x120 logical
 //       extent that fits, so 4x → 640x480) showing the gray ground plane (the §20 §1

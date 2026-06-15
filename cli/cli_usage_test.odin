@@ -4,7 +4,7 @@
 // runnable leaf renders a `[flags]` usage line and a Flags block with aligned
 // columns, type hints, and the synthetic `-h, --help`. The synthetic tree comes
 // from cli_parse_test.odin (build_cli_test_tree).
-package funpack
+package cli
 
 import "core:strings"
 import "core:testing"

@@ -4,7 +4,7 @@
 // runs after binding flags. Arity is a mechanical count test — pattern, not
 // judgment — so it lives wholly on the engine side (design principle §1) and is
 // a deterministic function of the positional count alone.
-package funpack
+package cli
 
 import "core:fmt"
 

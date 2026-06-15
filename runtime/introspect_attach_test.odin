@@ -281,7 +281,7 @@ test_attach_control_state_persists_across_requests :: proc(t: ^testing.T) {
 // though the server it feeds is FUNPACK_LIVE-gated.
 @(test)
 test_attach_args_artifact_only :: proc(t: ^testing.T) {
-	parsed, ok := parse_attach_args({"funpack-live", "attach", "game.artifact"})
+	parsed, ok := parse_attach_args({"funpack", "attach", "game.artifact"})
 	testing.expect(t, ok, "attach with an artifact must parse")
 	testing.expect_value(t, parsed.artifact, "game.artifact")
 	testing.expect(t, !parsed.has_replay, "no second positional means no replay log")
@@ -293,7 +293,7 @@ test_attach_args_artifact_only :: proc(t: ^testing.T) {
 // the default loopback port.
 @(test)
 test_attach_args_replay_and_port :: proc(t: ^testing.T) {
-	parsed, ok := parse_attach_args({"funpack-live", "attach", "game.artifact", "run.replay", "--port", "9000"})
+	parsed, ok := parse_attach_args({"funpack", "attach", "game.artifact", "run.replay", "--port", "9000"})
 	testing.expect(t, ok, "attach with a replay log and a port must parse")
 	testing.expect_value(t, parsed.artifact, "game.artifact")
 	testing.expect(t, parsed.has_replay, "the second positional is the replay log")
@@ -301,7 +301,7 @@ test_attach_args_replay_and_port :: proc(t: ^testing.T) {
 	testing.expect_value(t, parsed.port, 9000)
 
 	// --port=N (the equals form) parses identically.
-	eq, eq_ok := parse_attach_args({"funpack-live", "attach", "game.artifact", "--port=9000"})
+	eq, eq_ok := parse_attach_args({"funpack", "attach", "game.artifact", "--port=9000"})
 	testing.expect(t, eq_ok, "the --port=N form must parse")
 	testing.expect_value(t, eq.port, 9000)
 	testing.expect(t, !eq.has_replay, "a flag is not a positional — no replay log here")
@@ -313,22 +313,22 @@ test_attach_args_replay_and_port :: proc(t: ^testing.T) {
 // than guessing.
 @(test)
 test_attach_args_refusals :: proc(t: ^testing.T) {
-	_, no_artifact := parse_attach_args({"funpack-live", "attach"})
+	_, no_artifact := parse_attach_args({"funpack", "attach"})
 	testing.expect(t, !no_artifact, "attach with no artifact is a usage error")
 
-	_, unknown_flag := parse_attach_args({"funpack-live", "attach", "game.artifact", "--bogus"})
+	_, unknown_flag := parse_attach_args({"funpack", "attach", "game.artifact", "--bogus"})
 	testing.expect(t, !unknown_flag, "an unknown flag is a usage error, never silently ignored")
 
-	_, bad_port := parse_attach_args({"funpack-live", "attach", "game.artifact", "--port", "nope"})
+	_, bad_port := parse_attach_args({"funpack", "attach", "game.artifact", "--port", "nope"})
 	testing.expect(t, !bad_port, "a non-numeric port is a usage error")
 
-	_, oob_port := parse_attach_args({"funpack-live", "attach", "game.artifact", "--port", "70000"})
+	_, oob_port := parse_attach_args({"funpack", "attach", "game.artifact", "--port", "70000"})
 	testing.expect(t, !oob_port, "an out-of-range port is a usage error")
 
-	_, dangling_port := parse_attach_args({"funpack-live", "attach", "game.artifact", "--port"})
+	_, dangling_port := parse_attach_args({"funpack", "attach", "game.artifact", "--port"})
 	testing.expect(t, !dangling_port, "--port with no value is a usage error")
 
-	_, third_positional := parse_attach_args({"funpack-live", "attach", "a", "b", "c"})
+	_, third_positional := parse_attach_args({"funpack", "attach", "a", "b", "c"})
 	testing.expect(t, !third_positional, "a third positional is a usage error")
 }
 

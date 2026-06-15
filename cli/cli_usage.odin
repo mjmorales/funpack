@@ -24,7 +24,7 @@
 // Available Commands list; a runnable command shows a `[flags]` usage line (plus
 // `[args]` when it accepts positionals); every command shows a Flags block with
 // the synthetic `-h, --help`.
-package funpack
+package cli
 
 import "core:fmt"
 import "core:strings"

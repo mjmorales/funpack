@@ -13,6 +13,12 @@ version: '3'
 # Taskfiles can override them via the include's vars block. Var names are
 # toolchain-prefixed: the root Taskfile merges every base's top-level vars
 # into one global scope, so unprefixed names collide across odin.yml/go.yml.
+#
+# `odin check` requires an entry-point `main` unless told otherwise, but every
+# package that inherits these verbs (cli, funpack, runtime) is a LIBRARY — the
+# single `main` lives only in cmd/funpack, which overrides build/lint with its
+# own define-aware verbs. So the shared check passes -no-entry-point; `odin test`
+# synthesizes its own runner entry and needs no such flag.
 
 vars:
   ODIN: '{{.ODIN | default "odin"}}'
@@ -22,12 +28,12 @@ tasks:
   build:
     desc: Type-check the package without codegen
     cmds:
-      - '{{.ODIN}} check {{.ODIN_PKG}}'
+      - '{{.ODIN}} check {{.ODIN_PKG}} -no-entry-point'
 
   lint:
     desc: Type-check with vet and strict style
     cmds:
-      - '{{.ODIN}} check {{.ODIN_PKG}} -vet -strict-style'
+      - '{{.ODIN}} check {{.ODIN_PKG}} -vet -strict-style -no-entry-point'
 
   test:
     desc: Run the package test runner

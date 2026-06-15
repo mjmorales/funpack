@@ -22,7 +22,7 @@
 // cli_args.odin owns positional arity, cli_parse.odin the pure resolver and the
 // effectful dispatch, cli_usage.odin the deterministic help render, and
 // cli_funpack.odin the concrete funpack command tree.
-package funpack
+package cli
 
 import "core:fmt"
 import "core:strings"
@@ -319,4 +319,15 @@ fmt_command_error :: proc(cmd: ^Cli_Command, format: string, args: ..any) -> str
 // than a silently-empty filter.
 cli_nonempty :: proc(value: string) -> bool {
 	return value != ""
+}
+
+// cli_new_command heap-copies a command spec into `allocator` and returns its
+// stable address — the addressable node cli_finalize threads parent pointers
+// through and subcommand slices reference. Lives in the framework package so
+// every domain that authors a tree (the funpack compiler subtree, the entry
+// package's runtime nodes) constructs nodes through one shared constructor.
+cli_new_command :: proc(spec: Cli_Command, allocator := context.allocator) -> ^Cli_Command {
+	cmd := new(Cli_Command, allocator)
+	cmd^ = spec
+	return cmd
 }

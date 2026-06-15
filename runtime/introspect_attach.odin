@@ -466,7 +466,7 @@ when #config(FUNPACK_LIVE, false) {
 	run_attach_session :: proc(args: []string) -> int {
 		parsed, args_ok := parse_attach_args(args)
 		if !args_ok {
-			fmt.eprintln("usage: funpack-live attach <artifact-path> [recorded.replay] [--port N]")
+			fmt.eprintln("usage: funpack attach <artifact-path> [recorded.replay] [--port N]")
 			return 2
 		}
 
@@ -560,5 +560,18 @@ when #config(FUNPACK_LIVE, false) {
 				return written == len(buf)
 			},
 		}
+	}
+} else {
+	// Headless/default build: no SDL, no introspection server. run_attach_session
+	// is still an ALWAYS-PRESENT symbol so the single-binary entry package
+	// (cmd/funpack) links its `attach` verb against it in BOTH build modes — the
+	// real §28 remote-attach server above when built with -define:FUNPACK_LIVE=true,
+	// this refuse-stub otherwise.
+	run_attach_session :: proc(args: []string) -> int {
+		_ = args
+		fmt.eprintln(
+			"funpack: this build has no attach runtime (compiled without FUNPACK_LIVE); rebuild with -define:FUNPACK_LIVE=true",
+		)
+		return 2
 	}
 }

@@ -1,0 +1,37 @@
+version: '3'
+
+# cmd/funpack is the SINGLE binary: it composes the compiler subtree (the funpack
+# package) with the runtime verbs (funpack_runtime) under one CLI tree, and is the
+# ONLY package that imports funpack_runtime — so it is the only build that links
+# SDL. The shipped binary is the FUNPACK_LIVE build (`binary` below); the
+# define-free build links the runtime's refuse-stubs (no SDL) and is what the test
+# floor runs.
+#
+# build/lint type-check BOTH modes: the entry package calls run_live_session /
+# run_attach_session, which resolve to a different arm per define, so both the
+# stub arm (default) and the SDL arm (FUNPACK_LIVE) must compile. Type-checking
+# the SDL arm does NOT link the native lib, so it needs no SDL2 installed —
+# mirroring runtime:lint-live.
+
+tasks:
+  build:
+    desc: Type-check the entry package in both stub and FUNPACK_LIVE modes
+    cmds:
+      - odin check .
+      - odin check . -define:FUNPACK_LIVE=true
+
+  lint:
+    desc: Vet + strict-style the entry package in both modes
+    cmds:
+      - odin check . -vet -strict-style
+      - odin check . -vet -strict-style -define:FUNPACK_LIVE=true
+
+  test:
+    desc: Run the entry package's composition/wiring tests (define-free, no SDL)
+    cmds:
+      - odin test .
+
+  binary:
+    desc: Compile the single funpack binary (links vendor:sdl2 via FUNPACK_LIVE)
+    cmds:
+      - odin build . -define:FUNPACK_LIVE=true -out:funpack

@@ -1,7 +1,7 @@
 // Arity-validator tests: cli_args_check is total over the closed Cli_Args_Kind
 // set, so every kind is pinned at its boundary counts, and cli_args_expectation
 // renders an advisory phrase that names the rule.
-package funpack
+package cli
 
 import "core:strings"
 import "core:testing"

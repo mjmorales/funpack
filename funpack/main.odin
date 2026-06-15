@@ -1,20 +1,17 @@
 // funpack — the pure source → artifact compiler. No clock, no DB, no
 // network in scope; emits the versioned Index Contract (spec §29).
+//
+// This is a LIBRARY package: it holds the compiler verb CORES (run_build_verb,
+// run_check_verb, run_test_verb, run_warden_verb, run_version_verb, run_fmt_verb)
+// the unified CLI binary dispatches into. The single `main` lives in cmd/funpack,
+// which composes this package's compiler subtree (build_funpack_compiler_subtree,
+// cli_funpack.odin) with the runtime verbs and drives cli.cli_dispatch. Each verb
+// core owns its documented {0, 1, 2} exit contract (§29 §3); the framework (the
+// cli package) owns only the argument plumbing.
 package funpack
 
 import "core:fmt"
 import "core:os"
-
-// main builds the funpack command tree and hands the argument vector to the
-// framework's dispatch (cli_dispatch, cli_parse.odin): a usage error prints to
-// stderr and exits 2, `--help` prints to stdout and exits 0, and a resolved verb
-// runs and exits with ITS code. The dispatch never decides an exit number — each
-// verb's run_X_verb core owns its {0, 1, 2} contract (§29 §3). The tree is built
-// in the process allocator (lives until exit); transient parse state rides the
-// temp arena.
-main :: proc() {
-	os.exit(cli_dispatch(build_funpack_cli(), os.args[1:]))
-}
 
 // Warden_Command is the closed `funpack warden` subcommand set (§29 §1) — one
 // member per index query the sub-toolchain answers. The set is closed under
@@ -118,9 +115,9 @@ run_build_verb :: proc(mode: Build_Mode) -> int {
 		fmt.printfln("funpack build: wrote %s and %s", product.artifact_path, product.index_path)
 		// A game build is runnable — point the newcomer at the runner so a fresh
 		// `funpack build` is self-documenting about how to play the result. The
-		// one-command path (funpack run) leads; the direct funpack-live invocation
-		// (the runner the dist also ships) follows for when funpack is unavailable.
-		fmt.printfln("  run it with: funpack run   (or directly: %s %s)", FUNPACK_LIVE_BIN, product.artifact_path)
+		// one-command path (funpack run, which rebuilds then launches) leads; the
+		// play-the-prebuilt-artifact path (funpack live <artifact>) follows.
+		fmt.printfln("  run it with: funpack run   (or play this artifact: funpack live %s)", product.artifact_path)
 	}
 	return 0
 }

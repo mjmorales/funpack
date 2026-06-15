@@ -9,7 +9,8 @@ doctrine, this repo is the machine that satisfies it.
 
 ## What gets built here
 
-One first-party binary over one versioned contract, plus a runtime
+One first-party binary over one versioned contract — the pure compiler and the runtime in a
+single executable
 ([spec §29](https://github.com/mjmorales/funpack-spec/blob/main/spec/29-architecture-governance.md)):
 
 - **`funpack`** — the language toolchain. Parses, typechecks, runs the structural quality
@@ -22,8 +23,12 @@ One first-party binary over one versioned contract, plus a runtime
   reports, the agent edits, recompilation re-projects — it never writes source. General
   swarm orchestration (a stateful task DB, leases, dispatch) is the operator's agent
   tooling, deliberately out of the engine's scope.
-- **the runtime** — executes the artifact. It is the one impure consumer of the pure
-  compiler's output.
+- **the runtime** — executes the artifact, surfaced as the `funpack run` / `funpack live` /
+  `funpack attach` verbs of the same binary. It is the one impure consumer of the pure
+  compiler's output (the only part that links SDL); the compiler verbs stay a pure
+  `source → artifact` function. Packaged together, the purity boundary holds at the
+  artifact, not at a binary split — `odin test` per package keeps the deterministic floor
+  SDL-free.
 
 ```text
 agent → │ funpack (pure: src → artifact + index; `funpack warden` projects the index) │ ── artifact ──► runtime

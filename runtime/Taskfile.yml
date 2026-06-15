@@ -6,21 +6,15 @@ includes:
     flatten: true
 
 tasks:
-  # live compiles the FUNPACK_LIVE-defined runtime — the only build that links
-  # vendor:sdl2 — to a gitignored `funpack-live` binary, then runs it with the
-  # passed args. The default build/lint/test verbs stay define-free: the headless
-  # floor is the default gate, so the live SDL window path never enters CI by
-  # default. Run a session:
-  #   task -d runtime live -- testdata/pong.artifact
-  live:
-    desc: Build the FUNPACK_LIVE runtime (links vendor:sdl2) and run it
-    cmds:
-      - odin build . -define:FUNPACK_LIVE=true -out:funpack-live
-      - ./funpack-live {{.CLI_ARGS}}
-
   # lint-live type-checks the FUNPACK_LIVE-gated code the define-free default lint
-  # never compiles, so CI can catch when-gated rot in the live SDL block.
+  # never compiles, so CI can catch when-gated rot in the live SDL block. The
+  # runtime is now a LIBRARY (no main — the single binary lives in cmd/funpack), so
+  # this check passes -no-entry-point like the shared verbs. Type-checking the SDL
+  # arm does NOT link vendor:sdl2's native lib, so it needs no SDL2 installed.
+  # The runtime is a library — it builds no standalone binary. The one consolidated
+  # binary is built by `task cmd:binary` (or `task binary` at the root); play it with
+  # `funpack run` / `funpack live <artifact>`.
   lint-live:
     desc: Vet the FUNPACK_LIVE-gated runtime with strict style
     cmds:
-      - odin check . -vet -strict-style -define:FUNPACK_LIVE=true
+      - odin check . -vet -strict-style -define:FUNPACK_LIVE=true -no-entry-point

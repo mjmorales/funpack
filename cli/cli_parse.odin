@@ -14,7 +14,7 @@
 // arguments, with `--help`/`-h` recognized at any command level. Bool flags are
 // presence-valued and never consume the following token (`--release true`
 // leaves "true" a positional — the Cobra rule).
-package funpack
+package cli
 
 import "core:fmt"
 import "core:strconv"
