@@ -51,7 +51,6 @@ CMD_BRANCH :: "branch"
 CMD_CHECKOUT :: "checkout"
 
 // group "inspect" (class observe)
-CMD_INSPECT :: "inspect"
 CMD_SIGNALS :: "signals"
 CMD_PIPELINE :: "pipeline"
 CMD_TRACE :: "trace"
@@ -77,6 +76,4 @@ CMD_STATUS :: "status"
 
 EVENT_BREAKPOINT_HIT :: "breakpoint_hit"
 EVENT_WATCH_FIRED :: "watch_fired"
-EVENT_PAUSED :: "paused"
-EVENT_RELOAD_RESULT :: "reload_result"
 EVENT_DIVERGED :: "diverged"

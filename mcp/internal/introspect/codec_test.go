@@ -22,7 +22,7 @@ func TestEncodeRequestStampsVersionAndFrames(t *testing.T) {
 	}{
 		{
 			name: "with args",
-			req:  contract.Request{V: 999, ID: 7, Cmd: string(contract.CmdInspect), Args: json.RawMessage(`{"entity":42}`)},
+			req:  contract.Request{V: 999, ID: 7, Cmd: string(contract.CmdSignals), Args: json.RawMessage(`{"entity":42}`)},
 		},
 		{
 			name: "no args",
@@ -132,10 +132,10 @@ func TestDecodeMessageAcceptsValidEnvelopes(t *testing.T) {
 		},
 		{
 			name:     "event with no payload",
-			line:     `{"v":1,"event":"paused"}`,
+			line:     `{"v":1,"event":"diverged"}`,
 			wantKind: KindEvent,
 			assert: func(t *testing.T, d Decoded) {
-				if d.Event.Name != string(contract.EventPaused) {
+				if d.Event.Name != string(contract.EventDiverged) {
 					t.Errorf("event name: got %q", d.Event.Name)
 				}
 				if len(d.Event.Payload) != 0 {
@@ -188,7 +188,7 @@ func TestDecodeMessageRefusals(t *testing.T) {
 		{"response both result and error", `{"v":1,"id":1,"ok":false,"cmd":"set","result":{},"error":"boom"}`},
 		{"response neither result nor error", `{"v":1,"id":1,"ok":true,"cmd":"status"}`},
 		{"response result explicit null", `{"v":1,"id":1,"ok":true,"cmd":"status","result":null}`},
-		{"ambiguous event and ok", `{"v":1,"event":"paused","ok":true}`},
+		{"ambiguous event and ok", `{"v":1,"event":"diverged","ok":true}`},
 		{"no kind discriminator", `{"v":1,"id":1}`},
 		{"not a json object", `["v",1]`},
 		{"empty line", ``},
@@ -216,7 +216,7 @@ func TestDecodeMessageRefusals(t *testing.T) {
 // decode in order and a clean end of stream returns io.EOF.
 func TestReaderStreamsLines(t *testing.T) {
 	stream := strings.Join([]string{
-		`{"v":1,"event":"paused"}`,
+		`{"v":1,"event":"diverged"}`,
 		`{"v":1,"id":1,"ok":true,"cmd":"status","result":{"frame":10}}`,
 	}, "\n") + "\n"
 
@@ -226,7 +226,7 @@ func TestReaderStreamsLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode 1: %v", err)
 	}
-	if first.Kind != KindEvent || first.Event.Name != string(contract.EventPaused) {
+	if first.Kind != KindEvent || first.Event.Name != string(contract.EventDiverged) {
 		t.Fatalf("Decode 1: got kind=%q", first.Kind)
 	}
 

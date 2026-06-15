@@ -130,7 +130,6 @@ const (
 	CmdCheckout    Command = "checkout"
 
 	// group "inspect" (class observe)
-	CmdInspect        Command = "inspect"
 	CmdSignals        Command = "signals"
 	CmdPipeline       Command = "pipeline"
 	CmdTrace          Command = "trace"
@@ -166,7 +165,6 @@ var commandClass = map[Command]Class{
 	CmdReload:         ClassControl,
 	CmdBranch:         ClassControl,
 	CmdCheckout:       ClassControl,
-	CmdInspect:        ClassObserve,
 	CmdSignals:        ClassObserve,
 	CmdPipeline:       ClassObserve,
 	CmdTrace:          ClassObserve,
@@ -198,7 +196,6 @@ var commandGroup = map[Command]string{
 	CmdReload:         "control",
 	CmdBranch:         "control",
 	CmdCheckout:       "control",
-	CmdInspect:        "inspect",
 	CmdSignals:        "inspect",
 	CmdPipeline:       "inspect",
 	CmdTrace:          "inspect",
@@ -230,7 +227,6 @@ var Commands = []Command{
 	CmdReload,
 	CmdBranch,
 	CmdCheckout,
-	CmdInspect,
 	CmdSignals,
 	CmdPipeline,
 	CmdTrace,
@@ -270,8 +266,6 @@ type EventName string
 const (
 	EventBreakpointHit EventName = "breakpoint_hit"
 	EventWatchFired    EventName = "watch_fired"
-	EventPaused        EventName = "paused"
-	EventReloadResult  EventName = "reload_result"
 	EventDiverged      EventName = "diverged"
 )
 
@@ -279,7 +273,5 @@ const (
 var Events = []EventName{
 	EventBreakpointHit,
 	EventWatchFired,
-	EventPaused,
-	EventReloadResult,
 	EventDiverged,
 }

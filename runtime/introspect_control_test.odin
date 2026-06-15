@@ -206,6 +206,78 @@ test_control_spawn_adds_branch_row :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(canonical_table.rows), 1)
 }
 
+// despawn removes an EXISTING instance on the branch through the same
+// tick-boundary batch spawn mints through — the inverse of spawn. A spawn then a
+// despawn of the minted Id returns the branch population to its canonical size
+// and leaves the removed Id unresolvable, while the canonical population is
+// untouched throughout. The minted Id is addressed by args.instance, exactly as
+// `set` addresses a live row.
+@(test)
+test_control_despawn_removes_branch_row :: proc(t: ^testing.T) {
+	_, session := pong_control_session(t, 3)
+	s := session
+
+	// Mint a fresh Ball on the branch (Id 1, alongside the canonical Id 0), so the
+	// despawn target is a row this session created — no canonical row is removed.
+	spawned := session_request(
+		&s,
+		`{"id":1,"cmd":"spawn","args":{"thing":"Ball","fields":{"pos":"Vec2(x=0,y=0)","vel":"Vec2(x=4294967296,y=0)"}}}`,
+	)
+	testing.expect(t, strings.contains(spawned, `"instance":1`), "the spawn must mint Id 1")
+	if _, ok := branch_row(&s, "Ball", 1); !ok {
+		testing.fail_now(t, "the minted Ball must be live before despawn")
+	}
+
+	response := session_request(&s, `{"id":2,"cmd":"despawn","args":{"thing":"Ball","instance":1}}`)
+	testing.expect(t, strings.contains(response, `"ok":true`), "despawn must succeed")
+	testing.expect(t, strings.contains(response, `"warranted":false`), "a control response is non-warranted")
+	testing.expect(t, strings.contains(response, `"instance":1`), "the removed Id must be answered")
+
+	// The minted row is gone from the committed branch head; the original Ball (Id
+	// 0) survives, so the branch population is back to the canonical one row.
+	if _, ok := branch_row(&s, "Ball", 1); ok {
+		testing.fail_now(t, "the despawned instance must be absent from the branch head")
+	}
+	head := s.branch.head
+	branch_table := version_find_table(&head, "Ball")
+	testing.expect_value(t, len(branch_table.rows), 1)
+	canonical := s.versions[len(s.versions) - 1]
+	canonical_table := version_find_table(&canonical, "Ball")
+	testing.expect_value(t, len(canonical_table.rows), 1)
+}
+
+// despawn refuses a missing address arg and an unknown/already-absent instance,
+// leaving the branch exactly where it was — mirroring the spawn/set refusal
+// shape (apply_spawn_batch no-ops an absent Id, so the absence must refuse here).
+@(test)
+test_control_despawn_refusals :: proc(t: ^testing.T) {
+	_, session := pong_control_session(t, 3)
+	s := session
+	opened := session_request(&s, `{"id":1,"cmd":"branch"}`)
+	testing.expect(t, strings.contains(opened, `"ok":true`), "the explicit fork must succeed")
+	head_before := s.branch.head
+	ticks_before := s.branch.ticks
+
+	cases := [?]string {
+		// Missing the instance address arg.
+		`{"id":2,"cmd":"despawn","args":{"thing":"Ball"}}`,
+		// Unknown thing type.
+		`{"id":3,"cmd":"despawn","args":{"thing":"Nope","instance":0}}`,
+		// Known thing, but no live row carries that Id (already absent).
+		`{"id":4,"cmd":"despawn","args":{"thing":"Ball","instance":7}}`,
+	}
+	for request in cases {
+		response := session_request(&s, request)
+		testing.expect(t, strings.contains(response, `"ok":false`), "a refused despawn answers ok:false")
+	}
+	testing.expect(
+		t,
+		world_versions_equal(s.branch.head, head_before),
+		"a refused despawn must leave the branch head untouched",
+	)
+	testing.expect_value(t, s.branch.ticks, ticks_before)
+}
+
 // emit injects a Goal on the branch and folds a pipeline tick over it: pong's
 // tally consumer reads the injected signal exactly as a produced one, so the
 // branch Scoreboard counts a goal the canonical run never saw.
@@ -362,7 +434,8 @@ test_control_fork_canonical_digest_pinned :: proc(t: ^testing.T) {
 		`{"id":2,"cmd":"inject_input","args":{"ticks":5,"values":[{"player":"P2","action":"Steer::Move","value":"4294967296"}]}}`,
 		`{"id":3,"cmd":"set","args":{"thing":"Ball","instance":0,"field":"pos","value":"Vec2(x=0,y=0)"}}`,
 		`{"id":4,"cmd":"spawn","args":{"thing":"Paddle","fields":{"player":"PlayerId::P3","side":"Side::Left","x":"0","y":"0","speed":"0"}}}`,
-		`{"id":5,"cmd":"emit","args":{"signal":"Goal","value":"Goal(side=Side::Right)"}}`,
+		`{"id":5,"cmd":"despawn","args":{"thing":"Paddle","instance":2}}`,
+		`{"id":6,"cmd":"emit","args":{"signal":"Goal","value":"Goal(side=Side::Right)"}}`,
 	}
 	for request in battery {
 		response := session_request(&s, request)

@@ -41,10 +41,10 @@
       "$comment": "The closed command set, grouped by surface and tagged with its determinism class. observe = non-perturbing (reads canonical chain by default; accepts an optional `branch` arg). control = perturbing -> forks a non-warranted branch off a snapshot.",
       "time": { "class": "observe", "commands": ["load", "run", "pause", "step", "rewind", "reset", "status"] },
       "break": { "class": "observe", "commands": ["break", "watch", "clear"] },
-      "inspect": { "class": "observe", "commands": ["inspect", "signals", "pipeline", "trace", "diff", "replay_behavior", "draw_list", "screenshot"] },
+      "inspect": { "class": "observe", "commands": ["signals", "pipeline", "trace", "diff", "replay_behavior", "draw_list", "screenshot"] },
       "control": { "class": "control", "commands": ["inject_input", "set", "spawn", "despawn", "emit", "reload", "branch", "checkout"] },
       "self_heal": { "class": "observe", "commands": ["capture_test", "audit"] }
     },
-    "events": ["breakpoint_hit", "watch_fired", "paused", "reload_result", "diverged"]
+    "events": ["breakpoint_hit", "watch_fired", "diverged"]
   }
 }

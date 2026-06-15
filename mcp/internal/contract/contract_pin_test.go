@@ -104,22 +104,18 @@ func TestFunpackIntrospectMirrorMatches(t *testing.T) {
 }
 
 // knownPendingOdin lists contract command names the Odin runtime does not yet
-// route as a quoted dispatch literal. Each is a deliberate, recorded gap the
-// funpack-team task closes; the test asserts they are STILL absent so that when
-// Odin starts routing them, this list goes stale and forces its own pruning
-// (append-only-with-supersession discipline — the allowlist is self-expiring,
-// never a silent permanent exclusion).
+// route as a quoted dispatch literal. Each is a deliberate, recorded gap; the test
+// asserts each is STILL absent so that when Odin starts routing it, the entry goes
+// stale and forces its own pruning (append-only-with-supersession discipline — the
+// allowlist is self-expiring, never a silent permanent exclusion).
 //
-//   - "inspect": the contract lists it as the umbrella name of the inspect group;
-//     the runtime routes the group's MEMBERS (signals/pipeline/trace/...) but never
-//     a bare "inspect" cmd. Tracked: a follow-up decides whether the contract drops
-//     the umbrella name or the runtime adds an "inspect" alias.
-//   - "despawn": contract-declared control command not yet wired in
-//     control_request (spawn is, despawn is not). Tracked: funpack-team wiring task.
-var knownPendingOdin = map[Command]string{
-	CmdInspect: "inspect is the group umbrella name; runtime routes its members, not a bare inspect cmd",
-	CmdDespawn: "despawn is contract-declared but not yet routed in control_request",
-}
+// Currently EMPTY: ADR 2026-06-15-28-introspect-surface-gaps (open-spec-rulings)
+// resolved every standing command gap — `despawn` is now implemented in
+// control_request, so the contract keeps it and the runtime routes it, and `inspect`
+// (bare) was dropped from §28 and the contract as the redundant umbrella-as-member of
+// its own group. The machinery stays for the next time a contract command leads the
+// runtime.
+var knownPendingOdin = map[Command]string{}
 
 // odinCommandSources are the Odin files whose quoted string literals collectively
 // realize the §28 command surface (the dispatch switch plus the per-command
@@ -144,14 +140,11 @@ var odinEventSources = []string{
 // EMIT as a quoted push. Self-expiring, exactly like knownPendingOdin: the test
 // asserts each is still absent so wiring the emission forces pruning this list.
 //
-//   - "paused": §28 declares a paused push, but the present synchronous fold has
-//     no async channel; pause returns a synchronous {tick} result instead.
-//   - "reload_result": declared but not yet pushed (reload is a control command;
-//     its async result event is not wired).
-var knownPendingOdinEvents = map[EventName]string{
-	EventPaused:       "paused push declared but not emitted — synchronous fold has no async channel yet",
-	EventReloadResult: "reload_result push declared but not yet wired",
-}
+// Currently EMPTY: ADR 2026-06-15-28-introspect-surface-gaps dropped `paused` and
+// `reload_result` from the contract — the synchronous fold reports the pause/reload
+// outcome in the command RESPONSE, not as an async push — so the contract's event
+// set (breakpoint_hit, watch_fired, diverged) is exactly what the runtime emits.
+var knownPendingOdinEvents = map[EventName]string{}
 
 // quotedLiteral reports whether the quoted form "name" appears in any of the given
 // Odin source files under root.
