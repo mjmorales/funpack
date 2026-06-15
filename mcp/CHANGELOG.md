@@ -2,6 +2,14 @@
 
 All notable changes to funpack-mcp.
 
+## [0.3.0] - 2026-06-15
+
+### Features
+- feat: engine.input pad/mouse sources, diagnostics, and MCP resolver fixes (mario friction) (3c7bcaf)
+
+### Other
+- refactor: vendor funpack-spec into the monorepo (b392d66)
+
 ## [0.2.1] - 2026-06-15
 
 ### Fixes
