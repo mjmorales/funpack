@@ -8,10 +8,11 @@ name: Release
 # that never run on a [skip ci] commit). The [skip ci] marker also stops the
 # pushed release commit from re-triggering this workflow — no loop.
 #
-# `build` then compiles the two funpack bins at the freshly-cut tag and
+# `build` then compiles the SINGLE funpack binary at the freshly-cut tag and
 # `bump-tap` rewrites the Homebrew formula:
-#   funpack       — the compiler/toolchain CLI (headless, no runtime deps)
-#   funpack-live  — the runtime, FUNPACK_LIVE (links vendor:sdl2; needs SDL2 at runtime)
+#   funpack — the consolidated compiler + runtime in one executable, built with
+#             FUNPACK_LIVE (links vendor:sdl2; needs SDL2 at runtime, declared as a
+#             Homebrew dependency). The two-binary split (funpack + funpack-live) is gone.
 # Native matrix runners per OS/arch (no cross-compile — SDL2 links natively per arch).
 # Managed by OpenTofu (cloud-infra github/files/funpack-release.yml); edit the source there.
 
@@ -260,19 +261,16 @@ jobs:
           exec "$@"
           SH
           chmod +x "$RUNNER_TEMP/retry-odin.sh"
-      - name: Build funpack (compiler)
-        working-directory: funpack
-        run: '"$RUNNER_TEMP/retry-odin.sh" odin build . -out:funpack'
-      - name: Build funpack-live (runtime, FUNPACK_LIVE + SDL2)
-        working-directory: runtime
-        run: '"$RUNNER_TEMP/retry-odin.sh" odin build . -define:FUNPACK_LIVE=true -out:funpack-live'
+      - name: Build funpack (single binary, compiler + runtime, FUNPACK_LIVE + SDL2)
+        working-directory: cmd/funpack
+        run: '"$RUNNER_TEMP/retry-odin.sh" odin build . -define:FUNPACK_LIVE=true -out:funpack'
       - name: Package
         env:
           TAG: ${{ needs.release.outputs.tag }}
         run: |
           dist="funpack-${TAG}-${{ matrix.os }}-${{ matrix.arch }}"
           mkdir -p "$dist"
-          cp funpack/funpack runtime/funpack-live "$dist"/
+          cp cmd/funpack/funpack "$dist"/
           cp README.md LICENSE "$dist"/ 2>/dev/null || true
           tar -czf "${dist}.tar.gz" "$dist"
           echo "ASSET=${dist}.tar.gz" >> "$GITHUB_ENV"
