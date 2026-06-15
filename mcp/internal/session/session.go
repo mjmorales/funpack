@@ -30,6 +30,7 @@ import (
 	"net"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/mjmorales/funpack/mcp/internal/funpack"
 	"github.com/mjmorales/funpack/mcp/internal/introspect"
@@ -52,6 +53,11 @@ type Session struct {
 	conn       net.Conn
 	demux      *introspect.Demux
 	negotiated int
+	// artifact is the built-game path this attach loads, retained so the registry
+	// can report it in non-secret SessionInfo without re-deriving it. It is NOT a
+	// secret (the token is) and is safe to surface.
+	artifact  string
+	createdAt time.Time
 
 	// cancel stops the demux Run goroutine (the loop honors ctx cancel); Close
 	// invokes it before tearing down the connection and the process group.
@@ -189,6 +195,8 @@ func Open(ctx context.Context, bin funpack.Binary, artifact string, cfg Config) 
 		conn:       conn,
 		demux:      demux,
 		negotiated: negotiated,
+		artifact:   artifact,
+		createdAt:  time.Now(),
 		cancel:     cancel,
 		wait:       make(chan struct{}),
 	}
@@ -229,6 +237,14 @@ func (s *Session) ID() string { return s.id }
 // NegotiatedVersion returns the §28 protocol version the handshake negotiated
 // with the runtime.
 func (s *Session) NegotiatedVersion() int { return s.negotiated }
+
+// Artifact returns the built-game path this attach loads — non-secret metadata
+// the registry surfaces in SessionInfo.
+func (s *Session) Artifact() string { return s.artifact }
+
+// CreatedAt returns the wall-clock instant Open established the session, the
+// age key the reaper and session_list read.
+func (s *Session) CreatedAt() time.Time { return s.createdAt }
 
 // Demux returns the read-side multiplexer over the session stream — the
 // Await(ctx,id) / Events() surface the tool layer correlates responses and
