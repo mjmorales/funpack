@@ -86,6 +86,23 @@ func TestIntrospectProtocolVersionMatches(t *testing.T) {
 	}
 }
 
+// TestFunpackIntrospectMirrorMatches pins funpack's compile-time MIRROR of the
+// introspect protocol version (funpack/version.odin INTROSPECT_SCHEMA_VERSION,
+// what `funpack version` reports) to the contract's ProtocolVersion. The funpack
+// compiler package cannot import runtime (SDL link / -no-entry-point topology), so
+// it owns its own copy, exactly as it owns ARTIFACT_SCHEMA_VERSION. Pinning the
+// mirror to the contract — which TestIntrospectProtocolVersionMatches also pins the
+// runtime constant to — makes the two copies provably equal without a direct
+// cross-package reference, so `funpack version` can never mis-report §28 compat.
+func TestFunpackIntrospectMirrorMatches(t *testing.T) {
+	root := repoRootFromTest(t)
+	src := readOdin(t, root, filepath.Join("funpack", "version.odin"))
+	got := odinConstInt(t, src, "INTROSPECT_SCHEMA_VERSION")
+	if got != ProtocolVersion {
+		t.Errorf("funpack INTROSPECT_SCHEMA_VERSION = %d, contract ProtocolVersion = %d — funpack's version-report mirror drifted from runtime/the contract", got, ProtocolVersion)
+	}
+}
+
 // knownPendingOdin lists contract command names the Odin runtime does not yet
 // route as a quoted dispatch literal. Each is a deliberate, recorded gap the
 // funpack-team task closes; the test asserts they are STILL absent so that when

@@ -31,11 +31,16 @@ test_version_report_format :: proc(t: ^testing.T) {
 	want_head := fmt.tprintf("funpack %s\n", funpack_version())
 	testing.expect(t, strings.has_prefix(report, want_head), "report must lead with the funpack version line")
 
-	want_artifact := fmt.tprintf("  artifact-schema  v%d\n", ARTIFACT_SCHEMA_VERSION)
+	// Labels pad to the longest (`introspect-schema`, 17), so every `v` aligns at a
+	// fixed column — the literals here re-derive that exact padding from each label.
+	want_artifact := fmt.tprintf("  artifact-schema    v%d\n", ARTIFACT_SCHEMA_VERSION)
 	testing.expect(t, strings.contains(report, want_artifact), "report must carry the artifact schema version")
 
-	want_index := fmt.tprintf("  index-schema     v%d\n", INDEX_SCHEMA_VERSION)
+	want_index := fmt.tprintf("  index-schema       v%d\n", INDEX_SCHEMA_VERSION)
 	testing.expect(t, strings.contains(report, want_index), "report must carry the index schema version")
+
+	want_introspect := fmt.tprintf("  introspect-schema  v%d\n", INTROSPECT_SCHEMA_VERSION)
+	testing.expect(t, strings.contains(report, want_introspect), "report must carry the introspect schema version")
 }
 
 // test_version_report_is_deterministic: a pure function of compile-time
@@ -50,8 +55,8 @@ test_version_report_is_deterministic :: proc(t: ^testing.T) {
 // test_version_report_json_is_valid_contract_shape: `funpack version --json`
 // emits well-formed JSON whose KEYS are the generated contract field-name
 // constants (api_contract.gen.odin) and whose VALUES are the embedded version and
-// the two schema constants — so the machine surface the MCP resolver consumes can
-// never drift from contract/funpack-api.json on either side. Parsed through
+// the three schema constants — so the machine surface the MCP resolver consumes
+// can never drift from contract/funpack-api.json on either side. Parsed through
 // core:encoding/json (a real parse, not a substring sniff), then each field is
 // read by its generated key and asserted against its source-of-truth constant.
 @(test)
@@ -94,10 +99,14 @@ test_version_report_json_is_valid_contract_shape :: proc(t: ^testing.T) {
 	testing.expect(t, index_is_int, "index schema version must be a JSON integer")
 	testing.expect_value(t, int(index_value), int(INDEX_SCHEMA_VERSION))
 
-	// introspect is intentionally NOT emitted yet (the contract's "absent schema"
-	// case) — the held t-version-line story adds it.
-	_, has_introspect := schemas[SCHEMA_NAME_INTROSPECT]
-	testing.expect(t, !has_introspect, "introspect schema must be absent until t-version-line lands")
+	// introspect: the §28 protocol version, mirrored funpack-side (the contract pins
+	// this constant to runtime.INTROSPECT_PROTOCOL_VERSION); same key/value contract
+	// as artifact and index.
+	introspect_field, has_introspect := schemas[SCHEMA_NAME_INTROSPECT]
+	testing.expect(t, has_introspect, "schemas must carry the introspect version")
+	introspect_value, introspect_is_int := introspect_field.(json.Integer)
+	testing.expect(t, introspect_is_int, "introspect schema version must be a JSON integer")
+	testing.expect_value(t, int(introspect_value), int(INTROSPECT_SCHEMA_VERSION))
 }
 
 // test_version_report_json_is_deterministic: the machine surface is a pure

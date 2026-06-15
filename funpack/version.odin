@@ -18,6 +18,18 @@ import "core:strings"
 // the source-of-truth mirror must exist in the tree, by design.
 FUNPACK_VERSION_FILE :: #load("../VERSION", string)
 
+// INTROSPECT_SCHEMA_VERSION is funpack's compile-time MIRROR of the §28 §2
+// introspect-protocol version. The funpack compiler package may NOT import
+// `runtime` (runtime links SDL; importing it breaks the single-binary topology
+// and the pure `odin check -no-entry-point` story), so it cannot read
+// runtime.INTROSPECT_PROTOCOL_VERSION directly — each package owns its own
+// compile-time copy, exactly as ARTIFACT_SCHEMA_VERSION is dual-declared in
+// funpack/artifact_format.odin and runtime/artifact_lex.odin. This value MUST
+// equal runtime.INTROSPECT_PROTOCOL_VERSION and contract/funpack-api.json's
+// `introspect.protocol_version`; a read-only contract-pin test asserts the
+// equality, so a silent drift fails CI rather than mis-reporting compatibility.
+INTROSPECT_SCHEMA_VERSION :: 1
+
 // funpack_version returns the trimmed toolchain version embedded from VERSION.
 // Pure — a function of the compile-time embed alone (the trim is a substring
 // view, no allocation).
@@ -26,43 +38,44 @@ funpack_version :: proc() -> string {
 }
 
 // version_report renders the `funpack version` report: the toolchain version
-// line plus the bundled format-compatibility surface (the artifact and Index
-// Contract schema versions a build of this tree emits and reads, sourced from
-// their own constants). A function of the embedded VERSION plus
-// ARTIFACT_SCHEMA_VERSION and INDEX_SCHEMA_VERSION — no host state — so it is
-// byte-stable for a given source tree. The label columns are padded in the
-// literal (the labels are compile-time constants), so the schema versions align
-// without a format-flag dependency. Allocated in `allocator`.
+// line plus the bundled format-compatibility surface (the artifact, Index
+// Contract, and §28 introspect schema versions a build of this tree emits and
+// reads, sourced from their own constants). A function of the embedded VERSION
+// plus ARTIFACT_SCHEMA_VERSION, INDEX_SCHEMA_VERSION, and
+// INTROSPECT_SCHEMA_VERSION — no host state — so it is byte-stable for a given
+// source tree. The label columns are padded in the literal (the labels are
+// compile-time constants) to align every `v` on the longest label
+// (`introspect-schema`), so the schema versions align without a format-flag
+// dependency. Allocated in `allocator`.
 version_report :: proc(allocator := context.allocator) -> string {
 	return fmt.aprintf(
-		"funpack %s\n  artifact-schema  v%d\n  index-schema     v%d\n",
+		"funpack %s\n  artifact-schema    v%d\n  index-schema       v%d\n  introspect-schema  v%d\n",
 		funpack_version(),
 		ARTIFACT_SCHEMA_VERSION,
 		INDEX_SCHEMA_VERSION,
+		INTROSPECT_SCHEMA_VERSION,
 		allocator = allocator,
 	)
 }
 
 // version_report_json renders the machine-readable `funpack version --json`
 // surface: the contract shape
-// `{"version":"<funpack_version>","schemas":{"artifact":<v>,"index":<v>}}`.
+// `{"version":"<funpack_version>","schemas":{"artifact":<v>,"index":<v>,"introspect":<v>}}`.
 // The MCP resolver consumes this JSON instead of screen-scraping version_report's
 // human text (ADR 2026-06-15-funpack-api-contract-dual-codegen). The JSON KEYS are
 // the generated field-name constants from api_contract.gen.odin (VERSION_FIELD_*,
 // SCHEMA_NAME_*) — never hand-hardcoded here — so the shape can never drift from
 // contract/funpack-api.json. The VALUES stay the existing Odin constants
-// (ARTIFACT_SCHEMA_VERSION, INDEX_SCHEMA_VERSION) and the embedded VERSION, so this
-// re-uses one source of truth per concern. introspect is intentionally absent: a
-// build that does not yet expose it omits the key (the contract's "absent schema"
-// case), and the held t-version-line story adds it. The version value is a
-// release-managed semver ([0-9.]+ plus pre-release tags) — no characters that
-// require JSON escaping — so a direct interpolation stays valid JSON. Pure (a
+// (ARTIFACT_SCHEMA_VERSION, INDEX_SCHEMA_VERSION, INTROSPECT_SCHEMA_VERSION) and the
+// embedded VERSION, so this re-uses one source of truth per concern. The version
+// value is a release-managed semver ([0-9.]+ plus pre-release tags) — no characters
+// that require JSON escaping — so a direct interpolation stays valid JSON. Pure (a
 // function of compile-time constants alone) and byte-stable like version_report.
 // No trailing newline: a machine surface emits exactly the JSON value. Allocated
 // in `allocator`.
 version_report_json :: proc(allocator := context.allocator) -> string {
 	return fmt.aprintf(
-		`{{"%s":"%s","%s":{{"%s":%d,"%s":%d}}}}`,
+		`{{"%s":"%s","%s":{{"%s":%d,"%s":%d,"%s":%d}}}}`,
 		VERSION_FIELD_VERSION,
 		funpack_version(),
 		VERSION_FIELD_SCHEMAS,
@@ -70,6 +83,8 @@ version_report_json :: proc(allocator := context.allocator) -> string {
 		ARTIFACT_SCHEMA_VERSION,
 		SCHEMA_NAME_INDEX,
 		INDEX_SCHEMA_VERSION,
+		SCHEMA_NAME_INTROSPECT,
+		INTROSPECT_SCHEMA_VERSION,
 		allocator = allocator,
 	)
 }
