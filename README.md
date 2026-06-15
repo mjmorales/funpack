@@ -77,3 +77,19 @@ foundations first (`01-axioms`, `02-language-core`), then the runtime model
 (`29-architecture-governance`).
 
 For local development the spec is expected as a sibling checkout at `../funpack-spec`.
+
+## Claude Code plugin
+
+This repo is also the **funpack Claude Code marketplace** — the `.claude-plugin/marketplace.json`
+at the root publishes the `funpack` plugin under [`plugins/funpack/`](plugins/funpack/README.md):
+skills for the language, the `engine.*` stdlib, the things/behaviors/pipelines model, the bake
+pipelines, and the determinism contract; `/funpack:*` commands to scaffold, build, test, run, and
+query a game; and the `funpack-author` / `funpack-reviewer` agents.
+
+```
+/plugin marketplace add mjmorales/funpack
+/plugin install funpack@funpack
+```
+
+The plugin is versioned independently of the toolchain binary (its own `plugin-v*` release line);
+see [`plugins/funpack/README.md`](plugins/funpack/README.md) for the full surface.

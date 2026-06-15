@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "funpack",
+  "displayName": "funpack",
+  "version": "0.1.1",
+  "description": "Write deterministic, agent-first games in funpack. Skills for the language, the engine.* stdlib, the things/behaviors/pipelines model, project layout, the bake pipelines, and the fixed-point determinism contract; commands to scaffold, build, test, run, and query a game; and funpack-author / funpack-reviewer agents.",
+  "author": {
+    "name": "Manuel Morales"
+  },
+  "homepage": "https://github.com/mjmorales/funpack-spec",
+  "keywords": ["funpack", "game-development", "gamedev", "deterministic", "fixed-point", "agent-first", "language"]
+}
