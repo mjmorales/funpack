@@ -1,0 +1,28 @@
+{
+  "spec_ref": "beb6f83",
+  "funpack_version": "funpack 0.6.1",
+  "sources": [
+    {
+      "root": "funpack-spec/spec",
+      "kind": "spec",
+      "ref": "beb6f83",
+      "sections": 233,
+      "content_hash": "581f3f0ce067f34a76ba58bb748b8ea23089d9fab39db99172ad8da84b3bd269"
+    },
+    {
+      "root": "funpack-spec/stdlib/engine",
+      "kind": "engine",
+      "ref": "beb6f83",
+      "sections": 278,
+      "content_hash": "10d16509dd7be1f6f295f4de5b6d99f76ff160ae132d29947dfcf84719c8c5e0"
+    },
+    {
+      "root": "plugins/funpack",
+      "kind": "plugin",
+      "ref": "funpack 0.6.1",
+      "sections": 138,
+      "content_hash": "5ac3d24816fea7408fd4c4f44d15b9bea4f0f5a5ff0f8151799423e08b403fe5"
+    }
+  ],
+  "total_sections": 649
+}

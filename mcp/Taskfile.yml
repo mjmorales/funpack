@@ -31,6 +31,15 @@ tasks:
     cmds:
       - go vet {{.PKG}}
 
+  docs-regen:
+    desc: Regenerate the committed docs corpus (internal/docs/corpus + manifest.json) from funpack-spec
+    cmds:
+      - go run ./internal/docs/gen
+    env:
+      # Sibling funpack-spec repo. Passed through from the caller's environment;
+      # when unset (empty), the generator defaults to ../funpack-spec.
+      FUNPACK_SPEC_DIR: '{{.FUNPACK_SPEC_DIR}}'
+
   tidy:
     desc: Tidy and verify module dependencies
     cmds:
