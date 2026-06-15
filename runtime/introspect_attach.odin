@@ -108,6 +108,41 @@ attach_auth_from_env :: proc(allocator := context.allocator) -> (auth: Attach_Au
 	return attach_auth_from_token(token, allocator)
 }
 
+// attach_auth_from_file builds the default auth seam from a TOKEN FILE — the secret
+// read out-of-band from a 0600 file the supervisor controls, NOT through the
+// inherited environment (a coarse, leak-prone channel every child process and a
+// `/proc/<pid>/environ` reader sees). The whole file is the token, trimmed of
+// surrounding whitespace (a trailing newline from `echo "$tok" > file` is the common
+// case). ok=false when the file is unreadable OR the trimmed contents are empty — the
+// SAME auth-required floor attach_auth_from_env enforces, so the secret's CHANNEL
+// changed but the floor did not.
+attach_auth_from_file :: proc(path: string, allocator := context.allocator) -> (auth: Attach_Auth, ok: bool) {
+	raw, read_err := os.read_entire_file_from_path(path, allocator)
+	if read_err != nil {
+		return {}, false
+	}
+	token := strings.trim_space(string(raw))
+	if token == "" {
+		return {}, false
+	}
+	return attach_auth_from_token(token, allocator)
+}
+
+// attach_auth_resolve picks the token SOURCE for the server: a --token-file PATH
+// (when the operator passed one) takes PRECEDENCE over the ATTACH_AUTH_ENV fallback.
+// PRECEDENCE is total, not "merge" — a passed --token-file is the sole source, so a
+// file that exists-but-is-empty REFUSES (it does not silently fall back to the env);
+// only an UNSET --token-file consults the env. Either way the auth-required floor is
+// the same (empty-from-either ⇒ ok=false ⇒ the caller refuses to listen). Pure
+// dispatch over (has_file, path) — the source decision is headless-testable apart
+// from the FUNPACK_LIVE listen.
+attach_auth_resolve :: proc(token_file: string, has_token_file: bool, allocator := context.allocator) -> (auth: Attach_Auth, ok: bool) {
+	if has_token_file {
+		return attach_auth_from_file(token_file, allocator)
+	}
+	return attach_auth_from_env(allocator)
+}
+
 // attach_auth_decide runs the seam's check on a presented credential. Pure over the
 // auth value — the accept/reject decision the handshake gate consumes, isolated from
 // any transport so it is headless-testable on its own.
@@ -322,26 +357,51 @@ transport_send_line :: proc(transport: Line_Transport, line: string, allocator :
 // recorded snapshots. Fixed, not a flag — the operator drives depth over the wire.
 ATTACH_FRESH_TICKS :: 64
 
+// ATTACH_EPHEMERAL_PORT is the sentinel `--port 0` request: bind an EPHEMERAL
+// loopback port the kernel assigns, rather than a fixed one. It exists to close the
+// host-side TOCTOU the MCP supervisor otherwise hits — instead of the supervisor
+// probing for a "probably free" port and racing another process to bind it, the
+// server lets the kernel pick a guaranteed-free port at bind time and reports it back
+// through `--port-file`. 0 is the POSIX wildcard the kernel reads as "any free port".
+ATTACH_EPHEMERAL_PORT :: 0
+
 // Attach_Args is the parsed `attach` verb surface: the artifact to open, an OPTIONAL
-// recorded replay log to source the session's snapshots+seed from, and the loopback
-// port. `has_replay` distinguishes "attach over the recorded run" (real inputs, the
-// log's pinned seed — §28 §3 "sessions are themselves replayable") from a fresh
-// attach over an empty-input window (the ATTACH_FRESH_TICKS default).
+// recorded replay log to source the session's snapshots+seed from, the loopback port,
+// and the two out-of-band FILE handshake paths the MCP supervisor controls.
+// `has_replay` distinguishes "attach over the recorded run" (real inputs, the log's
+// pinned seed — §28 §3 "sessions are themselves replayable") from a fresh attach over
+// an empty-input window (the ATTACH_FRESH_TICKS default).
+//
+// THE FILE HANDSHAKE (the §28 wire stays on the socket; these two files are the
+// out-of-band control channel, NO new structured wire schema):
+//   - port == ATTACH_EPHEMERAL_PORT (0) requests a kernel-assigned ephemeral port;
+//     `port_file` (when set) is where the server writes the ACTUAL bound port so the
+//     supervisor can dial it, closing the host-side ephemeral-port TOCTOU.
+//   - `token_file` (when set) is the out-of-band 0600 file the per-session auth token
+//     is read from, taking precedence over ATTACH_AUTH_ENV — moving the secret off
+//     the inherited environment onto a file the supervisor owns.
 Attach_Args :: struct {
-	artifact:    string,
-	replay_log:  string,
-	has_replay:  bool,
-	port:        int,
+	artifact:        string,
+	replay_log:      string,
+	has_replay:      bool,
+	port:            int,
+	port_file:       string,
+	has_port_file:   bool,
+	token_file:      string,
+	has_token_file:  bool,
 }
 
 // parse_attach_args parses the `attach` verb tail into Attach_Args. The grammar is
 //
-//   attach <artifact> [recorded.replay] [--port N]
+//   attach <artifact> [recorded.replay] [--port N] [--port-file P] [--token-file T]
 //
 // `args` is the WHOLE process argv (args[0] = program, args[1] = "attach"); the
 // parse walks args[2:]. The first non-flag positional is the artifact (required); a
 // second non-flag positional is the optional replay log. `--port N` (or `--port=N`)
-// overrides ATTACH_DEFAULT_PORT; a missing/malformed/out-of-range port is ok=false.
+// overrides ATTACH_DEFAULT_PORT; `--port 0` requests an EPHEMERAL kernel-assigned
+// port (the valid range here is [0, 65535], 0 being the wildcard — a NEGATIVE or
+// over-range port is ok=false). `--port-file P` / `--token-file T` (and their `=`
+// forms) carry the out-of-band FILE handshake paths; each requires a NON-EMPTY value.
 // ok=false on no artifact, an unknown flag, or a third positional — the caller then
 // prints usage and exits non-zero rather than guessing. Pure (no IO), so the verb
 // surface is headless-tested even though the server it feeds is FUNPACK_LIVE-gated.
@@ -357,17 +417,47 @@ parse_attach_args :: proc(args: []string) -> (parsed: Attach_Args, ok: bool) {
 				return {}, false
 			}
 			port, port_ok := strconv.parse_int(args[i + 1])
-			if !port_ok || port <= 0 || port > 65535 {
+			if !port_ok || port < 0 || port > 65535 {
 				return {}, false
 			}
 			result.port = port
 			i += 2
 		case strings.has_prefix(arg, "--port="):
 			port, port_ok := strconv.parse_int(arg[len("--port="):])
-			if !port_ok || port <= 0 || port > 65535 {
+			if !port_ok || port < 0 || port > 65535 {
 				return {}, false
 			}
 			result.port = port
+			i += 1
+		case arg == "--port-file":
+			if i + 1 >= len(args) || args[i + 1] == "" {
+				return {}, false
+			}
+			result.port_file = args[i + 1]
+			result.has_port_file = true
+			i += 2
+		case strings.has_prefix(arg, "--port-file="):
+			value := arg[len("--port-file="):]
+			if value == "" {
+				return {}, false
+			}
+			result.port_file = value
+			result.has_port_file = true
+			i += 1
+		case arg == "--token-file":
+			if i + 1 >= len(args) || args[i + 1] == "" {
+				return {}, false
+			}
+			result.token_file = args[i + 1]
+			result.has_token_file = true
+			i += 2
+		case strings.has_prefix(arg, "--token-file="):
+			value := arg[len("--token-file="):]
+			if value == "" {
+				return {}, false
+			}
+			result.token_file = value
+			result.has_token_file = true
 			i += 1
 		case strings.has_prefix(arg, "--"):
 			return {}, false // an unknown flag is a usage error, never silently ignored
@@ -390,31 +480,48 @@ parse_attach_args :: proc(args: []string) -> (parsed: Attach_Args, ok: bool) {
 	return result, true
 }
 
+// attach_port_file_contents renders the bare port value the server writes to the
+// `--port-file` path: the bound port as a DECIMAL ASCII integer with a single
+// trailing newline (e.g. "54231\n"). It is the EXACT byte form the MCP supervisor's
+// reader parses — kept pure here so the format is pinned by a headless test and the
+// supervisor spec matches it byte-for-byte. The newline lets a line-oriented reader
+// (or a `read`/`cat`) terminate cleanly; a parser trimming whitespace reads the same
+// integer with or without it.
+attach_port_file_contents :: proc(port: int, allocator := context.allocator) -> string {
+	return fmt.aprintf("%d\n", port, allocator = allocator)
+}
+
 // --- The core:net socket loop (when-gated: the ONLY blocking-IO code here) ---
 
 when #config(FUNPACK_LIVE, false) {
 
-	// run_attach_server is the §28.2 remote-attach listener: it builds the auth seam
-	// from deployment config (FUNPACK_ATTACH_TOKEN via attach_auth_from_env), and —
-	// only if a secret is present (the auth-required floor: NO secret ⇒ NO server) —
-	// binds the LOOPBACK endpoint (attach_listen_endpoint), then accepts connections
-	// serially, serving each through serve_attach_connection over a core:net-backed
-	// Line_Transport. It is the thin adapter: the auth gate, the framing, and the
-	// request loop all live in the pure half above; this loop only wires core:net's
-	// recv_tcp/send_tcp/close onto the Line_Transport seam. Serial accept is the right
-	// shape for a single-operator dev debug channel — one agent attaches at a time,
-	// and the session fold is single-threaded (a control branch is per-session state).
-	// Returns a process exit code (non-zero on a missing secret or a listen failure).
-	run_attach_server :: proc(s: ^Debug_Session, port: int = ATTACH_DEFAULT_PORT) -> int {
-		auth, auth_ok := attach_auth_from_env()
-		if !auth_ok {
-			fmt.eprintfln(
-				"error: remote attach requires %s (the auth-required floor) — set a shared token to enable it",
-				ATTACH_AUTH_ENV,
-			)
-			return 1
-		}
-
+	// run_attach_server is the §28.2 remote-attach listener: handed a pre-resolved auth
+	// seam (the caller resolved the token SOURCE — file over env — via
+	// attach_auth_resolve, the auth-required floor already enforced there), it binds the
+	// LOOPBACK endpoint (attach_listen_endpoint), then accepts connections serially,
+	// serving each through serve_attach_connection over a core:net-backed Line_Transport.
+	// It is the thin adapter: the auth gate, the framing, and the request loop all live
+	// in the pure half above; this loop only wires core:net's recv_tcp/send_tcp/close
+	// onto the Line_Transport seam. Serial accept is the right shape for a single-operator
+	// dev debug channel — one agent attaches at a time, and the session fold is
+	// single-threaded (a control branch is per-session state).
+	//
+	// THE EPHEMERAL-PORT + PORT-FILE HANDSHAKE (closing the supervisor's host-side
+	// TOCTOU): when `port` is ATTACH_EPHEMERAL_PORT the kernel assigns a guaranteed-free
+	// port at bind time, and net.bound_endpoint reads the ACTUAL assigned port back off
+	// the listening socket — no host-side probe-then-race. When `port_file` is set the
+	// resolved port is written there (a bare decimal + newline) BEFORE the accept loop,
+	// so a supervisor waiting on the file sees the port the instant the socket is
+	// listenable and never races the bind. A fixed `port` still writes the file
+	// (harmless — the supervisor reads one code path). Returns a process exit code
+	// (non-zero on a listen, port-readback, or port-file-write failure).
+	run_attach_server :: proc(
+		s: ^Debug_Session,
+		auth: Attach_Auth,
+		port: int = ATTACH_DEFAULT_PORT,
+		port_file: string = "",
+		has_port_file: bool = false,
+	) -> int {
 		endpoint := attach_listen_endpoint(port)
 		listener, listen_err := net.listen_tcp(endpoint)
 		if listen_err != nil {
@@ -422,7 +529,30 @@ when #config(FUNPACK_LIVE, false) {
 			return 1
 		}
 		defer net.close(listener)
-		fmt.printfln("remote attach listening on 127.0.0.1:%d (auth required)", port)
+
+		// Read the ACTUAL bound port back: for an ephemeral (port 0) bind this is the
+		// kernel-assigned port; for a fixed bind it is the same port (a no-op readback
+		// that keeps one code path). bound_endpoint is core:net's getsockname wrapper —
+		// Odin-first, no custom syscall.
+		bound, bound_err := net.bound_endpoint(listener)
+		if bound_err != nil {
+			fmt.eprintfln("error: remote attach could not read the bound port (%v)", bound_err)
+			return 1
+		}
+		actual_port := bound.port
+
+		// Publish the bound port to the supervisor BEFORE accepting, so a waiter dials
+		// the right port the moment the listener is up. The write is the whole file in
+		// one call (write_entire_file truncates) — a reader either sees the absent file
+		// or the complete contents, never a torn partial.
+		if has_port_file {
+			contents := attach_port_file_contents(actual_port, context.temp_allocator)
+			if write_err := os.write_entire_file_from_string(port_file, contents); write_err != nil {
+				fmt.eprintfln("error: remote attach could not write port file %s (%v)", port_file, write_err)
+				return 1
+			}
+		}
+		fmt.printfln("remote attach listening on 127.0.0.1:%d (auth required)", actual_port)
 
 		for {
 			client, _, accept_err := net.accept_tcp(listener)
@@ -439,11 +569,14 @@ when #config(FUNPACK_LIVE, false) {
 
 	// run_attach_session is the §28.2 operator-facing `attach` CLI entry — the thin
 	// FUNPACK_LIVE arm session_driver.odin foretold ("a thin FUNPACK_LIVE CLI arm can
-	// call ... the run_attach_server when-gated thin-adapter shape"). It (1) loads the
-	// artifact, (2) opens a Debug_Session over a recording, and (3) serves the §28
-	// introspection contract on the auth-gated loopback port via run_attach_server
-	// (FUNPACK_ATTACH_TOKEN required — the auth floor run_attach_server enforces, never
-	// re-checked here). It is when-gated because run_attach_server's core:net loop is.
+	// call ... the run_attach_server when-gated thin-adapter shape"). It (1) resolves the
+	// auth token SOURCE (a --token-file over the FUNPACK_ATTACH_TOKEN env, via
+	// attach_auth_resolve) and refuses up front if no secret is present (the
+	// auth-required floor — NO secret ⇒ NO server, enforced BEFORE loading the
+	// artifact), (2) loads the artifact, (3) opens a Debug_Session over a recording, and
+	// (4) serves the §28 introspection contract on the auth-gated loopback port via
+	// run_attach_server, forwarding the ephemeral-port + --port-file handshake. It is
+	// when-gated because run_attach_server's core:net loop is.
 	//
 	// THE RECORDING the session folds (the §28 §3 time-travel substrate) is sourced two
 	// ways, mirroring replay.odin's identity-gated path:
@@ -466,8 +599,31 @@ when #config(FUNPACK_LIVE, false) {
 	run_attach_session :: proc(args: []string) -> int {
 		parsed, args_ok := parse_attach_args(args)
 		if !args_ok {
-			fmt.eprintln("usage: funpack attach <artifact-path> [recorded.replay] [--port N]")
+			fmt.eprintln(
+				"usage: funpack attach <artifact-path> [recorded.replay] [--port N] [--port-file P] [--token-file T]",
+			)
 			return 2
+		}
+
+		// Resolve the auth token SOURCE and enforce the auth-required floor BEFORE
+		// touching the artifact: a --token-file takes precedence over FUNPACK_ATTACH_TOKEN,
+		// and an empty/absent secret from either source refuses to listen (NO secret ⇒ NO
+		// server). Fail closed here so the operator sees the auth error without first
+		// paying the artifact load.
+		auth, auth_ok := attach_auth_resolve(parsed.token_file, parsed.has_token_file)
+		if !auth_ok {
+			if parsed.has_token_file {
+				fmt.eprintfln(
+					"error: remote attach requires a non-empty token in %s (the auth-required floor)",
+					parsed.token_file,
+				)
+			} else {
+				fmt.eprintfln(
+					"error: remote attach requires %s (the auth-required floor) — set a shared token or pass --token-file",
+					ATTACH_AUTH_ENV,
+				)
+			}
+			return 1
 		}
 
 		artifact_bytes, read_err := os.read_entire_file_from_path(parsed.artifact, context.allocator)
@@ -528,7 +684,7 @@ when #config(FUNPACK_LIVE, false) {
 		}
 
 		session := open_debug_session(program, snapshots, run_seed, context.allocator)
-		return run_attach_server(&session, parsed.port)
+		return run_attach_server(&session, auth, parsed.port, parsed.port_file, parsed.has_port_file)
 	}
 
 	// attach_socket_transport builds the Line_Transport over a connected core:net
