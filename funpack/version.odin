@@ -43,11 +43,47 @@ version_report :: proc(allocator := context.allocator) -> string {
 	)
 }
 
+// version_report_json renders the machine-readable `funpack version --json`
+// surface: the contract shape
+// `{"version":"<funpack_version>","schemas":{"artifact":<v>,"index":<v>}}`.
+// The MCP resolver consumes this JSON instead of screen-scraping version_report's
+// human text (ADR 2026-06-15-funpack-api-contract-dual-codegen). The JSON KEYS are
+// the generated field-name constants from api_contract.gen.odin (VERSION_FIELD_*,
+// SCHEMA_NAME_*) — never hand-hardcoded here — so the shape can never drift from
+// contract/funpack-api.json. The VALUES stay the existing Odin constants
+// (ARTIFACT_SCHEMA_VERSION, INDEX_SCHEMA_VERSION) and the embedded VERSION, so this
+// re-uses one source of truth per concern. introspect is intentionally absent: a
+// build that does not yet expose it omits the key (the contract's "absent schema"
+// case), and the held t-version-line story adds it. The version value is a
+// release-managed semver ([0-9.]+ plus pre-release tags) — no characters that
+// require JSON escaping — so a direct interpolation stays valid JSON. Pure (a
+// function of compile-time constants alone) and byte-stable like version_report.
+// No trailing newline: a machine surface emits exactly the JSON value. Allocated
+// in `allocator`.
+version_report_json :: proc(allocator := context.allocator) -> string {
+	return fmt.aprintf(
+		`{{"%s":"%s","%s":{{"%s":%d,"%s":%d}}}}`,
+		VERSION_FIELD_VERSION,
+		funpack_version(),
+		VERSION_FIELD_SCHEMAS,
+		SCHEMA_NAME_ARTIFACT,
+		ARTIFACT_SCHEMA_VERSION,
+		SCHEMA_NAME_INDEX,
+		INDEX_SCHEMA_VERSION,
+		allocator = allocator,
+	)
+}
+
 // run_version_verb prints the version report to stdout and exits 0. An
 // informational verb with a single success tier — no refusal, no counted
 // failure — so its exit contract is exactly {0}, never the build verbs' 2 or
-// the test verb's 1.
-run_version_verb :: proc() -> int {
-	fmt.print(version_report(context.temp_allocator))
+// the test verb's 1. The json face prints the machine-readable contract shape
+// (no trailing newline); the human face keeps the padded multi-line report.
+run_version_verb :: proc(json := false) -> int {
+	if json {
+		fmt.println(version_report_json(context.temp_allocator))
+	} else {
+		fmt.print(version_report(context.temp_allocator))
+	}
 	return 0
 }
