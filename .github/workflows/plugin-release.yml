@@ -1,0 +1,227 @@
+name: Plugin Release
+
+# Conventional-commit auto-release for the funpack CLAUDE CODE PLUGIN, versioned
+# INDEPENDENTLY of the toolchain binary. The binary release line is `v*`
+# (.github/workflows/release.yml); this one is `plugin-v*`. The two never
+# collide: each workflow scopes its trigger, its commit analysis, and its
+# `git describe` to a disjoint set of paths/tags, so a source-only push cuts a
+# binary release and a plugin-only push cuts a plugin release.
+#
+# Authoritative current version is plugins/funpack/.claude-plugin/plugin.json
+# (tags only pick the changelog range — an untagged hand-rolled release commit
+# would otherwise revert the version via a tag-based lookup). The job derives
+# the next semver from plugin-scoped conventional commits, stamps the version
+# into plugin.json + the root .claude-plugin/marketplace.json, prepends
+# plugins/funpack/CHANGELOG.md, then commits + tags (`plugin-vX.Y.Z`) + pushes
+# via the release App (the App is a bypass actor on the protected `main`
+# ruleset, so the `chore(plugin-release) [skip ci]` commit pushes past the
+# required odin/go checks that never run on a [skip ci] commit). The [skip ci]
+# marker also stops the pushed commit from re-triggering this workflow.
+#
+# This is a docs-only plugin (markdown + JSON), so there is NO binary build and
+# NO Homebrew bump — only the version stamp, changelog, tag, and GitHub release.
+# Managed by OpenTofu (cloud-infra github/files/funpack-plugin-release.yml);
+# edit the source there.
+
+on:
+  push:
+    branches: [main]
+    # Only plugin artifact changes cut a plugin release. Mirrors the
+    # paths-ignore in release.yml (the binary line ignores exactly these).
+    paths:
+      - 'plugins/**'
+      - '.claude-plugin/**'
+
+permissions:
+  contents: write # cut the tag + create the release
+
+concurrency:
+  # Shared with the binary release so the two never push to main simultaneously.
+  # Each still fetch+rebases before pushing (their file sets are disjoint, so
+  # the rebase is always clean) to absorb a commit the other landed first.
+  group: funpack-release
+  cancel-in-progress: false
+
+env:
+  # arduino/setup-task parity with the other funpack workflows (unused here but
+  # kept for a consistent runner env across the repo's CI).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release:
+    name: cut plugin version + tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history for tag detection + changelog range
+          # Don't persist the default GITHUB_TOKEN as a git auth header — the
+          # release push must authenticate as the release App (the ruleset
+          # bypass actor) via the App-token URL set in the push step.
+          persist-credentials: false
+
+      - name: Determine version bump
+        id: bump
+        run: |
+          # plugin.json is the authoritative current version.
+          CURRENT=$(grep '"version"' plugins/funpack/.claude-plugin/plugin.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          # Latest PLUGIN tag (plugin-v*) bounds the changelog range; the binary
+          # v* tags are invisible to this match, keeping the lines independent.
+          LATEST_TAG=$(git describe --tags --abbrev=0 --match 'plugin-v*' 2>/dev/null || echo "")
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          # Analyze only commits that TOUCHED the plugin artifact paths, so a
+          # mixed push (source + plugin) bumps each line by its own changes.
+          PATHS=(plugins .claude-plugin)
+          if [ -z "$LATEST_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- "${PATHS[@]}")
+          else
+            COMMITS=$(git log --pretty=format:"%s%n%b" "${LATEST_TAG}..HEAD" -- "${PATHS[@]}")
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Bump type from conventional commits: `!`/BREAKING -> major,
+          # feat -> minor, fix/docs/refactor/perf/style/build -> patch.
+          # chore/ci/test alone -> no release.
+          BUMP="none"
+          if echo "$COMMITS" | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+            BUMP="minor"
+          elif echo "$COMMITS" | grep -qE "^(fix|docs|refactor|perf|style|build)(\(.+\))?:"; then
+            BUMP="patch"
+          fi
+
+          if [ "$BUMP" = "none" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Bump: $BUMP ($CURRENT -> $NEW_VERSION)"
+
+      - name: Generate changelog
+        id: changelog
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          LATEST_TAG="${{ steps.bump.outputs.latest_tag }}"
+          if [ -z "$LATEST_TAG" ]; then RANGE="HEAD"; else RANGE="${LATEST_TAG}..HEAD"; fi
+          PATHS=(plugins .claude-plugin)
+
+          {
+            echo "changelog<<CHANGELOG_EOF"
+
+            BREAKING=$(git log --pretty=format:"%s" "$RANGE" -- "${PATHS[@]}" | grep -iE "^[a-z]+(\(.+\))?!:" || true)
+            BREAKING_BODY=$(git log --pretty=format:"%b" "$RANGE" -- "${PATHS[@]}" | grep -A1 "BREAKING CHANGE:" | grep -v "^--$" || true)
+            if [ -n "$BREAKING" ] || [ -n "$BREAKING_BODY" ]; then
+              echo "### Breaking Changes"
+              [ -n "$BREAKING" ] && echo "$BREAKING" | sed 's/^/- /'
+              [ -n "$BREAKING_BODY" ] && echo "$BREAKING_BODY" | sed 's/^/- /'
+              echo ""
+            fi
+
+            FEATURES=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- "${PATHS[@]}" | grep -E "^- feat" || true)
+            if [ -n "$FEATURES" ]; then echo "### Features"; echo "$FEATURES"; echo ""; fi
+
+            FIXES=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- "${PATHS[@]}" | grep -E "^- fix" || true)
+            if [ -n "$FIXES" ]; then echo "### Fixes"; echo "$FIXES"; echo ""; fi
+
+            OTHER=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- "${PATHS[@]}" | grep -E "^- (docs|refactor|perf|style|build)" || true)
+            if [ -n "$OTHER" ]; then echo "### Other"; echo "$OTHER"; echo ""; fi
+
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Stamp plugin version
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        run: |
+          # plugin.json has one "version"; marketplace.json has two (top-level +
+          # the plugins[] entry). A global replace of the version field stamps
+          # all of them to the cut version.
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/g" plugins/funpack/.claude-plugin/plugin.json
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/g" .claude-plugin/marketplace.json
+          git --no-pager diff -- plugins/funpack/.claude-plugin/plugin.json .claude-plugin/marketplace.json
+
+      - name: Update plugin CHANGELOG.md
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          # Pass via env (not ${{ }} shell interpolation) so backticks, $(),
+          # and other shell-active characters in commit subjects stay literal.
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+        run: |
+          CL=plugins/funpack/CHANGELOG.md
+          [ -f "$CL" ] || printf '# Changelog\n\nAll notable changes to the funpack Claude Code plugin.\n\n' > "$CL"
+          DATE=$(date -u +%Y-%m-%d)
+          ENTRY=$(printf "## [%s] - %s\n\n%s" "$NEW_VERSION" "$DATE" "$CHANGELOG")
+          INSERT_LINE=$(grep -n "^## \[" "$CL" | head -1 | cut -d: -f1)
+          if [ -n "$INSERT_LINE" ]; then
+            head -n $((INSERT_LINE - 1)) "$CL" > "$CL.tmp"
+            printf '%s\n\n' "$ENTRY" >> "$CL.tmp"
+            tail -n +"${INSERT_LINE}" "$CL" >> "$CL.tmp"
+          else
+            cp "$CL" "$CL.tmp"
+            printf '\n%s\n' "$ENTRY" >> "$CL.tmp"
+          fi
+          cat -s "$CL.tmp" > "$CL"
+          rm -f "$CL.tmp"
+
+      - name: Generate App token
+        id: app-token
+        if: steps.bump.outputs.skip != 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Commit, tag, and push
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git"
+          git add .claude-plugin/marketplace.json plugins/funpack/.claude-plugin/plugin.json plugins/funpack/CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "Plugin version files already current, skipping commit."
+          else
+            git commit -m "chore(plugin-release): plugin-v${NEW_VERSION} [skip ci]"
+          fi
+          # Absorb any commit the binary release landed first (disjoint files ->
+          # clean rebase), THEN tag so the tag points at the rebased commit that
+          # actually lands on main, then push the plugin commit + tag.
+          git fetch origin main
+          git rebase origin/main
+          git tag "plugin-v${NEW_VERSION}"
+          git push origin main --tags
+
+      - name: Create GitHub Release
+        if: steps.bump.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: plugin-v${{ steps.bump.outputs.new_version }}
+          name: plugin-v${{ steps.bump.outputs.new_version }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
