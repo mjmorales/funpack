@@ -31,8 +31,8 @@ type callerResolver func(id string) (caller, bool)
 
 // registryResolver is the production callerResolver: it resolves a session id
 // through the shared Registry the server owns, returning the live *session.Session
-// (which satisfies caller) or not-found. The server wires the time tools with this
-// after merge; the same Registry backs the inspect/control/self-heal groups.
+// (which satisfies caller) or not-found. The server wires the time tools with this;
+// the same Registry backs the other session-scoped groups.
 func registryResolver(reg *session.Registry) callerResolver {
 	return func(id string) (caller, bool) {
 		s, ok := reg.Get(id)

@@ -6,7 +6,7 @@
 // It exists so a symbol-shaped query ("world.resolve", "@stub", "behavior",
 // a misspelling like "resollve") lands on the right declaration directly,
 // rather than competing in the passage-relevance ranking. The query-shape
-// router (a later task) prefers this table for symbol-shaped queries and falls
+// router prefers this table for symbol-shaped queries and falls
 // back to the passage index for prose-shaped ones; the docs_search tool surfaces
 // both. To keep that contract clean, [Lookup] is pure: same corpus in, same
 // ranked hits out, with no I/O and no global state.

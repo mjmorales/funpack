@@ -27,7 +27,7 @@
 // version this build speaks is a hard stop.
 //
 // TRANSPORT-AGNOSTIC: Handshake drives a generic io.ReadWriter. The process
-// spawn, loopback dial, and token minting land in a later task (t-spawn-attach);
+// spawn, loopback dial, and token minting live in package session;
 // nothing here opens a socket or spawns a process.
 //
 // SECRET-SAFETY: the auth token is never logged in cleartext — every log site

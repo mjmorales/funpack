@@ -1,6 +1,6 @@
 // registry.go holds the Registry: the concurrency-safe shared map of live
 // supervised attach sessions, keyed on each session's opaque id. It is the one
-// piece of session-layer state the wave-6 reaper (which sweeps stale sessions by
+// piece of session-layer state the reaper (which sweeps stale sessions by
 // age) and every session-scoped tool (time/inspect/control/self-heal) key on, so
 // it lives in the session package beside the Session it tracks rather than in any
 // single tool layer.

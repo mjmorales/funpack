@@ -1,8 +1,8 @@
 // Package session is the supervised funpack-attach primitive: it spawns
 // `funpack attach` in its own process group, dials the auth-gated loopback
 // endpoint, performs the §28.2 handshake, and starts a read-side demux over the
-// connection — handing back a *Session the registry + reaper (a later task)
-// build on. It does NOT implement the registry, the reaper, or any MCP tool;
+// connection — handing back a *Session the registry + reaper build on. It does
+// NOT implement the registry, the reaper, or any MCP tool;
 // it is exactly the one supervised-spawn handle those layers compose.
 //
 // SECURITY FLOOR (spec §28.2), enforced by construction here:

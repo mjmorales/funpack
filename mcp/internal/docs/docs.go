@@ -6,7 +6,7 @@
 // repo. At runtime the loader reads those files through go:embed, so the binary
 // is self-contained — it never touches the funpack-spec sibling repo or any
 // other filesystem path. The symbol-table, passage-index, and docs MCP tools
-// (later tasks) build on Load/LoadManifest.
+// build on Load/LoadManifest.
 package docs
 
 import (
@@ -100,7 +100,7 @@ type SourceRecord struct {
 }
 
 // Manifest records how and from what the committed corpus was generated. It is
-// the audit trail a stale-corpus check (later task) reads to decide whether a
+// the audit trail a stale-corpus check reads to decide whether a
 // regen is due. Every field is content-derived, so re-running the generator
 // against the same sources reproduces the manifest byte-for-byte (no timestamp,
 // no machine path) — a clean git diff means the corpus is current.

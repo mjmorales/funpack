@@ -58,7 +58,7 @@ type SessionListOutput struct {
 
 // registerSessionTools wires the session-lifecycle tools (session_start /
 // session_end / session_list) against the shared Registry the server constructs
-// and the wave-6 reaper also keys on. The server owns the Registry's lifetime
+// and the reaper also keys on. The server owns the Registry's lifetime
 // (construct in New, sweep on CloseAll); these tools only Add/Remove/List against
 // it. session_start resolves through funpack.Resolve and opens through
 // session.Open — for a test that must drive without a funpack on PATH or a live
