@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/mjmorales/funpack/mcp/internal/contract"
 	"github.com/mjmorales/funpack/mcp/internal/funpack"
+	"github.com/mjmorales/funpack/mcp/internal/mcperr"
 	"github.com/rs/zerolog"
 )
 
@@ -72,6 +75,34 @@ func TestStartupPreflightResolveErrorWarnsAndProceeds(t *testing.T) {
 
 	if err := startupPreflight(zerolog.Nop()); err != nil {
 		t.Fatalf("resolve error must be non-fatal, got %v", err)
+	}
+}
+
+// TestStartupPreflightProbeFailureNotMislabeledNotFound locks the identity-vs-Is fix:
+// a version-probe failure (the common "funpack older than v0.7.0, no `version --json`"
+// case) is a CategoryResolver mcperr — the SAME category as ErrNotFound — so
+// errors.Is(err, ErrNotFound), which mcperr compares BY CATEGORY, would match it and
+// mislabel a located-but-too-old funpack as "binary not found". The identity check
+// (err == ErrNotFound) must route it to the "version probe failed" branch. This fails
+// on the pre-fix code (errors.Is) and passes on the identity check.
+func TestStartupPreflightProbeFailureNotMislabeledNotFound(t *testing.T) {
+	probeErr := mcperr.Wrap(mcperr.CategoryResolver,
+		"funpack at /x failed `funpack version --json`", errors.New("exit status 2"))
+	var buf bytes.Buffer
+	withFunpackSeam(t,
+		func() (funpack.Binary, error) { return funpack.Binary{}, probeErr },
+		func(funpack.Binary) error { t.Fatal("preflight must not run when resolve fails"); return nil },
+	)
+
+	if err := startupPreflight(zerolog.New(&buf)); err != nil {
+		t.Fatalf("a version-probe failure must be non-fatal, got %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "binary not found") {
+		t.Fatalf("version-probe failure was mislabeled as not-found: %s", out)
+	}
+	if !strings.Contains(out, "version probe failed") {
+		t.Fatalf("want the probe-failed message, got: %s", out)
 	}
 }
 

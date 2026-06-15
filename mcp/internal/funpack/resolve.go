@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/mjmorales/funpack/mcp/internal/contract"
 	"github.com/mjmorales/funpack/mcp/internal/mcperr"
@@ -38,11 +40,13 @@ var ErrNotFound = mcperr.New(mcperr.CategoryResolver, "funpack binary not found:
 
 // Resolve locates the funpack binary and populates its version metadata.
 //
-// Lookup order: $FUNPACK_BIN first (must exist and be an executable file),
-// otherwise exec.LookPath("funpack"). A miss in both returns ErrNotFound. Once
+// Lookup order: $FUNPACK_BIN first (must exist and be an executable file), then
+// exec.LookPath("funpack"), then the standard install locations (commonFunpackPaths)
+// for the minimal-child-PATH case. A miss everywhere returns ErrNotFound. Once
 // located, it runs `<bin> version --json` and decodes stdout into
-// contract.VersionInfo; a non-zero exit or unparseable JSON returns a wrapped
-// CategoryResolver error.
+// contract.VersionInfo; a probe failure (e.g. a funpack too old to support --json)
+// or unparseable JSON returns a wrapped CategoryResolver error naming the path and
+// the fix — NOT ErrNotFound, since the binary was found.
 func Resolve() (Binary, error) {
 	path, err := locate()
 	if err != nil {
@@ -57,7 +61,8 @@ func Resolve() (Binary, error) {
 	return Binary{Path: path, Version: info}, nil
 }
 
-// locate returns the funpack executable path, honoring $FUNPACK_BIN before PATH.
+// locate returns the funpack executable path: $FUNPACK_BIN, then PATH, then the
+// common install locations (the fallback for a child process with a minimal PATH).
 func locate() (string, error) {
 	if bin := os.Getenv("FUNPACK_BIN"); bin != "" {
 		if err := assertExecutable(bin); err != nil {
@@ -66,11 +71,34 @@ func locate() (string, error) {
 		return bin, nil
 	}
 
-	path, err := exec.LookPath("funpack")
-	if err != nil {
-		return "", ErrNotFound
+	if path, err := exec.LookPath("funpack"); err == nil {
+		return path, nil
 	}
-	return path, nil
+
+	// The MCP child is frequently spawned with a minimal PATH — a GUI-launched
+	// Claude Code does not inherit the login shell's PATH, so a `brew install`ed
+	// funpack on /opt/homebrew/bin is invisible to LookPath here even though the
+	// interactive shell resolves it. Probe the standard install locations before
+	// giving up, so the common case works without the operator pinning $FUNPACK_BIN.
+	for _, cand := range commonFunpackPaths() {
+		if assertExecutable(cand) == nil {
+			return cand, nil
+		}
+	}
+	return "", ErrNotFound
+}
+
+// commonFunpackPaths are the standard install locations probed when funpack is not
+// on the (often minimal) child PATH: Homebrew on Apple silicon and Intel, then the
+// per-user ~/.local/bin the funpack:mcp install flow targets. A package var so a
+// test can stub the probe set — otherwise the hardcoded locations would find a real
+// funpack on the test host and defeat the not-found path.
+var commonFunpackPaths = func() []string {
+	paths := []string{"/opt/homebrew/bin/funpack", "/usr/local/bin/funpack"}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".local", "bin", "funpack"))
+	}
+	return paths
 }
 
 // assertExecutable verifies path names an existing, non-directory, executable
@@ -99,8 +127,20 @@ func readVersion(path string) (contract.VersionInfo, error) {
 	cmd := exec.Command(path, contract.VersionArgv...)
 	out, err := cmd.Output()
 	if err != nil {
-		return contract.VersionInfo{}, mcperr.Wrap(mcperr.CategoryResolver,
-			fmt.Sprintf("running `funpack %s` failed", joinArgv(contract.VersionArgv)), err)
+		// A located-but-failing probe is NOT "binary not found": the most common
+		// cause is a funpack older than v0.7.0, which is when `version --json` was
+		// added — funpack-mcp consumes that JSON by contract and never scrapes the
+		// human `version` text (ADR 2026-06-15-funpack-api-contract-dual-codegen), so
+		// it requires a funpack new enough to emit it. Name the path + the fix so the
+		// operator does not chase a phantom path problem.
+		e := mcperr.Wrap(mcperr.CategoryResolver,
+			fmt.Sprintf("funpack at %s failed `funpack %s` — it is likely older than v0.7.0 (which added `version --json`); funpack-mcp requires funpack >= v0.7.0, so upgrade funpack (the v0.7.0 release tarball, a repo build, or `brew upgrade funpack` once the tap publishes 0.7.0) and point $FUNPACK_BIN at it",
+				path, joinArgv(contract.VersionArgv)),
+			err)
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			e.Detail = truncate(strings.TrimSpace(string(ee.Stderr)), 200)
+		}
+		return contract.VersionInfo{}, e
 	}
 
 	var info contract.VersionInfo

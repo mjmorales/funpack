@@ -45,15 +45,21 @@ var (
 func startupPreflight(logger zerolog.Logger) error {
 	bin, err := resolveFunpack()
 	if err != nil {
-		if errors.Is(err, funpack.ErrNotFound) {
+		// Identity, NOT errors.Is: every resolver error is CategoryResolver and
+		// mcperr.(*Error).Is compares by category, so errors.Is(err, ErrNotFound)
+		// matches EVERY resolver failure (including a version-probe failure) and
+		// would mislabel a located-but-too-old funpack as "not found". ErrNotFound is
+		// returned by identity from locate(), so == distinguishes it correctly.
+		if err == funpack.ErrNotFound {
 			logger.Warn().Err(err).Msg("funpack binary not found — funpack-backed tools will error per-call; serving docs tools regardless")
 			return nil
 		}
-		// A resolvable-but-broken funpack (e.g. FUNPACK_BIN points at a
-		// non-executable, or `version --json` did not parse) is also non-fatal:
-		// the binary may be wrong without the server itself being unusable, and
-		// the per-call tool error carries the detail. Warn and proceed.
-		logger.Warn().Err(err).Msg("funpack resolution failed — funpack-backed tools will error per-call; serving docs tools regardless")
+		// A located-but-unusable funpack (most commonly one older than v0.7.0, so
+		// `funpack version --json` fails; or a non-executable $FUNPACK_BIN) is also
+		// non-fatal: docs tools need no funpack, and the err already names the path
+		// and the upgrade fix. Distinct from "not found" so the operator does not
+		// chase a phantom PATH problem. Warn and proceed.
+		logger.Warn().Err(err).Msg("funpack found but its version probe failed — funpack-backed tools will error per-call; serving docs tools regardless (see error for the fix)")
 		return nil
 	}
 

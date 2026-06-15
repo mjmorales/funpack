@@ -39,6 +39,11 @@ func isolatePATH(t *testing.T) {
 	t.Helper()
 	t.Setenv("PATH", "")
 	t.Setenv("FUNPACK_BIN", "")
+	// Neutralize the hardcoded common-location probe too, else a real funpack on
+	// /opt/homebrew/bin leaks into the "no binary available" tests.
+	orig := commonFunpackPaths
+	commonFunpackPaths = func() []string { return nil }
+	t.Cleanup(func() { commonFunpackPaths = orig })
 }
 
 const goodPayload = `{"version":"0.6.2","schemas":{"artifact":18,"index":6}}`
