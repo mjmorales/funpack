@@ -202,37 +202,51 @@ test_introspect_draw_list_dump :: proc(t: ^testing.T) {
 }
 
 // screenshot is the §28.3 render-crossing TWIN of draw_list — explicitly NOT
-// sim-pure (§28 §2). In the HEADLESS default build (no display, no FUNPACK_LIVE)
-// the command ROUTES but reports the defined "requires live present" boundary
-// refusal: the offscreen capture seam (session_capture_frame) is the no-display
-// stub here. This pins the headless contract the deterministic suite can assert;
-// the on-screen frame capture itself is verifiable only under FUNPACK_LIVE with a
-// display (the same boundary the live present pass sits behind, type-checked by
-// `task lint-live`).
+// sim-pure (§28 §2). The OUTCOME is build-split: the default define-free build has no
+// display, no codec, and the else-arm stub, so the command ROUTES but reports the
+// defined "requires live present" boundary refusal (this is what `task test` pins). The
+// FUNPACK_LIVE build SERVES the capture HEADLESS — session_capture_frame forces SDL's
+// dummy video driver and renders to a CPU surface, so no display is required (this is
+// what `task runtime:test-live` pins). The command/branch/tick addressing is identical
+// in both; only the present-crossing outcome flips on the build.
 @(test)
 test_introspect_screenshot_requires_live_present :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
 	s := session
 	response := session_request(&s, `{"id":40,"cmd":"screenshot","args":{"tick":0}}`)
-	testing.expect(t, strings.contains(response, `"ok":false`), "headless screenshot must refuse — no display")
-	testing.expect(t, strings.contains(response, `"cmd":"screenshot"`), "the refusal must name the screenshot command")
-	testing.expect(
-		t,
-		strings.contains(response, "render/present boundary"),
-		"the refusal must name the render/present boundary it cannot cross headless",
-	)
-	testing.expect(
-		t,
-		strings.contains(response, "FUNPACK_LIVE"),
-		"the refusal must point at the FUNPACK_LIVE build that serves the capture",
-	)
+	testing.expect(t, strings.contains(response, `"cmd":"screenshot"`), "the envelope must name the screenshot command")
+	when #config(FUNPACK_LIVE, false) {
+		// The FUNPACK_LIVE build serves the offscreen capture with no display: the
+		// command succeeds and returns the qoi-format pixel payload (the present pass
+		// ran on the dummy driver's CPU surface).
+		testing.expect(t, strings.contains(response, `"ok":true`), "FUNPACK_LIVE screenshot serves headless via the dummy driver")
+		testing.expect(t, strings.contains(response, `"format":"qoi"`), "the served capture carries the qoi pixel payload")
+	} else {
+		// The default define-free build refuses at the present boundary — no codec, no
+		// display, the no-display stub — and the refusal points at the build that serves it.
+		testing.expect(t, strings.contains(response, `"ok":false`), "headless default screenshot must refuse — no codec, no display")
+		testing.expect(
+			t,
+			strings.contains(response, "render/present boundary"),
+			"the refusal must name the render/present boundary it cannot cross headless",
+		)
+		testing.expect(
+			t,
+			strings.contains(response, "FUNPACK_LIVE"),
+			"the refusal must point at the FUNPACK_LIVE build that serves the capture",
+		)
+	}
 }
 
 // THE WARRANTY DISTINCTION (§28 §2): draw_list is the sim-pure draw-list dump that
-// NEVER crosses the render/present boundary; screenshot is its render-crossing twin
-// and is NOT sim-pure. Over ONE session at the SAME tick, draw_list succeeds with
-// the deterministic draw-list (it serves headless) while screenshot refuses (its
-// pixel capture needs the impure present path) — the split that IS the warranty.
+// NEVER crosses the render/present boundary; screenshot is its render-crossing twin and
+// is NOT sim-pure. Over ONE session at the SAME tick, draw_list ALWAYS serves headless
+// with the deterministic draw-list (it never touches present). screenshot ALWAYS crosses
+// present — the distinction the warranty rests on — and that crossing's outcome is
+// build-split: the default define-free build refuses it (no codec, no display), while the
+// FUNPACK_LIVE build serves it from the offscreen CPU render path with no display. Either
+// way screenshot is the render-crossing, NOT-sim-pure twin; only whether the crossing
+// completes depends on whether the present codec is compiled in.
 @(test)
 test_introspect_draw_list_screenshot_distinction :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -243,11 +257,21 @@ test_introspect_draw_list_screenshot_distinction :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(draw_resp, "Rect(at=Vec2("), "draw_list dumps the deterministic draw-list")
 
 	shot_resp := session_request(&s, `{"id":42,"cmd":"screenshot","args":{"tick":0}}`)
-	testing.expect(
-		t,
-		strings.contains(shot_resp, `"ok":false`),
-		"the render-crossing screenshot refuses headless — it is NOT sim-pure",
-	)
+	when #config(FUNPACK_LIVE, false) {
+		// The render-crossing twin completes headless under FUNPACK_LIVE: the present
+		// codec is compiled in and runs on the dummy driver's CPU surface. The distinction
+		// stands — draw_list never crossed present; screenshot did, and returns pixels.
+		testing.expect(t, strings.contains(shot_resp, `"ok":true`), "FUNPACK_LIVE screenshot crosses present and serves headless")
+		testing.expect(t, strings.contains(shot_resp, `"format":"qoi"`), "the crossed-present capture carries pixels")
+	} else {
+		// The default build's present codec is compiled out, so the render-crossing twin
+		// refuses — the visible split that the warranty rests on in the deterministic suite.
+		testing.expect(
+			t,
+			strings.contains(shot_resp, `"ok":false`),
+			"the render-crossing screenshot refuses in the codec-free default build — it is NOT sim-pure",
+		)
+	}
 }
 
 // screenshot validates its args through the SAME observe-addressing path draw_list
@@ -331,17 +355,22 @@ test_introspect_observe_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 
 	// screenshot rides the SAME non-perturbing battery: it re-projects the committed
 	// tick to a draw-list (render_version — a pure post-commit projection) before it
-	// crosses into present, so even though the headless capture refuses, the
-	// re-projection writes nothing to the canonical chain. It is in the battery
-	// SEPARATELY (it answers ok:false headless) — the digest pin below proves it left
-	// no trace, the warranty that screenshot, though not sim-pure, is non-perturbing.
+	// crosses into present, so whether the present crossing REFUSES (codec-free default
+	// build) or SERVES the pixels (FUNPACK_LIVE, offscreen CPU render headless), the
+	// re-projection writes nothing to the canonical chain. The per-request outcome is
+	// build-split; the digest pin below proves it left no trace in EITHER build — the
+	// warranty that screenshot, though not sim-pure, is non-perturbing.
 	screenshots := [?]string {
 		`{"id":20,"cmd":"screenshot","args":{"tick":0}}`,
 		`{"id":21,"cmd":"screenshot","args":{"tick":599,"include_drawlist":true}}`,
 	}
 	for request in screenshots {
 		response := session_request(&s, request)
-		testing.expect(t, strings.contains(response, `"ok":false`), "headless screenshot refuses but must not perturb")
+		when #config(FUNPACK_LIVE, false) {
+			testing.expect(t, strings.contains(response, `"ok":true`), "FUNPACK_LIVE screenshot serves headless but must not perturb")
+		} else {
+			testing.expect(t, strings.contains(response, `"ok":false`), "codec-free screenshot refuses but must not perturb")
+		}
 	}
 
 	observed := session_capture(&s)

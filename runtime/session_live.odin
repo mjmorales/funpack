@@ -492,12 +492,14 @@ text_rects :: proc(text: string, at: Vec2, cell: Vec2, color: Draw_Color, alloca
 // trips an Odin checker assertion when that codec graph is in scope).
 //
 // Build split (the main.odin / audio.odin discipline): under -define:FUNPACK_LIVE the
-// live arm does the offscreen SDL render + readback + encode; the default headless
-// build has NO display, so the else arm returns ok=false and the command reports the
-// defined "requires live present" refusal (introspect.odin) — never a crash. Pixels
-// are non-deterministic/visual (§20 §5), so they are never on the determinism path;
-// this reads the committed version and writes nothing back, so the observe warranty
-// holds.
+// live arm does the offscreen SDL render + readback + encode — and it does so even on a
+// no-display host (CI, a headless attach session), because the capture-only Init forces
+// SDL's dummy video driver and the whole render path is CPU (surface + software renderer
+// + RenderReadPixels). The default define-free build compiles the else arm instead, which
+// returns ok=false so the command reports the defined "requires live present" refusal
+// (introspect.odin) — never a crash. Pixels are non-deterministic/visual (§20 §5), so they
+// are never on the determinism path; this reads the committed version and writes nothing
+// back, so the observe warranty holds.
 when #config(FUNPACK_LIVE, false) {
 	session_capture_frame :: proc(
 		program: ^Program,
@@ -510,11 +512,21 @@ when #config(FUNPACK_LIVE, false) {
 		ok: bool,
 	) {
 		// SDL video must be up for the offscreen renderer; a live session already
-		// initialized it (idempotent), a capture-only session initializes it here. No
-		// window is created — the target is a surface, so this works headless-of-window
-		// but still requires the SDL video subsystem (a true no-display host fails the
-		// Init and the command falls to its boundary refusal).
+		// initialized it (idempotent) and we leave its real driver untouched. A
+		// capture-only session inits it HERE, and capture never wants a window — the
+		// target is a CPU surface, the renderer is software, the readback is CPU. So
+		// before this capture-only Init we force SDL's "dummy" video driver: it
+		// satisfies SDL_INIT_VIDEO with NO display on every platform (CI, a headless
+		// attach host, macOS with no window server), where the default driver's Init
+		// would fail and drop the command to its boundary refusal. Forcing dummy is the
+		// correct headless choice — it guarantees identical CPU rasterization on dev
+		// (macOS) and CI, and the software renderer / RenderReadPixels below need no
+		// display regardless. The literal hint name is "SDL_VIDEODRIVER"; if SetHint
+		// does not take, fall back to the env var read at the same Init.
 		if .VIDEO not_in sdl.WasInit(sdl.INIT_VIDEO) {
+			if !sdl.SetHint("SDL_VIDEODRIVER", "dummy") {
+				_ = os.set_env("SDL_VIDEODRIVER", "dummy")
+			}
 			if sdl.Init(sdl.INIT_VIDEO) != 0 {
 				return "", 0, 0, false
 			}
