@@ -14,11 +14,21 @@ name: Release
 #             FUNPACK_LIVE (links vendor:sdl2; needs SDL2 at runtime, declared as a
 #             Homebrew dependency). The two-binary split (funpack + funpack-live) is gone.
 # Native matrix runners per OS/arch (no cross-compile — SDL2 links natively per arch).
+#
+# This is the BINARY release line (`v*`). The Claude Code plugin under plugins/
+# is versioned independently on the `plugin-v*` line by funpack-plugin-release.yml;
+# the paths-ignore below + the `--match 'v*'` tag scoping + the `:(exclude)`
+# pathspecs keep the two lines from cutting each other's releases.
 # Managed by OpenTofu (cloud-infra github/files/funpack-release.yml); edit the source there.
 
 on:
   push:
     branches: [main]
+    # Plugin-only changes cut a plugin release, not a binary one. The plugin
+    # workflow's `paths:` is the exact complement of this list.
+    paths-ignore:
+      - 'plugins/**'
+      - '.claude-plugin/**'
 
 permissions:
   contents: write   # cut the tag + create the release + upload assets
@@ -56,16 +66,21 @@ jobs:
       - name: Determine version bump
         id: bump
         run: |
-          # The latest git tag is the authoritative current version.
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          # The latest BINARY tag is the authoritative current version. `--match
+          # 'v*'` excludes the plugin line's `plugin-v*` tags so the two never
+          # cross-contaminate.
+          LATEST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "v0.0.0")
           echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
           CURRENT="${LATEST_TAG#v}"
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
+          # Exclude the plugin artifact paths so a mixed push (source + plugin)
+          # bumps the binary line only by its non-plugin commits.
+          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
           if [ "$LATEST_TAG" = "v0.0.0" ]; then
-            COMMITS=$(git log --pretty=format:"%s%n%b" HEAD)
+            COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- . "${EXCLUDES[@]}")
           else
-            COMMITS=$(git log --pretty=format:"%s%n%b" "${LATEST_TAG}..HEAD")
+            COMMITS=$(git log --pretty=format:"%s%n%b" "${LATEST_TAG}..HEAD" -- . "${EXCLUDES[@]}")
           fi
 
           if [ -z "$COMMITS" ]; then
@@ -107,12 +122,14 @@ jobs:
         run: |
           LATEST_TAG="${{ steps.bump.outputs.latest_tag }}"
           if [ "$LATEST_TAG" = "v0.0.0" ]; then RANGE="HEAD"; else RANGE="${LATEST_TAG}..HEAD"; fi
+          # Match the bump step: keep plugin commits out of the binary changelog.
+          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
 
           {
             echo "changelog<<CHANGELOG_EOF"
 
-            BREAKING=$(git log --pretty=format:"%s" "$RANGE" | grep -iE "^[a-z]+(\(.+\))?!:" || true)
-            BREAKING_BODY=$(git log --pretty=format:"%b" "$RANGE" | grep -A1 "BREAKING CHANGE:" | grep -v "^--$" || true)
+            BREAKING=$(git log --pretty=format:"%s" "$RANGE" -- . "${EXCLUDES[@]}" | grep -iE "^[a-z]+(\(.+\))?!:" || true)
+            BREAKING_BODY=$(git log --pretty=format:"%b" "$RANGE" -- . "${EXCLUDES[@]}" | grep -A1 "BREAKING CHANGE:" | grep -v "^--$" || true)
             if [ -n "$BREAKING" ] || [ -n "$BREAKING_BODY" ]; then
               echo "### Breaking Changes"
               [ -n "$BREAKING" ] && echo "$BREAKING" | sed 's/^/- /'
@@ -120,13 +137,13 @@ jobs:
               echo ""
             fi
 
-            FEATURES=$(git log --pretty=format:"- %s (%h)" "$RANGE" | grep -E "^- feat" || true)
+            FEATURES=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- . "${EXCLUDES[@]}" | grep -E "^- feat" || true)
             if [ -n "$FEATURES" ]; then echo "### Features"; echo "$FEATURES"; echo ""; fi
 
-            FIXES=$(git log --pretty=format:"- %s (%h)" "$RANGE" | grep -E "^- fix" || true)
+            FIXES=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- . "${EXCLUDES[@]}" | grep -E "^- fix" || true)
             if [ -n "$FIXES" ]; then echo "### Fixes"; echo "$FIXES"; echo ""; fi
 
-            OTHER=$(git log --pretty=format:"- %s (%h)" "$RANGE" | grep -E "^- (docs|refactor|perf|style|build)" || true)
+            OTHER=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- . "${EXCLUDES[@]}" | grep -E "^- (docs|refactor|perf|style|build)" || true)
             if [ -n "$OTHER" ]; then echo "### Other"; echo "$OTHER"; echo ""; fi
 
             echo "CHANGELOG_EOF"
@@ -198,6 +215,11 @@ jobs:
           else
             git commit -m "chore(release): v${NEW_VERSION} [skip ci]"
           fi
+          # Absorb any commit the plugin release landed first (disjoint files ->
+          # clean rebase), THEN tag so the tag points at the rebased commit that
+          # actually lands on main, then push the binary commit + tag.
+          git fetch origin main
+          git rebase origin/main
           git tag "v${NEW_VERSION}"
           git push origin main --tags
 
