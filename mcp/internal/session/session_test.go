@@ -179,6 +179,35 @@ func TestCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+// --- idle-activity tracking: the key the reaper sweeps on ---------------------
+
+// TestLastActivitySeededAtOpenAndTouchedByCall asserts the idle clock the reaper
+// reads: LastActivity is seeded to CreatedAt at Open (a never-Called session ages
+// off its birth, not epoch zero) and a Call advances it (the session is being
+// driven). Concurrency-safety is exercised by the -race registry/reaper suites;
+// here we pin the observable values.
+func TestLastActivitySeededAtOpenAndTouchedByCall(t *testing.T) {
+	s := openFakeT(t, "activity.fp")
+
+	// Seeded to creation: not zero, and equal to CreatedAt to nanosecond precision
+	// (Open stores created.UnixNano() into both).
+	if s.LastActivity().IsZero() {
+		t.Fatal("LastActivity is zero on a freshly-opened session")
+	}
+	if !s.LastActivity().Equal(s.CreatedAt()) {
+		t.Fatalf("LastActivity not seeded to CreatedAt: activity=%v created=%v",
+			s.LastActivity(), s.CreatedAt())
+	}
+
+	before := s.LastActivity()
+	time.Sleep(2 * time.Millisecond)
+	// A Call over the fake conn touches activity even though no real runtime answers.
+	_, _ = s.Call(context.Background(), "noop", nil)
+	if !s.LastActivity().After(before) {
+		t.Fatalf("Call did not advance LastActivity: before=%v after=%v", before, s.LastActivity())
+	}
+}
+
 // --- failure teardown: a failed handshake reaps the child group --------------
 
 // TestOpenReapsChildOnHandshakeFailure asserts a handshake refusal AFTER a

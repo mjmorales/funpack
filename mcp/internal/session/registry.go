@@ -26,6 +26,7 @@ import (
 
 	"github.com/mjmorales/funpack/mcp/internal/contract"
 	"github.com/mjmorales/funpack/mcp/internal/funpack"
+	"github.com/mjmorales/funpack/mcp/internal/mcperr"
 	"github.com/rs/zerolog"
 )
 
@@ -44,24 +45,83 @@ type SessionInfo struct {
 // by opaque session id. The zero value is NOT ready — construct one with
 // NewRegistry so the backing map is allocated; the server wires a single shared
 // Registry into the session tools and the reaper.
+//
+// CAPACITY: max bounds the number of concurrently live sessions (spec §28's
+// bounded session lifetime). A max of 0 means unbounded — TryAdd never refuses.
+// The cap is read/written under the same lock that guards the map, so the
+// count-then-insert in TryAdd is atomic against a concurrent TryAdd/Remove.
 type Registry struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	max      int
 }
 
-// NewRegistry returns an empty, ready Registry. The server constructs exactly one
-// and shares it across the session tools and the reaper.
+// NewRegistry returns an empty, ready, UNBOUNDED Registry (max 0). The server
+// constructs exactly one — use NewRegistryWithMax or SetMax to bound it — and
+// shares it across the session tools and the reaper.
 func NewRegistry() *Registry {
 	return &Registry{sessions: make(map[string]*Session)}
 }
 
-// Add registers a live session under its own id. A second Add of the same id
-// overwrites the prior entry (ids are crypto/rand-minted, so a collision is not a
-// real case — the overwrite is defined behavior, not a guard).
+// NewRegistryWithMax returns an empty, ready Registry capped at max concurrently
+// live sessions. A max <= 0 is treated as unbounded. This is the production
+// constructor the server uses to enforce spec §28's concurrency cap; tests that
+// do not exercise the cap use NewRegistry.
+func NewRegistryWithMax(max int) *Registry {
+	if max < 0 {
+		max = 0
+	}
+	return &Registry{sessions: make(map[string]*Session), max: max}
+}
+
+// SetMax updates the concurrency cap. A max <= 0 makes the registry unbounded.
+// Lowering the cap below the current Len does NOT evict existing sessions — it
+// only refuses subsequent TryAdds until Remove/reap drains below the new cap.
+func (r *Registry) SetMax(max int) {
+	if max < 0 {
+		max = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.max = max
+}
+
+// Len returns the number of currently live sessions.
+func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.sessions)
+}
+
+// Add registers a live session under its own id, IGNORING the cap. A second Add
+// of the same id overwrites the prior entry (ids are crypto/rand-minted, so a
+// collision is not a real case — the overwrite is defined behavior, not a guard).
+// Add is the internal/test path that bypasses the cap; the cap-enforcing
+// production path is TryAdd, which session_start uses.
 func (r *Registry) Add(s *Session) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessions[s.ID()] = s
+}
+
+// TryAdd registers a live session under its own id, REFUSING when the registry is
+// at capacity (Len >= max, for a bounded max). On refusal it returns an
+// *mcperr.Error of CategorySession ("session cap reached") and does NOT register
+// the session — the caller must Close the just-opened session to avoid an orphan.
+// The count-and-insert is performed under the write lock so a concurrent TryAdd
+// cannot both observe room and overflow the cap. An overwrite of an existing id
+// (not a real case for crypto/rand ids) is never a cap breach: a re-Add of a
+// present id keeps Len unchanged.
+func (r *Registry) TryAdd(s *Session) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.max > 0 {
+		if _, present := r.sessions[s.ID()]; !present && len(r.sessions) >= r.max {
+			return mcperr.New(mcperr.CategorySession, "session cap reached")
+		}
+	}
+	r.sessions[s.ID()] = s
+	return nil
 }
 
 // Get returns the live session for id and whether it was present. The returned

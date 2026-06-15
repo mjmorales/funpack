@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mjmorales/funpack/mcp/internal/contract"
@@ -249,6 +250,107 @@ func TestSessionStartResolveFailureIsStructuredError(t *testing.T) {
 	}
 	if len(reg.List()) != 0 {
 		t.Fatal("a failed resolve registered a session")
+	}
+}
+
+// trackingOpener wraps fakeOpener to record every session it opens, so a test can
+// assert the just-opened-but-refused session was Closed (not orphaned) when
+// session_start hits the cap. closed reports whether s has been torn down.
+type trackingOpener struct {
+	mu     sync.Mutex
+	opened []*session.Session
+}
+
+func (to *trackingOpener) open() sessionOpener {
+	return func(ctx context.Context, _ funpack.Binary, artifact string, _ session.Config) (*session.Session, error) {
+		s, err := session.OpenFake(ctx, artifact, zerolog.Nop())
+		if err == nil {
+			to.mu.Lock()
+			to.opened = append(to.opened, s)
+			to.mu.Unlock()
+		}
+		return s, err
+	}
+}
+
+func (to *trackingOpener) last() *session.Session {
+	to.mu.Lock()
+	defer to.mu.Unlock()
+	if len(to.opened) == 0 {
+		return nil
+	}
+	return to.opened[len(to.opened)-1]
+}
+
+// connectSessionToolsCapped is connectSessionTools with a registry capped at max,
+// so session_start refuses beyond the cap. It returns the client, the capped
+// registry, and the context.
+func connectSessionToolsCapped(t *testing.T, max int, open sessionOpener) (*mcp.ClientSession, *session.Registry, context.Context) {
+	t.Helper()
+	ctx := context.Background()
+
+	reg := session.NewRegistryWithMax(max)
+	t.Cleanup(reg.CloseAll)
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "funpack-mcp-test", Version: "v0.0.0"}, nil)
+	registerSessionToolsWith(srv, zerolog.Nop(), reg, stubResolver, open)
+
+	serverT, clientT := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverT, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "funpack-mcp-test-client", Version: "v0.0.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+
+	return clientSession, reg, ctx
+}
+
+// TestSessionStartRefusesAtCapAndClosesSession proves session_start enforces the
+// registry cap via TryAdd: opening beyond capacity returns a structured
+// CategorySession tool error AND closes the just-opened session (no orphan), and
+// the registry stays at the cap (the refused session was never registered).
+func TestSessionStartRefusesAtCapAndClosesSession(t *testing.T) {
+	to := &trackingOpener{}
+	cs, reg, ctx := connectSessionToolsCapped(t, 1, to.open())
+
+	// First open fills the cap of 1.
+	first := callTool(t, cs, ctx, "session_start", map[string]any{"artifact": "one.fp"})
+	if first.IsError {
+		t.Fatalf("first session_start under cap errored: %s", callText(first))
+	}
+
+	// Second open is refused: structured session-category error, session closed.
+	second := callTool(t, cs, ctx, "session_start", map[string]any{"artifact": "two.fp"})
+	if !second.IsError {
+		t.Fatal("session_start beyond the cap did not flag IsError")
+	}
+	got := callText(second)
+	for _, want := range []string{`"category":"session"`, "session cap reached"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("cap-refusal envelope missing %q; got: %s", want, got)
+		}
+	}
+
+	// The refused session was opened then closed — no orphan. Close is idempotent,
+	// so a re-Close returning nil proves it was already torn down by session_start.
+	refused := to.last()
+	if refused == nil {
+		t.Fatal("opener was not invoked for the refused session_start")
+	}
+	if err := refused.Close(); err != nil {
+		t.Fatalf("refused session was not closed by session_start (re-Close errored): %v", err)
+	}
+
+	// Registry held at the cap — the refused session never registered.
+	if reg.Len() != 1 {
+		t.Fatalf("registry Len after refused open: got %d, want 1", reg.Len())
 	}
 }
 

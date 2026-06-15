@@ -98,7 +98,15 @@ func registerSessionToolsWith(srv *mcp.Server, logger zerolog.Logger, reg *sessi
 			return res, SessionStartOutput{}, protoErr
 		}
 
-		reg.Add(sess)
+		if err := reg.TryAdd(sess); err != nil {
+			// At capacity: close the just-opened session so it does not leak as an
+			// orphan (the child group is reaped), then surface the cap refusal as a
+			// structured session-category tool error the model can read.
+			_ = sess.Close()
+			logger.Debug().Err(err).Str("artifact", in.Artifact).Msg("session_start refused: registry at capacity")
+			res, protoErr := mcperr.ToolError(err)
+			return res, SessionStartOutput{}, protoErr
+		}
 		logger.Info().Str("session_id", sess.ID()).Int("negotiated_v", sess.NegotiatedVersion()).Msg("session_start registered session")
 		return nil, SessionStartOutput{
 			SessionID:         sess.ID(),
