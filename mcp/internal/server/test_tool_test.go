@@ -97,19 +97,8 @@ func itoa(n int) string {
 	return string(digits)
 }
 
-// projectDir makes a throwaway project directory whose resolved (symlink-free)
-// absolute path a test points the tool at. macOS TempDir lives under a
-// /var → /private/var symlink, so the EvalSymlinks form is the physical path
-// funpack's working directory would resolve to.
-func projectDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("resolve project dir: %v", err)
-	}
-	return resolved
-}
+// projectDir (a throwaway symlink-resolved project dir) is shared with the other
+// server-package tool tests — defined once in build_tools_test.go.
 
 // connectTestTool wires a client to a BARE server carrying ONLY the test tool over
 // the in-memory loopback transport — registerTestTool exercised in isolation, not
