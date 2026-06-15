@@ -7,6 +7,14 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.8.0] - 2026-06-15
+
+### Features
+- feat: engine.input pad/mouse sources, diagnostics, and MCP resolver fixes (mario friction) (3c7bcaf)
+
+### Other
+- refactor: vendor funpack-spec into the monorepo (b392d66)
+
 ## [0.7.0] - 2026-06-15
 
 ### Features
