@@ -11,25 +11,25 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// fakeCaller is a §28 caller (satisfies the caller interface) that records the
+// timeFakeCaller is a §28 caller (satisfies the caller interface) that records the
 // command + args it was issued and returns a canned response — so the time tools
 // are exercised end to end with NO live funpack runtime. A handler field lets a
 // test script per-command replies (e.g. a §28 ok:false refusal).
-type fakeCaller struct {
+type timeFakeCaller struct {
 	lastCmd  string
 	lastArgs json.RawMessage
 	handler  func(cmd string, args json.RawMessage) (*contract.Response, error)
 }
 
-func (f *fakeCaller) Call(_ context.Context, cmd string, args json.RawMessage) (*contract.Response, error) {
+func (f *timeFakeCaller) Call(_ context.Context, cmd string, args json.RawMessage) (*contract.Response, error) {
 	f.lastCmd = cmd
 	f.lastArgs = args
 	return f.handler(cmd, args)
 }
 
-// okResp builds a §28 ok:true response whose result is the marshalled payload —
+// timeOkResp builds a §28 ok:true response whose result is the marshalled payload —
 // the success envelope the runtime would emit for a time command.
-func okResp(t *testing.T, cmd string, result any) *contract.Response {
+func timeOkResp(t *testing.T, cmd string, result any) *contract.Response {
 	t.Helper()
 	raw, err := json.Marshal(result)
 	if err != nil {
@@ -39,9 +39,9 @@ func okResp(t *testing.T, cmd string, result any) *contract.Response {
 	return &contract.Response{V: contract.ProtocolVersion, ID: 1, Ok: true, Cmd: cmd, Result: &msg}
 }
 
-// errResp builds a §28 ok:false refusal carrying the runtime's error text — the
+// timeErrResp builds a §28 ok:false refusal carrying the runtime's error text — the
 // envelope a time command emits when it refuses (e.g. "no timeline loaded").
-func errResp(cmd, text string) *contract.Response {
+func timeErrResp(cmd, text string) *contract.Response {
 	return &contract.Response{V: contract.ProtocolVersion, ID: 1, Ok: false, Cmd: cmd, Error: &text}
 }
 
@@ -49,7 +49,7 @@ func errResp(cmd, text string) *contract.Response {
 // carrying ONLY the time tools, registered with the caller-resolution seam INJECTED
 // to hand back fake — so every tool drives without a live funpack runtime. Returns
 // the connected client, the fake caller the test inspects, and the context.
-func connectTimeTools(t *testing.T, fake *fakeCaller) (*mcp.ClientSession, context.Context) {
+func connectTimeTools(t *testing.T, fake *timeFakeCaller) (*mcp.ClientSession, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -80,10 +80,10 @@ func connectTimeTools(t *testing.T, fake *fakeCaller) (*mcp.ClientSession, conte
 	return clientSession, ctx
 }
 
-// positionFake returns a fakeCaller that answers every command with an ok:true
+// positionFake returns a timeFakeCaller that answers every command with an ok:true
 // {tick} position payload — the canned reply the position-only commands surface.
-func positionFake(tick int64) *fakeCaller {
-	f := &fakeCaller{}
+func positionFake(tick int64) *timeFakeCaller {
+	f := &timeFakeCaller{}
 	f.handler = func(cmd string, _ json.RawMessage) (*contract.Response, error) {
 		raw, _ := json.Marshal(TimePositionOutput{Tick: tick})
 		msg := json.RawMessage(raw)
@@ -183,9 +183,9 @@ func TestTimeRunWithUntilMarshalsTarget(t *testing.T) {
 // rewind command carrying the required {"tick":N} and surfaces the full
 // bounded-replay result (tick, restored_from, refolded).
 func TestTimeRewindIssuesTickAndSurfacesReplayShape(t *testing.T) {
-	fake := &fakeCaller{}
+	fake := &timeFakeCaller{}
 	fake.handler = func(cmd string, _ json.RawMessage) (*contract.Response, error) {
-		return okResp(t, cmd, TimeRewindOutput{Tick: 20, RestoredFrom: 16, Refolded: 4}), nil
+		return timeOkResp(t, cmd, TimeRewindOutput{Tick: 20, RestoredFrom: 16, Refolded: 4}), nil
 	}
 	cs, ctx := connectTimeTools(t, fake)
 
@@ -230,9 +230,9 @@ func TestTimeStatusParsesFixedPayload(t *testing.T) {
 		Ring:          TimeStatusRing{Slots: 32, Occupied: 3, Oldest: &oldest, Newest: &newest},
 		Branch:        TimeStatusBranch{Live: false, Active: "canonical"},
 	}
-	fake := &fakeCaller{}
+	fake := &timeFakeCaller{}
 	fake.handler = func(cmd string, _ json.RawMessage) (*contract.Response, error) {
-		return okResp(t, cmd, want), nil
+		return timeOkResp(t, cmd, want), nil
 	}
 	cs, ctx := connectTimeTools(t, fake)
 
@@ -265,7 +265,7 @@ func TestTimeStatusParsesFixedPayload(t *testing.T) {
 // (the runtime emits "tick":null when no timeline is loaded) as a nil pointer
 // rather than a zero tick — the unloaded shape is distinguishable from tick 0.
 func TestTimeStatusNullTickWhenUnloaded(t *testing.T) {
-	fake := &fakeCaller{}
+	fake := &timeFakeCaller{}
 	fake.handler = func(cmd string, _ json.RawMessage) (*contract.Response, error) {
 		// Hand-built so tick is JSON null, not omitted.
 		raw := json.RawMessage(`{"loaded":false,"tick":null,"ticks_recorded":0,"seeded":false,"cadence":16,"ring":{"slots":32,"occupied":0,"oldest":null,"newest":null},"branch":{"live":false,"active":"canonical"}}`)
@@ -312,7 +312,7 @@ func TestTimeToolUnknownSessionIsStructuredError(t *testing.T) {
 	for _, tc := range tools {
 		t.Run(tc.name, func(t *testing.T) {
 			// A panicking caller proves the unknown-id guard short-circuits before Call.
-			fake := &fakeCaller{handler: func(string, json.RawMessage) (*contract.Response, error) {
+			fake := &timeFakeCaller{handler: func(string, json.RawMessage) (*contract.Response, error) {
 				t.Fatal("caller must not be reached for an unknown session id")
 				return nil, nil
 			}}
@@ -337,9 +337,9 @@ func TestTimeToolUnknownSessionIsStructuredError(t *testing.T) {
 // envelope carrying the runtime's error text, so the model reads the refusal reason
 // and self-corrects (issue load first) rather than getting an opaque failure.
 func TestTimeRefusalSurfacesAsSessionError(t *testing.T) {
-	fake := &fakeCaller{}
+	fake := &timeFakeCaller{}
 	fake.handler = func(cmd string, _ json.RawMessage) (*contract.Response, error) {
-		return errResp(cmd, "no timeline loaded — issue load first"), nil
+		return timeErrResp(cmd, "no timeline loaded — issue load first"), nil
 	}
 	cs, ctx := connectTimeTools(t, fake)
 
@@ -359,9 +359,9 @@ func TestTimeRefusalSurfacesAsSessionError(t *testing.T) {
 // out-of-range target) surfaces the runtime error text — the rewind path maps
 // ok:false through the same session-error junction as the position commands.
 func TestTimeRewindRefusalSurfacesText(t *testing.T) {
-	fake := &fakeCaller{}
+	fake := &timeFakeCaller{}
 	fake.handler = func(cmd string, _ json.RawMessage) (*contract.Response, error) {
-		return errResp(cmd, "tick out of range"), nil
+		return timeErrResp(cmd, "tick out of range"), nil
 	}
 	cs, ctx := connectTimeTools(t, fake)
 

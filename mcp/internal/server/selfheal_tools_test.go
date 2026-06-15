@@ -11,12 +11,12 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// fakeCaller is the FAKE §28 caller the self-heal tests drive against: every Call
+// shFakeCaller is the FAKE §28 caller the self-heal tests drive against: every Call
 // records the command + args it was issued and returns a canned response (or a
 // canned transport error), so the tools' arg-marshal → Call → Response-map logic
 // runs with no registry and no live runtime. resp is returned by value-pointer so
 // each Call hands back a fresh response.
-type fakeCaller struct {
+type shFakeCaller struct {
 	resp     *contract.Response
 	callErr  error
 	gotCmd   string
@@ -24,7 +24,7 @@ type fakeCaller struct {
 	callsLog int
 }
 
-func (f *fakeCaller) Call(_ context.Context, cmd string, args json.RawMessage) (*contract.Response, error) {
+func (f *shFakeCaller) Call(_ context.Context, cmd string, args json.RawMessage) (*contract.Response, error) {
 	f.callsLog++
 	f.gotCmd = cmd
 	f.gotArgs = args
@@ -62,7 +62,7 @@ func connectSelfHealTools(t *testing.T, resolve callerResolver) (*mcp.ClientSess
 }
 
 // resolveTo returns a callerResolver that hands every id the supplied caller — the
-// "session exists" path. Pairing it with a fakeCaller drives the §28 command path.
+// "session exists" path. Pairing it with a shFakeCaller drives the §28 command path.
 func resolveTo(c caller) callerResolver {
 	return func(string) (caller, bool) { return c, true }
 }
@@ -88,7 +88,7 @@ func TestCaptureTestReturnsEmittedTestBlock(t *testing.T) {
 		"test \"captured tick_clock tick 7 instance 3\" {\n" +
 		"  assert tick_clock.step(Clock{count: 41}, Input.empty()) == Clock{count: 42}\n" +
 		"}\n"
-	fc := &fakeCaller{resp: okResponse(t, string(contract.CmdCaptureTest), map[string]any{
+	fc := &shFakeCaller{resp: okResponse(t, string(contract.CmdCaptureTest), map[string]any{
 		"tick":     7,
 		"behavior": "tick_clock",
 		"instance": 3,
@@ -136,7 +136,7 @@ func TestCaptureTestReturnsEmittedTestBlock(t *testing.T) {
 // runtime args (so the runtime targets one Thing rather than the fold-order
 // default).
 func TestCaptureTestForwardsInstance(t *testing.T) {
-	fc := &fakeCaller{resp: okResponse(t, string(contract.CmdCaptureTest), map[string]any{
+	fc := &shFakeCaller{resp: okResponse(t, string(contract.CmdCaptureTest), map[string]any{
 		"tick": 2, "behavior": "mover", "instance": 9, "test": "test \"x\" {\n}\n",
 	})}
 	cs, ctx := connectSelfHealTools(t, resolveTo(fc))
@@ -160,7 +160,7 @@ func TestCaptureTestForwardsInstance(t *testing.T) {
 // args (a whole-run property) and surfaces warranted=true from a canned clean
 // re-fold, with no divergence block.
 func TestAuditWarrantedOnCleanRefold(t *testing.T) {
-	fc := &fakeCaller{resp: okResponse(t, string(contract.CmdAudit), map[string]any{
+	fc := &shFakeCaller{resp: okResponse(t, string(contract.CmdAudit), map[string]any{
 		"warranted":          true,
 		"ticks_audited":      120,
 		"recorded_session":   uint64(0xABCDEF),
@@ -198,7 +198,7 @@ func TestAuditWarrantedOnCleanRefold(t *testing.T) {
 // warranted=false plus the first diverging tick and the recorded-vs-reproduced
 // digest diff (the §28 §3 diverged payload).
 func TestAuditDivergenceReportsFirstTick(t *testing.T) {
-	fc := &fakeCaller{resp: okResponse(t, string(contract.CmdAudit), map[string]any{
+	fc := &shFakeCaller{resp: okResponse(t, string(contract.CmdAudit), map[string]any{
 		"warranted":          false,
 		"ticks_audited":      55,
 		"recorded_session":   uint64(0x1111),
@@ -274,7 +274,7 @@ func TestSelfHealRuntimeErrorResponseIsStructuredError(t *testing.T) {
 		{"audit", contract.CmdAudit, map[string]any{"session_id": "s"}, "no recording loaded"},
 	} {
 		errMsg := tc.errText
-		fc := &fakeCaller{resp: &contract.Response{
+		fc := &shFakeCaller{resp: &contract.Response{
 			V:     contract.ProtocolVersion,
 			Ok:    false,
 			Cmd:   string(tc.cmd),
@@ -298,7 +298,7 @@ func TestSelfHealRuntimeErrorResponseIsStructuredError(t *testing.T) {
 // TestSelfHealToolsAdvertised confirms both self-heal tools appear in tools/list so
 // an agent can discover them before calling.
 func TestSelfHealToolsAdvertised(t *testing.T) {
-	fc := &fakeCaller{resp: okResponse(t, string(contract.CmdAudit), map[string]any{"warranted": true})}
+	fc := &shFakeCaller{resp: okResponse(t, string(contract.CmdAudit), map[string]any{"warranted": true})}
 	cs, ctx := connectSelfHealTools(t, resolveTo(fc))
 
 	res, err := cs.ListTools(ctx, nil)

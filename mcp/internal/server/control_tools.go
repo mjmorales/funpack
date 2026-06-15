@@ -11,14 +11,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// caller is the §28 request seam the session-scoped tools resolve a session id to
-// and drive every command through. It is exactly *session.Session's Call method,
-// extracted as an interface so a test injects a FAKE caller (a canned-Response
-// stub) and the control tools run against it with NO live runtime. Production
-// resolves through session.Registry.Get, whose *Session satisfies this.
-type caller interface {
-	Call(ctx context.Context, cmd string, args json.RawMessage) (*contract.Response, error)
-}
+// caller and the production registryResolver seam are declared once in
+// time_tools.go (same package) and shared across the session-scoped tool groups.
 
 // controlResolve maps a session id to its caller and whether it is live. The
 // production resolver is reg.Get adapted to the interface; tests inject a fake

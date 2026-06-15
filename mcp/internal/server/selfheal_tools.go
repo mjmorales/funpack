@@ -11,21 +11,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// caller is the one §28 request seam the session-scoped tool groups (self-heal
-// here; time/inspect/control elsewhere) drive every command through. The
-// production caller is *session.Session (its Call issues a request and awaits the
-// correlated response over the live attach); a test injects a FAKE caller that
-// returns canned contract.Responses, so the tool's Call-and-map logic drives with
-// no live runtime. Held narrow on purpose — three methods is one-pass reasoning.
-type caller interface {
-	Call(ctx context.Context, cmd string, args json.RawMessage) (*contract.Response, error)
-}
-
-// callerResolver maps an opaque session id to its caller. The production resolver
-// is the shared Registry's Get (adapted so the concrete *session.Session satisfies
-// the caller interface); a test injects a resolver over a FAKE caller so the §28
-// command path drives without a registry or a live attach.
-type callerResolver func(id string) (caller, bool)
+// caller and callerResolver are declared once in time_tools.go (same package) and
+// shared across the session-scoped tool groups (time/control/self-heal).
 
 // CaptureTestInput names the recorded session and the behavior-instance-at-tick
 // the capture extracts. Instance is optional: omit it to take the first instance

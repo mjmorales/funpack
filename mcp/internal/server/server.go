@@ -43,6 +43,9 @@ func New(logger zerolog.Logger) (*mcp.Server, *session.Registry) {
 
 	reg := session.NewRegistryWithMax(DefaultMaxSessions)
 	registerSessionTools(srv, logger, reg)
+	registerTimeTools(srv, logger, reg)
+	registerControlTools(srv, logger, reg)
+	registerSelfHealTools(srv, logger, reg)
 
 	return srv, reg
 }

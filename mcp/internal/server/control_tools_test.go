@@ -11,32 +11,32 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// fakeCaller is the canned §28 caller the control-tool tests drive against — NO
+// ctlFakeCaller is the canned §28 caller the control-tool tests drive against — NO
 // live runtime. It records the (cmd, args) of the last Call so a test asserts the
 // tool sent the right command and the right arg shape, and replays a pre-set
-// Response (or err). One fakeCaller stands in for one resolved session.
-type fakeCaller struct {
+// Response (or err). One ctlFakeCaller stands in for one resolved session.
+type ctlFakeCaller struct {
 	gotCmd  string
 	gotArgs json.RawMessage
 	resp    *contract.Response
 	err     error
 }
 
-func (f *fakeCaller) Call(_ context.Context, cmd string, args json.RawMessage) (*contract.Response, error) {
+func (f *ctlFakeCaller) Call(_ context.Context, cmd string, args json.RawMessage) (*contract.Response, error) {
 	f.gotCmd = cmd
 	f.gotArgs = args
 	return f.resp, f.err
 }
 
-// okResp builds an ok §28 response whose result is the given raw JSON object.
-func okResp(cmd, result string) *contract.Response {
+// ctlOkResp builds an ok §28 response whose result is the given raw JSON object.
+func ctlOkResp(cmd, result string) *contract.Response {
 	raw := json.RawMessage(result)
 	return &contract.Response{V: contract.ProtocolVersion, ID: 1, Ok: true, Cmd: cmd, Result: &raw}
 }
 
-// errResp builds a not-ok §28 response carrying a runtime refusal message — the
+// ctlErrResp builds a not-ok §28 response carrying a runtime refusal message — the
 // shape runtime/introspect_control.odin's error_response emits.
-func errResp(cmd, msg string) *contract.Response {
+func ctlErrResp(cmd, msg string) *contract.Response {
 	m := msg
 	return &contract.Response{V: contract.ProtocolVersion, ID: 1, Ok: false, Cmd: cmd, Error: &m}
 }
@@ -162,7 +162,7 @@ func TestControlToolsSendCmdAndSurfaceBranch(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.tool, func(t *testing.T) {
-			fake := &fakeCaller{resp: okResp(string(c.wantCmd), c.result)}
+			fake := &ctlFakeCaller{resp: ctlOkResp(string(c.wantCmd), c.result)}
 			cs, ctx := connectControlTools(t, controlSessionID, fake)
 
 			res := callTool(t, cs, ctx, c.tool, c.args)
@@ -202,7 +202,7 @@ func TestControlToolsSendCmdAndSurfaceBranch(t *testing.T) {
 // perturbing arm appends (spawn's minted instance id) survives the pass-through —
 // the typed view names only the universal fields, but Result carries the rest.
 func TestControlSpawnSurfacesMintedInstance(t *testing.T) {
-	fake := &fakeCaller{resp: okResp("spawn", `{"branch":{"base_tick":7,"ticks":4},"warranted":false,"instance":42}`)}
+	fake := &ctlFakeCaller{resp: ctlOkResp("spawn", `{"branch":{"base_tick":7,"ticks":4},"warranted":false,"instance":42}`)}
 	cs, ctx := connectControlTools(t, controlSessionID, fake)
 
 	res := callTool(t, cs, ctx, "control_spawn", map[string]any{"session_id": controlSessionID, "thing": "Enemy"})
@@ -220,7 +220,7 @@ func TestControlSpawnSurfacesMintedInstance(t *testing.T) {
 // result, not invented. A canonical checkout surfaces active=canonical, warranted=true.
 func TestControlCheckoutSurfacesActiveLineage(t *testing.T) {
 	t.Run("branch", func(t *testing.T) {
-		fake := &fakeCaller{resp: okResp("checkout", `{"active":"branch","warranted":false,"branch":{"base_tick":7,"ticks":3}}`)}
+		fake := &ctlFakeCaller{resp: ctlOkResp("checkout", `{"active":"branch","warranted":false,"branch":{"base_tick":7,"ticks":3}}`)}
 		cs, ctx := connectControlTools(t, controlSessionID, fake)
 
 		res := callTool(t, cs, ctx, "control_checkout", map[string]any{"session_id": controlSessionID, "target": "branch"})
@@ -243,7 +243,7 @@ func TestControlCheckoutSurfacesActiveLineage(t *testing.T) {
 	})
 
 	t.Run("canonical", func(t *testing.T) {
-		fake := &fakeCaller{resp: okResp("checkout", `{"active":"canonical","warranted":true}`)}
+		fake := &ctlFakeCaller{resp: ctlOkResp("checkout", `{"active":"canonical","warranted":true}`)}
 		cs, ctx := connectControlTools(t, controlSessionID, fake)
 
 		res := callTool(t, cs, ctx, "control_checkout", map[string]any{"session_id": controlSessionID, "target": "canonical"})
@@ -265,7 +265,7 @@ func TestControlCheckoutSurfacesActiveLineage(t *testing.T) {
 // the model self-corrects from — and the caller is NEVER reached (no §28 traffic
 // for a session that does not exist).
 func TestControlUnknownSessionIsStructuredError(t *testing.T) {
-	fake := &fakeCaller{resp: okResp("set", branchResult)}
+	fake := &ctlFakeCaller{resp: ctlOkResp("set", branchResult)}
 	cs, ctx := connectControlTools(t, controlSessionID, fake)
 
 	res := callTool(t, cs, ctx, "control_set", map[string]any{"session_id": "no-such-session", "thing": "Player", "field": "hp", "value": "1"})
@@ -288,7 +288,7 @@ func TestControlUnknownSessionIsStructuredError(t *testing.T) {
 // refusal) maps to a structured invalid_input IsError carrying the runtime's own
 // message, NOT a protocol-level error, so the model reads the reason and corrects.
 func TestControlRuntimeRefusalIsStructuredError(t *testing.T) {
-	fake := &fakeCaller{resp: errResp("branch", "tick out of range")}
+	fake := &ctlFakeCaller{resp: ctlErrResp("branch", "tick out of range")}
 	cs, ctx := connectControlTools(t, controlSessionID, fake)
 
 	res := callTool(t, cs, ctx, "control_branch", map[string]any{"session_id": controlSessionID, "tick": 9999})
@@ -306,7 +306,7 @@ func TestControlRuntimeRefusalIsStructuredError(t *testing.T) {
 // TestControlToolsAdvertised confirms every control tool appears in tools/list,
 // so an agent can discover the full §28 control group before calling.
 func TestControlToolsAdvertised(t *testing.T) {
-	cs, ctx := connectControlTools(t, controlSessionID, &fakeCaller{resp: okResp("set", branchResult)})
+	cs, ctx := connectControlTools(t, controlSessionID, &ctlFakeCaller{resp: ctlOkResp("set", branchResult)})
 
 	res, err := cs.ListTools(ctx, nil)
 	if err != nil {
