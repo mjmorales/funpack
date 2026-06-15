@@ -66,6 +66,13 @@ type Session struct {
 	// secret (the token is) and is safe to surface.
 	artifact  string
 	createdAt time.Time
+	// lastActivityNanos is the wall-clock instant (UnixNano) of the most recent
+	// Call, seeded to createdAt at Open. It is the idle-age key the reaper sweeps
+	// on, kept as an atomic so a Call on one goroutine and the reaper's LastActivity
+	// read on another never race the registry lock. A monotonic-clock instant is
+	// deliberately NOT used: UnixNano is the durable wall-clock the reaper compares
+	// against time.Now() across goroutines without sharing a time.Time.
+	lastActivityNanos atomic.Int64
 
 	// cancel stops the demux Run goroutine (the loop honors ctx cancel); Close
 	// invokes it before tearing down the connection and the process group.
@@ -197,6 +204,7 @@ func Open(ctx context.Context, bin funpack.Binary, artifact string, cfg Config) 
 
 	runCtx, cancel := context.WithCancel(ctx)
 	demux := introspect.NewDemux(introspect.NewReader(conn))
+	created := time.Now()
 	s := &Session{
 		id:         id,
 		cmd:        cmd,
@@ -204,10 +212,13 @@ func Open(ctx context.Context, bin funpack.Binary, artifact string, cfg Config) 
 		demux:      demux,
 		negotiated: negotiated,
 		artifact:   artifact,
-		createdAt:  time.Now(),
+		createdAt:  created,
 		cancel:     cancel,
 		wait:       make(chan struct{}),
 	}
+	// Seed activity to creation: a session that never receives a Call still ages
+	// off the reaper's IdleTTL clock from when it was opened, not from epoch zero.
+	s.lastActivityNanos.Store(created.UnixNano())
 	go func() {
 		s.runErr = demux.Run(runCtx)
 		close(s.wait)
@@ -251,8 +262,16 @@ func (s *Session) NegotiatedVersion() int { return s.negotiated }
 func (s *Session) Artifact() string { return s.artifact }
 
 // CreatedAt returns the wall-clock instant Open established the session, the
-// age key the reaper and session_list read.
+// age key session_list reads and the reaper's optional MaxLifetime ceiling.
 func (s *Session) CreatedAt() time.Time { return s.createdAt }
+
+// LastActivity returns the wall-clock instant of the most recent Call (seeded to
+// CreatedAt at Open) — the idle-age key the reaper sweeps on. It is
+// concurrency-safe: it reads an atomic touched by Call, so the reaper can poll it
+// while a tool drives a Call on another goroutine without sharing a lock.
+func (s *Session) LastActivity() time.Time {
+	return time.Unix(0, s.lastActivityNanos.Load())
+}
 
 // Demux returns the read-side multiplexer over the session stream — the
 // Await(ctx,id) / Events() surface the tool layer correlates responses and
@@ -273,6 +292,9 @@ func (s *Session) Conn() net.Conn { return s.conn }
 // ctx bounds the wait; a closed stream or protocol fault surfaces as the demux's
 // error. args may be nil for a no-argument command.
 func (s *Session) Call(ctx context.Context, cmd string, args json.RawMessage) (*contract.Response, error) {
+	// Touch activity up front so even a Call that ultimately errors counts as use:
+	// the session is being driven, so the reaper must not evict it mid-interaction.
+	s.lastActivityNanos.Store(time.Now().UnixNano())
 	id := callSeq.Add(1)
 	if err := introspect.EncodeRequest(s.conn, contract.Request{ID: id, Cmd: cmd, Args: args}); err != nil {
 		return nil, err

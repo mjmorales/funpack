@@ -18,7 +18,7 @@ func connectLoopback(t *testing.T) (*mcp.ClientSession, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 
-	srv := New(zerolog.Nop())
+	srv, _ := New(zerolog.Nop())
 	serverT, clientT := mcp.NewInMemoryTransports()
 
 	serverSession, err := srv.Connect(ctx, serverT, nil)
