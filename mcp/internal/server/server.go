@@ -20,6 +20,7 @@ func New(logger zerolog.Logger) *mcp.Server {
 	}, nil)
 
 	registerHealth(srv, logger)
+	registerDocsGet(srv, logger)
 
 	return srv
 }
