@@ -49,9 +49,14 @@ jobs:
           exec "$@"
           SH
           chmod +x "$RUNNER_TEMP/retry-odin.sh"
+      # The root aggregate verbs cover every package (cli, funpack, runtime,
+      # cmd/funpack), so CI never needs editing when the package layout changes —
+      # the Taskfile is the single source of truth. build/lint type-check the
+      # cmd/funpack entry package in BOTH define modes; the SDL arm is type-checked
+      # (odin check) but NOT linked, so no libsdl2 install is needed on the runner.
       - name: Build (type-check)
-        run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:build runtime:build'
+        run: '"$RUNNER_TEMP/retry-odin.sh" task build'
       - name: Lint (vet + strict style)
-        run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:lint runtime:lint runtime:lint-live'
+        run: '"$RUNNER_TEMP/retry-odin.sh" task lint'
       - name: Test
-        run: '"$RUNNER_TEMP/retry-odin.sh" task funpack:test runtime:test'
+        run: '"$RUNNER_TEMP/retry-odin.sh" task test'
