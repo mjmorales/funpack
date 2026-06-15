@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# funpack-mcp plugin launcher — selects the per-platform funpack-mcp binary bundled
+# beside this script and execs it, falling back to a PATH `funpack-mcp` for dev.
+#
+# This is the `command` the plugin's .mcp.json invokes. Claude Code expands
+# ${CLAUDE_PLUGIN_ROOT} to the plugin install dir, so the declared command is
+# ${CLAUDE_PLUGIN_ROOT}/bin/funpack-mcp — this file.
+#
+# Bundled binaries are named funpack-mcp-<os>-<arch> and produced by
+# `task mcp:bundle` (cross-compile matrix). They are gitignored; this wrapper is
+# committed. Windows is out of scope — the funpack toolchain is unix-centric, so
+# only darwin and linux are mapped.
+set -euo pipefail
+
+dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+
+case "$(uname -s)" in
+  Darwin) os=darwin ;;
+  Linux)  os=linux ;;
+  *)
+    echo "funpack-mcp: unsupported OS $(uname -s) (darwin and linux only)" >&2
+    exit 1
+    ;;
+esac
+
+case "$(uname -m)" in
+  arm64 | aarch64) arch=arm64 ;;
+  x86_64 | amd64)  arch=amd64 ;;
+  *)
+    echo "funpack-mcp: unsupported arch $(uname -m) (arm64 and amd64 only)" >&2
+    exit 1
+    ;;
+esac
+
+bundled="$dir/funpack-mcp-$os-$arch"
+
+if [ -x "$bundled" ]; then
+  exec "$bundled" "$@"
+fi
+
+# Dev / go-install fallback: no bundled binary, but a funpack-mcp is on PATH.
+if command -v funpack-mcp >/dev/null 2>&1; then
+  exec funpack-mcp "$@"
+fi
+
+echo "funpack-mcp: no bundled binary at $bundled and none on PATH — run \`task mcp:bundle\`" >&2
+exit 1
