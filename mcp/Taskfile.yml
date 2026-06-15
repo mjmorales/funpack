@@ -1,0 +1,42 @@
+version: '3'
+
+# funpack-mcp — the Go MCP dev server. A SEPARATE Go module, never linked into
+# the Odin engine. Standalone for now: root-Taskfile aggregation, the per-arch
+# release line, and CI land under the mcp-distribution epic (t-task-build,
+# s-release-line). Validators in .claude/.prove.json stay pinned to the Odin root
+# verbs until that integration task wires these in deliberately.
+
+vars:
+  BIN: bin/funpack-mcp
+  PKG: ./...
+
+tasks:
+  build:
+    desc: Compile funpack-mcp to bin/funpack-mcp
+    cmds:
+      - go build -o {{.BIN}} .
+
+  run:
+    desc: Run the MCP server over stdio (serve)
+    cmds:
+      - go run . serve
+
+  test:
+    desc: Run the Go test suite
+    cmds:
+      - go test {{.PKG}}
+
+  lint:
+    desc: go vet the module
+    cmds:
+      - go vet {{.PKG}}
+
+  tidy:
+    desc: Tidy and verify module dependencies
+    cmds:
+      - go mod tidy
+
+  fmt:
+    desc: gofmt the module in place
+    cmds:
+      - gofmt -l -w .
