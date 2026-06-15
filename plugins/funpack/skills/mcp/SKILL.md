@@ -16,8 +16,19 @@ wiped on every update). The mechanics live in a script; your job is to dispatch 
 
 `${CLAUDE_PLUGIN_ROOT}` (where the wrapper lives) is replaced on every plugin update, so a
 binary placed there is lost. `${CLAUDE_PLUGIN_DATA}` (`~/.claude/plugins/data/<plugin-id>/`)
-persists and is exported to both the MCP child process and the Bash you run here, so the
-binary's home is `$CLAUDE_PLUGIN_DATA/bin/funpack-mcp`. The wrapper checks that path first.
+persists across updates, so the binary's home is `$CLAUDE_PLUGIN_DATA/bin/funpack-mcp`. The
+wrapper checks that path first.
+
+**The persistent home does not depend on the runtime env.** `$CLAUDE_PLUGIN_DATA` is only
+exported inside a plugin session; an `install`/`update` you run from an ordinary Bash does
+NOT have it set. Rather than fall back to a wiped-on-update cache path, the script derives
+the SAME persistent dir deterministically: it reads the plugin name from
+`.claude-plugin/plugin.json`, matches the `<name>@<marketplace>` key in
+`~/.claude/plugins/installed_plugins.json` (falling back to the owned marketplace name
+`funpack`), and lands the binary in `~/.claude/plugins/data/<name>-<marketplace>/bin`. So
+install is persistent regardless of how the skill is invoked — `target-kind: plugin-data`
+in every case. `$CLAUDE_PLUGIN_DATA` (when set) and `$FUNPACK_MCP_DATA` (dev) are honored
+as explicit overrides ahead of the derivation.
 
 ## Dispatch
 

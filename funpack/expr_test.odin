@@ -43,6 +43,51 @@ test_expr_word_logic_ladder :: proc(t: ^testing.T) {
 	testing.expect_value(t, and_node.op.text, "and")
 }
 
+// F5 (dogfood-mario): a fresh expression cannot open on a binary operator.
+// funpack is newline-terminated (spec §02 §1), so a leading `and`/`or`/comparison/
+// arithmetic glyph is a continuation dangling off an already-complete prior line.
+// parse_binary names the Newline_Before_Binary_Op verdict at the single
+// expression-entry seam — for the word operators (`and`/`or`, which lex as Idents
+// and would otherwise parse as a bare name) and the glyph operators alike (which
+// would otherwise reach parse_atom's bare Unexpected_Token).
+@(test)
+test_expr_leading_and_rejected_as_newline_continuation :: proc(t: ^testing.T) {
+	_, err := parse_expr_text("and c < d")
+	testing.expect_value(t, err, Parse_Error.Newline_Before_Binary_Op)
+}
+
+@(test)
+test_expr_leading_comparison_rejected_as_newline_continuation :: proc(t: ^testing.T) {
+	_, err := parse_expr_text("< d")
+	testing.expect_value(t, err, Parse_Error.Newline_Before_Binary_Op)
+}
+
+@(test)
+test_expr_leading_plus_rejected_as_newline_continuation :: proc(t: ^testing.T) {
+	_, err := parse_expr_text("+ d")
+	testing.expect_value(t, err, Parse_Error.Newline_Before_Binary_Op)
+}
+
+// The binary-only exclusion is load-bearing: a leading `-` opens a unary negation
+// and a leading `not` opens the word unary operator, so neither trips the
+// newline-continuation verdict — they legally start a fresh expression. Guarding
+// this keeps the F5 fix from swallowing valid unary-prefixed expressions.
+@(test)
+test_expr_leading_minus_is_unary_not_continuation :: proc(t: ^testing.T) {
+	expr, err := parse_expr_text("-x")
+	testing.expect_value(t, err, Parse_Error.None)
+	_, is_unary := expr.(^Unary_Expr)
+	testing.expect(t, is_unary)
+}
+
+@(test)
+test_expr_leading_not_is_unary_not_continuation :: proc(t: ^testing.T) {
+	expr, err := parse_expr_text("not ready")
+	testing.expect_value(t, err, Parse_Error.None)
+	_, is_unary := expr.(^Unary_Expr)
+	testing.expect(t, is_unary)
+}
+
 @(test)
 test_expr_left_associative_subtraction :: proc(t: ^testing.T) {
 	// (a - b) - c, never a - (b - c): the fold direction §10 depends on.

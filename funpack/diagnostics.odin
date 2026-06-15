@@ -216,6 +216,10 @@ parse_diagnostic :: proc(err: Parse_Error, line: int, col: int) -> Diagnostic {
 		d.message = "this string escape is outside the closed set — only `\\\"`, `\\{`, and `\\}` are escapes (lexical-core §4)"
 	case .Variant_Directive_Wrong_Target:
 		d.message = "an enum variant admits only @doc — move this directive off the variant (spec §05)"
+	case .Bool_Pattern_Unsupported:
+		d.message = "a bool is not matchable — `match` dispatches over a closed enum or tuple, not over `true`/`false`; use `if`/`else` instead (spec §02 §5)"
+	case .Newline_Before_Binary_Op:
+		d.message = "an expression does not continue across a newline before a binary operator — funpack ends a statement at the newline, so keep each line a complete expression, or bind an intermediate `let` (spec §02 §1)"
 	}
 	return d
 }

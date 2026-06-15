@@ -73,28 +73,34 @@ things; return `Spawn( Thing{…} )` / `Despawn()` to change population (applied
 
 ## engine.input — device-agnostic input
 
-Game logic queries **semantic actions, never devices**. Declare actions as kind-ascribed enums:
-`enum Move: Button { Up, Down }`, `enum Steer: Axis { Move }`, per player `PlayerId::{P1,P2,P3,P4}`.
+Game logic queries **semantic actions, never devices**. `Axis` and `Button` are **role-kind
+ascriptions written after the enum name — never imported**: `enum Move: Button { Up, Down }`,
+`enum Steer: Axis { Move }`, per player `PlayerId::{P1,P2,P3,P4}`.
 
 ```funpack
-extern type Input
-// all queries are self: Input, per player + action:
-pressed(input, player, action: Button) -> Bool     // down-edge this tick
-released(input, player, action: Button) -> Bool     // up-edge this tick
-held(input, player, action: Button) -> Bool         // level: down now
-value(input, player, action: Axis) -> Fixed         // 1D axis in [-1, +1]
-axis(input, player, action: Axis) -> Vec2           // 2D axis, each component [-1, +1]
+// queries are receiver methods on the Input resource (not imports), per player + action:
+input.pressed(player, action: Button)  -> Bool     // down-edge this tick
+input.released(player, action: Button) -> Bool     // up-edge this tick
+input.held(player, action: Button)     -> Bool     // level: down now
+input.value(player, action: Axis)      -> Fixed    // 1D axis in [-1, +1]
+input.axis(player, action: Axis)       -> Vec2     // 2D axis, each component [-1, +1]
 ```
 Devices appear in **one place**: a `fn bindings() -> Bindings` lifted into the entrypoint.
-`Bindings.empty().axis(P1, Steer::Move, keys_axis(Key::W, Key::S))…`. Binding sources:
-`keys_axis(neg, pos)`, `stick_x/stick_y(Stick)`, `wasd()`/`arrows()`/`dpad()`/`stick(Stick)` (each a
-`Vec2`, read via `axis`), `key(k)`, and a list of keys `[Key::W, Key::Up]` for a button. Test
-doubles: `Input.empty().with_pressed(p, a)`, `.with_value(p, a, x)`, `.with_axis(p, a, v)`.
+`Bindings.empty().axis(P1, Steer::Move, keys_axis(Key::W, Key::S))…`. Importable from `engine.input`:
+types `Input Bindings PlayerId Key PadButton MouseButton Stick`, source-helper funcs
+`keys_axis stick_x stick_y wasd arrows stick pad mouse`. Binding sources:
+- **Button:** the key-list `[Key::W, Key::Up]` (a single key is `[Key::W]`), `pad(PadButton::A)`,
+  `mouse(MouseButton::Left)` — there is **no `key(…)` helper**.
+- **Axis 1D:** `keys_axis(neg, pos)`, `stick_x/stick_y(Stick)` (read via `value`).
+- **Axis 2D:** `wasd()`/`arrows()`/`stick(Stick)` (each a `Vec2`, read via `axis`).
 
-> The richest binding helpers (`wasd`/`arrows`/`dpad`/`stick`, `pad`/`mouse`, the `[Key]`
-> button-source form) come from the input spec, not the bare signature file — see
-> `references/modules.md`. All analog values are fixed-point in [-1,1], engine-deadzoned; no `Float`
-> reaches sim code.
+Test doubles: `Input.empty().with_pressed(p, a)`, `.with_value(p, a, x)`, `.with_axis(p, a, v)`.
+
+> Sources **stack** (a key-list may mix devices: `[Key::W, PadButton::DpadUp]`). 2D orientation is
+> y-down — `W` and stick-up read negative y. `dpad()` (the d-pad as a single 2D `Vec2`) is spec-named
+> but not yet on the surface; bind the d-pad directions as digital buttons via `pad(PadButton::DpadUp)`.
+> See `references/modules.md` and spec §23 §3. All analog values are fixed-point in [-1,1],
+> engine-deadzoned; no `Float` reaches sim code.
 
 ## engine.render — 2D draw commands
 
@@ -143,7 +149,7 @@ content-authoring side (atlases, levels, models, UI templates) is the `funpack-c
 
 ## Accuracy note
 
-These signatures are distilled from the funpack-spec `stdlib/engine/*.fun` files and the worked
+These signatures are distilled from the in-repo `stdlib/engine/*.fun` files and the worked
 examples. Where the signature files, the prose spec, and the examples diverge, `references/modules.md`
 flags it. funpack is under active design — to confirm a signature, search the docs corpus with the
 funpack-mcp `docs_search` tool (then `docs_get` on a hit); for a load-bearing call, the final

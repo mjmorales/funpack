@@ -269,10 +269,11 @@ func TestWardenIndexRefusalIsNormalResult(t *testing.T) {
 // IsError envelope — the only condition the warden tools treat as a tool fault,
 // distinct from a captured non-zero exit.
 func TestWardenResolveFailureIsToolError(t *testing.T) {
-	// Force resolution to miss: empty FUNPACK_BIN and an empty PATH so LookPath
-	// cannot find a funpack anywhere.
-	t.Setenv("FUNPACK_BIN", "")
-	t.Setenv("PATH", "")
+	// Force a host-independent resolve miss: a separator-bearing, guaranteed-absent
+	// $FUNPACK_BIN is stat'd literally — never PATH-searched or common-paths probed —
+	// so this misses regardless of any funpack installed on the host. See the
+	// build-tool twin for why an empty PATH alone does not isolate the resolver.
+	t.Setenv("FUNPACK_BIN", filepath.Join(t.TempDir(), "absent", "funpack"))
 	session, ctx := connectWardenServer(t)
 
 	res := callWarden(t, session, ctx, "warden_holes", map[string]any{"dir": t.TempDir()})

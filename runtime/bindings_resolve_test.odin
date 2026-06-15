@@ -517,6 +517,86 @@ test_parse_source_v3_forms :: proc(t: ^testing.T) {
 	testing.expect(t, !unknown)
 }
 
+// test_parse_source_digital_button_forms pins the single-code digital arms:
+// pad(PadButton::A) and mouse(MouseButton::Left) each parse to their own kind
+// with the device code intact (ADR 2026-06-15-engine-input-source-helpers-split).
+// mouse is the parse mirror of pad; a wrong-arity mouse drops on the closed-set
+// discipline.
+@(test)
+test_parse_source_digital_button_forms :: proc(t: ^testing.T) {
+	pad, pad_ok := parse_source("pad(PadButton::A)", context.temp_allocator)
+	testing.expect(t, pad_ok)
+	testing.expect_value(t, pad.kind, Source_Kind.Pad)
+	testing.expect_value(t, pad.code, "PadButton::A")
+
+	mouse, mouse_ok := parse_source("mouse(MouseButton::Left)", context.temp_allocator)
+	testing.expect(t, mouse_ok)
+	testing.expect_value(t, mouse.kind, Source_Kind.Mouse)
+	testing.expect_value(t, mouse.code, "MouseButton::Left")
+
+	_, bad_arity := parse_source("mouse(MouseButton::Left,MouseButton::Right)", context.temp_allocator)
+	testing.expect(t, !bad_arity)
+}
+
+// mouse_button_program builds a synthetic Program with one Button-kinded action
+// bound to a mouse(MouseButton::Left) source — the §23 §3 mouse-button source no
+// committed golden exercises (ADR 2026-06-15-engine-input-source-helpers-split).
+// P1.Fire is bound to mouse(MouseButton::Left); the descriptor slices are
+// allocated on the passed allocator (not stack-temporary slice literals).
+@(private = "file")
+mouse_button_program :: proc(allocator := context.allocator) -> Program {
+	variants := make([]Enum_Variant, 1, allocator)
+	variants[0] = Enum_Variant{name = "Fire", payload = "unit"}
+	enums := make([]Enum_Decl, 1, allocator)
+	enums[0] = Enum_Decl{name = "Trigger", kind = .Button, variants = variants}
+	bindings := make([]Binding, 1, allocator)
+	bindings[0] = Binding {
+		kind   = "button",
+		player = "P1",
+		action = "Trigger::Fire",
+		source = "mouse(MouseButton::Left)",
+	}
+	return Program{enums = enums, bindings = bindings}
+}
+
+// test_mouse_button_resolves_pressed_held_released proves the §23 §4 fold for the
+// mouse source end-to-end (parse → window fold → snapshot): a mouse-down latches
+// `pressed` + `held`, and a mouse-up on the next tick reads `released` (was held,
+// now up) — the exact edge/level semantics the pad/key sources fold, since Mouse
+// is a digital source in the same Button_Accum path. This is the runtime half of
+// the cross-team mouse mirror; the device-free query vocabulary reads the action,
+// never the device code.
+@(test)
+test_mouse_button_resolves_pressed_held_released :: proc(t: ^testing.T) {
+	program := mouse_button_program(context.temp_allocator)
+	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
+
+	fire, found := table.registry.by_name["Trigger::Fire"]
+	if !testing.expect(t, found) {
+		return
+	}
+
+	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
+	queue := new_device_queue(context.temp_allocator)
+
+	// Tick 1: mouse-down. pressed + held, not released.
+	enqueue_mouse_down(&queue, "MouseButton::Left")
+	snap1, held1, levels1 := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
+	defer delete_input(snap1)
+	testing.expect(t, pressed(snap1, .P1, fire.id))
+	testing.expect(t, held(snap1, .P1, fire.id))
+	testing.expect(t, !released(snap1, .P1, fire.id))
+
+	// Tick 2: mouse-up. released edge (was held, now up), not pressed, not held.
+	enqueue_mouse_up(&queue, "MouseButton::Left")
+	snap2, _, _ := resolve_tick(table, &queue, held1, levels1, context.temp_allocator)
+	defer delete_input(snap2)
+	testing.expect(t, released(snap2, .P1, fire.id))
+	testing.expect(t, !pressed(snap2, .P1, fire.id))
+	testing.expect(t, !held(snap2, .P1, fire.id))
+}
+
 // test_action_registry_skips_non_input_enums proves the minting boundary: only
 // Axis/Button enums become actions. The pong artifact declares Side (a plain enum,
 // no role kind) and Steer (Axis) — Side contributes no ActionId, Steer::Move does.

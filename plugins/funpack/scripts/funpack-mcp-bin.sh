@@ -49,16 +49,92 @@ resolve_platform() {
   esac
 }
 
+# Marketplace name for this plugin, half of the plugin-data dir id
+# `<plugin-name>-<marketplace-name>`. This repo IS the funpack marketplace
+# (.claude-plugin/marketplace.json::name == "funpack"), so it is an owned
+# constant. A fork that re-publishes under a different marketplace overrides it
+# via $FUNPACK_MARKETPLACE; the installed_plugins.json lookup below also recovers
+# the real id when the plugin is actually installed, so this constant is only the
+# last-resort fallback.
+MARKETPLACE_NAME="${FUNPACK_MARKETPLACE:-funpack}"
+
+# ---------------------------------------------------------------------------
+# Read a flat top-level string field from a JSON file: json_str_field <file> <key>.
+# jq when present (the script already shells out to gh --jq), else a grep/sed
+# fallback for the flat `"key": "value"` case — both manifests are flat at the
+# fields we read, so the fallback is sufficient and keeps jq non-mandatory.
+# ---------------------------------------------------------------------------
+json_str_field() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    jq -er --arg k "$key" '.[$k] // empty' "$file" 2>/dev/null && return 0
+    return 1
+  fi
+  local val
+  val="$(grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" 2>/dev/null \
+          | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')"
+  [ -n "$val" ] && { printf '%s\n' "$val"; return 0; }
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Resolve the plugin's persistent data dir ENV-INDEPENDENTLY when
+# $CLAUDE_PLUGIN_DATA is unset (the case that previously fell through to the
+# wiped-on-update cache/dev-bundle path — the root cause of F1). Claude Code lays
+# the persistent dir out as ~/.claude/plugins/data/<plugin-name>-<marketplace-name>/.
+#
+# Order, all deterministic from committed manifests + the installed registry:
+#   1. plugin name from <plugin-root>/.claude-plugin/plugin.json::name.
+#   2. ground truth: the key `<name>@<marketplace>` in
+#      ~/.claude/plugins/installed_plugins.json (what Claude Code itself records)
+#      → data dir `<name>-<marketplace>`. Handles a fork/rename without guessing.
+#   3. fallback: `<name>-$MARKETPLACE_NAME` (the owned constant) when the plugin
+#      is not in the installed registry (e.g. a raw dev checkout never installed).
+#
+# Echoes the absolute data dir, or empty when even the plugin name is unresolvable.
+# ---------------------------------------------------------------------------
+resolve_plugin_data_dir() {
+  local script_dir plugin_root plugin_name manifest reg id data_root
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+  # scripts/ sits inside plugins/funpack/ beside .claude-plugin/.
+  plugin_root="$(cd -- "${script_dir}/.." >/dev/null 2>&1 && pwd -P)"
+  manifest="${plugin_root}/.claude-plugin/plugin.json"
+  plugin_name="$(json_str_field "$manifest" name || true)"
+  [ -n "$plugin_name" ] || return 1
+
+  data_root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/data"
+
+  # Ground truth: match the installed registry's `<name>@<marketplace>` key.
+  reg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+  if [ -f "$reg" ] && command -v jq >/dev/null 2>&1; then
+    id="$(jq -er --arg n "$plugin_name" \
+            '.plugins | keys[] | select(startswith($n + "@"))' "$reg" 2>/dev/null \
+          | head -1 || true)"
+    if [ -n "$id" ]; then
+      # `<name>@<marketplace>` -> `<name>-<marketplace>` (the data-dir convention).
+      printf '%s\n' "${data_root}/${id/@/-}"
+      return 0
+    fi
+  fi
+
+  # Fallback: the owned marketplace constant.
+  printf '%s\n' "${data_root}/${plugin_name}-${MARKETPLACE_NAME}"
+}
+
 # ---------------------------------------------------------------------------
 # Target resolution. Preference order:
-#   1. $CLAUDE_PLUGIN_DATA/bin/funpack-mcp  — the real, update-surviving home
-#      (set inside a plugin session; the wrapper execs this first).
+#   1. $CLAUDE_PLUGIN_DATA/bin/funpack-mcp  — the real, update-surviving home,
+#      passed straight through when a plugin session set it (the wrapper execs
+#      this first).
 #   2. $FUNPACK_MCP_DATA/bin/funpack-mcp    — explicit dev override.
-#   3. <repo>/plugins/funpack/bin/funpack-mcp-<wrapper-os>-<wrapper-arch>
-#      — the dev/`task mcp:bundle` per-platform path, IF this script can locate
-#        the repo from its own location.
-# The binary is a SINGLE file for THIS machine's platform (not per-platform-named),
-# except case 3 which targets the existing per-platform dev convention.
+#   3. ENV-INDEPENDENT persistent dir: ~/.claude/plugins/data/<plugin-id>/bin,
+#      derived from the manifest + installed registry (resolve_plugin_data_dir).
+#      This is the SAME update-surviving home as case 1 — it is reported as
+#      `plugin-data` — so an install/update run from an ordinary Bash (where
+#      $CLAUDE_PLUGIN_DATA is unset) still lands the binary where it survives the
+#      next plugin update, instead of in the wiped-on-update cache path.
+# The binary is a SINGLE file for THIS machine's platform (not per-platform-named).
 # TARGET_KIND records which case we used so callers/output can be explicit.
 # ---------------------------------------------------------------------------
 resolve_target() {
@@ -74,17 +150,15 @@ resolve_target() {
     TARGET_KIND="dev-override"
     return
   fi
-  local script_dir repo_bin
-  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
-  # scripts/ sits beside bin/ inside plugins/funpack/.
-  repo_bin="$(cd -- "${script_dir}/.." >/dev/null 2>&1 && pwd -P)/bin"
-  if [ -d "${repo_bin}" ]; then
-    BIN_DIR="${repo_bin}"
-    BIN="${BIN_DIR}/funpack-mcp-${WRAP_OS}-${WRAP_ARCH}"
-    TARGET_KIND="dev-bundle"
+  local data_dir
+  data_dir="$(resolve_plugin_data_dir || true)"
+  if [ -n "$data_dir" ]; then
+    BIN_DIR="${data_dir}/bin"
+    BIN="${BIN_DIR}/funpack-mcp"
+    TARGET_KIND="plugin-data"
     return
   fi
-  die "cannot resolve a target: \$CLAUDE_PLUGIN_DATA unset, \$FUNPACK_MCP_DATA unset, and no plugin bin/ dir found beside this script. Run inside a plugin session, or set \$FUNPACK_MCP_DATA=<dir>."
+  die "cannot resolve a persistent target: \$CLAUDE_PLUGIN_DATA unset, \$FUNPACK_MCP_DATA unset, and the plugin manifest (.claude-plugin/plugin.json) was not found beside this script to derive the data dir. Run inside a plugin session, or set \$FUNPACK_MCP_DATA=<dir>."
 }
 
 # ---------------------------------------------------------------------------

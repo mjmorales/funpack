@@ -507,6 +507,10 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.PlayerId), true
 	case "Key":
 		return engine_type_of(.Key), true
+	case "PadButton":
+		return engine_type_of(.PadButton), true
+	case "MouseButton":
+		return engine_type_of(.MouseButton), true
 	case "Stick":
 		return engine_type_of(.Stick), true
 	case "Color":

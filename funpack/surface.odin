@@ -130,16 +130,27 @@ STDLIB_SURFACE := []Module_Surface{
 	},
 	{
 		// §23: the input surface. Input is the read-only resource;
-		// PlayerId/Key/Stick are enums; Bindings is the builder type;
-		// keys_axis/stick_x/stick_y/wasd/stick are engine-provided axis-source
-		// helpers (wasd is the 2D WASD axis source, stick a gamepad-stick axis
-		// source). stick_x and stick_y are the horizontal/vertical twins: a
-		// gamepad stick into a single-axis source (krognid binds the left stick's
-		// x to Strafe and its y to Forward).
+		// PlayerId/Key/PadButton/MouseButton/Stick are the device enums (named
+		// only inside bindings() — §23 §1 keeps them out of sim code); Bindings is
+		// the builder type. The source helpers (§23 §3, ADR
+		// 2026-06-15-engine-input-source-helpers-split): digital BUTTON sources are
+		// the [Key::…] key-list literal (.button's 3rd arg, the canonical keyboard
+		// form), pad(PadButton) for a gamepad button, and mouse(MouseButton) for a
+		// mouse button; 1D AXIS sources are keys_axis(neg, pos)/stick_x/stick_y; 2D
+		// AXIS sources are wasd()/arrows() (keyboard quads) and stick(Stick). wasd
+		// covers the WASD quad, arrows the arrow-key quad (the only arrow-key 2D
+		// path — keys_axis is 1D). stick_x/stick_y are the horizontal/vertical
+		// twins: a gamepad stick into a single-axis source (krognid binds the left
+		// stick's x to Strafe and its y to Forward). `key(Key)` was dropped as
+		// redundant with the single-element [Key::W] list; `dpad()` (gamepad-dpad
+		// 2D) is spec-named but its runtime 2D pad-quad source is not yet modeled,
+		// so it is not admitted here (no broken seam).
 		path = "engine.input",
 		decls = {
 			{"Input", .Type_Name},
 			{"Key", .Type_Name},
+			{"PadButton", .Type_Name},
+			{"MouseButton", .Type_Name},
 			{"PlayerId", .Type_Name},
 			{"Bindings", .Type_Name},
 			{"Stick", .Type_Name},
@@ -147,7 +158,10 @@ STDLIB_SURFACE := []Module_Surface{
 			{"stick_x", .Func},
 			{"stick_y", .Func},
 			{"wasd", .Func},
+			{"arrows", .Func},
 			{"stick", .Func},
+			{"pad", .Func},
+			{"mouse", .Func},
 		},
 	},
 	{
@@ -849,9 +863,30 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 		// result is the same nil axis-source unknown keys_axis/stick_y yield,
 		// consumed only by Bindings.axis (whose source param is the nil unknown).
 		return clone_types({func_of({}, nil)}), true
+	case "arrows":
+		// §23 source helper: the 2D arrow-key keyboard axis source — no argument,
+		// the wasd() twin over Up/Down/Left/Right. It is the ONLY arrow-key 2D path
+		// (keys_axis is 1D), so dropping it would lose arrow-key 2D movement (ADR
+		// 2026-06-15-engine-input-source-helpers-split clause 3). Same nil
+		// axis-source result wasd() yields; lowers to the arrow keys_quad in emit.
+		return clone_types({func_of({}, nil)}), true
 	case "stick":
 		// §23 source helper: a gamepad stick into a 2D axis source.
 		return clone_types({func_of({engine_type_of(.Stick)}, nil)}), true
+	case "pad":
+		// §23 source helper: a gamepad digital BUTTON source — pad(PadButton::A).
+		// The canonical gamepad button source ([Key::…] is keyboard-only), it types
+		// like the axis helpers: the result is the nil unknown Bindings.button's
+		// source param (its 3rd arg) consumes, the same slot the [Key::…] key-list
+		// and the device source helpers feed.
+		return clone_types({func_of({engine_type_of(.PadButton)}, nil)}), true
+	case "mouse":
+		// §23 source helper: a mouse digital BUTTON source — mouse(MouseButton::Left).
+		// The mouse twin of pad(); neither is expressible by the keyboard-only
+		// [Key::…] list, so both close a real device-coverage gap (ADR
+		// 2026-06-15-engine-input-source-helpers-split). Result is the same nil
+		// unknown Bindings.button's source slot consumes.
+		return clone_types({func_of({engine_type_of(.MouseButton)}, nil)}), true
 	case "mesh":
 		// §19/§26 the manifest-checked string constructor: a String asset name into
 		// the typed handle. The closed-registry gate (asset_registry.odin) validates
@@ -931,6 +966,27 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 			// the function keys, M, and Enter; the runtime treats a key code as an
 			// opaque interned string, so admitting the variant here is the whole gate.
 			return engine_type_of(.Key), true
+		}
+	case "PadButton":
+		// §23 the gamepad digital-button enum a pad(PadButton::X) source names. The
+		// closed set is exactly the runtime's SDL→§23 pad map (device_live.odin
+		// pad_code_from_button): the four face buttons, Start/Back, the two
+		// shoulders, and the four d-pad directions (a d-pad direction binds as a
+		// digital button here; a single d-pad 2D axis is the deferred dpad() form).
+		switch variant {
+		case "A", "B", "X", "Y", "Start", "Back",
+		     "LeftShoulder", "RightShoulder",
+		     "DpadUp", "DpadDown", "DpadLeft", "DpadRight":
+			return engine_type_of(.PadButton), true
+		}
+	case "MouseButton":
+		// §23 the mouse digital-button enum a mouse(MouseButton::Left) source names.
+		// The closed set is the three standard buttons SDL reports
+		// (BUTTON_LEFT/MIDDLE/RIGHT), matching the runtime's mouse_code_from_button
+		// map (device_live.odin).
+		switch variant {
+		case "Left", "Middle", "Right":
+			return engine_type_of(.MouseButton), true
 		}
 	case "Stick":
 		switch variant {

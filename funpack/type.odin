@@ -48,10 +48,12 @@ Engine_Kind :: enum {
 	Time,     // §04 frame-time resource
 	Rng,      // threaded-resource RNG handle (engine.rand)
 	String,   // engine String (string literals, Draw::Text)
-	PlayerId, // §23 player-id enum
-	Key,      // §23 keyboard-key enum
-	Stick,    // §23 gamepad-stick enum
-	Color,    // §20 palette enum
+	PlayerId,    // §23 player-id enum
+	Key,         // §23 keyboard-key enum
+	PadButton,   // §23 gamepad-button enum (pad(PadButton::A) digital source)
+	MouseButton, // §23 mouse-button enum (mouse(MouseButton::Left) digital source)
+	Stick,       // §23 gamepad-stick enum
+	Color,       // §20 palette enum
 	Flip,     // §20 sprite-mirroring enum (None | X | Y | XY), Draw::Sprite.flip
 	// §11 physics surface: the Body record, its kind/shape enums, and the
 	// engine-routed Trigger signal.

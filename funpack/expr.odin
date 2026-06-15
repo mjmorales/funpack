@@ -377,6 +377,27 @@ infix_power :: proc(tok: Token) -> Binding_Power {
 	return .None
 }
 
+// leading_binary_op reports whether `tok` is a binary-ONLY operator standing in
+// a fresh statement/expression-start position — `and`/`or` (word operators
+// carried as Ident), a comparison (`== != < <= > >=`), or an arithmetic
+// (`+ * / %`) glyph — i.e. an infix operator with NO unary form. funpack is
+// newline-terminated (spec §02 §1), so such a token at expression start means
+// the prior line already ended a complete expression and this operator dangles
+// across the newline with no left operand. `-` and `not` are EXCLUDED: they
+// legally open a fresh expression (unary negation), so parse_unary owns them;
+// only the binary-only operators reach this predicate's `true`. The infix_power
+// table is the single source of which glyphs are infix; this predicate subtracts
+// the two that also open a unary form.
+leading_binary_op :: proc(tok: Token) -> bool {
+	if tok.kind == .Minus {
+		return false // `-` also opens a unary expression (parse_unary)
+	}
+	if tok.kind == .Ident && tok.text == "not" {
+		return false // `not` is the word unary operator (parse_unary)
+	}
+	return infix_power(tok) != .None
+}
+
 // parse_expression is the single expression seam every statement RHS
 // enters.
 parse_expression :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
@@ -384,6 +405,15 @@ parse_expression :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 }
 
 parse_binary :: proc(p: ^Parser, min_power: Binding_Power) -> (expr: Expr, err: Parse_Error) {
+	// A fresh expression cannot open on a binary operator — funpack is
+	// newline-terminated, so a leading `and`/`or`/comparison/arithmetic glyph is
+	// a continuation dangling off the prior (already complete) line. Name the
+	// verdict here at the single expression-entry seam, ahead of parse_unary,
+	// rather than letting parse_atom's bare Unexpected_Token (or, for the word
+	// operators, a stray name parse) swallow it (spec §02 §1).
+	if !at_end(p) && leading_binary_op(p.tokens[p.pos]) {
+		return nil, reject(p, p.tokens[p.pos], .Newline_Before_Binary_Op)
+	}
 	lhs := parse_unary(p) or_return
 	for !at_end(p) {
 		tok := p.tokens[p.pos]
@@ -677,6 +707,16 @@ parse_pattern :: proc(p: ^Parser) -> (pattern: Pattern, err: Parse_Error) {
 	tok := expect(p, .Ident) or_return
 	if tok.text == "_" {
 		return Pattern{kind = .Wildcard}, .None
+	}
+	// A `true`/`false` head is a bool literal in pattern position, not a
+	// mis-cased variant: Bool's two values are not a §02 §5 match domain (a
+	// match dispatches over a closed enum/tuple), so steer the author to
+	// `if`/`else` with the named verdict — branched AHEAD of the casing check,
+	// since `true`/`false` lex as a snake_case Ident that the Wrong_Case rule
+	// below would otherwise flag as casing rather than the real "Bool is not
+	// matchable" fault.
+	if tok.text == "true" || tok.text == "false" {
+		return pattern, reject(p, tok, .Bool_Pattern_Unsupported)
 	}
 	// The remaining forms are variant patterns: an UPPER_IDENT enum type,
 	// `::`, then an UPPER_IDENT variant (lexical-core.ebnf §2).

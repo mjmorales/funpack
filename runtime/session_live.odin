@@ -972,8 +972,10 @@ when #config(FUNPACK_LIVE, false) {
 	// dispatches .QUIT and an Escape KEYDOWN to the exit flag (Escape has no §23 Key
 	// variant, so the exit check claims it without touching the binding queue), and
 	// routes every other bindable event through the existing
-	// key_code_from_scancode / pad_code_from_button / stick_from_axis maps and the
-	// enqueue_* helpers onto the injected queue. It is the live producer's ONLY
+	// key_code_from_scancode / pad_code_from_button / mouse_code_from_button /
+	// stick_from_axis maps (the mouse arms mirror the pad arms — a digital button on
+	// a different device) and the enqueue_* helpers onto the injected queue. It is
+	// the live producer's ONLY
 	// drain — no second PollEvent loop exists anywhere, so the window is drained
 	// exactly once per tick (no double-drain) and the SDL→§23 dispatch lives in
 	// one switch. Returns true when an exit was requested. SDL repeats a held key;
@@ -1008,6 +1010,14 @@ when #config(FUNPACK_LIVE, false) {
 				if code, named := pad_code_from_button(sdl.GameControllerButton(event.cbutton.button));
 				   named {
 					enqueue_pad_up(queue, code)
+				}
+			case .MOUSEBUTTONDOWN:
+				if code, named := mouse_code_from_button(event.button.button); named {
+					enqueue_mouse_down(queue, code)
+				}
+			case .MOUSEBUTTONUP:
+				if code, named := mouse_code_from_button(event.button.button); named {
+					enqueue_mouse_up(queue, code)
 				}
 			case .CONTROLLERAXISMOTION:
 				stick, stick_axis, named := stick_from_axis(sdl.GameControllerAxis(event.caxis.axis))

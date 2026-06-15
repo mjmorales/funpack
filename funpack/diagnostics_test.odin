@@ -445,7 +445,7 @@ expect_located_arm :: proc(t: ^testing.T, d: Diagnostic, arm: string) {
 // test_arm_coverage_parse drives every Parse_Error arm through stage_parse_located
 // + parse_diagnostic and asserts each anchors a located diagnostic. The parser
 // stamps the offending token's span (or the stop token), so every arm carries a
-// non-zero line. Covers all 19 fault arms of Parse_Error (excluding .None).
+// non-zero line. Covers all 21 fault arms of Parse_Error (excluding .None).
 @(test)
 test_arm_coverage_parse :: proc(t: ^testing.T) {
 	cases := []Diag_Arm_Case {
@@ -467,6 +467,14 @@ test_arm_coverage_parse :: proc(t: ^testing.T) {
 		{"fn a(f: fn[Int]) -> Int { return 1 }\n", "Malformed_Fn_Type"},
 		{"fn a() -> String {\n  return \"bad \\q\"\n}\n", "Malformed_String_Escape"},
 		{"enum E {\n  @gtag(x)\n  A,\n}\n", "Variant_Directive_Wrong_Target"},
+		// F6: a bool literal in a match-arm pattern position. `true`/`false` lex as
+		// snake_case Idents, so without the dedicated branch this would mis-trip
+		// Wrong_Case; the dedicated arm steers the author to if/else.
+		{"fn pick() -> Int {\n  return match hit {\n    true => 1\n    false => 0\n  }\n}\n", "Bool_Pattern_Unsupported"},
+		// F5: a binary operator opening a fresh line — the §02 §1 newline already
+		// ended `return a < b`, so the dangling `and` is the named verdict, not a
+		// bare Unexpected_Token. Caught at the fn-body statement boundary.
+		{"fn keep() -> Bool {\n  return a < b\n  and c < d\n}\n", "Newline_Before_Binary_Op"},
 	}
 	for c in cases {
 		_, verdict := stage_parse_located(stage_lex(c.source))

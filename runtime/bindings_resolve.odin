@@ -110,15 +110,22 @@ delete_action_registry :: proc(registry: Action_Registry) {
 
 // Source_Kind is the closed §14 v3 source-form set (artifact-format §14) the
 // emitter lowers the §23 §3 builder helpers into. A button-contributing source
-// (Key, Pad) drives the edge/level fold; a 1D axis source (Keys_Axis, Stick_X,
-// Stick_Y) contributes to the action's single 1D value slot (the x component
-// `value` reads); a 2D source (Keys_Quad, Stick) contributes both components of
-// the action's Vec2 (the vector `axis` reads). `stick(Stick)` is a FIRST-CLASS
-// 2D form — never spread into the 1D stick_x/stick_y halves, whose contributions
-// land in the 1D slot (ADR 2026-06-06-binding-source-lowering-2d-quad-and-stick).
+// (Key, Pad, Mouse) drives the edge/level fold; a 1D axis source (Keys_Axis,
+// Stick_X, Stick_Y) contributes to the action's single 1D value slot (the x
+// component `value` reads); a 2D source (Keys_Quad, Stick) contributes both
+// components of the action's Vec2 (the vector `axis` reads). `stick(Stick)` is a
+// FIRST-CLASS 2D form — never spread into the 1D stick_x/stick_y halves, whose
+// contributions land in the 1D slot (ADR
+// 2026-06-06-binding-source-lowering-2d-quad-and-stick). Mouse is the digital
+// mouse-button source (ADR 2026-06-15-engine-input-source-helpers-split), the
+// exact fold-and-parse mirror of Pad — a different device, same edge/level
+// semantics; no committed artifact emits it, so it rides the v18 open window
+// (the §14 source-form vocabulary grows without moving any pinned reader's bytes,
+// exactly as Pad already sits parsed-but-unemitted at v18).
 Source_Kind :: enum {
 	Key, // key(Key::X) — a single digital source
 	Pad, // pad(PadButton::A) — a single digital source
+	Mouse, // mouse(MouseButton::Left) — a single digital source
 	Keys_Axis, // keys_axis(neg, pos) — two keys form one 1D analog axis
 	Stick_X, // stick_x(Stick::Left) — the x stick component into a 1D axis
 	Stick_Y, // stick_y(Stick::Left) — the y stick component into a 1D axis
@@ -253,11 +260,11 @@ player_from_string :: proc(s: string) -> (player: PlayerId, ok: bool) {
 
 // parse_source parses a §14 v3 source-form token into a Device_Source. The
 // token is `helper(args)`: the helper name selects the kind, the comma-split args
-// are the device codes. `key`/`pad` take one code; `keys_axis` takes neg,pos;
-// `stick_x`/`stick_y` take one stick code; `keys_quad` takes the ratified
-// (neg_x, pos_x, neg_y, pos_y) quad; `stick` takes one stick code and is the
-// first-class 2D form — the emitter records it verbatim, never spread into the
-// 1D stick_x/stick_y halves (artifact-format §14 v3). An unrecognized helper
+// are the device codes. `key`/`pad`/`mouse` take one code; `keys_axis` takes
+// neg,pos; `stick_x`/`stick_y` take one stick code; `keys_quad` takes the
+// ratified (neg_x, pos_x, neg_y, pos_y) quad; `stick` takes one stick code and is
+// the first-class 2D form — the emitter records it verbatim, never spread into
+// the 1D stick_x/stick_y halves (artifact-format §14 v3). An unrecognized helper
 // returns ok=false.
 parse_source :: proc(
 	token: string,
@@ -287,6 +294,12 @@ parse_source :: proc(
 			return {}, false
 		}
 		return Device_Source{kind = .Pad, code = strings.clone(strings.trim_space(parts[0]), allocator)},
+			true
+	case "mouse":
+		if len(parts) != 1 {
+			return {}, false
+		}
+		return Device_Source{kind = .Mouse, code = strings.clone(strings.trim_space(parts[0]), allocator)},
 			true
 	case "keys_axis":
 		if len(parts) != 2 {
@@ -335,14 +348,16 @@ parse_source :: proc(
 // --- The headless injected device-event queue (§23 §5 producer seam) ------
 
 // Device_Event_Kind is the closed set of raw device transitions the resolver
-// coalesces: a digital down/up edge on a key or pad button, and an analog stick
-// axis sample. These are RAW device events, never actions — they exist only
+// coalesces: a digital down/up edge on a key, pad, or mouse button, and an analog
+// stick axis sample. These are RAW device events, never actions — they exist only
 // inside this device-aware layer and are gone by the time the snapshot is built.
 Device_Event_Kind :: enum {
 	Key_Down,
 	Key_Up,
 	Pad_Down,
 	Pad_Up,
+	Mouse_Down,
+	Mouse_Up,
 	Stick_Sample,
 }
 
@@ -411,6 +426,19 @@ enqueue_pad_down :: proc(queue: ^Device_Queue, code: string) {
 // enqueue_pad_up injects a pad-button-up raw event for `code`.
 enqueue_pad_up :: proc(queue: ^Device_Queue, code: string) {
 	enqueue(queue, Device_Event{kind = .Pad_Up, code = code})
+}
+
+// enqueue_mouse_down injects a mouse-button-down raw event for `code` — the
+// digital mirror of enqueue_pad_down, coalesced into a `pressed` edge for any
+// action a binding maps the mouse button to (§23 §4).
+enqueue_mouse_down :: proc(queue: ^Device_Queue, code: string) {
+	enqueue(queue, Device_Event{kind = .Mouse_Down, code = code})
+}
+
+// enqueue_mouse_up injects a mouse-button-up raw event for `code` — a `released`
+// edge, the level going false at the tick instant unless re-pressed.
+enqueue_mouse_up :: proc(queue: ^Device_Queue, code: string) {
+	enqueue(queue, Device_Event{kind = .Mouse_Up, code = code})
 }
 
 // enqueue_stick_sample injects an analog stick sample for `code` on the named
@@ -661,10 +689,10 @@ resolve_window :: proc(
 	// injection order; folding it in place is the deterministic replay.
 	for event in queue.events {
 		switch event.kind {
-		case .Key_Down, .Pad_Down:
+		case .Key_Down, .Pad_Down, .Mouse_Down:
 			levels.went_down[event.code] = true
 			levels.level[event.code] = true
-		case .Key_Up, .Pad_Up:
+		case .Key_Up, .Pad_Up, .Mouse_Up:
 			levels.level[event.code] = false
 		case .Stick_Sample:
 			levels.stick_sample[Stick_Sample_Key{event.code, event.stick_axis}] = event.sample
@@ -704,7 +732,7 @@ accumulate_button :: proc(
 	source: Device_Source,
 	window: Window_Levels,
 ) {
-	if source.kind != .Key && source.kind != .Pad {
+	if source.kind != .Key && source.kind != .Pad && source.kind != .Mouse {
 		return
 	}
 	accum := buttons[key]
@@ -760,7 +788,8 @@ accumulate_axis :: proc(
 		if sample, sampled := window.stick_sample[Stick_Sample_Key{source.code, .Y}]; sampled {
 			contribution.y = apply_deadzone(sample)
 		}
-	case .Key, .Pad:
+	case .Key, .Pad, .Mouse:
+		// Digital button sources contribute nothing to an axis action.
 		return
 	}
 	total := axes[key]

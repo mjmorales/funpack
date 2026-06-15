@@ -287,6 +287,39 @@ test_parse_match_bad_pattern_case_rejected :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
+// F6 (dogfood-mario): a match dispatched on a bool literal pattern. `true`/`false`
+// lex as snake_case Idents in variant-head position, so the casing check would
+// mis-flag them as Wrong_Case ("snake_case for fn/field names…") — a misdiagnosis
+// of the real fault: Bool's two values are not a §02 §5 match domain. The
+// dedicated Bool_Pattern_Unsupported verdict branches AHEAD of the casing check
+// and steers the author to if/else. The `true` and `false` arms each trip it.
+@(test)
+test_parse_match_on_bool_true_pattern_steers_to_if :: proc(t: ^testing.T) {
+	_, err := parse_expr_text("match hit {\n  true => 1\n  false => 0\n}\n")
+	testing.expect_value(t, err, Parse_Error.Bool_Pattern_Unsupported)
+}
+
+@(test)
+test_parse_match_on_bool_false_first_arm_steers_to_if :: proc(t: ^testing.T) {
+	// The verdict is per-pattern, so a `false`-first arm trips it too — the
+	// branch keys on the literal text, not arm order.
+	_, err := parse_expr_text("match done {\n  false => 0\n  true => 1\n}\n")
+	testing.expect_value(t, err, Parse_Error.Bool_Pattern_Unsupported)
+}
+
+// F5 (dogfood-mario): the exact two-line case through a full fn parse. `return a
+// < b` ends at the §02 §1 newline (a complete expression), so the `and c < d`
+// continuation dangles at the next statement-start. The fn-body statement loop
+// catches the leading binary operator ahead of the R_Brace expectation that
+// would otherwise report a bare Unexpected_Token on `and` (the misfire F5
+// reported), naming Newline_Before_Binary_Op instead.
+@(test)
+test_parse_fn_body_leading_binary_op_after_newline_rejected :: proc(t: ^testing.T) {
+	source := "fn keep() -> Bool {\n  return a < b\n  and c < d\n}\n"
+	_, err := stage_parse(stage_lex(source))
+	testing.expect_value(t, err, Parse_Error.Newline_Before_Binary_Op)
+}
+
 // parse_match_from_keyword consumes the leading `match` token then
 // delegates to parse_match — mirroring how parse_atom dispatches the
 // keyword, for a test that drives parse_match directly.

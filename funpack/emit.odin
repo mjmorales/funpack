@@ -1269,14 +1269,17 @@ device_code_source :: proc(expr: Expr) -> string {
 
 // lower_source_call lowers a §23 §3 builder-call source into its ratified §14
 // source form (schema v3): `wasd()` lowers to the 2D digital quad
-// `keys_quad(Key::A,Key::D,Key::W,Key::S)` — argument order (neg_x, pos_x,
-// neg_y, pos_y), up = neg_y in the y-down draw space, matching SDL stick
-// polarity — and every already-canonical helper (key/pad/keys_axis/stick/
+// `keys_quad(Key::A,Key::D,Key::W,Key::S)` and `arrows()` to its arrow-key twin
+// `keys_quad(Key::Left,Key::Right,Key::Up,Key::Down)` — argument order (neg_x,
+// pos_x, neg_y, pos_y), up = neg_y in the y-down draw space, matching SDL stick
+// polarity — and every already-canonical helper (key/pad/mouse/keys_axis/stick/
 // stick_x/stick_y) renders verbatim through builder_call_string. `stick(Stick)`
 // is deliberately NOT spread into stick_x/stick_y: those are 1D forms feeding
 // the action's single 1D value slot, while `stick` is a first-class 2D source
 // the runtime folds as both components (ADR
-// 2026-06-06-binding-source-lowering-2d-quad-and-stick).
+// 2026-06-06-binding-source-lowering-2d-quad-and-stick). `arrows()` lowers to a
+// keys_quad the runtime already resolves, so it needs no new source-form
+// vocabulary (ADR 2026-06-15-engine-input-source-helpers-split).
 lower_source_call :: proc(expr: Expr) -> string {
 	call, is_call := expr.(^Call_Expr)
 	if !is_call {
@@ -1285,6 +1288,9 @@ lower_source_call :: proc(expr: Expr) -> string {
 	if name, is_name := call.callee.(^Name_Expr); is_name {
 		if name.name == "wasd" && len(call.args) == 0 {
 			return "keys_quad(Key::A,Key::D,Key::W,Key::S)"
+		}
+		if name.name == "arrows" && len(call.args) == 0 {
+			return "keys_quad(Key::Left,Key::Right,Key::Up,Key::Down)"
 		}
 	}
 	return builder_call_string(expr)

@@ -232,6 +232,24 @@ pad_code_from_button :: proc(button: sdl.GameControllerButton) -> (code: string,
 	return "", false
 }
 
+// mouse_code_from_button maps an SDL mouse-button index onto the §23
+// "MouseButton::<Name>" token — the digital mirror of pad_code_from_button.
+// SDL reports the button index as a raw u8 (sdl.BUTTON_LEFT/MIDDLE/RIGHT, the
+// standard three buttons), not an enum; an index with no §23 variant (extra
+// buttons X1/X2) is `named` false and dropped before the queue, matching the pad
+// map's drop-the-unbindable discipline.
+mouse_code_from_button :: proc(button: u8) -> (code: string, named: bool) {
+	switch button {
+	case sdl.BUTTON_LEFT:
+		return "MouseButton::Left", true
+	case sdl.BUTTON_MIDDLE:
+		return "MouseButton::Middle", true
+	case sdl.BUTTON_RIGHT:
+		return "MouseButton::Right", true
+	}
+	return "", false
+}
+
 // stick_from_axis maps an SDL game-controller axis onto its §23 stick code and
 // the Stick_Axis component the queue's stick sample carries. SDL's LEFTX/LEFTY
 // resolve to "Stick::Left" X/Y and RIGHTX/RIGHTY to "Stick::Right" X/Y — the same

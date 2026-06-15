@@ -190,6 +190,82 @@ test_hunt_imports_populate_bindings :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_input_device_button_helpers_bind :: proc(t: ^testing.T) {
+	// The §23 §3 device-button surface (ADR
+	// 2026-06-15-engine-input-source-helpers-split): pad/mouse/arrows are funcs and
+	// PadButton/MouseButton are type names, each owned by engine.input. pad/mouse
+	// close the gamepad/mouse digital-button gap the keyboard-only [Key::…] list
+	// cannot reach; arrows is the only arrow-key 2D source. Each member binds to
+	// engine.input with the expected Decl_Kind — the closed-table admission this
+	// surface owns.
+	source := "import engine.input.{Bindings, PlayerId, Key, PadButton, MouseButton, pad, mouse, arrows, wasd, stick, Stick}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	expectations := []Surface_Expectation {
+		{"Bindings", "engine.input", .Type_Name},
+		{"PlayerId", "engine.input", .Type_Name},
+		{"Key", "engine.input", .Type_Name},
+		{"PadButton", "engine.input", .Type_Name},
+		{"MouseButton", "engine.input", .Type_Name},
+		{"Stick", "engine.input", .Type_Name},
+		{"pad", "engine.input", .Func},
+		{"mouse", "engine.input", .Func},
+		{"arrows", "engine.input", .Func},
+		{"wasd", "engine.input", .Func},
+		{"stick", "engine.input", .Func},
+	}
+	expect_bindings(t, bindings, expectations)
+}
+
+@(test)
+test_input_device_button_bindings_body_typechecks :: proc(t: ^testing.T) {
+	// End-to-end surface admission: a bindings() body binding pad(PadButton::A) and
+	// mouse(MouseButton::Left) to a Button action and arrows() to an Axis action
+	// typechecks clean through the whole pipeline (ADR
+	// 2026-06-15-engine-input-source-helpers-split). pad/mouse type as the nil
+	// unknown Bindings.button's source slot consumes (the same slot the [Key::…]
+	// list feeds); arrows types like wasd into Bindings.axis. The trailing passing
+	// test pins a clean run (Pipeline_Error.None, one passed assert) — a missing
+	// helper would halt at Typecheck_Failed (Unknown_Member) before the assert.
+	source := "import engine.input.{Bindings, PlayerId, PadButton, MouseButton, pad, mouse, arrows}\n" +
+		"import engine.math.to_fixed\n" +
+		"enum Fire: Button { Shoot, Jump }\n" +
+		"enum Drive: Axis { Move }\n" +
+		"fn bindings() -> Bindings {\n" +
+		"  return Bindings.empty()\n" +
+		"    .button(PlayerId::P1, Fire::Shoot, pad(PadButton::A))\n" +
+		"    .button(PlayerId::P1, Fire::Jump,  mouse(MouseButton::Left))\n" +
+		"    .axis(PlayerId::P1, Drive::Move, arrows())\n" +
+		"}\n" +
+		"test \"x\" {\n\tassert to_fixed(2) == 2.0\n}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_input_device_button_unknown_variant_rejected :: proc(t: ^testing.T) {
+	// The closed-enum guard on the new device enums: a variant outside the admitted
+	// PadButton set is not a value, mirroring how a Key/Stick variant outside its
+	// set rejects. `PadButton::Triangle` is no §23 pad button (the set is the SDL→§23
+	// face/shoulder/dpad map), so the call site fails typecheck rather than binding a
+	// phantom device code the runtime could never resolve.
+	source := "import engine.input.{Bindings, PlayerId, PadButton, pad}\n" +
+		"enum Fire: Button { Shoot }\n" +
+		"fn bindings() -> Bindings {\n" +
+		"  return Bindings.empty()\n" +
+		"    .button(PlayerId::P1, Fire::Shoot, pad(PadButton::Triangle))\n" +
+		"}\n" +
+		"test \"x\" {\n\tassert 1 == 1\n}\n"
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
+}
+
+@(test)
 test_snake_hunt_import_lines_compile_clean :: proc(t: ^testing.T) {
 	// The whole pipeline accepts the snake and hunt import lines ahead of a
 	// passing assert — no unknown-module / unknown-member halts typecheck, so

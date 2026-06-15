@@ -32,17 +32,26 @@ type Binary struct {
 }
 
 // ErrNotFound is the sentinel returned when no funpack binary can be located —
-// neither $FUNPACK_BIN nor a `funpack` on PATH. It is an *mcperr.Error of
-// CategoryResolver. Match it by errors.Is for the category, or by identity
-// (err == ErrNotFound) when a caller must distinguish it from other resolver
-// failures, since mcperr.(*Error).Is compares by category alone.
-var ErrNotFound = mcperr.New(mcperr.CategoryResolver, "funpack binary not found: set $FUNPACK_BIN or put funpack on PATH")
+// neither $FUNPACK_BIN, a `funpack` on PATH, nor a standard install location. It
+// is an *mcperr.Error of CategoryResolver. Match it by errors.Is for the
+// category, or by identity (err == ErrNotFound) when a caller must distinguish
+// it from other resolver failures, since mcperr.(*Error).Is compares by category
+// alone.
+//
+// The message names BOTH remedies because either resolves it: put funpack on
+// PATH, OR point $FUNPACK_BIN at an absolute path. A bare $FUNPACK_BIN (e.g. the
+// shipped .mcp.json default `funpack`) is PATH-searched like an unset value, so
+// it is not a third broken case — see locate.
+var ErrNotFound = mcperr.New(mcperr.CategoryResolver, "funpack binary not found: put funpack on PATH, or set $FUNPACK_BIN to an absolute path to the binary")
 
 // Resolve locates the funpack binary and populates its version metadata.
 //
-// Lookup order: $FUNPACK_BIN first (must exist and be an executable file), then
-// exec.LookPath("funpack"), then the standard install locations (commonFunpackPaths)
-// for the minimal-child-PATH case. A miss everywhere returns ErrNotFound. Once
+// Lookup order: $FUNPACK_BIN first, then exec.LookPath("funpack"), then the
+// standard install locations (commonFunpackPaths) for the minimal-child-PATH
+// case. A BARE $FUNPACK_BIN (no path separator, e.g. the shipped .mcp.json
+// default `funpack`) is PATH-searched, not stat'd as a cwd-relative file; an
+// $FUNPACK_BIN that CONTAINS a separator is taken as a literal path and must
+// exist and be executable. A miss everywhere returns ErrNotFound. Once
 // located, it runs `<bin> version --json` and decodes stdout into
 // contract.VersionInfo; a probe failure (e.g. a funpack too old to support --json)
 // or unparseable JSON returns a wrapped CategoryResolver error naming the path and
@@ -63,15 +72,33 @@ func Resolve() (Binary, error) {
 
 // locate returns the funpack executable path: $FUNPACK_BIN, then PATH, then the
 // common install locations (the fallback for a child process with a minimal PATH).
+//
+// $FUNPACK_BIN is split on whether it names a PATH command or a filesystem path:
+//   - A value CONTAINING a path separator (absolute or cwd-relative, e.g.
+//     /opt/homebrew/bin/funpack or ./funpack) is taken literally and must stat as
+//     an executable file — a miss/dir/non-exec is reported against that exact path.
+//   - A BARE command name (no separator, e.g. the shipped .mcp.json default
+//     `funpack`) is NOT a cwd-relative file: it is resolved exactly like an unset
+//     $FUNPACK_BIN — exec.LookPath(name), then the commonFunpackPaths fallback.
+//     os.Stat("funpack") against cwd would always miss even with funpack on PATH,
+//     which is the bug this split fixes (the shipped default was broken out of the
+//     box). funpackName lets a bare $FUNPACK_BIN pin a non-default command name.
 func locate() (string, error) {
+	funpackName := "funpack"
 	if bin := os.Getenv("FUNPACK_BIN"); bin != "" {
-		if err := assertExecutable(bin); err != nil {
-			return "", err
+		if strings.ContainsRune(bin, filepath.Separator) {
+			// A path-shaped value: take it literally, stat as an executable file.
+			if err := assertExecutable(bin); err != nil {
+				return "", err
+			}
+			return bin, nil
 		}
-		return bin, nil
+		// A bare command name: PATH-search it (and the common-paths fallback)
+		// exactly like an unset value, under this name instead of the default.
+		funpackName = bin
 	}
 
-	if path, err := exec.LookPath("funpack"); err == nil {
+	if path, err := exec.LookPath(funpackName); err == nil {
 		return path, nil
 	}
 
@@ -102,8 +129,10 @@ var commonFunpackPaths = func() []string {
 }
 
 // assertExecutable verifies path names an existing, non-directory, executable
-// file. A missing path is ErrNotFound; a present-but-not-executable path is a
-// distinct resolver error naming the offending path.
+// file. It is the literal-path branch of locate (a path-shaped $FUNPACK_BIN or a
+// commonFunpackPaths candidate) — never a bare command name, which goes through
+// exec.LookPath instead. A missing path is ErrNotFound; a present-but-not-executable
+// path is a distinct resolver error naming the offending path.
 func assertExecutable(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -135,7 +164,7 @@ func readVersion(path string) (contract.VersionInfo, error) {
 		// operator does not chase a phantom path problem.
 		e := mcperr.Wrap(mcperr.CategoryResolver,
 			fmt.Sprintf("funpack at %s failed `funpack %s` — it is likely older than v0.7.0 (which added `version --json`); funpack-mcp requires funpack >= v0.7.0, so upgrade funpack (the v0.7.0 release tarball, a repo build, or `brew upgrade funpack` once the tap publishes 0.7.0) and point $FUNPACK_BIN at it",
-				path, joinArgv(contract.VersionArgv)),
+				path, strings.Join(contract.VersionArgv, " ")),
 			err)
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
 			e.Detail = truncate(strings.TrimSpace(string(ee.Stderr)), 200)
@@ -191,18 +220,6 @@ func ResolveAndPreflight() (Binary, error) {
 		return Binary{}, err
 	}
 	return b, nil
-}
-
-// joinArgv renders argv for an error message ("version --json").
-func joinArgv(argv []string) string {
-	out := ""
-	for i, a := range argv {
-		if i > 0 {
-			out += " "
-		}
-		out += a
-	}
-	return out
 }
 
 // truncate caps s at n runes, appending an ellipsis when it was cut, so a noisy

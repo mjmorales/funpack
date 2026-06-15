@@ -40,10 +40,12 @@ type Hit struct {
 
 // DocsSearchOutput is the ranked hit list plus the corpus version it ranked
 // against, so a caller can tell which build's docs answered and detect a stale
-// pin against a known spec/funpack version.
+// pin against a known spec/funpack version. CorpusDrift makes a corpus-vs-compiler
+// version skew LOUD on every search rather than leaving the lag silent.
 type DocsSearchOutput struct {
-	Hits          []Hit  `json:"hits" jsonschema:"ranked search hits, best first; empty when nothing matched"`
-	CorpusVersion string `json:"corpus_version" jsonschema:"version stamp of the corpus that answered, derived from the manifest (spec ref + funpack version)"`
+	Hits          []Hit       `json:"hits" jsonschema:"ranked search hits, best first; empty when nothing matched"`
+	CorpusVersion string      `json:"corpus_version" jsonschema:"version stamp of the corpus that answered, derived from the manifest (spec ref + funpack version)"`
+	CorpusDrift   CorpusDrift `json:"corpus_drift" jsonschema:"corpus-vs-resolved-compiler funpack version skew; drift=true means these docs describe an older toolchain than the one that compiles"`
 }
 
 // registerDocsSearch wires the docs_search tool: query in, ranked hits out. The
@@ -65,6 +67,17 @@ func registerDocsSearch(srv *mcp.Server, logger zerolog.Logger) {
 
 	engine := search.New(corpus)
 	corpusVersion := corpusVersion(manifest)
+	// Resolve the compiler ONCE at registration: the resolved funpack is stable
+	// for the process lifetime, so drift is computed here and every search reuses
+	// it without re-execing funpack per call. A drift surfaces as a loud warning in
+	// every docs_search response.
+	drift := detectCorpusDrift(manifest)
+	if drift.Drift {
+		logger.Warn().
+			Str("corpus_funpack", drift.CorpusVersion).
+			Str("compiler_funpack", drift.CompilerVersion).
+			Msg("docs corpus version lags the resolved compiler — docs_search may describe an older toolchain")
+	}
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "docs_search",
@@ -97,7 +110,7 @@ func registerDocsSearch(srv *mcp.Server, logger zerolog.Logger) {
 			})
 		}
 		logger.Debug().Str("query", in.Query).Int("limit", limit).Int("hits", len(hits)).Msg("docs_search")
-		return nil, DocsSearchOutput{Hits: hits, CorpusVersion: corpusVersion}, nil
+		return nil, DocsSearchOutput{Hits: hits, CorpusVersion: corpusVersion, CorpusDrift: drift}, nil
 	})
 }
 

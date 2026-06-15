@@ -502,6 +502,8 @@ Parse_Error :: enum {
 	Malformed_Fn_Type,     // a §02 §3 function type whose shape matches none of the FnType form (fun.ebnf §11: 'fn' '(' (Type (',' Type)*)? ')' '->' Type) — a missing `(` after `fn`, a trailing comma or non-type parameter, a missing `)`/comma between parameters, or a missing `->` before the result; an element type's OWN errors keep their verdicts (a lowercase name stays Wrong_Case), the Malformed_Type_Params mold
 	Malformed_String_Escape, // a string literal whose backslash escape is outside the closed lexical-core §4 set (`\"` `\{` `\}`) — an unknown escape character, or a trailing backslash at line/input end; the lexer marks the literal (Token_Kind.Malformed_Escape) and advance names the verdict centrally, so every string position reports it; an UNTERMINATED string keeps its existing Unexpected_Token verdict — the Malformed_Fn_Type mold
 	Variant_Directive_Wrong_Target, // a declaration-family directive (@gtag/@todo/@expose/a debug probe) prefixing an enum variant — §05 admits exactly @doc on a variant ("each `Draw` variant carries a @doc"); every other directive names a non-variant target — or a variant @doc left dangling with no variant to attach to; @migrate and @index/@spatial on a variant keep their directive-keyed Migrate_Wrong_Target / Index_Wrong_Target verdicts — the Migrate_Wrong_Target mold
+	Bool_Pattern_Unsupported, // a `match` scrutinee dispatched on a bool literal pattern (`true`/`false` arm) — §02 §5 admits a match over a closed enum/tuple, not over Bool's two values, so a Bool match is a named verdict steering the author to `if`/`else` rather than the casing-class Wrong_Case the snake_case `true`/`false` head would otherwise trip (the parser sees `true`/`false` as a snake_case Ident in variant-head position); the Wrong_Case mold, branched ahead of the casing check
+	Newline_Before_Binary_Op, // a statement/expression-start position whose first token is a binary operator (`and`/`or`, a comparison `== != < <= > >=`, or an arithmetic `+ * / %`) — funpack is newline-terminated (spec §02 §1), so the prior line already ended a complete expression and a binary operator cannot continue it across the newline; a named verdict steering the author to keep each line a complete expression (or bind an intermediate `let`) rather than the bare Unexpected_Token the dangling operator would otherwise trip. Unary-capable leads (`-`, `not`) are EXCLUDED — they legally open a fresh expression — so only the binary-only operators arm this verdict
 }
 
 Parser :: struct {
@@ -1920,6 +1922,18 @@ parse_fn_body :: proc(p: ^Parser) -> (body: []Statement, err: Parse_Error) {
 			node := parse_if_stmt(p) or_return
 			append(&stmts, node)
 		case:
+			// A leading binary operator at statement start is a continuation
+			// dangling off the prior (already complete) statement — funpack is
+			// newline-terminated, so `return a < b` then `and c < d` ended the
+			// return on the first line. Name the verdict here, ahead of the
+			// R_Brace expectation that would otherwise report a bare
+			// Unexpected_Token on the operator (spec §02 §1). The expression-entry
+			// seam (expr.odin parse_binary) catches the same fault when the
+			// operator opens an expression directly (a match-arm body, a list
+			// element); this catches it at the fn-body statement boundary.
+			if !at_end(p) && leading_binary_op(p.tokens[p.pos]) {
+				return nil, reject(p, p.tokens[p.pos], .Newline_Before_Binary_Op)
+			}
 			break body_loop
 		}
 		skip_newlines(p)

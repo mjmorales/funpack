@@ -306,13 +306,16 @@ func TestEmptyDirIsToolError(t *testing.T) {
 	}
 }
 
-// TestResolveFailureIsToolError proves a resolve failure — no funpack on PATH and
-// no $FUNPACK_BIN — surfaces a structured resolver tool error rather than a
-// protocol fault.
+// TestResolveFailureIsToolError proves a resolve failure surfaces a structured
+// resolver tool error rather than a protocol fault.
 func TestResolveFailureIsToolError(t *testing.T) {
-	// Empty FUNPACK_BIN and an empty PATH guarantee Resolve cannot locate funpack.
-	t.Setenv("FUNPACK_BIN", "")
-	t.Setenv("PATH", "")
+	// Force a host-independent resolve miss: point $FUNPACK_BIN at a separator-bearing,
+	// guaranteed-absent path. A path-shaped FUNPACK_BIN is stat'd literally and never
+	// PATH-searched or common-paths-probed, so this misses regardless of any funpack
+	// installed on the host. (An empty PATH alone does NOT isolate the resolver: it
+	// still probes commonFunpackPaths, where a brew-installed funpack would resolve
+	// and run the verb — yielding a funpack error, not the resolver error under test.)
+	t.Setenv("FUNPACK_BIN", filepath.Join(t.TempDir(), "absent", "funpack"))
 	dir := projectDir(t)
 	session, ctx := connectBuildTools(t)
 

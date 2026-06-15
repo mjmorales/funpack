@@ -103,3 +103,89 @@ test_binding_calls_passes_canonical_1d_sources_verbatim :: proc(t: ^testing.T) {
 	testing.expect_value(t, binds[0].source, "keys_axis(Key::W,Key::S)")
 	testing.expect_value(t, binds[1].source, "stick_y(Stick::Left)")
 }
+
+// test_binding_calls_lowers_pad_and_mouse_button_sources proves the §23 §3
+// device-button sources land verbatim in the §14 record (ADR
+// 2026-06-15-engine-input-source-helpers-split): pad(PadButton::A) and
+// mouse(MouseButton::Left) are the gamepad/mouse twins of the keyboard [Key::…]
+// list — neither expressible by the keyboard-only list — and the runtime's
+// parse_source folds exactly these tokens (`pad`/`mouse` cases). A button source
+// is NOT spread (only the key-LIST literal spreads), so each is one record.
+@(test)
+test_binding_calls_lowers_pad_and_mouse_button_sources :: proc(t: ^testing.T) {
+	source := "enum Fire: Button { Shoot, Jump }\n" +
+		"fn bindings() -> Bindings {\n" +
+		"  return Bindings.empty()\n" +
+		"    .button(PlayerId::P1, Fire::Shoot, pad(PadButton::A))\n" +
+		"    .button(PlayerId::P1, Fire::Jump,  mouse(MouseButton::Left))\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	binds := binding_calls(ast)
+	testing.expect_value(t, len(binds), 2)
+	if len(binds) != 2 {
+		return
+	}
+	testing.expect_value(t, binds[0].source, "pad(PadButton::A)")
+	testing.expect_value(t, binds[0].kind, "button")
+	testing.expect_value(t, binds[0].action, "Fire::Shoot")
+	testing.expect_value(t, binds[1].source, "mouse(MouseButton::Left)")
+	testing.expect_value(t, binds[1].kind, "button")
+	testing.expect_value(t, binds[1].action, "Fire::Jump")
+}
+
+// test_binding_calls_spreads_mixed_device_key_list proves a key-LIST button
+// source stacks across DEVICES: [Key::W, PadButton::DpadUp] spreads to one
+// stacked bind per element, each carrying its own device's single-code helper
+// (key(…)/pad(…)) — device_code_source keys the helper off the element's enum,
+// so keyboard and gamepad bind the same action with no logic change (§23 §3).
+@(test)
+test_binding_calls_spreads_mixed_device_key_list :: proc(t: ^testing.T) {
+	source := "enum Move: Button { Up }\n" +
+		"fn bindings() -> Bindings {\n" +
+		"  return Bindings.empty()\n" +
+		"    .button(PlayerId::P1, Move::Up, [Key::W, PadButton::DpadUp])\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	binds := binding_calls(ast)
+	testing.expect_value(t, len(binds), 2)
+	if len(binds) != 2 {
+		return
+	}
+	testing.expect_value(t, binds[0].source, "key(Key::W)")
+	testing.expect_value(t, binds[1].source, "pad(PadButton::DpadUp)")
+}
+
+// test_binding_calls_lowers_arrows_to_arrow_keys_quad proves arrows() lowers to
+// keys_quad(Key::Left,Key::Right,Key::Up,Key::Down) — the arrow-key twin of
+// wasd(), the (neg_x,pos_x,neg_y,pos_y) order with up = neg_y in the y-down draw
+// space. It is the ONLY arrow-key 2D path (keys_axis is 1D), so it is kept rather
+// than dropped (ADR 2026-06-15-engine-input-source-helpers-split clause 3); the
+// runtime resolves the emitted keys_quad with no new source-form vocabulary.
+@(test)
+test_binding_calls_lowers_arrows_to_arrow_keys_quad :: proc(t: ^testing.T) {
+	source := "enum Drive: Axis { Move }\n" +
+		"fn bindings() -> Bindings {\n" +
+		"  return Bindings.empty()\n" +
+		"    .axis(PlayerId::P1, Drive::Move, arrows())\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	binds := binding_calls(ast)
+	testing.expect_value(t, len(binds), 1)
+	if len(binds) != 1 {
+		return
+	}
+	testing.expect_value(t, binds[0].source, "keys_quad(Key::Left,Key::Right,Key::Up,Key::Down)")
+	testing.expect_value(t, binds[0].kind, "axis")
+}

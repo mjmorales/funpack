@@ -1,6 +1,6 @@
 # funpack `engine.*` — complete module reference
 
-Verbatim-distilled from the funpack-spec `stdlib/engine/*.fun` signature files, the prose spec
+Verbatim-distilled from the in-repo `stdlib/engine/*.fun` signature files, the prose spec
 (`spec/26-stdlib.md`, `spec/23-input.md`), and the worked examples. Conventions: `self`-first =
 method; no-self return-qualified = associated constructor (`Type.fn()`); no-self bare = free
 function. Everything is `Fixed`-point and deterministic; partiality is `Option`/`Result`, never a
@@ -84,43 +84,56 @@ extern fn of(items: [T]) -> View[T]    // TEST FIXTURE: View.of([...])
 ```
 
 ## engine.input
+Importable surface (`import engine.input.{…}`):
 ```funpack
-extern type Axis   Button            // kinds for action enums: enum Drive: Axis {…}  enum Act: Button {…}
-enum PlayerId { P1, P2, P3, P4 }
-enum Key { A..Z, Up, Down, Left, Right, Space, Enter, Escape, Shift, Tab }   // bindings-only
-enum Stick { Left, Right }
-extern type Input
-extern type Bindings
-
-// query surface (all self: Input)
-extern fn pressed(self, player: PlayerId, action: Button) -> Bool    // down-edge this tick
-extern fn released(self, player: PlayerId, action: Button) -> Bool   // up-edge this tick
-extern fn held(self, player: PlayerId, action: Button) -> Bool       // level: down now
-extern fn value(self, player: PlayerId, action: Axis) -> Fixed       // 1D axis [-1,+1]
-extern fn axis(self, player: PlayerId, action: Axis) -> Vec2         // 2D axis, each comp [-1,+1]
-
-// binding sources + builder
-extern fn keys_axis(neg: Key, pos: Key) -> AxisSource
-extern fn stick_x(stick: Stick) -> AxisSource ; stick_y(stick) -> AxisSource
-extern fn key(k: Key) -> ButtonSource
-extern fn empty() -> Bindings                            // Bindings.empty()
-extern fn axis(self: Bindings, player, action: Axis, source: AxisSource) -> Bindings
-extern fn button(self: Bindings, player, action: Button, source: ButtonSource) -> Bindings
-
-// test doubles (self: Input)
-extern fn empty() -> Input                               // Input.empty()
-extern fn with_pressed/with_released/with_held(self, player, action: Button) -> Input
-extern fn with_value(self, player, action: Axis, value: Fixed) -> Input
-extern fn with_axis(self, player, action: Axis, value: Vec2) -> Input
+// types
+Input  Bindings                      // the read resource and the binding builder
+PlayerId                             // enum { P1, P2, P3, P4 }
+Key                                  // enum { A..Z, Up, Down, Left, Right, Space, Enter, M, F5, F9 } — bindings-only
+PadButton                            // enum { A, B, X, Y, Start, Back, LeftShoulder, RightShoulder, DpadUp, DpadDown, DpadLeft, DpadRight }
+MouseButton                          // enum { Left, Middle, Right }
+Stick                                // enum { Left, Right }
+// source-helper funcs
+keys_axis  stick_x  stick_y          // 1D axis sources
+wasd  arrows  stick                  // 2D axis sources
+pad  mouse                           // digital button sources
 ```
-**[FLAG] — trust `spec/23-input.md` over the signature file for binding helpers.** The full source
-set is: `key`, `keys_axis`, `stick_x`, `stick_y` (→ `value`), plus the 2D helpers `wasd()`,
-`arrows()`, `dpad()`, `stick(Stick)` each contributing a full **`Vec2`** (→ `axis`), plus
-`pad(PadButton)`, `mouse(MouseButton)`. `pad`/`mouse`/`wasd`/`arrows`/`dpad`/`stick` are absent from
-the `.fun` file. The `.button(player, action, [Key::W, Key::Up])` **list-of-keys** form is what pong/
-snake/§23 actually use (the file says `source: ButtonSource`). 2D orientation is y-down: `W` and
-stick-up read **negative y**. Bindings live in `fn bindings() -> Bindings` lifted into the
-entrypoint, not a pipeline block.
+**Not importable** — `Axis`/`Button` are role-kind ascriptions (by-text, written after the action
+enum name); `pressed`/`released`/`held`/`value`/`axis` (on `Input`) and `axis`/`button` (on
+`Bindings`) are receiver-resolved methods:
+```funpack
+enum Drive: Axis   { Move }          // an Axis action → read via value (1D) / axis (2D)
+enum Act:   Button { Jump, Fire }    // a Button action → read via pressed / released / held
+```
+
+```funpack
+// query surface — receiver methods on the Input resource (not imports)
+input.pressed(PlayerId, Button)  -> Bool    // down-edge this tick
+input.released(PlayerId, Button) -> Bool    // up-edge this tick
+input.held(PlayerId, Button)     -> Bool    // level: down now
+input.value(PlayerId, Axis)      -> Fixed   // 1D axis [-1,+1]
+input.axis(PlayerId, Axis)       -> Vec2    // 2D axis, each comp [-1,+1]
+
+// binding sources fed to .button(…) / .axis(…)
+[Key::W, Key::Up]                           // BUTTON: the key-list literal (a single key is [Key::W])
+pad(PadButton::A)                           // BUTTON: a gamepad button
+mouse(MouseButton::Left)                    // BUTTON: a mouse button
+keys_axis(Key::A, Key::D)                   // AXIS 1D
+stick_x(Stick::Left)  stick_y(Stick::Left)  // AXIS 1D
+wasd()  arrows()                            // AXIS 2D — WASD / arrow keys into a Vec2
+stick(Stick::Left)                          // AXIS 2D — a gamepad stick into a Vec2
+
+// builder + test doubles
+Bindings.empty().axis(PlayerId, Axis, <axis-source>).button(PlayerId, Button, <button-source>)
+Input.empty().with_pressed/with_released/with_held(PlayerId, Button)
+Input.empty().with_value(PlayerId, Axis, Fixed) ; with_axis(PlayerId, Axis, Vec2)
+```
+Sources for one action **stack** — a key-list may mix devices (`[Key::W, PadButton::DpadUp]`).
+2D orientation is y-down: `W` and stick-up read **negative y**. Bindings live in
+`fn bindings() -> Bindings` lifted into the entrypoint, not a pipeline block. There is **no `key(…)`
+helper** (use the `[Key::W]` one-element list). `dpad()` is spec-named (the d-pad as a single 2D
+`Vec2`) but not yet on the surface — bind the d-pad's directions as digital buttons via
+`pad(PadButton::DpadUp)` etc. (spec §23 §3; ADR `2026-06-15-engine-input-source-helpers-split`).
 
 ## engine.list
 ```funpack

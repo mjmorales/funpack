@@ -111,13 +111,117 @@ func TestResolveMissingIsErrNotFound(t *testing.T) {
 }
 
 // TestResolveFunpackBinMissingIsErrNotFound proves a pointed-but-absent
-// $FUNPACK_BIN is also ErrNotFound, not a generic stat error.
+// $FUNPACK_BIN ABSOLUTE path is ErrNotFound, not a generic stat error. The path
+// contains a separator, so it is taken literally and stat'd — the bare-name
+// branch never applies here.
 func TestResolveFunpackBinMissingIsErrNotFound(t *testing.T) {
 	isolatePATH(t)
 	t.Setenv("FUNPACK_BIN", filepath.Join(t.TempDir(), "nope"))
 
 	if _, err := Resolve(); err != ErrNotFound {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestResolveBareFunpackBinSearchesPATH is the F2 regression guard: a BARE
+// $FUNPACK_BIN (the shipped .mcp.json default `funpack`, no path separator) must
+// be PATH-searched, NOT stat'd as a cwd-relative file. Before the fix it was
+// os.Stat("funpack") against cwd and always missed even with funpack on PATH, so
+// the shipped default broke every funpack-backed tool out of the box. Stage a
+// fake funpack on PATH, point a bare $FUNPACK_BIN at it, and assert it resolves
+// via LookPath.
+func TestResolveBareFunpackBinSearchesPATH(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeFunpack(t, dir, goodPayload)
+	isolatePATH(t)
+	t.Setenv("PATH", dir)
+	t.Setenv("FUNPACK_BIN", "funpack") // bare name — the shipped default
+
+	b, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := filepath.Join(dir, "funpack"); b.Path != want {
+		t.Fatalf("Path = %q, want %q (bare FUNPACK_BIN must PATH-resolve)", b.Path, want)
+	}
+}
+
+// TestResolveBareFunpackBinFallsToCommonPaths proves a bare $FUNPACK_BIN that is
+// not on PATH still reaches the commonFunpackPaths fallback — the bare-name
+// branch is the unset-value path exactly, so the minimal-child-PATH probe applies
+// to it too. Stub commonFunpackPaths to a staged fake.
+func TestResolveBareFunpackBinFallsToCommonPaths(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeFunpack(t, dir, goodPayload)
+	isolatePATH(t) // clears PATH and stubs commonFunpackPaths to nil
+	t.Setenv("FUNPACK_BIN", "funpack")
+	commonFunpackPaths = func() []string { return []string{bin} }
+
+	b, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if b.Path != bin {
+		t.Fatalf("Path = %q, want %q (bare FUNPACK_BIN must reach commonFunpackPaths)", b.Path, bin)
+	}
+}
+
+// TestResolveBareFunpackBinMissingIsErrNotFound proves a bare $FUNPACK_BIN that
+// resolves nowhere (not on PATH, not in commonFunpackPaths) is ErrNotFound — the
+// shipped-default failure mode when funpack genuinely is not installed, distinct
+// from "broken even when installed" (the bug).
+func TestResolveBareFunpackBinMissingIsErrNotFound(t *testing.T) {
+	isolatePATH(t)
+	t.Setenv("FUNPACK_BIN", "funpack")
+
+	if _, err := Resolve(); err != ErrNotFound {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestResolveCustomBareFunpackBinSearchesPATH proves a bare $FUNPACK_BIN can pin
+// a NON-default command name, PATH-searched under that name. Stage a fake binary
+// named funpack-dev and resolve it via FUNPACK_BIN=funpack-dev.
+func TestResolveCustomBareFunpackBinSearchesPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell-script funpack is POSIX-only")
+	}
+	dir := t.TempDir()
+	custom := filepath.Join(dir, "funpack-dev")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"version\" ] && [ \"$2\" = \"--json\" ]; then\n" +
+		"  printf '%s' '" + goodPayload + "'\n  exit 0\nfi\nexit 3\n"
+	if err := os.WriteFile(custom, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake funpack-dev: %v", err)
+	}
+	isolatePATH(t)
+	t.Setenv("PATH", dir)
+	t.Setenv("FUNPACK_BIN", "funpack-dev")
+
+	b, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if b.Path != custom {
+		t.Fatalf("Path = %q, want %q", b.Path, custom)
+	}
+}
+
+// TestResolveAbsoluteFunpackBinStatLiteral proves an $FUNPACK_BIN containing a
+// separator is stat'd literally, NOT PATH-searched: a fake binary on PATH does
+// NOT satisfy an absolute FUNPACK_BIN that points elsewhere-and-absent. Guards
+// that the separator split did not accidentally route absolute paths through
+// LookPath.
+func TestResolveAbsoluteFunpackBinStatLiteral(t *testing.T) {
+	onPath := t.TempDir()
+	writeFakeFunpack(t, onPath, goodPayload) // a real funpack on PATH
+	isolatePATH(t)
+	t.Setenv("PATH", onPath)
+	// Absolute, separator-bearing, but absent: must NOT fall back to PATH.
+	t.Setenv("FUNPACK_BIN", filepath.Join(t.TempDir(), "elsewhere", "funpack"))
+
+	if _, err := Resolve(); err != ErrNotFound {
+		t.Fatalf("err = %v, want ErrNotFound (absolute FUNPACK_BIN must stat literally, not PATH-search)", err)
 	}
 }
 
