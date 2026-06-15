@@ -3,6 +3,8 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"github.com/mjmorales/funpack/mcp/internal/funpack"
 	"github.com/mjmorales/funpack/mcp/internal/introspect"
 	"github.com/mjmorales/funpack/mcp/internal/mcperr"
+	"github.com/mjmorales/funpack/mcp/internal/qoi"
 	"github.com/rs/zerolog"
 )
 
@@ -503,6 +506,100 @@ func TestEndToEndAgainstRealFunpack(t *testing.T) {
 	if !resp.Ok {
 		t.Fatalf("status response not ok: %+v", resp)
 	}
+
+	// A bare `attach <artifact>` pre-folds ATTACH_FRESH_TICKS empty-input ticks, so
+	// the canonical chain carries recorded ticks 0..63 — enough to drive the inspect
+	// group's §28 observe commands live. Drive draw_list (sim-pure, always serves)
+	// and screenshot (the impure present crossing) at tick 0 to prove the new inspect
+	// tools work end-to-end against the REAL runtime, and validate the QOI decoder
+	// against real core:image/qoi output rather than only a synthetic stream.
+	driveInspectLive(t, ctx, s)
+}
+
+// driveInspectLive drives the §28 inspect group's draw_list and screenshot commands
+// over a live attached session, asserting draw_list serves the sim-pure draw-list
+// and screenshot's real QOI frame decodes to the geometry it advertises. It is the
+// live half of the inspect-tools coverage: the unit tests pin the tool envelope over
+// a fake caller; this pins the wire payload against the actual runtime — the QOI a
+// real core:image/qoi encode produces must round-trip through the MCP decoder.
+func driveInspectLive(t *testing.T, ctx context.Context, s *Session) {
+	t.Helper()
+
+	// draw_list at tick 0: the sim-pure render projection always serves (headless
+	// included), so this is the floor the inspect group must clear live.
+	if err := introspect.EncodeRequest(s.Conn(), contract.Request{ID: 2, Cmd: "draw_list", Args: mustRawArgs(t, map[string]any{"tick": 0})}); err != nil {
+		t.Fatalf("EncodeRequest draw_list: %v", err)
+	}
+	drawResp, err := s.Demux().Await(ctx, 2)
+	if err != nil {
+		t.Fatalf("Await draw_list response: %v", err)
+	}
+	if !drawResp.Ok {
+		t.Fatalf("draw_list response not ok: %+v", drawResp)
+	}
+	var draw struct {
+		Tick     int64    `json:"tick"`
+		Commands []string `json:"commands"`
+	}
+	if drawResp.Result == nil || json.Unmarshal(*drawResp.Result, &draw) != nil || draw.Tick != 0 {
+		t.Fatalf("draw_list result shape wrong: %+v", drawResp)
+	}
+
+	// screenshot at tick 0: the FUNPACK_LIVE build serves the capture HEADLESS (it
+	// forces SDL's dummy video driver), so this returns a real base64-QOI frame. The
+	// MCP QOI decoder must decode it to exactly the width*height*4 RGBA the header
+	// advertises — the live validation of the decoder against real runtime output.
+	if err := introspect.EncodeRequest(s.Conn(), contract.Request{ID: 3, Cmd: "screenshot", Args: mustRawArgs(t, map[string]any{"tick": 0})}); err != nil {
+		t.Fatalf("EncodeRequest screenshot: %v", err)
+	}
+	shotResp, err := s.Demux().Await(ctx, 3)
+	if err != nil {
+		t.Fatalf("Await screenshot response: %v", err)
+	}
+	if !shotResp.Ok {
+		// A FUNPACK_LIVE build serves the headless capture; a refusal here means the
+		// binary under test is NOT FUNPACK_LIVE (or has no capture path) — surface the
+		// runtime's own boundary text rather than masking it.
+		t.Fatalf("screenshot response not ok (is FUNPACK_BIN a FUNPACK_LIVE build?): %+v", shotResp)
+	}
+	var shot struct {
+		Tick   int64  `json:"tick"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+		Format string `json:"format"`
+		Pixels string `json:"pixels"`
+	}
+	if shotResp.Result == nil || json.Unmarshal(*shotResp.Result, &shot) != nil {
+		t.Fatalf("screenshot result shape wrong: %+v", shotResp)
+	}
+	if shot.Format != "qoi" {
+		t.Fatalf("screenshot format %q, want qoi", shot.Format)
+	}
+	qoiBytes, err := base64.StdEncoding.DecodeString(shot.Pixels)
+	if err != nil {
+		t.Fatalf("screenshot pixels not valid base64: %v", err)
+	}
+	rgba, header, err := qoi.Decode(qoiBytes)
+	if err != nil {
+		t.Fatalf("real runtime QOI did not decode through the MCP decoder: %v", err)
+	}
+	if int(header.Width) != shot.Width || int(header.Height) != shot.Height {
+		t.Fatalf("decoded QOI dims %dx%d disagree with the screenshot envelope %dx%d", header.Width, header.Height, shot.Width, shot.Height)
+	}
+	if len(rgba) != shot.Width*shot.Height*4 {
+		t.Fatalf("decoded RGBA is %d bytes, want %d (width*height*4)", len(rgba), shot.Width*shot.Height*4)
+	}
+}
+
+// mustRawArgs marshals a §28 args object into the json.RawMessage the Request
+// carries, failing the test on a marshal error (a static map never errors).
+func mustRawArgs(t *testing.T, args map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return raw
 }
 
 // --- test helpers ------------------------------------------------------------
