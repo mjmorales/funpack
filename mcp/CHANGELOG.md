@@ -2,6 +2,11 @@
 
 All notable changes to funpack-mcp.
 
+## [0.3.3] - 2026-06-16
+
+### Fixes
+- fix(mcp): pin docs-corpus spec_ref to the nearest release tag (3348b36)
+
 ## [0.3.2] - 2026-06-16
 
 ### Fixes
