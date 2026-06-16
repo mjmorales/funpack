@@ -2,6 +2,11 @@
 
 All notable changes to funpack-mcp.
 
+## [0.3.2] - 2026-06-16
+
+### Fixes
+- fix(mcp): version compatibility is advisory, not a startup gate (3dd5fd1)
+
 ## [0.3.1] - 2026-06-16
 
 ### Fixes
