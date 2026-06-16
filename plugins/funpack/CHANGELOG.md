@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.5.1] - 2026-06-16
+
+### Fixes
+- fix(plugin): funpack-mcp launcher resolves the compiler zero-config (3dcf26c)
+
 ## [0.5.0] - 2026-06-16
 
 ### Features
