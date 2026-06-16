@@ -105,8 +105,11 @@ type SourceRecord struct {
 // against the same sources reproduces the manifest byte-for-byte (no timestamp,
 // no machine path) — a clean git diff means the corpus is current.
 type Manifest struct {
-	// SpecRef is `git -C $FUNPACK_SPEC_DIR describe --tags --always` at
-	// generation time.
+	// SpecRef is the nearest release tag reachable from HEAD
+	// (`git -C $FUNPACK_SPEC_DIR describe --tags --always --abbrev=0`) at
+	// generation time — no commit-distance suffix, so it is byte-stable between
+	// releases. Informational provenance only; content integrity is the
+	// per-source ContentHash.
 	SpecRef string `json:"spec_ref"`
 	// FunpackVersion is the first line of `funpack version` at generation time.
 	FunpackVersion string `json:"funpack_version"`

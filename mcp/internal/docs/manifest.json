@@ -1,18 +1,18 @@
 {
-  "spec_ref": "plugin-v0.4.0",
+  "spec_ref": "funpack-mcp-v0.3.2",
   "funpack_version": "funpack 0.8.1",
   "sources": [
     {
       "root": "spec",
       "kind": "spec",
-      "ref": "plugin-v0.4.0",
+      "ref": "funpack-mcp-v0.3.2",
       "sections": 233,
       "content_hash": "db72e3ed4645e6600724beec8545f661ab85351a89abcddce0c05b6df16e56b5"
     },
     {
       "root": "stdlib/engine",
       "kind": "engine",
-      "ref": "plugin-v0.4.0",
+      "ref": "funpack-mcp-v0.3.2",
       "sections": 284,
       "content_hash": "a76cbbe9e19e1d4966eea11529d8aef5c9ed716bbe9a66792432cb9719996520"
     },

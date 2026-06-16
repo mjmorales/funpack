@@ -427,10 +427,15 @@ func slugify(s string) string {
 	return s
 }
 
-// gitDescribe returns `git -C <dir> describe --tags --always`, or "unknown" on
-// failure (a shallow or detached checkout still yields a short sha).
+// gitDescribe returns the nearest release tag reachable from HEAD via
+// `git -C <dir> describe --tags --always --abbrev=0`, or "unknown" on failure.
+// --abbrev=0 drops the `-N-g<sha>` commit-distance suffix so the ref stays
+// stable across dev commits between releases: the manifest is byte-pinned, and a
+// HEAD-relative suffix would drift the committed manifest on every commit. The
+// nearest tag bumps only at the next release. --always preserves a short-sha
+// fallback for a tagless or shallow checkout.
 func gitDescribe(dir string) string {
-	out, err := exec.Command("git", "-C", dir, "describe", "--tags", "--always").Output()
+	out, err := exec.Command("git", "-C", dir, "describe", "--tags", "--always", "--abbrev=0").Output()
 	if err != nil {
 		return "unknown"
 	}
