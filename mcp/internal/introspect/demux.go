@@ -3,6 +3,7 @@ package introspect
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
@@ -159,9 +160,10 @@ func (d *Demux) deliver(resp *contract.Response) {
 // arrives. It returns:
 //
 //   - the response, once Run delivers it;
-//   - ctx.Err(), if the passed ctx is cancelled while waiting (the registration
-//     is reclaimed so a later response for id is dropped rather than delivered
-//     to a gone caller);
+//   - a structured CategorySession error naming the reason (deadline vs cancel),
+//     if the passed ctx is cancelled while waiting — never the bare "context
+//     canceled" string (the registration is reclaimed so a later response for id
+//     is dropped rather than delivered to a gone caller);
 //   - the loop's terminal error, if Run stops while the caller is blocked — a
 //     clean EOF/cancel surfaces as a CategorySession error, a protocol fault
 //     surfaces as the original *mcperr.Error of CategoryProtocol.
@@ -188,11 +190,37 @@ func (d *Demux) Await(ctx context.Context, id int64) (*contract.Response, error)
 		return resp, nil
 	case <-ctx.Done():
 		d.reclaim(id)
-		return nil, ctx.Err()
+		return nil, waitContextErr(ctx.Err(), id)
 	case <-d.done:
 		d.reclaim(id)
 		return nil, d.terminalErr()
 	}
+}
+
+// waitContextErr maps a per-request wait's context error into a structured,
+// human-and-model-legible session error so a cancelled or expired Await never
+// surfaces as the bare "context canceled" string a caller cannot act on. A
+// deadline (the runtime did not answer in time) and a cancel (the caller/SDK
+// abandoned the request) are named distinctly. A non-context error — there is
+// none on this branch today, but the guard keeps the mapping total — passes
+// through unchanged.
+func waitContextErr(err error, id int64) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return mcperr.Wrap(mcperr.CategorySession,
+			fmt.Sprintf("introspection request id %d: the runtime did not answer before the request deadline", id), err)
+	case errors.Is(err, context.Canceled):
+		return mcperr.Wrap(mcperr.CategorySession,
+			fmt.Sprintf("introspection request id %d: the request was cancelled before the runtime answered", id), err)
+	default:
+		return err
+	}
+}
+
+// isContextErr reports whether err is one of the two standard context
+// terminations, so a deliberate read-loop stop is named rather than leaked raw.
+func isContextErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // reclaim removes the slot for id if it is still registered. Called when an
@@ -235,6 +263,15 @@ func (d *Demux) finish(err error) error {
 // answered.
 func (d *Demux) terminalErr() error {
 	if d.err != nil {
+		// A context-cancel terminal means the read loop was deliberately stopped
+		// (Close cancels the session's run ctx). To a blocked caller that is a
+		// session-lifecycle end, not the opaque "context canceled" the bare ctx
+		// error stringifies to — name it as a session-category failure so the model
+		// reads "the session was closed", not an internal cancel.
+		if isContextErr(d.err) {
+			return mcperr.Wrap(mcperr.CategorySession,
+				"the introspection stream stopped before the response arrived (the session was closed)", d.err)
+		}
 		return d.err
 	}
 	return mcperr.New(mcperr.CategorySession, "introspection stream closed before response arrived")

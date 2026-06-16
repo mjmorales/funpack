@@ -157,10 +157,14 @@ func (c Config) withDefaults() Config {
 // failure it tears down whatever it had started (kill the group, close the conn,
 // clear the temp files) and returns an *mcperr.Error of CategorySession.
 //
-// The ctx governs the port-file poll, the dial, and the demux Run loop lifetime;
-// cancelling it after a successful Open stops the read loop exactly as Close does
-// (Close also kills the group). The resolved bin.Path is the executable; artifact
-// is the built-game path `funpack attach` loads.
+// The ctx governs ONLY the startup phase — the port-file poll, the dial, and the
+// handshake. The demux Run loop is deliberately decoupled from ctx (rooted in
+// context.WithoutCancel) and lives until Close: a Session MUST outlive the request
+// that opened it. session_start passes its per-request ctx here and the MCP SDK
+// cancels that ctx the instant session_start returns, so a Run loop rooted in it
+// would die immediately and every later session-scoped tool call would find a dead
+// demux. The resolved bin.Path is the executable; artifact is the built-game path
+// `funpack attach` loads.
 //
 // SEQUENCE (each step a named checkpoint, each failure a CategorySession refusal):
 //
@@ -231,7 +235,14 @@ func Open(ctx context.Context, bin funpack.Binary, artifact string, cfg Config) 
 		return nil, err
 	}
 
-	runCtx, cancel := context.WithCancel(ctx)
+	// Root the demux read loop in a ctx SEVERED from the caller's cancellation:
+	// session_start hands us its per-request ctx, which the MCP SDK cancels the
+	// instant the tool returns. Deriving runCtx from ctx directly would stop the
+	// read loop right after Open returns, so every later tool call would await a
+	// dead demux and get "context canceled". WithoutCancel keeps any ctx values but
+	// drops the parent's cancellation — the loop now stops ONLY on Close (which
+	// invokes the stored cancel), a clean EOF, or a protocol fault.
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	demux := introspect.NewDemux(introspect.NewReader(conn))
 	created := time.Now()
 	s := &Session{

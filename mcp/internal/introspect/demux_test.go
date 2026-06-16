@@ -239,6 +239,89 @@ func TestAwaitAfterStopFailsFast(t *testing.T) {
 	}
 }
 
+// --- F13 surfacing: a cancelled/expired/closed wait is a NAMED session error ---
+
+// TestAwaitNamesPerRequestCancel asserts a per-request ctx CANCEL while blocked in
+// Await surfaces a structured CategorySession error that NAMES the cancel — never
+// the bare "context canceled" string a client cannot act on (the F13 surfacing
+// fix). Run is not started, so Await blocks purely on the request ctx — isolating
+// the per-request mapping from the loop-terminal one.
+func TestAwaitNamesPerRequestCancel(t *testing.T) {
+	d := NewDemux(NewReader(blockingReader{}))
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancelReq()
+	}()
+
+	_, err := d.Await(reqCtx, 9)
+	assertNamedSessionErr(t, err, "cancelled")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("the cause chain must preserve context.Canceled for errors.Is, got %v", err)
+	}
+}
+
+// TestAwaitNamesPerRequestDeadline asserts a per-request ctx DEADLINE while blocked
+// in Await surfaces a structured CategorySession error naming the deadline — the
+// "the runtime did not answer in time" case, reported distinctly from a cancel.
+func TestAwaitNamesPerRequestDeadline(t *testing.T) {
+	d := NewDemux(NewReader(blockingReader{}))
+
+	reqCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err := d.Await(reqCtx, 9)
+	assertNamedSessionErr(t, err, "deadline")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the cause chain must preserve context.DeadlineExceeded for errors.Is, got %v", err)
+	}
+}
+
+// TestAwaitNamesSessionClosedOnLoopCancel asserts that when the read loop is
+// stopped by its own ctx cancel (what Close does to the session-rooted run ctx), a
+// subsequent Await surfaces a named "the session was closed" CategorySession error
+// — not the bare "context canceled" the raw terminal error would stringify to.
+func TestAwaitNamesSessionClosedOnLoopCancel(t *testing.T) {
+	d := NewDemux(NewReader(blockingReader{}))
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	errc := runInBackground(runCtx, d)
+
+	cancelRun()
+	if err := <-errc; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run should stop with context.Canceled on its ctx cancel, got %v", err)
+	}
+
+	// done is now closed with the loop's terminal error = context.Canceled. A
+	// post-shutdown Await must NAME the session close, not leak the bare ctx string.
+	_, err := d.Await(context.Background(), 5)
+	assertNamedSessionErr(t, err, "session was closed")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("the cause chain must preserve context.Canceled, got %v", err)
+	}
+}
+
+// assertNamedSessionErr fails unless err is an *mcperr.Error of CategorySession
+// whose message contains want AND is not one of the bare context strings — the
+// invariant the F13 surfacing fix establishes: a cancelled/expired/closed wait is
+// always a named session failure, never the opaque "context canceled" leak.
+func assertNamedSessionErr(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("want a structured session error, got nil")
+	}
+	var de *mcperr.Error
+	if !errors.As(err, &de) || de.Code != mcperr.CategorySession {
+		t.Fatalf("want a CategorySession mcperr, got %v (%T)", err, err)
+	}
+	if !strings.Contains(de.Message, want) {
+		t.Fatalf("session error message %q does not name %q", de.Message, want)
+	}
+	if de.Message == "context canceled" || de.Message == "context deadline exceeded" {
+		t.Fatalf("error leaked the bare context string: %q", de.Message)
+	}
+}
+
 // blockingReader is an io.Reader that never returns, modeling an idle live
 // connection so a ctx-cancel test has a stream Run cannot drain to EOF.
 type blockingReader struct{}

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -179,6 +180,72 @@ func TestCloseIsIdempotent(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("second Close must be a no-op, got: %v", err)
+	}
+}
+
+// --- F13 regression: a session must outlive the request that opened it --------
+
+// TestSessionOutlivesTheOpenRequestContext is the F13 regression. session_start
+// hands Open its per-request ctx, and the MCP SDK cancels that ctx the instant
+// the tool returns. If the demux read loop were rooted in that ctx it would die
+// there, so every later session-scoped tool Call would fail with the demux's
+// terminal "context canceled" — exactly the F13 symptom (session_start succeeds,
+// every later inspect/time op returns context canceled). Here a fake runtime
+// answers a request issued AFTER the Open ctx is cancelled, proving the loop is
+// rooted in the session lifetime (context.WithoutCancel), not the request.
+func TestSessionOutlivesTheOpenRequestContext(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	// A fake runtime: read each request off the wire and reply ok with the same id.
+	go func() {
+		r := introspect.NewReader(serverConn)
+		for {
+			dec, err := r.Decode()
+			if err != nil {
+				return
+			}
+			if dec.Kind != introspect.KindRequest {
+				continue
+			}
+			line := fmt.Sprintf("{\"v\":%d,\"id\":%d,\"ok\":true,\"cmd\":%q,\"result\":{\"pong\":true}}\n",
+				contract.ProtocolVersion, dec.Request.ID, dec.Request.Cmd)
+			if _, err := serverConn.Write([]byte(line)); err != nil {
+				return
+			}
+		}
+	}()
+
+	cfg := Config{
+		Log:       zerolog.Nop(),
+		mintToken: func() (string, error) { return "tok", nil },
+		spawn:     fixedPortSpawn(1),
+		dial:      func(context.Context, int) (net.Conn, error) { return clientConn, nil },
+		handshake: func(net.Conn, string) (int, error) { return contract.ProtocolVersion, nil },
+	}
+
+	// Open with a REQUEST-SCOPED ctx, exactly as session_start does.
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	s, err := Open(reqCtx, funpack.Binary{Path: "/bin/sh"}, "outlive.fp", cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// The SDK cancels the session_start request ctx the moment the tool returns.
+	cancelReq()
+
+	// A later tool's Call — on its OWN live ctx — must still be answered. Before the
+	// fix this returned the demux's terminal error because the read loop died with
+	// reqCtx.
+	callCtx, cancelCall := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelCall()
+	resp, err := s.Call(callCtx, "status", nil)
+	if err != nil {
+		t.Fatalf("F13 regression: Call after the Open ctx was cancelled failed — the demux died with the request ctx: %v", err)
+	}
+	if resp == nil || !resp.Ok {
+		t.Fatalf("Call: want an ok response after the Open ctx was cancelled, got %+v", resp)
 	}
 }
 
