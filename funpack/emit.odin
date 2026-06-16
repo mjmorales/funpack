@@ -1273,7 +1273,12 @@ device_code_source :: proc(expr: Expr) -> string {
 // `keys_quad(Key::Left,Key::Right,Key::Up,Key::Down)` — argument order (neg_x,
 // pos_x, neg_y, pos_y), up = neg_y in the y-down draw space, matching SDL stick
 // polarity — and every already-canonical helper (key/pad/mouse/keys_axis/stick/
-// stick_x/stick_y) renders verbatim through builder_call_string. `stick(Stick)`
+// stick_x/stick_y) renders verbatim through builder_call_string. `dpad()` lowers
+// to the d-pad 2D quad `pad_quad(PadButton::DpadLeft,DpadRight,DpadUp,DpadDown)`
+// — the same (neg_x, pos_x, neg_y, pos_y) order and up = neg_y polarity as the
+// keys_quad forms, over the four d-pad direction codes; the runtime folds it
+// through the new Pad_Quad source (parsed-but-unemitted on the v18 open window
+// until a committed artifact binds dpad()). `stick(Stick)`
 // is deliberately NOT spread into stick_x/stick_y: those are 1D forms feeding
 // the action's single 1D value slot, while `stick` is a first-class 2D source
 // the runtime folds as both components (ADR
@@ -1291,6 +1296,9 @@ lower_source_call :: proc(expr: Expr) -> string {
 		}
 		if name.name == "arrows" && len(call.args) == 0 {
 			return "keys_quad(Key::Left,Key::Right,Key::Up,Key::Down)"
+		}
+		if name.name == "dpad" && len(call.args) == 0 {
+			return "pad_quad(PadButton::DpadLeft,PadButton::DpadRight,PadButton::DpadUp,PadButton::DpadDown)"
 		}
 	}
 	return builder_call_string(expr)

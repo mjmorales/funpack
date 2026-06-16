@@ -95,7 +95,7 @@ MouseButton                          // enum { Left, Middle, Right }
 Stick                                // enum { Left, Right }
 // source-helper funcs
 keys_axis  stick_x  stick_y          // 1D axis sources
-wasd  arrows  stick                  // 2D axis sources
+wasd  arrows  dpad  stick            // 2D axis sources
 pad  mouse                           // digital button sources
 ```
 **Not importable** — `Axis`/`Button` are role-kind ascriptions (by-text, written after the action
@@ -120,7 +120,7 @@ pad(PadButton::A)                           // BUTTON: a gamepad button
 mouse(MouseButton::Left)                    // BUTTON: a mouse button
 keys_axis(Key::A, Key::D)                   // AXIS 1D
 stick_x(Stick::Left)  stick_y(Stick::Left)  // AXIS 1D
-wasd()  arrows()                            // AXIS 2D — WASD / arrow keys into a Vec2
+wasd()  arrows()  dpad()                    // AXIS 2D — WASD / arrow keys / gamepad d-pad into a Vec2
 stick(Stick::Left)                          // AXIS 2D — a gamepad stick into a Vec2
 
 // builder + test doubles
@@ -131,9 +131,10 @@ Input.empty().with_value(PlayerId, Axis, Fixed) ; with_axis(PlayerId, Axis, Vec2
 Sources for one action **stack** — a key-list may mix devices (`[Key::W, PadButton::DpadUp]`).
 2D orientation is y-down: `W` and stick-up read **negative y**. Bindings live in
 `fn bindings() -> Bindings` lifted into the entrypoint, not a pipeline block. There is **no `key(…)`
-helper** (use the `[Key::W]` one-element list). `dpad()` is spec-named (the d-pad as a single 2D
-`Vec2`) but not yet on the surface — bind the d-pad's directions as digital buttons via
-`pad(PadButton::DpadUp)` etc. (spec §23 §3; ADR `2026-06-15-engine-input-source-helpers-split`).
+helper** (use the `[Key::W]` one-element list). `dpad()` binds the d-pad as a single 2D `Vec2` (the
+only d-pad 2D path — a direction is otherwise only a digital `pad(PadButton::DpadUp)` button); it
+lowers to the runtime `pad_quad` source, the d-pad twin of `keys_quad` (spec §23 §3; ADR
+`2026-06-15-engine-input-source-helpers-split`).
 
 ## engine.list
 ```funpack

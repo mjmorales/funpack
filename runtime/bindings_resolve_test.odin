@@ -390,6 +390,26 @@ axis2d_program :: proc(allocator := context.allocator) -> Program {
 	return Program{enums = enums, bindings = bindings}
 }
 
+// pad_quad_program builds the d-pad twin of axis2d_program: one Axis action bound
+// to a single pad_quad(PadButton::DpadLeft,DpadRight,DpadUp,DpadDown) source — the
+// form dpad() lowers into. It proves the Pad_Quad fold reads the same window.level
+// map the digital Pad source folds, since the d-pad edges arrive as Pad_Down/Up.
+@(private = "file")
+pad_quad_program :: proc(allocator := context.allocator) -> Program {
+	variants := make([]Enum_Variant, 1, allocator)
+	variants[0] = Enum_Variant{name = "Move", payload = "unit"}
+	enums := make([]Enum_Decl, 1, allocator)
+	enums[0] = Enum_Decl{name = "Drive", kind = .Axis, variants = variants}
+	bindings := make([]Binding, 1, allocator)
+	bindings[0] = Binding {
+		kind   = "axis",
+		player = "P1",
+		action = "Drive::Move",
+		source = "pad_quad(PadButton::DpadLeft,PadButton::DpadRight,PadButton::DpadUp,PadButton::DpadDown)",
+	}
+	return Program{enums = enums, bindings = bindings}
+}
+
 // test_keys_quad_resolves_components proves the §14 v3 keys_quad 2D fold: each
 // key drives its own component with the ratified (neg_x,pos_x,neg_y,pos_y)
 // order — W (neg_y, up in the y-down draw space) reads y = −1 with x untouched,
@@ -427,6 +447,47 @@ test_keys_quad_resolves_components :: proc(t: ^testing.T) {
 	snap_ws, _, _ := resolve_tick(table, &queue, held_wd, levels_wd, context.temp_allocator)
 	defer delete_input(snap_ws)
 	testing.expect_value(t, axis(snap_ws, .P1, drive.id), Vec2{to_fixed(1), Fixed(0)})
+}
+
+// test_pad_quad_resolves_components proves the Pad_Quad 2D fold: the d-pad twin of
+// keys_quad over Pad_Down/Up events. Each direction drives its own component with
+// the ratified (neg_x,pos_x,neg_y,pos_y) order — DpadUp (neg_y, up in the y-down
+// draw space) reads y = −1 with x untouched, DpadRight (pos_x) reads x = +1, and
+// an opposing pair (DpadUp + DpadDown) cancels its component to 0. The fold reuses
+// key_pair_level verbatim because Pad_Down/Up populate the same window.level map by
+// device code that Key_Down/Up do.
+@(test)
+test_pad_quad_resolves_components :: proc(t: ^testing.T) {
+	program := pad_quad_program(context.temp_allocator)
+	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
+
+	drive, found := table.registry.by_name["Drive::Move"]
+	if !testing.expect(t, found) {
+		return
+	}
+
+	prev := make(map[Player_Action]bool, context.temp_allocator)
+	levels := new_device_levels(context.temp_allocator)
+	queue := new_device_queue(context.temp_allocator)
+
+	// DpadUp down (neg_y) → y reads −1, x stays 0.
+	enqueue_pad_down(&queue, "PadButton::DpadUp")
+	snap_u, held_u, levels_u := resolve_tick(table, &queue, prev, levels, context.temp_allocator)
+	defer delete_input(snap_u)
+	testing.expect_value(t, axis(snap_u, .P1, drive.id), Vec2{Fixed(0), fixed_neg(to_fixed(1))})
+
+	// DpadRight down too (pos_x) → x reads +1 alongside the held DpadUp's y = −1.
+	enqueue_pad_down(&queue, "PadButton::DpadRight")
+	snap_ur, held_ur, levels_ur := resolve_tick(table, &queue, held_u, levels_u, context.temp_allocator)
+	defer delete_input(snap_ur)
+	testing.expect_value(t, axis(snap_ur, .P1, drive.id), Vec2{to_fixed(1), fixed_neg(to_fixed(1))})
+
+	// DpadDown down (pos_y) while DpadUp is still held → the y pair cancels to 0;
+	// x keeps +1.
+	enqueue_pad_down(&queue, "PadButton::DpadDown")
+	snap_ud, _, _ := resolve_tick(table, &queue, held_ur, levels_ur, context.temp_allocator)
+	defer delete_input(snap_ud)
+	testing.expect_value(t, axis(snap_ud, .P1, drive.id), Vec2{to_fixed(1), Fixed(0)})
 }
 
 // test_stick_2d_resolves_both_components proves the §14 v3 first-class stick
@@ -511,8 +572,23 @@ test_parse_source_v3_forms :: proc(t: ^testing.T) {
 	testing.expect_value(t, stick.kind, Source_Kind.Stick)
 	testing.expect_value(t, stick.code, "Stick::Left")
 
+	// pad_quad is the d-pad twin of keys_quad: the same ratified four-code order
+	// into the x/y pairs, over PadButton direction codes (the form dpad() emits).
+	pad_quad, pad_quad_ok := parse_source(
+		"pad_quad(PadButton::DpadLeft,PadButton::DpadRight,PadButton::DpadUp,PadButton::DpadDown)",
+		context.temp_allocator,
+	)
+	testing.expect(t, pad_quad_ok)
+	testing.expect_value(t, pad_quad.kind, Source_Kind.Pad_Quad)
+	testing.expect_value(t, pad_quad.neg_code, "PadButton::DpadLeft")
+	testing.expect_value(t, pad_quad.pos_code, "PadButton::DpadRight")
+	testing.expect_value(t, pad_quad.neg_y_code, "PadButton::DpadUp")
+	testing.expect_value(t, pad_quad.pos_y_code, "PadButton::DpadDown")
+
 	_, bad_arity := parse_source("keys_quad(Key::A,Key::D)", context.temp_allocator)
 	testing.expect(t, !bad_arity)
+	_, bad_pad_quad_arity := parse_source("pad_quad(PadButton::DpadLeft,PadButton::DpadRight)", context.temp_allocator)
+	testing.expect(t, !bad_pad_quad_arity)
 	_, unknown := parse_source("wasd()", context.temp_allocator)
 	testing.expect(t, !unknown)
 }

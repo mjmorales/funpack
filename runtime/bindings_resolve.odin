@@ -121,7 +121,15 @@ delete_action_registry :: proc(registry: Action_Registry) {
 // exact fold-and-parse mirror of Pad — a different device, same edge/level
 // semantics; no committed artifact emits it, so it rides the v18 open window
 // (the §14 source-form vocabulary grows without moving any pinned reader's bytes,
-// exactly as Pad already sits parsed-but-unemitted at v18).
+// exactly as Pad already sits parsed-but-unemitted at v18). Pad_Quad is the
+// d-pad-as-single-2D-Vec2 form `dpad()` lowers into — the gamepad-d-pad twin of
+// Keys_Quad, folding four PadButton levels into both Vec2 components. The d-pad
+// edges arrive as the same Pad_Down/Up events the digital Pad source folds (the
+// level map is keyed by PadButton code either way), so the fold reuses
+// key_pair_level verbatim and device_live needs no new read. Like Mouse it sits
+// parsed-but-unemitted on the v18 open window: no committed artifact binds dpad()
+// yet, so growing the vocabulary moves no pinned reader's bytes (a committed
+// dpad() binding would be the deliberate bump).
 Source_Kind :: enum {
 	Key, // key(Key::X) — a single digital source
 	Pad, // pad(PadButton::A) — a single digital source
@@ -130,6 +138,7 @@ Source_Kind :: enum {
 	Stick_X, // stick_x(Stick::Left) — the x stick component into a 1D axis
 	Stick_Y, // stick_y(Stick::Left) — the y stick component into a 1D axis
 	Keys_Quad, // keys_quad(neg_x,pos_x,neg_y,pos_y) — four keys form one 2D axis
+	Pad_Quad, // pad_quad(neg_x,pos_x,neg_y,pos_y) — four d-pad buttons form one 2D axis
 	Stick, // stick(Stick::Left) — both stick components into a 2D axis
 }
 
@@ -143,10 +152,10 @@ Source_Kind :: enum {
 Device_Source :: struct {
 	kind:       Source_Kind,
 	code:       string, // Key/Pad: the device code; Stick/Stick_X/Stick_Y: the stick code
-	neg_code:   string, // Keys_Axis: the key driving −1; Keys_Quad: the key driving x −1
-	pos_code:   string, // Keys_Axis: the key driving +1; Keys_Quad: the key driving x +1
-	neg_y_code: string, // Keys_Quad only: the key driving y −1 (up in the y-down draw space)
-	pos_y_code: string, // Keys_Quad only: the key driving y +1
+	neg_code:   string, // Keys_Axis: the key driving −1; Keys_Quad/Pad_Quad: the code driving x −1
+	pos_code:   string, // Keys_Axis: the key driving +1; Keys_Quad/Pad_Quad: the code driving x +1
+	neg_y_code: string, // Keys_Quad/Pad_Quad only: the code driving y −1 (up in the y-down draw space)
+	pos_y_code: string, // Keys_Quad/Pad_Quad only: the code driving y +1
 }
 
 // Resolved_Binding is one artifact binding parsed into its target and source:
@@ -261,8 +270,9 @@ player_from_string :: proc(s: string) -> (player: PlayerId, ok: bool) {
 // parse_source parses a §14 v3 source-form token into a Device_Source. The
 // token is `helper(args)`: the helper name selects the kind, the comma-split args
 // are the device codes. `key`/`pad`/`mouse` take one code; `keys_axis` takes
-// neg,pos; `stick_x`/`stick_y` take one stick code; `keys_quad` takes the
-// ratified (neg_x, pos_x, neg_y, pos_y) quad; `stick` takes one stick code and is
+// neg,pos; `stick_x`/`stick_y` take one stick code; `keys_quad`/`pad_quad` take
+// the ratified (neg_x, pos_x, neg_y, pos_y) quad (d-pad button codes for
+// `pad_quad`); `stick` takes one stick code and is
 // the first-class 2D form — the emitter records it verbatim, never spread into
 // the 1D stick_x/stick_y halves (artifact-format §14 v3). An unrecognized helper
 // returns ok=false.
@@ -329,6 +339,18 @@ parse_source :: proc(
 		}
 		return Device_Source {
 				kind = .Keys_Quad,
+				neg_code = strings.clone(strings.trim_space(parts[0]), allocator),
+				pos_code = strings.clone(strings.trim_space(parts[1]), allocator),
+				neg_y_code = strings.clone(strings.trim_space(parts[2]), allocator),
+				pos_y_code = strings.clone(strings.trim_space(parts[3]), allocator),
+			},
+			true
+	case "pad_quad":
+		if len(parts) != 4 {
+			return {}, false
+		}
+		return Device_Source {
+				kind = .Pad_Quad,
 				neg_code = strings.clone(strings.trim_space(parts[0]), allocator),
 				pos_code = strings.clone(strings.trim_space(parts[1]), allocator),
 				neg_y_code = strings.clone(strings.trim_space(parts[2]), allocator),
@@ -775,9 +797,12 @@ accumulate_axis :: proc(
 		if sampled {
 			contribution.x = apply_deadzone(sample)
 		}
-	case .Keys_Quad:
-		// Digital 2D quad: each component is its own neg/pos key pair (§14 v3,
+	case .Keys_Quad, .Pad_Quad:
+		// Digital 2D quad: each component is its own neg/pos code pair (§14 v3,
 		// order neg_x,pos_x,neg_y,pos_y; up = neg_y in the y-down draw space).
+		// Keys_Quad reads Key codes, Pad_Quad reads d-pad PadButton codes — both
+		// fold tick-instant levels through the shared key_pair_level, since
+		// Pad_Down/Up populate the same window.level map keyed by device code.
 		contribution.x = key_pair_level(window, source.neg_code, source.pos_code)
 		contribution.y = key_pair_level(window, source.neg_y_code, source.pos_y_code)
 	case .Stick:

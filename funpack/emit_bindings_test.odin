@@ -189,3 +189,31 @@ test_binding_calls_lowers_arrows_to_arrow_keys_quad :: proc(t: ^testing.T) {
 	testing.expect_value(t, binds[0].source, "keys_quad(Key::Left,Key::Right,Key::Up,Key::Down)")
 	testing.expect_value(t, binds[0].kind, "axis")
 }
+
+// test_binding_calls_lowers_dpad_to_pad_quad proves dpad() lowers to
+// pad_quad(PadButton::DpadLeft,DpadRight,DpadUp,DpadDown) — the d-pad twin of
+// arrows(), the (neg_x,pos_x,neg_y,pos_y) order with up = neg_y in the y-down draw
+// space. It is the ONLY d-pad 2D path (a d-pad direction is otherwise only a
+// digital pad button), so it closes the d-pad 2D gap; the runtime folds the
+// emitted pad_quad through its Pad_Quad source (ADR
+// 2026-06-15-engine-input-source-helpers-split).
+@(test)
+test_binding_calls_lowers_dpad_to_pad_quad :: proc(t: ^testing.T) {
+	source := "enum Drive: Axis { Move }\n" +
+		"fn bindings() -> Bindings {\n" +
+		"  return Bindings.empty()\n" +
+		"    .axis(PlayerId::P1, Drive::Move, dpad())\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	if parse_err != .None {
+		return
+	}
+	binds := binding_calls(ast)
+	testing.expect_value(t, len(binds), 1)
+	if len(binds) != 1 {
+		return
+	}
+	testing.expect_value(t, binds[0].source, "pad_quad(PadButton::DpadLeft,PadButton::DpadRight,PadButton::DpadUp,PadButton::DpadDown)")
+	testing.expect_value(t, binds[0].kind, "axis")
+}

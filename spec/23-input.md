@@ -61,11 +61,13 @@ contributes, so keyboard and gamepad work simultaneously with no logic change; a
 > 1D, so dropping them would lose that capability. See ADR
 > `2026-06-15-engine-input-source-helpers-split`.
 >
-> **Implementation status:** `pad(PadButton)`, `mouse(MouseButton)`, `wasd()`, `arrows()`, the
+> **Implementation status:** `pad(PadButton)`, `mouse(MouseButton)`, `wasd()`, `arrows()`, `dpad()`, the
 > `[Key::…]` key-list, `keys_axis`, `stick`, `stick_x`, `stick_y` are implemented end-to-end. `dpad()`
-> (the d-pad-as-2D-`Vec2` source) is specified but its runtime 2D pad-quad source kind is not yet
-> modeled, so its surface helper is the next increment — the d-pad's directions are bindable today as
-> digital buttons via `pad(PadButton::DpadUp)` etc.
+> (the d-pad-as-2D-`Vec2` source) lowers to the runtime `Pad_Quad` source kind, the d-pad twin of
+> `keys_quad`: its four direction codes fold into both `Vec2` components against the same `Pad_Down`/`Up`
+> events the digital `pad(PadButton::DpadUp)` form reads. Like `mouse`, `pad_quad` rides the v18 open
+> source-form window **parsed-but-unemitted** — no committed artifact binds `dpad()` yet, so the
+> vocabulary grew without a schema bump (a committed `dpad()` binding would be the deliberate bump).
 
 A source is 1D or 2D by its **form**, not the action it feeds: `keys_axis`, `stick_x`, `stick_y`
 contribute one value (the 1D slot `value` reads); `wasd()`, `arrows()`, `dpad()`, `stick(Stick)`
