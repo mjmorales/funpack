@@ -2,6 +2,14 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.5.0] - 2026-06-16
+
+### Features
+- feat: engine.input dpad() 2D source — Pad_Quad runtime source kind (4283620)
+
+### Fixes
+- fix(plugin): rename funpack:mcp skill to funpack:funpack-mcp + from-zero install fix (4cef250)
+
 ## [0.4.0] - 2026-06-16
 
 ### Features
