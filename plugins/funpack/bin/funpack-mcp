@@ -6,7 +6,7 @@
 #
 # Resolution order (three sources, first hit wins):
 #   1. $CLAUDE_PLUGIN_DATA/bin/funpack-mcp — the persistent, update-surviving binary
-#      the `funpack:mcp install` skill fetches. ${CLAUDE_PLUGIN_ROOT} is wiped on every
+#      the `funpack:funpack-mcp install` skill fetches. ${CLAUDE_PLUGIN_ROOT} is wiped on every
 #      plugin update, but ${CLAUDE_PLUGIN_DATA} (~/.claude/plugins/data/<plugin-id>/)
 #      persists and is exported to this child process, so we prefer it.
 #   2. $dir/funpack-mcp-<os>-<arch> — a per-platform binary bundled beside this wrapper
@@ -48,10 +48,14 @@ if [ -x "$bundled" ]; then
   exec "$bundled" "$@"
 fi
 
-# 3. Dev / go-install fallback: a funpack-mcp on PATH.
-if command -v funpack-mcp >/dev/null 2>&1; then
-  exec funpack-mcp "$@"
+# 3. Dev / go-install fallback: a real funpack-mcp server on PATH — but NEVER this
+# wrapper. If the plugin bin dir (or a symlink) puts this file on PATH, `command -v`
+# resolves to the wrapper itself and exec'ing it would loop forever, re-entering here
+# every iteration. `-ef` compares device+inode (following symlinks), so a self-hit is
+# skipped and we fall through to the install hint below rather than spin.
+if cand="$(command -v funpack-mcp 2>/dev/null)" && [ -n "$cand" ] && ! [ "$cand" -ef "${BASH_SOURCE[0]}" ]; then
+  exec "$cand" "$@"
 fi
 
-echo "funpack-mcp: no funpack-mcp binary found — run the \`funpack:mcp install\` skill (or \`task mcp:bundle\` for a dev build)" >&2
+echo "funpack-mcp: no funpack-mcp binary found — run the \`funpack:funpack-mcp install\` skill (or \`task mcp:bundle\` for a dev build)" >&2
 exit 1

@@ -2,7 +2,7 @@
 # funpack-mcp-bin.sh — install / update / uninstall the funpack-mcp server binary
 # into the plugin's persistent data dir. This is the *mechanical* half: it resolves
 # the target path, maps this machine's platform to the release asset, fetches the
-# tarball, and places the binary. The `funpack:mcp` skill is the judgment half that
+# tarball, and places the binary. The `funpack:funpack-mcp` skill is the judgment half that
 # drives it and interprets the result for the user.
 #
 # Why a persistent data dir: ${CLAUDE_PLUGIN_ROOT} (the plugin install dir, where the
@@ -80,9 +80,10 @@ json_str_field() {
 
 # ---------------------------------------------------------------------------
 # Resolve the plugin's persistent data dir ENV-INDEPENDENTLY when
-# $CLAUDE_PLUGIN_DATA is unset (the case that previously fell through to the
-# wiped-on-update cache/dev-bundle path — the root cause of F1). Claude Code lays
-# the persistent dir out as ~/.claude/plugins/data/<plugin-name>-<marketplace-name>/.
+# $CLAUDE_PLUGIN_DATA is unset — the case that must not fall through to a
+# wiped-on-update cache path (which would silently lose the binary on the next
+# plugin update). Claude Code lays the persistent dir out as
+# ~/.claude/plugins/data/<plugin-name>-<marketplace-name>/.
 #
 # Order, all deterministic from committed manifests + the installed registry:
 #   1. plugin name from <plugin-root>/.claude-plugin/plugin.json::name.
@@ -281,6 +282,14 @@ build_from_source() {
 do_install() {
   resolve_platform
   resolve_target
+  # Capture prior presence BEFORE any fetch overwrites $BIN. This is the
+  # from-zero signal the skill branches its post-install readout on: an absent
+  # binary now means the MCP server found nothing to exec at session start and
+  # registered ZERO tools, so a mid-session /reload-plugins reconnect cannot
+  # surface them — only a new session can. A present binary means a server was
+  # already running, so a reconnect swaps it in place. Emitted as `prior-binary`.
+  local prior_binary=absent
+  [ -x "$BIN" ] && prior_binary=present
   local tag asset tmp
   tag="$(latest_tag)"
   # The git tag is the full "funpack-mcp-vX.Y.Z" and the asset is
@@ -317,6 +326,7 @@ do_install() {
   kv target "$BIN"
   kv "target-kind" "$TARGET_KIND"
   kv version "$tag"
+  kv "prior-binary" "$prior_binary"
   if [ -x "$BIN" ]; then
     kv installed "yes"
     kv "self-reported" "$("$BIN" version 2>&1 | head -1 || echo '?')"
@@ -348,6 +358,9 @@ do_update() {
     kv installed "${installed:-<unknown>}"
     kv latest "$latest"
     kv "update-available" "no"
+    # No-op update: the binary is executable (that is why we are current), so a
+    # server was running at session start — same signal the install path emits.
+    kv "prior-binary" "present"
     log "already current (${installed})"
   fi
 }
