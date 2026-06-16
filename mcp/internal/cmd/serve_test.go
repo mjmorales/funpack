@@ -120,18 +120,23 @@ func TestStartupPreflightInRangeProceeds(t *testing.T) {
 	}
 }
 
-// TestStartupPreflightOutOfRangeRefuses: a resolvable funpack with an out-of-range
-// schema fails closed — startupPreflight returns the schema-mismatch error so serve
-// exits non-zero.
-func TestStartupPreflightOutOfRangeRefuses(t *testing.T) {
+// TestStartupPreflightOutOfRangeWarnsAndProceeds: a resolvable funpack with an
+// out-of-range schema is advisory, NOT fatal — startupPreflight serves anyway
+// (returns nil) and logs a warning carrying the got/want detail. This locks the
+// relaxation away from the former fail-closed gate: a version-skewed compiler must
+// not disable every tool; the skew is surfaced via health.funpack_compat instead.
+func TestStartupPreflightOutOfRangeWarnsAndProceeds(t *testing.T) {
 	bin := outOfRangeBinary()
 	withFunpackSeam(t,
 		func() (funpack.Binary, error) { return bin, nil },
 		funpack.Preflight, // real preflight against an out-of-range binary
 	)
 
-	err := startupPreflight(zerolog.Nop())
-	if err == nil {
-		t.Fatal("out-of-range funpack must refuse startup, got nil error")
+	var buf bytes.Buffer
+	if err := startupPreflight(zerolog.New(&buf)); err != nil {
+		t.Fatalf("out-of-range funpack must NOT refuse startup, got %v", err)
+	}
+	if out := buf.String(); !strings.Contains(out, "schema differs") {
+		t.Fatalf("expected a schema-skew warning, got log: %q", out)
 	}
 }

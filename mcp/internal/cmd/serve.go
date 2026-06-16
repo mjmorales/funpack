@@ -24,9 +24,9 @@ const (
 	reaperTick = 30 * time.Second
 )
 
-// resolveFunpack and preflightFunpack are the funpack-resolution seam serve gates
-// startup on, indirected through package vars so a unit test can drive the three
-// startup outcomes (not-found → warn, in-range → proceed, out-of-range → refuse)
+// resolveFunpack and preflightFunpack are the funpack-resolution seam serve reads
+// at startup, indirected through package vars so a unit test can drive the three
+// startup outcomes (not-found → warn, in-range → proceed, out-of-range → warn)
 // without execing a real funpack. Production wiring is the package defaults below;
 // tests swap them and restore in a defer.
 var (
@@ -34,14 +34,16 @@ var (
 	preflightFunpack = funpack.Preflight
 )
 
-// startupPreflight runs the funpack resolve+preflight gate before the server binds
-// its transport. It returns a fatal error ONLY when a resolvable funpack reports a
-// schema OUTSIDE the supported range — an incompatible funpack would feed the
-// tools garbage, so serve fails closed at startup. A funpack that cannot be found
-// is NOT fatal: the docs/search tools need no funpack, so serve proceeds and the
-// funpack-backed tools error per-call; this case logs a WARNING. The two failure
-// kinds are kept distinct — resolve-miss vs preflight-mismatch — rather than
-// collapsed into one fatal, because they share the resolver error category.
+// startupPreflight resolves funpack and reports its compatibility before the server
+// binds its transport — but it NEVER refuses startup. Schema skew (a funpack whose
+// schema differs from this MCP build's supported version) is advisory, not fatal:
+// requiring the compiler and the MCP to be the exact same version made a routine
+// version lag disable every tool, so serve now fails OPEN and the skew is surfaced
+// as diagnostics (health.funpack_compat) instead of gating. A tool that genuinely
+// cannot read a skewed artifact fails at its own boundary with a precise error.
+// A funpack that cannot be found is likewise non-fatal (docs/search tools need no
+// funpack). Every outcome logs and returns nil; the function keeps a fallible
+// signature for the seam and for any future genuinely-fatal startup condition.
 func startupPreflight(logger zerolog.Logger) error {
 	bin, err := resolveFunpack()
 	if err != nil {
@@ -64,9 +66,14 @@ func startupPreflight(logger zerolog.Logger) error {
 	}
 
 	if err := preflightFunpack(bin); err != nil {
-		// Schema mismatch: refuse. Returning the error from RunE exits serve
-		// non-zero with the got/want detail; main.go renders it to stderr.
-		return err
+		// Schema skew is advisory, not fatal (relaxed from the former fail-closed
+		// gate). Serve anyway and surface the got/want detail in the log and in
+		// health.funpack_compat; a tool that cannot read a skewed artifact fails at
+		// its own boundary. This avoids disabling every tool just because the
+		// compiler and this MCP build are not the exact same version.
+		logger.Warn().Err(err).Str("funpack", bin.Path).Str("funpack_version", bin.Version.Version).
+			Msg("funpack schema differs from this MCP build's supported version — serving anyway; see health.funpack_compat for the skew")
+		return nil
 	}
 
 	logger.Info().Str("funpack", bin.Path).Str("funpack_version", bin.Version.Version).Msg("funpack resolved and schema-compatible")
