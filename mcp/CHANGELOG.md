@@ -2,6 +2,11 @@
 
 All notable changes to funpack-mcp.
 
+## [0.3.1] - 2026-06-16
+
+### Fixes
+- fix(mcp): stamp funpack-mcp buildinfo from the funpack-mcp-v* tag family (3a55d03)
+
 ## [0.3.0] - 2026-06-15
 
 ### Features
