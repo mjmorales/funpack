@@ -3,7 +3,7 @@
 **funpack** — an LL(1), agent-first programming language for game development. This monorepo
 holds both the **specification** ([`spec/`](spec/)) — the doctrine — and the **toolchain** that
 satisfies it — the machine. (The spec was previously the separate `funpack-spec` repo; it is now
-vendored here and that repo is archived.)
+vendored here and that repo has been deleted.)
 
 > Prime directive: **programming with LLMs should be fun.**
 
