@@ -2,6 +2,14 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.4.0] - 2026-06-16
+
+### Features
+- feat: engine.input pad/mouse sources, diagnostics, and MCP resolver fixes (mario friction) (3c7bcaf)
+
+### Other
+- refactor: vendor funpack-spec into the monorepo (b392d66)
+
 ## [0.3.0] - 2026-06-15
 
 ### Features
