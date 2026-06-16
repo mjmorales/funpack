@@ -19,8 +19,12 @@ vars:
   # buildinfo override paths — release binaries carry a real version; a bare
   # cross-compile would default to dev. Derived from git, with safe fallbacks so
   # the target runs off a tag, off a detached HEAD, or outside a checkout.
+  # MATCH the funpack-mcp-v* tag family explicitly: the repo carries several tag
+  # lines (funpack v*, plugin-v*, funpack-mcp-v*), and an unmatched `git describe`
+  # stamps whichever tag is nearest — which is how a v0.3.0 build came to report
+  # 0.2.1 in `health`. Strip the funpack-mcp-v prefix so health reports clean semver.
   BUNDLE_VERSION:
-    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+    sh: git describe --tags --match 'funpack-mcp-v*' --always --dirty 2>/dev/null | sed 's/^funpack-mcp-v//' || echo dev
   BUNDLE_COMMIT:
     sh: git rev-parse --short HEAD 2>/dev/null || echo none
   BUNDLE_DATE:
