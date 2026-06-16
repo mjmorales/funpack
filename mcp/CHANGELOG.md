@@ -2,6 +2,11 @@
 
 All notable changes to funpack-mcp.
 
+## [0.3.4] - 2026-06-16
+
+### Fixes
+- fix(mcp): F13 — session outlives the open request ctx + named session errors (6f600fb)
+
 ## [0.3.3] - 2026-06-16
 
 ### Fixes
