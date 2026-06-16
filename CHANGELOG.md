@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.8.1] - 2026-06-16
+
+### Other
+- docs: funpack-spec repo deleted, not archived (bba89f7)
+
 ## [0.8.0] - 2026-06-15
 
 ### Features
