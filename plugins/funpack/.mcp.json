@@ -2,10 +2,7 @@
   "mcpServers": {
     "funpack": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/funpack-mcp",
-      "args": ["serve"],
-      "env": {
-        "FUNPACK_BIN": "${FUNPACK_BIN}"
-      }
+      "args": ["serve"]
     }
   }
 }

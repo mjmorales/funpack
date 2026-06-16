@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
-# funpack-mcp plugin launcher — selects a funpack-mcp binary and execs it. This is
-# the `command` the plugin's .mcp.json invokes; Claude Code expands
+# funpack-mcp plugin launcher — selects a funpack-mcp server binary and execs it.
+# This is the `command` the plugin's .mcp.json invokes; Claude Code expands
 # ${CLAUDE_PLUGIN_ROOT} to the plugin install dir, so the declared command is
 # ${CLAUDE_PLUGIN_ROOT}/bin/funpack-mcp — this file.
 #
 # Resolution order (three sources, first hit wins):
-#   1. $CLAUDE_PLUGIN_DATA/bin/funpack-mcp — the persistent, update-surviving binary
-#      the `funpack:funpack-mcp install` skill fetches. ${CLAUDE_PLUGIN_ROOT} is wiped on every
-#      plugin update, but ${CLAUDE_PLUGIN_DATA} (~/.claude/plugins/data/<plugin-id>/)
-#      persists and is exported to this child process, so we prefer it.
-#   2. $dir/funpack-mcp-<os>-<arch> — a per-platform binary bundled beside this wrapper
-#      by `task mcp:bundle` (dev/cross-compile path). Gitignored; the wrapper is committed.
+#   1. $dir/funpack-mcp-<os>-<arch> — the per-platform binary bundled beside this
+#      wrapper in the published plugin. It ALWAYS matches the installed plugin version
+#      (the cache is replaced wholesale on every plugin update), so it is preferred:
+#      a stale one-time `funpack:funpack-mcp install` in the data dir can no longer
+#      shadow a fresher bundle. (This deliberately reverses an earlier data-dir-first
+#      order — do not flip it back: with the binary bundled into every release, the
+#      bundle is the current build and the data-dir copy is only a fallback.)
+#   2. $CLAUDE_PLUGIN_DATA/bin/funpack-mcp — the persistent, update-surviving binary
+#      the `funpack:funpack-mcp install` skill fetches. The fallback for a platform
+#      with no bundled binary; ${CLAUDE_PLUGIN_DATA} survives the cache wipe a plugin
+#      update performs on ${CLAUDE_PLUGIN_ROOT}.
 #   3. funpack-mcp on PATH — a brew / `go install` build for dev.
 #
 # Windows is out of scope — the funpack toolchain is unix-centric, so only darwin and
 # linux are mapped.
 set -euo pipefail
 
-dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+# Compiler discovery is the server's resolver's job (PATH + the standard install
+# locations), NOT this wrapper's: the .mcp.json ships no FUNPACK_BIN, so the var is
+# unset unless a user explicitly exports an absolute override. Defensively drop a
+# value that arrived as an unexpanded literal (e.g. a launcher that does not
+# interpolate "${FUNPACK_BIN}" in an env block) so the resolver does its own search
+# instead of treating the literal string as a path. A real override is preserved.
+case "${FUNPACK_BIN:-}" in
+  *'${'*) unset FUNPACK_BIN ;;
+esac
 
-# 1. Persistent, skill-installed binary (survives plugin updates).
-if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -x "${CLAUDE_PLUGIN_DATA}/bin/funpack-mcp" ]; then
-  exec "${CLAUDE_PLUGIN_DATA}/bin/funpack-mcp" "$@"
-fi
+dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 
 case "$(uname -s)" in
   Darwin) os=darwin ;;
@@ -42,10 +52,16 @@ case "$(uname -m)" in
     ;;
 esac
 
-# 2. Per-platform binary bundled beside this wrapper (dev / task mcp:bundle).
+# 1. Per-platform binary bundled beside this wrapper — matches the installed plugin
+#    version exactly, refreshed on every plugin update.
 bundled="$dir/funpack-mcp-$os-$arch"
 if [ -x "$bundled" ]; then
   exec "$bundled" "$@"
+fi
+
+# 2. Persistent, skill-installed binary — the fallback for an unbundled platform.
+if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -x "${CLAUDE_PLUGIN_DATA}/bin/funpack-mcp" ]; then
+  exec "${CLAUDE_PLUGIN_DATA}/bin/funpack-mcp" "$@"
 fi
 
 # 3. Dev / go-install fallback: a real funpack-mcp server on PATH — but NEVER this
