@@ -117,7 +117,7 @@ func locate() (string, error) {
 
 // commonFunpackPaths are the standard install locations probed when funpack is not
 // on the (often minimal) child PATH: Homebrew on Apple silicon and Intel, then the
-// per-user ~/.local/bin the funpack:mcp install flow targets. A package var so a
+// per-user ~/.local/bin the funpack:funpack-mcp install flow targets. A package var so a
 // test can stub the probe set — otherwise the hardcoded locations would find a real
 // funpack on the test host and defeat the not-found path.
 var commonFunpackPaths = func() []string {
