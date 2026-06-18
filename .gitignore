@@ -8,11 +8,6 @@ cmd/funpack/funpack
 # §14 derived build products — gitignored, rebuilt on demand
 .funpack/
 
-# funpack-mcp build output: the standalone Go module's bin/. (The plugin no longer
-# bundles a per-platform MCP binary — the MCP server folded into the `funpack mcp`
-# verb of the one funpack binary, which the plugin's .mcp.json invokes off PATH.)
-mcp/bin/
-
 # machine-local symlinks (written by claude-prove install init/local-env)
 .claude/prove-plugin
 
