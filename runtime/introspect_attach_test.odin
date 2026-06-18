@@ -278,6 +278,105 @@ test_attach_control_state_persists_across_requests :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `"warranted":false`), "the forked control lineage is non-warranted")
 }
 
+// attach_write_fixture writes ATTACH_FIXTURE to a unique temp path and returns it.
+// The helper tests need a real on-disk artifact (open_session_for_artifact reads
+// from a path, the seam the MCP session-registry will drive); each test gets its own
+// path so they never collide. The caller removes the file via the returned path.
+@(private = "file")
+attach_write_fixture :: proc(t: ^testing.T, name: string) -> string {
+	dir, dir_err := os.temp_dir(context.temp_allocator)
+	testing.expect(t, dir_err == nil, "a temp dir is available")
+	path, join_err := filepath.join({dir, name}, context.temp_allocator)
+	testing.expect(t, join_err == nil, "the fixture path joins")
+	testing.expect(t, os.write_entire_file_from_string(path, ATTACH_FIXTURE) == nil, "the fixture artifact writes")
+	return path
+}
+
+// test_open_session_for_artifact_fresh is the acceptance for the shared opener:
+// a fresh (no-replay) open resolves .Ok, yields the ATTACH_FRESH_TICKS seedless
+// empty-input window, and serves a session BYTE-IDENTICAL to one assembled the
+// long-hand way via attach_fixture_session — pinning that the shared opener and
+// the manual assembly produce the same served session. It runs in the SDL-free
+// default build, proving the helper is NOT gated behind FUNPACK_LIVE.
+@(test)
+test_open_session_for_artifact_fresh :: proc(t: ^testing.T) {
+	path := attach_write_fixture(t, "funpack-open-session-fresh.artifact")
+	defer os.remove(path)
+
+	session, program, result := open_session_for_artifact(path, "", false, context.allocator)
+	testing.expect_value(t, result, Open_Session_Result.Ok)
+	testing.expect(t, program != nil, "an Ok open returns the heap program the session borrows")
+	s := session
+	testing.expect_value(t, len(s.snapshots), ATTACH_FRESH_TICKS)
+	testing.expect(t, !s.seed.has_seed, "a fresh open is seedless (NO_SEED)")
+
+	// The reference: a session over the IDENTICAL fixture + tick count assembled
+	// long-hand. An observe round-trip over each must return the same response bytes
+	// — the shared opener and the manual assembly serve one contract.
+	_, ref_session := attach_fixture_session(t, ATTACH_FRESH_TICKS)
+	ref := ref_session
+	helper_resp := session_request(&s, `{"id":1,"cmd":"pipeline"}`)
+	ref_resp := session_request(&ref, `{"id":1,"cmd":"pipeline"}`)
+	testing.expect_value(t, helper_resp, ref_resp)
+}
+
+// test_open_session_for_artifact_replay_identity_mismatch pins the §09 §5 identity
+// gate the helper now owns: a replay log recorded against a DIFFERENT build (a
+// mismatched content_hash) is refused BEFORE opening — .Replay_Identity_Mismatch with
+// a nil program. This is the property the MCP JSON-RPC error mapping depends on: the
+// gate refuses without folding inputs shaped for another artifact.
+@(test)
+test_open_session_for_artifact_replay_identity_mismatch :: proc(t: ^testing.T) {
+	path := attach_write_fixture(t, "funpack-open-session-mismatch.artifact")
+	defer os.remove(path)
+
+	// A replay log whose header identity does NOT match the fixture build: derive the
+	// true identity, then perturb the content_hash so the every-field compare fails.
+	program := new(Program, context.temp_allocator)
+	loaded, load_err := load_program(ATTACH_FIXTURE, context.temp_allocator)
+	testing.expect(t, load_err == .None, "the fixture must load to derive its identity")
+	program^ = loaded
+	identity := identity_from_program(program^, ATTACH_FIXTURE)
+	identity.content_hash ~= 0xDEAD_BEEF // a build fingerprint that cannot match the artifact
+
+	writer := open_replay_writer(identity, context.temp_allocator)
+	defer delete_replay_writer(&writer)
+	record_tick(&writer, empty(), context.temp_allocator) // one empty tick — enough to frame a valid log
+	log_bytes := finish_replay(&writer, context.temp_allocator)
+
+	replay_path, join_err := filepath.join({os.temp_dir(context.temp_allocator) or_else "", "funpack-open-session-mismatch.replay"}, context.temp_allocator)
+	testing.expect(t, join_err == nil, "the replay path joins")
+	testing.expect(t, write_replay_file(replay_path, log_bytes), "the mismatched replay log writes")
+	defer os.remove(replay_path)
+
+	session, prog, result := open_session_for_artifact(path, replay_path, true, context.allocator)
+	_ = session
+	testing.expect_value(t, result, Open_Session_Result.Replay_Identity_Mismatch)
+	testing.expect(t, prog == nil, "an identity-mismatch open returns a nil program (refused before opening)")
+}
+
+// test_open_session_for_artifact_read_and_malformed pins the two pre-load fail-closed
+// arms map to DISTINCT discriminants: a non-existent path is .Artifact_Read_Failed,
+// garbage bytes are .Artifact_Malformed. The distinct mapping is what lets the MCP
+// caller report the right JSON-RPC error, and the helper returns a nil program on each.
+@(test)
+test_open_session_for_artifact_read_and_malformed :: proc(t: ^testing.T) {
+	_, prog_missing, missing := open_session_for_artifact("/nonexistent/funpack/no-such.artifact", "", false, context.allocator)
+	testing.expect_value(t, missing, Open_Session_Result.Artifact_Read_Failed)
+	testing.expect(t, prog_missing == nil, "a read failure returns a nil program")
+
+	dir, dir_err := os.temp_dir(context.temp_allocator)
+	testing.expect(t, dir_err == nil, "a temp dir is available")
+	garbage_path, join_err := filepath.join({dir, "funpack-open-session-garbage.artifact"}, context.temp_allocator)
+	testing.expect(t, join_err == nil, "the garbage path joins")
+	testing.expect(t, os.write_entire_file_from_string(garbage_path, "not a funpack artifact\n") == nil, "the garbage file writes")
+	defer os.remove(garbage_path)
+
+	_, prog_bad, malformed := open_session_for_artifact(garbage_path, "", false, context.allocator)
+	testing.expect_value(t, malformed, Open_Session_Result.Artifact_Malformed)
+	testing.expect(t, prog_bad == nil, "a malformed artifact returns a nil program")
+}
+
 // test_attach_args_artifact_only pins the minimal `attach <artifact>` verb: the
 // artifact is bound, no replay log, and the port defaults to ATTACH_DEFAULT_PORT. The
 // parse is pure (no IO), so the operator-facing verb surface is proven headless even

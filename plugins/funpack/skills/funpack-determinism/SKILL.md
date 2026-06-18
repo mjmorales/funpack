@@ -131,8 +131,8 @@ tools → fill every hole before a release build (the ban is the forcing functio
 
 ## Driving the loop — the MCP tools
 
-The compile / test / query ops are **MCP tools** the bundled funpack-mcp server provides, not CLI
-invocations you shell out. The intent → tool map is in `../../references/mcp-tools.md`; the verbs you
+The compile / test / query ops are **MCP tools** the funpack MCP server (`funpack mcp`) provides, not
+CLI invocations you shell out. The intent → tool map is in `../../references/mcp-tools.md`; the verbs you
 reach for here:
 
 - **Compile**: `build` (emit the artifact + `.funpack/index.ndjson`), `check` (the same verdict, no

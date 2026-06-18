@@ -30,8 +30,9 @@ main :: proc() {
 }
 
 // build_root_cli composes the root from the compiler subtree (the funpack
-// package's pure verbs) plus the runtime verbs (run, live, attach — declared in
-// this package because they call into funpack_runtime). It returns the root
+// package's pure verbs) plus the runtime verbs (run, live, attach, mcp — declared
+// in this package because they call into funpack_runtime; mcp serves the MCP dev
+// server over stdio). It returns the root
 // UNFINALIZED: main and the contract test finalize it, so the test asserts
 // cli_finalize's verdict (proving no verb-name collision across the compiler and
 // runtime nodes) instead of an internal assert masking it.
@@ -41,6 +42,7 @@ build_root_cli :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 	append(&subs, build_run_command(allocator))
 	append(&subs, build_live_command(allocator))
 	append(&subs, build_attach_command(allocator))
+	append(&subs, build_mcp_command(allocator))
 	return cli.cli_new_command(
 		cli.Cli_Command {
 			use = "funpack",

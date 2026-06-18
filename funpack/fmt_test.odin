@@ -75,6 +75,121 @@ test_fmt_property_holds_over_golden_numerics :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fmt_drift_reports_drift_without_writing :: proc(t: ^testing.T) {
+	// The central purity property: fmt_drift over a drifting tree returns the
+	// drift AND leaves the on-disk bytes untouched. This is the property the MCP
+	// one-shot fold depends on — the `fmt` tool computes drift without mutating
+	// the tree. MINI_SOURCE's blank-line-after-@doc drift is the real drift.
+	root, ok := write_minimal_valid_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	drifted, verdict := fmt_drift(root, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Fmt_Error.None)
+	testing.expect_value(t, len(drifted), 1)
+	if len(drifted) != 1 {
+		return
+	}
+	src_path := drifted[0].path
+	// The project read may canonicalize the tmp root through a symlink (macOS
+	// /var → /private/var), so assert the source-path SUFFIX rather than an exact
+	// scratch_join match — the seam reports the project's own resolved path.
+	testing.expect(t, strings.has_suffix(src_path, "mini.fun"), "drift path ends in the offending source")
+	testing.expect_value(t, drifted[0].on_disk, MINI_SOURCE)
+	testing.expect(t, drifted[0].canonical != MINI_SOURCE, "canonical must differ from the drifting on-disk bytes")
+
+	// The compute left disk byte-untouched.
+	after, read_err := os.read_entire_file_from_path(src_path, context.temp_allocator)
+	testing.expect(t, read_err == nil)
+	testing.expect_value(t, string(after), MINI_SOURCE)
+	log.infof("fmt_drift: the drift is reported and the source stays byte-untouched (pure compute, no side effect)")
+}
+
+@(test)
+test_fmt_drift_clean_tree_empty :: proc(t: ^testing.T) {
+	// A canonical tree drifts from nothing: after the write pass canonicalizes
+	// the tree, fmt_drift returns an empty drift list with a clean verdict — the
+	// empty-drift-plus-clean-verdict signal the MCP arm reads as ok:true.
+	root, ok := write_minimal_valid_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	testing.expect_value(t, fmt_verb_exit(root, .Write), 0)
+	drifted, verdict := fmt_drift(root, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Fmt_Error.None)
+	testing.expect_value(t, len(drifted), 0)
+	log.infof("fmt_drift: a canonical tree yields an empty drift list and a clean verdict")
+}
+
+@(test)
+test_fmt_drift_unified_diff_matches_verb :: proc(t: ^testing.T) {
+	// Schema↔dispatch coherence: the diff carried on Drifted_Source is byte-equal
+	// to a fresh unified_diff() call over the same (path, on_disk, canonical), so
+	// the seam's diff is exactly the bytes the verb prints and the MCP arm
+	// serializes — the same coherence the contract-pin tests guard for tools/list.
+	root, ok := write_minimal_valid_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	drifted, verdict := fmt_drift(root, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Fmt_Error.None)
+	testing.expect_value(t, len(drifted), 1)
+	if len(drifted) != 1 {
+		return
+	}
+	d := drifted[0]
+	fresh := unified_diff(d.path, d.on_disk, d.canonical, context.temp_allocator)
+	testing.expect_value(t, d.unified_diff, fresh)
+	log.infof("fmt_drift: Drifted_Source.unified_diff is byte-equal to a fresh unified_diff() call (seam↔print coherence)")
+}
+
+@(test)
+test_fmt_drift_malformed_tree_refuses :: proc(t: ^testing.T) {
+	// A root with no funpack_configs/ is the read_project refusal — fmt_drift
+	// returns Fmt_Error.Malformed_Tree with no drift, the coarse exit-2 tier the
+	// wrapper renders, distinguished from a clean tree by the verdict (not by an
+	// empty drift list).
+	root := scratch_join({scratch_base(), tprintf_seq("funpack-fmt-drift-malformed")})
+	remove_scratch_tree(root)
+	if !ensure_dir(root) {
+		log.warnf("SKIP fmt_drift malformed tree: cannot create %s", root)
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	drifted, verdict := fmt_drift(root, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Fmt_Error.Malformed_Tree)
+	testing.expect_value(t, len(drifted), 0)
+	testing.expect(t, verdict.offender != "", "Malformed_Tree carries the project_refusal_message offender")
+}
+
+@(test)
+test_fmt_drift_parse_error_refuses :: proc(t: ^testing.T) {
+	// A source the §02 grammar cannot parse is the compile tier — fmt_drift
+	// returns Fmt_Error.Parse_Failed (never a counted drift) with an offender
+	// naming the offending source path, the same compile-floor exit-2 the verb
+	// wrapper renders.
+	root, ok := write_broken_pong_tree(t)
+	if !ok {
+		return
+	}
+	defer remove_scratch_tree(root)
+
+	drifted, verdict := fmt_drift(root, context.temp_allocator)
+	testing.expect_value(t, verdict.err, Fmt_Error.Parse_Failed)
+	testing.expect_value(t, len(drifted), 0)
+	// The offender is the project's own resolved `path: detail` line; assert it
+	// names the offending source (suffix-tolerant of the /private symlink prefix).
+	testing.expect(t, strings.contains(verdict.offender, "pong.fun"), "Parse_Failed offender names the offending source path")
+}
+
+@(test)
 test_fmt_check_drift_exits_one_without_writing :: proc(t: ^testing.T) {
 	// MINI_SOURCE carries a blank line between the module @doc and the import,
 	// which the canonical form drops — a real drift. --check exits 1, prints

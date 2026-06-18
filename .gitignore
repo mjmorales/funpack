@@ -8,12 +8,6 @@ cmd/funpack/funpack
 # §14 derived build products — gitignored, rebuilt on demand
 .funpack/
 
-# funpack-mcp build output: the standalone module's bin/, and the per-platform
-# release binaries `task mcp:bundle` cross-compiles into the plugin. The launcher
-# wrapper (plugins/funpack/bin/funpack-mcp, no -os-arch suffix) stays committed.
-mcp/bin/
-plugins/funpack/bin/funpack-mcp-*
-
 # machine-local symlinks (written by claude-prove install init/local-env)
 .claude/prove-plugin
 

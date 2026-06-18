@@ -1,9 +1,11 @@
 # funpack MCP tools — intent → tool map
 
-The funpack plugin ships the **funpack-mcp** server (bundled via `plugins/funpack/.mcp.json`). Every
-ops verb that used to be a CLI invocation is now an MCP tool. **Do not shell out to `funpack
-build|check|fmt|test|run|live|warden`** and do not parse human CLI wording — call the tool and read
-its structured result. The replacement mapping is explicit at the bottom of this file.
+The funpack plugin exposes the **funpack MCP server** — the `funpack mcp` verb of the funpack binary,
+wired via `plugins/funpack/.mcp.json` (the plugin runs `funpack mcp` off `PATH`; funpack ships on
+`PATH` via Homebrew). Every ops verb that used to be a CLI invocation is now an MCP tool. **Do not
+shell out to `funpack build|check|fmt|test|run|live|warden`** and do not parse human CLI wording —
+call the tool and read its structured result. The replacement mapping is explicit at the bottom of
+this file.
 
 Tools split into two classes:
 
@@ -105,6 +107,7 @@ The old `/funpack:build|run|test|warden` slash commands are **gone**. Use the MC
 
 `/funpack:new` (scaffolding the project tree) **stays** — it has no MCP equivalent.
 
-> Tool names here are the exact identities `funpack-mcp` registers (`server.New` in
-> `mcp/internal/server/server.go`). If a tool isn't listed, it isn't wired — call `health` to confirm
-> the server, and don't assume an unlisted verb exists.
+> Tool names here are the exact identities the `funpack mcp` server registers (the generated
+> `funpack.TOOL_SPECS` projected from `contract/funpack-api.json`, dispatched in `cmd/funpack/mcp_tools_*.odin`).
+> If a tool isn't listed, it isn't wired — call `health` to confirm the server, and don't assume an
+> unlisted verb exists.
