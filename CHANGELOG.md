@@ -7,6 +7,28 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.10.0] - 2026-06-18
+
+### Features
+- feat(plugin): rewire MCP bundling to the native funpack mcp verb (4cc1b2a)
+- feat(mcp): re-home the contract generator to Odin (funpack mcp gen-contract) (91929a2)
+- feat(mcp): wire the one-shot compute-tool dispatch family (74acd40)
+- feat(mcp): wire session_start/list/end dispatch arm onto the registry (2180032)
+- feat(mcp): wire docs_get/docs_search/health in-process over the embedded corpus (a95b386)
+- feat(mcp): declare server-native tools in contract, project into unified TOOL_SPECS (5ab81e9)
+- feat(mcp): fill inspect_screenshot arm with native QOI->PNG transcode (e684669)
+- feat(mcp): control + self-heal tool dispatch (control_*, capture_test, audit) (911bc2f)
+- feat(mcp): wire the observe + time-travel tool dispatch family (c8e74fe)
+- feat(mcp): server-scoped session registry + per-family dispatch chain (mcp-odin-fold) (3934dec)
+- feat(mcp): port docs-search BM25 + symbol-table + blend ranker to Odin (mcp-odin-fold) (b4e6dfe)
+- feat(mcp): MCP JSON-RPC 2.0 protocol layer for `funpack mcp` (mcp-odin-fold) (c41eeec)
+- feat(mcp): re-home docs corpus generation + embed to Odin (mcp-odin-fold) (3bc07d6)
+- feat(mcp): enrich §28 contract with per-command arg shapes + project Tool_Spec table (f0176e0)
+- feat(mcp): re-home surface-parity gate to Odin funpack package (ecbe827)
+- feat(mcp): stdio JSON-RPC transport scaffold + minimal funpack mcp verb (80baaa5)
+- feat(mcp): extract pure fmt_drift seam from fmt verb (e5128b2)
+- feat(mcp): extract pure open_session_for_artifact seam from attach (33a1021)
+
 ## [0.9.0] - 2026-06-18
 
 ### Features
