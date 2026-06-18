@@ -11,9 +11,10 @@ import (
 // funpack <-> funpack-mcp boundary. Field tags mirror the on-disk JSON exactly;
 // "$comment" keys are ignored.
 type Contract struct {
-	ContractVersion int             `json:"contract_version"`
-	VersionSurface  VersionSurface  `json:"version_surface"`
-	Introspect      IntrospectBlock `json:"introspect"`
+	ContractVersion int              `json:"contract_version"`
+	VersionSurface  VersionSurface   `json:"version_surface"`
+	Introspect      IntrospectBlock  `json:"introspect"`
+	ServerTools     ServerToolsBlock `json:"server_tools"`
 }
 
 // VersionSurface describes the `funpack version --json` shape plus the MCP's
@@ -75,6 +76,43 @@ func (in IntrospectBlock) commandGroupSpecs() (map[string]CommandGroup, error) {
 	return decodeTyped[CommandGroup](in.CommandGroups)
 }
 
+// ServerToolsBlock is the server-native MCP tool surface — the tools backed by
+// in-process compute-halves and the session registry, NOT by §28 wire commands.
+// Its families map interleaves a "$comment" string key with the typed family
+// entries, so it decodes as raw messages and drops the comment key on access.
+type ServerToolsBlock struct {
+	Families map[string]json.RawMessage `json:"families"`
+}
+
+// familySpecs returns server_tools.families decoded into ServerToolFamily,
+// skipping any "$comment" key.
+func (st ServerToolsBlock) familySpecs() (map[string]ServerToolFamily, error) {
+	return decodeTyped[ServerToolFamily](st.Families)
+}
+
+// ServerToolFamily is one MCP dispatch family of server-native tools: the
+// determinism class every tool in it carries (the Tool_Spec.class hint), whether
+// the family's tools ride a named §28 session (always false for server-native
+// tools), and the ORDERED list of tools in the family. The family name is the
+// Tool_Spec.group the downstream tools/call arm keys on. The list order is
+// preserved on-disk so the generated Tool_Spec table is byte-stable.
+type ServerToolFamily struct {
+	Class         string           `json:"class"`
+	SessionScoped bool             `json:"session_scoped"`
+	Tools         []ServerToolSpec `json:"tools"`
+}
+
+// ServerToolSpec is one server-native MCP tool: its advertised name (which is
+// ALSO its dispatch key — a server-native tool has no §28 wire command) and the
+// per-arg shape map that is its full input_schema. Args is the hand-authored shape
+// the generator projects; an empty map means the tool takes no arguments. The map
+// decodes with arbitrary key order, so callers iterate it via sortedKeys for
+// byte-stable output.
+type ServerToolSpec struct {
+	Name string             `json:"name"`
+	Args map[string]ArgSpec `json:"args"`
+}
+
 // EnvelopeSpec is one of the three closed message kinds (request/response/event).
 type EnvelopeSpec struct {
 	Fields      []string `json:"fields"`
@@ -133,6 +171,23 @@ type ResolvedContract struct {
 	ContractVersion int
 	VersionSurface  ResolvedVersionSurface
 	Introspect      ResolvedIntrospect
+	ServerTools     ResolvedServerTools
+}
+
+// ResolvedServerTools is ServerToolsBlock with its raw families map decoded.
+type ResolvedServerTools struct {
+	Families map[string]ServerToolFamily
+}
+
+// serverToolNames returns a family's tool names in on-disk declaration order — the
+// ordered projection the Odin Tool_Spec table consumes so the generated table stays
+// byte-stable.
+func serverToolNames(fam ServerToolFamily) []string {
+	names := make([]string, len(fam.Tools))
+	for i, tool := range fam.Tools {
+		names[i] = tool.Name
+	}
+	return names
 }
 
 // ResolvedVersionSurface is VersionSurface with its raw maps decoded.
@@ -180,6 +235,10 @@ func loadContract(path string) (*ResolvedContract, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode introspect.command_groups: %w", err)
 	}
+	families, err := c.ServerTools.familySpecs()
+	if err != nil {
+		return nil, fmt.Errorf("decode server_tools.families: %w", err)
+	}
 
 	return &ResolvedContract{
 		ContractVersion: c.ContractVersion,
@@ -195,6 +254,9 @@ func loadContract(path string) (*ResolvedContract, error) {
 			Envelopes:       envelopes,
 			CommandGroups:   groups,
 			Events:          c.Introspect.Events,
+		},
+		ServerTools: ResolvedServerTools{
+			Families: families,
 		},
 	}, nil
 }

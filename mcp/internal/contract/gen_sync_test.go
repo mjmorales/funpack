@@ -96,6 +96,13 @@ func TestGeneratedOdinIsWellFormed(t *testing.T) {
 		"CMD_LOAD :: \"load\"",
 		"EVENT_BREAKPOINT_HIT :: \"breakpoint_hit\"",
 		"ENVELOPE_RESPONSE_FIELD_OK :: \"ok\"",
+		// The unified TOOL_SPECS table carries BOTH a §28 command (session-scoped)
+		// and the server-native tools (group = dispatch family, session_scoped = false).
+		"name           = \"time_load\",",
+		"name           = \"build\",",
+		"group          = \"oneshot\",",
+		"group          = \"docs_health\",",
+		"group          = \"session\",",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(got, want) {

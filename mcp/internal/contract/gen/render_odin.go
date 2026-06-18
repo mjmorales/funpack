@@ -102,12 +102,13 @@ func odinString(s string) string {
 func renderToolSpecs(b *bytes.Buffer, c *ResolvedContract) {
 	b.WriteString("// --- MCP tools/list projection (Tool_Spec table) ----------------------------\n")
 	b.WriteString("//\n")
-	b.WriteString("// Generated FROM contract/funpack-api.json command_groups: each §28 command\n")
-	b.WriteString("// becomes one MCP tool. input_schema is the wire `args` shape PLUS the always-\n")
-	b.WriteString("// present session_id and (for observe-class commands) the optional `branch`\n")
-	b.WriteString("// selector. A future tools/list reads TOOL_SPECS; tools/call dispatches on\n")
-	b.WriteString("// .command / .group — one source so the advertised schema cannot drift from\n")
-	b.WriteString("// dispatch (the §28 wire arg names ARE the dispatch hints).\n\n")
+	b.WriteString("// Generated FROM contract/funpack-api.json: each §28 command_groups command AND\n")
+	b.WriteString("// each server_tools tool becomes one MCP tool in the SAME table. A §28 command's\n")
+	b.WriteString("// input_schema is the wire `args` shape PLUS the always-present session_id and\n")
+	b.WriteString("// (for observe-class commands) the optional `branch` selector; a server-native\n")
+	b.WriteString("// tool's input_schema is its `args` verbatim. tools/list reads TOOL_SPECS;\n")
+	b.WriteString("// tools/call dispatches on .command / .group — one source so the advertised\n")
+	b.WriteString("// schema cannot drift from dispatch.\n\n")
 
 	b.WriteString("// Tool_Arg is one MCP input_schema property: the JSON name, its JSON-Schema\n")
 	b.WriteString("// type, whether it is required, and its description.\n")
@@ -118,12 +119,14 @@ func renderToolSpecs(b *bytes.Buffer, c *ResolvedContract) {
 	b.WriteString("\tdoc:       string,\n")
 	b.WriteString("}\n\n")
 
-	b.WriteString("// Tool_Spec is one MCP tool projected from a §28 command: its advertised tool\n")
-	b.WriteString("// name and full input_schema (args), plus the dispatch hints (the §28 wire\n")
-	b.WriteString("// command, its declaring group, and the determinism class) tools/call switches\n")
-	b.WriteString("// on. session_scoped is true for every §28 command (all ride a named session);\n")
-	b.WriteString("// the field is explicit so a future one-shot compute tool can sit in the same\n")
-	b.WriteString("// table with session_scoped = false.\n")
+	b.WriteString("// Tool_Spec is one MCP tool: its advertised tool name and full input_schema\n")
+	b.WriteString("// (args), plus the dispatch hints tools/call switches on (the wire command, its\n")
+	b.WriteString("// declaring group/family, and the determinism class). It carries BOTH classes of\n")
+	b.WriteString("// MCP tool from one table: a §28 session command (session_scoped = true, group is\n")
+	b.WriteString("// its §28 group, command is the wire command) and a server-native tool\n")
+	b.WriteString("// (session_scoped = false, group is its dispatch family, command equals the tool\n")
+	b.WriteString("// name — no §28 wire command exists). One unified table is the whole point: every\n")
+	b.WriteString("// tool tools/list advertises and tools/call dispatches reads from here.\n")
 	b.WriteString("Tool_Spec :: struct {\n")
 	b.WriteString("\tname:           string,\n")
 	b.WriteString("\tcommand:        string,\n")
@@ -152,9 +155,12 @@ func renderToolSpecs(b *bytes.Buffer, c *ResolvedContract) {
 	b.WriteString("\tdoc       = \"optional §28 observe-addressing selector: omit for the canonical timeline, set to a checkout-created branch name\",\n")
 	b.WriteString("}\n\n")
 
-	b.WriteString("// TOOL_SPECS is the generated tools/list projection, one entry per §28 command\n")
-	b.WriteString("// in contract order (groups sorted, commands as declared). A package-level `:=`\n")
-	b.WriteString("// (not `::`) because an Odin slice literal is not a compile-time constant; it is\n")
+	b.WriteString("// TOOL_SPECS is the generated tools/list projection: the FULL MCP tool surface\n")
+	b.WriteString("// in one table — the §28 commands first (groups sorted, commands as declared),\n")
+	b.WriteString("// then the server-native tools (families sorted, tools as declared). Both\n")
+	b.WriteString("// sections are projected from contract/funpack-api.json by the same walk, so the\n")
+	b.WriteString("// advertised input_schema cannot drift from dispatch. A package-level `:=` (not\n")
+	b.WriteString("// `::`) because an Odin slice literal is not a compile-time constant; it is\n")
 	b.WriteString("// read-only by convention (a generated table tools/list walks, never mutates).\n")
 	b.WriteString("TOOL_SPECS := []Tool_Spec{\n")
 	for _, g := range sortedKeys(c.Introspect.CommandGroups) {
@@ -183,7 +189,41 @@ func renderToolSpecs(b *bytes.Buffer, c *ResolvedContract) {
 			b.WriteString("\t},\n")
 		}
 	}
+	renderServerToolSpecs(b, c)
 	b.WriteString("}\n")
+}
+
+// renderServerToolSpecs appends the server-native tools to the SAME TOOL_SPECS
+// literal the §28 commands feed. Each server-native tool projects into one
+// Tool_Spec whose group is its FAMILY (the downstream tools/call arm key), class
+// is the family's determinism class, session_scoped is the family's flag (false for
+// every server-native tool), command IS the tool name (no §28 wire command exists),
+// and args are the tool's full input_schema verbatim — NO injected SESSION_ID_ARG or
+// BRANCH_ARG (those are §28-specific). Families iterate in sorted order, tools in
+// on-disk declaration order, args in sorted-key order — byte-stable.
+func renderServerToolSpecs(b *bytes.Buffer, c *ResolvedContract) {
+	for _, famName := range sortedKeys(c.ServerTools.Families) {
+		fam := c.ServerTools.Families[famName]
+		for _, tool := range fam.Tools {
+			b.WriteString(fmt.Sprintf("\t{\n\t\tname           = %q,\n", tool.Name))
+			b.WriteString(fmt.Sprintf("\t\tcommand        = %q,\n", tool.Name))
+			b.WriteString(fmt.Sprintf("\t\tgroup          = %q,\n", famName))
+			b.WriteString(fmt.Sprintf("\t\tclass          = %q,\n", fam.Class))
+			b.WriteString(fmt.Sprintf("\t\tsession_scoped = %t,\n", fam.SessionScoped))
+			b.WriteString("\t\targs           = []Tool_Arg{\n")
+			for _, argName := range sortedKeys(tool.Args) {
+				arg := tool.Args[argName]
+				b.WriteString("\t\t\t{")
+				b.WriteString(fmt.Sprintf("name = %q, ", argName))
+				b.WriteString(fmt.Sprintf("json_type = %q, ", arg.Type))
+				b.WriteString(fmt.Sprintf("required = %t, ", arg.Required))
+				b.WriteString(fmt.Sprintf("doc = %s", odinString(arg.Doc)))
+				b.WriteString("},\n")
+			}
+			b.WriteString("\t\t},\n")
+			b.WriteString("\t},\n")
+		}
+	}
 }
 
 // orderedFieldNames returns version_surface.fields keys in deterministic order.

@@ -80,12 +80,13 @@ EVENT_DIVERGED :: "diverged"
 
 // --- MCP tools/list projection (Tool_Spec table) ----------------------------
 //
-// Generated FROM contract/funpack-api.json command_groups: each §28 command
-// becomes one MCP tool. input_schema is the wire `args` shape PLUS the always-
-// present session_id and (for observe-class commands) the optional `branch`
-// selector. A future tools/list reads TOOL_SPECS; tools/call dispatches on
-// .command / .group — one source so the advertised schema cannot drift from
-// dispatch (the §28 wire arg names ARE the dispatch hints).
+// Generated FROM contract/funpack-api.json: each §28 command_groups command AND
+// each server_tools tool becomes one MCP tool in the SAME table. A §28 command's
+// input_schema is the wire `args` shape PLUS the always-present session_id and
+// (for observe-class commands) the optional `branch` selector; a server-native
+// tool's input_schema is its `args` verbatim. tools/list reads TOOL_SPECS;
+// tools/call dispatches on .command / .group — one source so the advertised
+// schema cannot drift from dispatch.
 
 // Tool_Arg is one MCP input_schema property: the JSON name, its JSON-Schema
 // type, whether it is required, and its description.
@@ -96,12 +97,14 @@ Tool_Arg :: struct {
 	doc:       string,
 }
 
-// Tool_Spec is one MCP tool projected from a §28 command: its advertised tool
-// name and full input_schema (args), plus the dispatch hints (the §28 wire
-// command, its declaring group, and the determinism class) tools/call switches
-// on. session_scoped is true for every §28 command (all ride a named session);
-// the field is explicit so a future one-shot compute tool can sit in the same
-// table with session_scoped = false.
+// Tool_Spec is one MCP tool: its advertised tool name and full input_schema
+// (args), plus the dispatch hints tools/call switches on (the wire command, its
+// declaring group/family, and the determinism class). It carries BOTH classes of
+// MCP tool from one table: a §28 session command (session_scoped = true, group is
+// its §28 group, command is the wire command) and a server-native tool
+// (session_scoped = false, group is its dispatch family, command equals the tool
+// name — no §28 wire command exists). One unified table is the whole point: every
+// tool tools/list advertises and tools/call dispatches reads from here.
 Tool_Spec :: struct {
 	name:           string,
 	command:        string,
@@ -130,9 +133,12 @@ BRANCH_ARG :: Tool_Arg{
 	doc       = "optional §28 observe-addressing selector: omit for the canonical timeline, set to a checkout-created branch name",
 }
 
-// TOOL_SPECS is the generated tools/list projection, one entry per §28 command
-// in contract order (groups sorted, commands as declared). A package-level `:=`
-// (not `::`) because an Odin slice literal is not a compile-time constant; it is
+// TOOL_SPECS is the generated tools/list projection: the FULL MCP tool surface
+// in one table — the §28 commands first (groups sorted, commands as declared),
+// then the server-native tools (families sorted, tools as declared). Both
+// sections are projected from contract/funpack-api.json by the same walk, so the
+// advertised input_schema cannot drift from dispatch. A package-level `:=` (not
+// `::`) because an Odin slice literal is not a compile-time constant; it is
 // read-only by convention (a generated table tools/list walks, never mutates).
 TOOL_SPECS := []Tool_Spec{
 	{
@@ -461,6 +467,190 @@ TOOL_SPECS := []Tool_Spec{
 		args           = []Tool_Arg{
 			SESSION_ID_ARG,
 			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "docs_get",
+		command        = "docs_get",
+		group          = "docs_health",
+		class          = "docs",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "anchor", json_type = "string", required = true, doc = "stable corpus anchor of the section to fetch (e.g. an engine/<module>#<decl> or <file>#<heading-slug> anchor)"},
+		},
+	},
+	{
+		name           = "docs_search",
+		command        = "docs_search",
+		group          = "docs_health",
+		class          = "docs",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "limit", json_type = "integer", required = false, doc = "maximum hits to return; omit or <= 0 for the default (10), capped at 50"},
+			{name = "query", json_type = "string", required = true, doc = "search query: an engine symbol/identifier (e.g. world.resolve, @stub) for a declaration, or natural language (e.g. how does determinism work) for a concept"},
+		},
+	},
+	{
+		name           = "health",
+		command        = "health",
+		group          = "docs_health",
+		class          = "docs",
+		session_scoped = false,
+		args           = []Tool_Arg{
+		},
+	},
+	{
+		name           = "build",
+		command        = "build",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "absolute path to the funpack project tree to build (the funpack verb operates on the project at this working directory)"},
+			{name = "release", json_type = "boolean", required = false, doc = "build the optimized shippable artifact (passes --release); omit for a fast dev build"},
+		},
+	},
+	{
+		name           = "export",
+		command        = "export",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "absolute path to the funpack project tree to export the shippable (release) artifact for (the funpack verb operates on the project at this working directory)"},
+		},
+	},
+	{
+		name           = "check",
+		command        = "check",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "absolute path to the funpack project tree to check (the funpack verb operates on the project at this working directory)"},
+			{name = "release", json_type = "boolean", required = false, doc = "check against the release build configuration (passes --release)"},
+		},
+	},
+	{
+		name           = "test",
+		command        = "test",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "absolute path to the funpack project tree to test (funpack runs every test block in the tree at this working directory)"},
+		},
+	},
+	{
+		name           = "fmt",
+		command        = "fmt",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "check", json_type = "boolean", required = false, doc = "verdict-only mode (passes --check): report whether the tree is formatted via the exit code without rewriting files"},
+			{name = "dir", json_type = "string", required = true, doc = "absolute path to the funpack project tree to format (the funpack verb operates on the project at this working directory)"},
+		},
+	},
+	{
+		name           = "warden_find",
+		command        = "warden_find",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "project directory whose committed .funpack/index.ndjson to query"},
+			{name = "query", json_type = "string", required = true, doc = "declaration name substring to look up (the warden find positional filter); an empty result means nothing existing to reuse"},
+		},
+	},
+	{
+		name           = "warden_graph",
+		command        = "warden_graph",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "project directory whose committed .funpack/index.ndjson to query"},
+			{name = "node", json_type = "string", required = false, doc = "optional node name to filter the graph to one node's edges; omit for the full dependency graph"},
+		},
+	},
+	{
+		name           = "warden_holes",
+		command        = "warden_holes",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "project directory whose committed .funpack/index.ndjson to query for typed holes"},
+		},
+	},
+	{
+		name           = "warden_probes",
+		command        = "warden_probes",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "project directory whose committed .funpack/index.ndjson to query for debug probes"},
+		},
+	},
+	{
+		name           = "warden_debt",
+		command        = "warden_debt",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "project directory whose committed .funpack/index.ndjson to query for declarations tagged as debt"},
+		},
+	},
+	{
+		name           = "warden_tags",
+		command        = "warden_tags",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "project directory whose committed .funpack/index.ndjson to query for the registered governance tags"},
+		},
+	},
+	{
+		name           = "warden_pipeline",
+		command        = "warden_pipeline",
+		group          = "oneshot",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "dir", json_type = "string", required = true, doc = "project directory whose committed .funpack/index.ndjson to project the pipeline from"},
+		},
+	},
+	{
+		name           = "session_start",
+		command        = "session_start",
+		group          = "session",
+		class          = "session",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "artifact", json_type = "string", required = true, doc = "path to the built funpack game artifact for the attach session to load"},
+		},
+	},
+	{
+		name           = "session_list",
+		command        = "session_list",
+		group          = "session",
+		class          = "session",
+		session_scoped = false,
+		args           = []Tool_Arg{
+		},
+	},
+	{
+		name           = "session_end",
+		command        = "session_end",
+		group          = "session",
+		class          = "session",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "session_id", json_type = "string", required = true, doc = "opaque id of the session to close, as returned by session_start"},
 		},
 	},
 }
