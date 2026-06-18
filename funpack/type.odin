@@ -55,6 +55,7 @@ Engine_Kind :: enum {
 	Stick,       // §23 gamepad-stick enum
 	Color,       // §20 palette enum
 	Flip,     // §20 sprite-mirroring enum (None | X | Y | XY), Draw::Sprite.flip
+	Align,    // §20 horizontal text-alignment enum (Left | Center | Right)
 	// §11 physics surface: the Body record, its kind/shape enums, and the
 	// engine-routed Trigger signal.
 	Body,            // §11 §2 physics body record (engine.physics)

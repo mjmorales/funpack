@@ -128,6 +128,77 @@ test_surface_dump_makes_the_restore_visible :: proc(t: ^testing.T) {
 	testing.expect(t, rgb_found, "Color::Rgb appears in the dumped struct variants")
 }
 
+// test_surface_dump_lists_the_variant_readmit is the mechanical variant-re-admit
+// proof (story mechanical-variant-readmit): the dump projects the FULL restored
+// closed sets (PlayerId P1-P4, Bone/Slot with their extremities + generic joints/
+// slots) and the §20 Align enum's variant set — the same shape the Color palette
+// restore takes — so the introspect dump an author/agent inspects shows every
+// re-admitted variant without a trial compile, and the .fun parity gate compares
+// against ground truth. Asserts over the structured dump (a field rename is caught
+// by the struct, not a brittle substring).
+@(test)
+test_surface_dump_lists_the_variant_readmit :: proc(t: ^testing.T) {
+	dump := build_surface_dump()
+
+	// (1) the re-admitted closed enum sets appear with their full restored variants.
+	Want :: struct {
+		type_name: string,
+		variants:  []string,
+	}
+	wants := []Want {
+		{"PlayerId", {"P1", "P2", "P3", "P4"}},
+		{"Bone", {"Hips", "Neck", "LHand", "RHand", "LFoot", "RFoot", "Joint7"}},
+		{"Slot", {"LHand", "RHand", "LFoot", "RFoot", "Slot0", "Slot3"}},
+		{"Key", {"Q", "Escape", "Shift", "Tab"}},
+		{"Align", {"Left", "Center", "Right"}},
+	}
+	for want in wants {
+		found := false
+		for set in dump.enum_variants {
+			if set.type_name != want.type_name {
+				continue
+			}
+			found = true
+			for variant in want.variants {
+				testing.expectf(
+					t,
+					slice_has(set.variants, variant),
+					"%s::%s appears in the dumped variant set",
+					want.type_name,
+					variant,
+				)
+			}
+		}
+		testing.expectf(t, found, "the %s enum's variant set appears in the dump", want.type_name)
+	}
+
+	// (2) Align (render) and Axis/Button (input) appear as engine TYPE decls — the
+	// type-position projection the parity gate reads, distinct from a variant set.
+	Decl_Want :: struct {
+		path: string,
+		name: string,
+	}
+	decl_wants := []Decl_Want {
+		{"engine.render", "Align"},
+		{"engine.input", "Axis"},
+		{"engine.input", "Button"},
+	}
+	for want in decl_wants {
+		found := false
+		for module in dump.modules {
+			if module.path != want.path {
+				continue
+			}
+			for decl in module.decls {
+				if decl.name == want.name && decl.kind == .Type_Name {
+					found = true
+				}
+			}
+		}
+		testing.expectf(t, found, "%s::%s appears as a Type_Name decl in the dump", want.path, want.name)
+	}
+}
+
 // test_surface_dump_walks_the_index_tables pins that the index-walkable rodata is
 // projected faithfully: the dumped module set IS STDLIB_SURFACE (same count, same
 // paths in order) and the reexports ARE STDLIB_REEXPORTS — the dump is generated

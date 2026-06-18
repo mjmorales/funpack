@@ -167,6 +167,19 @@ STDLIB_SURFACE := []Module_Surface{
 			{"PlayerId", .Type_Name},
 			{"Bindings", .Type_Name},
 			{"Stick", .Type_Name},
+			// Axis/Button are the §03 §4 role-kind markers (input.fun:7,10 `extern
+			// type Axis` / `extern type Button`): the kind an action enum ascribes
+			// (`enum Drive: Axis`, `enum Act: Button`). They are TYPE-POSITION names
+			// the §26 input partition owns, so they appear as engine.input types in
+			// the introspect dump (the partition the dump walks directly) and the
+			// surface is the source of truth the .fun parity gate compares against.
+			// The ascription itself never resolves through this table — the parser
+			// captures the kind as a contextual string (parse_optional_kind) the
+			// Enum_Schema.role carries, so `enum Drive: Axis` compiles whether or not
+			// Axis is admitted here; this row is the type-decl projection, not a new
+			// binding path the ascription depends on.
+			{"Axis", .Type_Name},
+			{"Button", .Type_Name},
 			{"keys_axis", .Func},
 			{"stick_x", .Func},
 			{"stick_y", .Func},
@@ -182,12 +195,15 @@ STDLIB_SURFACE := []Module_Surface{
 		// §20: the 2D render surface. Draw is the closed §04 draw-command
 		// type; Color is its palette enum; Flip is the §20 sprite-mirroring enum
 		// (None | X | Y | XY) a Draw::Sprite's `flip` field names — one set of
-		// atlas cells reused for both facings.
+		// atlas cells reused for both facings; Align is the §20 horizontal
+		// text-alignment enum (Left | Center | Right) — admitted as the type, no
+		// Draw command consumes it yet.
 		path = "engine.render",
 		decls = {
 			{"Draw", .Type_Name},
 			{"Color", .Type_Name},
 			{"Flip", .Type_Name},
+			{"Align", .Type_Name},
 		},
 	},
 	{
@@ -989,17 +1005,29 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type, found: bool) {
 	switch type_name {
 	case "PlayerId":
+		// §23 the local-player slots (input.fun:13, `enum PlayerId { P1, P2, P3, P4 }`):
+		// the four split-screen slots Input queries are addressed by. The runtime
+		// input enum (input.odin) already carries P1-P4, so admitting the full set
+		// here is the typecheck gate — a four-player binding names P3/P4 exactly as a
+		// two-player one names P1/P2.
 		switch variant {
-		case "P1", "P2":
+		case "P1", "P2", "P3", "P4":
 			return engine_type_of(.PlayerId), true
 		}
 	case "Key":
 		switch variant {
-		case "W", "S", "A", "D", "Up", "Down", "Left", "Right", "Space",
-		     "F5", "F9", "M", "Enter":
-			// yard's menu keybinds (quicksave/quickload/toggle-motion/apply) bind to
-			// the function keys, M, and Enter; the runtime treats a key code as an
-			// opaque interned string, so admitting the variant here is the whole gate.
+		case "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+		     "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+		     "Up", "Down", "Left", "Right", "Space", "Enter", "Escape", "Shift", "Tab",
+		     "F5", "F9":
+			// The full §23 physical-key set (input.fun:16, the A-Z + Up/Down/Left/Right
+			// + Space/Enter/Escape/Shift/Tab letters/modifiers a bindings() key-list
+			// names), plus F5/F9 — yard's quicksave/quickload menu keybinds, which the
+			// committed corpus binds though they sit outside the stdlib's named set
+			// (the live-key scancode map is a separate runtime story). The runtime
+			// treats a key code as an opaque interned string, so admitting the variant
+			// here is the whole typecheck gate — a binding to Key::Q types exactly as
+			// one to Key::W.
 			return engine_type_of(.Key), true
 		}
 	case "PadButton":
@@ -1059,15 +1087,34 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 		case "None", "X", "Y", "XY":
 			return engine_type_of(.Flip), true
 		}
+	case "Align":
+		// §20 the horizontal text-alignment enum (render.fun:18, `enum Align { Left,
+		// Center, Right }`): the closed set a Draw::Text alignment field will name —
+		// admitted here the Flip mold (a bare-variant value reached through this
+		// surface, grounded in engine_type_name, never the denominator of an
+		// exhaustiveness match). No Draw command consumes Align yet; admitting the
+		// enum type is the surface restore, wiring it into Draw::Text is a later
+		// feature.
+		switch variant {
+		case "Left", "Center", "Right":
+			return engine_type_of(.Align), true
+		}
 	case "Slot":
 		// §16 §7 the part-attach slots krognid.gen.fun binds meshes to. The
 		// left-side slots plus their right-mirror twins — PartSet.mirror(L, R)
 		// derives the R set, but a binding may target either side explicitly, so
-		// the full closed set is admitted (matching the .fpm rig's slot space).
+		// the full closed set is admitted (matching the .fpm rig's slot space): the
+		// torso/head core, the four-limb upper/lower slots both sides, the four
+		// hand/foot extremities a held prop or footwear attaches to, and the four
+		// generic Slot0-3 attach points a non-humanoid rig binds. The runtime keys
+		// part bindings by an opaque slot string, so admitting the variant here is
+		// the typecheck gate.
 		switch variant {
 		case "Torso", "Head",
 		     "LUpperArm", "LLowerArm", "RUpperArm", "RLowerArm",
-		     "LUpperLeg", "LLowerLeg", "RUpperLeg", "RLowerLeg":
+		     "LUpperLeg", "LLowerLeg", "RUpperLeg", "RLowerLeg",
+		     "LHand", "RHand", "LFoot", "RFoot",
+		     "Slot0", "Slot1", "Slot2", "Slot3":
 			return engine_type_of(.Slot), true
 		}
 	case "Side":
@@ -1078,12 +1125,19 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 		}
 	case "Bone":
 		// §16 §7 the skeleton bones a pose generator drives (Pose.set(Bone::…, t)).
-		// The humanoid bone set: torso/head plus the four-limb upper/lower bones,
-		// both sides (a pose drives both legs and both arms in counter-swing).
+		// The humanoid bone set: the spine (Hips/Torso/Neck/Head), the four-limb
+		// upper/lower bones both sides (a pose drives both legs and both arms in
+		// counter-swing), the four extremities (hands/feet), and the eight generic
+		// Joint0-7 slots a non-humanoid rig drives. The runtime pose (pose.odin) keys
+		// bones by an opaque string, so admitting the variant here is the typecheck
+		// gate — Pose.set(Bone::LHand, t) types exactly as Pose.set(Bone::Head, t).
 		switch variant {
-		case "Torso", "Head",
+		case "Hips", "Torso", "Neck", "Head",
 		     "LUpperArm", "LLowerArm", "RUpperArm", "RLowerArm",
-		     "LUpperLeg", "LLowerLeg", "RUpperLeg", "RLowerLeg":
+		     "LUpperLeg", "LLowerLeg", "RUpperLeg", "RLowerLeg",
+		     "LHand", "RHand", "LFoot", "RFoot",
+		     "Joint0", "Joint1", "Joint2", "Joint3",
+		     "Joint4", "Joint5", "Joint6", "Joint7":
 			return engine_type_of(.Bone), true
 		}
 	case "Bus":

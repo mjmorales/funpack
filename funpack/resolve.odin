@@ -526,6 +526,11 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 	// reached through surface_enum_variant, not as bare type-refs.
 	case "Flip":
 		return engine_type_of(.Flip), true
+	// §20 the horizontal text-alignment enum: a bare `align: Align` field or
+	// `-> Align` return names it in type position; its variants (Left/Center/Right)
+	// are reached through surface_enum_variant, not as bare type-refs (the Flip mold).
+	case "Align":
+		return engine_type_of(.Align), true
 	// §11 physics: a `body: Body` field, a `shape: Shape2` field, a `kind:
 	// BodyKind` field, and a `pads: [Trigger]` inbound signal all name an
 	// engine type here. Box/Circle and Static/Dynamic/Kinematic are reached

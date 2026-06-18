@@ -914,6 +914,76 @@ test_anim_enum_variants_type_to_handles :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_full_closed_variant_sets_restore :: proc(t: ^testing.T) {
+	// The mechanical variant re-admit (the Color-palette restore shape): each
+	// engine enum's FULL declared variant set types to its engine handle, and a
+	// member outside the set is not a value (the closed-enum guard). The runtime
+	// already carries every code (PlayerId P1-P4 in input.odin, keys/bones keyed by
+	// opaque interned string), so admitting the variant here is the typecheck gate.
+	// Pins the restored portions against silent re-dropping: a variant removed from a
+	// surface_enum_variant arm fails its row here.
+	Case :: struct {
+		type_name: string,
+		kind:      Engine_Kind,
+		variants:  []string,
+		unknown:   string,
+	}
+	cases := []Case {
+		// §23 PlayerId — the four split-screen slots (P3/P4 the restored portion).
+		{"PlayerId", .PlayerId, {"P1", "P2", "P3", "P4"}, "P5"},
+		// §23 Key — the full A-Z + Up/Down/Left/Right + Space/Enter/Escape/Shift/Tab
+		// physical-key set (input.fun:16) plus the F5/F9 yard menu keybinds.
+		{
+			"Key",
+			.Key,
+			{
+				"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+				"N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+				"Up", "Down", "Left", "Right", "Space", "Enter", "Escape", "Shift",
+				"Tab", "F5", "F9",
+			},
+			"Backspace",
+		},
+		// §16 §7 Bone — spine + four limbs both sides + extremities + Joint0-7.
+		{
+			"Bone",
+			.Bone,
+			{
+				"Hips", "Torso", "Neck", "Head",
+				"LUpperArm", "LLowerArm", "RUpperArm", "RLowerArm",
+				"LUpperLeg", "LLowerLeg", "RUpperLeg", "RLowerLeg",
+				"LHand", "RHand", "LFoot", "RFoot",
+				"Joint0", "Joint1", "Joint2", "Joint3",
+				"Joint4", "Joint5", "Joint6", "Joint7",
+			},
+			"Tail",
+		},
+		// §16 §7 Slot — torso/head + four limbs both sides + extremities + Slot0-3.
+		{
+			"Slot",
+			.Slot,
+			{
+				"Torso", "Head",
+				"LUpperArm", "LLowerArm", "RUpperArm", "RLowerArm",
+				"LUpperLeg", "LLowerLeg", "RUpperLeg", "RLowerLeg",
+				"LHand", "RHand", "LFoot", "RFoot",
+				"Slot0", "Slot1", "Slot2", "Slot3",
+			},
+			"Backpack",
+		},
+	}
+	for c in cases {
+		for variant in c.variants {
+			v, has := surface_enum_variant(c.type_name, variant)
+			testing.expectf(t, has, "%s::%s types as a value", c.type_name, variant)
+			testing.expect(t, is_engine(v, c.kind))
+		}
+		_, has_unknown := surface_enum_variant(c.type_name, c.unknown)
+		testing.expectf(t, !has_unknown, "%s::%s is not a value", c.type_name, c.unknown)
+	}
+}
+
+@(test)
 test_anim_audio_static_and_method_builders_resolve :: proc(t: ^testing.T) {
 	// AC: the anim/audio static builders and value methods resolve to engine-value
 	// signatures — Skeleton.humanoid()/PartSet.empty()/Pose.empty()/Pose.blend and
@@ -1041,6 +1111,105 @@ test_flip_unknown_variant_is_compile_error :: proc(t: ^testing.T) {
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	_, err := stage_typecheck(ast)
 	testing.expect(t, err != .None)
+}
+
+@(test)
+test_surface_admits_engine_render_align :: proc(t: ^testing.T) {
+	// §20 the horizontal text-alignment enum (render.fun:18, `enum Align { Left,
+	// Center, Right }`), admitted the Flip mold: it imports from engine.render as a
+	// Type_Name, grounds in type position via engine_type_name, its three variants
+	// type to the Align engine value through surface_enum_variant, and a variant
+	// outside the closed set is not a value. No Draw command consumes Align yet —
+	// admitting the enum type is the surface restore, not a Draw::Text wiring.
+	source := "import engine.render.{Draw, Color, Flip, Align}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	bindings, err := resolve_imports(ast)
+	testing.expect_value(t, err, Type_Error.None)
+	align, bound := bindings.names["Align"]
+	testing.expect(t, bound)
+	testing.expect_value(t, align.module, "engine.render")
+	testing.expect_value(t, align.kind, Decl_Kind.Type_Name)
+
+	// engine_type_name grounds a bare `align: Align` field/param/return.
+	ground, has_ground := engine_type_name("Align")
+	testing.expect(t, has_ground)
+	testing.expect(t, is_engine(ground, .Align))
+
+	for variant in ([]string{"Left", "Center", "Right"}) {
+		v, has := surface_enum_variant("Align", variant)
+		testing.expectf(t, has, "Align::%s types as a value", variant)
+		testing.expect(t, is_engine(v, .Align))
+	}
+	_, has_unknown := surface_enum_variant("Align", "Justify")
+	testing.expect(t, !has_unknown, "Align::Justify is not a value — the closed set is Left/Center/Right")
+}
+
+@(test)
+test_align_value_typechecks_and_evals :: proc(t: ^testing.T) {
+	// The end-to-end junction: an Align value constructs, types against a `-> Align`
+	// return, and compares equal under evaluation (the bare-variant Enum_Value mold
+	// Color/Flip/Bus share — no per-enum eval special-casing). A clean run pins the
+	// whole surface→typecheck→eval path the restore opened.
+	source := "import engine.render.Align\n" +
+		"fn left() -> Align { return Align::Left }\n" +
+		"fn center() -> Align { return Align::Center }\n" +
+		"test \"align constructs and compares as a value\" {\n" +
+		"  assert left() == Align::Left\n" +
+		"  assert center() == Align::Center\n" +
+		"  assert left() != Align::Right\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	// Three asserts in the one test block; report.passed counts each assert.
+	testing.expect_value(t, report.passed, 3)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_input_axis_button_role_kinds_are_engine_input_types :: proc(t: ^testing.T) {
+	// §03 §4 the ascription-only role kinds (input.fun:7,10 `extern type Axis` /
+	// `extern type Button`): the §26 engine.input partition OWNS them as type-position
+	// names, so they project as engine.input types in the introspect dump (the parity
+	// gate the .fun corpus compares against). The ascription path is independent —
+	// `enum Drive: Axis` captures the kind as a contextual string the parser stores on
+	// Enum_Schema.role, never resolving it through the surface table — so admitting the
+	// type-decl row does not change how an action enum ascribes its role.
+	axis, axis_bound := surface_resolve(must_surface_module(t, "engine.input"), "Axis")
+	testing.expect(t, axis_bound)
+	testing.expect_value(t, axis.module, "engine.input")
+	testing.expect_value(t, axis.kind, Decl_Kind.Type_Name)
+
+	button, button_bound := surface_resolve(must_surface_module(t, "engine.input"), "Button")
+	testing.expect(t, button_bound)
+	testing.expect_value(t, button.module, "engine.input")
+	testing.expect_value(t, button.kind, Decl_Kind.Type_Name)
+
+	// The ascription still compiles clean: a Button-kinded and an Axis-kinded action
+	// enum, bound and queried through a full pipeline run — the admission of the
+	// type-decl rows did not disturb the role-kind contextual-string path.
+	source := "import engine.input.{Bindings, PlayerId, PadButton, pad}\n" +
+		"import engine.math.to_fixed\n" +
+		"enum Act: Button { Jump }\n" +
+		"enum Drive: Axis { Move }\n" +
+		"fn bindings() -> Bindings {\n" +
+		"  return Bindings.empty()\n" +
+		"    .button(PlayerId::P1, Act::Jump, pad(PadButton::A))\n" +
+		"    .axis(PlayerId::P3, Drive::Move, pad(PadButton::A))\n" +
+		"}\n" +
+		"test \"x\" {\n\tassert to_fixed(2) == 2.0\n}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+// must_surface_module resolves a partition by path or fails the test — the small
+// helper the engine.input role-kind spec reads the partition through.
+must_surface_module :: proc(t: ^testing.T, path: string) -> Module_Surface {
+	module, found := surface_module(path)
+	testing.expectf(t, found, "partition %s exists", path)
+	return module
 }
 
 // ── §26 prelude compare/Ordering + §20 Color palette/Rgb parity restore ──
