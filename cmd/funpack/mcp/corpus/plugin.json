@@ -311,7 +311,7 @@
     "anchor": "skills/funpack-determinism/SKILL.md#driving-the-loop-the-mcp-tools",
     "kind": "plugin",
     "title": "Driving the loop \u2014 the MCP tools",
-    "text": "The compile / test / query ops are **MCP tools** the bundled funpack-mcp server provides, not CLI\ninvocations you shell out. The intent \u2192 tool map is in `../../references/mcp-tools.md`; the verbs you\nreach for here:\n\n- **Compile**: `build` (emit the artifact + `.funpack/index.ndjson`), `check` (the same verdict, no\n  product written), `export` (the optimized release build, hole-banned), `fmt` (format / check\n  formatting). A release build is the hole-ban mode \u2014 it rejects any `@stub` or debug directive.\n- **Test**: `test` runs every `test \"\u2026\" { assert \u2026 }` block and returns a structured pass/fail\n  summary (counts + each failing test's name and detail).\n- **Look up the spec / engine API**: search the funpack docs with the `docs_search` MCP tool (then\n  `docs_get` on a hit's anchor) rather than relying on memorized prose.",
+    "text": "The compile / test / query ops are **MCP tools** the funpack MCP server (`funpack mcp`) provides, not\nCLI invocations you shell out. The intent \u2192 tool map is in `../../references/mcp-tools.md`; the verbs you\nreach for here:\n\n- **Compile**: `build` (emit the artifact + `.funpack/index.ndjson`), `check` (the same verdict, no\n  product written), `export` (the optimized release build, hole-banned), `fmt` (format / check\n  formatting). A release build is the hole-ban mode \u2014 it rejects any `@stub` or debug directive.\n- **Test**: `test` runs every `test \"\u2026\" { assert \u2026 }` block and returns a structured pass/fail\n  summary (counts + each failing test's name and detail).\n- **Look up the spec / engine API**: search the funpack docs with the `docs_search` MCP tool (then\n  `docs_get` on a hit's anchor) rather than relying on memorized prose.",
     "source": "skills/funpack-determinism/SKILL.md"
   },
   {
@@ -873,55 +873,6 @@
     "title": "Forms that are spec/grammar-real but not shown in examples",
     "text": "`query` declarations, `mut data`, `Map[K,V]` usage in game code, `@expose`, `@todo`, `@migrate`. Use\nthe grammar forms above as canonical, but expect your toolchain to be the final arbiter.",
     "source": "skills/funpack-language/references/grammar.md"
-  },
-  {
-    "anchor": "skills/funpack-mcp/SKILL.md#funpack-mcp-binary-install-update-uninstall-status",
-    "kind": "plugin",
-    "title": "funpack-mcp binary: install / update / uninstall / status",
-    "text": "---\nname: funpack-mcp\nargument-hint: \"<install|update|uninstall|status>\"\ndescription: Install, update, uninstall, or check the funpack-mcp server binary that the funpack plugin's MCP wrapper runs. Use when the MCP tools are unavailable, after installing/updating the plugin, or to fetch/refresh the binary. Triggers on \"install the funpack mcp\", \"update funpack-mcp\", \"uninstall the mcp\", \"funpack mcp not found\", \"fetch the mcp binary\", \"the funpack MCP isn't working\".\n---\n\n\nYou manage the **funpack-mcp server binary** the plugin's MCP wrapper execs. A script owns all mechanics; your job is to dispatch to it and interpret its result for the user.\n\n<!-- Primacy: dispatch rule + script invocation first \u2014 the two most load-bearing directives lead the prompt. -->",
-    "source": "skills/funpack-mcp/SKILL.md"
-  },
-  {
-    "anchor": "skills/funpack-mcp/SKILL.md#1-dispatch",
-    "kind": "plugin",
-    "title": "1. Dispatch",
-    "text": "Take the **first token** of `$ARGUMENTS`; map it to a subcommand. **Empty \u2192 `status`.** Run:\n\n```bash\nbash \"$CLAUDE_PLUGIN_ROOT/scripts/funpack-mcp-bin.sh\" <subcommand>\n```\n\n| First token | Subcommand | Effect |\n|---|---|---|\n| `install` | `install` | Fetch latest release for this platform \u2192 persistent data dir |\n| `update` | `update` | Reinstall only if a newer release exists |\n| `uninstall` | `uninstall` | Remove the installed binary + version stamp |\n| `status` / empty | `status` | Report target path, installed/latest version, update availability |\n\nIf `$CLAUDE_PLUGIN_ROOT` is unset (run outside a plugin session), resolve the script at `../../scripts/funpack-mcp-bin.sh` relative to this `SKILL.md` and run it the same way.\n\nThe script owns all mechanics and **all network access** \u2014 never download or curl anything yourself; there are no secrets to handle.",
-    "source": "skills/funpack-mcp/SKILL.md"
-  },
-  {
-    "anchor": "skills/funpack-mcp/SKILL.md#2-read-the-script-s-keys-do-not-recompute",
-    "kind": "plugin",
-    "title": "2. Read the script's keys \u2014 do not recompute",
-    "text": "The script emits greppable `key: value` lines on **stderr** with meaningful exit codes (0 = ok). Branch on these keys; never re-derive them from prose or other fields:\n\n- `target` / `target-kind` \u2014 resolved path and slot (`plugin-data` = the normal update-surviving home).\n- `version` \u2014 installed tag (install/update success).\n- `source` \u2014 `release-asset (...)` or `build-from-source (...)` (install/update).\n- `prior-binary` \u2014 `absent` | `present` (install/update). The from-zero signal; it alone decides the load instruction below.\n- `present` / `executable` / `installed` / `latest` / `update-available` \u2014 status fields.",
-    "source": "skills/funpack-mcp/SKILL.md"
-  },
-  {
-    "anchor": "skills/funpack-mcp/SKILL.md#3-readout-per-subcommand",
-    "kind": "plugin",
-    "title": "3. Readout per subcommand",
-    "text": "Give a short, plain readout.\n\n**install / update success** \u2014 confirm `version:` and `target:`, then give exactly ONE load instruction, keyed strictly on `prior-binary`. <!-- HARD CONSTRAINT (FRICTION F9): the two remedies are mutually exclusive; never flatten to \"new session or /reload-plugins\". -->\n\n| `prior-binary` | Meaning | Tell the user |\n|---|---|---|\n| `absent` | From-zero: no server binary existed at session start, so this session launched zero funpack tools. A mid-session `/reload-plugins` relaunches the process but does NOT inject the new server's tools into the running tool index. | **You must start a new session.** Do NOT offer `/reload-plugins` \u2014 it will not surface the tools this session. |\n| `present` | In-place version bump: a server was already running, so reconnect swaps the binary in place. | **Run `/reload-plugins` to pick up the new binary, or start a new session.** A running session won't switch binaries on its own. |\n\n**status** \u2014 relay installed vs latest and `update-available`. If `present: no` or `executable: no`, recommend `install`. If `update-available: yes`, recommend `update`.\n\n**update, nothing to do** (`update-available: no`) \u2014 say it's already current; report the `installed:` version.\n\n**uninstall** \u2014 confirm removal. Note: a `funpack-mcp` on `PATH` via **brew** or **`go install`** is not managed here, so if the MCP still resolves a binary after uninstall, that PATH copy is why.",
-    "source": "skills/funpack-mcp/SKILL.md"
-  },
-  {
-    "anchor": "skills/funpack-mcp/SKILL.md#4-macos-amd64-intel-mac-gap-handle-don-t-guess",
-    "kind": "plugin",
-    "title": "4. macos-amd64 (Intel Mac) gap \u2014 handle, don't guess",
-    "text": "Releases ship **linux-arm64, linux-x64, macos-arm64** only \u2014 there is **no macos-x64 asset**. On Intel Mac the script auto-falls-back to **build-from-source**: it locates the `mcp/` Go module (via the repo or `$FUNPACK_MCP_SRC`) and runs `go build`. A `source: build-from-source (...)` line means it built locally \u2014 tell the user it was built from source and **Go is required** on this platform. If neither an asset nor a buildable source tree exists, the script exits non-zero naming the gap \u2014 relay that message verbatim instead of inventing a fix.",
-    "source": "skills/funpack-mcp/SKILL.md"
-  },
-  {
-    "anchor": "skills/funpack-mcp/SKILL.md#5-failure-handling",
-    "kind": "plugin",
-    "title": "5. Failure handling",
-    "text": "On non-zero exit, surface the script's stderr verbatim \u2014 it already names the cause (offline, unsupported platform, missing source, etc.). Instead of retrying blindly or fabricating a workaround: if the cause is environmental (offline, unsupported arch), say so and stop.",
-    "source": "skills/funpack-mcp/SKILL.md"
-  },
-  {
-    "anchor": "skills/funpack-mcp/SKILL.md#why-a-separate-fetch-is-needed-state-only-if-asked",
-    "kind": "plugin",
-    "title": "Why a separate fetch is needed (state only if asked)",
-    "text": "`$CLAUDE_PLUGIN_ROOT` (where the committed wrapper `bin/funpack-mcp` lives) is wiped on every plugin update, so a binary placed there is lost. `$CLAUDE_PLUGIN_DATA` (`~/.claude/plugins/data/<plugin-id>/`) persists, so the binary's home is `$CLAUDE_PLUGIN_DATA/bin/funpack-mcp`, which the wrapper checks first.\n\nThe persistent home is **env-independent**: `$CLAUDE_PLUGIN_DATA` is exported only inside a plugin session, so an `install`/`update` run from ordinary Bash lacks it. Rather than fall back to a wiped-on-update cache path, the script derives the same dir deterministically \u2014 it reads the plugin name from `.claude-plugin/plugin.json`, matches the `<name>@<marketplace>` key in `~/.claude/plugins/installed_plugins.json` (falling back to the owned marketplace `funpack`), and lands the binary in `~/.claude/plugins/data/<name>-<marketplace>/bin`. Install is therefore persistent regardless of invocation \u2014 `target-kind: plugin-data` in every case. `$CLAUDE_PLUGIN_DATA` (when set) and `$FUNPACK_MCP_DATA` (dev) are honored as explicit overrides ahead of the derivation.",
-    "source": "skills/funpack-mcp/SKILL.md"
   },
   {
     "anchor": "skills/funpack-project/SKILL.md#funpack-project-structure-config",
