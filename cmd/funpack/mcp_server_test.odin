@@ -29,8 +29,8 @@ drive_handler :: proc(t: ^testing.T, request_line: string, loc := #caller_locati
 // test_mcp_initialize_capabilities pins the handshake: an initialize request returns
 // a well-formed JSON-RPC result advertising capabilities={tools} ONLY (no resources,
 // no prompts), the PINNED MCP protocolVersion, and serverInfo. The protocolVersion
-// assertion is the regression guard for the version the go-sdk advertised (the
-// bundled plugin client negotiates this exact string).
+// assertion is the regression guard for the negotiated revision (the bundled plugin
+// client negotiates this exact string).
 @(test)
 test_mcp_initialize_capabilities :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
@@ -139,10 +139,10 @@ test_mcp_unknown_tool :: proc(t: ^testing.T) {
 	testing.expect_value(t, detail, "no_such_tool")
 }
 
-// test_mcp_known_tool_not_implemented pins the SKELETON contract for a tool that IS
-// in the table: at this layer no arm is wired, so the call returns the in-band
-// not-implemented IsError envelope keyed off the Tool_Spec (the wave-3 tasks replace
-// it). It is an IsError result, never a JSON-RPC error — the same convention.
+// test_mcp_known_tool_not_implemented pins the fallthrough contract for a tool that
+// IS in the table but no family arm claims (`break`): the call returns the in-band
+// not-implemented IsError envelope keyed off the Tool_Spec, never a JSON-RPC error —
+// the same in-band convention every domain failure rides.
 @(test)
 test_mcp_known_tool_not_implemented :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"break"}}`)
@@ -218,10 +218,11 @@ test_mcp_stdout_discipline :: proc(t: ^testing.T) {
 
 // test_mcp_verb_exit_codes pins the {0,1,2} exit contract's clean-shutdown arm: a
 // served connection that reaches EOF (the host closed stdin) ends the loop and the
-// verb core returns 0 — a clean serve-then-EOF is success (serve.go:121). The usage
-// tier (exit 2) is the framework's, pinned by cli_root_test; an unrecoverable fault
-// (exit 1) has no path in the skeleton (the loop never panics on wire input). This
-// test drives the loop to a natural EOF close to prove the 0-exit shutdown.
+// verb core returns 0 — a clean serve-then-EOF is success. The usage tier (exit 2)
+// is the framework's, pinned by cli_root_test; the exit-1 fault tier has no path
+// through the dispatch loop (it never panics on wire input — every malformed request
+// is a JSON-RPC error response). This test drives the loop to a natural EOF close to
+// prove the 0-exit shutdown.
 @(test)
 test_mcp_verb_exit_codes :: proc(t: ^testing.T) {
 	// A connection whose stream drains (EOF) returns from the serve loop cleanly —

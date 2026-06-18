@@ -1,14 +1,14 @@
-// The `funpack mcp gen-contract` dev-time subcommand — the Odin re-home of the
-// deleted-on-wave-9 Go `go run ./internal/contract/gen -odin-out …` (the Odin half of
-// the dual-codegen). It is a thin filesystem wrapper around generate_contract_odin
-// (mcp_contract_gen.odin): it reads the in-repo contract/funpack-api.json, runs the
-// pure generator core, and writes funpack/api_contract.gen.odin. It mirrors the
-// gen-corpus subcommand (cli_mcp_gen_corpus.odin) arm-for-arm.
+// The `funpack mcp gen-contract` dev-time subcommand — the Odin half of the
+// dual-codegen for the funpack↔MCP API contract. It is a thin filesystem wrapper
+// around generate_contract_odin (mcp_contract_gen.odin): it reads the in-repo
+// contract/funpack-api.json, runs the pure generator core, and writes
+// funpack/api_contract.gen.odin. It mirrors the gen-corpus subcommand
+// (cli_mcp_gen_corpus.odin) arm-for-arm.
 //
-// WHY THIS EXISTS (mcp-rehome-contract-generator): the Go generator is deleted with
-// the rest of the mcp/ module on wave-9 (delete-go-module). Without this Odin path,
-// the committed funpack/api_contract.gen.odin would be unregenerable after a contract
-// edit. This ADDS the Odin regeneration path; it does NOT delete the Go generator.
+// WHY THIS EXISTS: the committed funpack/api_contract.gen.odin is generated, not
+// hand-edited; this subcommand is the regeneration path a maintainer runs after a
+// contract/funpack-api.json edit. Without it the generated source would drift from
+// its contract source with no way to re-derive it.
 //
 // DEV-ONLY: this regenerates committed source under the working tree; it is invoked
 // by a maintainer after a contract/funpack-api.json edit, then the regenerated file

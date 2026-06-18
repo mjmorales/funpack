@@ -1,11 +1,11 @@
 // The DOCS + HEALTH tool dispatch family — the arm of the tools/call chain
 // (mcp_server.odin MCP_DISPATCH_CHAIN) that owns the three in-process documentation
-// tools over the embedded corpus (mcp_corpus.odin) and its ported ranker
+// tools over the embedded corpus (mcp_corpus.odin) and its ranker
 // (mcp_docs_search.odin): docs_get (anchor → full section), docs_search (the
 // query-shape-blended BM25 + symbol ranker), and health (server liveness + corpus
-// drift + the §28 version_report_json surface). This file is the SEAM the
-// mcp-tools-docs-health task fills — it edits ONLY this file's dispatch proc, never
-// mcp_handle_tools_call, so the six families stay merge-clean.
+// drift + the §28 version_report_json surface). This file is ONE dispatch seam — it
+// owns ONLY this file's dispatch proc, never mcp_handle_tools_call, so the six
+// families stay independent.
 //
 // THE FOLD: each tool reads its args off the parsed MCP arguments object, runs a PURE
 // in-process compute over the compile-time-embedded corpus, and renders a structured
@@ -24,12 +24,11 @@
 // human-paced, low-frequency operation, not a hot loop. docs_get and health skip the
 // ranker entirely (an anchor scan / a manifest read), so only docs_search pays it.
 //
-// HEALTH IS ONE-BINARY-AWARE: the Go server resolved an EXTERNAL funpack to compare
-// the corpus version against a separately-installed compiler (mcp/internal/server/
-// corpus_drift.go). There is no external funpack here — the MCP server IS funpack, one
-// binary — so "the compiler version" is the in-process funpack_version() and the
-// schema-compat probe is moot (a compiler can never disagree with itself). Drift stays
-// a REAL check: the corpus is committed (mcp/corpus/*.json) and embedded at build time,
+// HEALTH IS ONE-BINARY-AWARE: there is no external funpack to resolve — the MCP
+// server IS funpack, one binary — so "the compiler version" is the in-process
+// funpack_version() and a schema-compat probe is moot (a compiler can never disagree
+// with itself). Drift stays a REAL check: the corpus is committed (mcp/corpus/*.json)
+// and embedded at build time,
 // so a corpus generated against an older funpack then built into a newer binary without
 // a regen is a genuine, detectable skew — manifest.funpack_version vs funpack_version().
 package main
@@ -129,9 +128,9 @@ docs_dispatch_get :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator
 }
 
 // docs_get_result renders one resolved section as the docs_get success result: a single
-// text content block holding {anchor,title,kind,text} JSON (docs_get.go DocsGetOutput).
-// The keys mirror the Go output verbatim so a client reads the same shape across the
-// fold. Built with the byte-stable write_json_string idiom the §28 renderers use.
+// text content block holding {anchor,title,kind,text} JSON. The key set is the
+// docs_get output contract a client reads. Built with the byte-stable
+// write_json_string idiom the §28 renderers use.
 docs_get_result :: proc(section: Corpus_Section, allocator := context.allocator) -> Mcp_Tool_Result {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"anchor\":")
@@ -150,11 +149,11 @@ docs_get_result :: proc(section: Corpus_Section, allocator := context.allocator)
 }
 
 // docs_dispatch_search resolves docs_search: a required `query` and an optional `limit`
-// drive the ported query-shape ranker (search_engine_search) over the embedded corpus,
+// drive the query-shape ranker (search_engine_search) over the embedded corpus,
 // returning the ranked hits plus the corpus version and the corpus-vs-binary drift so a
-// stale corpus is loud on every search (docs_search.go DocsSearchOutput). An empty query
-// is Invalid_Input. The limit is clamped to [1, DOCS_SEARCH_MAX_LIMIT], defaulting to
-// DOCS_SEARCH_DEFAULT_LIMIT when omitted or <= 0.
+// stale corpus is loud on every search. An empty query is Invalid_Input. The limit is
+// clamped to [1, DOCS_SEARCH_MAX_LIMIT], defaulting to DOCS_SEARCH_DEFAULT_LIMIT when
+// omitted or <= 0.
 docs_dispatch_search :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	query, has_query := docs_arg_string(dispatch.arguments, "query")
 	if !has_query || strings.trim_space(query) == "" {
@@ -196,10 +195,10 @@ docs_dispatch_search :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 }
 
 // docs_search_result renders the ranked hits plus provenance as the docs_search success
-// result (docs_search.go DocsSearchOutput): one text content block holding
-// {hits:[…],corpus_version,corpus_drift}. Each hit carries {anchor,title,kind,score,
-// snippet,source} — anchor re-feeds docs_get, source tags which ranker produced it. The
-// keys mirror the Go output verbatim.
+// result: one text content block holding {hits:[…],corpus_version,corpus_drift}. Each
+// hit carries {anchor,title,kind,score,snippet,source} — anchor re-feeds docs_get,
+// source tags which ranker produced it. This key set is the docs_search output
+// contract a client reads.
 docs_search_result :: proc(hits: []Search_Result, manifest: Corpus_Manifest, allocator := context.allocator) -> Mcp_Tool_Result {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"hits\":[")
@@ -240,13 +239,13 @@ docs_write_hit :: proc(b: ^strings.Builder, hit: Search_Result) {
 }
 
 // docs_dispatch_health resolves health: a no-argument liveness probe that reports server
-// identity, the §28 version surface, and the corpus-vs-binary drift on the FIRST probe,
-// so a stale corpus is visible before the agent trusts a docs result (health.go). The
-// schema-compat surface the Go health reported is OMITTED by design — there is no
-// external funpack to disagree with the in-process schema constants (one binary), so a
-// compat probe would always be trivially compatible. The version block is
-// version_report_json verbatim (the contract's {version,schemas} shape, version.odin:76),
-// embedded as the `version` field so health doubles as the machine version surface.
+// identity, the §28 version surface, and the corpus-vs-binary drift, so a stale corpus
+// is visible before the agent trusts a docs result. A schema-compat surface is OMITTED
+// by design — there is no external funpack to disagree with the in-process schema
+// constants (one binary), so a compat probe would always be trivially compatible. The
+// version block is version_report_json verbatim (the contract's {version,schemas}
+// shape), embedded as the `version` field so health doubles as the machine version
+// surface.
 docs_dispatch_health :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	manifest, _ := load_manifest(allocator)
 	drift := docs_detect_drift(manifest, allocator)
@@ -269,13 +268,12 @@ docs_dispatch_health :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 }
 
 // Docs_Corpus_Drift reports a version skew between the embedded docs corpus and the
-// funpack binary it shipped inside — the Odin re-home of the Go server's CorpusDrift
-// (corpus_drift.go), collapsed to the one-binary world. drift=true means the corpus was
-// generated against a DIFFERENT funpack version than the binary now serving it, so any
-// surface change since corpus_version is invisible to docs_search — the silent lag this
-// makes loud. compiler_version is always the in-process funpack_version() (there is no
-// external compiler to resolve), so the "no compiler resolved" arm the Go check carried
-// is gone: the comparison always has both sides.
+// funpack binary it shipped inside. drift=true means the corpus was generated against
+// a DIFFERENT funpack version than the binary now serving it, so any surface change
+// since corpus_version is invisible to docs_search — the silent lag this makes loud.
+// compiler_version is always the in-process funpack_version() (there is no external
+// compiler to resolve), so the comparison always has both sides — there is no "no
+// compiler resolved" arm.
 Docs_Corpus_Drift :: struct {
 	drift:            bool,
 	corpus_version:   string,
@@ -287,8 +285,8 @@ Docs_Corpus_Drift :: struct {
 // funpack_version() and builds a Docs_Corpus_Drift. Both strings are normalized (the
 // `funpack ` prefix the manifest stamp may carry is stripped) before the equality test,
 // so "funpack 0.6.1" and "0.6.1" compare on the same bare-semver footing
-// (corpus_drift.go normalizeFunpackVersion). A manifest with an empty funpack_version
-// (no manifest, or a malformed one) reports no drift — there is nothing to compare.
+// (docs_normalize_version). A manifest with an empty funpack_version (no manifest, or
+// a malformed one) reports no drift — there is nothing to compare.
 docs_detect_drift :: proc(manifest: Corpus_Manifest, allocator := context.allocator) -> Docs_Corpus_Drift {
 	corpus_version := docs_normalize_version(manifest.funpack_version)
 	compiler_version := docs_normalize_version(funpack.funpack_version())
@@ -315,10 +313,10 @@ docs_detect_drift :: proc(manifest: Corpus_Manifest, allocator := context.alloca
 	}
 }
 
-// docs_write_drift renders a Docs_Corpus_Drift as the MCP corpus_drift object
-// (corpus_drift.go CorpusDrift): {drift,corpus_version,compiler_version,warning}. The
-// version fields and warning are omitted when empty, matching the Go `omitempty`, so a
-// no-drift probe carries the minimal {drift:false,…} shape.
+// docs_write_drift renders a Docs_Corpus_Drift as the MCP corpus_drift object:
+// {drift,corpus_version,compiler_version,warning}. The version fields and warning are
+// omitted when empty (the omitempty convention), so a no-drift probe carries the
+// minimal {drift:false,…} shape.
 docs_write_drift :: proc(b: ^strings.Builder, drift: Docs_Corpus_Drift) {
 	strings.write_string(b, "{\"drift\":")
 	strings.write_string(b, drift.drift ? "true" : "false")
@@ -349,7 +347,7 @@ docs_corpus_version :: proc(manifest: Corpus_Manifest, allocator := context.allo
 
 // docs_normalize_version strips a leading `funpack ` prefix and surrounding whitespace
 // so a manifest stamp ("funpack 0.6.1") and the in-process funpack_version() ("0.6.1")
-// compare on the same bare-semver footing (corpus_drift.go normalizeFunpackVersion).
+// compare on the same bare-semver footing.
 docs_normalize_version :: proc(s: string) -> string {
 	trimmed := strings.trim_space(s)
 	trimmed = strings.trim_prefix(trimmed, "funpack ")

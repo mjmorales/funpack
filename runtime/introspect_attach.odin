@@ -494,14 +494,14 @@ attach_port_file_contents :: proc(port: int, allocator := context.allocator) -> 
 // Open_Session_Result discriminates how open_session_for_artifact resolved a
 // session-open request. It is the seam's whole point: the helper is the SHARED,
 // stdout-clean opener for BOTH attach (the FUNPACK_LIVE TCP arm below) and the
-// future `funpack mcp` verb, and the two callers report failures differently — the
+// `funpack mcp` verb, and the two callers report failures differently — the
 // attach arm prints its own stderr messages (it owns the artifact-path/port-file
 // context), the MCP verb maps each variant to a JSON-RPC error object on a transport
 // where stdout belongs to the protocol. Returning a discriminated result instead of
 // printing inside the helper keeps it transport-agnostic and stdout-clean (mandatory
 // for the MCP caller), and the six variants map 1:1 to the §28.2 attach stderr
-// messages so the extraction is lossless. Closed enum (§04 closed-taxonomy
-// discipline): every open-failure mode is one named variant, never a bare bool.
+// messages. Closed enum (§04 closed-taxonomy discipline): every open-failure mode
+// is one named variant, never a bare bool.
 Open_Session_Result :: enum {
 	Ok, // the session opened — `session` is live, `program` is the heap artifact it borrows
 	Artifact_Read_Failed, // the artifact path could not be read off disk
@@ -513,10 +513,10 @@ Open_Session_Result :: enum {
 
 // open_session_for_artifact is the SHARED, stdout-clean session opener — the pure
 // (default-build, UN-gated) orchestration both the FUNPACK_LIVE attach arm and the
-// future `funpack mcp` verb fold over. Every leaf proc it sequences (load_program,
-// read_replay_file, identity_from_program*, open_debug_session) already lives in the
-// SDL-free default build; only the ORCHESTRATION was trapped inside the when-gated
-// attach arm, so it is hoisted here to compile and be unit-tested in the `odin test`
+// `funpack mcp` verb fold over. Every leaf proc it sequences (load_program,
+// read_replay_file, identity_from_program*, open_debug_session) lives in the
+// SDL-free default build, so the orchestration lives here too (not inside the
+// when-gated attach arm) where it compiles and is unit-tested in the `odin test`
 // floor. It returns a DISCRIMINATED Open_Session_Result rather than printing, so the
 // MCP caller (where stdout is owned by JSON-RPC) maps failures to error objects and
 // the attach caller prints its own stderr context — neither writes through the helper.
@@ -735,7 +735,7 @@ when #config(FUNPACK_LIVE, false) {
 
 		// Open the session over the SHARED pure helper, then map its discriminated
 		// result to attach's own stderr context (the helper never prints — it returns a
-		// transport-agnostic Open_Session_Result so the stdio MCP verb can reuse it).
+		// transport-agnostic Open_Session_Result the stdio MCP verb reuses unchanged).
 		session, _, result := open_session_for_artifact(parsed.artifact, parsed.replay_log, parsed.has_replay)
 		switch result {
 		case .Ok:

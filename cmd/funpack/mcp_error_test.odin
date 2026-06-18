@@ -1,8 +1,7 @@
-// Deliberate spec for the MCP tool-boundary error convention (mcp_error.odin) —
-// the Odin port of mcperr_test.go's TestToolErrorEnvelope / TestToolErrorNonDomainError.
-// These pin the convention every downstream tool arm renders failures through: a
-// DOMAIN failure is an IsError tools/call result whose first TextContent decodes to
-// a {category,message,detail} envelope under a CLOSED category — never a JSON-RPC
+// Deliberate spec for the MCP tool-boundary error convention (mcp_error.odin).
+// These pin the convention every tool arm renders failures through: a DOMAIN
+// failure is an IsError tools/call result whose first TextContent decodes to a
+// {category,message,detail} envelope under a CLOSED category — never a JSON-RPC
 // error object. Also pins the content-block result model (text vs image). Pure JSON
 // fold — define-free, no SDL.
 package main
@@ -11,10 +10,10 @@ import "core:encoding/json"
 import "core:strings"
 import "core:testing"
 
-// test_mcp_tool_error_envelope is the port of TestToolErrorEnvelope (mcperr_test.go:89):
-// a domain Mcp_Error maps to an IsError result with exactly one TextContent whose
-// text decodes back to its {category,message,detail} fields. This is the in-band
-// failure the model reads and self-corrects from, not a protocol error.
+// test_mcp_tool_error_envelope pins the error envelope: a domain Mcp_Error maps to an
+// IsError result with exactly one TextContent whose text decodes back to its
+// {category,message,detail} fields. This is the in-band failure the model reads and
+// self-corrects from, not a protocol error.
 @(test)
 test_mcp_tool_error_envelope :: proc(t: ^testing.T) {
 	domain := Mcp_Error{category = .Resolver, message = "doc not found", detail = "name=foo"}
@@ -57,10 +56,10 @@ test_mcp_error_category_wire :: proc(t: ^testing.T) {
 	testing.expect_value(t, mcp_error_category_wire(.Internal), "internal")
 }
 
-// test_mcp_content_blocks pins the content-block result model the downstream tool
-// arms return through: a text block renders {type:"text",text:…} and an image block
-// renders {type:"image",data:…,mimeType:…} with an ARBITRARY mime type, so the
-// screenshot task picks image/qoi vs image/png later without a protocol-layer change.
+// test_mcp_content_blocks pins the content-block result model the tool arms return
+// through: a text block renders {type:"text",text:…} and an image block renders
+// {type:"image",data:…,mimeType:…} with an ARBITRARY mime type, so the screenshot
+// arm picks image/qoi vs image/png without a protocol-layer change.
 @(test)
 test_mcp_content_blocks :: proc(t: ^testing.T) {
 	text := mcp_text_content("hello")
@@ -75,7 +74,7 @@ test_mcp_content_blocks :: proc(t: ^testing.T) {
 
 // decode_envelope parses an error-envelope JSON string and returns its
 // category/message/detail (detail empty when absent), so a test asserts the decoded
-// fields exactly as the Go test json.Unmarshals the envelope.
+// fields against the rendered envelope.
 decode_envelope :: proc(t: ^testing.T, text: string, loc := #caller_location) -> (category: string, message: string, detail: string) {
 	parsed, err := json.parse(transmute([]u8)text, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
 	testing.expect(t, err == .None, "the envelope must be valid JSON", loc = loc)

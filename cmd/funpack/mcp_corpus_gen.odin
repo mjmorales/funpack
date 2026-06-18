@@ -1,14 +1,13 @@
-// The docs-corpus generator core — the Odin re-home of the deleted Go
-// mcp/internal/docs/gen/gencore. It runs the three file-driven extractors
-// arm-for-arm against the in-repo source trees and assembles the corpus IN MEMORY
-// (the per-kind section slices plus the content-derived manifest); it performs NO
-// filesystem WRITES — persisting the shards is the caller's job (the gen-corpus
-// subcommand, cli_mcp_gen_corpus.odin). That split is exactly the gencore design:
-// the pin test (mcp_corpus_pin_test.odin) regenerates through THIS SAME core and
-// byte-compares against the committed shards, so generation and drift-detection
-// share ONE extraction path with no second, divergent extractor to keep in sync.
+// The docs-corpus generator core. It runs the three file-driven extractors against
+// the in-repo source trees and assembles the corpus IN MEMORY (the per-kind section
+// slices plus the content-derived manifest); it performs NO filesystem WRITES —
+// persisting the shards is the caller's job (the gen-corpus subcommand,
+// cli_mcp_gen_corpus.odin). That split lets the pin test (mcp_corpus_pin_test.odin)
+// regenerate through THIS SAME core and byte-compare against the committed shards,
+// so generation and drift-detection share ONE extraction path with no second,
+// divergent extractor to keep in sync.
 //
-// THE THREE EXTRACTORS (gencore.go parity):
+// THE THREE EXTRACTORS:
 //   - extract_spec    : heading-split spec/NN-*.md prose (fence-aware splitter)
 //   - extract_engine  : decl-split stdlib/engine/*.fun, pairing each decl with its
 //                       immediately-preceding @doc PROSE line. CRITICAL: the engine
@@ -27,9 +26,9 @@
 // passed IN to generate_corpus — this pure core never shells out, so the pin test
 // and the SDL-free floor never invoke git.
 //
-// ODIN-FIRST NOTE: core:text/regex covers the four anchored head-match patterns the
-// Go path used, but each is a trivial line-anchored prefix/suffix match; a
-// hand-rolled index scan is used instead (the idiom the funpack lexer/parser and
+// ODIN-FIRST NOTE: core:text/regex covers the four anchored head-match patterns,
+// but each is a trivial line-anchored prefix/suffix match; a hand-rolled index scan
+// is used instead (the idiom the funpack lexer/parser and
 // surface_parity.odin already follow) — it avoids a per-call regex-VM allocation
 // and keeps the generator a deterministic pure walk. SHA-256 is core:crypto/sha2;
 // hex is core:encoding/hex; JSON is core:encoding/json — no hand-roll.
@@ -45,9 +44,9 @@ import "core:slice"
 import "core:strings"
 
 // Corpus_Roots holds the resolved absolute source directories for one generation
-// run — the Odin mirror of gencore.Roots. spec_md / engine_fun / plugin_dir are the
-// three extractor inputs; spec_ref is the git-describe value the SUBCOMMAND computed
-// and passes in (the pure core never shells out — see the package doc).
+// run. spec_md / engine_fun / plugin_dir are the three extractor inputs; spec_ref is
+// the git-describe value the SUBCOMMAND computed and passes in (the pure core never
+// shells out — see the package doc).
 Corpus_Roots :: struct {
 	spec_md:     string, // <repo>/spec (NN-*.md prose)
 	engine_fun:  string, // <repo>/stdlib/engine (*.fun signatures)
@@ -55,9 +54,9 @@ Corpus_Roots :: struct {
 	spec_ref:    string, // git describe value, computed by the caller (gated to the subcommand)
 }
 
-// Corpus_Result is one generation run's output, held in memory — the Odin mirror of
-// gencore.Result. The same Corpus_Roots content yields a byte-identical result
-// (deterministic walk, sorted file order, no clock).
+// Corpus_Result is one generation run's output, held in memory. The same
+// Corpus_Roots content yields a byte-identical result (deterministic walk, sorted
+// file order, no clock).
 Corpus_Result :: struct {
 	spec:     []Corpus_Section,
 	engine:   []Corpus_Section,
@@ -68,8 +67,7 @@ Corpus_Result :: struct {
 // generate_corpus runs the three extractors against r and assembles the in-memory
 // result including the content-derived manifest. ok=false when a source root is
 // unreadable (so a misconfigured root fails loudly rather than emitting an empty
-// corpus — the gencore.Generate contract). No filesystem writes. Allocated in
-// `allocator`.
+// corpus). No filesystem writes. Allocated in `allocator`.
 generate_corpus :: proc(r: Corpus_Roots, allocator := context.allocator) -> (result: Corpus_Result, ok: bool) {
 	spec_secs, spec_ok := extract_markdown_tree(r.spec_md, r.spec_md, CORPUS_KIND_SPEC, allocator)
 	if !spec_ok {
@@ -128,9 +126,9 @@ generate_corpus :: proc(r: Corpus_Roots, allocator := context.allocator) -> (res
 		true
 }
 
-// hash_corpus_sections is the content hash over the sections' anchors and text —
-// the Odin mirror of gencore.HashSections. SHA-256 over each section's
-// anchor + NUL + text + NUL, hex-encoded. A content change between regens shows up
+// hash_corpus_sections is the content hash over the sections' anchors and text:
+// SHA-256 over each section's anchor + NUL + text + NUL, hex-encoded. A content
+// change between regens shows up
 // in the manifest's per-source content_hash, so the pin test names WHICH root
 // drifted. core:crypto/sha2 + core:encoding/hex (Odin-first; no hand-roll).
 hash_corpus_sections :: proc(sections: []Corpus_Section, allocator := context.allocator) -> string {
@@ -150,12 +148,11 @@ hash_corpus_sections :: proc(sections: []Corpus_Section, allocator := context.al
 }
 
 // marshal_corpus_json renders a value exactly as the committed corpus files are
-// written: 2-space-indented pretty JSON with a trailing newline — the Odin mirror
-// of gencore.MarshalJSON. Byte-comparing this against a committed file IS the
-// corpus drift test. The Odin marshaler is the new canonical producer (the pin
-// test is Odin-vs-Odin going forward), so byte-exactness against the LEGACY Go
-// bytes is not required — see the open-question resolution in the task spec.
-// Allocated in `allocator`.
+// written: 2-space-indented pretty JSON with a trailing newline. Byte-comparing
+// this against a committed file IS the corpus drift test, and this marshaler is the
+// sole canonical producer of those bytes — the pin test regenerates through it and
+// compares against what it last wrote, so the only byte-exactness requirement is
+// this producer against itself. Allocated in `allocator`.
 marshal_corpus_json :: proc(v: any, allocator := context.allocator) -> (out: string, ok: bool) {
 	bytes, err := json.marshal(v, {pretty = true, use_spaces = true, spaces = 2}, allocator)
 	if err != nil {
@@ -170,8 +167,8 @@ marshal_corpus_json :: proc(v: any, allocator := context.allocator) -> (out: str
 // --- spec / plugin extraction ------------------------------------------------
 
 // extract_markdown_tree is the shared heading-splitter for the prose corpora
-// (spec/, plugin skills/) — the Odin mirror of gencore.extractMarkdownTree.
-// walk_root is the directory walked; anchor_base is the directory anchors/sources
+// (spec/, plugin skills/). walk_root is the directory walked; anchor_base is the
+// directory anchors/sources
 // are made relative to (so plugin anchors keep the skills/… prefix). Files are
 // walked in sorted path order for determinism. ok=false when the tree is
 // unreadable. Allocated in `allocator`.
@@ -209,11 +206,10 @@ extract_markdown_tree :: proc(
 	return out[:], true
 }
 
-// corpus_rel returns path relative to base — the Odin mirror of
-// filepath.Rel(base, path). filepath.rel already yields '/'-separated segments on
-// the POSIX targets funpack builds for (no ToSlash hop needed; the Go path's
-// filepath.ToSlash was a Windows-only no-op here). Both inputs are absolute, so the
-// rel is the source's corpus-relative anchor path.
+// corpus_rel returns path relative to base. filepath.rel already yields
+// '/'-separated segments on the POSIX targets funpack builds for (no slash
+// normalization needed). Both inputs are absolute, so the rel is the source's
+// corpus-relative anchor path.
 corpus_rel :: proc(base, path: string, allocator := context.allocator) -> string {
 	rel, err := filepath.rel(base, path, allocator)
 	if err != nil {
@@ -232,8 +228,8 @@ corpus_join :: proc(elems: []string, allocator := context.allocator) -> string {
 }
 
 // split_headings turns one markdown document into heading-delimited sections,
-// appending them to out — the Odin mirror of gencore.splitHeadings. Anchors are
-// "<source>#<slug>"; a duplicate slug WITHIN a file is suffixed "-2", "-3", … so
+// appending them to out. Anchors are "<source>#<slug>"; a duplicate slug WITHIN a
+// file is suffixed "-2", "-3", … so
 // anchors stay unique and stable per content. A heading inside a ```-fenced code
 // block is NOT a split point. An organizational parent heading whose only content
 // is its subheadings (empty body) is skipped — each child heading is its own
@@ -268,9 +264,9 @@ split_headings :: proc(
 }
 
 // flush_heading_section emits the accumulated heading + body as one section into
-// out, then clears the body — the gencore.splitHeadings `flush` closure lifted to a
-// top-level proc (Odin nested procs do not capture, so the state is threaded
-// explicitly). A section with an empty title (preamble before the first heading) or
+// out, then clears the body — the split_headings `flush` step as a top-level proc
+// (Odin nested procs do not capture, so the state is threaded explicitly). A section
+// with an empty title (preamble before the first heading) or
 // an empty body (an organizational parent heading) is skipped. The slug is
 // deduped within the file via slug_counts ("-2", "-3", …).
 flush_heading_section :: proc(
@@ -304,9 +300,8 @@ flush_heading_section :: proc(
 }
 
 // parse_heading reports whether line is an ATX H1/H2/H3 heading ("# ", "## ",
-// "### ") and returns its trimmed title — the Odin mirror of the Go
-// headingRe `^(#{1,3})\s+(.+?)\s*$`. Leading whitespace is NOT allowed before the
-// hashes (the regex is line-anchored at column 0), matching gencore.
+// "### ") and returns its trimmed title — the `^(#{1,3})\s+(.+?)\s*$` match.
+// Leading whitespace is NOT allowed before the hashes (line-anchored at column 0).
 parse_heading :: proc(line: string) -> (title: string, ok: bool) {
 	hashes := 0
 	for hashes < len(line) && hashes < 4 && line[hashes] == '#' {
@@ -329,8 +324,7 @@ parse_heading :: proc(line: string) -> (title: string, ok: bool) {
 
 // extract_engine reads stdlib/engine/*.fun in sorted filename order and emits one
 // section per declaration, each paired with its immediately-preceding @doc PROSE
-// line — the Odin mirror of gencore.extractEngine. ok=false when the directory is
-// unreadable. Allocated in `allocator`.
+// line. ok=false when the directory is unreadable. Allocated in `allocator`.
 extract_engine :: proc(dir: string, allocator := context.allocator) -> (sections: []Corpus_Section, ok: bool) {
 	if !os.is_dir(dir) {
 		return nil, false
@@ -363,9 +357,9 @@ extract_engine :: proc(dir: string, allocator := context.allocator) -> (sections
 	return out[:], true
 }
 
-// split_engine_file turns one .fun signature file into per-declaration sections —
-// the Odin mirror of gencore.splitEngineFile. The anchor is
-// "engine/<module>#<decl-name>"; a name repeated within a module (UFCS overloads
+// split_engine_file turns one .fun signature file into per-declaration sections. The
+// anchor is "engine/<module>#<decl-name>"; a name repeated within a module (UFCS
+// overloads
 // on different self types) is suffixed. Each decl pairs with its immediately-
 // preceding @doc line; any non-doc, non-decl line clears a dangling @doc so it
 // never attaches to the wrong declaration.
@@ -420,9 +414,9 @@ split_engine_file :: proc(
 }
 
 // parse_doc_line reports whether trimmed is a single-line `@doc("...")` annotation
-// and returns the inner string — the Odin mirror of the Go docLineRe
-// `^@doc\("(.*)"\)\s*$`. The whole line must be exactly the annotation (the
-// trailing `)` after the closing quote, then only whitespace).
+// and returns the inner string — the `^@doc\("(.*)"\)\s*$` match. The whole line
+// must be exactly the annotation (the trailing `)` after the closing quote, then
+// only whitespace).
 parse_doc_line :: proc(trimmed: string) -> (doc: string, ok: bool) {
 	if !strings.has_prefix(trimmed, "@doc(\"") {
 		return "", false
@@ -436,14 +430,14 @@ parse_doc_line :: proc(trimmed: string) -> (doc: string, ok: bool) {
 
 // parse_decl_head reports whether trimmed begins with a stdlib decl keyword
 // (extern fn, fn, extern type, data, enum, let) followed by a name, and returns the
-// declared name — the Odin mirror of the Go declHeadRe
-// `^(extern\s+fn|fn|extern\s+type|data|enum|let)\s+([A-Za-z_][A-Za-z0-9_]*)`. The
-// `extern fn`/`extern type` forms must precede the bare `fn` check so `extern fn`
-// is not mis-read as a name after `extern`.
+// declared name — the
+// `^(extern\s+fn|fn|extern\s+type|data|enum|let)\s+([A-Za-z_][A-Za-z0-9_]*)` match.
+// The `extern fn`/`extern type` forms must precede the bare `fn` check so `extern
+// fn` is not mis-read as a name after `extern`.
 parse_decl_head :: proc(trimmed: string) -> (name: string, ok: bool) {
 	// The multi-word `extern fn`/`extern type` forms are tried FIRST so `extern fn`
 	// is not mis-read as `extern` + the name `fn`. The keyword list is the closed
-	// declHeadRe alternation; strip_decl_keyword returns the post-keyword remainder.
+	// decl-keyword alternation; strip_decl_keyword returns the post-keyword remainder.
 	rest, matched := strip_decl_keyword(trimmed)
 	if !matched {
 		return "", false
@@ -522,9 +516,9 @@ corpus_word_prefix :: proc(s, word: string) -> bool {
 }
 
 // engine_signature returns the declaration signature beginning at lines[start] and
-// the count of EXTRA lines consumed past start — the Odin mirror of
-// gencore.signature. For a function (fn / extern fn) the body is dropped (the head
-// up to the first `{`). For a type declaration (data / enum / extern type / let)
+// the count of EXTRA lines consumed past start. For a function (fn / extern fn) the
+// body is dropped (the head up to the first `{`). For a type declaration (data /
+// enum / extern type / let)
 // the brace-delimited field/variant list IS the signature, kept verbatim across
 // however many lines the braces span.
 engine_signature :: proc(lines: []string, start: int, allocator := context.allocator) -> (sig: string, consumed: int) {
@@ -557,8 +551,8 @@ engine_signature :: proc(lines: []string, start: int, allocator := context.alloc
 }
 
 // corpus_unescape_doc reverses the minimal escaping the .fun @doc strings use
-// (\" → ", \\ → \) — the Odin mirror of gencore.unescapeDoc. Order matters: the Go
-// path replaces \" then \\, so this matches it. Allocated in `allocator`.
+// (\" → ", \\ → \). Order matters: \" is replaced BEFORE \\, so an escaped backslash
+// preceding a quote does not re-trigger the quote unescape. Allocated in `allocator`.
 corpus_unescape_doc :: proc(s: string, allocator := context.allocator) -> string {
 	a, _ := strings.replace_all(s, "\\\"", "\"", allocator)
 	b, _ := strings.replace_all(a, "\\\\", "\\", allocator)
@@ -568,8 +562,8 @@ corpus_unescape_doc :: proc(s: string, allocator := context.allocator) -> string
 // --- shared helpers ----------------------------------------------------------
 
 // corpus_slugify produces a stable lowercase kebab anchor fragment from a heading
-// or name — the Odin mirror of gencore.slugify: lowercase, strip backticks,
-// collapse whitespace runs to a single space, replace every non-[a-z0-9] run with a
+// or name: lowercase, strip backticks, collapse whitespace runs to a single space,
+// replace every non-[a-z0-9] run with a
 // single dash, trim leading/trailing dashes, and fall back to "section" when empty.
 // Stable across regen because it depends only on the text content. Allocated in
 // `allocator`.

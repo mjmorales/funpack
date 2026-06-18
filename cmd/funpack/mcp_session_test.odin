@@ -1,11 +1,11 @@
 // Deliberate spec for the server-scoped session registry (mcp_session.odin) — the
 // F13 fix as a living regression. The headline test (test_mcp_session_f13_outlives_request
-// _scratch) is the sharpest restatement of the F13 lesson the Go path learned the hard
-// way: a debug session's retained COW chain OUTLIVES the request that opened it, so a
-// LATER request through a re-looked-up entry reads a branch a PRIOR request committed —
-// even after a SEPARATE per-request scratch arena was reset in between. The rest pin
-// the registry surface: open over an artifact, lookup, end (arena_destroy teardown),
-// the unknown-id refusal path, double-end idempotency, and distinct minted ids.
+// _scratch) is the sharpest statement of the F13 invariant: a debug session's
+// retained COW chain OUTLIVES the request that opened it, so a LATER request through
+// a re-looked-up entry reads a branch a PRIOR request committed — even after a
+// SEPARATE per-request scratch arena was reset in between. The rest pin the registry
+// surface: open over an artifact, lookup, end (arena_destroy teardown), the
+// unknown-id refusal path, double-end idempotency, and distinct minted ids.
 //
 // DEFINE-FREE FLOOR: these run in the default `odin test .` build (no FUNPACK_LIVE, no
 // SDL). Everything the registry folds (open_session_for_artifact, session_request, the
@@ -78,9 +78,9 @@ stage_fixture_artifact :: proc(t: ^testing.T, name: string) -> (path: string, ok
 
 // test_mcp_session_f13_outlives_request_scratch is THE F13 regression. It proves the
 // session's retained branch survives a per-request scratch arena reset and is read back
-// by a LATER request through a re-looked-up entry — the exact failure the Go path hit
-// (the SDK cancelled the request ctx the instant session_start returned, freeing the
-// session out from under the next call). Here the session lives on its OWN arena, so:
+// by a LATER request through a re-looked-up entry — the F13 failure mode (an MCP host
+// cancels the request scope the instant session_start returns, freeing the session
+// out from under the next call). Here the session lives on its OWN arena, so:
 //
 //   1. open a session in the registry (its COW chain on the dedicated session arena),
 //   2. fold `branch` then `set` through it — the forked branch head commits ONTO the
@@ -117,7 +117,7 @@ test_mcp_session_f13_outlives_request_scratch :: proc(t: ^testing.T) {
 
 	// (3) THE F13 TRIGGER: a SEPARATE per-request scratch arena is reset between the
 	// request that forked and the request that reads. A registry that owned the session
-	// on this scratch (the Go failure) would lose the branch here.
+	// on this scratch (the F13 failure mode) would lose the branch here.
 	scratch: virtual.Arena
 	testing.expect_value(t, virtual.arena_init_growing(&scratch), virtual.Allocator_Error.None)
 	scratch_allocator := virtual.arena_allocator(&scratch)

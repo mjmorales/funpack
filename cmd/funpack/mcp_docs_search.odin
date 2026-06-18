@@ -1,5 +1,4 @@
-// The unified docs-search ranker — the Odin re-home of the deleted Go
-// mcp/internal/docs/search package. It fuses the symbol half (Symbol_Table) and
+// The unified docs-search ranker. It fuses the symbol half (Symbol_Table) and
 // the prose half (Passage_Index) of the funpack docs index into ONE ranked result
 // list, choosing the blend by the SHAPE of the query.
 //

@@ -6,19 +6,17 @@ import "core:path/filepath"
 import "core:slice"
 import "core:testing"
 
-// The contract pin/staleness guard, re-homed from the deleted Go module
-// (mcp/internal/contract gen_sync_test.go + contract_pin_test.go) as a pure,
-// SDL-free Odin test. The funpack<->MCP contract (contract/funpack-api.json) is the
-// single source of truth; the generated TOOL_SPECS table in api_contract.gen.odin
-// is a MECHANICAL projection of BOTH its tool sections — the §28
-// introspect.command_groups (session-scoped wire commands) AND server_tools
-// (the server-native compute / docs / session-lifecycle tools). These tests walk
-// the contract FRESH (in Odin, no go-run shellout), projecting each section by the
-// SAME rules the generator applies, and assert the committed table matches that
-// walk exactly in BOTH drift directions, so the table cannot silently drift from
-// the contract — the drift guard the generated-tools/list approach depends on. A
-// contract edit that lands without a regenerate, or a hand-edit of the generated
-// file, trips a loud failure here.
+// The contract pin/staleness guard — a pure, SDL-free test. The funpack<->MCP
+// contract (contract/funpack-api.json) is the single source of truth; the generated
+// TOOL_SPECS table in api_contract.gen.odin is a MECHANICAL projection of BOTH its
+// tool sections — the §28 introspect.command_groups (session-scoped wire commands)
+// AND server_tools (the server-native compute / docs / session-lifecycle tools).
+// These tests walk the contract FRESH, projecting each section by the SAME rules the
+// generator applies, and assert the committed table matches that walk exactly in
+// BOTH drift directions, so the table cannot silently drift from the contract — the
+// drift guard the generated-tools/list approach depends on. A contract edit that
+// lands without a regenerate, or a hand-edit of the generated file, trips a loud
+// failure here.
 
 // CONTRACT_REL is contract/funpack-api.json relative to the repo root; the funpack
 // package dir sits one level under the root, so #directory resolves it absolutely
@@ -242,7 +240,7 @@ find_expected :: proc(tools: []Expected_Tool, command: string) -> (Expected_Tool
 	return {}, false
 }
 
-// TestToolSpecsMatchContract is the staleness gate: the committed TOOL_SPECS table
+// test_tool_specs_match_contract is the staleness gate: the committed TOOL_SPECS table
 // must be the exact projection of the fresh contract walk. It catches both drift
 // directions — a contract command the table lacks, and a table entry no contract
 // command backs — plus every per-tool field (name, group, class) and the full
@@ -331,7 +329,7 @@ test_every_tool_spec_arg_is_typed :: proc(t: ^testing.T) {
 	}
 }
 
-// TestToolSpecsCoverEveryContractCommandName pins the §28 SUBSET of the Tool_Spec
+// test_tool_specs_cover_every_command_const pins the §28 SUBSET of the Tool_Spec
 // table against the generated CMD_* name surface in the SAME file: every CMD_*
 // constant must be the command of exactly one session-scoped Tool_Spec, AND the
 // count of CMD_* consts equals the count of session-scoped tools, so the two
@@ -375,11 +373,10 @@ test_tool_specs_cover_every_command_const :: proc(t: ^testing.T) {
 
 // SERVER_NATIVE_TOOLS is the closed set of server-native tool names the contract's
 // server_tools section declares — the oneshot / docs_health / session families. It
-// is the deliberate floor the unblocked downstream families (mcp-tools-oneshot,
-// mcp-tools-docs-health, mcp-tools-session-lifecycle) dispatch against: every one
-// must be present in TOOL_SPECS as a NON-session-scoped tool for tools/list to
-// advertise it and mcp_lookup_tool to resolve it. Adding a server-native tool means
-// declaring it in the contract, regenerating, and extending this list.
+// is the deliberate floor those families dispatch against: every one must be present
+// in TOOL_SPECS as a NON-session-scoped tool for tools/list to advertise it and
+// mcp_lookup_tool to resolve it. Adding a server-native tool means declaring it in
+// the contract, regenerating, and extending this list.
 SERVER_NATIVE_TOOLS :: []string{
 	"build", "export", "check", "test", "fmt",
 	"warden_find", "warden_graph", "warden_holes", "warden_probes", "warden_debt", "warden_tags", "warden_pipeline",
@@ -387,13 +384,12 @@ SERVER_NATIVE_TOOLS :: []string{
 	"session_start", "session_list", "session_end",
 }
 
-// TestToolSpecsCoverEveryServerNativeTool pins that every server-native tool the
-// contract declares is present in the unified TOOL_SPECS table as a non-session-
-// scoped entry. This is the gate this task exists to satisfy: until these tools are
-// in TOOL_SPECS, mcp_lookup_tool and mcp_handle_tools_list cannot reach or advertise
-// the oneshot / docs-health / session-lifecycle families. The count is pinned too,
-// so a contract edit that drops a server-native tool (or a hand-edit of the table)
-// trips here.
+// test_tool_specs_cover_every_server_native_tool pins that every server-native tool
+// the contract declares is present in the unified TOOL_SPECS table as a non-session-
+// scoped entry. Without it, mcp_lookup_tool and mcp_handle_tools_list cannot reach or
+// advertise the oneshot / docs-health / session-lifecycle families. The count is
+// pinned too, so a contract edit that drops a server-native tool (or a hand-edit of
+// the table) trips here.
 @(test)
 test_tool_specs_cover_every_server_native_tool :: proc(t: ^testing.T) {
 	server_native_count := 0

@@ -1,17 +1,17 @@
 // The MCP protocol dispatch loop and the `funpack mcp` verb entry — the JSON-RPC
 // 2.0 handler that swaps in over the merged transport's Mcp_Line_Handler seam
-// (mcp_transport.odin). This is the protocol SKELETON: the three lifecycle methods
+// (mcp_transport.odin). This is the protocol CORE: the three lifecycle methods
 // (initialize / tools/list / tools/call) plus the notifications/* accept-and-drop,
-// over the contract-generated TOOL_SPECS table. The per-tool ARMS and the session
-// registry are downstream tasks (mcp-session-registry, mcp-tools-*); they graft
-// real arms onto the tools/call switch this file stubs, so this task lands the
-// dispatch framework + the three contracts they extend: the tool name → arm seam,
-// the Mcp_Error envelope convention, and the Mcp_Content result model.
+// over the contract-generated TOOL_SPECS table. It owns the dispatch framework and
+// the three contracts the per-tool arms extend: the tool name → arm seam, the
+// Mcp_Error envelope convention, and the Mcp_Content result model. The per-family
+// arm files (mcp_tools_*.odin) graft real arms onto the tools/call switch; the
+// session registry is threaded through here (see THE SESSION REGISTRY below).
 //
 // ABSOLUTE STDOUT DISCIPLINE: this loop returns a response STRING per request; the
-// transport's send is the only stdout writer (mcp_transport.odin:70). Every
-// diagnostic routes to stderr via the gated dbg() / fmt.eprintln, never stdout —
-// a test scans the framed stream for any non-JSON-RPC line (mcp_server_test.odin).
+// transport's send is the only stdout writer (mcp_transport.odin). Every diagnostic
+// routes to stderr via the gated dbg() / fmt.eprintln, never stdout — a test scans
+// the framed stream for any non-JSON-RPC line (mcp_server_test.odin).
 package main
 
 import "../../funpack"
@@ -20,27 +20,25 @@ import "core:encoding/json"
 import "core:strings"
 
 // MCP_PROTOCOL_VERSION is the Model Context Protocol revision this server advertises
-// in the initialize handshake. It is pinned to the version the go-sdk advertised as
-// its latest (go-sdk v1.3.1 shared.go:37-39 latestProtocolVersion = "2025-06-18"),
-// the same value the deleted Go server negotiated, so the bundled plugin client sees
-// no protocol change across the fold. A test asserts the handshake carries exactly
-// this string (test_mcp_initialize_capabilities).
+// in the initialize handshake, pinned to the MCP spec revision the bundled plugin
+// client negotiates against. A test asserts the handshake carries exactly this
+// string (test_mcp_initialize_capabilities).
 MCP_PROTOCOL_VERSION :: "2025-06-18"
 
 // MCP_SERVER_NAME / MCP_SERVER_TITLE identify this server to a client in the
-// initialize result's serverInfo (the go-sdk Implementation, server.go:11). The
-// name is the stable programmatic id the deleted Go server reported ("funpack-mcp").
+// initialize result's serverInfo. The name is the stable programmatic id the server
+// reports ("funpack-mcp").
 MCP_SERVER_NAME :: "funpack-mcp"
 
 // run_mcp_verb is the `funpack mcp` verb core: it builds the JSON-RPC handler and
 // serves it over the auth-free stdio transport, then owns the {0,1,2} exit contract
-// (main.odin:23-24, each verb core owns its exit number). A clean serve-then-EOF (the
-// MCP host closed stdin) or a handler-signalled shutdown is exit 0 — the normal end
-// of a stdio session (mirroring serve.go:121, EOF/signal-as-clean). A usage error is
-// the framework's exit 2 (this verb takes no args, so usage never reaches here). An
-// unrecoverable server fault would be exit 1; the protocol loop never panics on wire
-// input (every malformed request is a JSON-RPC error response), so there is no fault
-// path in the skeleton — it is reserved for the downstream session/IO arms.
+// (each verb core owns its exit number). A clean serve-then-EOF (the MCP host closed
+// stdin) or a handler-signalled shutdown is exit 0 — the normal end of a stdio
+// session. A usage error is the framework's exit 2 (this verb takes no args, so
+// usage never reaches here). An unrecoverable server fault is exit 1; the protocol
+// loop never panics on wire input (every malformed request is a JSON-RPC error
+// response), so a fault path arises only from the session/IO arms, not the dispatch
+// core.
 //
 // THE SESSION REGISTRY is server-scoped: minted once here, lives for the whole stdio
 // session, torn down on shutdown (the F13 fix — a session OUTLIVES the request that
@@ -70,10 +68,10 @@ mcp_jsonrpc_handler :: proc(registry: ^Mcp_Session_Registry) -> Mcp_Line_Handler
 
 // mcp_dispatch_line parses one JSON-RPC line and routes it to its method handler,
 // returning the response line to frame back (empty ⇒ no reply, the notification
-// case) and keep_open (always true at the skeleton layer — the host closing stdin
-// ends the session, not a protocol message). A line that is not a valid request
-// envelope is a PROTOCOL fault: a JSON-RPC error response (never a panic). A
-// notification (no id) is accepted and dropped silently per the MCP contract.
+// case) and keep_open (always true — the host closing stdin ends the session, never
+// a protocol message). A line that is not a valid request envelope is a PROTOCOL
+// fault: a JSON-RPC error response (never a panic). A notification (no id) is
+// accepted and dropped silently per the MCP contract.
 mcp_dispatch_line :: proc(registry: ^Mcp_Session_Registry, line: string, allocator := context.allocator) -> (response: string, keep_open: bool) {
 	request, ok := mcp_parse_request(line, allocator)
 	if !ok {
@@ -87,8 +85,9 @@ mcp_dispatch_line :: proc(registry: ^Mcp_Session_Registry, line: string, allocat
 	}
 
 	// notifications/* carry no id and expect no response (notifications/initialized,
-	// notifications/cancelled, …) — accept and drop, matching the go-sdk, so the
-	// handshake completes (server.go registers no notification handlers beyond this).
+	// notifications/cancelled, …) — accept and drop per JSON-RPC notification
+	// semantics, so the handshake completes regardless of which notifications a client
+	// sends.
 	if strings.has_prefix(request.method, "notifications/") {
 		return "", true
 	}
@@ -106,9 +105,8 @@ mcp_dispatch_line :: proc(registry: ^Mcp_Session_Registry, line: string, allocat
 
 // mcp_handle_initialize answers the MCP handshake: it advertises THIS server's
 // protocolVersion, capabilities, and serverInfo. capabilities advertises tools ONLY
-// (no resources, no prompts, no logging) — the deleted Go server registered only
-// tools (server.go:37-49), and the screenshot/session surface is all tools. The
-// result shape matches the go-sdk InitializeResult (protocol.go:486-503).
+// (no resources, no prompts, no logging) — the entire funpack surface is tools. The
+// result shape matches the MCP InitializeResult.
 mcp_handle_initialize :: proc(request: Mcp_Request, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"protocolVersion\":\"")
@@ -126,10 +124,10 @@ mcp_handle_initialize :: proc(request: Mcp_Request, allocator := context.allocat
 
 // mcp_handle_tools_list emits the tools/list result from the generated TOOL_SPECS
 // table (funpack/api_contract.gen.odin), so the advertised input_schema CANNOT drift
-// from dispatch (the §28 wire arg names ARE the dispatch hints). At the SKELETON
-// layer this projection is the full contract table; the downstream tool tasks fill
-// the matching tools/call arms. The result is {tools:[…]}, each tool a {name,
-// description, inputSchema} per the go-sdk Tool shape (protocol.go:1045).
+// from dispatch (the §28 wire arg names ARE the dispatch hints). This projection is
+// the full contract table; the per-family arm files fill the matching tools/call
+// arms. The result is {tools:[…]}, each tool a {name, description, inputSchema} per
+// the MCP Tool shape.
 mcp_handle_tools_list :: proc(request: Mcp_Request, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"tools\":[")
@@ -184,8 +182,8 @@ mcp_write_tool_spec :: proc(b: ^strings.Builder, spec: funpack.Tool_Spec) {
 // reach into live sessions — the F13 lifetime owner). It is passed BY VALUE: a family
 // arm reads it; only the session arm mutates state, and that state lives behind the
 // `registry` pointer, not in this struct. Bundling the call context in one struct is
-// what lets each downstream tool task fill ONLY its family file — the dispatch seam
-// never changes shape as arms land.
+// what lets each family file fill ONLY its own arm — the dispatch seam never changes
+// shape as arms land.
 Mcp_Dispatch :: struct {
 	spec:      funpack.Tool_Spec,
 	name:      string,
@@ -203,10 +201,10 @@ Mcp_Dispatch :: struct {
 // in-band IsError result convention (mcp_error.odin), never a JSON-RPC error object —
 // the model reads the category and self-corrects.
 //
-// THE EXTENSION SEAM (the whole point of the chain): each downstream tool task fills
-// ONLY its own family file (its dispatch proc), with ZERO edits here. A family arm
-// returns ("", false) for any tool it does not own (the stub state), so a tool flows
-// down the chain until its family claims it. The chain order is the family list, not a
+// THE EXTENSION SEAM (the whole point of the chain): each family file fills ONLY its
+// own dispatch proc, with ZERO edits here. A family arm returns ("", false) for any
+// tool it does not own (the stub state), so a tool flows down the chain until its
+// family claims it. The chain order is the family list, not a
 // priority — at most one family owns any given tool name, so order is immaterial to
 // correctness (a tool the wrong family wrongly claimed would be a bug in that family,
 // not here).
@@ -236,7 +234,7 @@ mcp_handle_tools_call :: proc(registry: ^Mcp_Session_Registry, request: Mcp_Requ
 
 	// The `arguments` object the call carried (MCP tools/call params.arguments). Absent
 	// or non-object leaves it empty — each arm reads its own args off it, exactly as
-	// session_request reads its `args` (introspect.odin:430-435).
+	// session_request reads its `args` (introspect.odin).
 	arguments: json.Object
 	if nested, has_args := request.params["arguments"]; has_args {
 		if object, args_ok := nested.(json.Object); args_ok {
@@ -252,10 +250,9 @@ mcp_handle_tools_call :: proc(registry: ^Mcp_Session_Registry, request: Mcp_Requ
 		registry  = registry,
 	}
 
-	// The per-family dispatch chain. Each arm lives in its own file (mcp_tools_*.odin)
-	// and is filled by its downstream tool task; the first arm that returns handled=true
-	// owns the result. A KNOWN tool no family yet claims falls through to the
-	// not-implemented stub below.
+	// The per-family dispatch chain. Each arm lives in its own file (mcp_tools_*.odin);
+	// the first arm that returns handled=true owns the result. A KNOWN tool no family
+	// claims falls through to the not-implemented stub below.
 	for arm in MCP_DISPATCH_CHAIN {
 		if result, handled := arm(dispatch, allocator); handled {
 			return result
@@ -280,10 +277,10 @@ mcp_handle_tools_call :: proc(registry: ^Mcp_Session_Registry, request: Mcp_Requ
 Mcp_Tool_Dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> (result: string, handled: bool)
 
 // MCP_DISPATCH_CHAIN is the ordered per-family dispatch chain mcp_handle_tools_call
-// walks. Each entry is a family's arm proc, each in its OWN file, each filled by its
-// downstream tool task. ADDING a tool family means: write its mcp_tools_<family>.odin
-// with its dispatch proc, then append the proc here — NEVER edit mcp_handle_tools_call.
-// Order is immaterial to correctness (at most one family claims any tool name).
+// walks. Each entry is a family's arm proc, each in its OWN file. ADDING a tool
+// family means: write its mcp_tools_<family>.odin with its dispatch proc, then append
+// the proc here — NEVER edit mcp_handle_tools_call. Order is immaterial to
+// correctness (at most one family claims any tool name).
 MCP_DISPATCH_CHAIN := [?]Mcp_Tool_Dispatch {
 	mcp_oneshot_dispatch,
 	mcp_docs_tool_dispatch,
@@ -294,9 +291,8 @@ MCP_DISPATCH_CHAIN := [?]Mcp_Tool_Dispatch {
 }
 
 // mcp_lookup_tool finds a Tool_Spec by its advertised MCP name in the generated
-// table — the seam the downstream tool tasks dispatch their arms through (name →
-// spec → arm). Returned by value (the table is read-only); found=false is the
-// unknown-tool path.
+// table — the seam the family arms dispatch through (name → spec → arm). Returned by
+// value (the table is read-only); found=false is the unknown-tool path.
 mcp_lookup_tool :: proc(name: string) -> (spec: funpack.Tool_Spec, found: bool) {
 	for candidate in funpack.TOOL_SPECS {
 		if candidate.name == name {
@@ -307,11 +303,10 @@ mcp_lookup_tool :: proc(name: string) -> (spec: funpack.Tool_Spec, found: bool) 
 }
 
 // mcp_render_tool_result renders an Mcp_Tool_Result into a JSON-RPC success result:
-// {content:[…],isError:<bool>} per the go-sdk CallToolResult (protocol.go:75). A
-// domain failure rides here as a SUCCESSFUL JSON-RPC result with isError=true (the
-// convention) — never a JSON-RPC error object. Each content block renders to its
-// MCP wire shape (text ⇒ {type:"text",text:…}, image ⇒ {type:"image",data:…,
-// mimeType:…}, content.go).
+// {content:[…],isError:<bool>} per the MCP CallToolResult shape. A domain failure
+// rides here as a SUCCESSFUL JSON-RPC result with isError=true (the convention) —
+// never a JSON-RPC error object. Each content block renders to its MCP wire shape
+// (text ⇒ {type:"text",text:…}, image ⇒ {type:"image",data:…,mimeType:…}).
 mcp_render_tool_result :: proc(id: Mcp_Id, result: Mcp_Tool_Result, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"content\":[")

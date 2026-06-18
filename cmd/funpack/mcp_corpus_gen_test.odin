@@ -1,20 +1,20 @@
 // Extractor-unit tests for the corpus generator splitters — the foundational
 // junctions of the three extractors, exercised on small inline fixtures so a
 // splitter invariant regresses HERE (named) rather than silently shifting the
-// committed corpus through the pin test. These pin the gencore invariants the Odin
-// port must hold: the heading splitter is fence-aware and dedupes repeated slugs;
-// the engine splitter pairs a decl with its immediately-preceding @doc line, drops a
-// non-extern fn body to the signature head, and clears a dangling @doc on an
-// intervening line. Define-free, run on the default `odin test .` floor.
+// committed corpus through the pin test. These pin the extractor invariants: the
+// heading splitter is fence-aware and dedupes repeated slugs; the engine splitter
+// pairs a decl with its immediately-preceding @doc line, drops a non-extern fn body
+// to the signature head, and clears a dangling @doc on an intervening line.
+// Define-free, run on the default `odin test .` floor.
 package main
 
 import "core:strings"
 import "core:testing"
 
 // test_split_headings_is_fence_aware pins that a markdown heading INSIDE a ```-fenced
-// code block is NOT a split point (the gencore splitHeadings fence rule), while the
-// real H2 heading is — so a fenced "# not a heading" stays in the preceding section's
-// body rather than minting a spurious section.
+// code block is NOT a split point (the heading-splitter fence rule), while the real
+// H2 heading is — so a fenced "# not a heading" stays in the preceding section's body
+// rather than minting a spurious section.
 @(test)
 test_split_headings_is_fence_aware :: proc(t: ^testing.T) {
 	doc := strings.join(
@@ -49,7 +49,7 @@ test_split_headings_is_fence_aware :: proc(t: ^testing.T) {
 
 // test_split_headings_dedupes_repeated_slug pins the duplicate-slug suffixing: two
 // headings that slugify to the same anchor fragment within one file get "-2" on the
-// second (the gencore slugCounts rule), so anchors stay unique and stable.
+// second (the per-file slug-dedup rule), so anchors stay unique and stable.
 @(test)
 test_split_headings_dedupes_repeated_slug :: proc(t: ^testing.T) {
 	doc := strings.join(
@@ -70,7 +70,7 @@ test_split_headings_dedupes_repeated_slug :: proc(t: ^testing.T) {
 
 // test_split_headings_skips_empty_parent pins that an organizational parent heading
 // with no body of its own (only subheadings follow) is NOT emitted — only the leaf
-// sections that carry a searchable passage are (the gencore empty-body skip).
+// sections that carry a searchable passage are (the empty-body skip rule).
 @(test)
 test_split_headings_skips_empty_parent :: proc(t: ^testing.T) {
 	doc := strings.join(
@@ -121,7 +121,7 @@ test_split_engine_pairs_doc_and_drops_fn_body :: proc(t: ^testing.T) {
 
 // test_split_engine_keeps_type_body pins the type-declaration arm: a data/enum/extern
 // type's brace-delimited member list IS the signature and is kept verbatim across
-// lines (unlike a fn body, which is dropped) — the gencore signature() type branch.
+// lines (unlike a fn body, which is dropped) — the engine_signature type branch.
 @(test)
 test_split_engine_keeps_type_body :: proc(t: ^testing.T) {
 	src := strings.join(
@@ -149,7 +149,7 @@ test_split_engine_keeps_type_body :: proc(t: ^testing.T) {
 
 // test_split_engine_clears_dangling_doc pins that a @doc line NOT immediately
 // followed by a decl (an intervening non-blank line) is cleared, so the doc never
-// attaches to the wrong (later) declaration — the gencore dangling-@doc clear.
+// attaches to the wrong (later) declaration — the dangling-@doc clear rule.
 @(test)
 test_split_engine_clears_dangling_doc :: proc(t: ^testing.T) {
 	src := strings.join(
@@ -179,8 +179,8 @@ test_split_engine_clears_dangling_doc :: proc(t: ^testing.T) {
 
 // test_corpus_slugify_invariants pins the slug normalization: lowercase, backticks
 // stripped, non-alphanumeric runs collapse to a single dash, leading/trailing dashes
-// trimmed, and an all-punctuation title falls back to "section" — the gencore
-// slugify contract anchors depend on for stability across regen.
+// trimmed, and an all-punctuation title falls back to "section" — the slugify
+// contract anchors depend on for stability across regen.
 @(test)
 test_corpus_slugify_invariants :: proc(t: ^testing.T) {
 	testing.expect_value(t, corpus_slugify("Hello World", context.temp_allocator), "hello-world")

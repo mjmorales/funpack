@@ -1,12 +1,12 @@
 // The server-scoped session registry + per-session arena lifetime — the F13 fix at
-// its source. The Go path learned it the hard way: a debug session must OUTLIVE the
-// tool-call request that opened it (the SDK cancels the request ctx the instant
-// session_start returns). Here that is structural, not a discipline: each named
-// session owns a DEDICATED core:mem/virtual.Arena, and the runtime Debug_Session it
-// holds is opened ON that arena's allocator — so the retained COW version chain and
-// the per-boundary Rng states live for the session's lifetime, never the request's.
-// session_end is one arena_destroy: a single free, no per-request leak, no
-// OS-process-group teardown (the Go reaper's job, now allocator discipline).
+// its source. THE INVARIANT: a debug session must OUTLIVE the tool-call request that
+// opened it, because an MCP host cancels the request scope the instant session_start
+// returns. Here that is structural, not a discipline: each named session owns a
+// DEDICATED core:mem/virtual.Arena, and the runtime Debug_Session it holds is opened
+// ON that arena's allocator — so the retained COW version chain and the per-boundary
+// Rng states live for the session's lifetime, never the request's. session_end is
+// one arena_destroy: a single free, no per-request leak, no OS-process-group
+// teardown — the lifetime is allocator discipline, not a reaper.
 //
 // SINGLE-THREADED PER SESSION: a control command commits its forked branch head as
 // per-session mutable state (introspect.odin Debug_Session.branch), so a session's
@@ -23,9 +23,9 @@
 // THE REQUEST FOLD ALLOCATOR (the retention rule, the F13 crux): a request is folded
 // through session_request on the SESSION ARENA allocator, NOT a per-request scratch
 // arena. session_request uses one allocator for both the response render AND the COW
-// commit a control command makes (introspect.odin:437-462) — exactly as the attach
-// serve loop folds on its connection allocator and never frees between lines
-// (introspect_attach.odin:286-293). The session arena holds that chain for the
+// commit a control command makes (introspect.odin) — exactly as the attach serve
+// loop folds on its connection allocator and never frees between lines
+// (introspect_attach.odin). The session arena holds that chain for the
 // session's life and reaps it whole at session_end. The OUTER JSON-RPC envelope
 // (parse + render) is what uses the protocol loop's per-request scratch; that scratch
 // must NEVER touch a session arena (an arena_free_all on it would corrupt the chain).
@@ -43,7 +43,7 @@ import "core:strings"
 // session allocated — the COW chain, the snapshots, the program — sits in `arena`, so
 // arena_destroy frees the entry in one shot. The id is the stable handle the tool
 // arms look the entry up by (mcp_session_registry_lookup); label is the optional
-// human/agent-supplied name a session_start may carry (the downstream lifecycle tool
+// human/agent-supplied name a session_start may carry (the session-lifecycle arm
 // surfaces it in session_list — kept here so the entry is the single record).
 Mcp_Session_Entry :: struct {
 	id:      string,
@@ -111,8 +111,8 @@ mcp_session_registry_open :: proc(
 
 	// Open the session ON the session arena: open_session_for_artifact new's the
 	// Program and the snapshots on this allocator and folds the recording through
-	// open_debug_session, so the whole session graph is arena-owned (introspect_attach
-	// .odin:541-548 — a per-session arena frees it in one shot).
+	// open_debug_session, so the whole session graph is arena-owned — a per-session
+	// arena frees it in one shot.
 	session, program, open_result := funpack_runtime.open_session_for_artifact(
 		artifact_path,
 		replay_log,
@@ -161,8 +161,8 @@ mcp_session_registry_lookup :: proc(reg: ^Mcp_Session_Registry, id: string) -> (
 
 // mcp_session_registry_request folds one §28 request line through a named session and
 // returns the response line. THE F13 CRUX: the fold runs on the SESSION ARENA
-// allocator, so a control command's forked branch head (introspect.odin:460) commits
-// into the arena that lives for the session's lifetime — a LATER request reads it back
+// allocator, so a control command's forked branch head commits into the arena that
+// lives for the session's lifetime — a LATER request reads it back
 // (the regression the named test pins). The OUTER JSON-RPC envelope's per-request
 // scratch is the protocol loop's concern and must never be handed here. An unknown id
 // is found=false — the caller renders the stale-session refusal; the session is never
@@ -195,9 +195,10 @@ mcp_session_registry_end :: proc(reg: ^Mcp_Session_Registry, id: string, registr
 }
 
 // mcp_session_registry_destroy tears down the WHOLE registry at server shutdown:
-// every live session's arena is destroyed (the shutdown teardown the Go path did via
-// process-group kill), then each entry struct is freed and the map released. After
-// this the registry is empty and reusable. `registry_allocator` must match make's.
+// every live session's arena is destroyed (the lifetime ends in allocator teardown,
+// not a process-group kill), then each entry struct is freed and the map released.
+// After this the registry is empty and reusable. `registry_allocator` must match
+// make's.
 mcp_session_registry_destroy :: proc(reg: ^Mcp_Session_Registry, registry_allocator := context.allocator) {
 	for _, entry in reg.entries {
 		virtual.arena_destroy(&entry.arena)

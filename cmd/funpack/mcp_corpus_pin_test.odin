@@ -1,11 +1,10 @@
-// The corpus-pin drift gate — the Odin re-home of the deleted Go
-// mcp/internal/docs/corpus_pin_test.go. It is the single shared-extractor-path
-// guarantee: it regenerates the corpus IN MEMORY through the SAME generate_corpus
-// extractors the committed shards were built with, and byte/hash-compares against
-// the #load-embedded committed bytes. A drift — a spec edit, an engine signature
+// The corpus-pin drift gate — the single shared-extractor-path guarantee: it
+// regenerates the corpus IN MEMORY through the SAME generate_corpus extractors the
+// committed shards were built with, and byte/hash-compares against the
+// #load-embedded committed bytes. A drift — a spec edit, an engine signature
 // change, a plugin skill rewrite, or a stale checkout — fails here, forcing
 // `task docs-regen` + recommit. There is no second, divergent extractor to keep in
-// sync (exactly the gencore-shared-by-gen-and-pin design).
+// sync (the one-extraction-path-shared-by-gen-and-pin design).
 //
 // HERMETIC SKIP: when the in-repo source trees are unavailable (a checkout without
 // spec/stdlib/plugins, or an env without the fixture), the regen-driven tests SKIP

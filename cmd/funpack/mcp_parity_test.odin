@@ -1,14 +1,12 @@
-// Clean-break PARITY GATE — the two SERVER-LEVEL, cross-cutting contracts the
-// deleted Go suite pinned that no single per-family Odin test covers, expressed as
-// living spec over the REAL framed transport (serve_mcp_connection + the production
-// mcp_jsonrpc_handler), not an arm shortcut:
+// SERVER-LEVEL PARITY GATE — the two cross-cutting contracts that no single
+// per-family test covers, expressed as living spec over the REAL framed transport
+// (serve_mcp_connection + the production mcp_jsonrpc_handler), not an arm shortcut:
 //
 //   1. tools/list advertises the WHOLE 45-tool surface — the §28 session tools AND
 //      the server-native (oneshot / docs-health / session-lifecycle) tools — each as
-//      a named entry carrying a well-formed object inputSchema. The Go module pinned
-//      this per family (one *_tools_test.go each asserting its own list membership);
-//      with the module gone, the union must be pinned in ONE place over the wire so a
-//      dropped or unadvertised family fails loudly. (mcp_server_test.odin's
+//      a named entry carrying a well-formed object inputSchema. Each family pins its
+//      own list membership in its own test; this pins the UNION in ONE place over the
+//      wire so a dropped or unadvertised family fails loudly. (mcp_server_test.odin's
 //      projection test asserts the COUNT and one tool; this asserts the full NAMED set.)
 //   2. A full protocol ROUND-TRIP — initialize → tools/list → a tools/call for at
 //      least one representative tool of EACH of the six dispatch families — driven as
@@ -93,17 +91,17 @@ parity_stage_fixture :: proc(t: ^testing.T, name: string) -> (path: string, ok: 
 }
 
 // test_parity_tools_list_advertises_full_surface pins the cross-cutting advertisement
-// contract the deleted Go module spread across its per-family List* tests: tools/list,
-// driven over the REAL framed transport, advertises EVERY tool name across all six
-// families — the §28 session group AND the server-native group — and each is a named
+// contract no per-family test covers: tools/list, driven over the REAL framed
+// transport, advertises EVERY tool name across all six families — the §28 session
+// group AND the server-native group — and each is a named
 // entry carrying a well-formed object inputSchema. A family unwired from the projection
 // (or a tool dropped from the contract) makes its name absent here. The expected set is
 // the closed 45-tool union; a contract that grows the surface without extending this
 // list trips the count assertion, forcing the list to track the real surface.
 @(test)
 test_parity_tools_list_advertises_full_surface :: proc(t: ^testing.T) {
-	// The full 45-tool surface, grouped by family for legibility. This is the union the
-	// deleted Go *_tools_test.go files each asserted a slice of; pinned here in one place.
+	// The full 45-tool surface, grouped by family for legibility. This is the union of
+	// every family's own list membership, pinned here in one place.
 	expected := []string {
 		// §28 time-travel
 		"time_load", "time_run", "time_pause", "time_step", "time_rewind", "time_reset", "time_status",

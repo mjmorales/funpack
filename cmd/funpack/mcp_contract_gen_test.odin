@@ -1,13 +1,12 @@
-// The contract-gen pin gate — the Odin re-home of the deleted-on-wave-9 Go
-// mcp/internal/contract gen_sync / contract_pin tests. It is the single drift guard
-// that keeps funpack/api_contract.gen.odin in lockstep with contract/funpack-api.json
-// AFTER the Go generator is gone: it regenerates the Odin source IN MEMORY through the
-// SAME generate_contract_odin renderer the committed file was produced by, and
-// byte-compares against the #load-embedded committed bytes. A drift — a contract edit
-// without a regen, a stale checkout, or a hand-edit of the generated file — fails
-// here, naming the fix (`funpack mcp gen-contract` + recommit). There is no second,
-// divergent renderer to keep in sync (the gen-core-shared-by-gen-and-pin design the
-// corpus pin also follows).
+// The contract-gen pin gate — the single drift guard that keeps
+// funpack/api_contract.gen.odin in lockstep with contract/funpack-api.json: it
+// regenerates the Odin source IN MEMORY through the SAME generate_contract_odin
+// renderer the committed file was produced by, and byte-compares against the
+// #load-embedded committed bytes. A drift — a contract edit without a regen, a
+// stale checkout, or a hand-edit of the generated file — fails here, naming the
+// fix (`funpack mcp gen-contract` + recommit). There is no second, divergent
+// renderer to keep in sync (the gen-core-shared-by-gen-and-pin design the corpus
+// pin also follows).
 //
 // HERMETIC: both inputs are #load-embedded at compile time (the committed contract
 // JSON and the committed generated Odin), so this gate needs no source tree on disk

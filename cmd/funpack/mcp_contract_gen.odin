@@ -1,10 +1,9 @@
-// The contract generator core — the Odin re-home of the deleted-on-wave-9 Go
-// mcp/internal/contract/gen (contract.go decode + render_odin.go render). It reads
-// contract/funpack-api.json (the SINGLE source of truth for the funpack <-> MCP API
-// boundary) and renders funpack/api_contract.gen.odin: the API_CONTRACT_VERSION,
-// the `funpack version --json` field-name + schema-name consts, the §28 envelope /
-// command / event name consts, and the unified TOOL_SPECS table (every §28 command
-// AND every server-native tool projected into one MCP tools/list table).
+// The contract generator core — decodes contract/funpack-api.json (the SINGLE
+// source of truth for the funpack <-> MCP API boundary) and renders
+// funpack/api_contract.gen.odin: the API_CONTRACT_VERSION, the `funpack version
+// --json` field-name + schema-name consts, the §28 envelope / command / event name
+// consts, and the unified TOOL_SPECS table (every §28 command AND every
+// server-native tool projected into one MCP tools/list table).
 //
 // PURE: this core takes the raw contract bytes and returns the generated source
 // bytes — NO filesystem WRITES (persisting api_contract.gen.odin is the caller's
@@ -13,12 +12,11 @@
 // (mcp_contract_gen_test.odin) regenerates through THIS SAME core and byte-compares
 // against the committed file — one render path, no second divergent renderer.
 //
-// BYTE-STABLE: the Go renderer's exact layout is reproduced so a regen reproduces
-// the committed file verbatim. Maps (command_groups, families, version fields,
-// args) iterate in sorted-key order; ordered lists (schema_names, group commands,
-// family tools, events, envelope fields) iterate in on-disk declaration order. The
-// contract's "$comment" string keys interleaved among typed map entries are dropped
-// on access (the Go decodeTyped mirror).
+// BYTE-STABLE: the render layout is fixed so a regen reproduces the committed file
+// verbatim. Maps (command_groups, families, version fields, args) iterate in
+// sorted-key order; ordered lists (schema_names, group commands, family tools,
+// events, envelope fields) iterate in on-disk declaration order. The contract's
+// "$comment" string keys interleaved among typed map entries are dropped on access.
 //
 // ODIN-FIRST NOTE: JSON is core:encoding/json (json.parse over the raw bytes, then a
 // json.Value walk — the §28 idiom at mcp_jsonrpc.odin / introspect.odin); sorting is
@@ -137,7 +135,7 @@ generate_contract_odin :: proc(contract_json: string, allocator := context.alloc
 // (groups sorted, commands as declared), then every server-native tool (families
 // sorted, tools as declared). One source — the contract walk — so the advertised
 // tools/list input_schema cannot drift from the tools/call dispatch arm. The exact
-// layout (tab indentation, comment text) reproduces the Go renderToolSpecs output.
+// layout (tab indentation, comment text) is fixed so a regen is byte-stable.
 render_tool_specs :: proc(b: ^strings.Builder, introspect: json.Object, root: json.Object) {
 	strings.write_string(b, "// --- MCP tools/list projection (Tool_Spec table) ----------------------------\n")
 	strings.write_string(b, "//\n")
@@ -243,7 +241,7 @@ render_tool_specs :: proc(b: ^strings.Builder, introspect: json.Object, root: js
 // flag (false for every server-native tool), command IS the tool name (no §28 wire
 // command), and args are the tool's full input_schema verbatim — NO injected
 // SESSION_ID_ARG or BRANCH_ARG. Families sorted, tools in on-disk declaration order,
-// args sorted — byte-stable, the Go renderServerToolSpecs mirror.
+// args sorted — byte-stable.
 render_server_tool_specs :: proc(b: ^strings.Builder, root: json.Object) {
 	server_tools, has_st := contract_object(root, "server_tools")
 	if !has_st {
@@ -302,20 +300,19 @@ render_arg_entries :: proc(b: ^strings.Builder, args: json.Object) {
 }
 
 // odin_const maps a contract name (snake_case) to its Odin SCREAMING_SNAKE const
-// suffix — the Go odinConst mirror (strings.ToUpper).
+// suffix (an upper-case fold).
 odin_const :: proc(name: string, allocator := context.allocator) -> string {
 	return strings.to_upper(name, allocator)
 }
 
 // odin_string renders s as a double-quoted Odin string literal, escaping the few
-// characters a literal cannot carry raw — the Go odinString mirror: backslash, quote,
-// newline, tab. Contract docs are plain ASCII prose, so only these need escaping; the
-// newline/tab escapes are defensive for byte-stable single-line literals. Allocated in
-// `allocator`.
+// characters a literal cannot carry raw: backslash, quote, newline, tab. Contract
+// docs are plain ASCII prose, so only these need escaping; the newline/tab escapes
+// are defensive for byte-stable single-line literals. Allocated in `allocator`.
 odin_string :: proc(s: string, allocator := context.allocator) -> string {
 	// Order matters: backslash first so a later-introduced escape sequence is not
-	// double-escaped (the Go strings.NewReplacer applies its pairs left-to-right but
-	// never re-scans replaced text; a single fold over the input reproduces that).
+	// double-escaped. A single left-to-right fold over the input (never re-scanning
+	// replaced text) keeps each source byte escaped exactly once.
 	b := strings.builder_make(allocator)
 	strings.write_byte(&b, '"')
 	for i in 0 ..< len(s) {
@@ -338,7 +335,7 @@ odin_string :: proc(s: string, allocator := context.allocator) -> string {
 
 // contract_tool_name projects a command's MCP tool name from its group's tool_prefix:
 // a non-empty prefix yields "<prefix>_<command>", an empty prefix yields the bare
-// command — the Go CommandGroup.toolName mirror. Allocated in `allocator`.
+// command. Allocated in `allocator`.
 contract_tool_name :: proc(tool_prefix, command: string, allocator := context.allocator) -> string {
 	if tool_prefix == "" {
 		return strings.clone(command, allocator)
@@ -347,9 +344,9 @@ contract_tool_name :: proc(tool_prefix, command: string, allocator := context.al
 }
 
 // sorted_typed_keys returns the keys of a "$comment"-interleaved contract map in
-// ascending order, dropping the "$comment" key — the Go sortedKeys(decodeTyped(…))
-// composition: typed entries only, deterministic order so the generated output is
-// byte-stable. Allocated in `allocator`.
+// ascending order, dropping the "$comment" key: typed entries only, in
+// deterministic order so the generated output is byte-stable. Allocated in
+// `allocator`.
 sorted_typed_keys :: proc(object: json.Object, allocator := context.allocator) -> []string {
 	keys := make([dynamic]string, 0, len(object), allocator)
 	for k in object {
@@ -363,8 +360,7 @@ sorted_typed_keys :: proc(object: json.Object, allocator := context.allocator) -
 }
 
 // contract_command_names returns a group's command names in on-disk declaration order
-// — the Go commandNames mirror, the ordered projection the CMD_* consts consume.
-// Allocated in `allocator`.
+// — the ordered projection the CMD_* consts consume. Allocated in `allocator`.
 contract_command_names :: proc(grp: json.Object, allocator := context.allocator) -> []string {
 	commands, _ := contract_array(grp, "commands")
 	names := make([dynamic]string, 0, len(commands), allocator)
@@ -380,7 +376,7 @@ contract_command_names :: proc(grp: json.Object, allocator := context.allocator)
 	return names[:]
 }
 
-// --- typed json.Value accessors (the decode half of the Go contract.go) ------------
+// --- typed json.Value accessors (the contract decode half) -------------------------
 
 // contract_object reads object[key] as a json.Object; has=false when absent or not an
 // object.
@@ -419,7 +415,7 @@ contract_string :: proc(object: json.Object, key: string) -> (value: string, has
 
 // contract_bool reads object[key] as a boolean; has=false when absent or not a
 // boolean (a missing `required`/`session_scoped` defaults to false, the JSON-Schema
-// omitted-is-false convention the Go decode also produces from the zero value).
+// omitted-is-false convention).
 contract_bool :: proc(object: json.Object, key: string) -> (value: bool, has: bool) {
 	field, present := object[key]
 	if !present {

@@ -1,7 +1,6 @@
-// The symbol half of the funpack docs index — the Odin re-home of the deleted Go
-// mcp/internal/docs/symbols package (symbols.go + match.go). A name-keyed table
-// built from the embedded corpus (load_corpus) resolves a query to the engine
-// declarations, directives, and grammar keywords it most likely names.
+// The symbol half of the funpack docs index. A name-keyed table built from the
+// embedded corpus (load_corpus) resolves a query to the engine declarations,
+// directives, and grammar keywords it most likely names.
 //
 // It exists so a symbol-shaped query ("world.resolve", "@stub", "behavior", a
 // misspelling like "resollve") lands on the right declaration directly rather
@@ -117,8 +116,9 @@ Symbol :: struct {
 	signature: string,
 }
 
-// Symbol_Match_Kind names how a query matched a symbol. The closed set mirrors
-// the Go MatchKind string values a consumer presents or filters on.
+// Symbol_Match_Kind names how a query matched a symbol. A closed set; each value's
+// wire token (symbol_match_kind_label) is the string a consumer presents or filters
+// on.
 Symbol_Match_Kind :: enum {
 	Exact,
 	Alias,
@@ -127,8 +127,8 @@ Symbol_Match_Kind :: enum {
 	Fuzzy,
 }
 
-// symbol_match_kind_label is the lowercase wire token for a match kind, mirroring
-// the Go MatchKind strings ("exact"/"alias"/"prefix"/"substring"/"fuzzy").
+// symbol_match_kind_label is the lowercase wire token for a match kind — the stable
+// strings ("exact"/"alias"/"prefix"/"substring"/"fuzzy") a client filters on.
 symbol_match_kind_label :: proc(k: Symbol_Match_Kind) -> string {
 	switch k {
 	case .Exact:

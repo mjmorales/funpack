@@ -259,7 +259,7 @@ test_shot_dispatch_declines_other_tools :: proc(t: ^testing.T) {
 // test_shot_present_boundary_end_to_end folds a §28 screenshot through a real session
 // and asserts the arm's whole BUILD-CONDITIONED contract — the one piece of behavior
 // that legitimately diverges by build, because session_capture_frame is itself a build
-// split (session_live.odin:528 when #config(FUNPACK_LIVE)):
+// split (session_live.odin, gated when #config(FUNPACK_LIVE)):
 //
 //   - DEFINE-FREE floor (no FUNPACK_LIVE): the capture is the no-op stub, the §28 fold
 //     refuses, and the arm reframes that as a Session-category IsError naming

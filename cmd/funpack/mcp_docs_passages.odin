@@ -1,5 +1,4 @@
-// The BM25 passage half of the funpack docs index — the Odin re-home of the
-// deleted Go mcp/internal/docs/passages package. It answers conceptual queries
+// The BM25 passage half of the funpack docs index. It answers conceptual queries
 // ("determinism", "pipeline schedule") by ranking Corpus_Section prose on Okapi
 // BM25 relevance and returning anchored hits with a short matching snippet.
 //

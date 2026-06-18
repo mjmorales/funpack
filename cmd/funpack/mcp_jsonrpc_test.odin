@@ -51,8 +51,8 @@ test_mcp_parse_id_forms :: proc(t: ^testing.T) {
 // test_mcp_parse_request_malformed pins the refusal contract: a line that is not
 // valid JSON, a JSON value that is not an object, and a request missing its method
 // all parse ok=false — a JSON-RPC error response, never a panic (the §28 fold
-// discipline, introspect.odin:413). A missing-method request still recovers its id
-// so the error response can echo it.
+// discipline). A missing-method request still recovers its id so the error response
+// can echo it.
 @(test)
 test_mcp_parse_request_malformed :: proc(t: ^testing.T) {
 	_, bad_json := mcp_parse_request(`{not json`, context.temp_allocator)

@@ -1,6 +1,6 @@
-// The corpus embed/load round-trip junction — the Odin re-home of the deleted Go
-// mcp/internal/docs/docs_test.go. It guards the loader contract independent of
-// regeneration: #load + parse the committed shards through load_corpus /
+// The corpus embed/load round-trip junction. It guards the loader contract
+// independent of regeneration: #load + parse the committed shards through
+// load_corpus /
 // load_manifest and assert the loaded corpus is well-formed — every Kind is a valid
 // closed-enum value, every Section carries non-empty Anchor/Title/Text/Source, and
 // the per-kind section counts equal the manifest's declared counts. This is the
@@ -76,9 +76,9 @@ test_corpus_load_counts_match_manifest :: proc(t: ^testing.T) {
 }
 
 // test_corpus_by_kind_partitions asserts corpus_by_kind returns exactly the sections
-// of the requested kind and nothing else — the accessor the downstream docs ranker
-// (mcp-docs-search-port) reads per-kind partitions through. Guards the partition
-// contract so a future ranker can trust it.
+// of the requested kind and nothing else — the accessor the docs ranker reads
+// per-kind partitions through. Guards the partition contract so the ranker can trust
+// it.
 @(test)
 test_corpus_by_kind_partitions :: proc(t: ^testing.T) {
 	sections, ok := load_corpus(context.temp_allocator)

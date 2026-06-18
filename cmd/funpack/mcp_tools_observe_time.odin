@@ -4,8 +4,8 @@
 // (load, run, pause, step, rewind, reset, status) over a NAMED session. Each tool here
 // marshals its args into a §28 request line and folds it through
 // mcp_session_registry_request (mcp_session.odin) on the session's arena, lifting the
-// result back into the MCP result. This file is the SEAM the downstream observe/time
-// tools task fills — it edits ONLY this file's dispatch proc, never mcp_handle_tools_call.
+// result back into the MCP result. This file is ONE dispatch seam — it owns ONLY this
+// file's dispatch proc, never mcp_handle_tools_call.
 //
 // THE FAMILY IS PURE RE-FOLD READS: every command here is class "observe" (the
 // generated Tool_Spec, api_contract.gen.odin) — observe re-folds a recorded tick and
@@ -119,7 +119,7 @@ obs_session_id :: proc(arguments: json.Object) -> (id: string, has: bool) {
 // behavior/branch as strings, include_drawlist as a boolean) so the §28 arg names ARE
 // the MCP arg names (the generated-projection contract — no per-arg translation table).
 // An empty args object is elided (a no-arg command like pipeline sends just {id,cmd}),
-// matching session_request's optional-args read (introspect.odin:430-435).
+// matching session_request's optional-args read (introspect.odin).
 obs_build_request_line :: proc(command: string, arguments: json.Object, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"id\":")

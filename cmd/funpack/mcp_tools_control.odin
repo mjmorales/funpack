@@ -4,16 +4,15 @@
 // self-heal pair (capture_test, audit) over a NAMED session. A control command
 // PERTURBS, so it forks the session's branch head as per-session mutable state —
 // committed THROUGH the session arena (mcp_session_registry_request, the F13
-// retention rule, mcp_session.odin:162-177) so a LATER request reads it back. This
-// file is the SEAM filled by the mcp-tools-control-selfheal task: it edits ONLY this
-// file's dispatch proc, never mcp_handle_tools_call — that is how the six families
-// stay merge-clean.
+// retention rule in mcp_session.odin) so a LATER request reads it back. This file is
+// ONE dispatch seam: it owns ONLY this file's dispatch proc, never
+// mcp_handle_tools_call — that is how the six families stay independent.
 //
 // THE FOLD (every tool here is one shape, control and self-heal alike): match the MCP
 // tool name → its §28 command, pull the universal session_id selector, re-render the
 // REMAINING MCP arguments as the §28 `args` object, and fold the assembled line
 // `{"id":1,"cmd":"<command>","args":{…}}` through mcp_session_registry_request on the
-// session's arena. control_request (runtime/introspect_control.odin:51) forks onto a
+// session's arena. control_request (runtime/introspect_control.odin) forks onto a
 // Session_Branch and answers branch/active/warranted; spawn/despawn answer the minted
 // /removed instance; checkout flips the active lineage. The §28 response is lifted
 // VERBATIM into the MCP result — `ok:true` becomes a text content block carrying the
@@ -21,13 +20,13 @@
 // the IsError envelope (mcp_error.odin) keyed .Exec, never a JSON-RPC error object.
 //
 // THE INTEGER-PRESERVING RE-RENDER (the subtle correctness crux): the MCP arguments
-// object is parsed with parse_integers=true (mcp_jsonrpc.odin:69), so an integer arg
+// object is parsed with parse_integers=true (mcp_jsonrpc.odin), so an integer arg
 // (tick, instance, ticks) arrives as json.Integer. session_request RE-PARSES the line
-// we hand it, also with parse_integers=true (introspect.odin:412), and json_int_field
-// then demands a json.Integer (introspect.odin:1060). json.marshal would render an
-// i64 as a float ("3.0000…"), which re-parses as json.Float and silently fails every
-// int arg — so we re-render with ctrl_write_json_value, the inverse of the parser that
-// keeps a json.Integer a BARE integer and round-trips cleanly through session_request.
+// we hand it, also with parse_integers=true, and json_int_field then demands a
+// json.Integer. json.marshal would render an i64 as a float ("3.0000…"), which
+// re-parses as json.Float and silently fails every int arg — so we re-render with
+// ctrl_write_json_value, the inverse of the parser that keeps a json.Integer a BARE
+// integer and round-trips cleanly through session_request.
 package main
 
 import funpack_runtime "../../runtime"
@@ -38,8 +37,8 @@ import "core:strings"
 // CTRL_REQUEST_ID is the §28 correlation id every control/self-heal line stamps. The
 // id is opaque to MCP — session_request echoes it back and we never read it (the MCP
 // layer correlates by the JSON-RPC envelope id, not this). A fixed value is correct:
-// a session serializes its requests (mcp_session.odin:11-15), so there is no in-flight
-// id to disambiguate.
+// a session serializes its requests (mcp_session.odin), so there is no in-flight id
+// to disambiguate.
 CTRL_REQUEST_ID :: 1
 
 // mcp_control_dispatch is the control + self-heal family's arm. It CLAIMS its ten
@@ -213,9 +212,9 @@ ctrl_lift_response :: proc(response: string, command: string, allocator := conte
 }
 
 // ctrl_response_ok reports whether a §28 response is the success envelope. The §28
-// envelope's field order is fixed (`{"v":N,"id":N,"ok":true|false,…}`,
-// introspect.odin:1000/1016), so a structural parse reads `ok` directly — the
-// boolean the success/refusal split keys on.
+// envelope's field order is fixed (`{"v":N,"id":N,"ok":true|false,…}`), so a
+// structural parse reads `ok` directly — the boolean the success/refusal split keys
+// on.
 ctrl_response_ok :: proc(response: string) -> bool {
 	parsed, err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true)
 	defer json.destroy_value(parsed)
@@ -234,9 +233,9 @@ ctrl_response_ok :: proc(response: string) -> bool {
 	return is_bool && bool(flag)
 }
 
-// ctrl_response_error pulls the `error` string off a §28 refusal envelope
-// (introspect.odin:1018) so the IsError result carries the engine's own message
-// (tick out of range, unknown thing, reload refusal) rather than a generic one.
+// ctrl_response_error pulls the `error` string off a §28 refusal envelope so the
+// IsError result carries the engine's own message (tick out of range, unknown thing,
+// reload refusal) rather than a generic one.
 // Returns "" when the field is absent or non-string (the caller substitutes a
 // default), so a malformed engine line never crashes the lift.
 ctrl_response_error :: proc(response: string, allocator := context.allocator) -> string {

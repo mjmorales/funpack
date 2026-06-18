@@ -1,16 +1,14 @@
-// The `funpack mcp` verb — the native Odin MCP dev server (the clean-break fold of
-// the deleted Go funpack-mcp module). It speaks MCP (JSON-RPC 2.0) over stdio,
-// hand-rolled on core: primitives, AUTH-FREE (the host forks this server and owns
-// its inherited fds — there is no listening port to gate). It lives ONLY in this
-// entry package, the single FUNPACK_LIVE/SDL-linking build, beside run/live/attach.
+// The `funpack mcp` verb — the native Odin MCP dev server. It speaks MCP
+// (JSON-RPC 2.0) over stdio, hand-rolled on core: primitives, AUTH-FREE (the host
+// forks this server and owns its inherited fds — there is no listening port to
+// gate). It lives ONLY in this entry package, the single FUNPACK_LIVE/SDL-linking
+// build, beside run/live/attach.
 //
-// THIS TASK (mcp-transport) ships the MINIMAL, EXTENSIBLE parent verb + the stdio
-// transport scaffolding. The verb here starts, reads lines off stdin, and frames a
-// response per line through the transport with a stub echo handler — proving the
-// transport end-to-end. The DOWNSTREAM mcp-protocol-verb task swaps the echo
-// handler for the real JSON-RPC dispatch (initialize / tools/list / tools/call),
-// the session registry, and the per-tool arms; mcp-docs-corpus-embed adds the
-// docs subcommands. Keep this parent minimal so those build ON it, not around it.
+// The parent verb is deliberately MINIMAL and EXTENSIBLE: it owns the stdio
+// transport and the serve loop, and the protocol dispatch (initialize /
+// tools/list / tools/call), the session registry, the per-tool arms, and the
+// docs/codegen subcommands all build ON it via their own files. Keep this parent
+// thin so additions graft onto it rather than around it.
 package main
 
 import "../../cli"
@@ -23,8 +21,8 @@ import "core:slice"
 // subcommands (the dev-time `gen-corpus` regenerator); the framework descends to a
 // subcommand on a leading non-flag token and otherwise runs the serve handler. The
 // dev-time codegen subcommands hang here: gen-corpus (docs-corpus shards) and
-// gen-contract (funpack/api_contract.gen.odin). Downstream tasks append further
-// subcommands here without re-authoring the parent.
+// gen-contract (funpack/api_contract.gen.odin). Further subcommands append here
+// without re-authoring the parent.
 build_mcp_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 	subs := slice.clone(
 		[]^cli.Cli_Command {

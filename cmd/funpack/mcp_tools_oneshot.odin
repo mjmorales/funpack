@@ -5,9 +5,9 @@
 // (funpack/pipeline.odin), fmt → fmt_drift (funpack/fmt.odin), and the warden_* readers
 // → read_warden_index + warden_command_output (funpack/warden_output.odin). Each is a
 // pure projection of the project tree at the caller's `dir`, lifted into the MCP result.
-// This file is the SEAM the mcp-tools-oneshot task fills — it edits ONLY this file's
-// dispatch proc, never mcp_handle_tools_call — so the six dispatch families stay
-// merge-clean (each family owns its own file and its own `oneshot_`-style prefix).
+// This file is ONE dispatch seam — it owns ONLY this file's dispatch proc, never
+// mcp_handle_tools_call — so the six dispatch families stay independent (each owns its
+// own file and its own `oneshot_`-style prefix).
 //
 // EXIT-CODE-AS-DATA (the family's crux): a non-zero build/check/export VERDICT, a
 // non-zero test failed count, and a warden index-refusal (the CLI's exit 2) are all a

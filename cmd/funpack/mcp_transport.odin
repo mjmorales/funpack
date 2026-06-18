@@ -1,32 +1,30 @@
 // The stdio JSON-RPC transport scaffolding for `funpack mcp` — the line-framed,
 // AUTH-FREE serve loop and its stdin/stdout backing. This is the TWIN of the
-// runtime's serve_attach_connection (runtime/introspect_attach.odin:294-320),
-// MINUS the auth handshake: MCP over stdio inverts the attach trust model (the
-// host forks this server and owns its inherited fds, so there is no listening
-// port to gate), so per the resolved AUTH ADR there is NO token, NO handshake,
-// NO Attach_Auth — the stdio peer is trusted by construction and absolute stdout
-// discipline is the sole hard transport invariant.
+// runtime's serve_attach_connection (runtime/introspect_attach.odin), MINUS the
+// auth handshake: MCP over stdio inverts the attach trust model (the host forks
+// this server and owns its inherited fds, so there is no listening port to gate),
+// so there is NO token, NO handshake, NO Attach_Auth — the stdio peer is trusted by
+// construction and absolute stdout discipline is the sole hard transport invariant.
 //
-// THE REUSE (Odin-first): the transport-agnostic byte-stream seam already exists,
-// is pure, and is headless-tested in the runtime package — Line_Transport /
-// Line_Reader / new_line_reader / reader_next_line / transport_send_line
-// (runtime/introspect_attach.odin:224-347, all package-public). This file does
-// NOT re-frame NDJSON; it (1) adapts os.stdin/os.stdout into a Line_Transport and
-// (2) folds that transport through an auth-free request loop. The newline framing,
-// the partial-frame reassembly, and the EOF contract are the runtime seam's, run
-// here unchanged.
+// THE REUSE (Odin-first): the transport-agnostic byte-stream seam is pure and
+// headless-tested in the runtime package — Line_Transport / Line_Reader /
+// new_line_reader / reader_next_line / transport_send_line (introspect_attach.odin,
+// all package-public). This file does NOT re-frame NDJSON; it (1) adapts
+// os.stdin/os.stdout into a Line_Transport and (2) folds that transport through an
+// auth-free request loop. The newline framing, the partial-frame reassembly, and the
+// EOF contract are the runtime seam's, run here unchanged.
 //
-// THE SOFT LSP SEAM (ADR): newline framing ONLY — no Content-Length Framer. The
-// serve loop and the stdio transport are written dependency-light so a future
-// `funpack lsp` verb lifts them and layers Content-Length framing on top when it
-// has a real second consumer; we do not pay that abstraction cost speculatively.
+// THE SOFT LSP SEAM: newline framing ONLY — no Content-Length Framer. The serve loop
+// and the stdio transport are written dependency-light so a `funpack lsp` verb could
+// lift them and layer Content-Length framing on top once it has a real second
+// consumer; that abstraction cost is not paid speculatively.
 //
-// THE HANDLER SEAM: the request semantics (JSON-RPC 2.0 parse / dispatch / the
-// tools surface) are the DOWNSTREAM mcp-protocol-verb task's concern, not this
-// one. This transport is strictly framing: it hands each complete line to a
-// Mcp_Line_Handler callback and frames whatever the handler returns back out. The
-// real JSON-RPC handler (mcp_server.odin mcp_jsonrpc_handler) is what cli_run_mcp
-// folds through this same callback; the transport stays oblivious to its semantics.
+// THE HANDLER SEAM: the request semantics (JSON-RPC 2.0 parse / dispatch / the tools
+// surface) are NOT this transport's concern. This transport is strictly framing: it
+// hands each complete line to a Mcp_Line_Handler callback and frames whatever the
+// handler returns back out. The real JSON-RPC handler (mcp_server.odin
+// mcp_jsonrpc_handler) is what cli_run_mcp folds through this same callback; the
+// transport stays oblivious to its semantics.
 package main
 
 import funpack_runtime "../../runtime"
@@ -34,9 +32,9 @@ import "core:os"
 
 // Mcp_Line_Handler is the request-semantics seam the serve loop folds each
 // complete request line through. It is a bare proc (not a struct+vtable) to keep
-// this transport dependency-light, with a `userdata` rawptr so the downstream
-// dispatch can thread per-session state (the JSON-RPC handler + session registry)
-// without this file knowing its shape. It returns the response line to frame back
+// this transport dependency-light, with a `userdata` rawptr so the dispatch layer
+// can thread per-session state (the JSON-RPC handler + session registry) without
+// this file knowing its shape. It returns the response line to frame back
 // (empty ⇒ nothing is written, the JSON-RPC notification case — a request with no
 // reply) and keep_open (false ⇒ the loop stops after this line, the JSON-RPC
 // shutdown/exit hook). The allocator is the per-request scratch the loop owns.
@@ -88,13 +86,13 @@ serve_mcp_stdio :: proc(handler: Mcp_Line_Handler, allocator := context.allocato
 // first line is already a request. Each complete NDJSON line is folded through the
 // handler; a non-empty response is framed back with its newline (transport_send_line),
 // an empty response is the notification case (nothing written). The loop ends on
-// (1) a peer close (reader_next_line ok=false — the Line_Reader EOF contract,
-// runtime/introspect_attach.odin:262-270), (2) the handler signalling keep_open
-// =false (the JSON-RPC shutdown hook), or (3) a send fault.
+// (1) a peer close (reader_next_line ok=false — the Line_Reader EOF contract in
+// runtime/introspect_attach.odin), (2) the handler signalling keep_open=false (the
+// JSON-RPC shutdown hook), or (3) a send fault.
 //
 // Pure over (handler, transport) so the buffer-backed tests exercise the loop
 // end-to-end with no stdin/stdout, exactly as Mem_Conn fills the same seam for the
-// attach loop. The downstream JSON-RPC handler is the only moving part swapped in.
+// attach loop. The JSON-RPC handler is the only moving part swapped in.
 serve_mcp_connection :: proc(handler: Mcp_Line_Handler, transport: funpack_runtime.Line_Transport, allocator := context.allocator) {
 	reader := funpack_runtime.new_line_reader(transport, allocator)
 	defer delete(reader.pending)

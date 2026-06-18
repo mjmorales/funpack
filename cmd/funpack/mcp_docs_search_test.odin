@@ -1,12 +1,11 @@
-// The unified-search blend junction — the Odin re-home of the deleted Go
-// mcp/internal/docs/search/search_test.go. Every proc builds an engine over the
-// REAL embedded corpus (load_corpus) and asserts the query-shape contract by
+// The unified-search blend junction. Every proc builds an engine over the REAL
+// embedded corpus (load_corpus) and asserts the query-shape contract by
 // source/anchor IDENTITY and rank ORDER: a symbol-shaped query leads with a symbol
 // hit, a conceptual query leads with a passage, min-max normalization and the
 // deterministic tie-break (symbol-before-passage, then anchor) hold. The classifier
-// and min-max kernel are pinned directly. No exact-score golden — the Go tests
-// likewise defer "which prose leads" to the BM25 call, asserting only the order
-// invariants that survive the f64 Go→Odin boundary.
+// and min-max kernel are pinned directly. No exact-score golden — "which prose
+// leads" is deferred to the BM25 call, asserting only the order invariants that
+// survive f64 arithmetic.
 //
 // Define-free, so these run on the default `odin test .` floor.
 package main
@@ -15,7 +14,7 @@ import "core:strings"
 import "core:testing"
 
 // search_test_engine builds an engine over the real committed corpus, failing if
-// the corpus is empty — the production-data discipline the Go helper established.
+// the corpus is empty — the production-data discipline.
 @(private = "file")
 search_test_engine :: proc(t: ^testing.T) -> Search_Engine {
 	sections, ok := load_corpus(context.temp_allocator)
@@ -194,8 +193,8 @@ test_search_surfaces_both_sources :: proc(t: ^testing.T) {
 }
 
 // test_search_results_carry_downstream_contract asserts every result carries the
-// fields docs_search surfaces: a non-empty anchor, a title, a positive score, a
-// valid kind, and a recognized source.
+// fields the docs_search tool surfaces to a client: a non-empty anchor, a title, a
+// positive score, a valid kind, and a recognized source.
 @(test)
 test_search_results_carry_downstream_contract :: proc(t: ^testing.T) {
 	e := search_test_engine(t)

@@ -292,12 +292,12 @@ attach_write_fixture :: proc(t: ^testing.T, name: string) -> string {
 	return path
 }
 
-// test_open_session_for_artifact_fresh is the STORY ACCEPTANCE for the shared opener:
-// a fresh (no-replay) open resolves .Ok, yields the ATTACH_FRESH_TICKS seedless empty-
-// input window, and serves a session BYTE-IDENTICAL to one built the old way via
-// attach_fixture_session — proving open_session_for_artifact is a behavior-preserving
-// extraction, not a reshape. It runs in the SDL-free default build, proving the helper
-// is NOT gated behind FUNPACK_LIVE.
+// test_open_session_for_artifact_fresh is the acceptance for the shared opener:
+// a fresh (no-replay) open resolves .Ok, yields the ATTACH_FRESH_TICKS seedless
+// empty-input window, and serves a session BYTE-IDENTICAL to one assembled the
+// long-hand way via attach_fixture_session — pinning that the shared opener and
+// the manual assembly produce the same served session. It runs in the SDL-free
+// default build, proving the helper is NOT gated behind FUNPACK_LIVE.
 @(test)
 test_open_session_for_artifact_fresh :: proc(t: ^testing.T) {
 	path := attach_write_fixture(t, "funpack-open-session-fresh.artifact")
@@ -310,9 +310,9 @@ test_open_session_for_artifact_fresh :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(s.snapshots), ATTACH_FRESH_TICKS)
 	testing.expect(t, !s.seed.has_seed, "a fresh open is seedless (NO_SEED)")
 
-	// The reference: a session over the IDENTICAL fixture + tick count built the old
-	// way. An observe round-trip over each must return the same response bytes — the
-	// extraction changed the orchestration, not the served contract.
+	// The reference: a session over the IDENTICAL fixture + tick count assembled
+	// long-hand. An observe round-trip over each must return the same response bytes
+	// — the shared opener and the manual assembly serve one contract.
 	_, ref_session := attach_fixture_session(t, ATTACH_FRESH_TICKS)
 	ref := ref_session
 	helper_resp := session_request(&s, `{"id":1,"cmd":"pipeline"}`)

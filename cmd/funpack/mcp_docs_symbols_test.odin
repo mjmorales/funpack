@@ -1,11 +1,10 @@
-// The symbol-table + fuzzy-match junction — the Odin re-home of the deleted Go
-// mcp/internal/docs/symbols/{symbols_test.go,match.go cases}. Every proc builds a
-// table over the REAL embedded corpus (load_corpus) and asserts a tier-ORDER /
-// match-kind / anchor-IDENTITY invariant — the five-tier bucketed ranking
+// The symbol-table + fuzzy-match junction. Every proc builds a table over the REAL
+// embedded corpus (load_corpus) and asserts a tier-ORDER / match-kind /
+// anchor-IDENTITY invariant — the five-tier bucketed ranking
 // (exact>alias>prefix>substring>fuzzy), the 0.34 fuzzy floor, and the Levenshtein
 // kernel the fuzzy ranker hangs on. These are order-level, not score-equality,
-// assertions, so a benign f64 rounding difference across the Go→Odin boundary never
-// fails them while a real reshuffle does.
+// assertions, so a benign f64 rounding difference never fails them while a real
+// reshuffle does.
 //
 // Define-free, so these run on the default `odin test .` floor.
 package main
@@ -13,8 +12,7 @@ package main
 import "core:testing"
 
 // symbol_test_table builds a table over the real committed corpus, failing if it
-// produces an empty table from a non-empty corpus — the production-data discipline
-// the Go helper established.
+// produces an empty table from a non-empty corpus — the production-data discipline.
 @(private = "file")
 symbol_test_table :: proc(t: ^testing.T) -> Symbol_Table {
 	sections, ok := load_corpus(context.temp_allocator)

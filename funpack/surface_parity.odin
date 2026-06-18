@@ -1,6 +1,5 @@
-// Surface-parity gate — re-homed from the deleted Go MCP module
-// (mcp/internal/docs/surface_parity*.go) into the SDL-free `funpack` compiler
-// package that already OWNS the dump (surface_dump.odin) and reads the
+// Surface-parity gate — lives in the SDL-free `funpack` compiler package that
+// already OWNS the surface dump (surface_dump.odin) and reads the
 // stdlib/engine/*.fun signature files from disk (golden_fmt_test.odin).
 //
 // THE DRIFT CLASS THIS CATCHES. The version-string corpus-pin check compares
@@ -34,29 +33,28 @@
 // receiver-method SIGNATURE TEXT is intentionally out of scope (documented in
 // EXCLUDED_SURFACE).
 //
-// HOW IT SOURCES THE DUMP. Unlike the Go path (which read a committed
-// testdata/introspect.json fixture freshness-pinned against a trial build), the
-// re-homed gate runs INSIDE the toolchain: the compiler model is built LIVE
-// in-memory from build_surface_dump() (surface_dump.odin) — no JSON fixture, no
-// temp build, no introspect subprocess, no serialize/deserialize hop. It is
-// strictly more faithful (the gate diffs the in-memory tables directly, no wire
-// round-trip), and it drops the entire freshness-pin dance the fixture demanded.
+// HOW IT SOURCES THE DUMP. The gate runs INSIDE the toolchain: the compiler model
+// is built LIVE in-memory from build_surface_dump() (surface_dump.odin) — no JSON
+// fixture, no temp build, no introspect subprocess, no serialize/deserialize hop.
+// Diffing the in-memory tables directly (no wire round-trip) is strictly more
+// faithful than diffing a committed dump fixture, and needs no freshness-pin to
+// keep a fixture in step with the compiler.
 //
-// THE CORPUS ARM. The Go gate diffed TWO doc sources (the .fun files AND the docs
-// corpus). The re-homed corpus lives in the FUNPACK_LIVE cmd subtree, unreachable
-// from this SDL-free package; corpus↔.fun drift is covered by the re-homed
-// corpus-pin test (regenerate-through-the-same-extractor + byte-compare), since
-// the corpus engine sections are VERBATIM .fun declaration text parsed by the
-// IDENTICAL grammar. So this gate runs the .fun arm only — the two together cover
-// what the Go gate's two arms covered, with no redundant second parse.
+// THE CORPUS ARM. Surface drift has two doc sources (the .fun files AND the docs
+// corpus). The corpus lives in the FUNPACK_LIVE cmd subtree, unreachable from this
+// SDL-free package; corpus↔.fun drift is covered separately by the corpus-pin test
+// (regenerate-through-the-same-extractor + byte-compare), since the corpus engine
+// sections are VERBATIM .fun declaration text parsed by the IDENTICAL grammar. So
+// this gate runs the .fun arm only — the two together cover both doc sources with
+// no redundant second parse.
 //
-// ODIN-FIRST NOTE. core:text/regex covers the four .fun head-match patterns the
-// Go path used (Multiline anchor, optional capture group, word boundaries — all
-// supported). A hand-rolled scanner is used instead because the brace-balanced
-// split/match scans are already pure index scans needing no regex, the funpack
-// package's lexer/parser are themselves hand-rolled index scans (the idiom), and
-// a scanner avoids a per-call regex-VM allocation — keeping the gate a
-// deterministic pure walk like the dump it diffs.
+// ODIN-FIRST NOTE. core:text/regex covers the four .fun head-match patterns
+// (Multiline anchor, optional capture group, word boundaries — all supported). A
+// hand-rolled scanner is used instead because the brace-balanced split/match scans
+// are already pure index scans needing no regex, the funpack package's
+// lexer/parser are themselves hand-rolled index scans (the idiom), and a scanner
+// avoids a per-call regex-VM allocation — keeping the gate a deterministic pure
+// walk like the dump it diffs.
 package funpack
 
 import "core:slice"
@@ -123,9 +121,9 @@ Parity_Kind :: enum {
 	Struct_Field,
 }
 
-// parity_kind_label renders a Parity_Kind as the stable lower-kebab token the Go
-// gate used in finding messages and (kind, symbol) sort order, so the failure
-// text and any assertion read the same as before the re-home.
+// parity_kind_label renders a Parity_Kind as a stable lower-kebab token used in
+// finding messages and (kind, symbol) sort order, so the failure text and any
+// assertion read deterministically.
 parity_kind_label :: proc(k: Parity_Kind) -> string {
 	switch k {
 	case .Module_Type:
@@ -159,7 +157,7 @@ Finding :: struct {
 }
 
 // finding_string renders one finding as the actionable line the failure message
-// prints, mirroring the Go Finding.String() text so the message reads the same.
+// prints.
 finding_string :: proc(f: Finding, alloc := context.allocator) -> string {
 	src := f.source
 	if src == "" {
@@ -346,12 +344,12 @@ residual_allow_set :: proc(alloc := context.allocator) -> map[Residual_Key]bool 
 // AUTHORITATIVE side: its module decls, enum variant sets, and struct-payload
 // variants+fields are the compiler's enforced surface verbatim. Allocated on alloc.
 //
-// Two-pass module-type folding mirrors the Go ParseDumpModel: pass one records
-// each module's own .Type_Name decls and a global name->isType index; pass two
-// folds a re-exported TYPE into the re-exporting module's type set (engine.ui
-// re-exports View from engine.world) — otherwise a .fun that imports the
-// re-exported type reads as docs-ahead falsely. Re-exported functions/values are
-// not types and do not affect module_types.
+// Two-pass module-type folding: pass one records each module's own .Type_Name
+// decls and a global name->isType index; pass two folds a re-exported TYPE into
+// the re-exporting module's type set (engine.ui re-exports View from
+// engine.world) — otherwise a .fun that imports the re-exported type reads as
+// docs-ahead falsely. Re-exported functions/values are not types and do not
+// affect module_types.
 compiler_model_from_dump :: proc(dump: Surface_Dump, alloc := context.allocator) -> Surface_Model {
 	m := new_surface_model(alloc)
 
@@ -461,7 +459,8 @@ sp_scan_ident :: proc(s: string, i: int) -> (ident: string, next: int) {
 }
 
 // word_at reports whether the keyword `kw` occurs at index i with a word boundary
-// on both sides (so `enumerate` does not match `enum`). Mirrors the Go \b anchor.
+// on both sides (so `enumerate` does not match `enum`) — the `\b` anchor done as
+// a pure index check.
 word_at :: proc(s: string, i: int, kw: string) -> bool {
 	if i + len(kw) > len(s) {
 		return false
@@ -489,20 +488,19 @@ skip_ws :: proc(s: string, i: int) -> int {
 }
 
 // at_line_start reports whether index i begins a line (i == 0 or the prior byte
-// is a newline) — the (?m)^ anchor the funTypeDeclRe used to find top-level type
-// decl heads.
+// is a newline) — the (?m)^ anchor used to find top-level type decl heads.
 at_line_start :: proc(s: string, i: int) -> bool {
 	return i == 0 || s[i - 1] == '\n'
 }
 
 // parse_fun_decl_source extracts the module's top-level TYPE decl names and every
-// enum's variants from one funpack declaration source into m. Mirrors the Go
-// parseFunDeclSource: a hand-rolled scan replaces the four regexes (verified
-// equivalent — see the package ODIN-FIRST NOTE).
+// enum's variants from one funpack declaration source into m. A hand-rolled scan
+// stands in for the four .fun head-match patterns (see the package ODIN-FIRST NOTE
+// for why a scanner over regex).
 parse_fun_decl_source :: proc(text, module: string, m: ^Surface_Model, alloc := context.allocator) {
-	// Pass A: top-level TYPE decl heads (`^(extern type|data|enum) Name`) — the
-	// (?m)^ line-anchored funTypeDeclRe. Only TYPE decls are recorded (see
-	// module_types); fn/let are not matched.
+	// Pass A: top-level TYPE decl heads (`^(extern type|data|enum) Name`), line
+	// anchored at (?m)^. Only TYPE decls are recorded (see module_types); fn/let
+	// are not matched.
 	i := 0
 	for i < len(text) {
 		if at_line_start(text, i) {
@@ -532,7 +530,7 @@ parse_fun_decl_source :: proc(text, module: string, m: ^Surface_Model, alloc := 
 
 	// Pass B: enum bodies. Strip single-line @doc(...) annotations first so an
 	// annotated variant inside a brace body is tokenized as the variant, not the
-	// @doc (the funDocLineRe strip). Then scan every `enum Name [..]? {` head; a
+	// @doc. Then scan every `enum Name [..]? {` head; a
 	// non-empty generic-param list marks a GENERIC enum, whose variants are excluded
 	// (structurally matched, absent from the dump's enum_variants).
 	clean := strip_doc_lines(text, alloc)
@@ -573,7 +571,7 @@ parse_fun_decl_source :: proc(text, module: string, m: ^Surface_Model, alloc := 
 }
 
 // has_extern_type reports whether `extern` + whitespace + `type` begins at i (the
-// funTypeDeclRe `extern\s+type` arm).
+// `extern\s+type` head).
 has_extern_type :: proc(s: string, i: int) -> bool {
 	return extern_type_len(s, i) > 0
 }
@@ -596,7 +594,7 @@ extern_type_len :: proc(s: string, i: int) -> int {
 
 // strip_doc_lines removes every single-line `@doc(...)` annotation (to end of
 // line) so enum-body tokenization does not mistake a variant's @doc for a
-// variant. Mirrors the funDocLineRe `@doc\([^\n]*` strip. Allocated on alloc.
+// variant — the `@doc\([^\n]*` strip. Allocated on alloc.
 strip_doc_lines :: proc(text: string, alloc := context.allocator) -> string {
 	b := strings.builder_make(alloc)
 	i := 0
@@ -651,8 +649,8 @@ parse_enum_body :: proc(enum_name, body: string, m: ^Surface_Model, alloc := con
 }
 
 // collect_field_names records every `name:` field NAME in a struct-variant field
-// body into fields (the funFieldRe `([A-Za-z_]\w*)\s*:` capture). Field types are
-// not modeled (see EXCLUDED_SURFACE).
+// body into fields (the `([A-Za-z_]\w*)\s*:` capture). Field types are not modeled
+// (see EXCLUDED_SURFACE).
 collect_field_names :: proc(field_body: string, fields: ^map[string]bool) {
 	i := 0
 	for i < len(field_body) {

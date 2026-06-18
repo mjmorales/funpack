@@ -6,8 +6,8 @@
 // keep_open shutdown hook.
 //
 // All run over an IN-MEMORY Line_Transport (never os.stdin/os.stdout), mirroring
-// the runtime's file-private Mem_Conn (runtime/introspect_attach_test.odin:82-128),
-// so the loop is deterministic and socket-free. The stdio adapter itself
+// the runtime's file-private Mem_Conn (runtime/introspect_attach_test.odin), so the
+// loop is deterministic and socket-free. The stdio adapter itself
 // (mcp_stdio_transport, os.read/os.write) is NOT unit-tested directly — it is a
 // thin adapter over this same seam and would require redirecting real fds, exactly
 // as the runtime keeps its core:net adapter untested and the pure loop fully
@@ -88,8 +88,8 @@ mem_conn :: proc(lines: []string, raw_tail := "", chunk := 0, allocator := conte
 // Rec_Handler records every line the loop hands the handler, so a test asserts the
 // exact sequence (and count) of dispatched requests. `stop_on` (non-empty) makes
 // the handler return keep_open=false when it sees that line — the JSON-RPC
-// shutdown hook. The response is the echoed line (the stub contract this task
-// ships), so the framed-out stream equals the dispatched lines.
+// shutdown hook. The response echoes the line back, so the framed-out stream equals
+// the dispatched lines (a test double for the transport, not the real handler).
 @(private = "file")
 Rec_Handler :: struct {
 	seen:    [dynamic]string,
@@ -158,7 +158,7 @@ test_mcp_serve_partial_frame_reassembly :: proc(t: ^testing.T) {
 
 // test_mcp_serve_eof_closes pins the EOF close contract: the loop returns after the
 // last complete line and the handler is NOT called again past EOF (recv returns 0
-// on a drained stream — the Line_Reader EOF signal, introspect_attach.odin:262-270).
+// on a drained stream — the Line_Reader EOF signal in introspect_attach.odin).
 @(test)
 test_mcp_serve_eof_closes :: proc(t: ^testing.T) {
 	lines := []string{`{"id":1}`}
@@ -174,8 +174,8 @@ test_mcp_serve_eof_closes :: proc(t: ^testing.T) {
 
 // test_mcp_serve_handler_close pins the handler's keep_open shutdown hook: when the
 // handler returns keep_open=false on a line, the loop stops dispatching AFTER it —
-// the JSON-RPC shutdown/exit path the downstream task ends a session through. The
-// line that triggered the close is still answered (framed back) before the loop ends.
+// the JSON-RPC shutdown/exit path that ends a session. The line that triggered the
+// close is still answered (framed back) before the loop ends.
 @(test)
 test_mcp_serve_handler_close :: proc(t: ^testing.T) {
 	lines := []string{`{"id":1,"method":"initialize"}`, `{"id":2,"method":"shutdown"}`, `{"id":3,"method":"never"}`}

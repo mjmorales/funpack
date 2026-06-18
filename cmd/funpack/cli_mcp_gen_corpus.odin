@@ -1,6 +1,6 @@
-// The `funpack mcp gen-corpus` dev-time subcommand — the Odin re-home of the
-// deleted Go `go run ./internal/docs/gen` (gen/main.go). It is a thin filesystem
-// wrapper around generate_corpus (mcp_corpus_gen.odin): it resolves the in-repo
+// The `funpack mcp gen-corpus` dev-time subcommand — the regenerator for the
+// committed docs-corpus shards. It is a thin filesystem wrapper around
+// generate_corpus (mcp_corpus_gen.odin): it resolves the in-repo
 // source roots (spec/, stdlib/engine/, plugins/funpack/), computes spec_ref via the
 // SINGLE residual git shell (the one place git is touched — never the server, never
 // the SDL-free floor), runs the pure generator core, and persists the four committed
@@ -116,8 +116,8 @@ corpus_repo_root :: proc(allocator := context.allocator) -> string {
 }
 
 // corpus_write_shard marshals one per-kind section slice to corpus_dir/name as
-// 2-space-indented JSON with a trailing newline — the gencore.WriteShard mirror.
-// Returns false (stderr-reported) on marshal or write failure.
+// 2-space-indented JSON with a trailing newline (marshal_corpus_json — the committed
+// shard form). Returns false (stderr-reported) on marshal or write failure.
 corpus_write_shard :: proc(corpus_dir, name: string, sections: []Corpus_Section) -> bool {
 	path := corpus_join({corpus_dir, name})
 	return corpus_write_value(path, sections)
@@ -141,9 +141,9 @@ corpus_write_value :: proc(path: string, v: any) -> bool {
 }
 
 // corpus_git_describe returns the nearest release tag reachable from HEAD via
-// `git -C <dir> describe --tags --always --abbrev=0`, or "unknown" on any failure —
-// the gencore.gitDescribe mirror. --abbrev=0 drops the commit-distance suffix so the
-// ref stays byte-stable across dev commits between releases (the manifest is
+// `git -C <dir> describe --tags --always --abbrev=0`, or "unknown" on any failure.
+// --abbrev=0 drops the commit-distance suffix so the ref stays byte-stable across
+// dev commits between releases (the manifest is
 // byte-pinned). THE SINGLE RESIDUAL SHELL: core:sys/posix.popen runs git and reads
 // its stdout; this is the only subprocess in the whole corpus subsystem, isolated to
 // this dev subcommand so the server and the SDL-free floor never shell out.

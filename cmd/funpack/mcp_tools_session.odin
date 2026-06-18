@@ -3,10 +3,10 @@
 // session_end. It is the family that drives the server-scoped session registry
 // (mcp_session.odin) reached through dispatch.registry: session_start opens a session
 // on a dedicated arena and returns its id, session_list reports the live entries,
-// session_end is the arena_destroy teardown. This file is the SEAM the downstream
-// mcp-tools-session-lifecycle task fills — it edits ONLY this file's dispatch proc,
-// never mcp_handle_tools_call. The registry INFRASTRUCTURE it drives already exists
-// (mcp_session.odin); this arm wires the three tools onto it.
+// session_end is the arena_destroy teardown. This file is ONE dispatch seam — it owns
+// ONLY this file's dispatch proc, never mcp_handle_tools_call. The registry
+// INFRASTRUCTURE it drives lives in mcp_session.odin; this arm wires the three tools
+// onto it.
 //
 // UNLIKE the observe/control families, these tools carry NO §28 request marshalling:
 // they manage the registry DIRECTLY (open / enumerate / end), so the int-as-float arg
@@ -109,12 +109,11 @@ sess_start :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 }
 
 // sess_list enumerates every live session in the registry as a clean result —
-// {"sessions":[{session_id,label},…]} — the model's reach into what is currently open
-// (the Go path's listSessions). It takes no arguments (the generated Tool_Spec carries
-// an empty arg set), drives the registry map directly (no §28 fold), and is always a
-// clean result (an empty registry is the empty array, never an error). The label is the
-// optional caller-supplied name carried on each entry (session_start does not set one
-// today, so it is the empty string until a labelled-open path lands).
+// {"sessions":[{session_id,label},…]} — the model's reach into what is currently open.
+// It takes no arguments (the generated Tool_Spec carries an empty arg set), drives the
+// registry map directly (no §28 fold), and is always a clean result (an empty registry
+// is the empty array, never an error). The label is the optional caller-supplied name
+// carried on each entry; when session_start opens without one it is the empty string.
 sess_list :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"sessions\":[")
@@ -167,7 +166,7 @@ sess_end :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> stri
 
 // sess_render_start_result renders the session_start clean result body —
 // {"session_id":…,"negotiated_version":N} — built with the same strings.Builder +
-// write_json_string idiom the §28 envelope renderers use (introspect.odin:1024), so the
+// write_json_string idiom the §28 envelope renderers use (introspect.odin), so the
 // body is byte-stable. The id is a string handle; negotiated_version is the §28 protocol
 // integer the session speaks (so an integer, never a float — the model reads it raw).
 sess_render_start_result :: proc(id: string, negotiated_version: int, allocator := context.allocator) -> string {

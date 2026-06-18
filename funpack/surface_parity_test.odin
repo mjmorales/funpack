@@ -1,5 +1,4 @@
-// The deliberate spec for the surface-parity gate (surface_parity.odin) —
-// re-homed from the deleted Go MCP module's surface_parity_test.go into the
+// The deliberate spec for the surface-parity gate (surface_parity.odin) — in the
 // funpack compiler package that owns the live dump (surface_dump_test.odin sits
 // beside this) and reads the stdlib/engine/*.fun signature files from disk
 // (golden_fmt_test.odin). Five junctions are pinned:
@@ -21,10 +20,10 @@
 //  5. EXCLUDED-SURFACE DOCUMENTED — every EXCLUDED_SURFACE axis carries a WHY, so
 //     an exclusion can never silently become a coverage hole.
 //
-// Unlike the Go path the gate runs INSIDE the toolchain off the in-memory dump:
-// no fixture, no temp build, no introspect subprocess. The .fun arm reads
-// stdlib/engine/*.fun via resolve_stdlib_dir(); an absent tree SKIPs loudly (the
-// golden_fmt_test.odin discipline), keeping the suite hermetic in a bare checkout.
+// The gate runs INSIDE the toolchain off the in-memory dump: no fixture, no temp
+// build, no introspect subprocess. The .fun arm reads stdlib/engine/*.fun via
+// resolve_stdlib_dir(); an absent tree SKIPs loudly (the golden_fmt_test.odin
+// discipline), keeping the suite hermetic in a bare checkout.
 package funpack
 
 import "core:log"
@@ -37,8 +36,8 @@ import "core:testing"
 // records keyed by their engine.<module> path (input.fun -> engine.input), in
 // sorted filename order for determinism. ok = false (with a loud warn) when the
 // tree is absent, so a checkout without the fixture SKIPs rather than yielding an
-// empty (falsely-in-parity) model. Mirrors the Go LoadFunSources + the
-// golden_fmt_test.odin resolve/SKIP protocol. Allocated on alloc.
+// empty (falsely-in-parity) model — the golden_fmt_test.odin resolve/SKIP
+// protocol. Allocated on alloc.
 load_fun_sources :: proc(alloc := context.allocator) -> (sources: []Fun_Source, ok: bool) {
 	dir := resolve_stdlib_dir()
 	if !os.is_dir(dir) {
@@ -134,8 +133,8 @@ test_surface_parity_detects_synthetic_divergence :: proc(t: ^testing.T) {
 
 	for tc in cases {
 		// Fresh-parse the .fun model each case so the synthetic symbol is the ONLY
-		// new divergence and the real residuals stay allow-listed (the deep-clone the
-		// Go cloneModel gave; parse_fun_model builds independent maps each call).
+		// new divergence and the real residuals stay allow-listed (parse_fun_model
+		// builds independent maps each call, so no cross-case bleed).
 		mutated := parse_fun_model(sources, context.temp_allocator)
 		switch tc.inject {
 		case .Enum_Variant:

@@ -3,10 +3,10 @@
 // session. Per the resolved ADR this arm hand-rolls a minimal stored-block PNG encoder
 // (core has no PNG encoder — core:image/png is decode-only) so MCP ImageContent
 // carries a renderable image/png; it returns an .Image content block, not text. This
-// file is the SEAM the mcp-tools-screenshot task fills — it edits ONLY this file's
-// dispatch proc, never mcp_handle_tools_call.
+// file is ONE dispatch seam — it owns ONLY this file's dispatch proc, never
+// mcp_handle_tools_call.
 //
-// THE PIPELINE (Go qoiToPNG inverted onto Odin core, inspect_tools.go:526-550):
+// THE PIPELINE (QOI → PNG over Odin core):
 //   §28 screenshot fold → base64-QOI pixels → base64.decode → qoi.load_from_bytes
 //   (RGBA8/RGB8, tight row-major) → shot_encode_png (hand-rolled, below) → base64 →
 //   MCP image content block (mimeType image/png) + a metadata text block.
@@ -14,7 +14,7 @@
 // EVERY package-level proc/type here is prefixed `shot_` so package main carries no
 // duplicate symbols when all six family files merge (the merge-clean invariant).
 //
-// PRESENT-BOUNDARY REFUSAL (preserved from mapScreenshotRefusal, inspect_tools.go:466):
+// PRESENT-BOUNDARY REFUSAL:
 // screenshot is the one observe command that crosses the render/present boundary — a
 // funpack binary built WITHOUT FUNPACK_LIVE answers with a §28 ok:false refusal. The
 // arm reframes that as a Session-category envelope naming inspect_draw_list (the
@@ -80,9 +80,8 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	}
 
 	// Marshal the §28 args (tick, optional include_drawlist, optional branch) into a
-	// request line, mirroring the Go inspectScreenshotArgs shape (inspect_tools.go:279).
-	// An unset optional is elided so the runtime defaults (visual-only, canonical
-	// timeline) — exactly as observe_screenshot reads its args.
+	// request line. An unset optional is elided so the runtime defaults (visual-only,
+	// canonical timeline) — exactly as observe_screenshot reads its args.
 	include, has_include := funpack_runtime.json_bool_field(dispatch.arguments, "include_drawlist")
 	branch, has_branch := funpack_runtime.json_string_field(dispatch.arguments, "branch")
 	line := shot_build_request_line(tick, include, has_include, branch, has_branch, allocator)
@@ -107,8 +106,8 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		}, allocator)
 	}
 	if !ok_field {
-		// A §28 refusal — reframe the present-boundary crossing, forward a caller-input
-		// mistake unchanged (mapScreenshotRefusal, inspect_tools.go:487).
+		// A §28 refusal — reframe a present-boundary crossing, forward a caller-input
+		// mistake unchanged (shot_map_refusal).
 		return shot_error_line(dispatch.id, shot_map_refusal(error_text), allocator)
 	}
 
@@ -129,8 +128,8 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	}
 
 	// BOTH content blocks on one result: the PNG (image/png) the model SEES, and the
-	// structured geometry metadata as a text block (Go pre-set Content, inspect_tools
-	// .go:455). The metadata mirrors ScreenshotOutput {tick,width,height,commands?}.
+	// structured geometry metadata as a text block. The metadata carries
+	// {tick,width,height,commands?}.
 	meta := shot_render_metadata(result_obj, include && has_include, allocator)
 	content := make([]Mcp_Content, 2, allocator)
 	content[0] = mcp_image_content(png_b64, "image/png")
@@ -177,7 +176,7 @@ shot_build_request_line :: proc(
 // shot_parse_response parses one §28 response line into its (ok, error, result) parts.
 // parsed=false for a line that is not a JSON object. On ok:true `result_obj` is the
 // result object; on ok:false `error_text` is the runtime's refusal string. The shapes
-// mirror ok_response_open / error_response (introspect.odin:1000-1022).
+// mirror ok_response_open / error_response (introspect.odin).
 shot_parse_response :: proc(
 	line: string,
 	allocator := context.allocator,
@@ -207,12 +206,12 @@ shot_parse_response :: proc(
 	return true, ok_field, error_text, result_obj
 }
 
-// shot_map_refusal owns the inspect_screenshot present-boundary diagnostic at THIS
-// boundary (mapScreenshotRefusal, inspect_tools.go:487): a CALLER-input refusal (bad
-// tick, unknown branch) is forwarded as the runtime stated it (the caller fixes the
-// argument), while the present-boundary crossing — everything else — is reframed as a
-// Session-category envelope naming inspect_draw_list, the sim-pure headless substitute.
-// The runtime text rides along as detail for fidelity.
+// shot_map_refusal owns the inspect_screenshot present-boundary diagnostic: a
+// CALLER-input refusal (bad tick, unknown branch) is forwarded as the runtime stated
+// it (the caller fixes the argument), while the present-boundary crossing —
+// everything else — is reframed as a Session-category envelope naming
+// inspect_draw_list, the sim-pure headless substitute. The runtime text rides along
+// as detail for fidelity.
 shot_map_refusal :: proc(runtime_text: string) -> Mcp_Error {
 	if shot_is_input_refusal(runtime_text) {
 		return Mcp_Error{category = .Session, message = runtime_text}
@@ -229,9 +228,9 @@ shot_map_refusal :: proc(runtime_text: string) -> Mcp_Error {
 
 // shot_is_input_refusal reports whether a §28 screenshot refusal is a caller-side
 // argument mistake (a bad/missing tick, an unknown branch) rather than the present-
-// boundary crossing (isScreenshotInputRefusal, inspect_tools.go:517). The markers are
-// the runtime's stable refusal substrings (observe_screenshot, introspect.odin:935-943);
-// the present-boundary refusal is everything else.
+// boundary crossing. The markers are the runtime's stable refusal substrings (from
+// observe_screenshot in introspect.odin); the present-boundary refusal is everything
+// else.
 shot_is_input_refusal :: proc(runtime_text: string) -> bool {
 	markers := [?]string{"tick out of range", "missing args.tick", "unknown branch"}
 	for marker in markers {
@@ -242,10 +241,11 @@ shot_is_input_refusal :: proc(runtime_text: string) -> bool {
 	return false
 }
 
-// shot_render_metadata renders the ScreenshotOutput metadata text block from the §28
+// shot_render_metadata renders the screenshot metadata text block from the §28
 // result: {tick,width,height} always, commands[] when include_drawlist rode along
-// (the result carries them as text commands — observe_screenshot, introspect.odin:977).
-// Built with the same write_json_string idiom as the §28 renderers, so it is byte-stable.
+// (the result carries them as text commands from observe_screenshot in
+// introspect.odin). Built with the same write_json_string idiom as the §28 renderers,
+// so it is byte-stable.
 shot_render_metadata :: proc(result_obj: json.Object, include_drawlist: bool, allocator := context.allocator) -> string {
 	tick, _ := funpack_runtime.json_int_field(result_obj, "tick")
 	width, _ := funpack_runtime.json_int_field(result_obj, "width")
@@ -331,8 +331,8 @@ shot_encode_png :: proc(
 		return nil, false
 	}
 	// Truecolor PNG: 3 channels → color type 2 (RGB), 4 → color type 6 (RGBA). The
-	// runtime always encodes 4 (session_live.odin:605), but the decode honors the QOI
-	// header, so support both rather than assume.
+	// runtime always encodes 4, but the decode honors the QOI header, so support both
+	// rather than assume.
 	color_type: u8
 	switch channels {
 	case 3:
@@ -429,8 +429,8 @@ shot_zlib_stored :: proc(data: []u8, allocator := context.allocator) -> []u8 {
 
 // shot_write_chunk appends one PNG chunk (PNG spec §5.3): a big-endian u32 length of
 // the data, the 4-byte type code, the data, then a big-endian u32 CRC32 over the TYPE
-// + DATA (not the length). The CRC is core:hash.crc32 (seed 0 = PNG's init/final-xor —
-// crc.odin:4-41), Odin-first.
+// + DATA (not the length). The CRC is core:hash.crc32 (seed 0 = PNG's init/final-xor),
+// Odin-first.
 shot_write_chunk :: proc(b: ^strings.Builder, type_code: string, data: []u8) {
 	length: [4]u8
 	shot_put_u32_be(length[:], u32(len(data)))

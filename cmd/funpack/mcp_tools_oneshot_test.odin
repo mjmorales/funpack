@@ -269,13 +269,12 @@ test_oneshot_warden_missing_index_is_data_refusal :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"error\":\"missing_index\"`), "the closed Warden_Read_Error arm is the machine field")
 }
 
-// test_oneshot_reachable_through_tools_call is the REACHABILITY proof — the test the task
-// requires. It drives a real `tools/call` for `build` through mcp_handle_tools_call (the
-// chain caller, NOT the family arm directly), proving the oneshot family is now reachable
-// and advertised: the result is the family's structured build verdict, NOT the
-// "tool not yet implemented" Internal stub the family replaced. This is the end-to-end
-// junction the upstream register-mcp-server-native fix unblocked (the tool is now in
-// TOOL_SPECS, so mcp_handle_tools_call routes it into this family).
+// test_oneshot_reachable_through_tools_call is the REACHABILITY proof. It drives a
+// real `tools/call` for `build` through mcp_handle_tools_call (the chain caller, NOT
+// the family arm directly), proving the oneshot family is reachable and advertised:
+// the result is the family's structured build verdict, NOT the "tool not yet
+// implemented" Internal fallthrough stub. The `build` tool is in TOOL_SPECS, so
+// mcp_handle_tools_call routes it into this family end to end.
 @(test)
 test_oneshot_reachable_through_tools_call :: proc(t: ^testing.T) {
 	root, ok := oneshot_write_tree("funpack-mcp-oneshot-e2e", ONESHOT_MINI_SOURCE)

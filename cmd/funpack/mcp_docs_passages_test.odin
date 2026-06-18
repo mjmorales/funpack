@@ -1,10 +1,9 @@
-// The BM25 passage-ranker junction — the Odin re-home of the deleted Go
-// mcp/internal/docs/passages/passages_test.go. Every proc builds an index over
-// the REAL embedded corpus (load_corpus) and asserts a rank-ORDER / anchor-IDENTITY
+// The BM25 passage-ranker junction. Every proc builds an index over the REAL
+// embedded corpus (load_corpus) and asserts a rank-ORDER / anchor-IDENTITY
 // invariant, never an exact float score: BM25 IDF/saturation is f64 arithmetic and
-// exact-score equality across the Go→Odin boundary is brittle and meaningless, so
-// the living spec pins what the ranker GUARANTEES (which section leads, ties break
-// on anchor, snippets are present) — exactly the contract the Go tests pinned.
+// exact-score equality is brittle and meaningless, so the living spec pins what the
+// ranker GUARANTEES (which section leads, ties break on anchor, snippets are
+// present).
 //
 // Define-free (the ranker is), so these run on the default `odin test .` floor.
 package main
@@ -14,8 +13,7 @@ import "core:testing"
 
 // passage_test_index loads the real committed corpus and indexes it on the temp
 // allocator, failing if the corpus is empty (a generation regression) rather than
-// silently testing an empty index — the production-data discipline the Go helper
-// established.
+// silently testing an empty index — the production-data discipline.
 @(private = "file")
 passage_test_index :: proc(t: ^testing.T) -> Passage_Index {
 	sections, ok := load_corpus(context.temp_allocator)
@@ -66,8 +64,8 @@ test_passages_query_pipeline_schedule_ranks_pipelines :: proc(t: ^testing.T) {
 }
 
 // test_passages_query_returns_anchored_hits_with_snippets asserts every returned
-// hit carries the contract downstream tools depend on: a non-empty stable anchor, a
-// title, a positive score, and a non-empty snippet.
+// hit carries the contract the consuming docs tools depend on: a non-empty stable
+// anchor, a title, a positive score, and a non-empty snippet.
 @(test)
 test_passages_query_returns_anchored_hits_with_snippets :: proc(t: ^testing.T) {
 	ix := passage_test_index(t)

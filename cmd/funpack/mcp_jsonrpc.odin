@@ -1,8 +1,8 @@
 // The JSON-RPC 2.0 envelope codec — request parse + response render — as plain,
 // dependency-light procs (ADR: NO Framer abstraction, NO package split; a future
 // `funpack lsp` lifts these procs as-is when it has a real second consumer). The
-// parse/render idiom is exactly the §28 one (runtime/introspect.odin:412 json.parse
-// + strings.Builder envelope rendering), reused not re-invented.
+// parse/render idiom is exactly the §28 one (runtime/introspect.odin: json.parse +
+// strings.Builder envelope rendering), reused not re-invented.
 //
 // JSON-RPC 2.0 (https://www.jsonrpc.org/specification): a request is
 // {"jsonrpc":"2.0","id":<id>,"method":<string>,"params":<value>}; `id` is a string,
@@ -62,9 +62,8 @@ Mcp_Request :: struct {
 // mcp_parse_request parses one JSON-RPC line into an Mcp_Request, returning ok=false
 // for a line that is not a valid request envelope (malformed JSON, not an object, or
 // a missing/non-string method). The caller renders the parse failure as a JSON-RPC
-// error response — the fold never panics on wire input (the §28 contract,
-// introspect.odin:413). The id is recovered when present even on a method error, so
-// the error response can echo it.
+// error response — the fold never panics on wire input (the §28 contract). The id is
+// recovered when present even on a method error, so the error response can echo it.
 mcp_parse_request :: proc(line: string, allocator := context.allocator) -> (request: Mcp_Request, ok: bool) {
 	parsed, parse_err := json.parse(transmute([]u8)line, json.DEFAULT_SPECIFICATION, true, allocator)
 	if parse_err != .None {
@@ -132,9 +131,9 @@ mcp_write_id :: proc(b: ^strings.Builder, id: Mcp_Id) {
 
 // mcp_render_result renders a JSON-RPC success response: the fixed field order
 // (jsonrpc, id, result) keeps the line byte-stable, mirroring the §28 ok envelope
-// (introspect.odin:1000). `result_json` is the already-rendered result value (a
-// JSON object/array/literal the method handler built); this proc only wraps it in
-// the envelope, so the handler owns the result shape.
+// (introspect.odin). `result_json` is the already-rendered result value (a JSON
+// object/array/literal the method handler built); this proc only wraps it in the
+// envelope, so the handler owns the result shape.
 mcp_render_result :: proc(id: Mcp_Id, result_json: string, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"jsonrpc\":\"")
