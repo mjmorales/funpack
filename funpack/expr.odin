@@ -192,8 +192,12 @@ Tuple_Expr :: struct {
 	col:      int,
 }
 
-// Lambda_Expr carries the single-return body form the golden surface
-// uses: fn(params) { return expr }.
+// Lambda_Expr carries the lambda's single-statement body as ONE Expr (spec
+// §02 §5): the bare expression of an implicit-return body `fn(x){ x + 1 }`, the
+// `if`-expression of `fn(x){ if c { a } else { b } }`, or the inner expression of
+// a `return` body `fn(x){ return x + 1 }`. parse_lambda strips the optional
+// leading `return`, so `body` is always the expression the evaluators run — there
+// is no Return node.
 Lambda_Expr :: struct {
 	params: []string,
 	body:   Expr,
@@ -1016,9 +1020,34 @@ parse_lambda :: proc(p: ^Parser, fn_tok: Token) -> (expr: Expr, err: Parse_Error
 	expect(p, .R_Paren) or_return
 	expect(p, .L_Brace) or_return
 	skip_newlines(p)
-	expect(p, .Return) or_return
+	// The lambda body is a SINGLE STATEMENT (spec §02 §5): one expression (implicit
+	// return), an if-expression, or a `return` — never a multi-statement block.
+	// A leading `let` is the multi-statement case by construction: a `let` binds a
+	// name the body must then USE, so it can never be the one statement. Name the
+	// verdict here at the body seam so the author lifts the locals into a named
+	// helper `fn` rather than tripping a bare Unexpected_Token. The offender is the
+	// `let` keyword in hand.
+	if peek_kind(p) == .Let {
+		return nil, reject(p, peek_tok(p), .Lambda_Body_Multi_Statement)
+	}
+	// `return` is optional sugar: forms 1 (bare expression, implicit return) and 3
+	// (`return <expr>`) collapse — consume an optional leading `return`, then parse
+	// the one body expression. The expression parser already handles the
+	// if-expression atom (form 2) and the bare-expression and `return`-stripped
+	// forms, so all three single-statement body shapes set `body` to the same
+	// single Expr the evaluators run as an expression (no Return-specific node).
+	if peek_kind(p) == .Return {
+		expect(p, .Return) or_return
+	}
 	body := parse_expression(p) or_return
 	skip_newlines(p)
+	// One statement is consumed. Any token before the closing `}` other than the
+	// brace is a SECOND statement — the multi-statement / `let`-then-`return` body
+	// the spec forbids. Name the verdict on that second statement's lead token; the
+	// helper-fn remedy (which CAN hold a `let` sequence) is the fix.
+	if peek_kind(p) != .R_Brace {
+		return nil, reject(p, peek_tok(p), .Lambda_Body_Multi_Statement)
+	}
 	expect(p, .R_Brace) or_return
 	node := new(Lambda_Expr, context.temp_allocator)
 	// The `fn` keyword is the lambda's first byte.

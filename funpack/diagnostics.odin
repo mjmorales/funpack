@@ -220,6 +220,8 @@ parse_diagnostic :: proc(err: Parse_Error, line: int, col: int) -> Diagnostic {
 		d.message = "a bool is not matchable — `match` dispatches over a closed enum or tuple, not over `true`/`false`; use `if`/`else` instead (spec §02 §5)"
 	case .Newline_Before_Binary_Op:
 		d.message = "an expression does not continue across a newline before a binary operator — funpack ends a statement at the newline, so keep each line a complete expression, or bind an intermediate `let` (spec §02 §1)"
+	case .Lambda_Body_Multi_Statement:
+		d.message = "a lambda body is a single statement — one expression, an if-expression, or a `return` — never a multi-statement block; lift the locals into a named helper `fn` and call it from the one-statement lambda (spec §02 §5)"
 	}
 	return d
 }

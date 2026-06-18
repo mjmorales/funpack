@@ -229,6 +229,106 @@ test_expr_lambda_single_return :: proc(t: ^testing.T) {
 	testing.expect_value(t, body.op.kind, Token_Kind.Plus)
 }
 
+// A lambda body is a SINGLE STATEMENT
+// (spec §02 §5) — one expression (implicit return), an if-expression, or a
+// `return` — never a multi-statement block. parse_lambda accepts all three
+// single-statement forms by stripping an optional leading `return` and parsing
+// one expression (the if-expression is an expression atom), setting `body` to
+// that one Expr; it rejects only a multi-statement block — a leading `let` (a
+// `let` binds a name the body must then use, so it cannot be the one statement)
+// or a second statement after the first (the `let`-then-`return` body) — with
+// the Lambda_Body_Multi_Statement verdict steering the author to a named helper
+// `fn`. The three accept-forms and the reject-form are one parser junction.
+
+// ── accept: form 1 — bare expression, implicit return ─────────────────────────
+@(test)
+test_expr_lambda_implicit_return_parses :: proc(t: ^testing.T) {
+	expr, err := parse_expr_text("fn(x) { x + 1 }")
+	testing.expect_value(t, err, Parse_Error.None)
+	lambda, is_lambda := expr.(^Lambda_Expr)
+	testing.expect(t, is_lambda)
+	// The body is the bare `x + 1` expression — no Return node, the same Expr the
+	// evaluators run.
+	body, body_is_binary := lambda.body.(^Binary_Expr)
+	testing.expect(t, body_is_binary)
+	testing.expect_value(t, body.op.kind, Token_Kind.Plus)
+}
+
+// ── accept: form 2 — if-expression ────────────────────────────────────────────
+@(test)
+test_expr_lambda_if_expression_parses :: proc(t: ^testing.T) {
+	expr, err := parse_expr_text("fn(x) { if x > 0 { x } else { 0 - x } }")
+	testing.expect_value(t, err, Parse_Error.None)
+	lambda, is_lambda := expr.(^Lambda_Expr)
+	testing.expect(t, is_lambda)
+	// The body is the if-expression directly — an expression atom, no Return wrap.
+	_, body_is_if := lambda.body.(^If_Expr)
+	testing.expect(t, body_is_if)
+}
+
+// ── accept: form 3 — explicit return ──────────────────────────────────────────
+@(test)
+test_expr_lambda_explicit_return_parses :: proc(t: ^testing.T) {
+	expr, err := parse_expr_text("fn(x) { return x + 1 }")
+	testing.expect_value(t, err, Parse_Error.None)
+	lambda, is_lambda := expr.(^Lambda_Expr)
+	testing.expect(t, is_lambda)
+	// `return` is stripped: the body is the inner `x + 1`, identical to form 1.
+	body, body_is_binary := lambda.body.(^Binary_Expr)
+	testing.expect(t, body_is_binary)
+	testing.expect_value(t, body.op.kind, Token_Kind.Plus)
+}
+
+// ── reject: a leading `let` is the multi-statement case by construction ────────
+@(test)
+test_expr_lambda_leading_let_rejected :: proc(t: ^testing.T) {
+	_, err := parse_expr_text("fn(x) { let y = x + 1 return y }")
+	testing.expect_value(t, err, Parse_Error.Lambda_Body_Multi_Statement)
+}
+
+// ── reject: a second statement after the first is multi-statement ─────────────
+@(test)
+test_expr_lambda_second_statement_rejected :: proc(t: ^testing.T) {
+	// Two return statements: one expression is the body, the second `return` is a
+	// trailing statement the closing-brace check rejects.
+	_, err := parse_expr_text("fn(x) { return x + 1 return x }")
+	testing.expect_value(t, err, Parse_Error.Lambda_Body_Multi_Statement)
+}
+
+// COMPILER-EVAL PARITY: the widened single-statement lambda body (spec §02 §5) is a
+// parser-only change — both evaluators run lambda.body as an EXPRESSION
+// (evaluate.odin apply_lambda → eval_expr, interp_call.odin apply_lambda →
+// eval), so an implicit-return body and an if-expression body evaluate with no
+// eval change. This pins the compiler interpreter (run_test_pipeline drives
+// lex→…→evaluate); the runtime interpreter's twin parity proof rides the
+// artifact lambda node (emit_lambda's single body child → runtime eval_lambda)
+// and is pinned in runtime/. The implicit-return fold reproduces the numerics
+// `fold(…, fn(acc, x) { return acc + x })` result without the `return`, and the
+// if-expression fold (a running max) evaluates the branch the if-expr yields.
+@(test)
+test_lambda_implicit_return_body_evaluates :: proc(t: ^testing.T) {
+	source := "import engine.list.fold\n" +
+		"test \"implicit-return lambda folds\" {\n" +
+		"  assert fold([1, 2, 3], 0, fn(acc, x) { acc + x }) == 6\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_lambda_if_expression_body_evaluates :: proc(t: ^testing.T) {
+	source := "import engine.list.fold\n" +
+		"test \"if-expression lambda folds a running max\" {\n" +
+		"  assert fold([3, 1, 4, 1, 5], 0, fn(acc, x) { if x > acc { x } else { acc } }) == 5\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
 @(test)
 test_expr_unary_minus_tighter_than_division :: proc(t: ^testing.T) {
 	// (-1.0) / 0.0 — unary binds above the multiplicative tier.
