@@ -15,23 +15,21 @@ name: Release
 #             Homebrew dependency). The two-binary split (funpack + funpack-live) is gone.
 # Native matrix runners per OS/arch (no cross-compile — SDL2 links natively per arch).
 #
-# This is the BINARY release line (`v*`). Two sibling lines are versioned
+# This is the BINARY release line (`v*`). One sibling line is versioned
 # independently: the Claude Code plugin under plugins/ on `plugin-v*`
-# (funpack-plugin-release.yml) and the mcp/ Go module on `funpack-mcp-v*`
-# (funpack-mcp-release.yml). The paths-ignore below + the `--match 'v*'` tag
-# scoping + the `:(exclude)` pathspecs keep all three from cutting each other's
+# (funpack-plugin-release.yml). The paths-ignore below + the `--match 'v*'` tag
+# scoping + the `:(exclude)` pathspecs keep the two from cutting each other's
 # releases.
 # Managed by OpenTofu (cloud-infra github/files/funpack-release.yml); edit the source there.
 
 on:
   push:
     branches: [main]
-    # Plugin-only and mcp-only changes cut their own line's release, not a binary
-    # one. Each sibling workflow's `paths:` is scoped to exactly what's ignored here.
+    # Plugin-only changes cut their own line's release, not a binary one. The
+    # plugin workflow's `paths:` is scoped to exactly what's ignored here.
     paths-ignore:
       - 'plugins/**'
       - '.claude-plugin/**'
-      - 'mcp/**'
 
 permissions:
   contents: write   # cut the tag + create the release + upload assets
@@ -77,9 +75,9 @@ jobs:
           CURRENT="${LATEST_TAG#v}"
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
-          # Exclude the sibling-line paths (plugin + mcp) so a mixed push bumps the
+          # Exclude the sibling-line paths (plugin) so a mixed push bumps the
           # binary line only by its own source commits.
-          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin' ':(exclude)mcp')
+          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
           if [ "$LATEST_TAG" = "v0.0.0" ]; then
             COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- . "${EXCLUDES[@]}")
           else
@@ -125,8 +123,8 @@ jobs:
         run: |
           LATEST_TAG="${{ steps.bump.outputs.latest_tag }}"
           if [ "$LATEST_TAG" = "v0.0.0" ]; then RANGE="HEAD"; else RANGE="${LATEST_TAG}..HEAD"; fi
-          # Match the bump step: keep plugin + mcp commits out of the binary changelog.
-          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin' ':(exclude)mcp')
+          # Match the bump step: keep plugin commits out of the binary changelog.
+          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
 
           {
             echo "changelog<<CHANGELOG_EOF"
