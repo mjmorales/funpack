@@ -162,10 +162,12 @@ stick_sample_to_fixed :: proc(raw: i16) -> Fixed {
 // key_code_from_scancode maps an SDL physical scancode onto the §23 "Key::<Name>"
 // token the bindings table matches by equality. `named` is false for a scancode
 // with no §23 Key variant, so an unbindable key is dropped before it reaches the
-// queue. The covered set is the §23 Key vocabulary the golden examples bind —
-// pong/snake/hunt's movement keys + space, and yard's menu keys (F5/F9/M/Enter
-// for Save/Restore/ToggleMotion/Apply); a scancode outside it is simply not a
-// §23 key.
+// queue. The covered set is the full §23 Key vocabulary the surface admits — the
+// physical-key alphabet (every letter A..Z), the directional arrows + Space, the
+// control/modifier keys (Escape/Shift/Tab), and the function keys yard's menu
+// binds (F5/F9, plus M/Enter for Save/Restore/ToggleMotion/Apply). A live binding
+// written against any of these resolves its physical scancode; a scancode outside
+// the set is simply not a §23 key.
 key_code_from_scancode :: proc(scancode: sdl.Scancode) -> (code: string, named: bool) {
 	#partial switch scancode {
 	case .W:
@@ -194,6 +196,62 @@ key_code_from_scancode :: proc(scancode: sdl.Scancode) -> (code: string, named: 
 		return "Key::F5", true
 	case .F9:
 		return "Key::F9", true
+	// The full physical-key alphabet the surface admits (W/A/S/D/M are mapped
+	// above; the rest follow here so each §23 Key::<Letter> the compiler now
+	// typechecks also binds live input). The token spelling matches the surface
+	// allow-list by equality — Key::B, Key::C, ... — so a binding written against
+	// any letter resolves the matching physical scancode.
+	case .B:
+		return "Key::B", true
+	case .C:
+		return "Key::C", true
+	case .E:
+		return "Key::E", true
+	case .F:
+		return "Key::F", true
+	case .G:
+		return "Key::G", true
+	case .H:
+		return "Key::H", true
+	case .I:
+		return "Key::I", true
+	case .J:
+		return "Key::J", true
+	case .K:
+		return "Key::K", true
+	case .L:
+		return "Key::L", true
+	case .N:
+		return "Key::N", true
+	case .O:
+		return "Key::O", true
+	case .P:
+		return "Key::P", true
+	case .Q:
+		return "Key::Q", true
+	case .R:
+		return "Key::R", true
+	case .T:
+		return "Key::T", true
+	case .U:
+		return "Key::U", true
+	case .V:
+		return "Key::V", true
+	case .X:
+		return "Key::X", true
+	case .Y:
+		return "Key::Y", true
+	case .Z:
+		return "Key::Z", true
+	// Control/modifier keys the surface admits. Shift maps the LEFT shift
+	// scancode to the single §23 token Key::Shift; right shift (RSHIFT) aliases
+	// to the SAME token so either physical shift resolves a Key::Shift binding.
+	case .ESCAPE:
+		return "Key::Escape", true
+	case .LSHIFT, .RSHIFT:
+		return "Key::Shift", true
+	case .TAB:
+		return "Key::Tab", true
 	}
 	return "", false
 }

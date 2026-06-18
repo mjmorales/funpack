@@ -50,6 +50,33 @@ test_key_scancode_maps_to_yard_menu_codes :: proc(t: ^testing.T) {
 	check(t, .RETURN, "Key::Enter")
 }
 
+// test_key_scancode_maps_full_alphabet_and_modifiers proves the surface-parity
+// admission: the physical-key alphabet (the letters beyond pong's W/A/S/D/M) and
+// the control/modifier keys (Escape/Shift/Tab) each resolve their exact §23 token,
+// so a binding written against any Key::<Name> the compiler now typechecks also
+// binds live input. Shift is the modifier seam: LSHIFT and RSHIFT both alias to
+// the single token Key::Shift, so either physical shift resolves a Key::Shift
+// binding.
+@(test)
+test_key_scancode_maps_full_alphabet_and_modifiers :: proc(t: ^testing.T) {
+	check :: proc(t: ^testing.T, scancode: sdl.Scancode, want: string) {
+		code, named := key_code_from_scancode(scancode)
+		testing.expect(t, named)
+		testing.expect_value(t, code, want)
+	}
+	// A representative span of the newly-admitted letter alphabet.
+	check(t, .B, "Key::B")
+	check(t, .E, "Key::E")
+	check(t, .Q, "Key::Q")
+	check(t, .Z, "Key::Z")
+	// Control/modifier keys.
+	check(t, .ESCAPE, "Key::Escape")
+	check(t, .TAB, "Key::Tab")
+	// Both physical shifts alias to one token.
+	check(t, .LSHIFT, "Key::Shift")
+	check(t, .RSHIFT, "Key::Shift")
+}
+
 // test_unmapped_scancode_is_dropped proves the keyboard error case: a scancode
 // with no §23 Key variant (a function key) reports named == false, so the live
 // poll enqueues nothing for it — an unbindable key never reaches the queue.
