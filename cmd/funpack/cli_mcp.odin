@@ -14,21 +14,26 @@
 package main
 
 import "../../cli"
+import "core:slice"
 
 // build_mcp_command declares the `funpack mcp` verb node, mirroring
 // build_run/live/attach_command (cli_runtime.odin). It is MINIMAL and EXTENSIBLE:
 // no positionals (the server reads its protocol off stdin, not argv) and no flags
-// today. Downstream tasks append subcommands here (e.g. `funpack mcp gen-corpus`)
-// and/or flags; the parent stays a thin shell over serve_mcp_stdio so the protocol
-// surface grows in mcp_server.odin/mcp_tools.odin, never in this verb declaration.
+// today. It carries both a `run` (serve the stdio server when invoked bare) AND
+// subcommands (the dev-time `gen-corpus` regenerator); the framework descends to a
+// subcommand on a leading non-flag token and otherwise runs the serve handler. This
+// task APPENDS gen-corpus as the first child; downstream tasks append further
+// subcommands here without re-authoring the parent.
 build_mcp_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
+	subs := slice.clone([]^cli.Cli_Command{build_mcp_gen_corpus_command(allocator)}, allocator)
 	return cli.cli_new_command(
 		cli.Cli_Command {
 			use = "mcp",
 			short = "Serve the funpack MCP dev server over stdio (JSON-RPC 2.0)",
-			long = "Serve the Model Context Protocol dev server for funpack over stdio — line-framed JSON-RPC 2.0, auth-free (the MCP host forks the server and owns its inherited fds, so there is no port to gate). The server reads requests off stdin and writes framed responses to stdout (absolute stdout discipline: stdout carries ONLY framed JSON-RPC, every diagnostic routes to stderr). Run by an MCP host, not directly at a terminal.",
+			long = "Serve the Model Context Protocol dev server for funpack over stdio — line-framed JSON-RPC 2.0, auth-free (the MCP host forks the server and owns its inherited fds, so there is no port to gate). The server reads requests off stdin and writes framed responses to stdout (absolute stdout discipline: stdout carries ONLY framed JSON-RPC, every diagnostic routes to stderr). Run by an MCP host, not directly at a terminal. The `gen-corpus` subcommand is a dev-time tool that regenerates the committed docs-corpus shards.",
 			args = cli.cli_no_args(),
 			run = cli_run_mcp,
+			subcommands = subs,
 		},
 		allocator,
 	)

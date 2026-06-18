@@ -35,3 +35,19 @@ tasks:
     desc: Compile the single funpack binary (links vendor:sdl2 via FUNPACK_LIVE)
     cmds:
       - odin build . -define:FUNPACK_LIVE=true -out:funpack
+
+  docs-regen:
+    desc: Regenerate the committed docs-corpus shards (the Odin re-home of the deleted mcp docs-regen)
+    # Build the FUNPACK_LIVE binary (the only build carrying `funpack mcp gen-corpus`)
+    # and run gen-corpus from the repo ROOT so it resolves spec/, stdlib/engine/, and
+    # plugins/funpack/ and rewrites cmd/funpack/mcp/corpus/{spec,engine,plugin}.json +
+    # manifest.json. Recommit the regenerated shards. dir: ../.. runs at the repo root.
+    dir: ../..
+    cmds:
+      - odin build ./cmd/funpack -define:FUNPACK_LIVE=true -out:/tmp/funpack-docs-regen
+      - /tmp/funpack-docs-regen mcp gen-corpus
+
+  docs-check:
+    desc: Run the corpus-pin drift gate (regenerate in-memory, byte/hash-compare against the committed shards)
+    cmds:
+      - odin test . -define:ODIN_TEST_NAMES=main.test_corpus_pin_shards_byte_match,main.test_corpus_pin_per_source_hashes,main.test_corpus_pin_manifest_section_counts,main.test_corpus_pin_mutated_hash_detected_as_drift
