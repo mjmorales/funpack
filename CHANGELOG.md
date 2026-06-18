@@ -7,6 +7,18 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.9.0] - 2026-06-18
+
+### Features
+- feat(runtime): map the full key alphabet scancodes for live input (36ad07d)
+- feat(funpack): admit full Key/PlayerId/Bone/Slot sets + Align + Axis/Button (fa881fa)
+- feat(runtime): wire restored-surface eval + Color::Rgb rasterization (fdc52cf)
+- feat(funpack): restore dropped stdlib surface + add introspect dump (d7b552b)
+- feat: engine.input dpad() 2D source — Pad_Quad runtime source kind (4283620)
+
+### Fixes
+- fix(funpack): widen lambda body to spec (one expr / if-expr / return) (7197a9b)
+
 ## [0.8.1] - 2026-06-16
 
 ### Other
