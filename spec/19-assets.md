@@ -22,7 +22,7 @@ no network, no machine paths leak into an artifact.
 | `.tiles` tileset | DSL | tile defs (cell + collision) | `TilesetHandle` |
 | `.atlas` sprite sheet | image + slice spec | atlas (regions + clips) | `AtlasHandle` (+ named cells/clips) |
 | audio (WAV/OGG) | raw | decoded buffer | `SoundHandle` |
-| font (TTF) | raw | glyph atlas | `Font` |
+| font (TTF) | raw | glyph atlas | `Font` _(planned — not yet exposed; the stdlib declares no `Font` handle or loader and the live runtime renders text via built-in glyphs)_ |
 
 Two source flavors, one pipeline: **authored DSLs** bake through their importer and emit a seam; **raw
 external files** are content-hashed directly through a binary importer. Both end as a content-hashed

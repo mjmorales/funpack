@@ -20,7 +20,7 @@ shape shown for illustration; `extern fn` / `extern type` is the Tier-1 native b
 | `world.fun`   | `engine.world`   | `Spawn Despawn View[T] Id` |
 | `input.fun`   | `engine.input`   | `Input Key Stick PlayerId Bindings`, `Axis Button` |
 | `geom.fun`    | `engine.geom`    | `Sketch Path PathOp` (2D↔3D bridge) |
-| `render.fun`  | `engine.render`  | `Draw` (incl. `Sprite`) `Color Align Font Flip` |
+| `render.fun`  | `engine.render`  | `Draw` (incl. `Sprite`) `Color Align Flip` |
 | `render3.fun` | `engine.render3` | `Draw3 Material` |
 | `anim.fun`    | `engine.anim`    | `Bone Slot Side Skeleton Pose Transform PartSet` |
 | `model.fun`   | `engine.model`   | `Length Solid Anchors Shape3` (the `.gen.fun` surface) |

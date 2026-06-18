@@ -17,9 +17,6 @@ enum Color {
 @doc("Horizontal text alignment.")
 enum Align { Left, Center, Right }
 
-@doc("A loaded font face. Engine-provided.")
-extern type Font
-
 @doc("A 2D draw command. Returned in a list from a render behavior.")
 enum Draw {
   @doc("A filled axis-aligned rectangle at a top-left point.")

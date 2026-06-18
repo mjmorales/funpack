@@ -67,7 +67,7 @@ import "core:strings"
 // spelling — so equality is meaningful across the two.
 Surface_Model :: struct {
 	// module_types maps a dotted module path (engine.render) to the set of TYPE
-	// names it declares (Draw, Color, Flip, Align, Font). ONLY type declarations
+	// names it declares (Draw, Color, Flip, Align). ONLY type declarations
 	// (the dump's .Type_Name kind; the .fun's enum/extern type/data) are modeled
 	// here — NOT free functions or values. Type names normalize 1:1 across both
 	// sources, whereas a function's PLACEMENT differs structurally between them:
@@ -75,7 +75,7 @@ Surface_Model :: struct {
 	// while a .fun file declares both as top-level `extern fn`. Diffing function
 	// names at module-decl granularity is therefore all false positives. Function/
 	// value parity is in EXCLUDED_SURFACE; the divergence-relevant signal at this
-	// granularity is TYPE presence (Font/Shape3/Volume/PathOp are the residuals).
+	// granularity is TYPE presence (Shape3/Volume/PathOp are the residuals).
 	module_types:          map[string]map[string]bool,
 	// enum_bare_variants maps an enum type name (Color) to its set of bare (no
 	// payload) variant names (White, Black, …). The canonical Color-palette example.
@@ -266,10 +266,6 @@ RESIDUAL_OVER_DECLARES := []Residual_Over_Declare {
 	// variant-finding subsumption in diff_surfaces. Restoring the type's wiring in
 	// surface.odin removes the entry.
 
-	// render.fun declares Font (extern type) which is not in the compiler's
-	// engine.render type decls. (Align is now admitted — readmitted by story
-	// mechanical-variant-readmit — so it left this list.)
-	{.Module_Type, "engine.render::Font", "extern Font type unimplemented in surface.odin"},
 	// geom.fun's §03 vector-path geometry (Sketch builder + Path/PathOp) is wholly
 	// unimplemented; Draw::Fill/Stroke (which name a Sketch) are the dependent render
 	// gap below.

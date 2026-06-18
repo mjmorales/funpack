@@ -1512,13 +1512,6 @@
     "source": "engine/render.fun"
   },
   {
-    "anchor": "engine/render#font",
-    "kind": "engine",
-    "title": "render.Font",
-    "text": "A loaded font face. Engine-provided.\n\nextern type Font",
-    "source": "engine/render.fun"
-  },
-  {
     "anchor": "engine/render#draw",
     "kind": "engine",
     "title": "render.Draw",

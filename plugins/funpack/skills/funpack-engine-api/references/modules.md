@@ -159,7 +159,6 @@ spatial filter / distance sort).
 enum Flip { None, X, Y, XY }
 enum Color { White, Black, Red, Green, Blue, Yellow, Cyan, Magenta, Gray, Rgb{ r: Fixed, g: Fixed, b: Fixed } }
 enum Align { Left, Center, Right }
-extern type Font
 enum Draw {
   Rect{ at: Vec2, size: Vec2, color: Color }          // at = TOP-LEFT corner
   Line{ a: Vec2, b: Vec2, color: Color }

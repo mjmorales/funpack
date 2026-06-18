@@ -17,7 +17,7 @@ the manifest, is a **compile error**.
 | Source | Authored as | Seam exposes |
 |---|---|---|
 | `.atlas` sprite sheet | image + slice spec | `AtlasHandle` (+ named cells/clips) |
-| audio (WAV/OGG), font (TTF) | raw | `SoundHandle` / `Font` |
+| audio (WAV/OGG) | raw | `SoundHandle` |
 | `.flvl` level | DSL | a `Ref` table, `*_spawns()`, `TilemapHandle` |
 | `.tiles` tileset | DSL | `TilesetHandle` |
 | `.fpm` model/rig | DSL | params `data`, anchors, `MeshHandle` / skeleton + parts |
