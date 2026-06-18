@@ -21,11 +21,18 @@ import "core:slice"
 // no positionals (the server reads its protocol off stdin, not argv) and no flags
 // today. It carries both a `run` (serve the stdio server when invoked bare) AND
 // subcommands (the dev-time `gen-corpus` regenerator); the framework descends to a
-// subcommand on a leading non-flag token and otherwise runs the serve handler. This
-// task APPENDS gen-corpus as the first child; downstream tasks append further
+// subcommand on a leading non-flag token and otherwise runs the serve handler. The
+// dev-time codegen subcommands hang here: gen-corpus (docs-corpus shards) and
+// gen-contract (funpack/api_contract.gen.odin). Downstream tasks append further
 // subcommands here without re-authoring the parent.
 build_mcp_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
-	subs := slice.clone([]^cli.Cli_Command{build_mcp_gen_corpus_command(allocator)}, allocator)
+	subs := slice.clone(
+		[]^cli.Cli_Command {
+			build_mcp_gen_corpus_command(allocator),
+			build_mcp_gen_contract_command(allocator),
+		},
+		allocator,
+	)
 	return cli.cli_new_command(
 		cli.Cli_Command {
 			use = "mcp",
