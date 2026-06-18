@@ -141,5 +141,84 @@
       }
     },
     "events": ["breakpoint_hit", "watch_fired", "diverged"]
+  },
+  "server_tools": {
+    "$comment": "The SERVER-NATIVE MCP tool surface, distinct from the §28 introspect.command_groups: these tools are backed by in-process compute-halves and the session registry, NOT by §28 wire commands. The generator projects EVERY tool here into the SAME unified funpack.TOOL_SPECS table the §28 commands feed (one Tool_Spec each: name + input_schema args), so the advertised tools/list input_schema cannot drift from dispatch. Tools are grouped by their MCP dispatch FAMILY (the downstream tools/call arm that owns them): `oneshot` = stateless compute tools (build/check/export/test/fmt/warden_*); `docs_health` = the embedded-corpus + liveness tools; `session` = the session-lifecycle tools that drive the server-scoped registry. Each family carries its determinism `class` (the Tool_Spec.class hint) and `session_scoped` (false for every server-native tool — none rides a named §28 session). Unlike a §28 command, a server-native tool has NO wire command and NO injected session_id/branch arg: its `name` IS its dispatch key, and its `args` ARE its full input_schema (each {type, required, doc} mirroring a §28 arg). SOURCE OF TRUTH for each arg shape: the Go tool definitions under mcp/internal/server (BuildInput/CheckInput/FmtInput/TestInput, Warden*Input, DocsGetInput/DocsSearchInput, HealthInput, Session*Input). See ADR 2026-06-18-mcp-server-native-tools-in-contract.",
+    "families": {
+      "oneshot": {
+        "class": "compute",
+        "session_scoped": false,
+        "tools": [
+          { "name": "build", "args": {
+            "dir": { "type": "string", "required": true, "doc": "absolute path to the funpack project tree to build (the funpack verb operates on the project at this working directory)" },
+            "release": { "type": "boolean", "required": false, "doc": "build the optimized shippable artifact (passes --release); omit for a fast dev build" }
+          } },
+          { "name": "export", "args": {
+            "dir": { "type": "string", "required": true, "doc": "absolute path to the funpack project tree to export the shippable (release) artifact for (the funpack verb operates on the project at this working directory)" }
+          } },
+          { "name": "check", "args": {
+            "dir": { "type": "string", "required": true, "doc": "absolute path to the funpack project tree to check (the funpack verb operates on the project at this working directory)" },
+            "release": { "type": "boolean", "required": false, "doc": "check against the release build configuration (passes --release)" }
+          } },
+          { "name": "test", "args": {
+            "dir": { "type": "string", "required": true, "doc": "absolute path to the funpack project tree to test (funpack runs every test block in the tree at this working directory)" }
+          } },
+          { "name": "fmt", "args": {
+            "dir": { "type": "string", "required": true, "doc": "absolute path to the funpack project tree to format (the funpack verb operates on the project at this working directory)" },
+            "check": { "type": "boolean", "required": false, "doc": "verdict-only mode (passes --check): report whether the tree is formatted via the exit code without rewriting files" }
+          } },
+          { "name": "warden_find", "args": {
+            "dir": { "type": "string", "required": true, "doc": "project directory whose committed .funpack/index.ndjson to query" },
+            "query": { "type": "string", "required": true, "doc": "declaration name substring to look up (the warden find positional filter); an empty result means nothing existing to reuse" }
+          } },
+          { "name": "warden_graph", "args": {
+            "dir": { "type": "string", "required": true, "doc": "project directory whose committed .funpack/index.ndjson to query" },
+            "node": { "type": "string", "required": false, "doc": "optional node name to filter the graph to one node's edges; omit for the full dependency graph" }
+          } },
+          { "name": "warden_holes", "args": {
+            "dir": { "type": "string", "required": true, "doc": "project directory whose committed .funpack/index.ndjson to query for typed holes" }
+          } },
+          { "name": "warden_probes", "args": {
+            "dir": { "type": "string", "required": true, "doc": "project directory whose committed .funpack/index.ndjson to query for debug probes" }
+          } },
+          { "name": "warden_debt", "args": {
+            "dir": { "type": "string", "required": true, "doc": "project directory whose committed .funpack/index.ndjson to query for declarations tagged as debt" }
+          } },
+          { "name": "warden_tags", "args": {
+            "dir": { "type": "string", "required": true, "doc": "project directory whose committed .funpack/index.ndjson to query for the registered governance tags" }
+          } },
+          { "name": "warden_pipeline", "args": {
+            "dir": { "type": "string", "required": true, "doc": "project directory whose committed .funpack/index.ndjson to project the pipeline from" }
+          } }
+        ]
+      },
+      "docs_health": {
+        "class": "docs",
+        "session_scoped": false,
+        "tools": [
+          { "name": "docs_get", "args": {
+            "anchor": { "type": "string", "required": true, "doc": "stable corpus anchor of the section to fetch (e.g. an engine/<module>#<decl> or <file>#<heading-slug> anchor)" }
+          } },
+          { "name": "docs_search", "args": {
+            "query": { "type": "string", "required": true, "doc": "search query: an engine symbol/identifier (e.g. world.resolve, @stub) for a declaration, or natural language (e.g. how does determinism work) for a concept" },
+            "limit": { "type": "integer", "required": false, "doc": "maximum hits to return; omit or <= 0 for the default (10), capped at 50" }
+          } },
+          { "name": "health", "args": {} }
+        ]
+      },
+      "session": {
+        "class": "session",
+        "session_scoped": false,
+        "tools": [
+          { "name": "session_start", "args": {
+            "artifact": { "type": "string", "required": true, "doc": "path to the built funpack game artifact for the attach session to load" }
+          } },
+          { "name": "session_list", "args": {} },
+          { "name": "session_end", "args": {
+            "session_id": { "type": "string", "required": true, "doc": "opaque id of the session to close, as returned by session_start" }
+          } }
+        ]
+      }
+    }
   }
 }
