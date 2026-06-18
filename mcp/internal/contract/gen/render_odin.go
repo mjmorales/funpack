@@ -62,7 +62,7 @@ func renderOdin(c *ResolvedContract) ([]byte, error) {
 	for _, g := range sortedKeys(c.Introspect.CommandGroups) {
 		grp := c.Introspect.CommandGroups[g]
 		b.WriteString(fmt.Sprintf("// group %q (class %s)\n", g, grp.Class))
-		for _, cmd := range grp.Commands {
+		for _, cmd := range commandNames(grp) {
 			b.WriteString(fmt.Sprintf("CMD_%s :: %q\n", odinConst(cmd), cmd))
 		}
 		b.WriteString("\n")
@@ -74,7 +74,116 @@ func renderOdin(c *ResolvedContract) ([]byte, error) {
 		b.WriteString(fmt.Sprintf("EVENT_%s :: %q\n", odinConst(e), e))
 	}
 
+	// The MCP tools/list projection: one Tool_Spec per §28 command, schema +
+	// dispatch hints from the SAME walk so the advertised input_schema cannot drift
+	// from the dispatch arm.
+	b.WriteString("\n")
+	renderToolSpecs(&b, c)
+
 	return b.Bytes(), nil
+}
+
+// odinString writes s as a double-quoted Odin string literal, escaping the few
+// characters an Odin string literal cannot carry raw. Contract docs are plain
+// ASCII prose, so only the quote and backslash need escaping; '\n' is escaped
+// defensively for byte-stable single-line literals.
+func odinString(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`)
+	return `"` + r.Replace(s) + `"`
+}
+
+// renderToolSpecs emits the generated Tool_Spec table: one entry per §28 command,
+// projecting the contract's per-command arg shapes into an MCP tools/list
+// input_schema (a session_id-keyed superset, plus an optional `branch` selector for
+// every observe-class command) AND the dispatch hints (group, class, wire command).
+// One source — the contract walk — so the schema a future tools/list advertises and
+// the arm tools/call dispatches into cannot drift. Groups iterate in sorted order,
+// commands in on-disk declaration order, args in sorted-key order — byte-stable.
+func renderToolSpecs(b *bytes.Buffer, c *ResolvedContract) {
+	b.WriteString("// --- MCP tools/list projection (Tool_Spec table) ----------------------------\n")
+	b.WriteString("//\n")
+	b.WriteString("// Generated FROM contract/funpack-api.json command_groups: each §28 command\n")
+	b.WriteString("// becomes one MCP tool. input_schema is the wire `args` shape PLUS the always-\n")
+	b.WriteString("// present session_id and (for observe-class commands) the optional `branch`\n")
+	b.WriteString("// selector. A future tools/list reads TOOL_SPECS; tools/call dispatches on\n")
+	b.WriteString("// .command / .group — one source so the advertised schema cannot drift from\n")
+	b.WriteString("// dispatch (the §28 wire arg names ARE the dispatch hints).\n\n")
+
+	b.WriteString("// Tool_Arg is one MCP input_schema property: the JSON name, its JSON-Schema\n")
+	b.WriteString("// type, whether it is required, and its description.\n")
+	b.WriteString("Tool_Arg :: struct {\n")
+	b.WriteString("\tname:      string,\n")
+	b.WriteString("\tjson_type: string,\n")
+	b.WriteString("\trequired:  bool,\n")
+	b.WriteString("\tdoc:       string,\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// Tool_Spec is one MCP tool projected from a §28 command: its advertised tool\n")
+	b.WriteString("// name and full input_schema (args), plus the dispatch hints (the §28 wire\n")
+	b.WriteString("// command, its declaring group, and the determinism class) tools/call switches\n")
+	b.WriteString("// on. session_scoped is true for every §28 command (all ride a named session);\n")
+	b.WriteString("// the field is explicit so a future one-shot compute tool can sit in the same\n")
+	b.WriteString("// table with session_scoped = false.\n")
+	b.WriteString("Tool_Spec :: struct {\n")
+	b.WriteString("\tname:           string,\n")
+	b.WriteString("\tcommand:        string,\n")
+	b.WriteString("\tgroup:          string,\n")
+	b.WriteString("\tclass:          string,\n")
+	b.WriteString("\tsession_scoped: bool,\n")
+	b.WriteString("\targs:           []Tool_Arg,\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// SESSION_ID_ARG is the universal session selector every §28 tool carries — the\n")
+	b.WriteString("// MCP handle that keys the live debug session a tools/call dispatches into.\n")
+	b.WriteString("SESSION_ID_ARG :: Tool_Arg{\n")
+	b.WriteString("\tname      = \"session_id\",\n")
+	b.WriteString("\tjson_type = \"string\",\n")
+	b.WriteString("\trequired  = true,\n")
+	b.WriteString("\tdoc       = \"opaque id of the live session, as returned by session_start\",\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// BRANCH_ARG is the optional §28 observe-addressing selector every observe-class\n")
+	b.WriteString("// tool carries: omitted reads the canonical timeline, set reads a checkout-\n")
+	b.WriteString("// created branch.\n")
+	b.WriteString("BRANCH_ARG :: Tool_Arg{\n")
+	b.WriteString("\tname      = \"branch\",\n")
+	b.WriteString("\tjson_type = \"string\",\n")
+	b.WriteString("\trequired  = false,\n")
+	b.WriteString("\tdoc       = \"optional §28 observe-addressing selector: omit for the canonical timeline, set to a checkout-created branch name\",\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// TOOL_SPECS is the generated tools/list projection, one entry per §28 command\n")
+	b.WriteString("// in contract order (groups sorted, commands as declared). A package-level `:=`\n")
+	b.WriteString("// (not `::`) because an Odin slice literal is not a compile-time constant; it is\n")
+	b.WriteString("// read-only by convention (a generated table tools/list walks, never mutates).\n")
+	b.WriteString("TOOL_SPECS := []Tool_Spec{\n")
+	for _, g := range sortedKeys(c.Introspect.CommandGroups) {
+		grp := c.Introspect.CommandGroups[g]
+		for _, cmd := range grp.Commands {
+			b.WriteString(fmt.Sprintf("\t{\n\t\tname           = %q,\n", grp.toolName(cmd.Name)))
+			b.WriteString(fmt.Sprintf("\t\tcommand        = %q,\n", cmd.Name))
+			b.WriteString(fmt.Sprintf("\t\tgroup          = %q,\n", g))
+			b.WriteString(fmt.Sprintf("\t\tclass          = %q,\n", grp.Class))
+			b.WriteString("\t\tsession_scoped = true,\n")
+			b.WriteString("\t\targs           = []Tool_Arg{\n")
+			b.WriteString("\t\t\tSESSION_ID_ARG,\n")
+			for _, argName := range sortedKeys(cmd.Args) {
+				arg := cmd.Args[argName]
+				b.WriteString("\t\t\t{")
+				b.WriteString(fmt.Sprintf("name = %q, ", argName))
+				b.WriteString(fmt.Sprintf("json_type = %q, ", arg.Type))
+				b.WriteString(fmt.Sprintf("required = %t, ", arg.Required))
+				b.WriteString(fmt.Sprintf("doc = %s", odinString(arg.Doc)))
+				b.WriteString("},\n")
+			}
+			if grp.Class == "observe" {
+				b.WriteString("\t\t\tBRANCH_ARG,\n")
+			}
+			b.WriteString("\t\t},\n")
+			b.WriteString("\t},\n")
+		}
+	}
+	b.WriteString("}\n")
 }
 
 // orderedFieldNames returns version_surface.fields keys in deterministic order.

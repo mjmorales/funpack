@@ -38,12 +38,107 @@
       }
     },
     "command_groups": {
-      "$comment": "The closed command set, grouped by surface and tagged with its determinism class. observe = non-perturbing (reads canonical chain by default; accepts an optional `branch` arg). control = perturbing -> forks a non-warranted branch off a snapshot.",
-      "time": { "class": "observe", "commands": ["load", "run", "pause", "step", "rewind", "reset", "status"] },
-      "break": { "class": "observe", "commands": ["break", "watch", "clear"] },
-      "inspect": { "class": "observe", "commands": ["signals", "pipeline", "trace", "diff", "replay_behavior", "draw_list", "screenshot"] },
-      "control": { "class": "control", "commands": ["inject_input", "set", "spawn", "despawn", "emit", "reload", "branch", "checkout"] },
-      "self_heal": { "class": "observe", "commands": ["capture_test", "audit"] }
+      "$comment": "The closed command set, grouped by surface and tagged with its determinism class. observe = non-perturbing (reads canonical chain by default; accepts an optional `branch` arg the generator injects per-class). control = perturbing -> forks a non-warranted branch off a snapshot. Each group's `tool_prefix` projects the MCP tool name: non-empty -> '<prefix>_<command>' (time/inspect/control), empty -> the bare command name (break, self_heal). Each command carries its §28 wire `args` shape (the object inside a request envelope's `args` field), authored by hand here from the runtime source (runtime/introspect_*.odin): the generator PROJECTS these into the MCP tools/list input_schema (a session_id-keyed superset) AND the dispatch hints, so the advertised schema cannot drift from dispatch. An arg's `type` is its JSON-Schema type (string|integer|number|boolean|array|object); `required` marks a mandatory arg; `doc` is the schema description. An empty `args` object means the command takes only the session handle.",
+      "time": {
+        "class": "observe",
+        "tool_prefix": "time",
+        "commands": [
+          { "name": "load", "args": {} },
+          { "name": "run", "args": { "until": { "type": "integer", "required": false, "doc": "target tick to run forward to; omitted runs to the last recorded tick (a target behind the cursor is refused — use rewind)" } } },
+          { "name": "pause", "args": {} },
+          { "name": "step", "args": {} },
+          { "name": "rewind", "args": { "tick": { "type": "integer", "required": true, "doc": "target tick to rewind the cursor to (>= -1, within the recording); restores the nearest snapshot at-or-before and re-folds forward" } } },
+          { "name": "reset", "args": {} },
+          { "name": "status", "args": {} }
+        ]
+      },
+      "break": {
+        "class": "observe",
+        "tool_prefix": "",
+        "commands": [
+          { "name": "break", "args": {
+            "on_signal": { "type": "string", "required": false, "doc": "break{on_signal:S} form: pause when a signal of type S is routed during a tick; mutually exclusive with target/body" },
+            "target": { "type": "string", "required": false, "doc": "break{when:<pred>} form: the behavior to fold the predicate against; required with body, mutually exclusive with on_signal" },
+            "body": { "type": "object", "required": false, "doc": "break{when:<pred>} form: the one-expression predicate node forest over the wire; required with target" }
+          } },
+          { "name": "watch", "args": {
+            "target": { "type": "string", "required": true, "doc": "the behavior to watch; watch{<expr>} fires when the expression value changes across steps" },
+            "body": { "type": "object", "required": true, "doc": "the one-expression watched-expression node forest over the wire" }
+          } },
+          { "name": "clear", "args": { "handle": { "type": "integer", "required": true, "doc": "the live-probe handle minted by a prior break/watch to remove" } } }
+        ]
+      },
+      "inspect": {
+        "class": "observe",
+        "tool_prefix": "inspect",
+        "commands": [
+          { "name": "signals", "args": { "tick": { "type": "integer", "required": true, "doc": "the recorded tick whose routed signals to dump" } } },
+          { "name": "pipeline", "args": {} },
+          { "name": "trace", "args": {
+            "tick": { "type": "integer", "required": true, "doc": "the recorded tick to trace the behavior at" },
+            "behavior": { "type": "string", "required": true, "doc": "the behavior name whose per-instance (in -> out) to trace" }
+          } },
+          { "name": "diff", "args": {
+            "from": { "type": "integer", "required": true, "doc": "the earlier retained tick of the diff" },
+            "to": { "type": "integer", "required": true, "doc": "the later retained tick of the diff" }
+          } },
+          { "name": "replay_behavior", "args": {
+            "tick": { "type": "integer", "required": true, "doc": "the recorded tick to replay the behavior at" },
+            "behavior": { "type": "string", "required": true, "doc": "the behavior name to re-run in isolation from its captured inputs" }
+          } },
+          { "name": "draw_list", "args": { "tick": { "type": "integer", "required": true, "doc": "the committed tick whose §20 draw-list to dump (the deterministic, always-serving render projection)" } } },
+          { "name": "screenshot", "args": {
+            "tick": { "type": "integer", "required": true, "doc": "the committed tick to capture as a presented frame (pixels)" },
+            "include_drawlist": { "type": "boolean", "required": false, "doc": "when true, the deterministic §20 draw-list rides along with the pixels (default false: visual-only)" }
+          } }
+        ]
+      },
+      "control": {
+        "class": "control",
+        "tool_prefix": "control",
+        "commands": [
+          { "name": "inject_input", "args": {
+            "pressed": { "type": "array", "required": false, "doc": "input records pressed THIS tick (each {player, action})" },
+            "held": { "type": "array", "required": false, "doc": "input records held DOWN (each {player, action})" },
+            "values": { "type": "array", "required": false, "doc": "1D analog records (each {player, action, value} as a Fixed raw-bit string)" },
+            "axes": { "type": "array", "required": false, "doc": "2D analog records (each {player, action, x, y} as Fixed raw-bit strings)" },
+            "ticks": { "type": "integer", "required": false, "doc": "number of full pipeline ticks to fold the snapshot through (>=1, default 1)" }
+          } },
+          { "name": "set", "args": {
+            "thing": { "type": "string", "required": true, "doc": "the thing (table) declaring the field to force" },
+            "field": { "type": "string", "required": true, "doc": "the field/column to overwrite" },
+            "value": { "type": "string", "required": true, "doc": "the new value, encoded against the field's declared type (artifact literal encoding)" },
+            "instance": { "type": "integer", "required": false, "doc": "the instance id of the row to set (defaults to 0)" }
+          } },
+          { "name": "spawn", "args": {
+            "thing": { "type": "string", "required": true, "doc": "the thing (table) to spawn an instance of" },
+            "fields": { "type": "object", "required": false, "doc": "field overrides keyed by field name, each encoded against the field's declared type; unspecified fields take the declared default" }
+          } },
+          { "name": "despawn", "args": {
+            "thing": { "type": "string", "required": false, "doc": "the thing (table) of the instance to despawn" },
+            "instance": { "type": "integer", "required": false, "doc": "the instance id of the row to despawn" }
+          } },
+          { "name": "emit", "args": {
+            "signal": { "type": "string", "required": true, "doc": "the signal type name to emit" },
+            "value": { "type": "string", "required": true, "doc": "the signal payload, encoded as a record of the signal type (artifact literal encoding)" }
+          } },
+          { "name": "reload", "args": { "artifact": { "type": "string", "required": true, "doc": "path to the recompiled artifact to hot-reload the branch onto" } } },
+          { "name": "branch", "args": { "tick": { "type": "integer", "required": false, "doc": "the canonical tick to fork at (default: the canonical head); -1 forks post-startup" } } },
+          { "name": "checkout", "args": { "target": { "type": "string", "required": false, "doc": "which lineage to make active: 'branch' (default) or 'canonical'" } } }
+        ]
+      },
+      "self_heal": {
+        "class": "observe",
+        "tool_prefix": "",
+        "commands": [
+          { "name": "capture_test", "args": {
+            "behavior": { "type": "string", "required": true, "doc": "name of the behavior whose step to capture into a regression test" },
+            "tick": { "type": "integer", "required": true, "doc": "the recorded tick at which to capture the behavior's (self, resources, inbound signals)" },
+            "instance": { "type": "integer", "required": false, "doc": "optional Thing id to target one behavior instance; omit to take the first instance in fold order" }
+          } },
+          { "name": "audit", "args": {} }
+        ]
+      }
     },
     "events": ["breakpoint_hit", "watch_fired", "diverged"]
   }

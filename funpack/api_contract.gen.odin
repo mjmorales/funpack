@@ -77,3 +77,390 @@ CMD_STATUS :: "status"
 EVENT_BREAKPOINT_HIT :: "breakpoint_hit"
 EVENT_WATCH_FIRED :: "watch_fired"
 EVENT_DIVERGED :: "diverged"
+
+// --- MCP tools/list projection (Tool_Spec table) ----------------------------
+//
+// Generated FROM contract/funpack-api.json command_groups: each §28 command
+// becomes one MCP tool. input_schema is the wire `args` shape PLUS the always-
+// present session_id and (for observe-class commands) the optional `branch`
+// selector. A future tools/list reads TOOL_SPECS; tools/call dispatches on
+// .command / .group — one source so the advertised schema cannot drift from
+// dispatch (the §28 wire arg names ARE the dispatch hints).
+
+// Tool_Arg is one MCP input_schema property: the JSON name, its JSON-Schema
+// type, whether it is required, and its description.
+Tool_Arg :: struct {
+	name:      string,
+	json_type: string,
+	required:  bool,
+	doc:       string,
+}
+
+// Tool_Spec is one MCP tool projected from a §28 command: its advertised tool
+// name and full input_schema (args), plus the dispatch hints (the §28 wire
+// command, its declaring group, and the determinism class) tools/call switches
+// on. session_scoped is true for every §28 command (all ride a named session);
+// the field is explicit so a future one-shot compute tool can sit in the same
+// table with session_scoped = false.
+Tool_Spec :: struct {
+	name:           string,
+	command:        string,
+	group:          string,
+	class:          string,
+	session_scoped: bool,
+	args:           []Tool_Arg,
+}
+
+// SESSION_ID_ARG is the universal session selector every §28 tool carries — the
+// MCP handle that keys the live debug session a tools/call dispatches into.
+SESSION_ID_ARG :: Tool_Arg{
+	name      = "session_id",
+	json_type = "string",
+	required  = true,
+	doc       = "opaque id of the live session, as returned by session_start",
+}
+
+// BRANCH_ARG is the optional §28 observe-addressing selector every observe-class
+// tool carries: omitted reads the canonical timeline, set reads a checkout-
+// created branch.
+BRANCH_ARG :: Tool_Arg{
+	name      = "branch",
+	json_type = "string",
+	required  = false,
+	doc       = "optional §28 observe-addressing selector: omit for the canonical timeline, set to a checkout-created branch name",
+}
+
+// TOOL_SPECS is the generated tools/list projection, one entry per §28 command
+// in contract order (groups sorted, commands as declared). A package-level `:=`
+// (not `::`) because an Odin slice literal is not a compile-time constant; it is
+// read-only by convention (a generated table tools/list walks, never mutates).
+TOOL_SPECS := []Tool_Spec{
+	{
+		name           = "break",
+		command        = "break",
+		group          = "break",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "body", json_type = "object", required = false, doc = "break{when:<pred>} form: the one-expression predicate node forest over the wire; required with target"},
+			{name = "on_signal", json_type = "string", required = false, doc = "break{on_signal:S} form: pause when a signal of type S is routed during a tick; mutually exclusive with target/body"},
+			{name = "target", json_type = "string", required = false, doc = "break{when:<pred>} form: the behavior to fold the predicate against; required with body, mutually exclusive with on_signal"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "watch",
+		command        = "watch",
+		group          = "break",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "body", json_type = "object", required = true, doc = "the one-expression watched-expression node forest over the wire"},
+			{name = "target", json_type = "string", required = true, doc = "the behavior to watch; watch{<expr>} fires when the expression value changes across steps"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "clear",
+		command        = "clear",
+		group          = "break",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "handle", json_type = "integer", required = true, doc = "the live-probe handle minted by a prior break/watch to remove"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "control_inject_input",
+		command        = "inject_input",
+		group          = "control",
+		class          = "control",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "axes", json_type = "array", required = false, doc = "2D analog records (each {player, action, x, y} as Fixed raw-bit strings)"},
+			{name = "held", json_type = "array", required = false, doc = "input records held DOWN (each {player, action})"},
+			{name = "pressed", json_type = "array", required = false, doc = "input records pressed THIS tick (each {player, action})"},
+			{name = "ticks", json_type = "integer", required = false, doc = "number of full pipeline ticks to fold the snapshot through (>=1, default 1)"},
+			{name = "values", json_type = "array", required = false, doc = "1D analog records (each {player, action, value} as a Fixed raw-bit string)"},
+		},
+	},
+	{
+		name           = "control_set",
+		command        = "set",
+		group          = "control",
+		class          = "control",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "field", json_type = "string", required = true, doc = "the field/column to overwrite"},
+			{name = "instance", json_type = "integer", required = false, doc = "the instance id of the row to set (defaults to 0)"},
+			{name = "thing", json_type = "string", required = true, doc = "the thing (table) declaring the field to force"},
+			{name = "value", json_type = "string", required = true, doc = "the new value, encoded against the field's declared type (artifact literal encoding)"},
+		},
+	},
+	{
+		name           = "control_spawn",
+		command        = "spawn",
+		group          = "control",
+		class          = "control",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "fields", json_type = "object", required = false, doc = "field overrides keyed by field name, each encoded against the field's declared type; unspecified fields take the declared default"},
+			{name = "thing", json_type = "string", required = true, doc = "the thing (table) to spawn an instance of"},
+		},
+	},
+	{
+		name           = "control_despawn",
+		command        = "despawn",
+		group          = "control",
+		class          = "control",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "instance", json_type = "integer", required = false, doc = "the instance id of the row to despawn"},
+			{name = "thing", json_type = "string", required = false, doc = "the thing (table) of the instance to despawn"},
+		},
+	},
+	{
+		name           = "control_emit",
+		command        = "emit",
+		group          = "control",
+		class          = "control",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "signal", json_type = "string", required = true, doc = "the signal type name to emit"},
+			{name = "value", json_type = "string", required = true, doc = "the signal payload, encoded as a record of the signal type (artifact literal encoding)"},
+		},
+	},
+	{
+		name           = "control_reload",
+		command        = "reload",
+		group          = "control",
+		class          = "control",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "artifact", json_type = "string", required = true, doc = "path to the recompiled artifact to hot-reload the branch onto"},
+		},
+	},
+	{
+		name           = "control_branch",
+		command        = "branch",
+		group          = "control",
+		class          = "control",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "tick", json_type = "integer", required = false, doc = "the canonical tick to fork at (default: the canonical head); -1 forks post-startup"},
+		},
+	},
+	{
+		name           = "control_checkout",
+		command        = "checkout",
+		group          = "control",
+		class          = "control",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "target", json_type = "string", required = false, doc = "which lineage to make active: 'branch' (default) or 'canonical'"},
+		},
+	},
+	{
+		name           = "inspect_signals",
+		command        = "signals",
+		group          = "inspect",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "tick", json_type = "integer", required = true, doc = "the recorded tick whose routed signals to dump"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "inspect_pipeline",
+		command        = "pipeline",
+		group          = "inspect",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "inspect_trace",
+		command        = "trace",
+		group          = "inspect",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "behavior", json_type = "string", required = true, doc = "the behavior name whose per-instance (in -> out) to trace"},
+			{name = "tick", json_type = "integer", required = true, doc = "the recorded tick to trace the behavior at"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "inspect_diff",
+		command        = "diff",
+		group          = "inspect",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "from", json_type = "integer", required = true, doc = "the earlier retained tick of the diff"},
+			{name = "to", json_type = "integer", required = true, doc = "the later retained tick of the diff"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "inspect_replay_behavior",
+		command        = "replay_behavior",
+		group          = "inspect",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "behavior", json_type = "string", required = true, doc = "the behavior name to re-run in isolation from its captured inputs"},
+			{name = "tick", json_type = "integer", required = true, doc = "the recorded tick to replay the behavior at"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "inspect_draw_list",
+		command        = "draw_list",
+		group          = "inspect",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "tick", json_type = "integer", required = true, doc = "the committed tick whose §20 draw-list to dump (the deterministic, always-serving render projection)"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "inspect_screenshot",
+		command        = "screenshot",
+		group          = "inspect",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "include_drawlist", json_type = "boolean", required = false, doc = "when true, the deterministic §20 draw-list rides along with the pixels (default false: visual-only)"},
+			{name = "tick", json_type = "integer", required = true, doc = "the committed tick to capture as a presented frame (pixels)"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "capture_test",
+		command        = "capture_test",
+		group          = "self_heal",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "behavior", json_type = "string", required = true, doc = "name of the behavior whose step to capture into a regression test"},
+			{name = "instance", json_type = "integer", required = false, doc = "optional Thing id to target one behavior instance; omit to take the first instance in fold order"},
+			{name = "tick", json_type = "integer", required = true, doc = "the recorded tick at which to capture the behavior's (self, resources, inbound signals)"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "audit",
+		command        = "audit",
+		group          = "self_heal",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "time_load",
+		command        = "load",
+		group          = "time",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "time_run",
+		command        = "run",
+		group          = "time",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "until", json_type = "integer", required = false, doc = "target tick to run forward to; omitted runs to the last recorded tick (a target behind the cursor is refused — use rewind)"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "time_pause",
+		command        = "pause",
+		group          = "time",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "time_step",
+		command        = "step",
+		group          = "time",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "time_rewind",
+		command        = "rewind",
+		group          = "time",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "tick", json_type = "integer", required = true, doc = "target tick to rewind the cursor to (>= -1, within the recording); restores the nearest snapshot at-or-before and re-folds forward"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "time_reset",
+		command        = "reset",
+		group          = "time",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "time_status",
+		command        = "status",
+		group          = "time",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			BRANCH_ARG,
+		},
+	},
+}
