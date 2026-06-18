@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"image"
 	"image/png"
+	"strings"
 
 	"github.com/mjmorales/funpack/mcp/internal/contract"
 	"github.com/mjmorales/funpack/mcp/internal/mcperr"
@@ -424,10 +425,12 @@ func registerScreenshotTool(srv *mcp.Server, logger zerolog.Logger, resolve call
 			res, protoErr := mcperr.ToolError(err)
 			return res, ScreenshotOutput{}, protoErr
 		}
-		// A headless / no-display runtime answers the present-boundary crossing with
-		// a §28 ok:false refusal — surface it as a session IsError exactly like every
-		// other tool, NOT as a transcode attempt over an absent payload.
-		if res, protoErr, isErr := mapResponseError(resp, "inspect_screenshot"); isErr {
+		// A funpack binary built WITHOUT FUNPACK_LIVE answers the present-boundary
+		// crossing with a §28 ok:false refusal — own the precise diagnostic at THIS
+		// boundary (the demux/session-bridge boundary pattern: the boundary owns its
+		// message rather than forwarding the upstream string) rather than forwarding
+		// the runtime string raw, and NEVER attempt a transcode over an absent payload.
+		if res, protoErr, isErr := mapScreenshotRefusal(resp); isErr {
 			return res, ScreenshotOutput{}, protoErr
 		}
 
@@ -458,6 +461,66 @@ func registerScreenshotTool(srv *mcp.Server, logger zerolog.Logger, resolve call
 		logger.Debug().Str("session_id", in.SessionID).Int64("tick", raw.Tick).Int("w", raw.Width).Int("h", raw.Height).Msg("inspect_screenshot captured")
 		return result, out, nil
 	})
+}
+
+// mapScreenshotRefusal owns the inspect_screenshot present-boundary diagnostic at
+// the MCP boundary, instead of forwarding the runtime's §28 error string verbatim
+// the way the generic mapResponseError does (the demux/session-bridge boundary
+// pattern: the boundary that knows the operation names the cause, it does not leak
+// an upstream string a caller cannot reliably act on). screenshot is the one observe command that is NOT
+// sim-pure — it crosses the render/present boundary, which a funpack binary built
+// WITHOUT -define:FUNPACK_LIVE=true cannot serve (its session_capture_frame is the
+// no-op stub). That capability is a compile-time property of the funpack BINARY, not
+// of the built artifact: there is no per-artifact live flag to set, so the durable
+// remedy is the deterministic twin — inspect_draw_list ALWAYS serves (headless
+// included) and IS the determinism-path render output, the canonical headless
+// screenshot substitute.
+//
+// On a §28 ok:false (the present-boundary refusal — or any screenshot refusal that
+// is NOT a caller mistake like a bad tick), it emits the MCP's own structured
+// CategorySession envelope naming the cause AND directing the caller to
+// inspect_draw_list, preserving the runtime's original text as Detail for fidelity.
+// A caller-side refusal (missing/out-of-range tick, unknown branch) is forwarded as
+// the runtime stated it — that is the caller's input to fix, not a boundary the MCP
+// must reframe. It returns isErr=false for an ok:true response, leaving the caller
+// to decode + transcode.
+func mapScreenshotRefusal(resp *contract.Response) (*mcp.CallToolResult, error, bool) {
+	if resp.Ok {
+		return nil, nil, false
+	}
+	runtimeText := ""
+	if resp.Error != nil {
+		runtimeText = *resp.Error
+	}
+	// A caller-input refusal is the caller's to fix — forward it unreframed so the
+	// model corrects the argument rather than chasing the present boundary.
+	if isScreenshotInputRefusal(runtimeText) {
+		res, protoErr := mcperr.ToolError(mcperr.New(mcperr.CategorySession, runtimeText))
+		return res, protoErr, true
+	}
+	e := mcperr.New(mcperr.CategorySession,
+		"inspect_screenshot crosses the render/present boundary, which this funpack binary cannot serve — pixel capture needs a funpack built with FUNPACK_LIVE. Use inspect_draw_list for the deterministic render projection: it is screenshot's sim-pure twin and always serves headless (it IS the determinism-path render output)")
+	if runtimeText != "" {
+		e.Detail = "runtime: " + runtimeText
+	}
+	res, protoErr := mcperr.ToolError(e)
+	return res, protoErr, true
+}
+
+// isScreenshotInputRefusal reports whether a §28 screenshot refusal is a caller-side
+// argument mistake (a tick out of range, a missing tick, an unknown branch) rather
+// than the present-boundary crossing. Those carry distinct fixed runtime text
+// (runtime/introspect.odin observe_screenshot), and the caller fixes the ARGUMENT,
+// so the MCP forwards them unreframed instead of pointing at inspect_draw_list. The
+// match is on the runtime's stable refusal substrings — the present-boundary refusal
+// (the FUNPACK_LIVE case) is everything else.
+func isScreenshotInputRefusal(runtimeText string) bool {
+	for _, marker := range []string{"tick out of range", "missing args.tick", "unknown branch"} {
+		if strings.Contains(runtimeText, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // qoiToPNG decodes a base64-QOI screenshot payload into RGBA8 and re-encodes it as

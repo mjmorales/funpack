@@ -68,8 +68,8 @@ Tools split into two classes:
 | `inspect_trace` | You want to trace one behavior's per-instance (in → out) at a tick — the bounded re-fold. |
 | `inspect_diff` | You want the committed-state diff between two retained ticks (per-table row adds/removes/changed fields). |
 | `inspect_replay_behavior` | You want to confirm one behavior re-runs purely from its captured inputs — the purity theorem, checkable (`refold_matches=false` is a bug to file). |
-| `inspect_draw_list` | You want one committed tick's deterministic draw-list (screenshot's sim-pure twin; always serves, headless included). |
-| `inspect_screenshot` | You want to **SEE** one committed tick as a presented PNG frame (needs a `FUNPACK_LIVE` build; a headless runtime refuses — use `inspect_draw_list` instead). |
+| `inspect_draw_list` | You want one committed tick's deterministic draw-list (screenshot's sim-pure twin; **always serves headless** — it IS the determinism-path render output, so it is the headless substitute for `inspect_screenshot`). |
+| `inspect_screenshot` | You want to **SEE** one committed tick as a presented PNG frame. Crosses the render/present boundary — only a funpack built with `FUNPACK_LIVE` can serve it (a property of the funpack **binary**, not the built artifact). The shipped funpack binary IS the `FUNPACK_LIVE` build, so this serves even headless (SDL dummy video driver — no display needed); a binary built without it refuses with a precise error pointing at `inspect_draw_list`. |
 
 ### Control (perturbing — forks a non-warranted branch off the canonical recording)
 

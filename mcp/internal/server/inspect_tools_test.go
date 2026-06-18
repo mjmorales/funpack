@@ -568,29 +568,87 @@ func TestInspectScreenshotEmitsPNGImageAndMetadata(t *testing.T) {
 	}
 }
 
-// TestInspectScreenshotRefusalSurfacesAsSessionError proves a §28 screenshot refusal
-// (a headless / no-display runtime that cannot cross the present boundary) maps to a
-// session IsError envelope — NOT a transcode attempt over an absent payload. The
-// runtime's boundary-refusal text reaches the model so it falls back to draw_list.
-func TestInspectScreenshotRefusalSurfacesAsSessionError(t *testing.T) {
-	const refusal = "screenshot crosses the render/present boundary — requires a FUNPACK_LIVE build with a display"
+// TestInspectScreenshotPresentBoundaryRefusalNamesDrawListSubstitute proves the
+// present-boundary refusal (a funpack binary built WITHOUT FUNPACK_LIVE) surfaces
+// the MCP's OWN precise CategorySession envelope — naming the cause (the binary
+// cannot cross the render/present boundary, pixel capture needs FUNPACK_LIVE) AND
+// directing the caller to inspect_draw_list as the headless substitute — NOT a bare
+// forward of the runtime string and NOT a transcode over an absent payload. The
+// runtime's original text is preserved in Detail for fidelity. This mirrors the
+// demux/session-bridge boundary pattern: the boundary that knows the operation owns
+// the message rather than forwarding the upstream string.
+func TestInspectScreenshotPresentBoundaryRefusalNamesDrawListSubstitute(t *testing.T) {
+	// The exact text runtime/introspect.odin observe_screenshot returns on the
+	// FUNPACK_LIVE present-boundary refusal — the MCP must NOT depend on it staying
+	// precise, but it preserves it as Detail.
+	const runtimeRefusal = "screenshot crosses the render/present boundary — requires a FUNPACK_LIVE build with a display (use draw_list for the sim-pure, headless draw-list dump)"
 	fake := &inspectFakeCaller{handler: func(cmd string, _ json.RawMessage) (*contract.Response, error) {
-		return inspectErrResp(cmd, refusal), nil
+		return inspectErrResp(cmd, runtimeRefusal), nil
 	}}
 	cs, ctx := connectInspectTools(t, fake)
 
 	res := callTool(t, cs, ctx, "inspect_screenshot", map[string]any{"session_id": "s1", "tick": 1})
 	if !res.IsError {
-		t.Fatal("inspect_screenshot did not flag IsError for a §28 boundary refusal")
+		t.Fatal("inspect_screenshot did not flag IsError for a §28 present-boundary refusal")
 	}
 	if firstImageContent(res) != nil {
 		t.Fatal("inspect_screenshot emitted an image content block on a refusal")
 	}
 	got := callText(res)
-	for _, want := range []string{`"category":"session"`, "render/present boundary"} {
+	// The envelope must be session-category, name the real cause (present boundary +
+	// FUNPACK_LIVE), direct to the inspect_draw_list substitute, and carry the
+	// runtime's original text as Detail — never a bare/opaque error.
+	for _, want := range []string{
+		`"category":"session"`,
+		"render/present boundary",
+		"FUNPACK_LIVE",
+		"inspect_draw_list",
+		`"detail":"runtime: ` + runtimeRefusal,
+	} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("inspect_screenshot refusal envelope missing %q; got: %s", want, got)
+			t.Fatalf("inspect_screenshot present-boundary envelope missing %q; got: %s", want, got)
 		}
+	}
+	// It must NOT misread as a session-timeout / bad-artifact failure.
+	for _, forbidden := range []string{"timed out", "context canceled", "bad artifact", "session was closed"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("inspect_screenshot present-boundary envelope leaked a misleading reading %q; got: %s", forbidden, got)
+		}
+	}
+}
+
+// TestInspectScreenshotInputRefusalIsForwardedUnreframed proves a caller-side
+// argument refusal (tick out of range, missing tick, unknown branch) is forwarded
+// as the runtime stated it — the caller fixes the ARGUMENT, so the MCP does NOT
+// reframe it as the present-boundary case or point at inspect_draw_list (that would
+// misdirect the caller away from the real fix).
+func TestInspectScreenshotInputRefusalIsForwardedUnreframed(t *testing.T) {
+	cases := []string{"tick out of range", "missing args.tick", "unknown branch — checkout an existing lineage"}
+	for _, runtimeRefusal := range cases {
+		t.Run(runtimeRefusal, func(t *testing.T) {
+			fake := &inspectFakeCaller{handler: func(cmd string, _ json.RawMessage) (*contract.Response, error) {
+				return inspectErrResp(cmd, runtimeRefusal), nil
+			}}
+			cs, ctx := connectInspectTools(t, fake)
+
+			res := callTool(t, cs, ctx, "inspect_screenshot", map[string]any{"session_id": "s1", "tick": 999})
+			if !res.IsError {
+				t.Fatal("inspect_screenshot did not flag IsError for a §28 input refusal")
+			}
+			got := callText(res)
+			if !strings.Contains(got, `"category":"session"`) {
+				t.Fatalf("inspect_screenshot input refusal not session-category; got: %s", got)
+			}
+			if !strings.Contains(got, runtimeRefusal) {
+				t.Fatalf("inspect_screenshot input refusal did not forward the runtime text %q; got: %s", runtimeRefusal, got)
+			}
+			// A caller-input refusal must NOT be reframed as the present boundary.
+			for _, forbidden := range []string{"FUNPACK_LIVE", "inspect_draw_list", "render/present boundary"} {
+				if strings.Contains(got, forbidden) {
+					t.Fatalf("inspect_screenshot input refusal %q was wrongly reframed (leaked %q); got: %s", runtimeRefusal, forbidden, got)
+				}
+			}
+		})
 	}
 }
 

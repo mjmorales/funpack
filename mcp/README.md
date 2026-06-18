@@ -27,9 +27,12 @@ task mcp:run     # serve over stdio
 
 ## Tools
 
-| Tool     | Purpose                                            |
-|----------|----------------------------------------------------|
-| `health` | Liveness + build version (registration smoke test) |
+The full tool surface (one-shot verbs, §28 session tools, docs search) is
+documented in `plugins/funpack/references/mcp-tools.md` — the agent-facing routing
+table, kept in sync with `server.New`. A few notes that live with the code:
 
-The operational surface (one-shot verbs, §28 session tools, docs search) lands
-under the `funpack-mcp` milestone.
+| Tool                | Note                                                                                                                                              |
+|---------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
+| `health`            | Liveness + build version (registration smoke test).                                                                                               |
+| `inspect_draw_list` | One committed tick's deterministic §20 draw-list. Always serves headless — it IS the determinism-path render output, screenshot's sim-pure twin.   |
+| `inspect_screenshot`| Captures a committed tick as a PNG the model can SEE. Crosses the render/present boundary, which only a funpack built with `FUNPACK_LIVE` serves. A binary without it refuses with a precise error directing the caller to `inspect_draw_list` (the headless substitute). The shipped funpack binary IS the `FUNPACK_LIVE` build, so screenshot serves even headless (SDL dummy video driver — no display needed). |

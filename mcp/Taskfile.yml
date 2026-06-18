@@ -88,13 +88,43 @@ tasks:
       Fail if the committed docs corpus has drifted from the in-repo spec/ +
       stdlib/. Regenerates in memory through the same generator and byte/hash-compares
       against the committed snapshot. Skips cleanly (PASS) when FUNPACK_SPEC_DIR /
-      the spec tree is absent, so it is hermetic off-spec. The CI
-      invocation that runs this is wired separately by
-      cloud-infra (it tofu-pushes .github/); this target is the in-repo check logic.
+      the spec tree is absent, so it is hermetic off-spec. Also runs the
+      surface-parity gate (the content-level check the version pin cannot be).
+      The CI invocation that runs this is wired separately by cloud-infra (it
+      tofu-pushes .github/); this target is the in-repo check logic.
     cmds:
-      - go test ./internal/docs/ -run 'CorpusPin|MutatedManifest' -count=1
+      - go test ./internal/docs/ -run 'CorpusPin|MutatedManifest|SurfaceParity|NoStaleResidual|SurfaceDumpFixture' -count=1
     env:
       FUNPACK_SPEC_DIR: '{{.FUNPACK_SPEC_DIR}}'
+
+  surface-dump-regen:
+    desc: >-
+      Regenerate the committed compiler-surface fixture
+      (internal/docs/testdata/introspect.json) by building a working-tree funpack
+      and capturing `funpack introspect`. The surface-parity gate reads this
+      fixture; run this whenever surface.odin changes the live stdlib surface.
+      The default (non-LIVE) build is used — `funpack introspect` projects the
+      surface.odin rodata and is byte-identical with or without FUNPACK_LIVE, so
+      this needs no libsdl2 link. Requires the Odin toolchain.
+    dir: ..
+    cmds:
+      - odin build cmd/funpack -out:{{.TMPBIN}}
+      - '{{.TMPBIN}} introspect > mcp/internal/docs/testdata/introspect.json'
+      - rm -f {{.TMPBIN}}
+    vars:
+      TMPBIN:
+        sh: echo "${TMPDIR:-/tmp}/funpack-surface-dump-$$"
+
+  surface-parity-check:
+    desc: >-
+      Run only the surface-parity gate: the docs corpus + stdlib/engine/*.fun
+      signature files vs the compiler-authoritative `funpack introspect` dump.
+      Fails on a divergence the .fun/corpus advertise that the compiler rejects
+      (a same-version surface divergence) beyond the audited residual allow-list. The
+      freshness-pin sub-test rebuilds funpack when Odin is present (skips cleanly
+      otherwise); the parity diff itself is hermetic off the committed fixture.
+    cmds:
+      - go test ./internal/docs/ -run 'SurfaceParity|NoStaleResidual|SurfaceDumpFixture' -count=1 -v
 
   tidy:
     desc: Tidy and verify module dependencies
