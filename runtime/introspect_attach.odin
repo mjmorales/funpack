@@ -491,6 +491,123 @@ attach_port_file_contents :: proc(port: int, allocator := context.allocator) -> 
 	return fmt.aprintf("%d\n", port, allocator = allocator)
 }
 
+// Open_Session_Result discriminates how open_session_for_artifact resolved a
+// session-open request. It is the seam's whole point: the helper is the SHARED,
+// stdout-clean opener for BOTH attach (the FUNPACK_LIVE TCP arm below) and the
+// future `funpack mcp` verb, and the two callers report failures differently — the
+// attach arm prints its own stderr messages (it owns the artifact-path/port-file
+// context), the MCP verb maps each variant to a JSON-RPC error object on a transport
+// where stdout belongs to the protocol. Returning a discriminated result instead of
+// printing inside the helper keeps it transport-agnostic and stdout-clean (mandatory
+// for the MCP caller), and the six variants map 1:1 to the §28.2 attach stderr
+// messages so the extraction is lossless. Closed enum (§04 closed-taxonomy
+// discipline): every open-failure mode is one named variant, never a bare bool.
+Open_Session_Result :: enum {
+	Ok, // the session opened — `session` is live, `program` is the heap artifact it borrows
+	Artifact_Read_Failed, // the artifact path could not be read off disk
+	Artifact_Malformed, // the artifact bytes did not parse (load_program refused)
+	Replay_Read_Failed, // a replay log was requested but could not be read off disk
+	Replay_Malformed, // the replay log read but did not parse (read_replay refused)
+	Replay_Identity_Mismatch, // the §09 §5 identity gate refused: log built/seeded for another artifact
+}
+
+// open_session_for_artifact is the SHARED, stdout-clean session opener — the pure
+// (default-build, UN-gated) orchestration both the FUNPACK_LIVE attach arm and the
+// future `funpack mcp` verb fold over. Every leaf proc it sequences (load_program,
+// read_replay_file, identity_from_program*, open_debug_session) already lives in the
+// SDL-free default build; only the ORCHESTRATION was trapped inside the when-gated
+// attach arm, so it is hoisted here to compile and be unit-tested in the `odin test`
+// floor. It returns a DISCRIMINATED Open_Session_Result rather than printing, so the
+// MCP caller (where stdout is owned by JSON-RPC) maps failures to error objects and
+// the attach caller prints its own stderr context — neither writes through the helper.
+//
+// THE RECORDING the session folds (the §28 §3 time-travel substrate) is sourced two
+// ways, mirroring replay.odin's identity-gated path:
+//   - WITH a replay log (attach over a recorded run): read_replay_file parses the
+//     real per-tick inputs + the pinned seed; the SAME §09 §5 identity check replay
+//     gates with (an every-field Replay_Identity compare) refuses a log recorded
+//     against a different build or seed BEFORE opening — never fold mismatched
+//     inputs. The seed rides through to open_debug_session, so a seeded run (snake)
+//     reproduces its RNG-driven setup.
+//   - WITHOUT one (a fresh open): an ATTACH_FRESH_TICKS window of empty inputs,
+//     seedless (NO_SEED). A seeded artifact opened fresh has no recorded seed, so
+//     its RNG-driven setup is not populated — the recorded-log path is the one that
+//     pins a seed (the limitation of a seedless fresh open).
+//
+// DETERMINISM WARRANTY UNTOUCHED (§28 §2): open_debug_session folds the recording
+// through the same production seam every driver uses, and the served session is
+// non-perturbing on the canonical chain.
+//
+// OWNERSHIP: on `Ok` the helper returns the live session and the heap `program` it
+// allocated with `new(Program, allocator)` (the session BORROWS program, so the
+// caller owns its lifetime); the snapshots/fresh-window are also on `allocator`, so a
+// per-session arena allocator frees the whole session in one shot. On any non-`Ok`
+// result the helper returns a zero Debug_Session and a `nil` program; any partial
+// allocation made before the failure (the new'd program, read bytes) is reclaimed by
+// the caller's session-scoped arena — both real callers own one. A future
+// context.allocator caller must wrap this in an arena to reclaim a failure-path leak.
+open_session_for_artifact :: proc(
+	artifact_path: string,
+	replay_log: string,
+	has_replay: bool,
+	allocator := context.allocator,
+) -> (
+	session: Debug_Session,
+	program: ^Program,
+	result: Open_Session_Result,
+) {
+	artifact_bytes, read_err := os.read_entire_file_from_path(artifact_path, allocator)
+	if read_err != nil {
+		return {}, nil, .Artifact_Read_Failed
+	}
+	program = new(Program, allocator)
+	loaded, load_err := load_program(string(artifact_bytes), allocator)
+	if load_err != .None {
+		return {}, nil, .Artifact_Malformed
+	}
+	program^ = loaded
+
+	// The recording the session pre-folds. A replay log supplies the real recorded
+	// inputs + seed (identity-gated against the loaded build, exactly as replay does);
+	// absent one, an empty-input window seedless.
+	snapshots: []Input
+	run_seed := NO_SEED
+	if has_replay {
+		log, log_ok, io_ok := read_replay_file(replay_log, allocator)
+		if !io_ok {
+			return {}, nil, .Replay_Read_Failed
+		}
+		if !log_ok {
+			return {}, nil, .Replay_Malformed
+		}
+		// The §09 §5 identity gate: refuse a log recorded against a different build or
+		// seed BEFORE opening, so the session never folds inputs shaped for another
+		// artifact. The seed rides from the log so a seeded run reproduces its setup.
+		// The recorded identity is rebuilt from the loaded artifact under the log's
+		// OWN seed (identity_from_program_seeded folds the seed into the fingerprint),
+		// so a build-or-seed mismatch is a plain Replay_Identity inequality — the same
+		// every-field check replay.odin gates with, over the struct's public fields.
+		if log.identity.has_seed {
+			run_seed = seeded_run(log.identity.seed)
+		}
+		loaded_identity :=
+			log.identity.has_seed ? identity_from_program_seeded(program^, string(artifact_bytes), log.identity.seed) : identity_from_program(program^, string(artifact_bytes))
+		if log.identity != loaded_identity {
+			return {}, nil, .Replay_Identity_Mismatch
+		}
+		snapshots = log.snapshots
+	} else {
+		fresh := make([]Input, ATTACH_FRESH_TICKS, allocator)
+		for i in 0 ..< ATTACH_FRESH_TICKS {
+			fresh[i] = empty()
+		}
+		snapshots = fresh
+	}
+
+	session = open_debug_session(program, snapshots, run_seed, allocator)
+	return session, program, .Ok
+}
+
 // --- The core:net socket loop (when-gated: the ONLY blocking-IO code here) ---
 
 when #config(FUNPACK_LIVE, false) {
@@ -573,29 +690,19 @@ when #config(FUNPACK_LIVE, false) {
 	// auth token SOURCE (a --token-file over the FUNPACK_ATTACH_TOKEN env, via
 	// attach_auth_resolve) and refuses up front if no secret is present (the
 	// auth-required floor — NO secret ⇒ NO server, enforced BEFORE loading the
-	// artifact), (2) loads the artifact, (3) opens a Debug_Session over a recording, and
-	// (4) serves the §28 introspection contract on the auth-gated loopback port via
-	// run_attach_server, forwarding the ephemeral-port + --port-file handshake. It is
-	// when-gated because run_attach_server's core:net loop is.
+	// artifact), (2) opens a Debug_Session over a recording through the SHARED pure
+	// open_session_for_artifact helper, mapping its discriminated result to the §28.2
+	// stderr messages, and (3) serves the §28 introspection contract on the auth-gated
+	// loopback port via run_attach_server, forwarding the ephemeral-port + --port-file
+	// handshake. It is when-gated because run_attach_server's core:net loop is.
 	//
-	// THE RECORDING the session folds (the §28 §3 time-travel substrate) is sourced two
-	// ways, mirroring replay.odin's identity-gated path:
-	//   - WITH a replay log (attach over a recorded run): read_replay_file parses the
-	//     real per-tick inputs + the pinned seed; the SAME §09 §5 identity check replay
-	//     gates with (an every-field Replay_Identity compare) refuses a log recorded
-	//     against a different build or seed BEFORE opening — never fold mismatched
-	//     inputs. The seed rides through to open_debug_session, so a seeded run (snake)
-	//     reproduces its RNG-driven setup.
-	//   - WITHOUT one (a fresh attach): an ATTACH_FRESH_TICKS window of empty inputs,
-	//     seedless (NO_SEED). A seeded artifact attached fresh has no recorded seed, so
-	//     its RNG-driven setup is not populated — the recorded-log path is the one that
-	//     pins a seed (noted: the limitation of a seedless fresh attach).
-	//
-	// DETERMINISM WARRANTY UNTOUCHED (§28 §2): attach activates a TRANSPORT over the
-	// unchanged observe/control session — open_debug_session folds the recording through
-	// the same production seam every driver uses, and the served session is
-	// non-perturbing on the canonical chain. Returns a process exit code (non-zero on a
-	// usage, load, replay-identity, or listen failure).
+	// AUTH STAYS CALLER-SIDE: the auth-required floor is resolved + enforced HERE, NOT
+	// inside open_session_for_artifact — attach owns a listening TCP port so it must
+	// have a secret, while the stdio `funpack mcp` verb (the other helper caller) deletes
+	// auth entirely (the host owns the inherited fds). The shared opener is therefore
+	// auth-free; auth is the attach arm's own floor, bound to the TCP server it gates.
+	// Returns a process exit code (non-zero on a usage, load, replay-identity, or listen
+	// failure).
 	run_attach_session :: proc(args: []string) -> int {
 		parsed, args_ok := parse_attach_args(args)
 		if !args_ok {
@@ -626,64 +733,34 @@ when #config(FUNPACK_LIVE, false) {
 			return 1
 		}
 
-		artifact_bytes, read_err := os.read_entire_file_from_path(parsed.artifact, context.allocator)
-		if read_err != nil {
+		// Open the session over the SHARED pure helper, then map its discriminated
+		// result to attach's own stderr context (the helper never prints — it returns a
+		// transport-agnostic Open_Session_Result so the stdio MCP verb can reuse it).
+		session, _, result := open_session_for_artifact(parsed.artifact, parsed.replay_log, parsed.has_replay)
+		switch result {
+		case .Ok:
+		// fall through to serve below
+		case .Artifact_Read_Failed:
 			fmt.eprintfln("error: cannot read artifact %s", parsed.artifact)
 			return 1
-		}
-		program := new(Program, context.allocator)
-		loaded, load_err := load_program(string(artifact_bytes), context.allocator)
-		if load_err != .None {
-			fmt.eprintfln("error: malformed artifact %s (%v)", parsed.artifact, load_err)
+		case .Artifact_Malformed:
+			fmt.eprintfln("error: malformed artifact %s", parsed.artifact)
+			return 1
+		case .Replay_Read_Failed:
+			fmt.eprintfln("error: cannot read replay log %s", parsed.replay_log)
+			return 1
+		case .Replay_Malformed:
+			fmt.eprintfln("error: malformed replay log %s", parsed.replay_log)
+			return 1
+		case .Replay_Identity_Mismatch:
+			fmt.eprintfln(
+				"error: replay log %s does not match artifact %s (different build or seed)",
+				parsed.replay_log,
+				parsed.artifact,
+			)
 			return 1
 		}
-		program^ = loaded
 
-		// The recording the session pre-folds. A replay log supplies the real recorded
-		// inputs + seed (identity-gated against the loaded build, exactly as replay does);
-		// absent one, an empty-input window seedless.
-		snapshots: []Input
-		run_seed := NO_SEED
-		if parsed.has_replay {
-			log, log_ok, io_ok := read_replay_file(parsed.replay_log, context.allocator)
-			if !io_ok {
-				fmt.eprintfln("error: cannot read replay log %s", parsed.replay_log)
-				return 1
-			}
-			if !log_ok {
-				fmt.eprintfln("error: malformed replay log %s", parsed.replay_log)
-				return 1
-			}
-			// The §09 §5 identity gate: refuse a log recorded against a different build or
-			// seed BEFORE opening, so the session never folds inputs shaped for another
-			// artifact. The seed rides from the log so a seeded run reproduces its setup.
-			// The recorded identity is rebuilt from the loaded artifact under the log's
-			// OWN seed (identity_from_program_seeded folds the seed into the fingerprint),
-			// so a build-or-seed mismatch is a plain Replay_Identity inequality — the same
-			// every-field check replay.odin gates with, over the struct's public fields.
-			if log.identity.has_seed {
-				run_seed = seeded_run(log.identity.seed)
-			}
-			loaded_identity :=
-				log.identity.has_seed ? identity_from_program_seeded(program^, string(artifact_bytes), log.identity.seed) : identity_from_program(program^, string(artifact_bytes))
-			if log.identity != loaded_identity {
-				fmt.eprintfln(
-					"error: replay log %s does not match artifact %s (different build or seed)",
-					parsed.replay_log,
-					parsed.artifact,
-				)
-				return 1
-			}
-			snapshots = log.snapshots
-		} else {
-			fresh := make([]Input, ATTACH_FRESH_TICKS, context.allocator)
-			for i in 0 ..< ATTACH_FRESH_TICKS {
-				fresh[i] = empty()
-			}
-			snapshots = fresh
-		}
-
-		session := open_debug_session(program, snapshots, run_seed, context.allocator)
 		return run_attach_server(&session, auth, parsed.port, parsed.port_file, parsed.has_port_file)
 	}
 
