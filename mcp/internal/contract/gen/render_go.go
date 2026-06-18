@@ -181,7 +181,7 @@ func renderCommands(b *bytes.Buffer, c *ResolvedContract) {
 			b.WriteString("\n")
 		}
 		b.WriteString(fmt.Sprintf("\t// group %q (class %s)\n", g, grp.Class))
-		for _, cmd := range grp.Commands {
+		for _, cmd := range commandNames(grp) {
 			b.WriteString(fmt.Sprintf("\tCmd%s Command = %q\n", goConst(cmd), cmd))
 		}
 	}
@@ -196,7 +196,7 @@ func renderCommands(b *bytes.Buffer, c *ResolvedContract) {
 		if grp.Class == "control" {
 			class = "ClassControl"
 		}
-		for _, cmd := range grp.Commands {
+		for _, cmd := range commandNames(grp) {
 			b.WriteString(fmt.Sprintf("\tCmd%s: %s,\n", goConst(cmd), class))
 		}
 	}
@@ -207,7 +207,7 @@ func renderCommands(b *bytes.Buffer, c *ResolvedContract) {
 	b.WriteString("var commandGroup = map[Command]string{\n")
 	for _, g := range groups {
 		grp := in.CommandGroups[g]
-		for _, cmd := range grp.Commands {
+		for _, cmd := range commandNames(grp) {
 			b.WriteString(fmt.Sprintf("\tCmd%s: %q,\n", goConst(cmd), g))
 		}
 	}
@@ -218,7 +218,7 @@ func renderCommands(b *bytes.Buffer, c *ResolvedContract) {
 	b.WriteString("var Commands = []Command{\n")
 	for _, g := range groups {
 		grp := in.CommandGroups[g]
-		for _, cmd := range grp.Commands {
+		for _, cmd := range commandNames(grp) {
 			b.WriteString(fmt.Sprintf("\tCmd%s,\n", goConst(cmd)))
 		}
 	}

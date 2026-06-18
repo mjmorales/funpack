@@ -83,10 +83,45 @@ type EnvelopeSpec struct {
 	Doc         string   `json:"doc"`
 }
 
-// CommandGroup is a named command surface tagged with its determinism class.
+// CommandGroup is a named command surface tagged with its determinism class. Its
+// commands are an ORDERED list of CommandSpec — each a §28 wire command name plus
+// the arg shape the generator projects into the tools/list input_schema. The list
+// order is preserved on-disk so the generated command consts and the Tool_Spec
+// table are byte-stable.
 type CommandGroup struct {
-	Class    string   `json:"class"`
-	Commands []string `json:"commands"`
+	Class      string        `json:"class"`
+	ToolPrefix string        `json:"tool_prefix"`
+	Commands   []CommandSpec `json:"commands"`
+}
+
+// toolName projects a command's MCP tool name from the group's tool_prefix: a
+// non-empty prefix yields "<prefix>_<command>" (time/inspect/control), an empty
+// prefix yields the bare command name (break/self_heal). The contract owns the
+// prefix (judgment); this projection is the mechanism.
+func (grp CommandGroup) toolName(command string) string {
+	if grp.ToolPrefix == "" {
+		return command
+	}
+	return grp.ToolPrefix + "_" + command
+}
+
+// CommandSpec is one §28 command: its wire name and the per-arg shape map (the
+// object inside a request envelope's `args` field). Args is the hand-authored
+// shape the generator projects; an empty map means the command takes only the
+// session handle. The map decodes with arbitrary key order, so callers iterate it
+// via sortedKeys for byte-stable output.
+type CommandSpec struct {
+	Name string             `json:"name"`
+	Args map[string]ArgSpec `json:"args"`
+}
+
+// ArgSpec is the shape of one §28 wire argument: its JSON-Schema type, whether it
+// is required, and its schema description. These are the fields the generator
+// projects into an MCP input_schema property.
+type ArgSpec struct {
+	Type     string `json:"type"`
+	Required bool   `json:"required"`
+	Doc      string `json:"doc"`
 }
 
 // ResolvedContract is the fully-decoded contract: every "$comment"-interleaved
@@ -179,6 +214,17 @@ func decodeTyped[T any](raw map[string]json.RawMessage) (map[string]T, error) {
 		out[k] = t
 	}
 	return out, nil
+}
+
+// commandNames returns a group's command names in on-disk declaration order — the
+// ordered projection the name-surface renderers (Go consts, Odin CMD_* consts)
+// consume so the generated taxonomy stays byte-stable.
+func commandNames(grp CommandGroup) []string {
+	names := make([]string, len(grp.Commands))
+	for i, c := range grp.Commands {
+		names[i] = c.Name
+	}
+	return names
 }
 
 // sortedKeys returns the keys of m in deterministic ascending order, so that
