@@ -160,7 +160,37 @@ import "core:slice"
 // self-consistent live-vs-refold over the embedded artifact), so the Tilemap-arm and
 // resolved-sprite bytes growing moves no committed golden. Only a sprite/tilemap-bearing
 // draw-list produces the new (correct) bytes.
-FRAME_DIGEST_SCHEMA_VERSION :: 9
+// v10 extends the §20 §1 color taxonomy from a bare nine-member enum to the
+// discriminated Draw_Color (named palette OR the spec's Color::Rgb{r,g,b}
+// exact-value escape, render.odin) — the surface-parity restore. A
+// Color::Rgb now has a first-class draw-list slot (before, it refused the
+// lowering), so an arbitrary 0..1 Fixed-channel color reaches the comparison
+// surface. The fold (write_color) is APPEND-STABLE for every named color: a
+// named member still folds as its single raw ordinal byte (White=0..Gray=8), the
+// exact byte the v5..v9 `u8(c.color)` fold emitted, so a golden whose draw-list
+// paints only named members is byte-UNCHANGED. An Rgb color folds under a RESERVED
+// sentinel byte (RGB_COLOR_TAG = 255, never a named ordinal — the named palette is
+// closed at 9 members) followed by the three raw Q32.32 channel bits, so it can
+// never alias a named color and a Color::Rgb is inside the digest bit-exactly
+// (two folds of the same Rgb are identical, a one-channel-bit divergence moves the
+// digest). No float — the channels are kernel Fixed (§10). The comparability stamp
+// bumps deliberately (§04 closed-enum: a taxonomy change). COMMITTED-GOLDEN
+// INVARIANCE under v10: pong/snake/hunt paint named White, yard's 2D Camera carries
+// no color, krognid paints named Gray/White — NONE emits a Color::Rgb, so every
+// committed pong/snake/hunt/yard/krognid CONTENT digest (per-tick AND session, the
+// session seeded from the frozen FRAME_SESSION_SEED, not this version) is
+// byte-unchanged under the v10 bump. Only a draw-list carrying a Color::Rgb produces
+// the new (correct) sentinel-tagged bytes, and no current golden does.
+FRAME_DIGEST_SCHEMA_VERSION :: 10
+
+// RGB_COLOR_TAG is the reserved leading byte that disambiguates a §20 §1
+// Color::Rgb fold from a named palette member in the canonical color stream
+// (write_color). It is 255 — outside the closed named-palette ordinal range
+// (White=0..Gray=8, and the set is closed at nine members), so a named color (one
+// ordinal byte) and an Rgb color ([255, r, g, b]) can never alias. A new named
+// member would have to reach 255 to collide, which the closed-enum discipline (a
+// 256th palette member is implausible and would itself be a schema bump) forbids.
+RGB_COLOR_TAG :: u8(255)
 
 // Field_Tag is the closed set of leading tag bytes that disambiguate a
 // Field_Value arm in the canonical stream, so two distinct columns never encode
@@ -568,12 +598,12 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		append(buf, u8(Cmd_Tag.Rect))
 		write_vec2(buf, c.at)
 		write_vec2(buf, c.size)
-		append(buf, u8(c.color))
+		write_color(buf, c.color)
 	case Draw_Text:
 		append(buf, u8(Cmd_Tag.Text))
 		write_vec2(buf, c.at)
 		write_length_prefixed(buf, c.text)
-		append(buf, u8(c.color))
+		write_color(buf, c.color)
 	case Draw_Camera:
 		append(buf, u8(Cmd_Tag.Camera))
 		write_vec2(buf, c.at)
@@ -587,12 +617,12 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 	case Draw3_Light:
 		append(buf, u8(Cmd_Tag.Draw3_Light))
 		write_vec3(buf, c.dir)
-		append(buf, u8(c.color))
+		write_color(buf, c.color)
 	case Draw3_Plane:
 		append(buf, u8(Cmd_Tag.Draw3_Plane))
 		write_vec3(buf, c.at)
 		write_vec2(buf, c.size)
-		append(buf, u8(c.color))
+		write_color(buf, c.color)
 	case Draw3_Rigged:
 		append(buf, u8(Cmd_Tag.Draw3_Rigged))
 		write_handle(buf, c.skeleton)
@@ -646,8 +676,9 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		// handle NAME and the cell key (length-prefixed strings — the name the
 		// present pass resolves the §19 asset by, carried verbatim, never resolved
 		// here), the at/size Vec2s (raw Q32.32 bits, `at` the §20 §1 center), the
-		// tint as its closed-§20 palette ordinal (one byte), the flip as its
-		// length-prefixed token (the §18 §1 Flip:: case name), and the layer as its
+		// tint as a §20 §1 Draw_Color (write_color: one ordinal byte for a named
+		// member, the RGB_COLOR_TAG sentinel + three channel bits for a Color::Rgb),
+		// the flip as its length-prefixed token (the §18 §1 Flip:: case name), and the layer as its
 		// raw i64 bits. Every field is in the fold, so a one-bit divergence in any of
 		// them (a moved `at`, a different `cell`, a flipped `flip`, a re-tinted `tint`,
 		// a re-layered `layer`) changes the digest — the entity sprite is inside the
@@ -657,10 +688,32 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		write_length_prefixed(buf, c.cell)
 		write_vec2(buf, c.at)
 		write_vec2(buf, c.size)
-		append(buf, u8(c.tint))
+		write_color(buf, c.tint)
 		write_length_prefixed(buf, c.flip)
 		put_u64_le(buf, u64(c.layer))
 		write_sprite_texture(buf, c.texture)
+	}
+}
+
+// write_color folds a §20 §1 Draw_Color into the canonical color stream (frame
+// digest v10). A NAMED color folds as its single raw palette ordinal byte
+// (White=0..Gray=8) — the EXACT byte the v5..v9 `u8(c.color)` fold emitted, so a
+// named color is byte-identical across the v9→v10 bump and every named-only golden
+// is unmoved. An Rgb color folds under the reserved RGB_COLOR_TAG sentinel byte
+// (255, never a named ordinal) followed by its three raw Q32.32 channel bits
+// (little-endian), so it can never alias a named color and a one-channel-bit
+// divergence moves the digest — the Color::Rgb is inside the comparison surface
+// bit-exactly. No float (§10): the channels are kernel Fixed.
+@(private = "file")
+write_color :: proc(buf: ^[dynamic]u8, color: Draw_Color) {
+	switch color.kind {
+	case .Named:
+		append(buf, u8(color.palette))
+	case .Rgb:
+		append(buf, RGB_COLOR_TAG)
+		put_u64_le(buf, u64(i64(color.r)))
+		put_u64_le(buf, u64(i64(color.g)))
+		put_u64_le(buf, u64(i64(color.b)))
 	}
 }
 

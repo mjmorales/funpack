@@ -434,3 +434,126 @@ test_grid_cells_degenerate :: proc(t: ^testing.T) {
 	testing.expect(t, ok)
 	testing.expect_value(t, len(as_cells(result)), 0)
 }
+
+// --- §08 View iteration + reference surface (gameplay eval) ----------------
+
+// method_call_node builds a `recv.method(args)` call node — a `.Call` whose
+// children[0] is a `.Field` callee (the method token over the receiver child) and
+// children[1:] are the arg nodes. The dual of call_node (a bare `.Name` callee);
+// eval_call routes a `.Field` callee to eval_method_call, where a List_Value
+// receiver dispatches the §08 View surface (count/at/ref/resolve).
+@(private = "file")
+method_call_node :: proc(method: string, recv: Node, args: ..Node) -> Node {
+	children := make([]Node, len(args) + 1, context.temp_allocator)
+	children[0] = field_node(method, recv)
+	for arg, i in args {
+		children[i + 1] = arg
+	}
+	return Node{kind = .Call, children = children}
+}
+
+// switch_value builds a `Switch{on}` record — the §08 thing a View materializes
+// over; the count/at gameplay-eval tests range over a hand-built list of these.
+@(private = "file")
+switch_value :: proc(on: bool) -> Value {
+	fields := make(map[string]Value, context.temp_allocator)
+	fields["on"] = on
+	return Record_Value{type_name = "Switch", fields = fields}
+}
+
+// view.count() reads the row count of a materialized View (a List_Value) as an Int
+// — the §08 iteration surface gameplay-eval junction (world.fun:24). A behavior
+// body that called count() before this was wired silently dropped its write: the
+// dual-interpreter parity trap, the runtime twin of funpack's eval_view_count.
+@(test)
+test_view_count_gameplay_eval :: proc(t: ^testing.T) {
+	interp := bare_interp()
+	view := List_Value{elements = []Value{switch_value(true), switch_value(false), switch_value(true)}}
+	env := scope1("switches", view)
+	node := method_call_node("count", name_node("switches"))
+
+	result, ok := eval(&interp, &node, &env)
+	testing.expect(t, ok)
+	count, is_int := result.(i64)
+	testing.expect(t, is_int)
+	testing.expect_value(t, count, i64(3))
+}
+
+// view.at(i) reads the i-th matched thing in stable order as the bare element T —
+// the §08 index surface (world.fun:27), distinct from ref/resolve (which yield a
+// Ref / an Option). An out-of-range index is fail-closed (ok=false), never a
+// faulted read. Mirrors funpack's eval_view_at.
+@(test)
+test_view_at_gameplay_eval :: proc(t: ^testing.T) {
+	interp := bare_interp()
+	view := List_Value{elements = []Value{switch_value(true), switch_value(false)}}
+	env := scope1("switches", view)
+
+	at0_node := method_call_node("at", name_node("switches"), em_int_lit(0))
+	at0, ok0 := eval(&interp, &at0_node, &env)
+	testing.expect(t, ok0)
+	rec0, is_rec0 := at0.(Record_Value)
+	testing.expect(t, is_rec0)
+	testing.expect_value(t, rec0.fields["on"].(bool), true)
+
+	at1_node := method_call_node("at", name_node("switches"), em_int_lit(1))
+	at1, ok1 := eval(&interp, &at1_node, &env)
+	testing.expect(t, ok1)
+	rec1, _ := at1.(Record_Value)
+	testing.expect_value(t, rec1.fields["on"].(bool), false)
+
+	// An out-of-range index fails closed (ok=false) — never a faulted/garbage read.
+	oob_node := method_call_node("at", name_node("switches"), em_int_lit(5))
+	_, oob_ok := eval(&interp, &oob_node, &env)
+	testing.expect(t, !oob_ok)
+}
+
+// view.ref(i) mints an index-keyed Ref record and view.resolve(ref) reads it back
+// to Option::Some/None — the §08 reference surface gameplay-eval junction (the
+// `gate: Ref[T]` round-trip). An out-of-range ref resolves to Option::None (a
+// despawned referent), never a fault. Mirrors funpack's eval_view_ref/resolve.
+@(test)
+test_view_ref_resolve_gameplay_eval :: proc(t: ^testing.T) {
+	interp := bare_interp()
+	view := List_Value{elements = []Value{switch_value(true), switch_value(false)}}
+	env := scope1("switches", view)
+
+	// ref(1) → a Ref record carrying index 1.
+	ref_node := method_call_node("ref", name_node("switches"), em_int_lit(1))
+	ref_val, ref_ok := eval(&interp, &ref_node, &env)
+	testing.expect(t, ref_ok)
+	ref_rec, is_ref := ref_val.(Record_Value)
+	testing.expect(t, is_ref)
+	testing.expect_value(t, ref_rec.type_name, "Ref")
+	testing.expect_value(t, ref_rec.fields["index"].(i64), i64(1))
+
+	// resolve(ref) → Option::Some(Switch{on: false}) — the row at index 1.
+	env2 := scope2("switches", view, "gate", ref_val)
+	resolve_node := method_call_node("resolve", name_node("switches"), name_node("gate"))
+	resolved, res_ok := eval(&interp, &resolve_node, &env2)
+	testing.expect(t, res_ok)
+	some, is_some := resolved.(Variant_Value)
+	testing.expect(t, is_some)
+	testing.expect_value(t, some.case_name, "Some")
+	payload_rec, _ := some.payload^.(Record_Value)
+	testing.expect_value(t, payload_rec.fields["on"].(bool), false)
+
+	// An out-of-range Ref resolves to Option::None (a despawned referent).
+	oob_ref := make(map[string]Value, context.temp_allocator)
+	oob_ref["index"] = i64(9)
+	env3 := scope2("switches", view, "gate", Record_Value{type_name = "Ref", fields = oob_ref})
+	none_node := method_call_node("resolve", name_node("switches"), name_node("gate"))
+	none_val, none_ok := eval(&interp, &none_node, &env3)
+	testing.expect(t, none_ok)
+	none_variant, _ := none_val.(Variant_Value)
+	testing.expect_value(t, none_variant.case_name, "None")
+}
+
+// em_int_lit builds an `.Int` literal node carrying the decimal token — the index
+// arg the at/ref calls read positionally.
+@(private = "file")
+em_int_lit :: proc(n: i64) -> Node {
+	fields := make([]string, 1, context.temp_allocator)
+	fields[0] = aprint_int(n, context.temp_allocator)
+	return Node{kind = .Int, fields = fields}
+}

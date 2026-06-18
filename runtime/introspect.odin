@@ -1373,6 +1373,27 @@ render_handle_text :: proc(b: ^strings.Builder, handle: Handle_Value) {
 	}
 }
 
+// color_text renders the BODY of a §20 §1 Draw_Color for the draw-list dump's
+// `Color::<body>` projection — the part after the `Color::` prefix the §28
+// inspect_draw_list line carries. A NAMED color renders as its palette member name
+// (`White`, `Gray` — so the existing `Color::White` line shape is unchanged after
+// Draw_Color stopped being a bare enum that `%v` printed directly). A Color::Rgb
+// renders as `Rgb(<r>,<g>,<b>)` with the RAW Q32.32 channel ints (the SAME
+// `i64(fixed)` convention the Vec2 `x=%d` lanes use here), so the dump is
+// deterministic — no float, byte-stable across machines. The string is built in
+// the supplied allocator (temp at the call site). DETERMINISM: this is a §28
+// OBSERVE projection (a read-only string view of the draw-list), never re-entering
+// the sim.
+color_text :: proc(color: Draw_Color, allocator := context.allocator) -> string {
+	switch color.kind {
+	case .Named:
+		return fmt.aprintf("%v", color.palette, allocator = allocator)
+	case .Rgb:
+		return fmt.aprintf("Rgb(%d,%d,%d)", i64(color.r), i64(color.g), i64(color.b), allocator = allocator)
+	}
+	return fmt.aprintf("%v", color.palette, allocator = allocator)
+}
+
 // render_draw_cmd_text renders one §20 draw command in the same constructor
 // style the value encoding uses — the draw-list dump's line items.
 render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
@@ -1380,15 +1401,15 @@ render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 	case Draw_Rect:
 		fmt.sbprintf(
 			b,
-			"Rect(at=Vec2(x=%d,y=%d),size=Vec2(x=%d,y=%d),color=Color::%v)",
+			"Rect(at=Vec2(x=%d,y=%d),size=Vec2(x=%d,y=%d),color=Color::%s)",
 			i64(c.at.x),
 			i64(c.at.y),
 			i64(c.size.x),
 			i64(c.size.y),
-			c.color,
+			color_text(c.color, context.temp_allocator),
 		)
 	case Draw_Text:
-		fmt.sbprintf(b, "Text(at=Vec2(x=%d,y=%d),text=L%d:%s,color=Color::%v)", i64(c.at.x), i64(c.at.y), len(c.text), c.text, c.color)
+		fmt.sbprintf(b, "Text(at=Vec2(x=%d,y=%d),text=L%d:%s,color=Color::%s)", i64(c.at.x), i64(c.at.y), len(c.text), c.text, color_text(c.color, context.temp_allocator))
 	case Draw_Camera:
 		fmt.sbprintf(b, "Camera(at=Vec2(x=%d,y=%d),zoom=%d,rotation=%d)", i64(c.at.x), i64(c.at.y), i64(c.zoom), i64(c.rotation))
 	case Draw3_Camera:
@@ -1404,17 +1425,17 @@ render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 			i64(c.fov),
 		)
 	case Draw3_Light:
-		fmt.sbprintf(b, "Light(dir=Vec3(x=%d,y=%d,z=%d),color=Color::%v)", i64(c.dir.x), i64(c.dir.y), i64(c.dir.z), c.color)
+		fmt.sbprintf(b, "Light(dir=Vec3(x=%d,y=%d,z=%d),color=Color::%s)", i64(c.dir.x), i64(c.dir.y), i64(c.dir.z), color_text(c.color, context.temp_allocator))
 	case Draw3_Plane:
 		fmt.sbprintf(
 			b,
-			"Plane(at=Vec3(x=%d,y=%d,z=%d),size=Vec2(x=%d,y=%d),color=Color::%v)",
+			"Plane(at=Vec3(x=%d,y=%d,z=%d),size=Vec2(x=%d,y=%d),color=Color::%s)",
 			i64(c.at.x),
 			i64(c.at.y),
 			i64(c.at.z),
 			i64(c.size.x),
 			i64(c.size.y),
-			c.color,
+			color_text(c.color, context.temp_allocator),
 		)
 	case Draw3_Rigged:
 		strings.write_string(b, "Rigged(skeleton=")
@@ -1443,7 +1464,7 @@ render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 		// the digest folds, so the draw-list dump names what diverged.
 		fmt.sbprintf(
 			b,
-			"Sprite(atlas=L%d:%s,cell=L%d:%s,at=Vec2(x=%d,y=%d),size=Vec2(x=%d,y=%d),tint=Color::%v,flip=L%d:%s,layer=%d)",
+			"Sprite(atlas=L%d:%s,cell=L%d:%s,at=Vec2(x=%d,y=%d),size=Vec2(x=%d,y=%d),tint=Color::%s,flip=L%d:%s,layer=%d)",
 			len(c.atlas),
 			c.atlas,
 			len(c.cell),
@@ -1452,7 +1473,7 @@ render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 			i64(c.at.y),
 			i64(c.size.x),
 			i64(c.size.y),
-			c.tint,
+			color_text(c.tint, context.temp_allocator),
 			len(c.flip),
 			c.flip,
 			c.layer,

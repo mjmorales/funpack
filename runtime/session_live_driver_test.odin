@@ -79,7 +79,7 @@ test_save_root_path_preserves_nested_dir :: proc(t: ^testing.T) {
 // no characters draws nothing, so the present pass paints no spurious glyph.
 @(test)
 test_text_rects_empty_is_no_rects :: proc(t: ^testing.T) {
-	rects := text_rects("", Vec2{to_fixed(80), to_fixed(8)}, TEXT_CELL, .White, context.temp_allocator)
+	rects := text_rects("", Vec2{to_fixed(80), to_fixed(8)}, TEXT_CELL, named_color(.White), context.temp_allocator)
 	testing.expect_value(t, len(rects), 0)
 }
 
@@ -92,10 +92,10 @@ test_text_rects_empty_is_no_rects :: proc(t: ^testing.T) {
 @(test)
 test_text_rects_centers_the_run :: proc(t: ^testing.T) {
 	at := Vec2{to_fixed(80), to_fixed(8)}
-	rects := text_rects("1", at, TEXT_CELL, .Green, context.temp_allocator)
+	rects := text_rects("1", at, TEXT_CELL, named_color(.Green), context.temp_allocator)
 	testing.expect_value(t, len(rects), 8)
 	first := rects[0]
-	testing.expect_value(t, first.color, Draw_Color.Green)
+	testing.expect_value(t, first.color, named_color(.Green))
 	testing.expect_value(t, first.size, TEXT_CELL)
 	// origin = at − (run_w/2, run_h/2) = (77, 3); col-1 cell center =
 	// origin.x + cell.x + cell.x/2 = 80 — the anchor point itself.
@@ -111,7 +111,7 @@ test_text_rects_centers_the_run :: proc(t: ^testing.T) {
 test_text_rects_advances_per_character :: proc(t: ^testing.T) {
 	at := Vec2{to_fixed(80), to_fixed(8)}
 	// '0' is a 12-cell hollow box; "0 0" is two '0' glyphs with a blank gap.
-	rects := text_rects("0 0", at, TEXT_CELL, .White, context.temp_allocator)
+	rects := text_rects("0 0", at, TEXT_CELL, named_color(.White), context.temp_allocator)
 	testing.expect_value(t, len(rects), 24)
 	// Run: 3 chars * advance 8 − gap 2 = 22 wide → origin.x = 80 − 11 = 69. The
 	// second '0' starts two advances right (69 + 16 = 85); its first lit cell

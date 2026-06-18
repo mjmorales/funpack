@@ -163,22 +163,44 @@ test_camera_from_command_zero_zoom_is_unity :: proc(t: ^testing.T) {
 	testing.expect_value(t, camera.zoom, to_fixed(1))
 }
 
-// test_draw_color_to_rgba_totality pins the §20 palette lowering over ALL NINE
-// closed-enum members to their fully-opaque RGBA8 tuples — the totality the
+// test_draw_color_to_rgba_totality pins the §20 §1 color lowering over ALL NINE
+// NAMED palette members to their fully-opaque RGBA8 tuples — the totality the
 // present boundary depends on (an unmapped member would not compile). Of the
 // four added members, Yellow/Cyan/Magenta are the canonical full-saturation
 // complements; Gray is the mid-channel 0.5 → 128 (krognid's ground plane).
 @(test)
 test_draw_color_to_rgba_totality :: proc(t: ^testing.T) {
-	testing.expect_value(t, draw_color_to_rgba(.White), Rgba8{255, 255, 255, 255})
-	testing.expect_value(t, draw_color_to_rgba(.Black), Rgba8{0, 0, 0, 255})
-	testing.expect_value(t, draw_color_to_rgba(.Red), Rgba8{255, 0, 0, 255})
-	testing.expect_value(t, draw_color_to_rgba(.Green), Rgba8{0, 255, 0, 255})
-	testing.expect_value(t, draw_color_to_rgba(.Blue), Rgba8{0, 0, 255, 255})
-	testing.expect_value(t, draw_color_to_rgba(.Yellow), Rgba8{255, 255, 0, 255})
-	testing.expect_value(t, draw_color_to_rgba(.Cyan), Rgba8{0, 255, 255, 255})
-	testing.expect_value(t, draw_color_to_rgba(.Magenta), Rgba8{255, 0, 255, 255})
-	testing.expect_value(t, draw_color_to_rgba(.Gray), Rgba8{128, 128, 128, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.White)), Rgba8{255, 255, 255, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.Black)), Rgba8{0, 0, 0, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.Red)), Rgba8{255, 0, 0, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.Green)), Rgba8{0, 255, 0, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.Blue)), Rgba8{0, 0, 255, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.Yellow)), Rgba8{255, 255, 0, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.Cyan)), Rgba8{0, 255, 255, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.Magenta)), Rgba8{255, 0, 255, 255})
+	testing.expect_value(t, draw_color_to_rgba(named_color(.Gray)), Rgba8{128, 128, 128, 255})
+}
+
+// test_draw_color_to_rgba_maps_rgb_channels_deterministically pins the Rgb
+// rasterization at the present boundary: a §20 §1 Color::Rgb's 0..1 Fixed
+// channels map onto 0..255 bytes through channel_to_u8 — pure integer Q32.32 math
+// (clamp → ×255 → round), NO float (§10), so the RGBA is byte-identical on every
+// machine. The endpoints map exactly (0.0→0, 1.0→255), the mid-channel 0.5→128
+// (the ties-away-from-zero round of 127.5), and an OUT-OF-RANGE channel CLAMPS to
+// the endpoint rather than wrapping (a >1 channel paints full, a <0 paints zero).
+@(test)
+test_draw_color_to_rgba_maps_rgb_channels_deterministically :: proc(t: ^testing.T) {
+	// Black via Rgb (all-zero channels) and White via Rgb (all-one channels) — the
+	// endpoints map exactly to the named-palette extremes.
+	testing.expect_value(t, draw_color_to_rgba(rgb_color(Fixed(0), Fixed(0), Fixed(0))), Rgba8{0, 0, 0, 255})
+	testing.expect_value(t, draw_color_to_rgba(rgb_color(FIXED_ONE, FIXED_ONE, FIXED_ONE)), Rgba8{255, 255, 255, 255})
+	// A mid-channel 0.5 rounds to 128 (127.5 ties away from zero); a per-channel mix
+	// (1.0 R, 0.5 G, 0.0 B) lands {255, 128, 0}.
+	half := fixed_div(FIXED_ONE, to_fixed(2))
+	testing.expect_value(t, draw_color_to_rgba(rgb_color(half, half, half)), Rgba8{128, 128, 128, 255})
+	testing.expect_value(t, draw_color_to_rgba(rgb_color(FIXED_ONE, half, Fixed(0))), Rgba8{255, 128, 0, 255})
+	// Out-of-range channels CLAMP to the endpoint, never wrap: 2.0 → 255, -1.0 → 0.
+	testing.expect_value(t, draw_color_to_rgba(rgb_color(to_fixed(2), fixed_neg(FIXED_ONE), Fixed(0))), Rgba8{255, 0, 0, 255})
 }
 
 // test_glyph_rects_space_is_empty pins the layout gap: a space emits no rect,
@@ -186,7 +208,7 @@ test_draw_color_to_rgba_totality :: proc(t: ^testing.T) {
 // the ONE draws-nothing character (every other unmapped character is loud tofu).
 @(test)
 test_glyph_rects_space_is_empty :: proc(t: ^testing.T) {
-	rects := glyph_rects(' ', VEC2_ZERO, Vec2{to_fixed(1), to_fixed(1)}, .White, context.temp_allocator)
+	rects := glyph_rects(' ', VEC2_ZERO, Vec2{to_fixed(1), to_fixed(1)}, named_color(.White), context.temp_allocator)
 	testing.expect_value(t, len(rects), 0)
 }
 
@@ -196,7 +218,7 @@ test_glyph_rects_space_is_empty :: proc(t: ^testing.T) {
 // missing text hides invisibly).
 @(test)
 test_glyph_rects_unmapped_is_loud_tofu :: proc(t: ^testing.T) {
-	rects := glyph_rects('?', VEC2_ZERO, Vec2{to_fixed(1), to_fixed(1)}, .White, context.temp_allocator)
+	rects := glyph_rects('?', VEC2_ZERO, Vec2{to_fixed(1), to_fixed(1)}, named_color(.White), context.temp_allocator)
 	testing.expect_value(t, len(rects), 15)
 }
 
@@ -209,13 +231,13 @@ test_glyph_rects_unmapped_is_loud_tofu :: proc(t: ^testing.T) {
 test_glyph_rects_one_glyph :: proc(t: ^testing.T) {
 	cell := Vec2{to_fixed(2), to_fixed(3)}
 	origin := Vec2{to_fixed(10), to_fixed(20)}
-	rects := glyph_rects('1', origin, cell, .White, context.temp_allocator)
+	rects := glyph_rects('1', origin, cell, named_color(.White), context.temp_allocator)
 	// 0b010, 0b110, 0b010, 0b010, 0b111 -> 1 + 2 + 1 + 1 + 3 lit cells.
 	testing.expect_value(t, len(rects), 8)
 	// First lit cell of row 0 (mask 0b010) is column 1: center = origin +
 	// (1*cell.x + cell.x/2, 0 + cell.y/2).
 	first := rects[0]
-	testing.expect_value(t, first.color, Draw_Color.White)
+	testing.expect_value(t, first.color, named_color(.White))
 	testing.expect_value(t, first.size, cell)
 	testing.expect_value(t, first.at.x, fixed_add(fixed_add(origin.x, cell.x), fixed_div(cell.x, to_fixed(2))))
 	testing.expect_value(t, first.at.y, fixed_add(origin.y, fixed_div(cell.y, to_fixed(2))))
@@ -228,7 +250,7 @@ test_glyph_rects_one_glyph :: proc(t: ^testing.T) {
 @(test)
 test_glyph_rects_eight_is_full_block :: proc(t: ^testing.T) {
 	cell := Vec2{to_fixed(4), to_fixed(4)}
-	rects := glyph_rects('8', VEC2_ZERO, cell, .White, context.temp_allocator)
+	rects := glyph_rects('8', VEC2_ZERO, cell, named_color(.White), context.temp_allocator)
 	testing.expect_value(t, len(rects), 13)
 }
 
@@ -240,7 +262,7 @@ test_glyph_rects_eight_is_full_block :: proc(t: ^testing.T) {
 test_glyph_rects_zero_corner_placement :: proc(t: ^testing.T) {
 	cell := Vec2{to_fixed(5), to_fixed(7)}
 	origin := Vec2{to_fixed(100), to_fixed(200)}
-	rects := glyph_rects('0', origin, cell, .White, context.temp_allocator)
+	rects := glyph_rects('0', origin, cell, named_color(.White), context.temp_allocator)
 	// 0b111, 0b101, 0b101, 0b101, 0b111 -> 3 + 2 + 2 + 2 + 3 = 12 lit cells.
 	testing.expect_value(t, len(rects), 12)
 	// The last appended cell is the bottom row's rightmost column (row 4, col 2); its
@@ -259,15 +281,15 @@ test_glyph_rects_zero_corner_placement :: proc(t: ^testing.T) {
 @(test)
 test_glyph_rects_letters_distinct :: proc(t: ^testing.T) {
 	cell := Vec2{to_fixed(1), to_fixed(1)}
-	letter_o := glyph_rects('O', VEC2_ZERO, cell, .Green, context.temp_allocator)
-	digit_0 := glyph_rects('0', VEC2_ZERO, cell, .Green, context.temp_allocator)
+	letter_o := glyph_rects('O', VEC2_ZERO, cell, named_color(.Green), context.temp_allocator)
+	digit_0 := glyph_rects('0', VEC2_ZERO, cell, named_color(.Green), context.temp_allocator)
 	testing.expect_value(t, len(letter_o), 8)
 	testing.expect_value(t, len(digit_0), 12)
 
-	upper_g := glyph_rects('G', VEC2_ZERO, cell, .Green, context.temp_allocator)
-	lower_g := glyph_rects('g', VEC2_ZERO, cell, .Green, context.temp_allocator)
+	upper_g := glyph_rects('G', VEC2_ZERO, cell, named_color(.Green), context.temp_allocator)
+	lower_g := glyph_rects('g', VEC2_ZERO, cell, named_color(.Green), context.temp_allocator)
 	testing.expect_value(t, len(upper_g), 9)
 	testing.expect_value(t, len(lower_g), 9)
-	testing.expect_value(t, upper_g[0].color, Draw_Color.Green)
+	testing.expect_value(t, upper_g[0].color, named_color(.Green))
 	testing.expect_value(t, upper_g[0].at, lower_g[0].at)
 }

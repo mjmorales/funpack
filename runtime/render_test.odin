@@ -48,12 +48,12 @@ render_startup :: proc(program: ^Program, allocator := context.allocator) -> Wor
 // renderer it checks.
 @(private = "file")
 white_rect :: proc(at, size: Vec2) -> Draw_Cmd {
-	return Draw_Rect{at = at, size = size, color = .White}
+	return Draw_Rect{at = at, size = size, color = named_color(.White)}
 }
 
 @(private = "file")
 white_text :: proc(at: Vec2, text: string) -> Draw_Cmd {
-	return Draw_Text{at = at, text = text, color = .White}
+	return Draw_Text{at = at, text = text, color = named_color(.White)}
 }
 
 // A committed pong tick over empty input renders the EXACT §20 draw-list: two
@@ -134,7 +134,7 @@ test_render_paddle_move_from_input_and_dt :: proc(t: ^testing.T) {
 	testing.expect(t, is_rect)
 	testing.expect_value(t, rect.at, Vec2{to_fixed(8), moved_y})
 	testing.expect_value(t, rect.size, Vec2{to_fixed(4), to_fixed(16)})
-	testing.expect_value(t, rect.color, Draw_Color.White)
+	testing.expect_value(t, rect.color, named_color(.White))
 }
 
 // The score Text interpolates from the COMMITTED Scoreboard columns: a tick whose
@@ -261,10 +261,10 @@ test_record_color_lowers_new_palette_members :: proc(t: ^testing.T) {
 		name: string,
 		want: Draw_Color,
 	} {
-		{"Yellow", .Yellow},
-		{"Cyan", .Cyan},
-		{"Magenta", .Magenta},
-		{"Gray", .Gray},
+		{"Yellow", named_color(.Yellow)},
+		{"Cyan", named_color(.Cyan)},
+		{"Magenta", named_color(.Magenta)},
+		{"Gray", named_color(.Gray)},
 	}
 	for c in cases {
 		got, ok := record_color(color_record(c.name), "color")
@@ -282,30 +282,72 @@ test_record_color_absent_field_defaults_white_ok :: proc(t: ^testing.T) {
 	rec := Record_Value{type_name = "Draw::Rect", fields = make(map[string]Value, context.temp_allocator)}
 	got, ok := record_color(rec, "color")
 	testing.expect(t, ok)
-	testing.expect_value(t, got, Draw_Color.White)
+	testing.expect_value(t, got, named_color(.White))
 }
 
-// An UNKNOWN color case_name REFUSES (ok=false) — fail-closed: a silent White
-// fallback would mispaint any out-of-palette color (a Gray ground plane
-// rendering White). The refusal must hold for any name outside the closed nine
-// (a typo, a future member, or the spec's `Color::Rgb{...}` escape the named
-// draw-list has no slot for). The returned ok=false is the loud signal; the
-// color value is not consumed.
+// An UNKNOWN color case_name as a BARE variant REFUSES (ok=false) — fail-closed: a
+// silent White fallback would mispaint any out-of-palette color (a Gray ground
+// plane rendering White). The refusal holds for any name outside the closed nine
+// (a typo, a future member). A bare `Rgb` variant (case_name "Rgb" with no struct
+// payload) also refuses — only the struct-payload `Color::Rgb{r,g,b}` form (a
+// Record_Value, asserted in test_record_color_lowers_rgb_struct_variant) carries a
+// color. The returned ok=false is the loud signal; the color value is not consumed.
 @(test)
 test_record_color_unknown_name_refuses :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	_, ok_typo := record_color(color_record("Whtie"), "color")
 	testing.expect(t, !ok_typo)
-	_, ok_rgb := record_color(color_record("Rgb"), "color")
-	testing.expect(t, !ok_rgb)
+	_, ok_bare_rgb := record_color(color_record("Rgb"), "color")
+	testing.expect(t, !ok_bare_rgb)
 	_, ok_future := record_color(color_record("Chartreuse"), "color")
 	testing.expect(t, !ok_future)
 }
 
+// test_record_color_lowers_rgb_struct_variant pins the Color::Rgb lowering:
+// a struct-payload `Color::Rgb{ r, g, b }` lands as a Record_Value tagged
+// "Color::Rgb" (eval_record serializes a struct-payload variant as a record), and
+// record_color reads its three Fixed channels into an Rgb Draw_Color with ok=true —
+// the exact-value escape the named palette has no slot for. A malformed Rgb (a
+// missing or non-Fixed channel) REFUSES fail-closed — never a partial color.
+@(test)
+test_record_color_lowers_rgb_struct_variant :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	r := fixed_div(FIXED_ONE, to_fixed(4)) // 0.25
+	g := fixed_div(FIXED_ONE, to_fixed(2)) // 0.5
+	b := FIXED_ONE // 1.0
+	got, ok := record_color(rgb_color_record(r, g, b), "color")
+	testing.expect(t, ok)
+	testing.expect_value(t, got, rgb_color(r, g, b))
+
+	// A missing channel refuses (fail-closed) — no absent-safe default for a color.
+	bad := make(map[string]Value, context.temp_allocator)
+	bad["r"] = r
+	bad["g"] = g // b absent
+	bad_rec := Record_Value{type_name = "Draw::Rect", fields = make(map[string]Value, context.temp_allocator)}
+	bad_rec.fields["color"] = Record_Value{type_name = "Color::Rgb", fields = bad}
+	_, bad_ok := record_color(bad_rec, "color")
+	testing.expect(t, !bad_ok)
+}
+
+// rgb_color_record builds a Draw::Rect record whose `color` is a struct-payload
+// Color::Rgb{r,g,b} — the shape eval_record produces for a `Color::Rgb{…}`
+// constructor in a render body (a Record_Value keyed by the `::`-joined name).
+rgb_color_record :: proc(r, g, b: Fixed) -> Record_Value {
+	rgb := make(map[string]Value, context.temp_allocator)
+	rgb["r"] = r
+	rgb["g"] = g
+	rgb["b"] = b
+	fields := make(map[string]Value, context.temp_allocator)
+	fields["color"] = Record_Value{type_name = "Color::Rgb", fields = rgb}
+	return Record_Value{type_name = "Draw::Rect", fields = fields}
+}
+
 // The fail-loud refusal PROPAGATES through draw_command_from_record: a Draw::Rect
-// naming an out-of-palette color does NOT lower (ok=false), so append_draw_commands
-// DROPS it from the draw-list rather than emitting a White-mispainted command — the
-// closed-palette contract enforced end-to-end at the projection boundary.
+// naming an out-of-palette color (here a BARE `Rgb` variant — the malformed
+// payload-less form, distinct from the well-formed Color::Rgb{r,g,b} struct) does
+// NOT lower (ok=false), so append_draw_commands DROPS it from the draw-list rather
+// than emitting a White-mispainted command — the closed-palette contract enforced
+// end-to-end at the projection boundary.
 @(test)
 test_draw_command_unknown_color_does_not_lower :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -324,7 +366,7 @@ test_draw_command_unknown_color_does_not_lower :: proc(t: ^testing.T) {
 	testing.expect(t, gray_ok)
 	rect, is_rect := cmd.(Draw_Rect)
 	testing.expect(t, is_rect)
-	testing.expect_value(t, rect.color, Draw_Color.Gray)
+	testing.expect_value(t, rect.color, named_color(.Gray))
 }
 
 // --- (§18 §1) Draw::Sprite lowering + digest fold ---------------------------
@@ -360,7 +402,7 @@ test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
 	testing.expect_value(t, sprite.cell, "hero")
 	testing.expect_value(t, sprite.at, Vec2{to_fixed(40), to_fixed(24)})
 	testing.expect_value(t, sprite.size, Vec2{to_fixed(16), to_fixed(16)})
-	testing.expect_value(t, sprite.tint, Draw_Color.White)
+	testing.expect_value(t, sprite.tint, named_color(.White))
 	testing.expect_value(t, sprite.flip, "None")
 	testing.expect_value(t, sprite.layer, i64(5))
 
@@ -406,7 +448,7 @@ test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
 
 	hero_cmd := cmd.(Draw_Sprite)
 	moved := hero_cmd; moved.at = Vec2{to_fixed(41), to_fixed(24)}
-	retinted := hero_cmd; retinted.tint = .Red
+	retinted := hero_cmd; retinted.tint = named_color(.Red)
 	reflipped := hero_cmd; reflipped.flip = "Horizontal"
 	relayered := hero_cmd; relayered.layer = 6
 	reatlased := hero_cmd; reatlased.atlas = "other_atlas"
@@ -419,7 +461,7 @@ test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
 	testing.expect(t, !draw_cmd_equal(cmd, resized)) // size Vec2
 
 	// (c) a Draw_Sprite-vs-other-arm kind mismatch is unequal (the union dispatch).
-	other_arm: Draw_Cmd = Draw_Rect{at = Vec2{to_fixed(40), to_fixed(24)}, size = Vec2{to_fixed(16), to_fixed(16)}, color = .White}
+	other_arm: Draw_Cmd = Draw_Rect{at = Vec2{to_fixed(40), to_fixed(24)}, size = Vec2{to_fixed(16), to_fixed(16)}, color = named_color(.White)}
 	testing.expect(t, !draw_cmd_equal(cmd, other_arm))
 
 	// (d) write_draw_cmd / frame_digest folds the sprite under Cmd_Tag.Sprite (=8).
@@ -456,9 +498,11 @@ test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
 	testing.expect(t, len(sprite_bytes) > tag_offset)
 	testing.expect_value(t, sprite_bytes[tag_offset], u8(Cmd_Tag.Sprite))
 
-	// (e) the comparability stamp advanced to v9 (v8 appended the Sprite arm; v9
-	// appended the resolved Sprite_Texture fields to it).
-	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 9)
+	// (e) the comparability stamp advanced to v10 (v8 appended the Sprite arm; v9
+	// appended the resolved Sprite_Texture fields to it; v10 restructured Draw_Color
+	// to the named-or-Rgb form and folds the tint through write_color — the Sprite
+	// tag ordinal is unmoved, a named tint stays its single ordinal byte).
+	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 10)
 }
 
 // sprite_record builds the Draw::Sprite record the dungeon's draw_hero/draw_slime/

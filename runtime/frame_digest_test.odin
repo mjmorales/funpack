@@ -294,8 +294,8 @@ test_draw_list_serializes_in_emitted_order :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 
 	empty_version := World_Version{tick = 0, tables = nil}
-	r1 := Draw_Rect{at = Vec2{to_fixed(8), to_fixed(60)}, size = Vec2{to_fixed(4), to_fixed(16)}, color = .White}
-	r2 := Draw_Rect{at = Vec2{to_fixed(152), to_fixed(60)}, size = Vec2{to_fixed(4), to_fixed(16)}, color = .White}
+	r1 := Draw_Rect{at = Vec2{to_fixed(8), to_fixed(60)}, size = Vec2{to_fixed(4), to_fixed(16)}, color = named_color(.White)}
+	r2 := Draw_Rect{at = Vec2{to_fixed(152), to_fixed(60)}, size = Vec2{to_fixed(4), to_fixed(16)}, color = named_color(.White)}
 
 	forward := Draw_List{cmds = []Draw_Cmd{r1, r2}}
 	reverse := Draw_List{cmds = []Draw_Cmd{r2, r1}}
@@ -312,23 +312,28 @@ test_draw_list_serializes_in_emitted_order :: proc(t: ^testing.T) {
 // --- v5 palette: ordinal stability + new-member sensitivity ------------------
 
 // test_draw_color_ordinals_are_append_stable pins the byte-stability the golden
-// invariant rests on: the original five palette members keep their raw ordinals
-// (White=0..Blue=4) after the four-member append, because write_draw_cmd folds the
-// color as `u8(c.color)`. A golden whose draw-list paints only these five emits the
-// SAME color byte at v5 as at v4, so its content digest is byte-unmoved — the whole
-// reason the schema bump does not regenerate any golden. The new members take the
-// next ordinals (5..8), append-only.
+// invariant rests on across the v10 Draw_Color restructure: the nine named members
+// keep their raw ordinals (White=0..Gray=8) on the inner Draw_Palette enum, and
+// write_color folds a NAMED color as exactly that single ordinal byte — the SAME
+// byte the pre-v10 `u8(c.color)` bare-enum fold emitted. A golden whose draw-list
+// paints only named members is byte-UNMOVED under the v9→v10 bump (the whole reason
+// the schema bump regenerates no named-only golden). The RGB_COLOR_TAG sentinel
+// (255) is reserved OUTSIDE the named ordinal range, so a Color::Rgb fold can never
+// alias a named color.
 @(test)
 test_draw_color_ordinals_are_append_stable :: proc(t: ^testing.T) {
-	testing.expect_value(t, u8(Draw_Color.White), 0)
-	testing.expect_value(t, u8(Draw_Color.Black), 1)
-	testing.expect_value(t, u8(Draw_Color.Red), 2)
-	testing.expect_value(t, u8(Draw_Color.Green), 3)
-	testing.expect_value(t, u8(Draw_Color.Blue), 4)
-	testing.expect_value(t, u8(Draw_Color.Yellow), 5)
-	testing.expect_value(t, u8(Draw_Color.Cyan), 6)
-	testing.expect_value(t, u8(Draw_Color.Magenta), 7)
-	testing.expect_value(t, u8(Draw_Color.Gray), 8)
+	testing.expect_value(t, u8(Draw_Palette.White), 0)
+	testing.expect_value(t, u8(Draw_Palette.Black), 1)
+	testing.expect_value(t, u8(Draw_Palette.Red), 2)
+	testing.expect_value(t, u8(Draw_Palette.Green), 3)
+	testing.expect_value(t, u8(Draw_Palette.Blue), 4)
+	testing.expect_value(t, u8(Draw_Palette.Yellow), 5)
+	testing.expect_value(t, u8(Draw_Palette.Cyan), 6)
+	testing.expect_value(t, u8(Draw_Palette.Magenta), 7)
+	testing.expect_value(t, u8(Draw_Palette.Gray), 8)
+	// The Rgb sentinel sits outside the named range, so the two color forms never
+	// collide in the canonical stream.
+	testing.expect(t, u64(RGB_COLOR_TAG) > u64(Draw_Palette.Gray))
 }
 
 // test_digest_distinguishes_palette_members pins the digest's color sensitivity
@@ -345,17 +350,60 @@ test_digest_distinguishes_palette_members :: proc(t: ^testing.T) {
 	at := Vec2{to_fixed(8), to_fixed(60)}
 	size := Vec2{to_fixed(4), to_fixed(16)}
 
-	members := []Draw_Color {
+	members := []Draw_Palette {
 		.White, .Black, .Red, .Green, .Blue, .Yellow, .Cyan, .Magenta, .Gray,
 	}
 	seen := make(map[u64]bool, context.temp_allocator)
-	for color in members {
-		list := Draw_List{cmds = []Draw_Cmd{Draw_Rect{at = at, size = size, color = color}}}
+	for palette in members {
+		list := Draw_List{cmds = []Draw_Cmd{Draw_Rect{at = at, size = size, color = named_color(palette)}}}
 		d := frame_digest(empty_version, list).digest
-		testing.expectf(t, !seen[d], "palette member %v digest collided", color)
+		testing.expectf(t, !seen[d], "palette member %v digest collided", palette)
 		seen[d] = true
 	}
 	testing.expect_value(t, len(seen), len(members))
+}
+
+// --- v10 Color::Rgb digest fold (the Rgb rasterization determinism surface) -
+
+// test_digest_folds_rgb_color_stably_and_distinctly pins the Color::Rgb fold:
+// an Rgb-colored Draw_Rect folds DETERMINISTICALLY (two folds of the same
+// Rgb digest identically) and DISTINCTLY (a one-channel-bit divergence moves the
+// digest, and an Rgb never collides with a named color of any palette member). The
+// channels are raw Q32.32 Fixed off the kernel — no float (§10) — folded under the
+// reserved RGB_COLOR_TAG sentinel, so the Color::Rgb is inside the §20 comparison
+// surface bit-exactly.
+@(test)
+test_digest_folds_rgb_color_stably_and_distinctly :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	empty_version := World_Version{tick = 0, tables = nil}
+	at := Vec2{to_fixed(8), to_fixed(60)}
+	size := Vec2{to_fixed(4), to_fixed(16)}
+
+	r := fixed_div(FIXED_ONE, to_fixed(4)) // 0.25
+	g := fixed_div(FIXED_ONE, to_fixed(2)) // 0.5
+	b := fixed_div(to_fixed(3), to_fixed(4)) // 0.75
+
+	rect_digest :: proc(version: World_Version, at, size: Vec2, color: Draw_Color) -> u64 {
+		cmds := make([]Draw_Cmd, 1, context.temp_allocator)
+		cmds[0] = Draw_Rect{at = at, size = size, color = color}
+		return frame_digest(version, Draw_List{cmds = cmds}).digest
+	}
+
+	// STABILITY: the same Rgb folds bit-identically across two folds.
+	base := rect_digest(empty_version, at, size, rgb_color(r, g, b))
+	again := rect_digest(empty_version, at, size, rgb_color(r, g, b))
+	testing.expect_value(t, again, base)
+
+	// CHANNEL SENSITIVITY: a one-channel divergence (b 0.75 → 0.5) moves the digest.
+	moved := rect_digest(empty_version, at, size, rgb_color(r, g, g))
+	testing.expect(t, moved != base)
+
+	// NO NAMED COLLISION: an Rgb never aliases a named color (the sentinel tag), even
+	// when the named member is the visual nearest (Gray ≈ mid-channels).
+	gray := rect_digest(empty_version, at, size, named_color(.Gray))
+	testing.expect(t, base != gray)
+	white := rect_digest(empty_version, at, size, named_color(.White))
+	testing.expect(t, base != white)
 }
 
 // --- v4 payload / String sensitivity -----------------------------------------

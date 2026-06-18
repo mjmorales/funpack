@@ -61,7 +61,7 @@ sprite_cmd :: proc(atlas, cell: string) -> Draw_Sprite {
 		cell = cell,
 		at = Vec2{to_fixed(40), to_fixed(24)},
 		size = Vec2{to_fixed(16), to_fixed(16)},
-		tint = .White,
+		tint = named_color(.White),
 		flip = "None",
 		layer = 5,
 	}

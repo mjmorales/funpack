@@ -19,18 +19,17 @@ package funpack_runtime
 
 // --- The §20 draw-list (the render projection's first-class result) -------
 
-// Draw_Color is the §20 closed palette a draw command paints in — the nine named
-// members of the spec's render.fun `Color` enum (White..Gray). It is the closed
-// taxonomy a Color variant lowers to; the spec's `Color::Rgb{r,g,b}` escape is NOT
-// a member here (the runtime draw-list carries only the named palette — an exact
-// Rgb value has no Draw_Color slot, so a Color::Rgb refuses the lowering rather
-// than collapsing to a named member). The NAMED members are appended in spec
-// order, so the existing five (White=0..Blue=4) keep their ordinals — the frame
-// digest folds the color as that raw ordinal (frame_digest.odin write_draw_cmd),
-// so a golden whose draw-list paints only the original five is byte-unchanged by
-// the four-member extension. A new member is a deliberate schema-version bump
-// (§04 closed-enum; FRAME_DIGEST_SCHEMA_VERSION).
-Draw_Color :: enum {
+// Draw_Palette is the §20 closed NAMED palette a draw command paints in — the
+// nine named members of the spec's render.fun `Color` enum (White..Gray). The
+// members are appended in spec order, so the existing five (White=0..Blue=4) keep
+// their ordinals — the frame digest folds a named color as that raw ordinal
+// (frame_digest.odin write_color), so a golden whose draw-list paints only the
+// original five is byte-unchanged by the four-member extension. A new named member
+// is a deliberate schema-version bump (§04 closed-enum; FRAME_DIGEST_SCHEMA_VERSION).
+// It is `u8`-backed so the digest fold writes one ordinal byte (the closed set
+// fits a byte; the Rgb sentinel byte 255 in write_color is reserved and can never
+// be a named ordinal).
+Draw_Palette :: enum u8 {
 	White,
 	Black,
 	Red,
@@ -40,6 +39,48 @@ Draw_Color :: enum {
 	Cyan,
 	Magenta,
 	Gray,
+}
+
+// Draw_Color_Kind discriminates the two §20 §1 Color forms a draw command can
+// carry: a Named palette member or an exact Rgb channel triple (Color::Rgb).
+Draw_Color_Kind :: enum u8 {
+	Named,
+	Rgb,
+}
+
+// Draw_Color is the §20 §1 color a draw command paints in — EITHER a named palette
+// member OR the spec's `Color::Rgb{r,g,b}` exact-value escape (render.fun:14,
+// 0..1 Fixed channels). Before the surface-parity restore the runtime draw-list
+// carried only the named palette and a Color::Rgb REFUSED the lowering; the Rgb variant now has
+// a first-class slot here so an arbitrary color reaches the frame digest and the
+// present pass deterministically. The fields are all simply-comparable (the kind
+// enum, the palette enum, three Fixed channels), so every Draw_* command carrying
+// a Draw_Color stays `==`-comparable (draw_cmd_equal's Rect/Sprite/Light/Plane
+// arms). DETERMINISM: the Rgb channels are raw Q32.32 Fixed off the kernel — no
+// float (§10) — and the digest folds them under a reserved sentinel tag, so an
+// Rgb color is inside the §20 comparison surface bit-exactly. Extending the color
+// taxonomy from a bare enum to this discriminated form is a deliberate
+// schema-version bump (§04 closed-enum; FRAME_DIGEST_SCHEMA_VERSION 9→10).
+Draw_Color :: struct {
+	kind:    Draw_Color_Kind,
+	palette: Draw_Palette, // the named member, valid when kind == .Named
+	r:       Fixed, // the Rgb red channel (0..1 Fixed), valid when kind == .Rgb
+	g:       Fixed, // the Rgb green channel
+	b:       Fixed, // the Rgb blue channel
+}
+
+// named_color builds a Draw_Color from a closed-palette member — the common case
+// every Draw_* color field carried before the Rgb escape existed. r/g/b sit at the
+// Fixed zero value (unread when kind == .Named).
+named_color :: proc(palette: Draw_Palette) -> Draw_Color {
+	return Draw_Color{kind = .Named, palette = palette}
+}
+
+// rgb_color builds a Draw_Color from an exact §20 §1 Color::Rgb channel triple
+// (0..1 Fixed each). The palette member sits at its zero value (.White, unread when
+// kind == .Rgb).
+rgb_color :: proc(r, g, b: Fixed) -> Draw_Color {
+	return Draw_Color{kind = .Rgb, r = r, g = g, b = b}
 }
 
 // Draw_Rect is the §20 filled rectangle: a fixed-point `at` and `size` in world
@@ -827,46 +868,82 @@ record_int :: proc(record: Record_Value, name: string) -> (value: i64, ok: bool)
 	return v, is_int
 }
 
-// record_color reads a draw command's color into the §20 palette. An ABSENT color
-// field defaults to White — pong paints everything White, so the default is the
-// common case and a missing field is the well-formed "no color stated" shape. A
-// PRESENT field that names a color must name one of the nine closed-palette members
-// (the spec render.fun `Color` enum, White..Gray): a recognized name lowers to its
-// member with ok=true; an unrecognized case_name (a typo, a future palette member,
-// or the spec's `Color::Rgb{...}` escape the named draw-list has no slot for)
-// REFUSES with ok=false — never guessed, the same fail-closed discipline
-// node_kind_from_tag applies to an unknown node tag. The caller drops the malformed
-// command rather than silently mispainting it White (a silent White fallback
-// renders e.g. a Gray ground plane White — the closed-palette violation this
-// refusal exists to prevent). A present-but-not-a-variant field also refuses.
+// record_color reads a draw command's color into a §20 §1 Draw_Color. An ABSENT
+// color field defaults to named White — pong paints everything White, so the
+// default is the common case and a missing field is the well-formed "no color
+// stated" shape. A PRESENT field is EITHER a named palette variant OR the
+// `Color::Rgb{r,g,b}` exact-value escape:
+//   - a named color is a Variant_Value whose case_name must name one of the nine
+//     closed-palette members (the spec render.fun `Color` enum, White..Gray); a
+//     recognized name lowers to its named member with ok=true, an unrecognized
+//     case_name (a typo, a future palette member) REFUSES with ok=false.
+//   - Color::Rgb lands as a struct-payload variant — a Record_Value tagged
+//     "Color::Rgb" (eval_record serializes a `Type::Case{…}` variant as a record,
+//     interp.odin), so a Record receiver with that type_name reads its r/g/b Fixed
+//     channels into an Rgb Draw_Color (the surface-parity restore — before it, a Color::Rgb
+//     had no slot and refused). A missing or non-Fixed channel REFUSES (fail-closed
+//     — never a partial color the present pass paints garbage from).
+// The caller drops a refused command rather than silently mispainting it White (a
+// silent White fallback renders e.g. a Gray ground plane White — the closed-palette
+// violation this refusal exists to prevent). A present field that is neither a
+// recognized variant nor a Color::Rgb record refuses.
 record_color :: proc(record: Record_Value, name: string) -> (color: Draw_Color, ok: bool) {
 	field, present := record.fields[name]
 	if !present {
-		return .White, true
+		return named_color(.White), true
+	}
+	// The §20 §1 Color::Rgb{r,g,b} exact-value escape: a struct-payload variant
+	// serialized as a `record Color::Rgb` node, so it reaches here as a Record_Value
+	// keyed by the `::`-joined type name (the same shape draw_command_from_record keys
+	// a Draw::Rect off). Read its three 0..1 Fixed channels strictly — a missing or
+	// non-Fixed channel is a fail-closed refusal.
+	if rgb_record, is_record := field.(Record_Value); is_record && rgb_record.type_name == "Color::Rgb" {
+		r, r_ok := record_color_channel(rgb_record, "r")
+		g, g_ok := record_color_channel(rgb_record, "g")
+		b, b_ok := record_color_channel(rgb_record, "b")
+		if !r_ok || !g_ok || !b_ok {
+			return named_color(.White), false
+		}
+		return rgb_color(r, g, b), true
 	}
 	variant, is_variant := field.(Variant_Value)
 	if !is_variant {
-		return .White, false
+		return named_color(.White), false
 	}
 	switch variant.case_name {
 	case "White":
-		return .White, true
+		return named_color(.White), true
 	case "Black":
-		return .Black, true
+		return named_color(.Black), true
 	case "Red":
-		return .Red, true
+		return named_color(.Red), true
 	case "Green":
-		return .Green, true
+		return named_color(.Green), true
 	case "Blue":
-		return .Blue, true
+		return named_color(.Blue), true
 	case "Yellow":
-		return .Yellow, true
+		return named_color(.Yellow), true
 	case "Cyan":
-		return .Cyan, true
+		return named_color(.Cyan), true
 	case "Magenta":
-		return .Magenta, true
+		return named_color(.Magenta), true
 	case "Gray":
-		return .Gray, true
+		return named_color(.Gray), true
 	}
-	return .White, false
+	return named_color(.White), false
+}
+
+// record_color_channel reads one §20 §1 Color::Rgb channel (r/g/b) strictly — the
+// channel must be present AND a Fixed (the 0..1 kernel value the `Color::Rgb{ r:
+// Fixed, … }` struct variant carries). ok is false when absent or not a Fixed, so a
+// malformed Rgb color refuses the lowering (distinct from record_fixed, which
+// defaults an absent scalar to 0 for a partially-built Camera — a color channel has
+// no absent-safe default).
+record_color_channel :: proc(record: Record_Value, name: string) -> (value: Fixed, ok: bool) {
+	field, present := record.fields[name]
+	if !present {
+		return Fixed(0), false
+	}
+	v, is_fixed := field.(Fixed)
+	return v, is_fixed
 }

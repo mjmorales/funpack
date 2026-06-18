@@ -258,37 +258,62 @@ Rgba8 :: struct {
 	a: u8,
 }
 
-// draw_color_to_rgba lowers a §20 Draw_Color onto its concrete RGBA8 tuple. The
-// switch is TOTAL over the nine-member closed palette (a new member is a
-// schema-version bump per §04, and would force a compile error here until mapped),
-// so the present boundary never faces an unhandled color. Every color is fully
-// opaque (alpha 255); pong paints everything White. Of the four added members,
+// draw_color_to_rgba lowers a §20 §1 Draw_Color onto its concrete RGBA8 tuple. A
+// NAMED color maps through the TOTAL nine-member palette switch (a new named member
+// is a schema-version bump per §04, and would force a compile error here until
+// mapped). A Color::Rgb maps each 0..1 Fixed channel onto a 0..255 byte through
+// channel_to_u8 (deterministic integer Q32.32 math, no float — the present
+// boundary stays consistent with the determinism path). Every color is fully
+// opaque (alpha 255); pong paints everything White. Of the named members,
 // Yellow/Cyan/Magenta are the canonical full-saturation complements (the spec
 // render.fun pins no RGBA for the named members, only the channel range for the
 // `Rgb` escape) and Gray is the mid-channel 0.5 → 128/255 (krognid's ground
 // plane).
 draw_color_to_rgba :: proc(color: Draw_Color) -> Rgba8 {
-	switch color {
-	case .White:
-		return Rgba8{255, 255, 255, 255}
-	case .Black:
-		return Rgba8{0, 0, 0, 255}
-	case .Red:
-		return Rgba8{255, 0, 0, 255}
-	case .Green:
-		return Rgba8{0, 255, 0, 255}
-	case .Blue:
-		return Rgba8{0, 0, 255, 255}
-	case .Yellow:
-		return Rgba8{255, 255, 0, 255}
-	case .Cyan:
-		return Rgba8{0, 255, 255, 255}
-	case .Magenta:
-		return Rgba8{255, 0, 255, 255}
-	case .Gray:
-		return Rgba8{128, 128, 128, 255}
+	switch color.kind {
+	case .Named:
+		switch color.palette {
+		case .White:
+			return Rgba8{255, 255, 255, 255}
+		case .Black:
+			return Rgba8{0, 0, 0, 255}
+		case .Red:
+			return Rgba8{255, 0, 0, 255}
+		case .Green:
+			return Rgba8{0, 255, 0, 255}
+		case .Blue:
+			return Rgba8{0, 0, 255, 255}
+		case .Yellow:
+			return Rgba8{255, 255, 0, 255}
+		case .Cyan:
+			return Rgba8{0, 255, 255, 255}
+		case .Magenta:
+			return Rgba8{255, 0, 255, 255}
+		case .Gray:
+			return Rgba8{128, 128, 128, 255}
+		}
+	case .Rgb:
+		return Rgba8 {
+			r = channel_to_u8(color.r),
+			g = channel_to_u8(color.g),
+			b = channel_to_u8(color.b),
+			a = 255,
+		}
 	}
 	return Rgba8{255, 255, 255, 255}
+}
+
+// channel_to_u8 maps a §20 §1 Color::Rgb channel (a 0..1 Fixed) onto its 0..255
+// 8-bit value DETERMINISTICALLY: clamp the channel into [0, 1], scale by 255 over
+// the kernel (fixed_mul), and round to nearest (fixed_round, ties away from zero) —
+// pure integer Q32.32 arithmetic, NO float (§10), so the present byte is the same
+// on every machine. An out-of-range channel (a behavior emitting >1 or <0) clamps
+// to the endpoint rather than wrapping, so a malformed channel paints a defined
+// extreme, never garbage.
+channel_to_u8 :: proc(channel: Fixed) -> u8 {
+	clamped := fixed_clamp(channel, Fixed(0), FIXED_ONE)
+	scaled := fixed_round(fixed_mul(clamped, to_fixed(255)))
+	return u8(scaled)
 }
 
 // --- block-glyph table ------------------------------------------------------
@@ -1090,7 +1115,7 @@ when #config(FUNPACK_LIVE, false) {
 				// position — a deliberate stand-in for the rigged mesh under the flat 2D
 				// projection (a true-3D skinned draw is out of scope; the rig STATE is
 				// fully in the determinism digest, the PRESENT shows only its footprint).
-				fill_world_rect(renderer, vec3_xz(c.at), RIGGED_MARKER_SIZE, .White, camera, board, window)
+				fill_world_rect(renderer, vec3_xz(c.at), RIGGED_MARKER_SIZE, named_color(.White), camera, board, window)
 			case Draw_Tilemap:
 				// The §18 §3 batched layer paints per-CELL only here, at the present
 				// boundary (the sim-side draw-LIST carries the one batched command —
@@ -1235,7 +1260,7 @@ when #config(FUNPACK_LIVE, false) {
 				// Unresolved (or no GPU texture): the untextured stand-in — Gray for a
 				// solid tile, nothing for a passable one (the prior behavior).
 				if layer.palette[index].solid {
-					fill_world_rect(renderer, at, cell_extent, .Gray, camera, board, window)
+					fill_world_rect(renderer, at, cell_extent, named_color(.Gray), camera, board, window)
 				}
 			}
 		}

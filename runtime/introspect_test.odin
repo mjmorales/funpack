@@ -460,3 +460,31 @@ test_introspect_request_refusals :: proc(t: ^testing.T) {
 		testing.expect(t, strings.contains(response, entry.fragment), entry.fragment)
 	}
 }
+
+// test_draw_list_dump_formats_color_named_and_rgb pins the §28 draw-list color
+// projection (the Color::Rgb introspect format): render_draw_cmd_text dumps a NAMED
+// color as `Color::<Member>` (the existing line shape, preserved after Draw_Color
+// stopped being a bare enum %v could print directly) and a Color::Rgb as
+// `Color::Rgb(<r>,<g>,<b>)` with the RAW Q32.32 channel ints — the SAME `i64(fixed)`
+// convention the Vec2 `x=%d` lanes use, so the string is deterministic (no float)
+// and byte-stable across machines. This is the line `inspect_draw_list` shows.
+@(test)
+test_draw_list_dump_formats_color_named_and_rgb :: proc(t: ^testing.T) {
+	at := Vec2{to_fixed(8), to_fixed(60)}
+	size := Vec2{to_fixed(4), to_fixed(16)}
+
+	// A named Gray rect dumps `color=Color::Gray` — unchanged from the bare-enum era.
+	named_b := strings.builder_make(context.temp_allocator)
+	render_draw_cmd_text(&named_b, Draw_Rect{at = at, size = size, color = named_color(.Gray)})
+	named_out := strings.to_string(named_b)
+	testing.expect(t, strings.contains(named_out, "color=Color::Gray"), named_out)
+
+	// A Color::Rgb rect dumps `color=Color::Rgb(<r>,<g>,<b>)` with raw Q32.32 ints.
+	// r=1.0 (FIXED_ONE), g=0.5 (half), b=0.0 — so the channels render as their raw
+	// bits: FIXED_ONE = 1<<32 = 4294967296, half = 1<<31 = 2147483648, 0.
+	half := fixed_div(FIXED_ONE, to_fixed(2))
+	rgb_b := strings.builder_make(context.temp_allocator)
+	render_draw_cmd_text(&rgb_b, Draw_Rect{at = at, size = size, color = rgb_color(FIXED_ONE, half, Fixed(0))})
+	rgb_out := strings.to_string(rgb_b)
+	testing.expect(t, strings.contains(rgb_out, "color=Color::Rgb(4294967296,2147483648,0)"), rgb_out)
+}

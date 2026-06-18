@@ -67,7 +67,7 @@ when #config(FUNPACK_LIVE, false) {
 		rect := Draw_Rect {
 			at    = Vec2{to_fixed(8), to_fixed(8)},
 			size  = Vec2{to_fixed(16), to_fixed(16)},
-			color = .White,
+			color = named_color(.White),
 		}
 		draw := Draw_List {
 			cmds = []Draw_Cmd{rect},

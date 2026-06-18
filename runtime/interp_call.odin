@@ -354,7 +354,125 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	if nav, is_nav := recv.(Nav_Value); is_nav {
 		return eval_nav_fixture_method(interp, nav, method, node, env)
 	}
+	// The §08 View iteration + reference surface on a materialized View receiver
+	// (world.fun:24-33): a View.of(list) / a tick-passed view row set is a
+	// List_Value, so count/at/ref/resolve dispatch on it — the GAMEPLAY-EVAL twin
+	// of funpack/evaluate.odin's eval_view_count/at/ref/resolve (the dual-interpreter
+	// parity surface). count() reports the row count (Int); at(i) reads the i-th row
+	// in stable order as the bare element T; ref(i) mints an index-keyed Ref record;
+	// resolve(ref) reads a Ref back to Option[T] (None out of range — a despawned
+	// referent). Tried AFTER the resource/intent/handle/record/nav arms so a
+	// same-named member on another receiver still resolves first.
+	if list, is_list := recv.(List_Value); is_list {
+		switch method {
+		case "count":
+			return eval_view_count(interp, list, node, env)
+		case "at":
+			return eval_view_at(interp, list, node, env)
+		case "ref":
+			return eval_view_ref(interp, list, node, env)
+		case "resolve":
+			return eval_view_resolve(interp, list, node, env)
+		}
+	}
 	return nil, false
+}
+
+// eval_view_count is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
+// eval_view_count — the §08 `count() -> Int` aggregate (world.fun:24): a
+// materialized View is a List_Value, so count() is its row count as an Int. No
+// argument (children[0] the callee); ok is false on a wrong arity (the typecheck
+// admits only the zero-arg form).
+eval_view_count :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 1 {
+		return nil, false
+	}
+	return i64(len(view.elements)), true
+}
+
+// eval_view_at is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's eval_view_at —
+// the §08 `at(i) -> T` positional read (world.fun:27): the i-th row of a
+// materialized View in stable id order, the bare element T the `-> T` signature
+// returns (not an Option — the index surface, distinct from ref/resolve). The
+// index arg is children[1]. ok is false on a wrong arity, a non-Int index, or an
+// out-of-range index — fail-closed; a well-typed passing program indexes a present
+// row.
+eval_view_at :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	index_value, idx_ok := eval(interp, &node.children[1], env)
+	if !idx_ok {
+		return nil, false
+	}
+	index, is_int := index_value.(i64)
+	if !is_int {
+		return nil, false
+	}
+	if index < 0 || index >= i64(len(view.elements)) {
+		return nil, false
+	}
+	return view.elements[index], true
+}
+
+// eval_view_ref is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's eval_view_ref
+// — the §08 `ref(i) -> Ref[T]` (the producer `switches.ref(0)`): a Record_Value
+// tagged "Ref" carrying its `index` as an Int, so it threads through a thing's
+// `gate: Ref[T]` field and a `with`-update exactly as a record does, and
+// eval_view_resolve reads the index back. The index is the materialized-view
+// position, NOT the engine Ref{thing, id} (a behavior-body view is a List_Value
+// with no row identity metadata — the fixture surface keys by index). Not
+// range-checked here — resolve handles an out-of-range ref as Option::None (a
+// despawned referent), so a ref outliving its row is a defined None, never a
+// fault. ok is false on a wrong arity or a non-Int index.
+eval_view_ref :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	index_value, idx_ok := eval(interp, &node.children[1], env)
+	if !idx_ok {
+		return nil, false
+	}
+	index, is_int := index_value.(i64)
+	if !is_int {
+		return nil, false
+	}
+	fields := make(map[string]Value, interp.allocator)
+	fields["index"] = index
+	return Record_Value{type_name = "Ref", fields = fields}, true
+}
+
+// eval_view_resolve is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
+// eval_view_resolve — the §08 `resolve(ref) -> Option[T]` over a materialized View
+// (`switches.resolve(self.gate)`): the Ref carries an `index` Int, and the View is
+// a List_Value, so resolve reads the element at that index as Option::Some when in
+// range or Option::None when out of range (the referent despawned — the gate
+// behavior's match covers None). The ref arg is children[1]. ok is false on a
+// wrong arity or a non-Ref argument (the typecheck admits only a Ref[T] here).
+eval_view_resolve :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	ref_value, ref_ok := eval(interp, &node.children[1], env)
+	if !ref_ok {
+		return nil, false
+	}
+	ref, is_record := ref_value.(Record_Value)
+	if !is_record || ref.type_name != "Ref" {
+		return nil, false
+	}
+	index_value, has_index := ref.fields["index"]
+	if !has_index {
+		return nil, false
+	}
+	index, is_int := index_value.(i64)
+	if !is_int {
+		return nil, false
+	}
+	if index < 0 || index >= i64(len(view.elements)) {
+		return none_value(), true
+	}
+	return some_value(interp, view.elements[index]), true
 }
 
 // eval_audio_constructor lowers the §22 §2 sustained-audio seed
@@ -606,6 +724,8 @@ eval_named_call :: proc(
 		return builtin_sqrt(interp, node, env)
 	case "max":
 		return builtin_max(interp, node, env)
+	case "compare":
+		return builtin_compare(interp, node, env)
 	case "lerp":
 		return builtin_lerp(interp, node, env)
 	case "floor":
@@ -882,6 +1002,58 @@ builtin_max :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return (ai >= bi) ? ai : bi, true
 	}
 	return nil, false
+}
+
+// builtin_compare is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
+// eval_compare — the spec-03 prelude total three-way comparison `compare(a, b) ->
+// Ordering`. It grounds Ord as the same ordered scalars `max`/`<`/`>` compare
+// (Fixed by its underlying Q32.32 integer ordering, Int directly), so no float
+// reaches a semantic path and the runtime fold is bit-identical to the compiler
+// eval. The args are children[1]/[2] (children[0] the callee). ok is false on a
+// wrong arity or a mixed/non-ordered pair (the typecheck-rejected forms — the
+// surface admits only a matching same-type pair, never compare(1, 2.0)). The
+// result is the prelude Ordering Variant_Value a match destructures.
+builtin_compare :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	a, a_ok := eval(interp, &node.children[1], env)
+	b, b_ok := eval(interp, &node.children[2], env)
+	if !a_ok || !b_ok {
+		return nil, false
+	}
+	if af, a_fixed := a.(Fixed); a_fixed {
+		bf, b_fixed := b.(Fixed)
+		if !b_fixed {
+			return nil, false
+		}
+		return ordering_value(i64(af), i64(bf)), true
+	}
+	if ai, a_int := a.(i64); a_int {
+		bi, b_int := b.(i64)
+		if !b_int {
+			return nil, false
+		}
+		return ordering_value(ai, bi), true
+	}
+	return nil, false
+}
+
+// ordering_value maps a three-way i64 comparison onto the prelude Ordering enum
+// value (Less/Equal/Greater) — the bare-variant Variant_Value a `Ordering::Less`
+// literal lowers to (enum_type "Ordering", nil payload), so a compare result
+// matches and values_equal compares it structurally against a literal Ordering
+// variant. Mirrors funpack/evaluate.odin ordering_value (a different machine —
+// runtime interp vs funpack evaluate — satisfying the one §02 §5 contract by
+// mirrored behavior, never linked code).
+ordering_value :: proc(l, r: i64) -> Value {
+	case_name := "Equal"
+	if l < r {
+		case_name = "Less"
+	} else if l > r {
+		case_name = "Greater"
+	}
+	return Variant_Value{enum_type = "Ordering", case_name = case_name}
 }
 
 // builtin_lerp is the §10 Tier-2 interpolation `lerp(a, b, t: Fixed) -> Fixed`:

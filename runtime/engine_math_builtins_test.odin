@@ -76,8 +76,13 @@ math_builtin_cases :: proc(a := context.allocator) -> []Math_Builtin_Case {
 	append(&cases, Math_Builtin_Case{"checked_div", em_call_node(a, "checked_div", fx(to_fixed(6), a), fx(to_fixed(2), a))})
 	// to_fixed: (Int) -> Fixed (re-exported by engine.math, owned by prelude).
 	append(&cases, Math_Builtin_Case{"to_fixed", em_call_node(a, "to_fixed", em_int_node(3, a))})
+	// compare: (Fixed, Fixed) -> Ordering | (Int, Int) -> Ordering (spec-03 prelude
+	// total three-way comparison). The runtime must wire it or the
+	// gameplay eval silently drops a body that compares — the dual-interpreter trap.
+	// Added to the sweep beside max (the same ordered-scalar overload shape).
 	// max: (Fixed, Fixed) -> Fixed | (Int, Int) -> Int.
 	append(&cases, Math_Builtin_Case{"max", em_call_node(a, "max", fx(to_fixed(1), a), fx(to_fixed(2), a))})
+	append(&cases, Math_Builtin_Case{"compare", em_call_node(a, "compare", fx(to_fixed(1), a), fx(to_fixed(2), a))})
 	// Vector ops.
 	append(&cases, Math_Builtin_Case{"dot", em_call_node(a, "dot", v2(to_fixed(1), to_fixed(2), a), v2(to_fixed(3), to_fixed(4), a))})
 	append(&cases, Math_Builtin_Case{"cross", em_call_node(a, "cross", v3(to_fixed(1), to_fixed(0), to_fixed(0), a), v3(to_fixed(0), to_fixed(1), to_fixed(0), a))})
@@ -149,6 +154,42 @@ test_max_fixed_and_int :: proc(t: ^testing.T) {
 	tie := em_eval_call(&interp, a, "max", em_int_node(5, a), em_int_node(5, a))
 	got_tie, _ := tie.(i64)
 	testing.expect_value(t, got_tie, i64(5))
+}
+
+// compare(a, b) folds to the prelude Ordering value (Less/Equal/Greater) over the
+// ordered scalars — the spec-03 total three-way comparison, the
+// GAMEPLAY-EVAL twin of funpack/evaluate.odin's eval_compare. The result is a bare
+// Ordering Variant_Value a match destructures, so this pins both the comparison
+// semantics AND the value shape a gameplay match reads. Fixed compares by its raw
+// Q32.32 integer ordering, Int directly — no float (§10.5). Mirrors the funpack
+// eval bit-for-bit: same comparison, same Ordering variant identity, a different
+// machine satisfying the one §02 §5 contract.
+@(test)
+test_compare_folds_to_ordering :: proc(t: ^testing.T) {
+	a := context.temp_allocator
+	interp := em_bare_interp(a)
+
+	expect_ordering :: proc(t: ^testing.T, v: Value, want_case: string, label: string) {
+		variant, is_variant := v.(Variant_Value)
+		testing.expectf(t, is_variant, "%s: result is not an Ordering variant", label)
+		testing.expectf(t, variant.enum_type == "Ordering", "%s: enum_type=%q, want Ordering", label, variant.enum_type)
+		testing.expectf(t, variant.case_name == want_case, "%s: case=%q, want %q", label, variant.case_name, want_case)
+		testing.expectf(t, variant.payload == nil, "%s: Ordering is a unit variant (nil payload)", label)
+	}
+
+	// Fixed compares by its Q32.32 ordering: 1.0 < 2.0 → Less; 2.0 > 1.0 → Greater;
+	// 1.0 == 1.0 → Equal. The fractional case 0.25 < 0.5 → Less pins the sub-unit
+	// ordering (the same raw-bits compare eval_max uses).
+	expect_ordering(t, em_eval_call(&interp, a, "compare", em_fixed_node(to_fixed(1), a), em_fixed_node(to_fixed(2), a)), "Less", "compare(1.0, 2.0)")
+	expect_ordering(t, em_eval_call(&interp, a, "compare", em_fixed_node(to_fixed(2), a), em_fixed_node(to_fixed(1), a)), "Greater", "compare(2.0, 1.0)")
+	expect_ordering(t, em_eval_call(&interp, a, "compare", em_fixed_node(to_fixed(1), a), em_fixed_node(to_fixed(1), a)), "Equal", "compare(1.0, 1.0)")
+	expect_ordering(t, em_eval_call(&interp, a, "compare", em_fixed_node(em_fx(1, 4), a), em_fixed_node(em_fx(1, 2), a)), "Less", "compare(0.25, 0.5)")
+
+	// Int compares directly on the Int rail (no Fixed promotion): 3 < 7 → Less,
+	// 7 > 3 → Greater, 5 == 5 → Equal.
+	expect_ordering(t, em_eval_call(&interp, a, "compare", em_int_node(3, a), em_int_node(7, a)), "Less", "compare(3, 7)")
+	expect_ordering(t, em_eval_call(&interp, a, "compare", em_int_node(7, a), em_int_node(3, a)), "Greater", "compare(7, 3)")
+	expect_ordering(t, em_eval_call(&interp, a, "compare", em_int_node(5, a), em_int_node(5, a)), "Equal", "compare(5, 5)")
 }
 
 // floor/round/trunc reduce a Fixed to an Int (the surface types them (Fixed) ->

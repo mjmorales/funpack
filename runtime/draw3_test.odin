@@ -479,14 +479,14 @@ test_draw3_lowering :: proc(t: ^testing.T) {
 	light, light_is := draw.cmds[1].(Draw3_Light)
 	testing.expect(t, light_is)
 	testing.expect(t, light.dir == Vec3{x = fixed_neg(d3_frac(3, 10)), y = fixed_neg(to_fixed(1)), z = fixed_neg(d3_frac(2, 10))})
-	testing.expect_value(t, light.color, Draw_Color.White)
+	testing.expect_value(t, light.color, named_color(.White))
 
 	// [2] Draw3_Plane: at Vec3 + size Vec2 + Color::Gray → .Gray ordinal.
 	plane, plane_is := draw.cmds[2].(Draw3_Plane)
 	testing.expect(t, plane_is)
 	testing.expect(t, plane.at == Vec3{x = to_fixed(25), y = Fixed(0), z = to_fixed(25)})
 	testing.expect(t, plane.size == Vec2{x = to_fixed(50), y = to_fixed(50)})
-	testing.expect_value(t, plane.color, Draw_Color.Gray)
+	testing.expect_value(t, plane.color, named_color(.Gray))
 
 	// [3] Draw3_Rigged: the §16 §7 rig — opaque handles, the blended pose, the world
 	// position. The skeleton is humanoid(); the parts carry the wired mesh() bind + the
@@ -559,8 +559,8 @@ test_draw3_digest_deterministic :: proc(t: ^testing.T) {
 
 	// A recolored plane (Gray → White) likewise diverges: the plane's color ordinal is
 	// in the fold. Build a Draw3_Plane-only list two ways to isolate the color byte.
-	plane_gray := Draw_List{cmds = []Draw_Cmd{Draw3_Plane{at = at, size = Vec2{to_fixed(50), to_fixed(50)}, color = .Gray}}}
-	plane_white := Draw_List{cmds = []Draw_Cmd{Draw3_Plane{at = at, size = Vec2{to_fixed(50), to_fixed(50)}, color = .White}}}
+	plane_gray := Draw_List{cmds = []Draw_Cmd{Draw3_Plane{at = at, size = Vec2{to_fixed(50), to_fixed(50)}, color = named_color(.Gray)}}}
+	plane_white := Draw_List{cmds = []Draw_Cmd{Draw3_Plane{at = at, size = Vec2{to_fixed(50), to_fixed(50)}, color = named_color(.White)}}}
 	testing.expect(t, frame_digest(empty_version, plane_gray).digest != frame_digest(empty_version, plane_white).digest)
 
 	// The appended Cmd_Tag ordinals: the 2D tags keep 0..2, the 3D tags take 3..6 — the
@@ -577,13 +577,16 @@ test_draw3_digest_deterministic :: proc(t: ^testing.T) {
 	// pins its ordinal); v8 appended the §18 §1 entity Sprite tag after that
 	// (test_draw_sprite_lowering_and_digest pins its ordinal); v9 appended the §19
 	// resolved Sprite_Texture fields to the Sprite arm (same Sprite=8 tag, more
-	// bytes), leaving every 2D/3D/Tilemap ordinal here unmoved.
-	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 9)
+	// bytes); v10 restructured Draw_Color (named palette OR Color::Rgb) and folds
+	// it through write_color (a named color stays its single ordinal byte, an Rgb
+	// folds under the reserved sentinel) — leaving every 2D/3D/Tilemap ordinal here
+	// unmoved.
+	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 10)
 
 	// A 2D-only Rect draw-list still digests through the unchanged Rect=0 tag — a
 	// proxy for the committed 2D goldens staying byte-unmoved (the committed-replay tests assert the
 	// real goldens). The Rect bytes contain the Rect tag (0) and no 3D tag.
-	rect_list := Draw_List{cmds = []Draw_Cmd{Draw_Rect{at = Vec2{to_fixed(8), to_fixed(60)}, size = Vec2{to_fixed(4), to_fixed(16)}, color = .White}}}
+	rect_list := Draw_List{cmds = []Draw_Cmd{Draw_Rect{at = Vec2{to_fixed(8), to_fixed(60)}, size = Vec2{to_fixed(4), to_fixed(16)}, color = named_color(.White)}}}
 	rect_bytes := frame_bytes(empty_version, rect_list)
 	// The draw-cmd tag byte is Rect=0, never a 3D ordinal — an existing 2D stream is
 	// unmoved by the append. The byte sits after the empty world state (tick u64 +
