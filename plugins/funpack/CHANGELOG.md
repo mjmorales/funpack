@@ -2,6 +2,12 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.6.0] - 2026-06-18
+
+### Features
+- feat(plugin): rewire MCP bundling to the native funpack mcp verb (4cc1b2a)
+- feat(mcp): screenshot present-boundary refusal + surface-parity gate (03e409f)
+
 ## [0.5.1] - 2026-06-16
 
 ### Fixes
