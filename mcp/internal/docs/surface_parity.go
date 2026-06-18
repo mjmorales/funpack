@@ -70,7 +70,7 @@ type SurfaceModel struct {
 	// function names at the module-decl granularity is therefore all false
 	// positives (every receiver method reads as docs-ahead). Function/value parity
 	// is in excludedSurface; the divergence-relevant signal at this granularity is
-	// TYPE presence (Align/Font/Shape3/Volume/PathOp are the residual exemplars).
+	// TYPE presence (Font/Shape3/Volume/PathOp are the residual exemplars).
 	ModuleTypes map[string]map[string]bool
 	// EnumBareVariants maps an enum type name (Color) to its set of bare (no
 	// payload) variant names (White, Black, …). The canonical Color-palette example.
@@ -242,9 +242,9 @@ var residualOverDeclares = []residualOverDeclare{
 	// variant-finding subsumption in DiffSurfaces. Restoring the type's wiring in
 	// surface.odin removes the entry.
 
-	// render.fun declares Align (text alignment enum) and Font (extern type);
-	// neither is in the compiler's engine.render type decls.
-	{KindModuleType, "engine.render::Align", "text-alignment enum unimplemented in surface.odin"},
+	// render.fun declares Font (extern type) which is not in the compiler's
+	// engine.render type decls. (Align is now admitted — readmitted by story
+	// mechanical-variant-readmit — so it left this list.)
 	{KindModuleType, "engine.render::Font", "extern Font type unimplemented in surface.odin"},
 	// geom.fun's §03 vector-path geometry (Sketch builder + Path/PathOp) is wholly
 	// unimplemented; Draw::Fill/Stroke (which name a Sketch) are the dependent
@@ -273,11 +273,6 @@ var residualOverDeclares = []residualOverDeclare{
 	{KindModuleType, "engine.nav::NavHandle", "baked-nav handle type unimplemented in surface.odin (engine.nav)"},
 	// core.fun's TickRate config type is declared but not admitted.
 	{KindModuleType, "engine.core::TickRate", "tick-rate config type unimplemented in surface.odin (engine.core)"},
-	// input.fun's Axis/Button role-kind ascription markers are extern types the
-	// compiler treats specially (ascription-only) and does not list as module
-	// type decls; declared in .fun but absent from the dump's engine.input decls.
-	{KindModuleType, "engine.input::Axis", "ascription-only role-kind marker not listed as a module type in surface.odin"},
-	{KindModuleType, "engine.input::Button", "ascription-only role-kind marker not listed as a module type in surface.odin"},
 	// ui.fun's Choice type is declared but not admitted.
 	{KindModuleType, "engine.ui::Choice", "UI choice type unimplemented in surface.odin (engine.ui)"},
 	// world.fun's Id/Owned handle types are declared but not admitted (the
@@ -295,60 +290,13 @@ var residualOverDeclares = []residualOverDeclare{
 	{KindStructVariant, "Draw::Line", "vector-path draw command unimplemented in surface.odin (depends on engine.geom)"},
 	{KindStructVariant, "Draw::Fill", "vector-path draw command unimplemented in surface.odin (depends on engine.geom)"},
 	{KindStructVariant, "Draw::Stroke", "vector-path draw command unimplemented in surface.odin (depends on engine.geom)"},
-	// input.fun declares the full physical-key alphabet; the compiler admits the
-	// keys the bindings/examples exercise (plus F5/F9). The remaining letters and
-	// modifier keys are unimplemented Key variants.
-	{KindEnumVariant, "Key::B", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::C", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::E", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::F", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::G", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::H", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::I", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::J", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::K", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::L", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::N", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::O", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::P", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::Q", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::R", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::T", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::U", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::V", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::X", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::Y", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::Z", "physical key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::Escape", "modifier/control key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::Shift", "modifier/control key unimplemented in surface.odin Key set"},
-	{KindEnumVariant, "Key::Tab", "modifier/control key unimplemented in surface.odin Key set"},
-	// input.fun declares four local-player slots; the compiler admits P1/P2.
-	{KindEnumVariant, "PlayerId::P3", "third local player slot unimplemented in surface.odin"},
-	{KindEnumVariant, "PlayerId::P4", "fourth local player slot unimplemented in surface.odin"},
-	// anim.fun declares a rich skeletal Bone/Slot taxonomy (named joints + numbered
-	// slots); the compiler admits the humanoid named set only.
-	{KindEnumVariant, "Bone::Hips", "skeletal bone unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Neck", "skeletal bone unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::LHand", "skeletal bone unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::RHand", "skeletal bone unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::LFoot", "skeletal bone unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::RFoot", "skeletal bone unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Joint0", "generic skeletal joint unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Joint1", "generic skeletal joint unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Joint2", "generic skeletal joint unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Joint3", "generic skeletal joint unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Joint4", "generic skeletal joint unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Joint5", "generic skeletal joint unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Joint6", "generic skeletal joint unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Bone::Joint7", "generic skeletal joint unimplemented in surface.odin Bone set"},
-	{KindEnumVariant, "Slot::LHand", "skeletal slot unimplemented in surface.odin Slot set"},
-	{KindEnumVariant, "Slot::RHand", "skeletal slot unimplemented in surface.odin Slot set"},
-	{KindEnumVariant, "Slot::LFoot", "skeletal slot unimplemented in surface.odin Slot set"},
-	{KindEnumVariant, "Slot::RFoot", "skeletal slot unimplemented in surface.odin Slot set"},
-	{KindEnumVariant, "Slot::Slot0", "generic skeletal slot unimplemented in surface.odin Slot set"},
-	{KindEnumVariant, "Slot::Slot1", "generic skeletal slot unimplemented in surface.odin Slot set"},
-	{KindEnumVariant, "Slot::Slot2", "generic skeletal slot unimplemented in surface.odin Slot set"},
-	{KindEnumVariant, "Slot::Slot3", "generic skeletal slot unimplemented in surface.odin Slot set"},
+	// NOTE: the full physical-key alphabet (Key:: B,C,E–L,N–V,X,Y,Z + Escape/Shift/
+	// Tab), both extra local-player slots (PlayerId::P3/P4), and the full skeletal
+	// Bone/Slot taxonomy (named joints + numbered Joint0–7 / Slot0–3) were all
+	// readmitted into surface.odin by story mechanical-variant-readmit, so they are
+	// now in parity and left this list. Only the feature-subsystem gaps above
+	// (vector-path Draw commands, and the whole-type render/geom/level/model/nav3/
+	// nav/core/ui/world subsystems) remain residual.
 }
 
 // residualKey is the (Kind, Symbol) lookup key the allow-list is matched on.
