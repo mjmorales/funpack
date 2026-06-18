@@ -16,6 +16,7 @@ package main
 
 import "../../funpack"
 import funpack_runtime "../../runtime"
+import "core:encoding/json"
 import "core:strings"
 
 // MCP_PROTOCOL_VERSION is the Model Context Protocol revision this server advertises
@@ -40,20 +41,29 @@ MCP_SERVER_NAME :: "funpack-mcp"
 // unrecoverable server fault would be exit 1; the protocol loop never panics on wire
 // input (every malformed request is a JSON-RPC error response), so there is no fault
 // path in the skeleton — it is reserved for the downstream session/IO arms.
+//
+// THE SESSION REGISTRY is server-scoped: minted once here, lives for the whole stdio
+// session, torn down on shutdown (the F13 fix — a session OUTLIVES the request that
+// opened it). It is threaded into the handler via userdata so the session-family
+// dispatch arm reaches it without the transport knowing its shape.
 run_mcp_verb :: proc(allocator := context.allocator) -> int {
-	serve_mcp_stdio(mcp_jsonrpc_handler(), allocator)
+	registry := mcp_session_registry_make(allocator)
+	defer mcp_session_registry_destroy(&registry, allocator)
+	serve_mcp_stdio(mcp_jsonrpc_handler(&registry), allocator)
 	return 0
 }
 
-// mcp_jsonrpc_handler builds the real request handler that replaces the echo stub —
-// the Mcp_Line_Handler the transport folds each line through. It carries no userdata
-// at the skeleton layer (no session registry yet); the downstream session-registry
-// task threads the registry through userdata without changing this seam.
-mcp_jsonrpc_handler :: proc() -> Mcp_Line_Handler {
+// mcp_jsonrpc_handler builds the real request handler — the Mcp_Line_Handler the
+// transport folds each line through. It carries the SERVER-SCOPED session registry as
+// userdata so the session-family dispatch arm reaches the live session table; the
+// registry outlives every request (the F13 lifetime contract). The handler unwraps the
+// registry pointer back out of userdata before dispatching.
+mcp_jsonrpc_handler :: proc(registry: ^Mcp_Session_Registry) -> Mcp_Line_Handler {
 	return Mcp_Line_Handler {
-		userdata = nil,
+		userdata = registry,
 		handle = proc(userdata: rawptr, line: string, allocator := context.allocator) -> (response: string, keep_open: bool) {
-			return mcp_dispatch_line(line, allocator)
+			registry := cast(^Mcp_Session_Registry)userdata
+			return mcp_dispatch_line(registry, line, allocator)
 		},
 	}
 }
@@ -64,7 +74,7 @@ mcp_jsonrpc_handler :: proc() -> Mcp_Line_Handler {
 // ends the session, not a protocol message). A line that is not a valid request
 // envelope is a PROTOCOL fault: a JSON-RPC error response (never a panic). A
 // notification (no id) is accepted and dropped silently per the MCP contract.
-mcp_dispatch_line :: proc(line: string, allocator := context.allocator) -> (response: string, keep_open: bool) {
+mcp_dispatch_line :: proc(registry: ^Mcp_Session_Registry, line: string, allocator := context.allocator) -> (response: string, keep_open: bool) {
 	request, ok := mcp_parse_request(line, allocator)
 	if !ok {
 		// A notification that failed to parse a method still gets no reply (the
@@ -89,7 +99,7 @@ mcp_dispatch_line :: proc(line: string, allocator := context.allocator) -> (resp
 	case "tools/list":
 		return mcp_handle_tools_list(request, allocator), true
 	case "tools/call":
-		return mcp_handle_tools_call(request, allocator), true
+		return mcp_handle_tools_call(registry, request, allocator), true
 	}
 	return mcp_render_error(request.id, MCP_JSONRPC_METHOD_NOT_FOUND, "method not found", allocator), true
 }
@@ -167,15 +177,40 @@ mcp_write_tool_spec :: proc(b: ^strings.Builder, spec: funpack.Tool_Spec) {
 	strings.write_string(b, "]}}")
 }
 
-// mcp_handle_tools_call dispatches a tools/call to its arm. At the SKELETON layer NO
-// arm is implemented: the call returns the IsError tools/call result the downstream
-// tasks will replace per tool — for a name in the table, a clean not-implemented
-// stub keyed off the Tool_Spec (wave-3 fills it); for an unknown name, the
-// invalid_input "unknown tool" envelope. EITHER way the failure is the in-band
-// IsError result convention (mcp_error.odin), never a JSON-RPC error object — the
-// model reads the category and self-corrects. The downstream arms graft onto the
-// switch this stub establishes.
-mcp_handle_tools_call :: proc(request: Mcp_Request, allocator := context.allocator) -> string {
+// Mcp_Dispatch is the per-call context every family dispatch arm reads: the resolved
+// Tool_Spec (name + arg schema — the dispatch hints), the tool name, the parsed
+// `arguments` object the call carried, the request id (so an arm can render its own
+// JSON-RPC result line), and the server-scoped session registry (the session family's
+// reach into live sessions — the F13 lifetime owner). It is passed BY VALUE: a family
+// arm reads it; only the session arm mutates state, and that state lives behind the
+// `registry` pointer, not in this struct. Bundling the call context in one struct is
+// what lets each downstream tool task fill ONLY its family file — the dispatch seam
+// never changes shape as arms land.
+Mcp_Dispatch :: struct {
+	spec:      funpack.Tool_Spec,
+	name:      string,
+	arguments: json.Object,
+	id:        Mcp_Id,
+	registry:  ^Mcp_Session_Registry,
+}
+
+// mcp_handle_tools_call dispatches a tools/call through the per-family arm CHAIN. For
+// a tool found in TOOL_SPECS it tries each family dispatch proc in order; the FIRST
+// that returns handled=true wins and owns the rendered JSON-RPC result. If NO family
+// handles a KNOWN tool, it falls through to the not-implemented IsError stub keyed off
+// the spec (the family file for that tool has not been filled yet). An UNKNOWN name
+// keeps the invalid_input "unknown tool" IsError envelope. EITHER failure is the
+// in-band IsError result convention (mcp_error.odin), never a JSON-RPC error object —
+// the model reads the category and self-corrects.
+//
+// THE EXTENSION SEAM (the whole point of the chain): each downstream tool task fills
+// ONLY its own family file (its dispatch proc), with ZERO edits here. A family arm
+// returns ("", false) for any tool it does not own (the stub state), so a tool flows
+// down the chain until its family claims it. The chain order is the family list, not a
+// priority — at most one family owns any given tool name, so order is immaterial to
+// correctness (a tool the wrong family wrongly claimed would be a bug in that family,
+// not here).
+mcp_handle_tools_call :: proc(registry: ^Mcp_Session_Registry, request: Mcp_Request, allocator := context.allocator) -> string {
 	name, has_name := request.params["name"]
 	name_string, name_is_string := name.(string)
 	if !has_name || !name_is_string {
@@ -186,27 +221,76 @@ mcp_handle_tools_call :: proc(request: Mcp_Request, allocator := context.allocat
 		return mcp_render_tool_result(request.id, result, allocator)
 	}
 
-	if spec, found := mcp_lookup_tool(string(name_string)); found {
+	spec, found := mcp_lookup_tool(string(name_string))
+	if !found {
 		result := mcp_tool_error_result(
 			Mcp_Error{
-				category = .Internal,
-				message  = "tool not yet implemented",
-				detail   = spec.name,
+				category = .Invalid_Input,
+				message  = "unknown tool",
+				detail   = string(name_string),
 			},
 			allocator,
 		)
 		return mcp_render_tool_result(request.id, result, allocator)
 	}
 
+	// The `arguments` object the call carried (MCP tools/call params.arguments). Absent
+	// or non-object leaves it empty — each arm reads its own args off it, exactly as
+	// session_request reads its `args` (introspect.odin:430-435).
+	arguments: json.Object
+	if nested, has_args := request.params["arguments"]; has_args {
+		if object, args_ok := nested.(json.Object); args_ok {
+			arguments = object
+		}
+	}
+
+	dispatch := Mcp_Dispatch {
+		spec      = spec,
+		name      = string(name_string),
+		arguments = arguments,
+		id        = request.id,
+		registry  = registry,
+	}
+
+	// The per-family dispatch chain. Each arm lives in its own file (mcp_tools_*.odin)
+	// and is filled by its downstream tool task; the first arm that returns handled=true
+	// owns the result. A KNOWN tool no family yet claims falls through to the
+	// not-implemented stub below.
+	for arm in MCP_DISPATCH_CHAIN {
+		if result, handled := arm(dispatch, allocator); handled {
+			return result
+		}
+	}
+
 	result := mcp_tool_error_result(
 		Mcp_Error{
-			category = .Invalid_Input,
-			message  = "unknown tool",
-			detail   = string(name_string),
+			category = .Internal,
+			message  = "tool not yet implemented",
+			detail   = spec.name,
 		},
 		allocator,
 	)
 	return mcp_render_tool_result(request.id, result, allocator)
+}
+
+// Mcp_Tool_Dispatch is one per-family dispatch arm: handed the call context, it either
+// CLAIMS the tool (handled=true, returning the rendered JSON-RPC result line) or
+// declines it (handled=false, result ignored) so the next arm in the chain tries.
+// Every family file (mcp_tools_*.odin) implements exactly one of these.
+Mcp_Tool_Dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> (result: string, handled: bool)
+
+// MCP_DISPATCH_CHAIN is the ordered per-family dispatch chain mcp_handle_tools_call
+// walks. Each entry is a family's arm proc, each in its OWN file, each filled by its
+// downstream tool task. ADDING a tool family means: write its mcp_tools_<family>.odin
+// with its dispatch proc, then append the proc here — NEVER edit mcp_handle_tools_call.
+// Order is immaterial to correctness (at most one family claims any tool name).
+MCP_DISPATCH_CHAIN := [?]Mcp_Tool_Dispatch {
+	mcp_oneshot_dispatch,
+	mcp_docs_tool_dispatch,
+	mcp_session_tool_dispatch,
+	mcp_observe_time_dispatch,
+	mcp_control_dispatch,
+	mcp_screenshot_dispatch,
 }
 
 // mcp_lookup_tool finds a Tool_Spec by its advertised MCP name in the generated

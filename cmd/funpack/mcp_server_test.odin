@@ -20,8 +20,9 @@ import "core:testing"
 // It exercises the same serve_mcp_connection loop the verb runs, so the test pins
 // the handler exactly as it ships, not a re-implementation.
 drive_handler :: proc(t: ^testing.T, request_line: string, loc := #caller_location) -> string {
+	registry := mcp_session_registry_make(context.temp_allocator)
 	conn := server_mem_conn({request_line}, context.temp_allocator)
-	serve_mcp_connection(mcp_jsonrpc_handler(), server_mem_transport(&conn), context.temp_allocator)
+	serve_mcp_connection(mcp_jsonrpc_handler(&registry), server_mem_transport(&conn), context.temp_allocator)
 	return strings.trim_right(strings.to_string(conn.outgoing), "\n")
 }
 
@@ -162,8 +163,9 @@ test_mcp_known_tool_not_implemented :: proc(t: ^testing.T) {
 // the handshake completes. notifications/initialized is the canonical case.
 @(test)
 test_mcp_notification_dropped :: proc(t: ^testing.T) {
+	registry := mcp_session_registry_make(context.temp_allocator)
 	conn := server_mem_conn({`{"jsonrpc":"2.0","method":"notifications/initialized"}`}, context.temp_allocator)
-	serve_mcp_connection(mcp_jsonrpc_handler(), server_mem_transport(&conn), context.temp_allocator)
+	serve_mcp_connection(mcp_jsonrpc_handler(&registry), server_mem_transport(&conn), context.temp_allocator)
 	testing.expect_value(t, strings.to_string(conn.outgoing), "")
 }
 
@@ -193,8 +195,9 @@ test_mcp_stdout_discipline :: proc(t: ^testing.T) {
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"no_such_tool"}}`,
 	}
+	registry := mcp_session_registry_make(context.temp_allocator)
 	conn := server_mem_conn(exchange, context.temp_allocator)
-	serve_mcp_connection(mcp_jsonrpc_handler(), server_mem_transport(&conn), context.temp_allocator)
+	serve_mcp_connection(mcp_jsonrpc_handler(&registry), server_mem_transport(&conn), context.temp_allocator)
 
 	out := strings.to_string(conn.outgoing)
 	// The notification produced no line, so the framed stream is exactly 3 responses.
@@ -223,8 +226,9 @@ test_mcp_stdout_discipline :: proc(t: ^testing.T) {
 test_mcp_verb_exit_codes :: proc(t: ^testing.T) {
 	// A connection whose stream drains (EOF) returns from the serve loop cleanly —
 	// the same path run_mcp_verb returns 0 after.
+	registry := mcp_session_registry_make(context.temp_allocator)
 	conn := server_mem_conn({`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`}, context.temp_allocator)
-	serve_mcp_connection(mcp_jsonrpc_handler(), server_mem_transport(&conn), context.temp_allocator)
+	serve_mcp_connection(mcp_jsonrpc_handler(&registry), server_mem_transport(&conn), context.temp_allocator)
 	// The loop returned (did not hang) and framed exactly the one response — the
 	// clean EOF shutdown run_mcp_verb maps to exit 0.
 	testing.expect(t, strings.contains(strings.to_string(conn.outgoing), `"id":1`), "the request was answered before the clean EOF close")
