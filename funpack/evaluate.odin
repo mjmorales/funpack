@@ -1426,6 +1426,8 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return transform_up(d), true
 	case "max":
 		return eval_max(ctx, env, e)
+	case "compare":
+		return eval_compare(ctx, env, e)
 	case "fold":
 		return eval_fold(ctx, env, e)
 	case "first":
@@ -2014,6 +2016,51 @@ eval_max :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: 
 	return nil, false
 }
 
+// eval_compare lowers `compare(a, b) -> Ordering` (spec-03 prelude total
+// three-way comparison): two same-typed ordered scalars into the prelude
+// Ordering enum value a match destructures. The kernel grounds Ord as Fixed and
+// Int (the same scalars `<`/`>` and `max` compare); Fixed compares by its
+// underlying Q32.32 integer ordering exactly as eval_max/compare_ordered do, so
+// no float ever reaches a semantic path. ok is false on a wrong arity or a
+// mixed/non-ordered pair (the typecheck-rejected forms never reach a passing
+// program — overloads_check admits only a matching same-type pair).
+eval_compare :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	a := eval_expr(ctx, env, e.args[0]) or_return
+	b := eval_expr(ctx, env, e.args[1]) or_return
+	if af, a_fixed := a.(Fixed); a_fixed {
+		bf, b_fixed := b.(Fixed)
+		if !b_fixed {
+			return nil, false
+		}
+		return ordering_value(i64(af), i64(bf)), true
+	}
+	if ai, a_int := a.(i64); a_int {
+		bi, b_int := b.(i64)
+		if !b_int {
+			return nil, false
+		}
+		return ordering_value(ai, bi), true
+	}
+	return nil, false
+}
+
+// ordering_value maps a three-way i64 comparison onto the prelude Ordering enum
+// value (Less/Equal/Greater) — the bare-variant Enum_Value identity
+// `Ordering::Less` lowers to, so a compare result matches and value_equal
+// compares structurally against a literal Ordering variant.
+ordering_value :: proc(l, r: i64) -> Value {
+	variant := "Equal"
+	if l < r {
+		variant = "Less"
+	} else if l > r {
+		variant = "Greater"
+	}
+	return Enum_Value{type_name = "Ordering", variant = variant}
+}
+
 // eval_map lowers `map(source, fn) -> [U]` (spec §08): a fresh list applying the
 // unary function to each element in source order. The function slot is a literal
 // lambda or a bare user-fn name (apply_combinator), the same two forms fold's
@@ -2230,6 +2277,10 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 	// len/contains UFCS still wins for those names.
 	if list, is_list := receiver.(List_Value); is_list {
 		switch callee.member {
+		case "count":
+			return eval_view_count(ctx, env, list, args)
+		case "at":
+			return eval_view_at(ctx, env, list, args)
 		case "ref":
 			return eval_view_ref(ctx, env, args)
 		case "resolve":
@@ -2737,6 +2788,38 @@ input_analog_axis :: proc(input: Input_Value, player, axis: string) -> Vec2_Valu
 		}
 	}
 	return result
+}
+
+// eval_view_count reads how many things a materialized View matched (spec §08,
+// world.fun:24): a View.of(list) is a List_Value, so count() is the row count as
+// an Int. No argument; ok is false on a wrong arity (the typecheck admits only
+// the zero-arg form).
+eval_view_count :: proc(ctx: Eval_Ctx, env: ^Env, view: List_Value, args: []Expr) -> (value: Value, ok: bool) {
+	if len(args) != 0 {
+		return nil, false
+	}
+	return i64(len(view.elements)), true
+}
+
+// eval_view_at reads the i-th matched thing of a materialized View in stable id
+// order (spec §08, world.fun:27): a View.of(list) is a List_Value, so at(i) is
+// the element at that index — the bare element T the `-> T` signature returns,
+// not an Option (the index surface, distinct from ref/resolve). ok is false on a
+// wrong arity, a non-Int index, or an out-of-range index — fail-closed; a
+// well-typed passing program indexes a present row.
+eval_view_at :: proc(ctx: Eval_Ctx, env: ^Env, view: List_Value, args: []Expr) -> (value: Value, ok: bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	index_value := eval_expr(ctx, env, args[0]) or_return
+	index, is_int := index_value.(i64)
+	if !is_int {
+		return nil, false
+	}
+	if index < 0 || index >= i64(len(view.elements)) {
+		return nil, false
+	}
+	return view.elements[index], true
 }
 
 // eval_view_ref mints a §08 Ref to the i-th row of a materialized View (the

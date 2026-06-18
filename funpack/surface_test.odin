@@ -1043,6 +1043,223 @@ test_flip_unknown_variant_is_compile_error :: proc(t: ^testing.T) {
 	testing.expect(t, err != .None)
 }
 
+// ── §26 prelude compare/Ordering + §20 Color palette/Rgb parity restore ──
+// (ADR stdlib-surface-source-of-truth-parity-restore — the spec + .fun signature
+// files are source of truth; these constructs are spec-declared and restored to
+// the surface they regressed below.)
+
+@(test)
+test_compare_returns_ordering_and_matches :: proc(t: ^testing.T) {
+	// The whole junction for §26/spec-03 `compare(a: T, b: T) -> Ordering`
+	// (prelude.fun:50): compare yields the Ordering enum value a three-way match
+	// destructures, and the kernel orders both Int and Fixed (the Ord grounds).
+	// Run through run_test_pipeline so typecheck (the Fixed/Int overload set), the
+	// exhaustiveness gate (the CLOSED_VARIANT_SETS Ordering entry), AND eval
+	// (eval_compare → ordering_value) all hold on one fixture. Less/Equal/Greater
+	// each evaluate to the correct arm.
+	source := "import engine.prelude.{Int, Fixed, Ordering}\n" +
+		"fn rank(o: Ordering) -> Int {\n" +
+		"  return match o {\n" +
+		"    Ordering::Less    => 0\n" +
+		"    Ordering::Equal   => 1\n" +
+		"    Ordering::Greater => 2\n" +
+		"  }\n" +
+		"}\n" +
+		"test \"compare orders ints and fixeds three ways\" {\n" +
+		"  assert rank(compare(1, 2)) == 0\n" +
+		"  assert rank(compare(2, 2)) == 1\n" +
+		"  assert rank(compare(3, 2)) == 2\n" +
+		"  assert rank(compare(0.5, 1.5)) == 0\n" +
+		"  assert rank(compare(1.5, 1.5)) == 1\n" +
+		"  assert rank(compare(2.5, 1.5)) == 2\n" +
+		"  assert compare(1, 2) == Ordering::Less\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 7)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_compare_overload_set_and_ordering_variants :: proc(t: ^testing.T) {
+	// The surface-table rows behind the fixture: compare is the prelude
+	// {(Fixed,Fixed)->Ordering, (Int,Int)->Ordering} closed overload set (the Ord
+	// bound realized over the kernel ordered grounds, mirroring max), and the three
+	// Ordering variants type to the Ordering engine handle. An entry outside the
+	// declared set is not a value — the closed-enum guard.
+	overloads, found := surface_signatures("compare")
+	testing.expect(t, found)
+	testing.expect_value(t, len(overloads), 2)
+	for overload in overloads {
+		testing.expect(t, returns_engine(overload, .Ordering))
+	}
+
+	for variant in ([]string{"Less", "Equal", "Greater"}) {
+		v, has := surface_enum_variant("Ordering", variant)
+		testing.expectf(t, has, "Ordering::%s did not type", variant)
+		testing.expect(t, is_engine(v, .Ordering))
+	}
+	_, has_unknown := surface_enum_variant("Ordering", "Greatest")
+	testing.expect(t, !has_unknown)
+
+	// The bare `Ordering` type-name grounds for a param/return position.
+	ordering, has_ordering := engine_type_name("Ordering")
+	testing.expect(t, has_ordering)
+	testing.expect(t, is_engine(ordering, .Ordering))
+}
+
+@(test)
+test_compare_mixed_kind_pair_rejected :: proc(t: ^testing.T) {
+	// The `a, b: T` same-type constraint: the closed overload set has no
+	// (Int, Fixed) arm, so a mixed-kind pair matches neither and is Type_Mismatch
+	// (no implicit Int→Fixed promotion, spec §10). A compile error, never a counted
+	// failure.
+	source := "import engine.prelude.{Int, Fixed, Ordering}\n" +
+		"fn bad() -> Ordering { return compare(1, 2.0) }\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_incomplete_ordering_match_is_non_exhaustive :: proc(t: ^testing.T) {
+	// The load-bearing exhaustiveness floor (the reason Ordering joins
+	// CLOSED_VARIANT_SETS): the prelude doc "forces a match", so a match leaving
+	// Greater unhandled is Non_Exhaustive_Match (spec §02 §5), not a silent pass.
+	// Without the closed-set entry the gate would leave the match "for a later
+	// stage" and admit the hole.
+	source := "import engine.prelude.{Int, Ordering}\n" +
+		"fn bad(o: Ordering) -> Int {\n" +
+		"  return match o {\n" +
+		"    Ordering::Less  => 0\n" +
+		"    Ordering::Equal => 1\n" +
+		"  }\n" +
+		"}\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, type_err := stage_typecheck(ast)
+	testing.expect_value(t, type_err, Type_Error.None)
+	gate_err := stage_gates(ast)
+	testing.expect_value(t, gate_err, Gate_Error.Non_Exhaustive_Match)
+}
+
+@(test)
+test_color_palette_full_set_and_rgb_are_values :: proc(t: ^testing.T) {
+	// The §20 §1 palette parity restore (render.fun:12-15): the full named set
+	// White/Black/Red/Green/Blue/Yellow/Cyan/Magenta/Gray types to the Color engine
+	// value, and the struct-payload escape Color::Rgb{r,g,b} yields the same Color
+	// type — so a `tint`/`color` field accepts either form. The secondary/CMY trio
+	// (Yellow/Cyan/Magenta) is the restored portion; the rest pin the closed set.
+	for variant in ([]string{
+		"White", "Black", "Red", "Green", "Blue",
+		"Yellow", "Cyan", "Magenta", "Gray",
+	}) {
+		v, has := surface_enum_variant("Color", variant)
+		testing.expectf(t, has, "Color::%s did not type", variant)
+		testing.expect(t, is_engine(v, .Color))
+	}
+	_, has_unknown := surface_enum_variant("Color", "Chartreuse")
+	testing.expect(t, !has_unknown)
+
+	result, fields, has_rgb := surface_struct_variant("Color", "Rgb")
+	testing.expect(t, has_rgb)
+	testing.expect(t, is_engine(result, .Color))
+	testing.expect_value(t, len(fields), 3)
+	want_fields := []string{"r", "g", "b"}
+	for field, i in fields {
+		testing.expect_value(t, field.name, want_fields[i])
+		testing.expect(t, is_ground(field.type, .Fixed))
+	}
+}
+
+@(test)
+test_color_palette_and_rgb_typecheck_and_eval :: proc(t: ^testing.T) {
+	// The end-to-end junction: the restored palette entries and Color::Rgb
+	// construct as values through the whole pipeline (typecheck + eval). Rgb built
+	// from to_fixed(...) compares equal to the literal-channel form (the generic
+	// eval_struct_variant builds a structural Record_Value value_equal compares).
+	source := "import engine.render.Color\n" +
+		"import engine.math.to_fixed\n" +
+		"fn yellow() -> Color { return Color::Yellow }\n" +
+		"fn cyan() -> Color { return Color::Cyan }\n" +
+		"fn magenta() -> Color { return Color::Magenta }\n" +
+		"fn red() -> Color { return Color::Rgb{ r: to_fixed(1), g: to_fixed(0), b: to_fixed(0) } }\n" +
+		"test \"palette and rgb construct as values\" {\n" +
+		"  assert yellow() == Color::Yellow\n" +
+		"  assert cyan() == Color::Cyan\n" +
+		"  assert magenta() == Color::Magenta\n" +
+		"  assert red() == Color::Rgb{ r: 1.0, g: 0.0, b: 0.0 }\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 4)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_color_rgb_unknown_field_is_compile_error :: proc(t: ^testing.T) {
+	// The closed-schema guard on the struct-payload escape: Color::Rgb carries
+	// exactly r/g/b, so an `a` channel is Type_Mismatch (a compile error, exit 2) —
+	// the Shape2::Box / Draw::Sprite mold.
+	source := "import engine.render.Color\n" +
+		"fn bad() -> Color { return Color::Rgb{ r: 1.0, g: 0.0, b: 0.0, a: 1.0 } }\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect(t, err != .None)
+}
+
+@(test)
+test_view_count_and_at_typecheck :: proc(t: ^testing.T) {
+	// The §08 read-table iteration surface (world.fun:24/:27): count() reads an Int
+	// and at(i) reads the element T off a View[T] receiver — restored beside the
+	// existing ref/resolve reference surface. Typechecks clean over a View[T] param.
+	source := "import engine.prelude.Int\n" +
+		"import engine.world.View\n" +
+		"data Switch { on: Bool }\n" +
+		"fn how_many(v: View[Switch]) -> Int { return v.count() }\n" +
+		"fn first_one(v: View[Switch]) -> Switch { return v.at(0) }\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect_value(t, err, Type_Error.None)
+
+	// The surface rows behind it: count is ()->Int, at is (Int)->T (the receiver's
+	// element), both off the .View engine method surface.
+	view := engine_type_of(.View, user_type_of("Switch", .Data)).(^Engine_Type)
+	count, has_count := surface_engine_method(view, "count")
+	testing.expect(t, has_count)
+	count_fn, count_is_func := count.(^Func_Type)
+	testing.expect(t, count_is_func)
+	if count_is_func {
+		testing.expect_value(t, len(count_fn.params), 0)
+		testing.expect(t, is_ground(count_fn.result, .Int))
+	}
+	at, has_at := surface_engine_method(view, "at")
+	testing.expect(t, has_at)
+	at_fn, at_is_func := at.(^Func_Type)
+	testing.expect(t, at_is_func)
+	if at_is_func {
+		testing.expect_value(t, len(at_fn.params), 1)
+		testing.expect(t, is_ground(at_fn.params[0], .Int))
+	}
+}
+
+@(test)
+test_view_unknown_method_is_compile_error :: proc(t: ^testing.T) {
+	// The closed-surface proof: restoring count/at did not open View to arbitrary
+	// methods — `tail` is no View method, so the call is Unsupported_Expr (the
+	// typecheck-fail verdict the pipeline maps to a compile error).
+	source := "import engine.prelude.Int\n" +
+		"import engine.world.View\n" +
+		"fn bad(v: View[Int]) -> Int { return v.tail() }\n"
+	ast, parse_err := stage_parse(stage_lex(source))
+	testing.expect_value(t, parse_err, Parse_Error.None)
+	_, err := stage_typecheck(ast)
+	testing.expect(t, err != .None)
+}
+
 @(test)
 test_bind_name_rejects_conflicting_rebind :: proc(t: ^testing.T) {
 	// The binding-layer floor behind the table test: re-binding the

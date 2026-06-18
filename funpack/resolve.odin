@@ -515,6 +515,12 @@ engine_type_name :: proc(name: string) -> (type: Type, found: bool) {
 		return engine_type_of(.Stick), true
 	case "Color":
 		return engine_type_of(.Color), true
+	// §26/spec-03 the prelude total-comparison result (prelude.fun:19): a bare
+	// `o: Ordering` param or `-> Ordering` return names it in type position; its
+	// variants (Less/Equal/Greater) are reached through surface_enum_variant, not
+	// as bare type-refs (the Color/Flip mold).
+	case "Ordering":
+		return engine_type_of(.Ordering), true
 	// §20 the sprite-mirroring enum: a bare `flip: Flip` field or `-> Flip` return
 	// names it in field/param/return position; its variants (None/X/Y/XY) are
 	// reached through surface_enum_variant, not as bare type-refs.

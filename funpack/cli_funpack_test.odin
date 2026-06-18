@@ -77,11 +77,30 @@ test_funpack_top_level_verbs :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, expect_funpack_ok(t, root, {"version"}).command.use, "version")
 	testing.expect_value(t, expect_funpack_ok(t, root, {"test"}).command.use, "test")
+	testing.expect_value(t, expect_funpack_ok(t, root, {"introspect"}).command.use, "introspect")
 
 	expect_funpack_reject(t, root, {})
 	expect_funpack_reject(t, root, {"bogus"})
 	expect_funpack_reject(t, root, {"version", "extra"})
 	expect_funpack_reject(t, root, {"test", "--flag"})
+}
+
+// test_funpack_introspect_verb pins the introspect verb wiring: it resolves to its
+// leaf with no positional, takes NO flags or arguments (a trailing token or any
+// flag is the usage tier), and its handler is the read-only dump core — so the
+// surface-dump fallback the §26 parity check relies on is reachable through the
+// tree exactly like version/test, never silently dropped or shadowed.
+@(test)
+test_funpack_introspect_verb :: proc(t: ^testing.T) {
+	root := build_compiler_test_root()
+
+	inv := expect_funpack_ok(t, root, {"introspect"})
+	testing.expect_value(t, inv.command.use, "introspect")
+	testing.expect_value(t, len(inv.args), 0)
+	testing.expect(t, inv.command.run == cli_run_introspect, "introspect routes to its dump core")
+
+	expect_funpack_reject(t, root, {"introspect", "extra"})
+	expect_funpack_reject(t, root, {"introspect", "--json"})
 }
 
 // test_funpack_version_json_flag pins the version `--json` seam: no flag is the

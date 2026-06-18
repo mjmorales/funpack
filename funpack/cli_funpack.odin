@@ -146,6 +146,16 @@ build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli
 		},
 		allocator,
 	)
+	introspect := cli.cli_new_command(
+		cli.Cli_Command {
+			use = "introspect",
+			short = "Dump the live stdlib surface as byte-stable JSON (read-only)",
+			long = "Emit the compiler-authoritative stdlib surface — the modules and decls, the §26 §3 re-exports, the typed free-function signatures, the engine-enum variant sets, the struct-payload variants, and the receiver/static/associated method surfaces — as one deterministic JSON object generated FROM the live surface.odin tables `check` enforces against. Use it to regenerate the docs corpus mechanically, or as ground truth when the corpus and the compiler disagree.",
+			args = cli.cli_no_args(),
+			run = cli_run_introspect,
+		},
+		allocator,
+	)
 	test := cli.cli_new_command(
 		cli.Cli_Command {
 			use = "test",
@@ -213,7 +223,10 @@ build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli
 		allocator,
 	)
 
-	return slice.clone([]^cli.Cli_Command{version, test, build, check, fmt_cmd, warden}, allocator)
+	return slice.clone(
+		[]^cli.Cli_Command{version, introspect, test, build, check, fmt_cmd, warden},
+		allocator,
+	)
 }
 
 // ── verb handlers ────────────────────────────────────────────────────────────
@@ -224,6 +237,10 @@ build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli
 
 cli_run_version :: proc(inv: ^cli.Cli_Invocation) -> int {
 	return run_version_verb(cli.cli_flag_bool(inv, "json"))
+}
+
+cli_run_introspect :: proc(_: ^cli.Cli_Invocation) -> int {
+	return run_introspect_verb()
 }
 
 cli_run_test :: proc(_: ^cli.Cli_Invocation) -> int {

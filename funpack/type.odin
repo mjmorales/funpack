@@ -72,6 +72,13 @@ Engine_Kind :: enum {
 	Settings,        // §24 §2 per-machine preferences record
 	AccessOpts,      // §24 §2 accessibility sub-record (reduce_motion)
 	Result,          // prelude Result[_, _] — matched Ok/Err with wildcard payloads
+	// §26/spec-03 the prelude total-comparison result (prelude.fun:19, `enum
+	// Ordering { Less, Equal, Greater }`): the value `compare(a, b)` produces and a
+	// match destructures three-way. A bare nullary enum like Color/Bus — its
+	// variants are reached through surface_enum_variant, its bare name grounds in
+	// engine_type_name, and its exhaustiveness denominator lives in
+	// CLOSED_VARIANT_SETS (the first engine enum a program matches exhaustively).
+	Ordering,
 	// §08 reference + navigation surface: the typed reference the §17 level
 	// bake resolves names to, the nav read/query handle, the route value a
 	// Path-field default carries, and the query-failure variant.

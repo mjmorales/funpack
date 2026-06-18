@@ -1529,6 +1529,13 @@ CLOSED_VARIANT_SETS := []Closed_Variant_Set{
 	// (Result::Ok(_)/Result::Err(_)) is forced to cover both arms, so a failed
 	// save/restore can never be silently dropped (spec §24 §1, AX4).
 	{type_name = "Result", variants = {"Ok", "Err"}},
+	// engine.prelude Ordering, with variants Less/Equal/Greater (prelude.fun:19) —
+	// the value `compare(a, b)` produces. The prelude doc "forces a match", so the
+	// three-way match must cover all three arms: without this entry the gate leaves
+	// an Ordering match "for a later stage" and an incomplete one would pass
+	// silently (spec §02 §5: a non-total match is a compile error). The first
+	// engine enum a program is expected to match exhaustively.
+	{type_name = "Ordering", variants = {"Less", "Equal", "Greater"}},
 }
 
 // closed_variant_sets is the per-file closed table the exhaustiveness gate

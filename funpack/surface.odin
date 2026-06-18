@@ -66,6 +66,16 @@ STDLIB_SURFACE := []Module_Surface{
 			// is a combinator row — its typing rule is combinator inference's, not a
 			// fixed signature (surface_signatures returns found = false for it).
 			{"or_else", .Func},
+			// compare is the spec-03 prelude total three-way comparison
+			// (`compare(a: T, b: T) -> Ordering`, prelude.fun:50): it produces the
+			// Ordering result a match destructures Less/Equal/Greater. T is the
+			// spec's Ord bound; the kernel grounds Ord as the same ordered scalars the
+			// `<`/`>` operators and `max` operate over (Fixed, Int), so its typing is a
+			// closed overload set ({(Fixed,Fixed)->Ordering, (Int,Int)->Ordering}) in
+			// surface_signatures, not a combinator. The owning prelude decl; matched
+			// over via the Ordering enum variant surface and the CLOSED_VARIANT_SETS
+			// exhaustiveness entry.
+			{"compare", .Func},
 		},
 	},
 	{
@@ -823,6 +833,20 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 			func_of({Ground_Type.Fixed, Ground_Type.Fixed}, Ground_Type.Fixed),
 			func_of({Ground_Type.Int, Ground_Type.Int}, Ground_Type.Int),
 		}), true
+	case "compare":
+		// §26/spec-03 the prelude total three-way comparison: `compare(a: T, b: T)
+		// -> Ordering`. T is the spec's Ord bound; the kernel grounds Ord as the
+		// same ordered scalars `<`/`>` and `max` operate over (Fixed, Int via
+		// eval_comparison/compare_ordered), so the generic is realized as a closed
+		// overload set — one arm per ordered ground, each demanding the two sides
+		// already agree (overloads_check matches a pair against ONE arm, so
+		// compare(1, 2.0) matches neither and is Type_Mismatch — the `a, b: T`
+		// same-type constraint, no Int→Fixed promotion). Both yield the Ordering
+		// engine enum a match destructures Less/Equal/Greater.
+		return clone_types({
+			func_of({Ground_Type.Fixed, Ground_Type.Fixed}, engine_type_of(.Ordering)),
+			func_of({Ground_Type.Int, Ground_Type.Int}, engine_type_of(.Ordering)),
+		}), true
 	case "cross":
 		return clone_types({func_of({Ground_Type.Vec3, Ground_Type.Vec3}, Ground_Type.Vec3)}), true
 	case "dot":
@@ -1005,12 +1029,26 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 		case "Left", "Right":
 			return engine_type_of(.Stick), true
 		}
+	case "Ordering":
+		// §26/spec-03 the prelude total-comparison result (prelude.fun:19,
+		// `enum Ordering { Less, Equal, Greater }`): the value `compare` produces and
+		// a match destructures three-way. The closed set is exactly the three
+		// declared variants — an entry outside them is not a value, mirroring the
+		// other engine enums. Its CLOSED_VARIANT_SETS twin (gates.odin) makes a
+		// match over it exhaustiveness-checked (the spec doc "forces a match").
+		switch variant {
+		case "Less", "Equal", "Greater":
+			return engine_type_of(.Ordering), true
+		}
 	case "Color":
 		// §20 §1 the one closed palette shared across engine.render (2D) and
-		// engine.render3 (3D, via re-export). Gray is the ground-plane shade
-		// stroll.fun's Draw3::Plane uses; the rest are the pong/hunt/yard palette.
+		// engine.render3 (3D, via re-export). The named palette is exactly
+		// render.fun:12-15: White/Black/Red/Green/Blue/Yellow/Cyan/Magenta/Gray
+		// (Gray is the ground-plane shade stroll.fun's Draw3::Plane uses; Rgb is the
+		// struct-payload escape variant in surface_struct_variant). The
+		// secondary/CMY trio (Yellow/Cyan/Magenta) completes the spec-declared set.
 		switch variant {
-		case "White", "Black", "Red", "Green", "Blue", "Gray":
+		case "White", "Black", "Red", "Green", "Blue", "Yellow", "Cyan", "Magenta", "Gray":
 			return engine_type_of(.Color), true
 		}
 	case "Flip":
@@ -1281,13 +1319,20 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 			return func_of({Ground_Type.Vec2}, engine_type_of(.Body)), true
 		}
 	case .View:
-		// §08: the read table's reference surface — the §17 level bake hands a
-		// behavior a typed Ref the View resolves back to a value. resolve(Ref[T])
-		// yields Option[T] (None when the referent despawned — the gate behavior
-		// reads `switches.resolve(self.gate)`); ref(Int) mints a Ref[T] to the i-th
-		// row (the test producer `switches.ref(0)`). Both carry the receiver's
-		// element T, so a View[Switch] resolves a Ref[Switch] to an Option[Switch].
+		// §08: the read table's iteration + reference surface (world.fun:24-33).
+		// count() reports how many things the view matched (an Int); at(i) reads the
+		// i-th matched thing in stable id order as the element T (world.fun:24/:27).
+		// The reference surface: resolve(Ref[T]) yields Option[T] (None when the
+		// referent despawned — the gate behavior reads `switches.resolve(self.gate)`);
+		// ref(Int) mints a Ref[T] to the i-th row (the test producer
+		// `switches.ref(0)`). count/at/ref/resolve all key off the receiver's element
+		// T, so a View[Switch] counts switches, reads a Switch at i, and resolves a
+		// Ref[Switch] to an Option[Switch].
 		switch member {
+		case "count":
+			return func_of({}, Ground_Type.Int), true
+		case "at":
+			return func_of({Ground_Type.Int}, receiver.elem), true
 		case "resolve":
 			return func_of({engine_type_of(.Ref, receiver.elem)}, option_of(receiver.elem)), true
 		case "ref":
@@ -1496,6 +1541,21 @@ surface_struct_variant :: proc(type_name: string, variant: string) -> (result: T
 		case "Circle":
 			return engine_type_of(.Shape2), clone_fields({
 					{name = "radius", type = Ground_Type.Fixed},
+				}), true
+		}
+	case "Color":
+		// §20 §1 the palette enum's struct-payload escape variant (render.fun:14):
+		// Color::Rgb{ r, g, b } is the exact-value form (0..1 Fixed channels) the
+		// named palette entries cover the common cases of. It yields the same Color
+		// engine type a named variant (surface_enum_variant's Color case) does, so a
+		// `tint`/`color` field accepts either form. Three Fixed channels; an unknown
+		// field or a mismatched value rejects (the Shape2::Box mold).
+		switch variant {
+		case "Rgb":
+			return engine_type_of(.Color), clone_fields({
+					{name = "r", type = Ground_Type.Fixed},
+					{name = "g", type = Ground_Type.Fixed},
+					{name = "b", type = Ground_Type.Fixed},
 				}), true
 		}
 	case "Draw3":
