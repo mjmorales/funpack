@@ -23,10 +23,10 @@
 //
 // THE HANDLER SEAM: the request semantics (JSON-RPC 2.0 parse / dispatch / the
 // tools surface) are the DOWNSTREAM mcp-protocol-verb task's concern, not this
-// one. This task is strictly framing: it hands each complete line to a
+// one. This transport is strictly framing: it hands each complete line to a
 // Mcp_Line_Handler callback and frames whatever the handler returns back out. The
-// verb here ships an echo handler so the transport is provable end-to-end; the
-// real JSON-RPC handler swaps in downstream over this same callback.
+// real JSON-RPC handler (mcp_server.odin mcp_jsonrpc_handler) is what cli_run_mcp
+// folds through this same callback; the transport stays oblivious to its semantics.
 package main
 
 import funpack_runtime "../../runtime"
