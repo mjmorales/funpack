@@ -62,6 +62,12 @@ test_root_verb_set :: proc(t: ^testing.T) {
 	testing.expect_value(t, expect_root_ok(t, root, {"live", "art"}).command.use, "live")
 	testing.expect_value(t, expect_root_ok(t, root, {"attach", "art"}).command.use, "attach")
 
+	// `mcp` resolves as a unique verb in the same tree (no use-token collision with
+	// a compiler or runtime verb — cli_finalize above adjudicated uniqueness). Bare
+	// `funpack mcp` serves the stdio server; `funpack mcp gen-corpus` is its child.
+	testing.expect_value(t, expect_root_ok(t, root, {"mcp"}).command.use, "mcp")
+	testing.expect_value(t, expect_root_ok(t, root, {"mcp", "gen-corpus"}).command.use, "gen-corpus")
+
 	// The bare program and an unknown verb are the usage tier.
 	expect_root_reject(t, root, {})
 	expect_root_reject(t, root, {"bogus"})

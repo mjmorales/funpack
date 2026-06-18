@@ -39,29 +39,11 @@ build_mcp_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 	)
 }
 
-// cli_run_mcp is the thin verb adapter (the cli_runtime.odin pattern): it
-// constructs the auth-free stdio serve loop and runs it with the request handler.
-// For THIS task the handler is the echo stub (mcp_echo_handler) — enough to prove
-// the transport round-trips a line; mcp-protocol-verb swaps in the JSON-RPC
-// handler over this same Mcp_Line_Handler seam. serve_mcp_stdio runs until the
-// stdin peer closes (EOF) or the handler ends the session, then the verb exits 0
-// (a clean serve-then-EOF is success; the JSON-RPC layer owns any error exits).
+// cli_run_mcp is the thin verb adapter (the cli_runtime.odin pattern): it relays
+// to run_mcp_verb, the verb core that builds the JSON-RPC handler, serves it over
+// the auth-free stdio transport, and owns the {0,1,2} exit contract. The framework
+// owns usage/help (this verb takes no args, so usage never reaches the core); the
+// core owns 0 on a clean serve-then-EOF / handler shutdown and 1 on a server fault.
 cli_run_mcp :: proc(inv: ^cli.Cli_Invocation) -> int {
-	serve_mcp_stdio(mcp_echo_handler())
-	return 0
-}
-
-// mcp_echo_handler is the STUB request handler this task ships to prove the
-// transport: it echoes each request line straight back as the response and keeps
-// the connection open. It is NOT the protocol — mcp-protocol-verb replaces it with
-// the JSON-RPC parse/dispatch handler. Kept here (not in mcp_transport.odin) so
-// the transport file is pure framing with no placeholder request semantics, and so
-// the swap is a one-line change in cli_run_mcp.
-mcp_echo_handler :: proc() -> Mcp_Line_Handler {
-	return Mcp_Line_Handler {
-		userdata = nil,
-		handle = proc(userdata: rawptr, line: string, allocator := context.allocator) -> (response: string, keep_open: bool) {
-			return line, true
-		},
-	}
+	return run_mcp_verb()
 }
