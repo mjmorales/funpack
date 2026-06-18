@@ -1,0 +1,1017 @@
+[
+  {
+    "anchor": "skills/funpack-content/SKILL.md#funpack-content-the-bake-pipelines",
+    "kind": "plugin",
+    "title": "funpack content \u2014 the bake pipelines",
+    "text": "---\nname: funpack-content\ndescription: Add content to a funpack game through the bake pipelines \u2014 sprites & atlases, levels (.flvl), tilemaps (.tiles + ASCII grids), rigged 3D models (.fpm), UI screens (.fui), and audio. Use when adding art, a level, a tile map, a character model, a menu/HUD, or sound to a game. Covers the authoring source formats, the generated gen/*.gen.fun seams, the typed handles/Refs, and the bake gates. Triggers on \"add a sprite/atlas\", \"Draw::Sprite\", \".flvl/level\", \".tiles/tilemap\", \".fpm/model/rig\", \".fui/UI/HUD/menu\", \"funpack audio/sound/music\", \"asset manifest\", \"gen seam\".\n---\n\n\nEvery authored asset follows one shape:\n\n> **`source \u2192 importer \u2192 (content-hashed asset + generated `.gen.fun` seam)`**\n\nThe importer is a deterministic pure function inside `funpack`; the content hash is identity +\ncache key; the `.gen.fun` **seam** is the committed, typed, diffable contract your game imports. Game\n`.fun` code **never sees the source DSL** \u2014 only the seam. A stale committed seam, or a name not in\nthe manifest, is a **compile error**.\n\n| Source | Authored as | Seam exposes |\n|---|---|---|\n| `.atlas` sprite sheet | image + slice spec | `AtlasHandle` (+ named cells/clips) |\n| audio (WAV/OGG), font (TTF) | raw | `SoundHandle` / `Font` |\n| `.flvl` level | DSL | a `Ref` table, `*_spawns()`, `TilemapHandle` |\n| `.tiles` tileset | DSL | `TilesetHandle` |\n| `.fpm` model/rig | DSL | params `data`, anchors, `MeshHandle` / skeleton + parts |\n| `.fui` screen | DSL | a view-model `data`, a `Msg` enum, a view fn |\n\nThis SKILL.md is the **how-to per pipeline**; for the full grammars, gates, and worked seam slices,\nread `references/pipelines.md` in this skill directory. The runtime types you call (`engine.assets`,\n`engine.level`, `engine.tilemap`, `engine.anim`, `engine.ui`, `engine.audio`) are in the\n`funpack-engine-api` skill; the schema/seam/behavior module split is in `funpack-project`.",
+    "source": "skills/funpack-content/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-content/SKILL.md#add-a-sprite-atlas",
+    "kind": "plugin",
+    "title": "Add a sprite (atlas)",
+    "text": "1. Write `assets/<name>.atlas` beside its PNG:\n   ```\n   atlas Pickups {\n     image \"pickups.png\"\n     grid  8 8\n     cell coin at (0, 0)\n     cell gem  at (1, 0)\n     clip spin cells [\"coin\", \"gem\", \"key\", \"gem\"] fps 8\n   }\n   ```\n2. The bake generates `gen/assets.gen.fun` with a typed constant: `let pickups: AtlasHandle = \u2026`.\n3. Draw it from a render behavior:\n   ```funpack\n   import assets\n   behavior draw_coin on Coin {\n     fn step(self: Coin) -> [Draw] {\n       return [Draw::Sprite{ atlas: assets.pickups, cell: assets.pickups.frame(\"spin\", self.spin_t),\n                             at: self.pos, size: Vec2{x: 8.0, y: 8.0}, tint: Color::White, flip: Flip::None, layer: 5 }]\n     }\n   }\n   ```\nA static cell is `\"coin\"` or `atlas.cell(col, row)`; an animation frame is `atlas.frame(clip, t)`\n(total, deterministic). Prefer the typed constant `assets.coin_sfx` over `sound(\"coin_sfx\")` \u2014\nrenaming the source then makes readers stop compiling. Release strips any asset no handle references\n(and writes a report \u2014 never silent).",
+    "source": "skills/funpack-content/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-content/SKILL.md#add-a-level-flvl",
+    "kind": "plugin",
+    "title": "Add a level (`.flvl`)",
+    "text": "A level is an **initial world** \u2014 placed things + params + references \u2014 the same shape `setup()`\nbuilds by hand. Write `levels/<name>.flvl`:\n```\nlevel Arena 2d {\n  bounds (0, 0) (160, 120)\n  things arena_world                          // the SCHEMA module whose thing types this places\n  place Player hero at center\n  place Switch plate at center.offset(y: 40)\n  place Door   exit  { gate: plate } at center.offset(y: -40)   // gate: Ref[Switch] resolved from the name `plate`\n  for i in 0..5 { place Pillar at center.offset(x: -48 + i * 24, y: 0) }\n}\n```\n`setup()` becomes `return arena_spawns()`; resolve named instances via the generated `Arena` symbol\ntable / `Ref`s through a `View`. Coordinates are killed by anchors (`center`, `left_edge`,\n`.offset(...)`), instance-relative refs, and `for` loops. **References are by name \u2192 typed `Ref[T]`**,\nresolved at bake; a dangling/duplicate/type-mismatched name is a compile error. Put your `thing`/\n`enum`/`signal` in a **schema module** the seam can import without a cycle (see `funpack-project`).",
+    "source": "skills/funpack-content/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-content/SKILL.md#add-a-tilemap-tiles-an-ascii-grid",
+    "kind": "plugin",
+    "title": "Add a tilemap (`.tiles` + an ASCII grid)",
+    "text": "The grid is the viewport \u2014 an ASCII picture you read, edit, and diff. Two parts:\n\n1. A tileset `assets/<name>.tiles` (atlas cell + collision per tile):\n   ```\n   tileset Dungeon {\n     atlas dungeon_atlas\n     tile floor { cell: (0, 0), solid: false }\n     tile wall  { cell: (1, 0), solid: true }\n   }\n   ```\n2. A `tilemap` layer **inside** a `.flvl` \u2014 a legend (chars \u2192 tile or spawn) and a grid:\n   ```\n   tilemap terrain cell 16 {\n     legend { '#' wall   '.' floor   'P' spawn Player hero   ' ' empty }\n     grid \"\"\"\n       ########\n       #.P....#\n       ########\n     \"\"\"\n   }\n   ```\nIt bakes to a batched tile layer (you never emit per-tile sprites) + a `[Spawn]` per marker + a\n`TilemapHandle` in the level seam. Query it: `terrain.solid_at(cell)`, `terrain.tile_at(cell)`,\n`terrain.cell_of(pos)`, `terrain.center_of(cell)`. Mutate at runtime with `[SetTile{map, cell, tile}]`\nor `[BuildLayer{...}]` (procedural gen folds a seeded `Rng`). Tile names are **project-global** \u2014\nkeep them unique across all `.tiles`. A wall's `solid` is what the nav graph derives from at bake.",
+    "source": "skills/funpack-content/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-content/SKILL.md#add-a-rigged-3d-model-fpm",
+    "kind": "plugin",
+    "title": "Add a rigged 3D model (`.fpm`)",
+    "text": "funpack has two languages: the `.fpm` modeling DSL (imperative, float-tolerant, **bake-time only**)\nand `.fun` (pure, fixed-point) which sees only the seam. Write `models/<name>.fpm`:\n```\nrig Krognid {\n  skeleton: humanoid\n  param torso_h: Length = 24\n  fn torso_mesh() -> Solid { return capsule(torso_r, torso_h).up(0) }\n  part torso at TORSO = torso_mesh()\n  mirror L -> R            // model the left side; the right is generated\n  material body = pbr(color: teal, rough: 0.7)\n}\n```\nIt bakes to a skeleton fn + a part\u2192slot mesh binding. Drive it with **pure pose generators** and\nrender `Draw3::Rigged`:\n```funpack\nimport krognid.{krognid_skeleton, krognid_parts}\nfn pose_walk(phase: Fixed) -> Pose {\n  return Pose.empty().set(Bone::LUpperLeg, rot_x(sin(phase) * 0.5)).set(Bone::RUpperLeg, rot_x(-sin(phase) * 0.5))\n}\nbehavior draw_krognid on Krognid {\n  fn step(self: Krognid, time: Time) -> [Draw3] {\n    let pose = Pose.blend(pose_idle(time.t), pose_walk(self.phase), walk_weight(self.speed))\n    return [Draw3::Rigged{ skeleton: krognid_skeleton(), parts: krognid_parts(), pose: pose, at: self.pos }]\n  }\n}\n```\nA part's origin must equal its bone pivot. A gameplay-observable bone must be fixed-point (sim\nstage); purely cosmetic motion may run float in render. Pose composition: `Pose.blend(a, b, w)`,\n`Pose.layer(base, overlay)` \u2014 and layering IS pipeline order (`pose: [pose_idle, pose_walk]`).",
+    "source": "skills/funpack-content/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-content/SKILL.md#add-a-ui-screen-fui",
+    "kind": "plugin",
+    "title": "Add a UI screen (`.fui`)",
+    "text": "A funpack UI is the Elm/React architecture: Model = a view-model `data`, View = `fn(model) -> View[Msg]`,\nMessages = signals, Update = ordinary behaviors. Write `ui/<name>.fui`:\n```\nscreen Hud {\n  row class=\"top-bar p-3 gap-4 bg-panel\" {\n    text { \"Score: {score}\" }\n    button class=\"btn\" @click=Coin { \"+1\" }\n  }\n  if game_over { text class=\"text-2xl\" { \"Game Over\" } }\n}\n```\nThe bake **infers both ends as types** from usage \u2014 `gen/hud.gen.fun` gets `data HudView { score: Int,\ngame_over: Bool }`, `enum HudMsg { Coin }`, and `fn hud(model: HudView) -> View[HudMsg]`. You write a\npure **projection** (`fn hud_view(self) -> HudView`), an exhaustive **update** (`fn on_hud(self,\nHudMsg) -> App`), and **mount** it: `hud(self.hud_view()).map(AppMsg::Hud)`. Widgets are a closed set\n(`panel row col grid stack scroll spacer text image icon button field slider toggle select`); style\nis semantic theme tokens (`bg-panel`, `text-2xl`), not raw values. Adding a `@click=Mute` makes\n`HudMsg` gain `Mute` \u2192 your update's `match` stops compiling, naming exactly where to handle it. The\n`ui:` stage runs after `render:`; each `Msg` is delivered as a deferred signal next tick (consume it\nin an early interior stage to satisfy effect closure).",
+    "source": "skills/funpack-content/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-content/SKILL.md#add-audio-two-regimes",
+    "kind": "plugin",
+    "title": "Add audio (two regimes)",
+    "text": "Sound is an **effect returned as data** \u2014 there is no `play_sound()`.\n\n- **One-shot SFX** (an event happened) \u2192 return `[Sound]` from the handling Update behavior, edge-\n  triggered, alongside other commands:\n  ```funpack\n  fn step(self: Coin, taken: [Taken]) -> (Coin, [Sound]) {\n    if is_empty(taken) { return (self, []) }\n    return (self, [Sound.sfx(assets.coin_sfx).bus(Bus::Sfx)])\n  }\n  ```\n- **Sustained audio** (music, a speed-modulated loop) \u2192 an `audio:` behavior returns the keyed set\n  that **should be playing now**; the engine diffs by key (appear\u2192start, disappear\u2192stop, same key new\n  gain/pitch\u2192bend the live voice, same key new clip\u2192crossfade):\n  ```funpack\n  behavior locomotion on Krognid {\n    fn step(self: Krognid) -> [Audio] {\n      if self.speed == 0.0 { return [] }                  // absent \u21d2 engine auto-stops the \"stride\" voice\n      return [Audio.track(\"stride\", sound(\"step\")).pitch(0.6 + self.speed * 0.2).gain(clamp(self.speed, 0.0, 1.0)).bus(Bus::Sfx)]\n    }\n  }\n  ```\nA settings slider drives volume by feeding its value into the `.gain` of the projection \u2014 there is no\nmutable global mixer. Buses: `Master / Music / Sfx / Ui / Voice`.\n\n> All grammars, the full gate lists, and complete seam slices are in `references/pipelines.md`. The\n> normative examples: `assets` (atlas), `arena` (levels), `dungeon`/`warren` (tilemaps), `krognid`\n> (model), `hud` (UI + audio). funpack is under active design \u2014 verify edge cases against a compile.",
+    "source": "skills/funpack-content/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#funpack-bake-pipelines-full-reference",
+    "kind": "plugin",
+    "title": "funpack bake pipelines \u2014 full reference",
+    "text": "Grammars, generated seams, gates, and worked slices for each authoring pipeline. Distilled from\nthe spec `spec/{16,17,18,19,21,22}.md`, `grammar/{atlas,flvl,fpm,fui,tiles,manifest}.ebnf`, and\nthe example projects. **[FLAG]** marks where examples/prose diverge or a detail is spec-only.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#the-universal-shape",
+    "kind": "plugin",
+    "title": "The universal shape",
+    "text": "`source \u2192 importer \u2192 (content-hashed asset + generated .gen.fun seam)`. The hash is\n`H(source bytes \u2295 importer version \u2295 dependency hashes)` \u2014 identity + cache key. Editing a source\nre-bakes only it and its dependents. Game `.fun` imports the **seam**, never the source DSL. A stale\ncommitted seam or an unknown name is a compile error.\n\n---",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#atlas-source-grammar-atlas-ebnf",
+    "kind": "plugin",
+    "title": "`.atlas` source (`grammar/atlas.ebnf`)",
+    "text": "```\natlas Pickups {\n  image \"pickups.png\"                  // a hash dependency\n  grid  8 8                            // each cell is 8x8 in the sheet\n  cell coin at (0, 0)\n  cell gem  at (1, 0)\n  clip spin cells [\"coin\", \"gem\", \"key\", \"gem\"] fps 8\n}\n```\nRaw audio (WAV/OGG) and fonts (TTF) have no DSL \u2014 a binary importer content-hashes them directly.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#the-manifest-generated-committed-the-name-registry-grammar-manifest-ebnf",
+    "kind": "plugin",
+    "title": "The manifest (generated, committed \u2014 the name registry, `grammar/manifest.ebnf`)",
+    "text": "INI/TOML shape; `#` comments; the source of truth for resolving a handle.\n```\n[pickups]\nkind = atlas ; source = \"pickups.atlas\" ; importer = \"atlas@2\"\ndeps = [\"pickups.png@sha256:02d0\u2026\"] ; hash = \"sha256:5379\u2026\" ; out = \".cache/53/79b6\u2026/pickups.atlas\"\n[coin_sfx]\nkind = audio ; source = \"audio/coin.wav\" ; importer = \"audio@1\" ; deps = [] ; hash = \"sha256:b8c8\u2026\"\n```\nNames are folder-namespaced and lowercase (`[audio/coin]`).",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#the-seam-gen-assets-gen-fun",
+    "kind": "plugin",
+    "title": "The seam (`gen/assets.gen.fun`)",
+    "text": "```funpack\nimport engine.assets.{MeshHandle, AtlasHandle, SoundHandle}\n@gtag(\"assets\") let coin: MeshHandle = MeshHandle{name: \"coin\"}\n@gtag(\"assets\") let pickups: AtlasHandle = AtlasHandle{name: \"pickups\"}\n@gtag(\"assets\") let coin_sfx: SoundHandle = SoundHandle{name: \"coin_sfx\"}\n```",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#rules-gates",
+    "kind": "plugin",
+    "title": "Rules / gates",
+    "text": "- **Closed name registry, compile-checked**: a name not in the manifest is a compile error.\n- Two addressing forms: the typed constant `assets.coin_sfx` (safe default \u2014 rename source \u21d2\n  constant disappears \u21d2 readers stop compiling) and string constructors `mesh(\"\u2026\")`/`atlas(\"\u2026\")`/\n  `sound(\"\u2026\")` (dynamic, still manifest-checked). `assert assets.coin_sfx == sound(\"coin_sfx\")`.\n- **Dead-asset elimination on release**: release bakes everything, strips any asset no handle\n  references, and writes `assets.report.txt` (truncation is never silent). A baked-but-unreferenced\n  asset is normal in dev; only release strips it.\n- Per-platform texture compression and streaming/residency have **no authoring surface** \u2014 folded\n  behind the typed handle, which is always valid. There is no load/unload API for assets.\n\n---",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#2-levels-flvl-grammar-flvl-ebnf",
+    "kind": "plugin",
+    "title": "2. Levels (`.flvl`, `grammar/flvl.ebnf`)",
+    "text": "A level is an initial world (placed things + params + references), the same shape `setup()` builds\nand a save deserializes to. Lowers one-way to a deterministic spawn list + typed seam.\n\n```\nlevel Arena 2d {                                  // 2d|3d header sets coordinate arity\n  bounds (0, 0) (160, 120)\n  things arena_world                              // the schema module whose thing types this places\n  prefab Turret {\n    place Base   base   at origin\n    place Cannon cannon { rate: 2.0 } at base.offset(y: 6)\n  }\n  place Player hero at center\n  place Switch plate at center.offset(y: 40)\n  place Door   exit  { gate: plate } at center.offset(y: -40)   // gate: Ref[Switch] resolved from name `plate`\n  for i in 0..5 { place Pillar at center.offset(x: -48 + i * 24, y: 0) }\n  place Turret right_gun { cannon.rate: 4.0 } at right_edge.center.offset(x: -12)   // override nested by path\n}\n```\n- **`place <Type> <name>? { params }? at <where> [facing <rot>]`** \u2014 instantiates a `thing`; the\n  optional `<name>` is the seam-exposed handle (anonymous \u2192 not in the seam).\n- **Reserved fields**: `at` writes `pos` (must be declared, of the level's arity); `facing` writes\n  `facing`. The *name*, not the type, is the contract.\n- **Killing raw coordinates**: bounds anchors (`center`, `left_edge`, `right_edge.center`,\n  `.offset(x:,y:[,z:])`); instance-relative (`base.top`, `above(table)`); model sockets\n  (`table.socket(\"cup\")`); repetition (`for i in 0..N`).\n- **References by name \u2192 typed `Ref[T]`**, resolved + typechecked at bake; nonexistent/duplicate/\n  type-mismatched is a compile error (dangling refs are unrepresentable).\n- **Prefabs** nest to any depth; members addressed by dotted path (`right_gun.cannon.rate`);\n  overrides apply at any depth (outer over nested default, declaration order).",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#the-seam-gen-arena-gen-fun-imports-the-schema-module-only",
+    "kind": "plugin",
+    "title": "The seam (`gen/arena.gen.fun`) \u2014 imports the **schema module only**",
+    "text": "```funpack\nimport engine.world.{Spawn, Ref}\nimport arena_world.{Player, Hunter, Pillar, Switch, Door, Base, Cannon}\ndata ArenaTurret { base: Ref[Base], cannon: Ref[Cannon] }\ndata Arena { hero: Ref[Player], stalker: Ref[Hunter], plate: Ref[Switch], exit: Ref[Door], left_gun: ArenaTurret, right_gun: ArenaTurret }\nextern fn arena_spawns() -> [Spawn]   // deterministic, declaration order, prefabs/loops expanded\nextern fn arena() -> Arena            // the symbol table, valid once the level is loaded\n```\n**Stable ids by name**: a named instance's `Id` derives from its level-qualified name, so its `Ref`\nis constant across loads/saves/replays; anonymous scenery takes declaration-order counter ids.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#consume-it",
+    "kind": "plugin",
+    "title": "Consume it",
+    "text": "```funpack\nimport arena.{arena_spawns, Arena, arena}\nfn setup() -> [Spawn] { return arena_spawns() }\nbehavior gate_logic on Door {\n  fn step(self: Door, switches: View[Switch]) -> Door {\n    return self with { open: gate_open(switches.resolve(self.gate)) }   // resolve the baked Ref[Switch]\n  }\n}\n```",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#the-3-way-module-split-required-whenever-a-seam-names-your-types",
+    "kind": "plugin",
+    "title": "The 3-way module split (required whenever a seam names your types)",
+    "text": "schema module (things/data/enums only, engine imports only) \u2190 generated seam (imports schema only) \u2190\nbehavior module (imports both). A seam importing a behavior module is a compile error. Small games\nwith no type-referencing seam (Pong) need no split.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#gates-all-compile-errors",
+    "kind": "plugin",
+    "title": "Gates (all compile errors)",
+    "text": "unresolved/duplicate names; type-mismatched references; params/overrides not on the schema; an `at`\nwithout a matching `pos`; placement outside `bounds`; a seam importing a behavior module; a prefab\nmember referenced but not placed. Coordinates are fixed-point \u21d2 bit-identical load everywhere.\n`include \"town/market.flvl\"` splits across files; chunks stream via `Load{level, at}`/`Unload{level}`\nover a `LevelHandle`. The lowering is one-way \u2014 a snapshot dump preserves names, never the sugar.\n\n---",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#3-tilemaps-tiles-the-ascii-grid-inside-a-flvl",
+    "kind": "plugin",
+    "title": "3. Tilemaps (`.tiles` + the ASCII grid inside a `.flvl`)",
+    "text": "> The grid is the viewport \u2014 an ASCII picture the agent reads/edits/diffs; the same grid paints\n> environment AND places entities.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#a-the-tileset-tiles-grammar-tiles-ebnf",
+    "kind": "plugin",
+    "title": "(a) The tileset `.tiles` (`grammar/tiles.ebnf`)",
+    "text": "```\ntileset Dungeon {\n  atlas dungeon_atlas\n  tile floor  { cell: (0, 0), solid: false }\n  tile wall   { cell: (1, 0), solid: true }\n  tile water  { cell: (2, 0), solid: false, tags: [\"liquid\"] }\n  tile rubble { cell: (3, 0), solid: true, tags: [\"diggable\"] }\n}\n```\nCollision is baked into the tile layer (fixed-point) \u2014 behaviors query it with no per-tile things.\n**One flat, project-global tile namespace**: a tilemap names no tileset (it uses bare tile names);\ntwo tilesets declaring the same tile name is a bake error \u2014 keep tile names unique across all\n`.tiles`.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#b-the-tilemap-layer-inside-a-level-grammar-flvl-ebnf-tilemap-rule",
+    "kind": "plugin",
+    "title": "(b) The tilemap layer (inside a `level`, `grammar/flvl.ebnf` Tilemap rule)",
+    "text": "```\ntilemap terrain cell 16 {                 // layer `terrain`; each cell is 16 logical units\n  legend {\n    '#' wall          '.' floor          '~' water          '%' rubble\n    'g' spawn Slime                       // anonymous marker \u2014 repeats freely\n    'P' spawn Player hero                 // named marker \u2014 must appear exactly once\n    ' ' empty\n  }\n  grid \"\"\"\n    ################\n    #.P....#...g...#\n    #..~~..%.......#\n    ################\n  \"\"\"\n}\nplace Chest loot { gems: 5 } at cell(13, 4)    // the relational few: explicit place + the cell() anchor\n```\nGrid handles spatial bulk; `place` handles the relational few, tied to the grid via `cell(col,row)`.\nA legend bind is a tile name, `spawn UPPER_IDENT name?`, or `empty`. Common leading indentation is\nstripped before the rectangularity check.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#bakes-to",
+    "kind": "plugin",
+    "title": "Bakes to",
+    "text": "A batched **tile layer** (rendered/collided by the engine \u2014 you never emit per-tile `Draw::Sprite`);\na **`[Spawn]`** per marker at its cell center (row-major declaration order \u21d2 deterministic ids); the\nlevel seam gains named markers as `Ref`s and the layer as a `TilemapHandle`. The tileset becomes a\n`TilesetHandle` in the asset seam.\n```funpack\nlet terrain: TilemapHandle = TilemapHandle{name: \"terrain\"}\ndata Dungeon { hero: Ref[Player], loot: Ref[Chest] }\nextern fn dungeon_spawns() -> [Spawn]\n```",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#consume-it-2",
+    "kind": "plugin",
+    "title": "Consume it",
+    "text": "```funpack\nimport engine.tilemap.{TilemapHandle, SetTile, tile_at, solid_at, cell_of, center_of}\nimport dungeon.{dungeon_spawns, terrain}\nfn walk(self: Player, d: Dir) -> Player {\n  let target = step_cell(terrain.cell_of(self.pos), d)\n  return self with { pos: enter(terrain, target, self.pos), dir: d }     // gate movement on the baked layer\n}\nbehavior dig on Player {\n  fn step(self: Player, input: Input) -> [SetTile] {\n    let target = step_cell(terrain.cell_of(self.pos), self.dir)\n    if input.pressed(PlayerId::P1, Act::Dig) and diggable(terrain.tile_at(target)) {\n      return [SetTile{map: terrain, cell: target, tile: \"floor\"}]\n    }\n    return []\n  }\n}\n```\nOnly actors draw (`Draw::Sprite`); the layer self-renders. Test handle-touching behaviors with\n`TilemapHandle.of(cell_size, [(cell, tile, solid), \u2026])`.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#runtime-mutation-committed-world-state-not-bake-decoration",
+    "kind": "plugin",
+    "title": "Runtime mutation (committed world state, not bake decoration)",
+    "text": "`SetTile{map, cell, tile}` edits one cell; `BuildLayer{map, fill, cells}` atomically replaces a whole\nlayer (procedural gen \u2014 fold a seeded `Rng` in an ordinary behavior; generation never makes the\nruntime compile source). Both re-derive render + collision + nav, carry across hot-reload, ride the\nsave snapshot. The extent + tileset stay declared once by the `.flvl`.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#gates-compile-errors",
+    "kind": "plugin",
+    "title": "Gates (compile errors)",
+    "text": "a char not in the legend; a non-rectangular grid; a tile name in no tileset; a duplicate named\nmarker; a marker without a `pos` of the level's arity; an unresolved reference; a `cell()` outside\nthe grid. A maze's `solid` walls are the single source the nav graph derives from at bake (the\npicture IS the topology \u2014 see `warren`). **[FLAG]** the exact tileset-handle name-derivation rule is\nunspecified \u2014 `warren` exposes `tileset Warren` as handle `warren_tiles` (collision-avoidance with\nthe `warren` atlas), while `dungeon` keeps `Dungeon`\u2192`dungeon`; trust the manifest/seam for the\nactual handle name.\n\n---",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#4-modeling-fpm-grammar-fpm-ebnf-not-ll-1-named-args-comments-allowed",
+    "kind": "plugin",
+    "title": "4. Modeling (`.fpm`, `grammar/fpm.ebnf` \u2014 NOT LL(1); named args; `//` comments allowed)",
+    "text": "Two languages: the `.fpm` DSL (imperative, float-tolerant, **bake-time only**) and `.fun` (pure,\nfixed-point) which sees only the seam. The vocabulary:\n\n| Keyword | Generates |\n|---|---|\n| `param` | a field on the params `data` |\n| `emit` | render geometry (`Solid`) \u2192 a content-hashed `MeshHandle` |\n| `anchor` / `socket` | an `Anchors` entry / attach point (usable by `.flvl` as `model.socket(\"\u2026\")`) |\n| `material` | a material binding (engine PBR; no user shaders) |\n| `collide` | a fixed-point `Shape3` sim proxy |\n\n```\nmodel Coin {\n  param radius: Length = 4 ; param thickness: Length = 1\n  emit cyl(radius, thickness)\n  material body = pbr(color: gold, rough: 0.3)\n}\nrig Krognid {\n  skeleton: humanoid                       // a stdlib topology: humanoid|quadruped|robot (or an inline tree)\n  param torso_h: Length = 24\n  fn torso_mesh() -> Solid { return capsule(torso_r, torso_h).up(0) }\n  part torso     at TORSO       = torso_mesh()      // part origin == the bone pivot (checked)\n  part upper_arm at L_UPPER_ARM = upper_arm()\n  mirror L -> R                             // model the left; the right is generated\n  clearance 1.5                             // min joint gap; bake warns below it\n  material body = pbr(color: teal, rough: 0.7)\n}\n```\nGeometry algebra: primitives `box`/`sphere`/`cyl`/`capsule`; booleans `union`/`difference`/\n`intersect`; transforms `.at`/`.rotate`/`.scale`/`.up`/`.down`; 2D\u21943D `extrude`/`revolve`/`loft`\nover a `Sketch`.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#seam-gen-krognid-gen-fun-functions-over-a-params-data-no-marker-type",
+    "kind": "plugin",
+    "title": "Seam (`gen/krognid.gen.fun`) \u2014 functions over a params `data`, no marker type",
+    "text": "```funpack\nimport engine.anim.{Skeleton, PartSet, Slot, Side}\nimport engine.assets.mesh\nfn krognid_skeleton() -> Skeleton { return Skeleton.humanoid() }\nfn krognid_parts() -> PartSet {\n  return PartSet.empty().bind(Slot::Torso, mesh(\"krognid_torso\")).bind(Slot::Head, mesh(\"krognid_head\"))\n    .bind(Slot::LUpperArm, mesh(\"krognid_upper_arm\")).mirror(Side::L, Side::R)\n}\n```\nA plain model seam emits `fn <name>_anchors(p) -> Anchors`, `fn <name>_mesh(p) -> MeshHandle`,\n`fn <name>_collider(p) -> Shape3`.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#consume-it-pure-pose-generators-draw3-rigged",
+    "kind": "plugin",
+    "title": "Consume it (pure pose generators \u2192 `Draw3::Rigged`)",
+    "text": "```funpack\nfn pose_walk(phase: Fixed, speed: Fixed) -> Pose {\n  let s = sin(phase) * 0.5\n  return Pose.empty().set(Bone::LUpperLeg, rot_x(s)).set(Bone::RUpperLeg, rot_x(-s)).set(Bone::Torso, up(bob))\n}\n```\nPose composition: `Pose.blend(a, b, w)` (per-bone lerp/slerp), `Pose.layer(base, overlay)` (overlay\nwins per bone) \u2014 both over the union of driven bones, an absent bone blending against rest.\n**Layering IS pipeline order** \u2014 a `pose: [pose_idle, pose_walk, pose_carry]` sub-pipeline lists\ngenerators top-to-bottom, no magic-number layers.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#rules-gates-2",
+    "kind": "plugin",
+    "title": "Rules / gates",
+    "text": "- Strictly bake-time: no runtime re-bake, no `fn(state) -> Solid` per tick. The seam is hashed once.\n- Geometry gates (hard): non-manifold / self-intersecting / zero-volume / over-budget mesh. Soft\n  (warn): a too-large model should decompose into sub-`model`s/`fn`s.\n- Rig gates: part origin == declared bone pivot (error); every bound slot has a mesh (error);\n  mirrored side declared not duplicated (error); joint clearance \u2265 `clearance` (warn); rest-pose\n  manifold/bounds (digest).\n- **Per-bone determinism boundary**: a gameplay-observable bone (a hand with a hitbox, a foot\n  driving sim IK) must be fixed-point in a sim stage; purely cosmetic secondary motion may run float\n  in render.\n- Tests assert on the digest + anchors, never coordinates (`d.anchors.find(\"seat_top\").z == 74.0`).\n- **[FLAG]** the `backing: procedural(\"table.fpm\") | asset(\"\u2026\") | template(\"\u2026\")` incremental-swap\n  line (the \"@stub for assets\") is spec-described but does not appear in any example manifest \u2014 the\n  concrete file/syntax is unconfirmed.\n\n---",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#5-ui-fui-grammar-fui-ebnf-ll-1-bind-one-token-the-event-token",
+    "kind": "plugin",
+    "title": "5. UI (`.fui`, `grammar/fui.ebnf` \u2014 LL(1); `bind:` one token; `@` the event token)",
+    "text": "Elm/React: Model = view-model `data`, View = `fn(model) -> View[Msg]`, Messages = signals, Update =\nordinary behaviors. **The binding name IS the wire** \u2014 a `.fui` declares what it reads/emits and the\nbake materializes both ends as types; the logic side must match.\n\n```\nscreen Settings {\n  col class=\"panel p-4 gap-3\" {\n    text class=\"text-2xl\" { \"Settings\" }\n    field placeholder=\"name\" bind:value=player_name\n    slider min=0 max=100 bind:value=volume\n    row class=\"gap-2\" {\n      for p in volume_presets { button class=\"btn\" @click=SetVolume(p.value) { \"{p.value}\" } }\n    }\n    button class=\"btn\" @click=Back { \"Back\" }\n  }\n}\n```\n- **Widgets**: a closed ~14 set \u2014 layout `panel row col grid stack scroll spacer`; content `text\n  image icon`; input `button field slider toggle select`. No `div`, no user components, no HTML.\n- **Style**: space-separated **semantic theme tokens** (`bg-panel`, `text-2xl`, `gap-4`) checked\n  like a `@gtag`; an unknown token is a compile error. Theme is `data`, swappable.\n- **Directives, each a typed edge**: `:attr=path` (value in), `@event=Msg` (message out),\n  `bind:value=field` (both \u2014 lowers to a read AND a `Set`-message). Shapes are **inferred from\n  usage \u2014 the template IS the schema**; you never hand-declare the view-model.\n- **Expression sublanguage = paths + literals + interpolation only** \u2014 no operators/calls/ternaries;\n  anything computed is a *named* view-model field set in the projection.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#seam-gen-settings-gen-fun-inferred-read-write-contract-screen-fn",
+    "kind": "plugin",
+    "title": "Seam (`gen/settings.gen.fun`) \u2014 inferred read + write contract + screen fn",
+    "text": "```funpack\nimport engine.ui.View\ndata SettingsPresetRow { value: Int }                          // inferred from `p.value` alone\ndata SettingsView { player_name: String, volume: Int, volume_presets: [SettingsPresetRow] }\nenum SettingsMsg { SetPlayerName(String), SetVolume(Int), Back }   // SetVolume reused by preset buttons\nextern fn settings(model: SettingsView) -> View[SettingsMsg]\n```\nA screen that binds nothing has an empty view-model (`data PauseView {}`).",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#routing-the-screens-are-the-route-table-gen-screens-gen-fun",
+    "kind": "plugin",
+    "title": "Routing \u2014 the screens ARE the route table (`gen/screens.gen.fun`)",
+    "text": "```funpack\nenum Screen { Hud, Pause, Settings }\nenum AppMsg { Hud(HudMsg), Pause(PauseMsg), Settings(SettingsMsg) }\n```\nAdding a `.fui` extends both enums \u2014 the mount AND the update `match` stop compiling until the screen\nis mounted and handled. No route config, no string URLs.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#consume-it-projection-update-mount",
+    "kind": "plugin",
+    "title": "Consume it (projection + update + mount)",
+    "text": "```funpack\nfn hud_view(self: App) -> HudView { return HudView{ score: self.score, time_left: self.clock, game_over: self.game_over } }\nfn on_hud(self: App, msg: HudMsg) -> App {\n  return match msg {\n    HudMsg::Coin  => self with { score: self.score + 1 }\n    HudMsg::Pause => self with { screen: Screen::Pause, paused: true }\n    HudMsg::Retry => App{}\n  }\n}\nbehavior view on App {\n  fn step(self: App) -> View[AppMsg] {\n    return match self.screen {\n      Screen::Hud      => hud(self.hud_view()).map(AppMsg::Hud)        // .map lifts each screen into AppMsg\n      Screen::Pause    => pause(self.pause_view()).map(AppMsg::Pause)\n      Screen::Settings => settings(self.settings_view()).map(AppMsg::Settings)\n    }\n  }\n}\npipeline Arcade { startup: [setup]   input: [on_msg]   update: [tick_clock]   ui: [view]   audio: [music] }\n```",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#the-ui-stage-rules",
+    "kind": "plugin",
+    "title": "The `ui:` stage & rules",
+    "text": "- A distinct **engine-closed stage**, not a flavor of `render:`: a render behavior is output-only\n  (`[Draw]`), but `View[Msg]` declares an inbound edge. `fn(self) -> View[Msg]` with Render's input\n  rules plus the power to mount an interactive tree.\n- Compositing is stage order: `ui:` after `render:`; multiple `ui:` behaviors composite back-to-front.\n- The `Msg` round-trip is a **deferred signal** \u2014 the engine hit-tests recorded pointer input next\n  tick. Effect closure requires every mounted `Msg` to be consumed (convention: an early `input:`/\n  `on_msg` stage).\n- Deterministic but **not sim-readable**: layout/hit-testing are fixed-point (replay-stable), but\n  layout metrics are never sim-readable (no `width-of`). UI state is `data` (saved).\n- No imperative UI-animation API (transitions are engine-derived from view diffs), no accessibility\n  authoring surface (falls out of the closed widgets + tokens). Focus & gamepad are engine-managed\n  via the closed `UiAction` set, bound in the same `bindings()` as gameplay; `Confirm` on a focused\n  widget emits its `@click` Msg.\n- List identity is positional by default; `for item in items key=item.id` for stable identity (a\n  `Ref[T]` is the natural key).\n- Incremental replacement: a `.fui` can be swapped for a hand-authored `engine.ui`-builder view\n  behind the same seam, no change to projection/update.\n\n---",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#6-audio-two-regimes-spec-22-audio-md",
+    "kind": "plugin",
+    "title": "6. Audio (two regimes, `spec/22-audio.md`)",
+    "text": "Sound is an effect \u2014 data returned to the engine. **No `play_sound()`.**\n\n| Regime | Surface | Trigger | Returned from |\n|---|---|---|---|\n| One-shot SFX | `[Sound]` command | edge (an event happened) | an Update behavior, alongside other commands |\n| Sustained audio | `[Audio]` scene | level (this should be playing now) | the `audio:` stage, diffed by the engine |",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#regime-a-one-shot-sound",
+    "kind": "plugin",
+    "title": "Regime A \u2014 one-shot `[Sound]`",
+    "text": "`Sound{ clip: SoundHandle, gain, pitch, bus, at: Option[Vec3] }`, built `Sound.sfx(clip)` /\n`Sound.sfx_at(clip, pos)` + `.gain`/`.pitch`/`.bus`/`.at`. No key, no lifetime \u2014 played once.\n```funpack\nbehavior on_msg on App {\n  fn step(self: App, msg: AppMsg) -> (App, [Sound]) { return (route(self, msg), click_sfx(msg)) }\n}\nfn click_sfx(msg: AppMsg) -> [Sound] {\n  return match msg {\n    AppMsg::Hud(HudMsg::Coin) => [Sound.sfx(sound(\"coin\")).bus(Bus::Ui)]\n    _                         => [Sound.sfx(sound(\"click\")).bus(Bus::Ui)]\n  }\n}\n```",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#regime-b-sustained-keyed-audio",
+    "kind": "plugin",
+    "title": "Regime B \u2014 sustained keyed `[Audio]`",
+    "text": "`Audio{ key: String, clip, gain, pitch, bus, at }`, built `Audio.track(key, clip)` + the setters. The\nengine diffs the keyed set: appear\u2192start, disappear\u2192stop (with the bus fade), same key new gain/pitch\n\u2192bend the live voice, same key new clip\u2192crossfade.\n```funpack\nbehavior music on App {\n  fn step(self: App) -> [Audio] {\n    let clip = match self.screen { Screen::Hud => \"bgm_play\"   Screen::Pause => \"bgm_menu\"   Screen::Settings => \"bgm_menu\" }\n    return [Audio.track(\"music\", sound(clip)).gain(to_fixed(self.volume) / 100.0).bus(Bus::Music)]\n  }\n}\n```\nThe settings volume drives gain because desired gain is part of the projection \u2014 there is no mutable\nglobal mixer.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-content/references/pipelines.md#the-audio-stage-rules",
+    "kind": "plugin",
+    "title": "The `audio:` stage & rules",
+    "text": "- An engine-closed stage like Render/Ui: pure `fn(self) -> [Audio]` with Render's input rules\n  (blackboard/resources/`View`; no signal lists, no `Rng`, no writes). Output-only.\n- Buses: `Master / Music / Sfx / Ui / Voice` \u2014 a slider drives a bus by feeding its value into the\n  gain of the sounds on it.\n- Deterministic: triggers are data (a replay re-emits the identical sequence); output never feeds\n  back. `gain`/`pitch` are `Fixed` (often from sim, e.g. pitch from speed); the sim never reads back.\n- Positional audio: optional world `at`, attenuated relative to the listener (defaults to the active\n  `Draw3::Camera`). No DSP-effect-chain authoring \u2014 reverb/filtering are engine bus settings.",
+    "source": "skills/funpack-content/references/pipelines.md"
+  },
+  {
+    "anchor": "skills/funpack-determinism/SKILL.md#funpack-determinism-gates-holes",
+    "kind": "plugin",
+    "title": "funpack determinism, gates & holes",
+    "text": "---\nname: funpack-determinism\ndescription: The funpack determinism contract, fixed-point numerics, the compiler's structural quality gates, @stub/@todo typed holes, and which funpack-mcp tool drives each compile/test/index-query op. Use to understand why a build fails (a gate), how to stay deterministic, how Fixed-point math behaves, how to develop incrementally with typed holes, and which MCP tool to call to compile, test, or query the index. Triggers on \"fixed-point\", \"Fixed/Q32.32\", \"determinism\", \"why won't it compile\", \"quality gate\", \"effect closure\", \"exhaustive match\", \"@stub\", \"@todo\", \"--release\", \"build the project\", \"run the tests\", \"compile to check\", \"query the index\".\n---\n\n\nfunpack's compiler is a **quality gate**: structural problems are **errors, not warnings**, with\nfixed budgets and no per-site waiver. This is what makes the write \u2192 check \u2192 fix loop converge. This\nskill covers the rules an author lives under. The ops that drive the loop (compile, test, query the\nindex) are MCP tools \u2014 see the **Driving the loop** section below.",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-determinism/SKILL.md#the-determinism-contract",
+    "kind": "plugin",
+    "title": "The determinism contract",
+    "text": "Two tiers:\n- **Build determinism** \u2014 same source \u2192 bit-identical artifact.\n- **Simulation determinism** \u2014 same inputs + seed \u2192 bit-identical frame *N* on every machine.\n\nIt's load-bearing at runtime (lockstep/peer-to-peer multiplayer, shared recordings) and in the dev\nloop (exact replay-repro and testing). The three sources of per-tick variance are all fixed or\nthreaded, so **input is the only nondeterminism in user code**:\n- **Input** arrives as the read-only `Input` resource \u2014 a per-tick action snapshot recorded for\n  replay. Logic queries semantic actions, never devices (see `funpack-engine-api`).\n- **RNG** is the `Rng` resource, **threaded**: a function taking an `Rng` must return the advanced\n  one (`-> (value, next_rng)`); it is never silently advanced.\n- **Time** is the `Time` resource \u2014 logical time on a fixed timestep; there is no wall clock in sim.\n\nA tick is a **fold over the flattened pipeline**, so a replay re-folds bit-identically.",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-determinism/SKILL.md#what-an-author-must-do-avoid",
+    "kind": "plugin",
+    "title": "What an author must do / avoid",
+    "text": "| Do | Avoid |\n|---|---|\n| Use `Fixed` (`42.5`) for all sim numbers; lift `Int \u2192 Fixed` with `to_fixed(n)` | A bare `f`-literal in sim code \u2014 a compile error |\n| Keep `Float` strictly behind the render/audio seam | Any `Float` on a type that flows into a blackboard or signal \u2014 a compile error (the warranty gate) |\n| Read time/rng/input only via the injected resources | Ambient IO/clock/RNG \u2014 unrepresentable (no such primitives are in scope) |\n| Thread `Rng` (return it advanced) | Assuming `+` reorders \u2014 `Fixed` `+` is **not** reorder-invariant under saturation |\n| Trust `fold` is left-to-right | Reading a setting from a behavior \u2014 settings are structurally kept out of the sim, so replays can't diverge |\n| Use the engine `Quat` (auto-renormalizing) | Holding a `Mat4` in sim \u2014 it is engine-only, not constructible in sim code |",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-determinism/SKILL.md#fixed-point-numerics",
+    "kind": "plugin",
+    "title": "Fixed-point numerics",
+    "text": "`Fixed` is a signed 64-bit **Q32.32** (32 integer, 32 fractional bits) \u2014 the single non-configurable\nformat. Range \u2248 ±2.1×10\u2079, precision \u2248 2.3×10\u207b¹\u2070. Multiply uses a 128-bit intermediate; both\nmultiply and divide **round toward zero** \u2014 one rule, every machine.\n\n**Literals are type-directed:** `42` is `Int`; `42.5` is `Fixed` (the sim default); `42.5f` is\n`Float` (render/audio only \u2014 a bare `f` in sim is a compile error). A `Fixed` literal not exactly\nrepresentable (`0.1`) is rounded to the nearest `Fixed` at compile time, deterministically.\n\n**Arithmetic is total \u2014 saturate, never wrap, never trap:**\n- Overflow past `Fixed.MAX`/`Fixed.MIN` saturates to the rail (same for `Int`).\n- `x / 0` is **defined**: saturates by the sign of `x` (`+x \u2192 MAX`, `\u2212x \u2192 MIN`, `0/0 \u2192 0`); `x % 0 \u2192 0`.\n- When detecting a zero divisor *is* the point, use `checked_div`/`checked_rem` \u2192 `Option`, forcing a\n  `match`.\n- **No implicit `Int \u2192 Fixed`** \u2014 mixing goes through explicit `to_fixed`.\n\n**Transcendentals are computed in integer arithmetic** \u2014 polynomial/lookup/CORDIC over the `Fixed`\nrepresentation, no float/libm in the path, so `sin`/`cos`/etc. are bit-identical everywhere.\n\n**Vectors:** `Vec2`/`Vec3` are `Fixed data: Num`; the `Num` kind confers `+ - *` and equality **and\nnothing more** \u2014 it does **not** confer `/`. `dot`/`cross`/`length`/`normalize`/`distance` are named\nfunctions, never operators. Rotation is a unit `Quat` (`Quat.mul` renormalizes).\n\n**`fold` is strictly left-to-right** \u2014 never tree-reduced or parallelized; a right-fold of the same\nlist can differ at the rails.\n\n**Golden values you can rely on** (from the `numerics` example):\n```\n0.5 * 0.5 == 0.25          1.0 / 4.0 == 0.25          to_fixed(2) == 2.0\n1.0 / 0.0 == Fixed.MAX     -1.0 / 0.0 == Fixed.MIN    0.0 / 0.0 == 0.0    5.0 % 0.0 == 0.0\nchecked_div(6.0, 2.0) == Option::Some(3.0)            checked_div(1.0, 0.0) == Option::None\ntrunc(1.5)==1   trunc(-1.5)==-1   floor(-1.5)==-2   round(1.5)==2\nclamp(5.0,0.0,3.0)==3.0    lerp(0.0,10.0,0.5)==5.0    length(Vec2{x:3.0,y:4.0})==5.0\nsin(0.0)==0.0   cos(0.0)==1.0   a.slerp(b,0.0)==a   a.slerp(b,1.0)==b\nfold([1.0,-1.0], Fixed.MAX, +) == Fixed.MAX - 1.0    # left-to-right under saturation\n```",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-determinism/SKILL.md#the-structural-quality-gates-errors-not-warnings",
+    "kind": "plugin",
+    "title": "The structural quality gates (errors, not warnings)",
+    "text": "A build fails on any of these \u2014 they drive the write \u2192 check \u2192 fix loop. They also run on hot-reload\n(last-good code keeps running; you get fix-criteria diagnostics).\n\n| Gate | Triggers when | Fix |\n|---|---|---|\n| Cyclomatic complexity \u2264 10 | a too-branchy function | decompose |\n| Nesting depth \u2264 3 | deep `if`/`match` pyramids | extract / flatten |\n| Function size \u2264 40 statements | one giant function | split |\n| Parameters \u2264 5 | a wide signature | group into a `data` |\n| **Duplication** | re-implementing an existing helper | reuse it (pre-empt with the `warden_find` MCP tool) |\n| **Exhaustive `match`** | an `Option`/`Result`/`enum` not fully covered | cover every arm |\n| **Effect closure** | emitting a signal nothing consumes (or dropping an IO result) | add the consuming stage downstream |\n| Behavior node check | a `step` whose params/return are illegal for its slot | conform the signature (see `funpack-game-model`) |\n| **`--release` hole-ban** | any `@stub` / debug directive in a release build | fill the hole before shipping |\n| No ambient mutation | mutating outside `mut data` | route through `mut data` |\n| `@gtag` registry | an unregistered tag | add it to `tags.fcfg` |\n| `@doc` temporal-token ban | \"now\"/\"was\"/\"todo\"/\"fix\" inside `@doc` | state what it *is* |\n| No free comments | a `//` comment in `.fun`/`.fcfg` | use `@doc`/`@todo`/`@stub` |\n| No ambient IO | hidden IO | return a command / take a resource |\n| `@todo` expiry | a `@todo` past its window | resolve the debt or close the task |\n| Malformed project tree | a layout violation | conform to `funpack_configs/` + `src/` |\n\nThese budgets are **fixed compiler constants** \u2014 there is no `holes = allow` or per-site waiver. The\nonly sanctioned escape for *incomplete* (never *complex*) code is the typed hole.",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-determinism/SKILL.md#stub-todo-incremental-development",
+    "kind": "plugin",
+    "title": "`@stub` / `@todo` \u2014 incremental development",
+    "text": "```funpack\nfn drag() -> Fixed @stub(Fixed)                                  // typecheck-only hole\nfn launch_speed(boost: Fixed) -> Fixed @stub(Fixed, boost + 6.0) // hole with a dev fallback that runs\n@todo(\"rebalance drops\", T-0042)                                 // dated debt; window mandatory\n```\n\n- **`@stub(T)`** \u2014 a typed hole in body/expression position. Callers typecheck against `T`, so you\n  build **top-down**: write a signature, let consumers compile, fill the body later. Compiles in dev;\n  reaching a bare hole in dev **fails closed** (a defined no-value outcome). A **compile error under\n  `--release`** \u2014 you cannot ship a hole.\n- **`@stub(T, fallback)`** \u2014 the fallback is a funpack expression that typechecks against `T` in the\n  declaration's own parameter scope and **runs in dev**, so the game stays playable while the hole\n  stands. Index-tracked and release-banned exactly like the bare form.\n- **`@todo(\"msg\", window)`** \u2014 the only legal temporal note. Windows: a task ref `T-0042`\n  (recommended), an ISO date `2026-09-01`, a relative duration `30d`, or a build count `50builds`.\n  **Past the window it's a compile error.**\n- Debug directives `@break`/`@log`/`@watch`/`@trace` are dev-only, release-forbidden, and\n  task-registered like `@stub`. `@log(self.head)` is the typed replacement for `print` (queryable\n  NDJSON).\n\nThe workflow: stub the signature \u2192 callers compile \u2192 add a `fallback` to keep playing \u2192 mark deferred\nwork with `@todo(\u2026, T-NNNN)` \u2192 query open holes/debt with the `warden_holes` / `warden_debt` MCP\ntools \u2192 fill every hole before a release build (the ban is the forcing function).",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-determinism/SKILL.md#driving-the-loop-the-mcp-tools",
+    "kind": "plugin",
+    "title": "Driving the loop \u2014 the MCP tools",
+    "text": "The compile / test / query ops are **MCP tools** the bundled funpack-mcp server provides, not CLI\ninvocations you shell out. The intent \u2192 tool map is in `../../references/mcp-tools.md`; the verbs you\nreach for here:\n\n- **Compile**: `build` (emit the artifact + `.funpack/index.ndjson`), `check` (the same verdict, no\n  product written), `export` (the optimized release build, hole-banned), `fmt` (format / check\n  formatting). A release build is the hole-ban mode \u2014 it rejects any `@stub` or debug directive.\n- **Test**: `test` runs every `test \"\u2026\" { assert \u2026 }` block and returns a structured pass/fail\n  summary (counts + each failing test's name and detail).\n- **Look up the spec / engine API**: search the funpack docs with the `docs_search` MCP tool (then\n  `docs_get` on a hit's anchor) rather than relying on memorized prose.",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-determinism/SKILL.md#warden-query-your-own-project-index",
+    "kind": "plugin",
+    "title": "`warden_*` \u2014 query your own project index",
+    "text": "Warden is **not a separate binary, process, or clock** \u2014 the `warden_*` MCP tools are pure\nprojections over the `.funpack/index.ndjson` the `build` tool emits, and they **never write source**\n(the agent edits source; a recompile re-derives the projection). Use them for **reuse-before-write**\nand acceptance checks:\n\n| Tool | Reports |\n|---|---|\n| `warden_find` | a pre-hoc reuse check \u2014 does a helper already exist? (run before writing one) |\n| `warden_holes` | every open `@stub` declaration |\n| `warden_debt` | every `@todo` with its message + window |\n| `warden_probes` | every outstanding debug probe (`@break`/`@log`/\u2026) |\n| `warden_graph` | the dependency/call graph projection |\n| `warden_tags` | declarations by `@gtag` (e.g. all behaviors tagged `combat`) |\n| `warden_pipeline` | the flattened pipeline projection |\n\nA task's completion is **proven by recompile** \u2014 a named `test` passes, a `@gtag` query returns the\nexpected cardinality, a structural gate clears \u2014 not self-attested.\n\n> funpack is under active design \u2014 a real compile (the `build` / `test` tools) is the tie-breaker.",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#funpack-engine-api-the-engine-stdlib",
+    "kind": "plugin",
+    "title": "funpack engine API \u2014 the `engine.*` stdlib",
+    "text": "---\nname: funpack-engine-api\ndescription: The funpack `engine.*` standard library \u2014 the API surface a game calls. Use when you need a function or type signature \u2014 vectors & fixed-point math, the world (View/Spawn/Ref), device-agnostic input, 2D/3D draw commands, audio, UI widgets, navigation, list/map/grid/string/rand, and the model/anim/render3 trio. Triggers on \"engine.math\", \"engine.world\", \"engine.input\", \"engine.render\", \"what function does/returns\", \"how do I clamp/fold/draw/spawn\", \"Vec2\", \"View[T]\", \"Draw::\", \"Bindings\", \"Input.value/axis\", \"funpack stdlib/API\".\n---\n\n\nfunpack is a small language over a **rich engine**: all expressiveness lives here. A game's first\nlines are its imports; everything is `Fixed`-point and replay-deterministic; nothing panics\n(partiality is in the return type, `Option`/`Result`); `Float` is render-only.\n\nThis SKILL.md covers the **core modules every 2D game touches** and how to read a signature. For the\n**complete per-module reference** (audio, ui, nav, map, grid, string, rand, geom, level, tilemap,\nmodel, anim, render3), read `references/modules.md` in this skill directory.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#how-to-read-a-signature-call-conventions",
+    "kind": "plugin",
+    "title": "How to read a signature (call conventions)",
+    "text": "The first parameter tells you how to call it:\n- **`self`-first** \u2192 a method: `input.value(p, a)`, `xs.fold(init, f)`.\n- **No `self`, qualified by its return type** \u2192 an associated constructor: `Bindings.empty()`,\n  `Time.at(0.5)`, `View.of([\u2026])`, `Pose.empty()`.\n- **No `self`, imported bare** \u2192 a free function: `clamp(x, lo, hi)`, `length(v)`, `sin(x)`.\n\nA method call and a free call are the same function (UFCS): `length(v)` \u2261 `v.length()`.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#engine-prelude-always-in-scope-no-import",
+    "kind": "plugin",
+    "title": "engine.prelude \u2014 always in scope, no import",
+    "text": "`Bool`, `Int`, `Fixed`, `Float`, `String`; `Option[T] { Some(T), None }`,\n`Result[T,E] { Ok(T), Err(E) }`, `Ordering { Less, Equal, Greater }`.\n`is_some(opt) -> Bool`, `or_else(opt, default) -> T`, `to_fixed(Int) -> Fixed`,\n`to_int(Fixed) -> Int` (truncates toward zero), `compare(a, b) -> Ordering`.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#engine-math-numbers-space-the-first-import-of-any-game",
+    "kind": "plugin",
+    "title": "engine.math \u2014 numbers & space (the first import of any game)",
+    "text": "```funpack\ndata Vec2: Num { x: Fixed, y: Fixed }     // supports + - * (scalar & component-wise) via the Num kind\ndata Vec3: Num { x: Fixed, y: Fixed, z: Fixed }\ndata Quat { x: Fixed, y: Fixed, z: Fixed, w: Fixed }\nlet pi:  Fixed = 3.14159265\nlet tau: Fixed = 6.28318531\n```\nScalar: `sin cos tan atan2 sqrt abs floor ceil round min max` (all `Fixed -> Fixed`),\n`clamp(x, lo, hi)`, `lerp(a, b, t)`. Vector: `length(v: Vec2) -> Fixed` (2D), `length3(v: Vec3)`,\n`dot(a: Vec3, b: Vec3) -> Fixed`, `cross`, `normalize`. Quat/Mat4 for 3D (see reference).\n\n> `/`, `dot`, `cross`, `length` are **named functions, not operators** \u2014 the `Num` kind confers only\n> `+ - *` and equality. Extended numerics (`Fixed.MAX/MIN/EPSILON`, `checked_div`, `pow/exp/log`,\n> `remap`, `wrap_angle`, `length_sq`, `distance`, `reflect`, `%`) are specified in the numerics\n> contract but thinner in the stdlib signature file \u2014 see `funpack-determinism`, and verify exotic\n> ones against your toolchain.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#engine-core-the-clock",
+    "kind": "plugin",
+    "title": "engine.core \u2014 the clock",
+    "text": "```funpack\ndata Time { dt: Fixed, t: Fixed }     // dt = fixed step; t = accumulated logical time\n```\n`Time.at(dt) -> Time` and `Time.tick(dt, t) -> Time` are the test fixtures. Logical time only \u2014 no\nwall clock in sim code. Usage: `self.pos + self.vel * time.dt`.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#engine-world-entities-population-commands",
+    "kind": "plugin",
+    "title": "engine.world \u2014 entities & population commands",
+    "text": "```funpack\ndata Id { raw: Int }\ndata Ref[T] { id: Id }        // weak, serializable; resolve to Option[T]\ndata Owned[T] { id: Id }      // exclusive owning ref; despawn cascades\nextern type Spawn             // command: Spawn(<thing-literal>)\ndata Despawn { id: Id }       // command: Despawn() self-despawns\nextern type View[T]           // read-only iterable view of matching things\n```\n`View[T]` methods: `count() -> Int`, `at(i) -> T`, `ref(i) -> Ref[T]`, `resolve(ref) -> Option[T]`,\nand the test fixture `View.of([items]) -> View[T]`. Behaviors take `View[Other]` to read other\nthings; return `Spawn( Thing{\u2026} )` / `Despawn()` to change population (applied at the tick boundary).",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#engine-input-device-agnostic-input",
+    "kind": "plugin",
+    "title": "engine.input \u2014 device-agnostic input",
+    "text": "Game logic queries **semantic actions, never devices**. `Axis` and `Button` are **role-kind\nascriptions written after the enum name \u2014 never imported**: `enum Move: Button { Up, Down }`,\n`enum Steer: Axis { Move }`, per player `PlayerId::{P1,P2,P3,P4}`.\n\n```funpack\n// queries are receiver methods on the Input resource (not imports), per player + action:\ninput.pressed(player, action: Button)  -> Bool     // down-edge this tick\ninput.released(player, action: Button) -> Bool     // up-edge this tick\ninput.held(player, action: Button)     -> Bool     // level: down now\ninput.value(player, action: Axis)      -> Fixed    // 1D axis in [-1, +1]\ninput.axis(player, action: Axis)       -> Vec2     // 2D axis, each component [-1, +1]\n```\nDevices appear in **one place**: a `fn bindings() -> Bindings` lifted into the entrypoint.\n`Bindings.empty().axis(P1, Steer::Move, keys_axis(Key::W, Key::S))\u2026`. Importable from `engine.input`:\ntypes `Input Bindings PlayerId Key PadButton MouseButton Stick`, source-helper funcs\n`keys_axis stick_x stick_y wasd arrows stick pad mouse`. Binding sources:\n- **Button:** the key-list `[Key::W, Key::Up]` (a single key is `[Key::W]`), `pad(PadButton::A)`,\n  `mouse(MouseButton::Left)` \u2014 there is **no `key(\u2026)` helper**.\n- **Axis 1D:** `keys_axis(neg, pos)`, `stick_x/stick_y(Stick)` (read via `value`).\n- **Axis 2D:** `wasd()`/`arrows()`/`stick(Stick)` (each a `Vec2`, read via `axis`).\n\nTest doubles: `Input.empty().with_pressed(p, a)`, `.with_value(p, a, x)`, `.with_axis(p, a, v)`.\n\n> Sources **stack** (a key-list may mix devices: `[Key::W, PadButton::DpadUp]`). 2D orientation is\n> y-down \u2014 `W` and stick-up read negative y. `dpad()` (the d-pad as a single 2D `Vec2`) is spec-named\n> but not yet on the surface; bind the d-pad directions as digital buttons via `pad(PadButton::DpadUp)`.\n> See `references/modules.md` and spec §23 §3. All analog values are fixed-point in [-1,1],\n> engine-deadzoned; no `Float` reaches sim code.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#engine-render-2d-draw-commands",
+    "kind": "plugin",
+    "title": "engine.render \u2014 2D draw commands",
+    "text": "A render behavior is a pure `fn(state) -> [Draw]`.\n\n```funpack\nenum Color { White, Black, Red, Green, Blue, Yellow, Cyan, Magenta, Gray, Rgb{ r: Fixed, g: Fixed, b: Fixed } }\nenum Flip { None, X, Y, XY }\nenum Draw {\n  Rect{ at: Vec2, size: Vec2, color: Color }            // at is the TOP-LEFT corner, not center\n  Line{ a: Vec2, b: Vec2, color: Color }\n  Text{ at: Vec2, text: String, color: Color }\n  Fill{ path: Sketch, color: Color }\n  Stroke{ path: Sketch, width: Fixed, color: Color }\n  Sprite{ atlas: AtlasHandle, cell: String, at: Vec2, size: Vec2, tint: Color, flip: Flip, layer: Int }\n}\n```\n`return [Draw::Rect{at: self.pos, size: Vec2{x:3.0,y:3.0}, color: Color::White}]`. Text uses\ninterpolation: `Draw::Text{at: \u2026, text: \"{self.left}   {self.right}\", color: Color::White}`. For\nsprites/atlases see the `funpack-content` skill. 3D draws (`Draw3`, `Camera`, `Light`) live in\n`engine.render3` \u2014 see `references/modules.md`.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#engine-list-immutable-t-every-game-uses-this",
+    "kind": "plugin",
+    "title": "engine.list \u2014 immutable `[T]` (every game uses this)",
+    "text": "Every op returns a new list; lookups are total (`Option`).\n```funpack\nlen, is_empty, get(i)->Option[T], first()->Option, last()->Option,\nprepend(item), append(item), concat(other), reverse, contains(item),\nfind(pred: fn(T)->Bool) -> Option[T],\nmap(f: fn(T)->U) -> [U], filter(pred) -> [T],\nfold(init: A, step: fn(A,T)->A) -> A          // THE deterministic loop primitive (left-to-right)\n```\n`fold(goals, self, add_goal)`, `filter(all_cells(), fn(c){ return not contains(occ, c) })`,\n`map(cells, fn(c){ return Cell{x: c.x, y: c.y} })`.\n\n> For the predicate \"find one matching\" use `find(xs, pred)`. Some examples write `first(xs, pred)`;\n> the signature file separates `first(xs)` (the head) from `find(xs, pred)` \u2014 prefer `find` for the\n> predicate form and verify against your toolchain.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#everything-else",
+    "kind": "plugin",
+    "title": "Everything else",
+    "text": "For **audio** (`Sound`/`Audio`, the two regimes), **ui** (widgets, `View[Msg]`), **nav**\n(pathfinding), **map/grid/string/rand**, **geom** (`Sketch`), **level/tilemap**, and the\n**model/anim/render3** 3D trio, read `references/modules.md` \u2014 it has the full signatures. The\ncontent-authoring side (atlases, levels, models, UI templates) is the `funpack-content` skill.",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/SKILL.md#accuracy-note",
+    "kind": "plugin",
+    "title": "Accuracy note",
+    "text": "These signatures are distilled from the in-repo `stdlib/engine/*.fun` files and the worked\nexamples. Where the signature files, the prose spec, and the examples diverge, `references/modules.md`\nflags it. funpack is under active design \u2014 to confirm a signature, search the docs corpus with the\nfunpack-mcp `docs_search` tool (then `docs_get` on a hit); for a load-bearing call, the final\ntie-breaker is a real compile (`check`).",
+    "source": "skills/funpack-engine-api/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#funpack-engine-complete-module-reference",
+    "kind": "plugin",
+    "title": "funpack `engine.*` \u2014 complete module reference",
+    "text": "Verbatim-distilled from the in-repo `stdlib/engine/*.fun` signature files, the prose spec\n(`spec/26-stdlib.md`, `spec/23-input.md`), and the worked examples. Conventions: `self`-first =\nmethod; no-self return-qualified = associated constructor (`Type.fn()`); no-self bare = free\nfunction. Everything is `Fixed`-point and deterministic; partiality is `Option`/`Result`, never a\npanic; `Float` is render-only.\n\n> **Accuracy flags** are inline as **[FLAG]**. Where the signature file and the examples/prose\n> diverge, both are given. For a load-bearing call, verify against a real compile \u2014 funpack is under\n> active design and \"the examples lead; a compile is the tie-breaker.\"\n\n---",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-prelude-always-in-scope",
+    "kind": "plugin",
+    "title": "engine.prelude \u2014 always in scope",
+    "text": "```funpack\nextern type Bool   Int   Fixed   Float   String\nenum Ordering { Less, Equal, Greater }\nenum Option[T] { Some(T), None }          // the only way to express absence; no null\nenum Result[T, E] { Ok(T), Err(E) }       // errors are values; exhaustive E handling forced\nfn is_some(self: Option[T]) -> Bool\nfn or_else(self: Option[T], fallback: T) -> T\nextern fn to_fixed(n: Int) -> Fixed\nextern fn to_int(x: Fixed) -> Int          // truncates toward zero\nextern fn compare(a: T, b: T) -> Ordering\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-math",
+    "kind": "plugin",
+    "title": "engine.math",
+    "text": "```funpack\ndata Vec2: Num { x: Fixed, y: Fixed }      // + - * (scalar & component-wise)\ndata Vec3: Num { x: Fixed, y: Fixed, z: Fixed }\ndata Quat { x: Fixed, y: Fixed, z: Fixed, w: Fixed }\ndata Aabb { min: Vec3, max: Vec3 }\nextern type Mat4\nlet pi:  Fixed = 3.14159265\nlet tau: Fixed = 6.28318531\n\n// scalar (Fixed -> Fixed unless noted)\nextern fn sin/cos/tan(x) ; atan2(y, x) ; sqrt(x) ; abs(x) ; floor/ceil/round(x) ; min/max(a, b)\nfn clamp(x: Fixed, lo: Fixed, hi: Fixed) -> Fixed\nfn lerp(a: Fixed, b: Fixed, t: Fixed) -> Fixed        // t in [0,1]\nfn length(v: Vec2) -> Fixed                            // 2D\nfn length3(v: Vec3) -> Fixed\nfn dot(a: Vec3, b: Vec3) -> Fixed                      // 3D\nextern fn cross(a: Vec3, b: Vec3) -> Vec3\nextern fn normalize(v: Vec3) -> Vec3\nextern fn from_axis_angle(axis: Vec3, angle: Fixed) -> Quat\nextern fn from_euler(yaw, pitch, roll) -> Quat         // Y, X, Z order\nextern fn qmul(a: Quat, b: Quat) -> Quat               // compose: apply b then a\nextern fn slerp(a: Quat, b: Quat, t: Fixed) -> Quat\nextern fn rotate(q: Quat, v: Vec3) -> Vec3\nextern fn mat_identity() -> Mat4 ; mat_trs(t, r, s) -> Mat4 ; mat_mul(a, b) -> Mat4 ; transform_point(m, p) -> Vec3\n```\n**[FLAG]** `length` is 2D, `length3`/`dot`/`cross` are 3D; there is no 2D `dot`/`normalize` in the\nsignature file. The numerics spec (`spec/10`) names more (`Fixed.MAX/MIN/EPSILON`, `checked_div`,\n`pow/exp/log`, `remap`, `inv_lerp`, `wrap_angle`, `radians/degrees`, `length_sq`, `distance`,\n`reflect`, `%`, `Quat.mul`/`Quat.axis_angle`) \u2014 real but under-declared in the interface file, and\nnamed differently (file `from_axis_angle`/`qmul` vs prose `Quat.axis_angle`/`Quat.mul`). See the\n`funpack-determinism` skill.",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-core",
+    "kind": "plugin",
+    "title": "engine.core",
+    "text": "```funpack\ndata Time { dt: Fixed, t: Fixed }\nextern type TickRate\nfn at(dt: Fixed) -> Time            // Time.at(dt) = Time{dt, t:0.0}\nfn tick(dt: Fixed, t: Fixed) -> Time\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-world",
+    "kind": "plugin",
+    "title": "engine.world",
+    "text": "```funpack\ndata Id { raw: Int }\ndata Ref[T] { id: Id }              // weak, serializable, shareable; resolves to Option[T]\ndata Owned[T] { id: Id }            // exclusive owning ref; despawn cascades to referent\nextern type Spawn                   // command; written Spawn(<thing-literal>)\ndata Despawn { id: Id }             // command; Despawn() self-despawns\nextern type View[T]                 // read-only iterable view; never mutates\nextern fn count(self: View[T]) -> Int\nextern fn at(self: View[T], i: Int) -> T\nextern fn ref(self: View[T], i: Int) -> Ref[T]\nextern fn resolve(self: View[T], ref: Ref[T]) -> Option[T]\nextern fn of(items: [T]) -> View[T]    // TEST FIXTURE: View.of([...])\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-input",
+    "kind": "plugin",
+    "title": "engine.input",
+    "text": "Importable surface (`import engine.input.{\u2026}`):\n```funpack\n// types\nInput  Bindings                      // the read resource and the binding builder\nPlayerId                             // enum { P1, P2, P3, P4 }\nKey                                  // enum { A..Z, Up, Down, Left, Right, Space, Enter, M, F5, F9 } \u2014 bindings-only\nPadButton                            // enum { A, B, X, Y, Start, Back, LeftShoulder, RightShoulder, DpadUp, DpadDown, DpadLeft, DpadRight }\nMouseButton                          // enum { Left, Middle, Right }\nStick                                // enum { Left, Right }\n// source-helper funcs\nkeys_axis  stick_x  stick_y          // 1D axis sources\nwasd  arrows  dpad  stick            // 2D axis sources\npad  mouse                           // digital button sources\n```\n**Not importable** \u2014 `Axis`/`Button` are role-kind ascriptions (by-text, written after the action\nenum name); `pressed`/`released`/`held`/`value`/`axis` (on `Input`) and `axis`/`button` (on\n`Bindings`) are receiver-resolved methods:\n```funpack\nenum Drive: Axis   { Move }          // an Axis action \u2192 read via value (1D) / axis (2D)\nenum Act:   Button { Jump, Fire }    // a Button action \u2192 read via pressed / released / held\n```\n\n```funpack\n// query surface \u2014 receiver methods on the Input resource (not imports)\ninput.pressed(PlayerId, Button)  -> Bool    // down-edge this tick\ninput.released(PlayerId, Button) -> Bool    // up-edge this tick\ninput.held(PlayerId, Button)     -> Bool    // level: down now\ninput.value(PlayerId, Axis)      -> Fixed   // 1D axis [-1,+1]\ninput.axis(PlayerId, Axis)       -> Vec2    // 2D axis, each comp [-1,+1]\n\n// binding sources fed to .button(\u2026) / .axis(\u2026)\n[Key::W, Key::Up]                           // BUTTON: the key-list literal (a single key is [Key::W])\npad(PadButton::A)                           // BUTTON: a gamepad button\nmouse(MouseButton::Left)                    // BUTTON: a mouse button\nkeys_axis(Key::A, Key::D)                   // AXIS 1D\nstick_x(Stick::Left)  stick_y(Stick::Left)  // AXIS 1D\nwasd()  arrows()  dpad()                    // AXIS 2D \u2014 WASD / arrow keys / gamepad d-pad into a Vec2\nstick(Stick::Left)                          // AXIS 2D \u2014 a gamepad stick into a Vec2\n\n// builder + test doubles\nBindings.empty().axis(PlayerId, Axis, <axis-source>).button(PlayerId, Button, <button-source>)\nInput.empty().with_pressed/with_released/with_held(PlayerId, Button)\nInput.empty().with_value(PlayerId, Axis, Fixed) ; with_axis(PlayerId, Axis, Vec2)\n```\nSources for one action **stack** \u2014 a key-list may mix devices (`[Key::W, PadButton::DpadUp]`).\n2D orientation is y-down: `W` and stick-up read **negative y**. Bindings live in\n`fn bindings() -> Bindings` lifted into the entrypoint, not a pipeline block. There is **no `key(\u2026)`\nhelper** (use the `[Key::W]` one-element list). `dpad()` binds the d-pad as a single 2D `Vec2` (the\nonly d-pad 2D path \u2014 a direction is otherwise only a digital `pad(PadButton::DpadUp)` button); it\nlowers to the runtime `pad_quad` source, the d-pad twin of `keys_quad` (spec §23 §3; ADR\n`2026-06-15-engine-input-source-helpers-split`).",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-list",
+    "kind": "plugin",
+    "title": "engine.list",
+    "text": "```funpack\nextern fn len/is_empty(self: [T])\nextern fn get(self, i: Int) -> Option[T]\nextern fn first(self) -> Option[T] ; last(self) -> Option[T]\nextern fn prepend/append(self, item: T) -> [T]\nextern fn concat(self, other: [T]) -> [T] ; reverse(self) -> [T]\nextern fn contains(self, item: T) -> Bool                 // requires Eq\nextern fn find(self, pred: fn(T) -> Bool) -> Option[T]\nextern fn map(self, f: fn(T) -> U) -> [U]\nextern fn filter(self, pred: fn(T) -> Bool) -> [T]\nextern fn fold(self, init: A, step: fn(A, T) -> A) -> A   // THE deterministic loop primitive, left-to-right\n```\n**[FLAG]** Predicate \"find one\" is `find(xs, pred)` in the file; some examples write `first(xs, pred)`\n\u2014 prefer `find`. `init(xs)` (all-but-last) is used in snake but not declared. `within(list, origin,\nr)` / `nearest_first(list, origin)` are named in the spec module map but have no signature (inferred:\nspatial filter / distance sort).",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-render",
+    "kind": "plugin",
+    "title": "engine.render",
+    "text": "```funpack\nenum Flip { None, X, Y, XY }\nenum Color { White, Black, Red, Green, Blue, Yellow, Cyan, Magenta, Gray, Rgb{ r: Fixed, g: Fixed, b: Fixed } }\nenum Align { Left, Center, Right }\nextern type Font\nenum Draw {\n  Rect{ at: Vec2, size: Vec2, color: Color }          // at = TOP-LEFT corner\n  Line{ a: Vec2, b: Vec2, color: Color }\n  Text{ at: Vec2, text: String, color: Color }\n  Fill{ path: Sketch, color: Color }\n  Stroke{ path: Sketch, width: Fixed, color: Color }\n  Sprite{ atlas: AtlasHandle, cell: String, at: Vec2, size: Vec2, tint: Color, flip: Flip, layer: Int }\n}\n```\n**[FLAG]** `Draw::Camera` (2D) is named in the spec module map but is **not** in `render.fun`'s `Draw`\nenum; `Camera` is really only in `render3.Draw3`. `Rect.at` is top-left (confirmed by pong's\ncollision math).",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-map",
+    "kind": "plugin",
+    "title": "engine.map",
+    "text": "```funpack\nextern fn empty() -> Map[K, V]              // Map.empty()\nextern fn len(self) -> Int ; get(self, key: K) -> Option[V] ; has(self, key: K) -> Bool\nextern fn set(self, key: K, value: V) -> Map[K, V] ; remove(self, key: K) -> Map[K, V]\nextern fn keys(self) -> [K] ; values(self) -> [V]      // stable order\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-grid",
+    "kind": "plugin",
+    "title": "engine.grid",
+    "text": "```funpack\ndata Cell { x: Int, y: Int }\nextern fn grid_cells(size: Cell) -> [Cell]                                 // all cells, row-major (canonical)\nextern fn grid_cells(w: Int, h: Int, builder: fn(Int, Int) -> Cell) -> [Cell]   // mapper form\nextern fn neighbors(cell: Cell) -> [Cell]                                  // four orthogonal\nextern fn in_bounds(cell: Cell, size: Cell) -> Bool\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-rand",
+    "kind": "plugin",
+    "title": "engine.rand",
+    "text": "The only nondeterminism, made explicit \u2014 every draw returns `(value, nextRng)`.\n```funpack\ndata Rng { state: Int }\nextern fn seed(n: Int) -> Rng                            // Rng.seed(n)\nextern fn next(self) -> (Fixed, Rng)                     // uniform [0,1)\nextern fn range(self, lo: Int, hi: Int) -> (Int, Rng)\nextern fn pick(self, items: [T]) -> (Option[T], Rng)\nextern fn chance(self, p: Fixed) -> (Bool, Rng)\nextern fn split(self) -> (Rng, Rng)\n```\n**[FLAG]** File is `self`-first (`rng.pick(items)`); snake calls `pick(free, rng)` (list-first).\nVerify arg order against a compile. Always thread the returned `Rng`.",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-string",
+    "kind": "plugin",
+    "title": "engine.string",
+    "text": "Build text by interpolation `\"{a}{b}\"`, never `+`.\n```funpack\nextern fn len(self) -> Int ; fn is_empty(self) -> Bool\nextern fn concat(self, other) -> String ; chars(self) -> [String] ; slice(self, start, end) -> String\nextern fn split(self, sep) -> [String] ; join(parts: [String], sep) -> String   // String.join(parts, sep)\nextern fn contains/starts_with/ends_with(self, s) -> Bool ; index_of(self, needle) -> Option[Int]\nextern fn trim/to_upper/to_lower(self) -> String ; repeat(self, n) -> String\nextern fn from_int(n) -> String ; from_fixed(x) -> String                          // String.from_int / from_fixed\nextern fn parse_int(self) -> Option[Int] ; parse_fixed(self) -> Option[Fixed]\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-audio",
+    "kind": "plugin",
+    "title": "engine.audio",
+    "text": "Two regimes, both plain data (no playback fn). See the `funpack-content` skill for the audio\npipeline.\n```funpack\nenum Bus { Master, Music, Sfx, Ui, Voice }\ndata Sound { clip: SoundHandle, gain: Fixed, pitch: Fixed, bus: Bus, at: Option[Vec3] }   // one-shot command\ndata Audio { key: String, clip: SoundHandle, gain: Fixed, pitch: Fixed, bus: Bus, at: Option[Vec3] }  // sustained, keyed\nfn sfx(clip) -> Sound ; sfx_at(clip, pos) -> Sound       // Sound.sfx(...)\nfn track(key: String, clip) -> Audio                      // Audio.track(key, clip)\nfn gain(self, g) ; pitch(self, p) ; bus(self, b) ; at(self, pos)    // fluent setters on both Sound and Audio\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-ui",
+    "kind": "plugin",
+    "title": "engine.ui",
+    "text": "A screen is a pure `fn(viewmodel) -> View[Msg]`. Normally authored as a `.fui` template\n(`funpack-content` skill); these builders are the hand-authored escape hatch.\n```funpack\nextern type View[Msg]\ndata Choice[T] { label: String, value: T }\nenum UiAction: Button { NavUp, NavDown, NavLeft, NavRight, Confirm, Cancel }\nextern type Theme\n// leaves\nextern fn text(content) -> View[Msg] ; button(label, on_click: Msg) -> View[Msg]\nextern fn image(handle: TextureHandle) -> View[Msg] ; spacer() -> View[Msg] ; icon(name) -> View[Msg]\n// containers\nextern fn panel/row/col/grid/stack(children: [View[Msg]]) -> View[Msg] ; scroll(child) -> View[Msg]\n// inputs (each maps the new value to a Msg)\nextern fn field(value: String, on_input: fn(String) -> Msg) -> View[Msg]\nextern fn slider(value: Int, min: Int, max: Int, on_change: fn(Int) -> Msg) -> View[Msg]\nextern fn toggle(on: Bool, on_change: fn(Bool) -> Msg) -> View[Msg]\nextern fn select(options: [Choice[T]], chosen: T, on_pick: fn(T) -> Msg) -> View[Msg]\n// modifiers\nextern fn class(self, tokens: String) -> View[Msg]       // semantic theme tokens, validated at bake\nextern fn when(self, cond: Bool) -> View[Msg]\nextern fn map(self, into: fn(Msg) -> Other) -> View[Other]   // re-tag; mounts child screens into a router\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-geom-vector-shapes-the-2d-3d-bridge",
+    "kind": "plugin",
+    "title": "engine.geom \u2014 vector shapes (the 2D\u21943D bridge)",
+    "text": "```funpack\nenum PathOp { MoveTo(Vec2), LineTo(Vec2), CubicTo{ c1: Vec2, c2: Vec2, to: Vec2 }, Arc{ to: Vec2, radius: Fixed }, Close }\ndata Path { ops: [PathOp] }\nextern type Sketch\nextern fn rect(size: Vec2) -> Sketch ; circle(radius) -> Sketch ; poly(points: [Vec2]) -> Sketch ; from_path(path) -> Sketch\nextern fn round(self, radius) ; shift(self, by: Vec2) ; turn(self, angle) ; scale(self, factor)   // -> Sketch\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-assets-content-handles-see-funpack-content",
+    "kind": "plugin",
+    "title": "engine.assets \u2014 content handles (see funpack-content)",
+    "text": "```funpack\ndata MeshHandle { name } ; TextureHandle { name } ; SoundHandle { name } ; AtlasHandle { name }\nextern fn mesh(name) -> MeshHandle ; texture(name) -> TextureHandle ; sound(name) -> SoundHandle ; atlas(name) -> AtlasHandle\nextern fn cell(self: AtlasHandle, col: Int, row: Int) -> String          // region id of a grid cell\nextern fn frame(self: AtlasHandle, clip: String, t: Fixed) -> String     // region id of an animation clip at time t\n```\nUnknown name = compile error (closed registry). Prefer the typed constant `assets.coin_sfx` over the\nstring form `sound(\"coin_sfx\")`.",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-nav-2d-pathfinding",
+    "kind": "plugin",
+    "title": "engine.nav \u2014 2D pathfinding",
+    "text": "```funpack\nextern type Nav                            // active level's baked nav graph, engine-injected\ndata NavHandle { name } ; Path { steps: [Vec2], cost: Fixed }\nenum NavError { Unreachable, OffNav }\nextern fn layer(level: LevelHandle, name) -> NavHandle\nextern fn path(self: Nav, from: Vec2, to: Vec2) -> Result[Path, NavError]\nextern fn reachable(self, from, to) -> Bool ; los(self, from, to) -> Bool ; nearest(self, point) -> Option[Vec2]\nextern fn advance(self: Path, pos: Vec2, arrive: Fixed) -> (Option[Vec2], Path)   // next waypoint + remaining\nextern fn of(route: Path) -> Nav ; fail(err: NavError) -> Nav                      // TEST FIXTURES\n```\nWrite the naive repath-every-tick; the engine dedups/caches.",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-nav3-3d-pathfinding",
+    "kind": "plugin",
+    "title": "engine.nav3 \u2014 3D pathfinding",
+    "text": "Same shape with `Vec3`/`Path3`/`NavError3`/`Nav3`: `layer3`, `path3`, `reachable3`, `los3`,\n`nearest3`, `advance3`. **[FLAG]** no `of`/`fail` fixtures (unlike `nav`).",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-render3-3d-draw-commands-floats-permitted-only-here",
+    "kind": "plugin",
+    "title": "engine.render3 \u2014 3D draw commands (floats permitted only here)",
+    "text": "```funpack\ndata Material { color: Color, metallic: Fixed, rough: Fixed }\nenum Draw3 {\n  Mesh{ handle: MeshHandle, at: Vec3, material: Material }\n  Rigged{ skeleton: Skeleton, parts: PartSet, pose: Pose, at: Vec3 }\n  Plane{ at: Vec3, size: Vec2, color: Color }\n  Camera{ eye: Vec3, at: Vec3, fov: Fixed }            // fov in DEGREES\n  Light{ dir: Vec3, color: Color }\n}\nfn matte(color) -> Material ; pbr(color, rough, metallic) -> Material\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-anim-skeletons-parts-poses",
+    "kind": "plugin",
+    "title": "engine.anim \u2014 skeletons, parts, poses",
+    "text": "```funpack\nenum Bone { Hips, Torso, Neck, Head, LUpperArm..RHand, LUpperLeg..RFoot, Joint0..Joint7 }   // 16 humanoid + generic\nenum Slot { Torso, Head, LUpperArm..RHand, LUpperLeg..RFoot, Slot0..Slot3 }\nenum Side { L, R }\ndata Transform { pos: Vec3, rot: Quat, scale: Vec3 }\nextern type Skeleton   Pose   PartSet\nextern fn identity() ; rot_x/rot_y/rot_z(angle) ; up(d) ; translate(offset)   // -> Transform\nextern fn humanoid() / quadruped() / robot() -> Skeleton\nextern fn empty() -> Pose ; set(self, bone, transform) -> Pose ; get(self, bone) -> Transform ; has(self, bone) -> Bool\nextern fn blend(a: Pose, b: Pose, weight: Fixed) -> Pose      // per-bone lerp/slerp\nextern fn layer(base: Pose, overlay: Pose) -> Pose            // overlay's bones replace base's\nextern fn empty() -> PartSet ; bind(self, slot, handle: MeshHandle) -> PartSet ; mirror(self, from: Side, to: Side) -> PartSet\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-model-the-gen-fun-model-surface",
+    "kind": "plugin",
+    "title": "engine.model \u2014 the `.gen.fun` model surface",
+    "text": "```funpack\ndata Length { value: Fixed }\nextern type Anchors   Solid\nenum Shape3 { Box{ size: Vec3 }, Sphere{ radius: Fixed }, Capsule{ radius: Fixed, height: Fixed }, Hull{ points: [Vec3] } }\nextern fn empty() -> Anchors ; at(self, name, point: Vec3) -> Anchors ; socket(self, name, point) -> Anchors\nextern fn point(self, name) -> Option[Vec3] ; handle(self: Solid) -> MeshHandle\n```\nThe geometry-builder vocabulary (`box`, `union`, `extrude`, \u2026) is the bake-time `.fpm` DSL, not this\nsurface \u2014 see `funpack-content`.",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-level",
+    "kind": "plugin",
+    "title": "engine.level",
+    "text": "```funpack\ndata LevelHandle { name }\nextern fn level(name) -> LevelHandle\ndata Load { level: LevelHandle, at: Vec3 } ; Unload { level: LevelHandle }   // streaming commands\nenum Volume { Rect{ min: Vec2, max: Vec2 }, Box{ min: Vec3, max: Vec3 }, Sphere{ center: Vec3, radius: Fixed } }\nextern fn contains(self: Volume, point: Vec3) -> Bool\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#engine-tilemap",
+    "kind": "plugin",
+    "title": "engine.tilemap",
+    "text": "```funpack\ndata TilesetHandle { name } ; TilemapHandle { name }\nextern fn tileset(name) -> TilesetHandle\nextern fn tile_at(self: TilemapHandle, cell: Cell) -> Option[String]   // tile name, or None if empty\nextern fn solid_at(self, cell) -> Bool                                  // collision query\nextern fn cell_of(self, pos: Vec2) -> Cell ; center_of(self, cell) -> Vec2\nextern fn of(cell_size: Int, cells: [(Cell, String, Bool)]) -> TilemapHandle   // TEST FIXTURE\ndata SetTile { map: TilemapHandle, cell: Cell, tile: String }                   // runtime: change one tile\ndata BuildLayer { map: TilemapHandle, fill: String, cells: [(Cell, String)] }   // runtime: replace whole layer\n```",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-engine-api/references/modules.md#modules-listed-in-the-spec-map-but-with-no-signature-file",
+    "kind": "plugin",
+    "title": "Modules listed in the spec map but with no signature file",
+    "text": "`engine.save`, `engine.seq`, `engine.physics`/`physics3` \u2014 referenced in `spec/26-stdlib.md` but no\n`.fun` surface exists to quote. The `physics:` engine stage is driven via the pipeline (see\n`funpack-game-model`), not a called API.",
+    "source": "skills/funpack-engine-api/references/modules.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#funpack-runtime-model-things-behaviors-pipelines",
+    "kind": "plugin",
+    "title": "funpack runtime model \u2014 things, behaviors, pipelines",
+    "text": "---\nname: funpack-game-model\ndescription: The funpack runtime model \u2014 things, behaviors, signals, commands, and pipelines. Use when designing or reasoning about how a funpack game is structured and scheduled \u2014 what a behavior's parameters/return mean, how things communicate via signals, effect closure, the pipeline schedule and tick fold, the slot contracts (Update/Render/Ui/Audio/Startup), and why behaviors are unit-testable. Triggers on \"behavior\", \"signal\", \"pipeline\", \"thing\", \"tick\", \"spawn/despawn\", \"effect closure\", \"render/audio/ui stage\", \"how does a funpack game work\".\n---\n\n\nA funpack game is a **deterministic fold**. State lives *with* the entity, every transition is a\n**pure function**, and the **only cross-entity channel is data**. This skill is the paradigm; for\nsyntax see `funpack-language`, for the APIs see `funpack-engine-api`.",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#the-one-paragraph-mental-model",
+    "kind": "plugin",
+    "title": "The one-paragraph mental model",
+    "text": "A **`thing`** owns its state (a `data` blackboard). A **`behavior on Thing`** is a pure\n`fn step(self, \u2026reads) -> \u2026writes` that runs once per instance per tick: **its parameters are its\nreads, its return is its writes**, and it writes **only its own thing**. To influence another thing\nit emits a **`signal`** \u2014 the sole cross-thing channel, delivered synchronously, same-tick, forward\nin pipeline order. A **`pipeline`** is an explicit ordered schedule of stages; a tick is a **fold**\nover the flattened pipeline, so a replay re-folds the same recorded inputs to a bit-identical frame.\nEffects (`[Draw]`, `[Spawn]`, `[Save]`) are **returned as data**, never performed \u2014 which is why\nevery behavior, renderers included, is a plain function you test by calling `name.step(...)`.",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#things-entity-colocated-state",
+    "kind": "plugin",
+    "title": "Things \u2014 entity = colocated state",
+    "text": "A `thing` owns a **blackboard**: a `data` value holding its whole state, traveling together\n(document-oriented, **not** ECS component tables). Each instance has a stable `Id` from a\ndeterministic spawn counter; all instances of a type form a queryable table. Things **compose**\nbehaviors; they never inherit.\n\n```funpack\nthing Ball { pos: Vec2, vel: Vec2 }\nthing Snake { head: Cell = Cell{x:10,y:10}, body: [Cell] = [], dir: Dir = Dir::Right }\n```\n\nUse a **`singleton`** for exactly-one state \u2014 a scoreboard, a camera, a menu. The engine spawns it\nbefore tick 0 and you access it by type (it yields `Scoreboard`, never `Option`/`[Scoreboard]`); its\nbehaviors run once per tick. Do **not** model single-instance state as a `thing` you `Spawn` once in\n`setup` (some older examples do; `singleton` is canonical).\n\nBecause a blackboard is `data`, it serializes by construction \u2014 saves, replay, and network sync are\nfree. `Ref[T]`/`Owned[T]` are phantom-typed ids (not pointers), so the world is a flat id-graph that\nserializes without pointer swizzling.",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#behaviors-pure-transitions",
+    "kind": "plugin",
+    "title": "Behaviors \u2014 pure transitions",
+    "text": "```funpack\n@gtag(\"paddle\")\nbehavior paddle_move on Paddle {\n  fn step(self: Paddle, input: Input, time: Time) -> Paddle {\n    let dir = input.value(self.player, Steer::Move)\n    return self with { y: clamp(self.y + dir * self.speed * time.dt, 0.0, BOARD.h) }\n  }\n}\n```\n\n`step` is the **reserved entry point** (the Unity `Update` / Elm `update` prior) \u2014 every behavior has\nexactly one, and it runs **once per instance in stable `Id` order**.\n\n**Parameters are the reads** \u2014 the signature *is* the effect declaration. The four legal input kinds:\n\n| Param | Meaning |\n|---|---|\n| `self: Thing` | the behavior's own blackboard |\n| a resource: `input: Input`, `time: Time`, `rng: Rng`, `nav: Nav` | read-only engine inputs (`Rng` is **threaded** \u2014 you must return it advanced) |\n| an inbound signal list: `goals: [Goal]` | signals routed to this stage this tick |\n| `paddles: View[Paddle]` | a **read-only** view of other things (collision, targeting) |\n\n**The return is the writes** \u2014 one or a tuple of:\n\n| Return | Meaning |\n|---|---|\n| `-> Thing` (a new `self`) | the new blackboard, built with `self with { \u2026 }` or a fresh literal |\n| `-> [Signal]` | emit signals (the only way to influence another thing) |\n| `-> [Command]` | engine effects-as-data (`[Spawn]`, `[Draw]`, `[Despawn]`, \u2026) |\n| `-> (Rng, [Spawn])`, `-> ([Despawn], [Delivered])` | combinations (threaded rng + commands; commands + signals) |\n\n**The core invariant \u2014 read your own, signal the rest:** a behavior writes **only its own thing's\nblackboard**. It may *read* other things through a `View`, but never *write* one. To change a\ndifferent thing \u2014 including a singleton \u2014 it **emits a signal** the target's own behavior folds\ndownstream. This single rule is what makes the model deterministic and every behavior testable.\n\nA behavior with no resource param \"observes nothing\"; with no command/signal return \"causes nothing\"\nand is provably pure. Taking a resource you don't need, or emitting a signal nothing consumes, is\ncaught at compile time.",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#signals-the-sole-cross-thing-channel",
+    "kind": "plugin",
+    "title": "Signals \u2014 the sole cross-thing channel",
+    "text": "```funpack\nsignal Goal { side: Side }      // plain data the engine routes\nsignal Died {}                  // empty payload is legal\n```\n\n- **Emit** by returning `[Signal]`: `score.step(self) -> [Goal]` returns `[Goal{side}]` or `[]`.\n- **Consume** by taking a `[Signal]` param: `tally.step(self, goals: [Goal])`. There is **no\n  separate `on Signal(...)` handler** \u2014 a stage's *position* is the collector. The idiom is a fold\n  over the signal list: `fold(goals, self, add_goal)`.\n- **Delivery is forward, synchronous, same-tick, in pipeline order.** A signal emitted in an earlier\n  stage is visible to every later stage the same tick. Canonical chain (pong's `scoring:` stage):\n  `score` emits `Goal` \u2192 `tally` folds it into the score \u2192 `serve` reads it to reset the ball \u2014 all\n  one tick, ordered by list position.\n\n**Effect closure (a compile-time gate):** every emitted signal **must** have a downstream consumer \u2014\nemitting a `Goal` nothing tallies, or dropping a `Saved`, is a compile error. The exception is\n**deferred edges** (UI `Msg`, IO results like `Saved`/`Restored`): they arrive **next tick** and may\nbe consumed anywhere, not strictly downstream.",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#commands-effects-as-data",
+    "kind": "plugin",
+    "title": "Commands \u2014 effects as data",
+    "text": "Effects are **returned as plain data, never performed as IO** \u2014 this is why behaviors are pure.\nThere are no ambient IO primitives in scope, so hidden IO is unrepresentable. The closed engine\ncommand set:\n\n```\n[Spawn] [Despawn] [Draw] [Draw3] [Sound] [Audio] [Save] [Restore]\n[ApplySettings] [Load] [Unload] [SetTile]   (+ emitted signal lists [S])\n```\n\n```funpack\nSpawn( Food{cell: cell} )    // PARENS \u2014 command-wrap is call syntax (Spawn{...} is wrong)\n[Despawn()]                  // self-despawn needs no id\n[Draw::Rect{at: self.pos, size: Vec2{x:3.0,y:3.0}, color: Color::White}]\n```\n\n**Population is fixed within a tick** \u2014 `Spawn`/`Despawn` apply as one deterministic batch at the\ntick boundary; a thing spawned this tick is first queryable next tick. **IO is a deferred,\nunignorable result:** a command (e.g. `[Save]`) requests IO; the outcome arrives next tick as a\nsignal carrying a `Result[\u2026, IoError]` whose error arm a `match` must cover \u2014 a failed write can\nnever be silently dropped.",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#pipelines-the-explicit-ordered-schedule",
+    "kind": "plugin",
+    "title": "Pipelines \u2014 the explicit ordered schedule",
+    "text": "```funpack\npipeline Pong {\n  startup:   [setup]\n  control:   [paddle_move, ball_move]\n  collision: [wall_bounce, paddle_bounce]\n  scoring:   [score, tally, serve]\n  render:    [draw_paddle, draw_ball, draw_score]\n}\n```\n\nA pipeline is **nothing but its ordered named stages**, run top-to-bottom. Stage names are\ndocumentary; their **position is the contract** (no numeric priorities). A stage value is one of\nthree kinds:\n\n- a **`[behavior]` list** \u2014 `control: [paddle_move, ball_move]`;\n- a single **engine-stage symbol** (a bare `LOWER_IDENT`) \u2014 `physics: solve` \u2014 an engine-owned\n  stage (the solver integrates `pos`/`vel` and routes contacts/triggers as inbound signals); the\n  discriminator is the *bare symbol value*, not the colon;\n- a **sub-pipeline name** (`UPPER_IDENT`) for fan-out \u2014 the engine flattens the tree **depth-first**\n  into one total order; fan-out is deterministic, sequential, synchronous (never concurrent) and\n  static.\n\n**Reserved slots:** `startup:` runs once before tick 0; `render:` / `ui:` / `audio:` are the\nterminal projection stages; everything between is Update.\n\n**The tick is a deterministic fold over the flattened pipeline.** Blackboard writes fold forward \u2014\neach stage sees every earlier stage's writes and signals. Two ordering rules close all determinism\nholes: *inter-stage* (the flattened pipeline is one total order) and *intra-stage* (listed behaviors\nrun top-to-bottom; a per-thing behavior runs over its instances in stable `Id` order).\n\nRuntime wiring (`tick` rate, `bindings`, `logical` resolution, `net`) lives in the **entrypoint**\n(`funpack_configs/entrypoints.fcfg`), not the pipeline \u2014 see `funpack-project`. The `fn bindings()`\nis wired in by the entrypoint, not listed as a stage.",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#slot-contracts-node-check-vs-edge-check",
+    "kind": "plugin",
+    "title": "Slot contracts \u2014 node check vs edge check",
+    "text": "A behavior takes a contract **implicitly, by occupying a stage slot** (Go-interface style, no\nannotation). The set is closed:\n\n| Contract | Stage | Inputs | Return |\n|---|---|---|---|\n| **Update** | any interior stage | blackboard / resources / signals / `View` | own blackboard and/or `[Signal]`/`[Command]` \u2014 must write or emit *something* |\n| **Render** | terminal `render:` | blackboard / resources / `View` \u2014 **no signals, no `Rng`** | `[Draw]` / `[Draw3]` only \u2014 cannot emit, command, or write a blackboard |\n| **Ui** | `ui:` (after `render:`) | blackboard / resources / `View` | `View[Msg]` \u2014 the engine hit-tests pointer input and delivers each `Msg` as a deferred signal next tick |\n| **Audio** | `audio:` | blackboard / resources / `View` (output-only) | `[Audio]` \u2014 engine diffs the keyed set and reconciles |\n| **Startup** | `startup:` | engine resources incl. `Rng`; no reads of unspawned things | `[Spawn]` (or a tuple ending in it); runs once before tick 0 |\n\nRender is the strictest (output-only); Ui is the one visual contract with an inbound edge (its\n`Msg`). Writing another thing's blackboard, or returning anything other than the blackboard / a\nsignal list / a command list, is a compile error.\n\n**Two layers, both must pass:** the per-behavior **node check** (\"is this behavior well-formed for\nits slot?\") and the cross-behavior **edge check** = effect closure (\"does every emitted signal have\na consumer?\").",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#testability-falls-out-of-purity",
+    "kind": "plugin",
+    "title": "Testability falls out of purity",
+    "text": "Every behavior \u2014 renderers included \u2014 is a plain function, invoked by its reserved entry point\n`name.step(args)` with deterministic fixtures (`View.of([\u2026])`, `Input.empty()`, `Time.at(dt)`,\n`Nav.of(route)`). No world or harness.\n\n```funpack\ntest \"score emits a left goal past the right edge\" {              // emit side: assert the signal list\n  assert score.step(Ball{pos: Vec2{x: 161.0, y: 60.0}, vel: Vec2{x: 70.0, y: 40.0}}) == [Goal{side: Side::Left}]\n}\ntest \"tally folds goals into the score\" {                          // consume side: feed signals, assert new state\n  assert tally.step(Scoreboard{left: 0, right: 0}, [Goal{side: Side::Left}, Goal{side: Side::Left}]) == Scoreboard{left: 2, right: 0}\n}\ntest \"draw_ball emits one white rect at the ball position\" {       // renderers are pure too: assert the draw list\n  assert draw_ball.step(Ball{pos: Vec2{x: 10.0, y: 20.0}, vel: Vec2{x: 0.0, y: 0.0}}) == [Draw::Rect{at: Vec2{x: 10.0, y: 20.0}, size: Vec2{x: 3.0, y: 3.0}, color: Color::White}]\n}\n```",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-game-model/SKILL.md#designing-a-game-the-standard-fun-skeleton",
+    "kind": "plugin",
+    "title": "Designing a game \u2014 the standard `.fun` skeleton",
+    "text": "`enum`s for state/actions \u2192 `data`/`thing`/`signal` declarations \u2192 pure `fn` helpers \u2192 `behavior`s \u2192\n`fn bindings() -> Bindings` (device mapping) \u2192 `fn setup() -> [Spawn]` (initial population) \u2192\n`pipeline Name { \u2026 }` \u2192 `test` blocks. Put the schedule in stage order: gather input \u2192 mutate state\n\u2192 resolve collisions/physics \u2192 emit & fold signals \u2192 project to `render:`/`ui:`/`audio:`.",
+    "source": "skills/funpack-game-model/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/SKILL.md#funpack-language-syntax-semantics",
+    "kind": "plugin",
+    "title": "funpack language \u2014 syntax & semantics",
+    "text": "---\nname: funpack-language\ndescription: Write and understand funpack `.fun` source \u2014 the language's syntax and semantics. Use when authoring, reading, editing, or explaining funpack code \u2014 declarations (thing/behavior/signal/pipeline/fn/enum/data/let/test), types, match, the `with` update, lambdas, string interpolation, the @doc/@gtag/@stub/@todo directives, and modules/imports. Triggers on \".fun\", \"funpack syntax\", \"write a funpack ...\", \"how do I declare\", \"funpack behavior/thing/signal/pipeline\", \"funpack match/enum/data\".\n---\n\n\nfunpack is a deliberately **boring, LL(1)** language over a **rich engine**. The surface is small\nand unambiguous so an LLM reasons from prior training instead of decoding novelty; all the power\nlives in the `engine.*` stdlib (see the `funpack-engine-api` skill). Three commitments drive every\nrule: **determinism** (same source \u2192 same artifact; fixed-point, never float), **legibility over\nexpressiveness** (one obvious way to do each thing), and **self-healing dev loops** (the compiler\nis a quality gate emitting fix-criteria diagnostics).\n\nFor the runtime paradigm (how behaviors/signals/pipelines compose into a game) see the\n`funpack-game-model` skill. This skill is the **syntax**. For the full grammar and edge cases, read\n`references/grammar.md` in this skill directory.",
+    "source": "skills/funpack-language/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/SKILL.md#read-this-first-the-five-things-that-trip-people-up",
+    "kind": "plugin",
+    "title": "Read this first \u2014 the five things that trip people up",
+    "text": "1. **Fixed-point, never float.** Sim numbers are `Fixed` (`42.5`, `0.0`, `8.0`). `42.5f` is `Float`,\n   legal **only** in render/audio code; a bare `f`-literal in sim is a compile error. There is **no\n   implicit `Int \u2192 Fixed`** \u2014 lift with `to_fixed(n)`.\n2. **`Spawn(x)` uses parentheses, not braces** \u2014 command-wrap is call syntax: `Spawn( Ball{...} )`,\n   `Despawn()`. (Older/training-data funpack may show `Spawn{ }`; that is wrong now.) A bare\n   `UPPER_IDENT{...}` is **always** a record literal \u2014 this is what keeps the grammar LL(1).\n3. **Lambdas are `fn(x){ return \u2026 }`** with a **single-statement** body. `=>` is the `match`-arm\n   separator **only**, never lambda syntax.\n4. **There are no comments.** `@doc(\"\u2026\")` documents (timeless \u2014 temporal words like \"now\"/\"was\" are\n   rejected); `@gtag(\"\u2026\")` tags intent (must be registered in `tags.fcfg`); `@todo(\"\u2026\", window)` is\n   the only dated note; `@stub(T)` is a typed hole.\n5. **State is immutable; update with `with`:** `self with { y: clamp(...) }`. `let` is the only\n   binding form and all locals are immutable.",
+    "source": "skills/funpack-language/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/SKILL.md#declaration-forms",
+    "kind": "plugin",
+    "title": "Declaration forms",
+    "text": "A file is a flat list of declarations; each opens with a unique keyword (LL(1)). Verbatim forms\n(from `pong`/`snake`/`yard`):\n\n```funpack\nimport engine.math.{Fixed, Vec2, clamp}        // selected members (brace group)\nimport engine.world.{View, Spawn}              // absolute paths only; no relative imports\nimport engine.core.Time                        // a single member\n\nenum Side { Left, Right }                       // plain sum type\nenum Steer: Axis { Move }                       // kind-ascribed: an analog-input action\nenum Cmd: Button { Jump, Fire }                 // kind-ascribed: digital-input actions\n\ndata Board { w: Fixed, h: Fixed }               // a value record (immutable, Eq/Ord/Hash by construction)\nlet BOARD: Board = Board{ w: 160.0, h: 120.0 }  // module constant (UPPER_SNAKE)\n\n@doc(\"A player's paddle.\")\n@gtag(\"paddle\")\nthing Paddle { player: PlayerId, side: Side, x: Fixed, y: Fixed, speed: Fixed }   // an entity with state\n\nsingleton Scoreboard { delivered: Int = 0 }     // exactly one, engine-spawned before tick 0, accessed by type\n\nsignal Goal { side: Side }                       // the sole cross-thing message; plain data, engine-routed\n\nfn advance(at: Vec2, vel: Vec2, dt: Fixed) -> Vec2 {   // free function; return type mandatory\n  return at + vel * dt                                 // value produced ONLY via explicit `return`\n}\n\nbehavior ball_move on Ball {                     // a pure transition attached to a thing\n  fn step(self: Ball, time: Time) -> Ball {      // `step` is the reserved entry point\n    return self with { pos: advance(self.pos, self.vel, time.dt) }\n  }\n}\n\npipeline Pong {                                  // the explicit ordered schedule\n  startup:   [setup]\n  control:   [paddle_move, ball_move]\n  scoring:   [score, tally, serve]\n  render:    [draw_paddle, draw_ball]\n}\n\ntest \"advance moves a point by velocity over dt\" {     // a top-level test; deterministic by construction\n  assert advance(Vec2{x: 0.0, y: 0.0}, Vec2{x: 2.0, y: 4.0}, 0.5) == Vec2{x: 1.0, y: 2.0}\n}\n```\n\n`thing` vs `singleton`: use **`singleton`** for exactly-one state (a scoreboard, a camera, a menu)\n\u2014 the engine spawns it before tick 0 and you access it by type. (Some examples declare a `thing`\nand spawn it once in `setup`; `singleton` is the canonical form.) An ordinary `thing` is a\nmulti-instance table you `Spawn`/`Despawn`.\n\nAlso: `query name(p) -> [T] { \u2026 }` (read-only memoized world read), and `extern fn`/`extern type`\n(the native boundary \u2014 stdlib only; you never author `extern`). See `references/grammar.md`.",
+    "source": "skills/funpack-language/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/SKILL.md#types-the-data-model",
+    "kind": "plugin",
+    "title": "Types & the data model",
+    "text": "- **Primitives:** `Int` (64-bit signed, **saturating**, one integer type), `Fixed` (the sim default\n  number \u2014 Q32.32 fixed-point), `Float` (render-only), `Bool`, `String`.\n- **Prelude (always in scope, no import):** `Option[T] { Some(T), None }` \u2014 the only way to express\n  absence (**there is no `null`**); `Result[T, E] { Ok(T), Err(E) }` \u2014 errors are values, handled by\n  exhaustive `match`; `Ordering { Less, Equal, Greater }`. Helpers: `is_some`, `or_else(opt, default)`,\n  `to_fixed(Int)->Fixed`, `to_int(Fixed)->Int`, `compare(a,b)->Ordering`.\n- **`data`** is a typed record. Every `data`/`thing`/`signal` value carries compiler-synthesized\n  batteries unconditionally \u2014 serialization, value semantics + immutability, `Eq`/`Ord`/`Hash`\n  (any `data` is usable as a `Map` key). **There is no `derives`.** Fields may have defaults\n  (`on: Bool = false`); a defaulted field may be omitted from a literal (`Snake{}`).\n- **Enums** are sum types, matched **exhaustively**. Variants may be plain (`Left`), tuple\n  (`Some(T)`, `MoveTo(Vec2)`), or struct (`Rgb{ r: Fixed, g: Fixed, b: Fixed }`).\n- **Generics are engine-only.** `Option[T]`, `Result[T,E]`, lists `[T]`, `Map[K,V]`, `View[T]`,\n  `Ref[T]` exist; **user code authors no type parameters** on its own `data`/`enum`/`fn`.\n- **Lists** are `[T]` (`[Cell]`, `[Goal]`, `[Draw]`). **Tuples exist only in return position**\n  (`-> (Rng, [Spawn])`) and the `let`/`match` that destructures them \u2014 never as a stored field type;\n  for any stored aggregate, use `data`.\n- **Kinds** ascribe an engine role on the declaration line with `:` \u2014 `enum Drive: Axis {\u2026}`,\n  `enum Cmd: Button {\u2026}`, `data Vec2: Num {\u2026}` (the `Num` kind is what enables `+ - *` on vectors).\n- **Mutation** is opt-in and declared: `mut data Name {\u2026}` makes the engine update in place. It is\n  the **only** sanctioned mutation \u2014 there is no `var`/`set`.",
+    "source": "skills/funpack-language/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/SKILL.md#expressions-statements",
+    "kind": "plugin",
+    "title": "Expressions & statements",
+    "text": "Expression-oriented (`if` and `match` yield values), but a function produces its value **only\nthrough explicit `return`** \u2014 no implicit last-expression return.\n\n```funpack\nreturn match d {                               // match: arms `Pattern => expr|block`, newline-separated, EXHAUSTIVE\n  Dir::Up    => Cell{x: c.x, y: c.y - 1}\n  Dir::Down  => Cell{x: c.x, y: c.y + 1}\n  Dir::Left  => Cell{x: c.x - 1, y: c.y}\n  Dir::Right => Cell{x: c.x + 1, y: c.y}\n}\n\nreturn self with { settings: self.settings with { access: a }, dirty: true }   // nested immutable update\n\nlet free = filter(all_cells(), fn(c) { return not contains(occ, c) })          // lambda: fn(params){ one statement }\n\ntext: \"{self.left}   {self.right}\"             // string interpolation; strings are NEVER built with `+`\n\nreturn Bindings.empty()                         // left-to-right builder chains (UFCS / associated fns)\n  .axis(PlayerId::P1, Steer::Move, keys_axis(Key::W, Key::S))\n  .axis(PlayerId::P2, Steer::Move, keys_axis(Key::Up, Key::Down))\n```\n\n- **`let`** is the only local binding; all locals immutable. **No `for`/`while`** \u2014 iterate with the\n  list combinators `map`/`filter`/`fold`/`find`; `fold(xs, init, fn(acc, x){\u2026})` is the deterministic\n  loop primitive (strictly left-to-right).\n- **Calls:** `.` is the universal access/call operator (field, UFCS method, or associated fn/const \u2014\n  `recv.f(x)`, `Type.empty()`, `Fixed.MAX`); `::` is the enum-variant selector **only**\n  (`Dir::Up`, `Option::Some`). A method call and a free-function call are the same function (UFCS:\n  `length(v)` \u2261 `v.length()`).\n- **Operators:** `+ - * / %`; comparisons `== != < <= > >=`; logic is the **words** `and`/`or`/`not`\n  (no `&&`/`||`/`!`). No operator overloading outside `Num`-kinded engine types. `=` is binding\n  only, never equality.\n- **`Option`/`Result` have no `?` operator** \u2014 propagate explicitly with `match` or `or_else`.",
+    "source": "skills/funpack-language/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/SKILL.md#directives",
+    "kind": "plugin",
+    "title": "Directives",
+    "text": "Directives prefix a declaration (or, for `@stub`, stand in body/expression position). They are\n**inert toward logic** (no codegen, no control flow \u2014 this holds the no-macro line). The category is\nclosed; you cannot define new ones.\n\n```funpack\n@doc(\"Timeless description of WHAT this is \u2014 never what happened to it.\")\n@gtag(\"ball\", \"score\")                                  // intent tags; each must be in tags.fcfg or it's a compile error\nfn launch_speed(boost: Fixed) -> Fixed @stub(Fixed, boost + 6.0)   // typed hole with a dev fallback\nfn drag() -> Fixed @stub(Fixed)                                    // bare hole: typechecks; reaching it in dev fails closed\n@todo(\"rebalance drops\", T-0042)                        // the ONLY dated note; window mandatory; past it = compile error\n```\n\n- `@doc` is the **sole documentation channel** (there are no comments). Temporal tokens inside it\n  are rejected.\n- `@gtag` labels must be registered in `funpack_configs/tags.fcfg` (closed registry \u2192 no synonym rot).\n- `@stub(T)` / `@stub(T, fallback)` compile in **dev** and are a **compile error under `--release`**\n  (\"you cannot ship a hole\"). Callers typecheck against `T`, so you build top-down: signatures\n  first, bodies later.\n- `@todo` windows: a task ref `T-0042` (recommended), an ISO date `2026-09-01`, a relative duration\n  `30d`, or a build count `50builds`.\n- `@expose` is the one visibility primitive, and it matters **only across a package edge** (within a\n  project, every declaration is importable \u2014 there is no `pub`).",
+    "source": "skills/funpack-language/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/SKILL.md#modules-imports",
+    "kind": "plugin",
+    "title": "Modules & imports",
+    "text": "**A module's name is its file path; nothing declares it \u2014 there is no `module` keyword.** Directory\nsegments are dotted, filename is the leaf: `src/pong.fun` \u2192 module `pong`; `src/combat/melee.fun` \u2192\n`combat.melee`; `stdlib/engine/math.fun` \u2192 `engine.math`. Imports are **absolute** (rooted, no\n`self`/`super`/`../`). A `@doc` that is the first item in a file documents the module. `engine` is\nthe single reserved root namespace.\n\nWhen a generated seam (e.g. a `.flvl` level's `gen/arena.gen.fun`) references your thing types,\nsplit into three modules to keep imports acyclic: a **schema** module (things/enums/signals only,\nno behaviors), the generated **seam** (imports the schema only), and the **behavior** module\n(imports both). See the `funpack-project` skill.",
+    "source": "skills/funpack-language/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/SKILL.md#what-funpack-deliberately-omits-and-why",
+    "kind": "plugin",
+    "title": "What funpack deliberately omits (and why)",
+    "text": "No macros · no user-defined operators · no inheritance (compose by nesting `data`) · no reflection ·\nno user generics · no `for`/`while` loops · no comments · no `null` · no `var`/`set` · no `?`\noperator · no implicit numeric promotion · no `&&`/`||`/`!` · no general tuples · no string `+`. The\nlanguage is small **on purpose**: power lives in the engine, and one-concept-per-glyph keeps it\nLL(1) so the next editor (usually an agent) reasons from priors, not novelty.\n\n> funpack is under active design and \"the examples lead, the prose follows; a real compile is the\n> tie-breaker.\" Treat the grammar forms here as canonical, but verify a surprising edge case with the\n> funpack-mcp `check` tool (or look it up with `docs_search`) rather than guessing. The normative idiom\n> lives in the in-repo examples\n> (`pong`, `snake`, `hunt`, `yard`, `arena`, `dungeon`, `warren`, `krognid`, `hud`, `assets`,\n> `numerics`, `drift`).",
+    "source": "skills/funpack-language/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#funpack-grammar-reference",
+    "kind": "plugin",
+    "title": "funpack grammar reference",
+    "text": "The complete declaration/expression grammar and edge cases, for when `SKILL.md` isn't enough. Forms\nare quoted from the in-repo `grammar/` (`fun.ebnf`, `fun.ll1.md`, `lexical-core.ebnf`) and the\nworked examples.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#reserved-contextual-keywords",
+    "kind": "plugin",
+    "title": "Reserved & contextual keywords",
+    "text": "**Reserved** (always keywords): `import let return assert if else match fn extern type pipeline test\nsignal behavior and or not with true false`.\n\n**Contextual** (keywords only where they select a production, so `let thing = \u2026` stays legal):\n`data enum thing singleton query mut on`. Kind names after a `:` (`Axis`, `Button`, `Num`,\n`CollisionLayer`) are contextual too.\n\n**Two identifier classes** (by initial char): `UPPER_IDENT` = types and enum variants;\n`LOWER_IDENT` = values, fields, functions, behaviors, stage labels. Module constants are\n`UPPER_SNAKE`. This split is load-bearing for LL(1).",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#all-declaration-productions",
+    "kind": "plugin",
+    "title": "All declaration productions",
+    "text": "```\nDeclaration ::= LetDecl | DataDecl | EnumDecl | ThingDecl | SignalDecl\n              | BehaviorDecl | FnDecl | QueryDecl | PipelineDecl | TestDecl | ExternDecl\n```",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#import",
+    "kind": "plugin",
+    "title": "import",
+    "text": "```\nImportDecl ::= 'import' PathSeg ImportTail*\nImportTail ::= '.' PathSeg | '.' '{' MemberName (Sep MemberName)* Sep? '}'\n```\nWhole module (`import engine.math`), one item (`import engine.math.max`), or a brace group\n(`import engine.math.{Fixed, Vec2, clamp}`). A generated seam imports by bare module name\n(`import arena.{arena_spawns}`). Absolute only.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#let",
+    "kind": "plugin",
+    "title": "let",
+    "text": "```\nLetDecl ::= 'let' LetName (':' Type)? '=' Expr\n```\n`LetName` is `UPPER_IDENT` (module constants) or `LOWER_IDENT` (locals / asset handles). Type\nannotation optional where inferable. The only binding form; locals are immutable.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#enum",
+    "kind": "plugin",
+    "title": "enum",
+    "text": "```\nEnumDecl ::= 'enum' UPPER_IDENT TypeParams? KindAsc? '{' Variant (Sep Variant)* Sep? '}'\nVariant  ::= UPPER_IDENT | UPPER_IDENT '(' Type (',' Type)* ')' | UPPER_IDENT RecordBody\nKindAsc  ::= ':' UPPER_IDENT\n```\nPlain (`Up`), tuple (`MoveTo(Vec2)`), or struct (`CubicTo{ c1: Vec2, c2: Vec2, to: Vec2 }`)\nvariants. `TypeParams` (generics) are engine-only. Matched exhaustively. Kind-ascribed input enums:\n`enum Steer: Axis { Move }`, `enum Cmd: Button { Jump, Fire }`.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#data",
+    "kind": "plugin",
+    "title": "data",
+    "text": "```\nDataDecl ::= 'mut'? 'data' UPPER_IDENT TypeParams? KindAsc? RecordBody\nRecordBody ::= '{' (Field (Sep Field)* Sep?)? '}'\nField      ::= LOWER_IDENT ':' Type ('=' Expr)?\n```\nA typed, schema'd, immutable record (ptr-backed COW with structural sharing). `mut data` is the only\nsanctioned in-place mutation. `TypeParams`/`: Num` kind are engine-only. Defaults make a field\nomittable.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#thing-singleton",
+    "kind": "plugin",
+    "title": "thing / singleton",
+    "text": "```\nThingDecl ::= ('thing' | 'singleton') UPPER_IDENT RecordBody\n```\nA `thing` owns colocated state; behaviors attach. A `singleton` is engine-spawned before tick 0 and\naccessed by type (canonical for exactly-one state \u2014 see `funpack-game-model`).",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#signal",
+    "kind": "plugin",
+    "title": "signal",
+    "text": "```\nSignalDecl ::= 'signal' UPPER_IDENT RecordBody\n```\nPlain `data` declared with `signal`; the sole cross-thing channel. Empty payload legal\n(`signal Died {}`). Subject to effect closure (every emit needs a downstream consumer).",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#behavior",
+    "kind": "plugin",
+    "title": "behavior",
+    "text": "```\nBehaviorDecl ::= 'behavior' LOWER_IDENT 'on' UPPER_IDENT '{' StepMethod '}'\nStepMethod   ::= Directive* 'fn' LOWER_IDENT '(' ParamList? ')' '->' ReturnType Block\n```\nThe method name is the reserved entry point **`step`** (semantic constraint, not grammar). First\nparam is `self: T` matching `on T`; the rest are dependency-injected resources/signals/views. Pure:\nreturns new state and/or command/signal lists.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#fn",
+    "kind": "plugin",
+    "title": "fn",
+    "text": "```\nFnDecl ::= 'fn' LOWER_IDENT '(' ParamList? ')' '->' ReturnType FnBody\nFnBody ::= Block | StubExpr\nStubExpr ::= '@stub' '(' Type (',' Expr)? ')'\n```\nReturn type mandatory. Value produced only via `return`. A body may be replaced by a typed hole.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#query-spec-defined-rare-in-examples",
+    "kind": "plugin",
+    "title": "query (spec-defined; rare in examples)",
+    "text": "```\nQueryDecl ::= 'query' LOWER_IDENT '(' ParamList? ')' '->' ReturnType Block\n```\nA read-only, memoized world read. May be prefixed `@index(Thing.field)` / `@spatial(Thing.field)`.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#extern-stdlib-only-you-never-author-this",
+    "kind": "plugin",
+    "title": "extern (stdlib only \u2014 you never author this)",
+    "text": "```\nExternFn   ::= 'extern' 'fn' LOWER_IDENT '(' ParamList? ')' '->' ReturnType   // no body\nExternType ::= 'extern' 'type' UPPER_IDENT TypeParams?\n```",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#pipeline",
+    "kind": "plugin",
+    "title": "pipeline",
+    "text": "```\nPipelineDecl ::= 'pipeline' UPPER_IDENT '{' StageEntry (Sep StageEntry)* Sep? '}'\nStageEntry   ::= Annotation* LOWER_IDENT ':' StageValue\nStageValue   ::= '[' (BehaviorRef (Sep BehaviorRef)* Sep?)? ']'   // a behavior list\n              | LOWER_IDENT                                       // an engine-stage symbol, e.g. `solve`\n              | UPPER_IDENT                                       // a sub-pipeline name (fan-out)\n```\nStage labels are documentary; their **order is the contract**. A bare-symbol value (`physics: solve`)\nis an engine-owned stage; a `[list]` value is your behaviors; an `UPPER_IDENT` is a sub-pipeline the\nengine flattens depth-first. An empty pipeline `pipeline Drift {}` is legal. A stage may be prefixed\n`@trace`.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#test",
+    "kind": "plugin",
+    "title": "test",
+    "text": "```\nTestDecl   ::= 'test' String '{' (TestStmt (Sep TestStmt)* Sep?)? '}'\nTestStmt   ::= LetStmt | AssertStmt | IfExpr | MatchExpr | ExprStmt\nAssertStmt ::= 'assert' Expr\n```\nName is a string literal. `assert` is legal only inside a test. Use engine fixtures \u2014 `View.of([\u2026])`,\n`Input.empty()`, `Time.at(dt)`, `Nav.of(route)` \u2014 to drive a behavior as `name.step(args)`.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#types",
+    "kind": "plugin",
+    "title": "Types",
+    "text": "```\nType      ::= NamedType | ListType | FnType | TupleType\nNamedType ::= UPPER_IDENT TypeArgs?              // Option[T], Map[K,V], View[Paddle]\nTypeArgs  ::= '[' Type (',' Type)* ']'\nListType  ::= '[' Type ']'                       // [Cell], [Spawn]\nFnType    ::= 'fn' '(' (Type (',' Type)*)? ')' '->' Type   // fn(A, T) -> A   (combinator params)\nTupleType ::= '(' Type (',' Type)+ ')'           // RETURN POSITION ONLY\n```\nFunction-typed `data` fields are rejected (serialization closure). Tuples are not a stored type.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#statements",
+    "kind": "plugin",
+    "title": "Statements",
+    "text": "```\nStatement  ::= LetStmt | ReturnStmt | IfExpr | MatchExpr | ExprStmt\nLetStmt    ::= 'let' LOWER_IDENT (':' Type)? '=' Expr\nReturnStmt ::= 'return' Expr\n```\nNewline terminates a statement; separators are newline **or** `,` (trailing `,` legal). Whitespace\nis never counted (a canonical formatter re-indents).",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#match",
+    "kind": "plugin",
+    "title": "match",
+    "text": "```\nMatchExpr ::= 'match' Expr '{' MatchArm (Sep MatchArm)* Sep? '}'\nMatchArm  ::= Pattern '=>' (Block | Expr)\nPattern   ::= '_' | LOWER_IDENT | '(' Pattern (',' Pattern)* ')'\n            | UPPER_IDENT '::' UPPER_IDENT VariantPat?\nVariantPat ::= '(' Pattern (',' Pattern)* ')' | '{' FieldPun (',' FieldPun)* '}'\n```\nExhaustive. Patterns: variant-with-binders (`Option::Some(v)`), struct-field-pun\n(`Shape2::Box{size} => size`), tuple (`(Option::Some(cell), next) => \u2026`), wildcard `_`. An arm RHS is\na block if it opens `{`, else an expression.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#record-literal-with-lambda-if",
+    "kind": "plugin",
+    "title": "Record literal, `with`, lambda, if",
+    "text": "```\nBracedInit ::= UPPER_IDENT '{' (FieldInit (Sep FieldInit)* Sep?)? '}'   // ALWAYS a record literal\nFieldInit  ::= LOWER_IDENT ':' Expr\nWithExpr   ::= PostfixExpr ('with' '{' FieldInit (Sep FieldInit)* '}')*\nLambda     ::= 'fn' '(' (LOWER_IDENT (',' LOWER_IDENT)*)? ')' '{' Statement '}'   // ONE statement, params untyped\nIfExpr     ::= 'if' Expr Block ('else' (Block | IfExpr))?\n```\nA record literal inside an `if`/`match` head must be parenthesized (a bare `{` after `if`/`match`\nopens the block). Lambda body is a single expression / if-expr / `return` \u2014 never a multi-statement\nblock; put real logic in a named `fn`. `else` is required when `if` is used as an expression.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#postfix-calls",
+    "kind": "plugin",
+    "title": "Postfix / calls",
+    "text": "```\nPostfixExpr ::= Atom PostfixOp*\nPostfixOp   ::= '.' (LOWER_IDENT | UPPER_IDENT) CallArgs?   // member / UFCS / associated fn or const\n             | '[' Expr ']'                                  // index (prefer xs.get(i) -> Option)\n             | CallArgs\nCallArgs    ::= '(' (Expr (',' Expr)*)? ')'\n```\n`recv.f(x)` resolves as a field of `recv`, then UFCS (a `fn` whose first param `self` is `recv`'s\ntype), then an associated fn in the receiver type's module. `Type.f(x)` / `Type.CONST` are\nassociated. Leading-dot builder chains line-join implicitly across newlines.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#operator-precedence-low-high",
+    "kind": "plugin",
+    "title": "Operator precedence (low \u2192 high)",
+    "text": "`or` \u2192 `and` \u2192 `== !=` \u2192 `< <= > >=` \u2192 `+ -` \u2192 `* / %` \u2192 unary (`not`, `-`) \u2192 `with` \u2192\ncall/index/member \u2192 atom.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#one-concept-per-glyph",
+    "kind": "plugin",
+    "title": "One concept per glyph",
+    "text": "`=` binding only · `:` type ascription / field separator · `::` enum-variant selector only · `.`\nmember/UFCS/associated · `->` fn return type · `=>` match arm · `[ ]` list/index/generic · `{ }`\nblock/record/body · `( )` group/args/return-tuple · `@` directive · `with` record-update.\n`and`/`or`/`not` are words. No `&&`/`||`/`!`, no `<>` generics, no pointer/deref sigils, no `..`\nrange (the level DSL has ranges; `.fun` has no loops), no string `+`.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#directives-the-closed-set",
+    "kind": "plugin",
+    "title": "Directives (the closed set)",
+    "text": "```\nDirective ::= '@doc'     '(' String ')'\n            | '@gtag'    '(' String (',' String)* ')'\n            | '@todo'    '(' String ',' Window ')'\n            | '@index'   '(' FieldPath ')'        // query-prefix only\n            | '@spatial' '(' FieldPath ')'        // query-prefix only\n            | '@migrate' '(' MigrateArgs ')'      // field/type/variant rename or retype\n            | '@expose' | '@server' | '@client'\n            | '@break' '(' Expr ')' | '@log' '(' Expr ')' | '@watch' '(' Expr ')' | '@trace'\n            | '@stub' '(' Type (',' Expr)? ')'\nFieldPath ::= UPPER_IDENT '.' LOWER_IDENT\nWindow    ::= INT('h'|'d'|'w'|'mo'|'q'|'y') | ISO_DATE | INT 'builds' | 'T-' DIGITS\n```\n`@index`/`@spatial` prefix a `query` only (their `FieldPath` head must name a declared\n`thing`/`singleton`). `@server`/`@client` assign a network realm (usually inferred). The debug\nfamily `@break`/`@log`/`@watch`/`@trace` are dev-only, release-forbidden, and task-registered like\n`@stub` \u2014 they never alter logic. `@log(expr)` is the typed replacement for `print` (emits queryable\nNDJSON).",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#the-ll-1-why",
+    "kind": "plugin",
+    "title": "The LL(1) \"why\"",
+    "text": "Every declaration opens with a unique keyword \u2192 one token of lookahead selects the production, no\nbacktracking. The decisive choice making expressions LL(1): **command-wrap is call syntax**\n(`Spawn(thing)`, `Despawn()`), so `UPPER_IDENT '{'` is unambiguously a record literal. Two lexical\nrules underpin it: the upper/lower identifier split, and \"no record literal in a control-flow head\"\n(parenthesize one there).",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#structural-floors-compile-errors-not-warnings",
+    "kind": "plugin",
+    "title": "Structural floors (compile errors, not warnings)",
+    "text": "The compiler caps complexity with **fixed constants, no per-site waiver**: cyclomatic \u2264 10, nesting\n\u2264 3, function \u2264 40 statements, parameters \u2264 5, plus a duplication ceiling. The only sanctioned\nescape for *incomplete* (never *complex*) code is `@stub`. See the `funpack-determinism` skill for\nthe full gate list.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-language/references/grammar.md#forms-that-are-spec-grammar-real-but-not-shown-in-examples",
+    "kind": "plugin",
+    "title": "Forms that are spec/grammar-real but not shown in examples",
+    "text": "`query` declarations, `mut data`, `Map[K,V]` usage in game code, `@expose`, `@todo`, `@migrate`. Use\nthe grammar forms above as canonical, but expect your toolchain to be the final arbiter.",
+    "source": "skills/funpack-language/references/grammar.md"
+  },
+  {
+    "anchor": "skills/funpack-mcp/SKILL.md#funpack-mcp-binary-install-update-uninstall-status",
+    "kind": "plugin",
+    "title": "funpack-mcp binary: install / update / uninstall / status",
+    "text": "---\nname: funpack-mcp\nargument-hint: \"<install|update|uninstall|status>\"\ndescription: Install, update, uninstall, or check the funpack-mcp server binary that the funpack plugin's MCP wrapper runs. Use when the MCP tools are unavailable, after installing/updating the plugin, or to fetch/refresh the binary. Triggers on \"install the funpack mcp\", \"update funpack-mcp\", \"uninstall the mcp\", \"funpack mcp not found\", \"fetch the mcp binary\", \"the funpack MCP isn't working\".\n---\n\n\nYou manage the **funpack-mcp server binary** the plugin's MCP wrapper execs. A script owns all mechanics; your job is to dispatch to it and interpret its result for the user.\n\n<!-- Primacy: dispatch rule + script invocation first \u2014 the two most load-bearing directives lead the prompt. -->",
+    "source": "skills/funpack-mcp/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-mcp/SKILL.md#1-dispatch",
+    "kind": "plugin",
+    "title": "1. Dispatch",
+    "text": "Take the **first token** of `$ARGUMENTS`; map it to a subcommand. **Empty \u2192 `status`.** Run:\n\n```bash\nbash \"$CLAUDE_PLUGIN_ROOT/scripts/funpack-mcp-bin.sh\" <subcommand>\n```\n\n| First token | Subcommand | Effect |\n|---|---|---|\n| `install` | `install` | Fetch latest release for this platform \u2192 persistent data dir |\n| `update` | `update` | Reinstall only if a newer release exists |\n| `uninstall` | `uninstall` | Remove the installed binary + version stamp |\n| `status` / empty | `status` | Report target path, installed/latest version, update availability |\n\nIf `$CLAUDE_PLUGIN_ROOT` is unset (run outside a plugin session), resolve the script at `../../scripts/funpack-mcp-bin.sh` relative to this `SKILL.md` and run it the same way.\n\nThe script owns all mechanics and **all network access** \u2014 never download or curl anything yourself; there are no secrets to handle.",
+    "source": "skills/funpack-mcp/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-mcp/SKILL.md#2-read-the-script-s-keys-do-not-recompute",
+    "kind": "plugin",
+    "title": "2. Read the script's keys \u2014 do not recompute",
+    "text": "The script emits greppable `key: value` lines on **stderr** with meaningful exit codes (0 = ok). Branch on these keys; never re-derive them from prose or other fields:\n\n- `target` / `target-kind` \u2014 resolved path and slot (`plugin-data` = the normal update-surviving home).\n- `version` \u2014 installed tag (install/update success).\n- `source` \u2014 `release-asset (...)` or `build-from-source (...)` (install/update).\n- `prior-binary` \u2014 `absent` | `present` (install/update). The from-zero signal; it alone decides the load instruction below.\n- `present` / `executable` / `installed` / `latest` / `update-available` \u2014 status fields.",
+    "source": "skills/funpack-mcp/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-mcp/SKILL.md#3-readout-per-subcommand",
+    "kind": "plugin",
+    "title": "3. Readout per subcommand",
+    "text": "Give a short, plain readout.\n\n**install / update success** \u2014 confirm `version:` and `target:`, then give exactly ONE load instruction, keyed strictly on `prior-binary`. <!-- HARD CONSTRAINT (FRICTION F9): the two remedies are mutually exclusive; never flatten to \"new session or /reload-plugins\". -->\n\n| `prior-binary` | Meaning | Tell the user |\n|---|---|---|\n| `absent` | From-zero: no server binary existed at session start, so this session launched zero funpack tools. A mid-session `/reload-plugins` relaunches the process but does NOT inject the new server's tools into the running tool index. | **You must start a new session.** Do NOT offer `/reload-plugins` \u2014 it will not surface the tools this session. |\n| `present` | In-place version bump: a server was already running, so reconnect swaps the binary in place. | **Run `/reload-plugins` to pick up the new binary, or start a new session.** A running session won't switch binaries on its own. |\n\n**status** \u2014 relay installed vs latest and `update-available`. If `present: no` or `executable: no`, recommend `install`. If `update-available: yes`, recommend `update`.\n\n**update, nothing to do** (`update-available: no`) \u2014 say it's already current; report the `installed:` version.\n\n**uninstall** \u2014 confirm removal. Note: a `funpack-mcp` on `PATH` via **brew** or **`go install`** is not managed here, so if the MCP still resolves a binary after uninstall, that PATH copy is why.",
+    "source": "skills/funpack-mcp/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-mcp/SKILL.md#4-macos-amd64-intel-mac-gap-handle-don-t-guess",
+    "kind": "plugin",
+    "title": "4. macos-amd64 (Intel Mac) gap \u2014 handle, don't guess",
+    "text": "Releases ship **linux-arm64, linux-x64, macos-arm64** only \u2014 there is **no macos-x64 asset**. On Intel Mac the script auto-falls-back to **build-from-source**: it locates the `mcp/` Go module (via the repo or `$FUNPACK_MCP_SRC`) and runs `go build`. A `source: build-from-source (...)` line means it built locally \u2014 tell the user it was built from source and **Go is required** on this platform. If neither an asset nor a buildable source tree exists, the script exits non-zero naming the gap \u2014 relay that message verbatim instead of inventing a fix.",
+    "source": "skills/funpack-mcp/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-mcp/SKILL.md#5-failure-handling",
+    "kind": "plugin",
+    "title": "5. Failure handling",
+    "text": "On non-zero exit, surface the script's stderr verbatim \u2014 it already names the cause (offline, unsupported platform, missing source, etc.). Instead of retrying blindly or fabricating a workaround: if the cause is environmental (offline, unsupported arch), say so and stop.",
+    "source": "skills/funpack-mcp/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-mcp/SKILL.md#why-a-separate-fetch-is-needed-state-only-if-asked",
+    "kind": "plugin",
+    "title": "Why a separate fetch is needed (state only if asked)",
+    "text": "`$CLAUDE_PLUGIN_ROOT` (where the committed wrapper `bin/funpack-mcp` lives) is wiped on every plugin update, so a binary placed there is lost. `$CLAUDE_PLUGIN_DATA` (`~/.claude/plugins/data/<plugin-id>/`) persists, so the binary's home is `$CLAUDE_PLUGIN_DATA/bin/funpack-mcp`, which the wrapper checks first.\n\nThe persistent home is **env-independent**: `$CLAUDE_PLUGIN_DATA` is exported only inside a plugin session, so an `install`/`update` run from ordinary Bash lacks it. Rather than fall back to a wiped-on-update cache path, the script derives the same dir deterministically \u2014 it reads the plugin name from `.claude-plugin/plugin.json`, matches the `<name>@<marketplace>` key in `~/.claude/plugins/installed_plugins.json` (falling back to the owned marketplace `funpack`), and lands the binary in `~/.claude/plugins/data/<name>-<marketplace>/bin`. Install is therefore persistent regardless of invocation \u2014 `target-kind: plugin-data` in every case. `$CLAUDE_PLUGIN_DATA` (when set) and `$FUNPACK_MCP_DATA` (dev) are honored as explicit overrides ahead of the derivation.",
+    "source": "skills/funpack-mcp/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#funpack-project-structure-config",
+    "kind": "plugin",
+    "title": "funpack project structure & config",
+    "text": "---\nname: funpack-project\ndescription: How to lay out and configure a funpack game project \u2014 the enforced directory tree, the `.fcfg` config layer (project/entrypoints/builds/tags), directory-derived modules, the schema/seam/behavior module split, derived capabilities, and packages/dependencies. Use when scaffolding a new project, fixing a project-structure error, wiring an entrypoint, registering a @gtag, or adding a dependency. Triggers on \"funpack project\", \"funpack_configs\", \".fcfg\", \"entrypoints\", \"tags.fcfg\", \"builds.fcfg\", \"project layout/structure\", \"funpack module\", \"funpack package/dependency\", \"scaffold a funpack game\".\n---\n\n\nfunpack enforces **one** project layout \u2014 there is no alternative arrangement and no override flag.\nThe compiler errors on a malformed tree exactly as it errors on a malformed function. The split is\nat the filename: **`.fun` = pure `source \u2192 artifact`; `.fcfg` = config the impure consumers\n(runtime, build driver) read.**",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#the-enforced-tree",
+    "kind": "plugin",
+    "title": "The enforced tree",
+    "text": "```\nproj/\n\u251c\u2500\u2500 funpack_configs/          authored, committed, formatter-owned\n\u2502   \u251c\u2500\u2500 project.fcfg          identity: name, version                      (mandatory)\n\u2502   \u251c\u2500\u2500 entrypoints.fcfg      root pipeline \u2194 tick \u2194 bindings \u2194 net        (mandatory for a game)\n\u2502   \u251c\u2500\u2500 builds.fcfg           emit targets: platform only                  (mandatory)\n\u2502   \u251c\u2500\u2500 tags.fcfg             the @gtag registry                           (mandatory)\n\u2502   \u2514\u2500\u2500 deps.fcfg             dependency declarations                      (optional; stdlib-only games have none)\n\u251c\u2500\u2500 src/       *.fun          gameplay (tests inline)                      (mandatory)\n\u251c\u2500\u2500 models/    *.fpm          bake-time rigs/models                        (capability-gated)\n\u251c\u2500\u2500 levels/    *.flvl         flat-text levels                             (capability-gated)\n\u251c\u2500\u2500 ui/        *.fui          UI templates                                 (capability-gated)\n\u251c\u2500\u2500 assets/    *.manifest + sources (*.atlas, *.tiles, raw)               (capability-gated)\n\u251c\u2500\u2500 gen/       *.gen.fun      compiler-owned, gitignored, rebuilt\n\u2514\u2500\u2500 .funpack/                 index + build products \u2014 derived, gitignored\n```\n\n**Minimal valid game** (the leanest example \u2014 single source file, no subsystem dirs):\n```\nmygame/\n\u251c\u2500\u2500 funpack_configs/\n\u2502   \u251c\u2500\u2500 project.fcfg\n\u2502   \u251c\u2500\u2500 entrypoints.fcfg\n\u2502   \u251c\u2500\u2500 builds.fcfg\n\u2502   \u2514\u2500\u2500 tags.fcfg\n\u2514\u2500\u2500 src/\n    \u2514\u2500\u2500 mygame.fun\n```\n\n`gen/` and `.funpack/` are **gitignored and rebuilt on demand**; `funpack_configs/` is authored and\ncommitted. (The example trees commits `gen/`/`.funpack/` for illustration \u2014 a real\nproject gitignores them.)",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#the-fcfg-config-layer",
+    "kind": "plugin",
+    "title": "The `.fcfg` config layer",
+    "text": "`.fcfg` is deliberately smaller than `.fun`: typed `key = value` plus `use mod.{\u2026}` refs, a fixed\nset of block kinds, **no expressions, no control flow, no behaviors**. The tells: `=` not `:`, `use`\nnot `import`. It inherits the no-comment discipline \u2014 only `@doc`/`@stub`/`@todo` annotate values.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#project-fcfg-package-identity",
+    "kind": "plugin",
+    "title": "project.fcfg \u2014 package identity",
+    "text": "```\nproject mygame {\n  version = \"0.1.0\"\n}\n```\nThe block label **is** the project name (and becomes a root namespace across a package edge). No\n`deps`/`description`/`author` fields.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#entrypoints-fcfg-root-pipeline-lifted-runtime-wiring",
+    "kind": "plugin",
+    "title": "entrypoints.fcfg \u2014 root pipeline + lifted runtime wiring",
+    "text": "```\nuse mygame.{MyGame, bindings}\n\nentrypoint main {\n  pipeline = MyGame          // the root pipeline (UPPER_IDENT)\n  tick     = 60hz            // sim rate (e.g. 60hz, 8hz)\n  logical  = 160x120         // fixed logical draw space WxH in integer world units (REQUIRED)\n  bindings = bindings        // the bindings table\n}\n```\nThis lifts the wiring a `pipeline` carries no config for. `logical` is the extent the engine scales\nand letterboxes to the window \u2014 declared here because it is runtime wiring. Multiple `entrypoint`\nblocks are legal as **distinct sims** (a benchmark, a tutorial), not client/server; selection is\ninferred (one = default; several = a named CLI pick \u2014 there is no `default =` field). An optional\n`net = authoritative | p2p | p2p(rollback)` turns on netcode.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#builds-fcfg-presentation-platform-targets",
+    "kind": "plugin",
+    "title": "builds.fcfg \u2014 presentation platform targets",
+    "text": "```\nbuild native {\n  platform = desktop          // or wasm\n}\n```\nPlatform only \u2014 there is **no `realm` field** (server/client is derived from source realm + `net:`).\nA declared platform always targets the client/standalone artifact.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#tags-fcfg-the-gtag-registry",
+    "kind": "plugin",
+    "title": "tags.fcfg \u2014 the @gtag registry",
+    "text": "```\ntags {\n  game\n  startup\n  render\n  input\n  ball\n  paddle\n  score\n}\n```\nBare `LOWER_IDENT`s, no label, no `=`. **Every `@gtag(\"x\")` in your `.fun` must list `x` here, or it\nis a compile error** \u2014 the registry is closed so the namespace never rots into synonyms. Tag sets\nare project-specific.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#deps-fcfg-dependencies-optional",
+    "kind": "plugin",
+    "title": "deps.fcfg \u2014 dependencies (optional)",
+    "text": "```\nuse hexgrid  version \"0.4\"  hash \"sha256:1c77\u2026\"     // curated registry\nuse shared   path    \"../studio-shared\"             // local path\nuse steering url \"https://\u2026/steering-2.0.tar\"  hash \"sha256:9f3a\u2026\"   // url\n```\nPresent only when you declare a non-stdlib dependency (see Packages below).",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#modules-name-path",
+    "kind": "plugin",
+    "title": "Modules \u2014 name = path",
+    "text": "**A module's name is its file location; nothing declares it \u2014 there is no `module` keyword.**\nDirectory segments dotted, filename the leaf:\n\n| File (under the source root) | Module |\n|---|---|\n| `src/mygame.fun` | `mygame` |\n| `src/combat/melee.fun` | `combat.melee` |\n| `src/combat.fun` | `combat` |\n\n- A **directory is a namespace**; an optional sibling `<name>.fun` carries that namespace's own\n  declarations (there is **no `mod.fun`** index file). A directory with no sibling file is a pure\n  namespace.\n- **Imports are absolute** (rooted, no `self`/`super`/`../`).\n- A `@doc` that is the **first item in a file** documents the module.\n- `engine` is the single reserved root namespace; a user `src/engine/` is a compile error.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#the-schema-seam-behavior-split",
+    "kind": "plugin",
+    "title": "The schema / seam / behavior split",
+    "text": "Whenever a generated seam (a `.flvl`/`.fui`/`.fpm` `gen/*.gen.fun`) references **your** thing types,\nsplit `src/` into three modules so the import graph stays acyclic:\n\n- **schema** module (`mygame_world.fun`) \u2014 only `thing`/`data`/`enum`/`signal`; imports engine types\n  only.\n- **generated seam** (`gen/mygame.gen.fun` \u2192 module `mygame`) \u2014 imports schema modules **only**; a\n  seam importing a behavior module is a compile error.\n- **behavior** module (`mygame_game.fun`) \u2014 imports schema + seam; declares `behavior`s + the\n  `pipeline`.\n\n```funpack\n// in mygame_game.fun\nimport mygame_world.{Player, Slime, Chest}       // sibling schema module\nimport mygame.{mygame_spawns, terrain}           // the generated seam (by bare module name)\n```\nA small game whose seams name no user types (like Pong) needs no split \u2014 one `src/mygame.fun`. A\ngenerated seam's module is its **source filename in the root namespace** (`ui/hud.fui` \u2192 module\n`hud`); `.gen.fun` is a filename marker, not a namespace segment. Two sources producing the same\nmodule name is a compile error.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#capabilities-derived-never-declared",
+    "kind": "plugin",
+    "title": "Capabilities \u2014 derived, never declared",
+    "text": "There is no features config. Each engine battery switches on from its backing source: a non-empty\n`ui/` \u21d2 UI; a non-empty `models/` \u21d2 modeling; a non-empty `assets/` \u21d2 assets; an `audio:` stage \u21d2\naudio; a `net:` entrypoint \u21d2 netcode; an `@expose` declaration \u21d2 modding. Render/input/state are\nalways on. A non-empty subsystem dir **expects its committed `gen/<source>.gen.fun` seam**.\n\n**You never branch on a capability.** A feature that is off simply has its stage not composed into\nthe pipeline \u2014 you add a stage, you never write `if feature.audio`.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#packages-dependencies",
+    "kind": "plugin",
+    "title": "Packages & dependencies",
+    "text": "funpack is batteries-included \u2014 most games never leave `engine.*`. Packages are the deliberate\nopposite of npm/cargo: no resolver, no version ranges, no transitive sprawl, no install scripts.\n\n- **Star graph, depth-1 always:** `game \u2192 { engine, + exactly the packages you declared }`. A\n  package may depend only on `engine`; a package importing another package is a compile error. No\n  diamonds, no version solving.\n- **Content-hash pins, no ranges.** A registry/url dep pins an exact `hash` (the human `version`\n  rides alongside for discovery). funpack never auto-upgrades; the pin is the lockfile.\n- **Vendored by default.** Dep source is fetched into `packages/<name>/`, committed, and reviewed in\n  PRs \u2014 no opaque `node_modules`. Builds are hermetic (no network at build time) and deterministic,\n  so package builds are bit-identical. The dependency lifecycle is fetch-then-pin: an initial fetch\n  vendors the source under `packages/<name>/`, and an update surfaces the source diff against your\n  vendored copy for review **before** the pinned `hash` changes.\n- **`@expose` is the one visibility primitive.** Within a project everything is importable (no\n  `pub`); across a package edge, only `@expose`d declarations are importable, generating a\n  `<name>.api.gen.fun` contract that can't drift. A game with no packages/mods writes zero `@expose`.\n- **A package is a project without an entrypoint** \u2014 a full tree (`src/`, `funpack_configs/{project,\n  tags}.fcfg`, the authoring surface) but **no `entrypoints.fcfg`** (a game runs; a package is\n  imported). The package name joins `engine` as a reserved root.",
+    "source": "skills/funpack-project/SKILL.md"
+  },
+  {
+    "anchor": "skills/funpack-project/SKILL.md#scaffold-recipe-what-funpack-new-does",
+    "kind": "plugin",
+    "title": "Scaffold recipe (what `/funpack:new` does)",
+    "text": "1. `funpack_configs/project.fcfg` \u2192 `project <name> { version = \"0.1.0\" }`.\n2. `funpack_configs/entrypoints.fcfg` \u2192 `use <name>.{<Pipeline>, bindings}` + an `entrypoint main`\n   with `pipeline`/`tick=60hz`/`logical=160x120`/`bindings=bindings`.\n3. `funpack_configs/builds.fcfg` \u2192 `build native { platform = desktop }`.\n4. `funpack_configs/tags.fcfg` \u2192 every `@gtag` your `src/` will use.\n5. `src/<name>.fun` \u2192 the entrypoint module (the pipeline value + `bindings()` + `setup()` +\n   behaviors + tests).\n6. Add a subsystem dir (`models/`/`levels/`/`ui/`/`assets/`) only when you author content for it (it\n   turns on the capability and expects the committed seam). Split `src/` into schema + game modules\n   once a seam must import your types. Add `deps.fcfg` only for a non-stdlib dependency. gitignore\n   `gen/` and `.funpack/`.\n\n> The CLI verb to scaffold is **not part of the spec** \u2014 there is no documented `funpack new`/`init`.\n> Create the tree by writing the files above directly (which is what `/funpack:new` does). The exact\n> tree and `.fcfg` shapes are taken from the in-repo examples; verify against your toolchain.",
+    "source": "skills/funpack-project/SKILL.md"
+  }
+]
