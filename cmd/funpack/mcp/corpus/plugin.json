@@ -1,5 +1,89 @@
 [
   {
+    "anchor": "skills/ctl/SKILL.md#funpack-ctl-funpack-binary-systems-operations",
+    "kind": "plugin",
+    "title": "funpack:ctl \u2014 funpack binary systems operations",
+    "text": "---\nname: ctl\ndescription: Operate the funpack binary on a machine \u2014 install, update, roll back, pin, scan, and report status of the funpack toolchain on disk. Use when the user wants to install funpack, update/upgrade to the latest release, check which funpack version is installed or on PATH, pin or switch to a specific version, roll back a bad upgrade, or audit every funpack binary on the machine. Triggers on \"install funpack\", \"update funpack\", \"upgrade funpack\", \"what funpack version\", \"funpack binary status\", \"scan funpack installs\", \"pin funpack to <version>\", \"roll back funpack\", \"funpack on PATH\", \"manage the funpack binary\". Not for authoring funpack programs, engine/runtime code, or project scaffolding \u2014 those are funpack-project / funpack-engine-api / funpack-language.\n---\n\n\nInstall, update, roll back, pin, and audit the **funpack binary** on a machine. You decide\nwhich operation and whether to gate it; the bundled script `scripts/funpackctl` does the\ndownload/extract/symlink/version-compare mechanics.\n\nInvoke the script with:\n\n```\n${CLAUDE_PLUGIN_ROOT}/skills/ctl/scripts/funpackctl <command> [args]\n```\n\n(In this repo's working tree that resolves to\n`plugins/funpack/skills/ctl/scripts/funpackctl`.) Always run `scan` or `status` first\nto learn the machine's current state before any mutating command.",
+    "source": "skills/ctl/SKILL.md"
+  },
+  {
+    "anchor": "skills/ctl/SKILL.md#the-install-model-read-this-before-acting",
+    "kind": "plugin",
+    "title": "The install model (read this before acting)",
+    "text": "funpack ships as a single binary. Three channels can coexist on one machine, and\n`scan` reports all of them:\n\n- **managed** \u2014 this skill's prefix `$FUNPACK_HOME` (default `~/.funpack`). Holds one\n  dir per version under `versions/<semver>/` and an active-version symlink at\n  `bin/funpack`. Switching versions and rolling back are O(1) symlink swaps with no\n  re-download. **Only this channel supports `rollback` and instant version-pinning** \u2014\n  it is the home for everything the user asks about updates/rollbacks/version-setting.\n- **brew** \u2014 `brew install mjmorales/tap/funpack`. Simple, but keeps no old versions,\n  so it cannot roll back or pin.\n- **dev-build** \u2014 a binary compiled from a checkout. `scan` detects it at `./funpack.bin`\n  or `./cmd/funpack/funpack` relative to the cwd (e.g. `task binary` output), never\n  machine-wide.\n\nSource of truth for releases: GitHub releases on `mjmorales/funpack`, binary line tagged\n`v*`, one asset per platform (`macos-arm64`, `linux-arm64`, `linux-x64`). Intel macOS has\nno prebuilt asset \u2014 build from source there.\n\n**Critical PATH fact:** what `funpack` actually runs is whatever PATH resolves first.\nA managed `install`/`update` only re-points `~/.funpack/bin/funpack`; it does **not**\nchange PATH or override a brew shim. If the user is on brew and you install into the\nmanaged prefix, `funpack` on PATH is unchanged until `~/.funpack/bin` precedes brew on\nPATH (or you run `funpackctl link`). Always check `status` after a mutation and surface\nthis if the on-PATH version did not move.",
+    "source": "skills/ctl/SKILL.md"
+  },
+  {
+    "anchor": "skills/ctl/SKILL.md#intent-command",
+    "kind": "plugin",
+    "title": "Intent \u2192 command",
+    "text": "| User wants | Command |\n|---|---|\n| \"what version / is it current?\" | `status` |\n| \"show me every funpack on this box\" | `scan` |\n| \"what releases exist?\" | `releases [N]` |\n| \"install funpack\" / \"install v0.10.1\" | `install [<ver>]` |\n| \"update / upgrade to latest\" | `update` |\n| \"switch to / pin v0.9.0\" (already installed) | `use <ver>` |\n| \"undo that upgrade\" | `rollback` |\n| \"list what I have installed\" | `list` |\n| \"remove the old v0.9.0\" | `uninstall <ver>` |\n| \"put funpack on my PATH\" | `link [<dir>]` |\n| \"why isn't funpack working?\" | `doctor` |",
+    "source": "skills/ctl/SKILL.md"
+  },
+  {
+    "anchor": "skills/ctl/SKILL.md#confirmation-gates",
+    "kind": "plugin",
+    "title": "Confirmation gates",
+    "text": "Reads (`status`, `scan`, `releases`, `list`, `which`, `doctor`) run freely \u2014 never gate\nthem. Gate the mutations that change which binary runs or destroy a cached version,\nusing `AskUserQuestion` (binary confirm), and only when the consequence is real:\n\n- **`install` / `update` / `use` / `rollback`** \u2014 confirm once before running, stating\n  the from \u2192 to versions. These are reversible (the prior version stays cached), so a\n  single confirm is enough; do not re-gate each step of a multi-version sequence.\n- **`uninstall`** \u2014 confirm; it deletes a cached version (re-downloadable, but gone from\n  disk). The script already refuses to remove the *active* version.\n- **brew/managed conflict** \u2014 if `status` shows the on-PATH funpack is brew-managed and\n  the user asked to update, do not silently install into the managed prefix and declare\n  victory. Present the choice via `AskUserQuestion`: (1) `brew upgrade` the brew install\n  (recommended if they want to keep brew as the source of truth), or (2) install into the\n  managed prefix and `link`/PATH-order it ahead of brew. Pick option 1 first unless they\n  want pinning/rollback, which brew can't give.",
+    "source": "skills/ctl/SKILL.md"
+  },
+  {
+    "anchor": "skills/ctl/SKILL.md#standard-procedures",
+    "kind": "plugin",
+    "title": "Standard procedures",
+    "text": "**Status check / \"is my funpack current?\"** \u2192 run `status`. Read back the active version,\nthe on-PATH version, the latest release, and the drift verdict (`up to date` / `behind` /\n`ahead`). The verdict compares latest against the active version, or the on-PATH version\nwhen nothing is managed \u2014 so a \"behind\" verdict on an unmanaged box is about the brew/dev\nbinary, not a managed install. If behind, offer `update`.\n\n**First install on a fresh machine** \u2192 `scan` to confirm none present \u2192 confirm \u2192 `install`\n(latest) \u2192 tell the user to add `$FUNPACK_HOME/bin` to PATH or run `link`, then `doctor`\nto confirm `funpack version` runs from PATH.\n\n**Update** \u2192 `status` (capture from-version) \u2192 confirm from \u2192 to \u2192 `update` \u2192 `status`\nagain. If on-PATH did not move (brew/order), apply the brew/managed conflict gate above.\n\n**Roll back a bad upgrade** \u2192 `list` to show active + rollback target \u2192 confirm \u2192\n`rollback`. Rollback toggles between the two most-recent active versions; running it\nagain returns to where you were.\n\n**Pin to a specific version** \u2192 if already installed (`list`), `use <ver>`; otherwise\n`install <ver>` (which downloads then activates it).\n\n**Diagnose \"funpack not found / wrong version\"** \u2192 `doctor` \u2192 it checks the prefix, the\nactive symlink, PATH resolution, that `funpack version` runs, platform asset\navailability, and `gh` presence. Then `scan` to see competing installs.\n\nFor the platform/asset matrix, the managed layout, and brew\u2194managed reconciliation\ndetails, see `references/operations.md`.",
+    "source": "skills/ctl/SKILL.md"
+  },
+  {
+    "anchor": "skills/ctl/references/operations.md#funpack-ctl-operations-reference",
+    "kind": "plugin",
+    "title": "funpack:ctl operations reference",
+    "text": "Deep detail behind the funpack:ctl skill: the managed-prefix layout, the platform/asset\nmatrix, the release contract, brew\u2194managed reconciliation, and troubleshooting. The\nSKILL.md is the day-to-day surface; reach here for the corner cases.",
+    "source": "skills/ctl/references/operations.md"
+  },
+  {
+    "anchor": "skills/ctl/references/operations.md#managed-prefix-layout",
+    "kind": "plugin",
+    "title": "Managed prefix layout",
+    "text": "`$FUNPACK_HOME` (default `~/.funpack`):\n\n```\n~/.funpack/\n\u251c\u2500\u2500 versions/\n\u2502   \u251c\u2500\u2500 0.10.1/\n\u2502   \u2502   \u251c\u2500\u2500 funpack          the binary for this version\n\u2502   \u2502   \u2514\u2500\u2500 .meta            key=value: source, tag, platform, sha256\n\u2502   \u2514\u2500\u2500 0.10.2/\n\u2502       \u251c\u2500\u2500 funpack\n\u2502       \u2514\u2500\u2500 .meta\n\u251c\u2500\u2500 bin/\n\u2502   \u2514\u2500\u2500 funpack -> ../versions/0.10.2/funpack    active-version symlink\n\u2514\u2500\u2500 .previous                0.10.1   (the rollback target: last displaced active)\n```\n\nState is the filesystem \u2014 there is no database. The active version is read from the\n`bin/funpack` symlink target; installed versions are the `versions/*` dirs; the rollback\ntarget is the one line in `.previous`. This is deliberate: no JSON/jq dependency, and the\nstate survives any tool that can read a symlink. `_activate` writes the version it\ndisplaces into `.previous`, so `rollback` toggles between the two most-recent actives.\n\nPut `$FUNPACK_HOME/bin` on PATH so `funpack` resolves to the active version. Override the\nprefix per-invocation with `FUNPACK_HOME=/some/path funpackctl ...`.",
+    "source": "skills/ctl/references/operations.md"
+  },
+  {
+    "anchor": "skills/ctl/references/operations.md#platform-asset-matrix",
+    "kind": "plugin",
+    "title": "Platform / asset matrix",
+    "text": "The release workflow builds three platform tarballs. Asset name:\n`funpack-v<X.Y.Z>-<plat>.tar.gz`, extracting to a dir of the same stem containing\n`funpack`, `README.md`, `LICENSE`.\n\n| uname -s / -m | `<plat>` | prebuilt? |\n|---|---|---|\n| Darwin / arm64 | `macos-arm64` | yes |\n| Darwin / x86_64 | `macos-x64` | **no** \u2014 build from source (`task binary`) or run arm64 under Rosetta |\n| Linux / aarch64 | `linux-arm64` | yes |\n| Linux / x86_64 | `linux-x64` | yes |\n\n`funpackctl` refuses (exit 1) rather than fetch a wrong-arch asset for an unsupported\ncombo, surfacing the build-from-source path.",
+    "source": "skills/ctl/references/operations.md"
+  },
+  {
+    "anchor": "skills/ctl/references/operations.md#release-contract",
+    "kind": "plugin",
+    "title": "Release contract",
+    "text": "- Repo: `mjmorales/funpack`. Binary releases are tagged `v<semver>`; the plugin line\n  (`plugin-v*`) and the retired MCP line (`funpack-mcp-v*`) are filtered out by tag regex.\n- Releases are cut **automatically** from conventional commits on `main` \u2014 never tag by\n  hand. The newest `v*` by `sort -V` is the update target.\n- `funpackctl` prefers `gh` for authenticated, rate-limit-friendly queries and downloads,\n  and falls back to the public REST API + `curl` when `gh` is absent.\n- The binary self-identifies: `funpack version --json` \u2192\n  `{\"version\":\"X.Y.Z\",\"schemas\":{\"artifact\":N,\"index\":N,\"introspect\":N}}`. `install`\n  cross-checks this against the version it filed the download under and warns on mismatch.\n  The committed repo-root `VERSION` file is the compile-time source of that string.",
+    "source": "skills/ctl/references/operations.md"
+  },
+  {
+    "anchor": "skills/ctl/references/operations.md#brew-managed-reconciliation",
+    "kind": "plugin",
+    "title": "brew \u2194 managed reconciliation",
+    "text": "Both can be installed at once; `scan` lists each with its real path. The decisive\nquestion is **PATH order** \u2014 `funpack` runs the first match in PATH.\n\n- If the user wants brew to stay the source of truth: `brew upgrade mjmorales/tap/funpack`.\n  Rollback/pin are not available this way (brew keeps no old versions).\n- If the user wants rollback/pinning: install into the managed prefix and ensure\n  `~/.funpack/bin` precedes the brew bin in PATH, or run `funpackctl link <dir>` to drop a\n  symlink into an earlier PATH dir (default `~/.local/bin`). Confirm `status` then shows\n  the managed version as the on-PATH version.\n\nNever declare an update successful on the strength of the managed active version alone;\ninstead, run `status` and confirm the **on-PATH** version moved before reporting success.",
+    "source": "skills/ctl/references/operations.md"
+  },
+  {
+    "anchor": "skills/ctl/references/operations.md#command-exit-contract",
+    "kind": "plugin",
+    "title": "Command exit contract",
+    "text": "- `0` success.\n- `1` operational failure (download failed, version not installed, refused destructive op,\n  could not resolve latest release, unsupported platform).\n- Mutations are idempotent where it matters: `install <ver>` of an already-cached version\n  just re-activates it (pass `--force` to re-download); `update` is a no-op when already\n  on latest; `use`/`rollback` are pure symlink swaps.",
+    "source": "skills/ctl/references/operations.md"
+  },
+  {
+    "anchor": "skills/ctl/references/operations.md#troubleshooting",
+    "kind": "plugin",
+    "title": "Troubleshooting",
+    "text": "| Symptom | Check |\n|---|---|\n| `funpack: command not found` | `doctor` \u2014 is `$FUNPACK_HOME/bin` (or a `link` dir) on PATH? |\n| `funpack version` shows old version after update | brew/dev build earlier in PATH \u2014 `scan`, fix PATH order or `link` |\n| download fails for a real tag | platform without a prebuilt asset (Intel macOS), or network/`gh` auth \u2014 `doctor` |\n| `rollback` errors \"no longer installed\" | the prior version was `uninstall`ed; `install <ver>` it again |\n| version reads as `v?` in `scan` | a dev build predating the `version` verb, or a non-funpack file \u2014 expected, not an error |\n| corporate proxy / no `gh` | falls back to `curl` against `api.github.com` and `github.com/releases/download` |",
+    "source": "skills/ctl/references/operations.md"
+  },
+  {
     "anchor": "skills/funpack-content/SKILL.md#funpack-content-the-bake-pipelines",
     "kind": "plugin",
     "title": "funpack content \u2014 the bake pipelines",
