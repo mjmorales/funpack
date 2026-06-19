@@ -520,11 +520,18 @@ decode_default :: proc(
 // decoder both call: a nested `Cell(x=10,y=10)` field decodes its `x`/`y` through
 // this same proc against the data-decl's field types, so the composite form nests
 // to any depth the emitter produces.
+// `human` is the §28 debug-surface flag: when true, a Fixed token may be a
+// source-literal decimal (`110.0`) decoded float-free via fixed_from_decimal, so a
+// control set/spawn payload accepts the legible form the observe projection renders
+// (F17/F18). It threads UNCHANGED through every nested decode (a `Vec2(x=2.0,y=104.0)`
+// component, a list element) so the leniency reaches any depth. The artifact load path
+// leaves it false (the default), keeping the raw Q32.32 decode byte-identical (spec §2.3).
 decode_default_value :: proc(
 	program: ^Program,
 	type_name: string,
 	encoded: string,
 	allocator := context.allocator,
+	human := false,
 ) -> (
 	value: Field_Value,
 	ok: bool,
@@ -533,7 +540,7 @@ decode_default_value :: proc(
 	case "Int":
 		return decode_int(encoded)
 	case "Fixed":
-		return decode_fixed(encoded)
+		return decode_fixed(encoded, human)
 	case "Bool":
 		return decode_bool(encoded)
 	}
@@ -549,7 +556,7 @@ decode_default_value :: proc(
 	// the shape the solver's mask read (value_to_layer_token) and the universal-Eq
 	// surface expect.
 	if strings.has_prefix(type_name, "[") || strings.has_prefix(encoded, "[") {
-		return decode_list_default(program, type_name, encoded, allocator)
+		return decode_list_default(program, type_name, encoded, allocator, human)
 	}
 	if strings.contains(encoded, "(") {
 		// A composite record default `Type(f=enc,…)` — the §6 single-token inline
@@ -562,7 +569,7 @@ decode_default_value :: proc(
 		// (`Shape2::Box(size=…)`) never reaches a top-level COLUMN (Field_Value carries
 		// no Variant_Value arm — a struct variant lives only NESTED, as a record field
 		// `Value`); it is decoded by decode_default_to_value off the record-field path.
-		return decode_record_default(program, type_name, encoded, allocator)
+		return decode_record_default(program, type_name, encoded, allocator, human)
 	}
 	if strings.contains(encoded, "::") {
 		// An enum-variant default (`Enum::Case`) carries verbatim as a token column.
@@ -582,7 +589,16 @@ decode_default_value :: proc(
 		// A numeric default whose declared type is not the literal `Int`/`Fixed` (a
 		// nested field decoded against an unknown data decl): decode as Fixed, the
 		// numeric reading the loader's setup-field path also defaults to.
-		return decode_fixed(encoded)
+		return decode_fixed(encoded, human)
+	}
+	if human {
+		// In human mode a source-literal decimal (`2.0`) reaches here for an unknown-decl
+		// numeric field (is_signed_decimal rejects the dot). Take the arm ONLY when it
+		// parses as a Fixed source literal — a non-numeric dotted token falls through to
+		// the bare-token arm unchanged, so no string-shaped value regresses.
+		if fixed_value, fixed_ok := decode_fixed_source(encoded); fixed_ok {
+			return fixed_value, true
+		}
 	}
 	// A bare token with no `::` and no `(` — keep it as a token column so the field
 	// stays loadable (the gate stage already proved defaults are concrete §6 forms).
@@ -604,6 +620,7 @@ decode_record_default :: proc(
 	type_name: string,
 	encoded: string,
 	allocator := context.allocator,
+	human := false,
 ) -> (
 	value: Field_Value,
 	ok: bool,
@@ -635,7 +652,7 @@ decode_record_default :: proc(
 			name := pair[:eq]
 			field_enc := pair[eq + 1:]
 			field_type := (vec2_fields || vec3_fields) ? "Fixed" : data_field_type(decl, name)
-			fv, fv_ok := decode_default_to_value(program, field_type, field_enc, allocator)
+			fv, fv_ok := decode_default_to_value(program, field_type, field_enc, allocator, human)
 			if !fv_ok {
 				return nil, false
 			}
@@ -677,6 +694,7 @@ decode_default_to_value :: proc(
 	type_name: string,
 	encoded: string,
 	allocator := context.allocator,
+	human := false,
 ) -> (
 	value: Value,
 	ok: bool,
@@ -684,10 +702,10 @@ decode_default_to_value :: proc(
 	if open := strings.index_byte(encoded, '('); open > 0 {
 		ctor := encoded[:open]
 		if strings.contains(ctor, "::") && strings.has_suffix(encoded, ")") {
-			return decode_struct_variant_value(program, encoded, allocator)
+			return decode_struct_variant_value(program, encoded, allocator, human)
 		}
 	}
-	fv, fv_ok := decode_default_value(program, type_name, encoded, allocator)
+	fv, fv_ok := decode_default_value(program, type_name, encoded, allocator, human)
 	if !fv_ok {
 		return nil, false
 	}
@@ -709,6 +727,7 @@ decode_struct_variant_value :: proc(
 	program: ^Program,
 	encoded: string,
 	allocator := context.allocator,
+	human := false,
 ) -> (
 	value: Value,
 	ok: bool,
@@ -734,7 +753,7 @@ decode_struct_variant_value :: proc(
 				return nil, false
 			}
 			name := pair[:eq]
-			pv, pv_ok := decode_default_to_value(program, "", pair[eq + 1:], allocator)
+			pv, pv_ok := decode_default_to_value(program, "", pair[eq + 1:], allocator, human)
 			if !pv_ok {
 				return nil, false
 			}
@@ -761,6 +780,7 @@ decode_list_default :: proc(
 	type_name: string,
 	encoded: string,
 	allocator := context.allocator,
+	human := false,
 ) -> (
 	value: Field_Value,
 	ok: bool,
@@ -777,7 +797,7 @@ decode_list_default :: proc(
 	pieces := split_top_level(body, ',', allocator)
 	elements := make([]Value, len(pieces), allocator)
 	for piece, i in pieces {
-		ev, ev_ok := decode_default_to_value(program, elem_type, piece, allocator)
+		ev, ev_ok := decode_default_to_value(program, elem_type, piece, allocator, human)
 		if !ev_ok {
 			return nil, false
 		}

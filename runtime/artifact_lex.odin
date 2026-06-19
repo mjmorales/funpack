@@ -552,14 +552,77 @@ decode_int :: proc(token: string) -> (value: i64, ok: bool) {
 // decode_fixed reads a Fixed field as its raw Q32.32 i64 bits in decimal (§2.3)
 // and lifts the bits straight into the runtime kernel's Fixed — bit-exact, no
 // decimal point, NO FLOAT in the load path. The raw integer IS the value
-// (`literal * 2^32`, truncated), so this is the only sound decode: any float
-// round-trip would break the determinism thesis (spec §10.5).
-decode_fixed :: proc(token: string) -> (value: Fixed, ok: bool) {
+// (`literal * 2^32`, truncated), so this is the only sound decode for the artifact
+// LOAD path: any float round-trip would break the determinism thesis (spec §10.5).
+//
+// The §28 DEBUG surfaces (control set/spawn) pass human=true to ALSO accept a
+// SOURCE-LITERAL Fixed — `110.0`, `-0.5` — the spelling the observe projection renders
+// (F17) and a human naturally writes (F18), decoded float-free through the
+// fixed_from_decimal kernel (all-integer, bit-exact — never a float). A dot is the
+// discriminator: a dotted token is a source literal, a bare integer is raw Q32.32 bits,
+// so a freshly-observed value AND an older raw payload both decode in human mode. The
+// load path (human=false, the default) is unreached by this and stays byte-identical.
+decode_fixed :: proc(token: string, human := false) -> (value: Fixed, ok: bool) {
+	if human && strings.index_byte(token, '.') >= 0 {
+		return decode_fixed_source(token)
+	}
 	bits, parsed := strconv.parse_i64(token)
 	if !parsed {
 		return Fixed(0), false
 	}
 	return Fixed(bits), true
+}
+
+// decode_fixed_source decodes a source-literal Fixed `[-]int.frac` to Q32.32 bits
+// through the float-free fixed_from_decimal kernel — the exact inverse of
+// write_source_fixed, closing the F17/F18 observe→control round-trip. The sign is
+// peeled here (fixed_from_decimal takes a non-negative magnitude and reapplied via
+// fixed_neg, which saturates at the MIN rail), and both digit runs are validated so a
+// malformed token fails cleanly rather than feeding garbage to the kernel.
+decode_fixed_source :: proc(token: string) -> (value: Fixed, ok: bool) {
+	body := token
+	negative := false
+	if len(body) > 0 && body[0] == '-' {
+		negative = true
+		body = body[1:]
+	}
+	dot := strings.index_byte(body, '.')
+	if dot < 0 {
+		return Fixed(0), false
+	}
+	int_str := body[:dot]
+	frac := body[dot + 1:]
+	if len(int_str) == 0 && len(frac) == 0 {
+		return Fixed(0), false // a bare `.` is not a number
+	}
+	if !is_ascii_digits(int_str) || !is_ascii_digits(frac) {
+		return Fixed(0), false
+	}
+	int_part: i64 = 0
+	if len(int_str) > 0 {
+		parsed: bool
+		int_part, parsed = strconv.parse_i64(int_str)
+		if !parsed {
+			return Fixed(0), false
+		}
+	}
+	magnitude := fixed_from_decimal(int_part, frac)
+	if negative {
+		return fixed_neg(magnitude), true
+	}
+	return magnitude, true
+}
+
+// is_ascii_digits reports whether every byte of s is `0`–`9` (an empty string is
+// vacuously true — the caller guards the all-empty case). The decimal-part validator
+// for decode_fixed_source.
+is_ascii_digits :: proc(s: string) -> bool {
+	for i in 0 ..< len(s) {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // decode_string reads a length-prefixed `Lk:bytes` String field (§2.4): the

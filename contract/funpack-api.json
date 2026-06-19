@@ -107,12 +107,12 @@
           { "name": "set", "args": {
             "thing": { "type": "string", "required": true, "doc": "the thing (table) declaring the field to force" },
             "field": { "type": "string", "required": true, "doc": "the field/column to overwrite" },
-            "value": { "type": "string", "required": true, "doc": "the new value, encoded against the field's declared type (artifact literal encoding)" },
+            "value": { "type": "string", "required": true, "doc": "the new value as a source literal — the same spelling inspect_draw_list / inspect_state / inspect_signals render (a Fixed as a decimal '110.0', a vector as 'Vec2(x=2.0,y=104.0)'), so an observed value pastes straight back; a raw Q32.32 integer is also accepted" },
             "instance": { "type": "integer", "required": false, "doc": "the instance id of the row to set (defaults to 0)" }
           } },
           { "name": "spawn", "args": {
             "thing": { "type": "string", "required": true, "doc": "the thing (table) to spawn an instance of" },
-            "fields": { "type": "object", "required": false, "doc": "field overrides keyed by field name, each encoded against the field's declared type; unspecified fields take the declared default" }
+            "fields": { "type": "object", "required": false, "doc": "field overrides keyed by field name, each a source literal (a Fixed as '110.0', a vector as 'Vec2(x=2.0,y=104.0)') — the spelling the observe surfaces render; a raw Q32.32 integer is also accepted; unspecified fields take the declared default" }
           } },
           { "name": "despawn", "args": {
             "thing": { "type": "string", "required": false, "doc": "the thing (table) of the instance to despawn" },
@@ -120,7 +120,7 @@
           } },
           { "name": "emit", "args": {
             "signal": { "type": "string", "required": true, "doc": "the signal type name to emit" },
-            "value": { "type": "string", "required": true, "doc": "the signal payload, encoded as a record of the signal type (artifact literal encoding)" }
+            "value": { "type": "string", "required": true, "doc": "the signal payload as a record source literal of the signal type (e.g. 'Goal(side=Side::Left)'); Fixed/vector fields take their decimal source spelling, the same the observe surfaces render; a raw Q32.32 integer is also accepted" }
           } },
           { "name": "reload", "args": { "artifact": { "type": "string", "required": true, "doc": "path to the recompiled artifact to hot-reload the branch onto" } } },
           { "name": "branch", "args": { "tick": { "type": "integer", "required": false, "doc": "the canonical tick to fork at (default: the canonical head); -1 forks post-startup" } } },

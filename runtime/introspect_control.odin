@@ -16,9 +16,12 @@
 // OUTSIDE the normal own-blackboard/signal/command path, the branch lineage is
 // non-warranted by construction, which is exactly why it forks.
 //
-// Command payloads are funpack values as strings in the artifact literal
-// encoding (decode_default_value / decode_fixed — the same codec the observe
-// side renders with, so an observed value pastes back as a control payload).
+// Command payloads are funpack values as strings, decoded through the §28 DEBUG codec
+// (decode_default_value with human=true): the SAME source-literal spelling the observe
+// side now renders (`Vec2(x=96.0,y=90.0)`, `110.0` — F17), so an observed value pastes
+// back verbatim as a control payload (F18), and an older raw Q32.32 payload still
+// decodes (the dot discriminates). A decode failure names the field, its type, and a
+// sample literal (value_decode_error) instead of a bare rejection.
 package funpack_runtime
 
 import "core:encoding/json"
@@ -386,13 +389,53 @@ parse_player :: proc(name: string) -> (player: PlayerId, ok: bool) {
 	return .P1, false
 }
 
+// value_decode_error builds the §28 set/spawn decode-failure message — F18's "state
+// the expected encoding." A bare "does not decode" left the agent guessing the wire
+// form; this names the field, its declared type, and a SAMPLE LITERAL in the exact
+// source-literal spelling the surface now accepts (the inverse of the observe
+// projection), so the remedy is shown, not just the failure.
+@(private = "file")
+value_decode_error :: proc(field: string, field_type: string, allocator := context.allocator) -> string {
+	return fmt.aprintf(
+		"value does not decode for field %s (declared type %s) — expected a source literal like %s",
+		field,
+		field_type,
+		field_type_sample_literal(field_type),
+		allocator = allocator,
+	)
+}
+
+// field_type_sample_literal returns a representative source-literal for a declared type
+// — the remedy half of value_decode_error. The scalar types get their canonical
+// spelling; the §10 vectors show the decimal-component constructor; an unknown type
+// falls back to the Fixed sample (the numeric reading control inputs most often carry).
+@(private = "file")
+field_type_sample_literal :: proc(field_type: string) -> string {
+	switch field_type {
+	case "Int":
+		return "42"
+	case "Fixed":
+		return "110.0"
+	case "Bool":
+		return "true"
+	case "Vec2":
+		return "Vec2(x=2.0,y=104.0)"
+	case "Vec3":
+		return "Vec3(x=2.0,y=104.0,z=0.0)"
+	}
+	if strings.has_prefix(field_type, "[") {
+		return "[] (an empty list, or comma-joined element literals)"
+	}
+	return "110.0"
+}
+
 // control_set forces one blackboard column on the branch — the debug-only write
 // outside the own-blackboard path (§28 §2), executed through the ORDINARY
 // transaction shape: a working tick state off the branch head, the row's map
 // replaced wholesale (the same replace-never-mutate discipline write_blackboard
 // keeps, so the prior version's aliased map is untouched), committed at the
-// boundary. The value decodes against the field's DECLARED type through the
-// artifact literal codec.
+// boundary. The value decodes against the field's DECLARED type through the §28
+// debug codec (human=true: source-literal Fixed accepted, F18).
 @(private = "file")
 control_set :: proc(
 	s: ^Debug_Session,
@@ -418,9 +461,9 @@ control_set :: proc(
 	if field_type == "" {
 		return error_response(id, "set", "unknown field", allocator)
 	}
-	decoded, decode_ok := decode_default_value(branch.program, field_type, encoded, allocator)
+	decoded, decode_ok := decode_default_value(branch.program, field_type, encoded, allocator, true)
 	if !decode_ok {
-		return error_response(id, "set", "value does not decode against the field's declared type", allocator)
+		return error_response(id, "set", value_decode_error(field, field_type, allocator), allocator)
 	}
 
 	state := new_tick_state(branch.head, allocator, allocator)
@@ -479,9 +522,9 @@ control_spawn :: proc(
 			if !is_string {
 				return error_response(id, "spawn", "field overrides must be encoded strings", allocator)
 			}
-			decoded, decode_ok := decode_default_value(branch.program, fd.type, encoded, allocator)
+			decoded, decode_ok := decode_default_value(branch.program, fd.type, encoded, allocator, true)
 			if !decode_ok {
-				return error_response(id, "spawn", "field override does not decode against its declared type", allocator)
+				return error_response(id, "spawn", value_decode_error(fd.name, fd.type, allocator), allocator)
 			}
 			fields[fd.name] = decoded
 			continue
@@ -573,9 +616,9 @@ control_emit :: proc(
 	if !has_signal || !has_value {
 		return error_response(id, "emit", "missing args.signal or args.value", allocator)
 	}
-	decoded, decode_ok := decode_default_value(branch.program, signal, encoded, allocator)
+	decoded, decode_ok := decode_default_value(branch.program, signal, encoded, allocator, true)
 	if !decode_ok {
-		return error_response(id, "emit", "signal value does not decode", allocator)
+		return error_response(id, "emit", value_decode_error(signal, signal, allocator), allocator)
 	}
 	record, is_record := decoded.(Record_Value)
 	if !is_record || record.type_name != signal {

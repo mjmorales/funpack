@@ -185,6 +185,71 @@ test_control_set_forces_branch_field :: proc(t: ^testing.T) {
 	)
 }
 
+// set accepts a SOURCE-LITERAL value — `Vec2(x=2.0,y=104.0)`, the exact spelling the
+// observe projection now renders (F17) — and decodes its decimal components float-free
+// to the same Q32.32 bits a `2.0`/`104.0` literal carries. This closes the F18
+// round-trip: an inspect_draw_list / inspect_state value pastes straight back as a
+// control payload, no hand-encoding into raw bits.
+@(test)
+test_control_set_accepts_source_literal_vec2 :: proc(t: ^testing.T) {
+	_, session := pong_control_session(t, 3)
+	s := session
+	response := session_request(
+		&s,
+		`{"id":2,"cmd":"set","args":{"thing":"Ball","instance":0,"field":"pos","value":"Vec2(x=2.0,y=104.0)"}}`,
+	)
+	testing.expect(t, strings.contains(response, `"ok":true`), response)
+
+	ball, ok := branch_row(&s, "Ball", 0)
+	testing.expect(t, ok, "the branch ball must resolve")
+	pos, _ := row_field(ball, "pos")
+	vec, is_vec := pos.(Vec2)
+	testing.expect(t, is_vec, "pos must stay a Vec2 column")
+	testing.expect_value(t, i64(vec.x), i64(to_fixed(2)))
+	testing.expect_value(t, i64(vec.y), i64(to_fixed(104)))
+}
+
+// set still accepts the raw Q32.32 spelling (`110.0`'s bits) for backward compatibility
+// — the dot is the discriminator, so an older raw payload and a freshly-observed decimal
+// both decode. A scalar Fixed field exercises the bare-token (non-vector) path.
+@(test)
+test_control_set_accepts_source_literal_scalar :: proc(t: ^testing.T) {
+	_, session := pong_control_session(t, 3)
+	s := session
+	// Ball.vel is a Vec2; force one component via a Vec2 source literal with a negative
+	// decimal to exercise the sign path of decode_fixed_source.
+	response := session_request(
+		&s,
+		`{"id":2,"cmd":"set","args":{"thing":"Ball","instance":0,"field":"vel","value":"Vec2(x=-0.5,y=1.5)"}}`,
+	)
+	testing.expect(t, strings.contains(response, `"ok":true`), response)
+
+	ball, ok := branch_row(&s, "Ball", 0)
+	testing.expect(t, ok, "the branch ball must resolve")
+	vel, _ := row_field(ball, "vel")
+	vec, is_vec := vel.(Vec2)
+	testing.expect(t, is_vec, "vel must stay a Vec2 column")
+	testing.expect_value(t, i64(vec.x), i64(fixed_neg(fixed_div(FIXED_ONE, to_fixed(2))))) // -0.5
+	testing.expect_value(t, i64(vec.y), i64(fixed_add(FIXED_ONE, fixed_div(FIXED_ONE, to_fixed(2))))) // 1.5
+}
+
+// A malformed value (a Vec2 literal whose component is non-numeric) fails with F18's
+// remedy-bearing error: the field name, its declared type, AND a sample source literal —
+// never a bare "does not decode" that left the agent guessing the wire form.
+@(test)
+test_control_set_decode_error_names_sample_literal :: proc(t: ^testing.T) {
+	_, session := pong_control_session(t, 3)
+	s := session
+	response := session_request(
+		&s,
+		`{"id":2,"cmd":"set","args":{"thing":"Ball","instance":0,"field":"pos","value":"Vec2(x=2.0,y=oops)"}}`,
+	)
+	testing.expect(t, strings.contains(response, `"ok":false`), "an undecodable value must refuse")
+	testing.expect(t, strings.contains(response, "field pos"), "the error must name the field")
+	testing.expect(t, strings.contains(response, "declared type Vec2"), "the error must name the declared type")
+	testing.expect(t, strings.contains(response, "Vec2(x=2.0,y=104.0)"), response)
+}
+
 // spawn mints a new instance on the branch through the ordinary tick-boundary
 // batch — the canonical population is untouched, and the minted Id is answered.
 @(test)

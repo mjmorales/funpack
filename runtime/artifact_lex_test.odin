@@ -5,6 +5,7 @@
 // count.
 package funpack_runtime
 
+import "core:strings"
 import "core:testing"
 
 // The primitive decoders read each field by the kind the caller knows from
@@ -42,6 +43,55 @@ test_primitive_decoders :: proc(t: ^testing.T) {
 	testing.expect(t, b)
 	_, not_bool := decode_bool("TRUE")
 	testing.expect(t, !not_bool)
+}
+
+// The §28 debug surfaces decode Fixed in HUMAN mode: a source-literal `110.0` lands on
+// the same Q32.32 bits a funpack literal would, decoded float-free through
+// fixed_from_decimal (F18), while a bare integer still reads as raw bits and the artifact
+// LOAD path (human=false) is untouched. This pins the F17/F18 round-trip: every value
+// write_source_fixed renders decodes back to the IDENTICAL bits via decode_fixed(human).
+@(test)
+test_decode_fixed_human_source_literal :: proc(t: ^testing.T) {
+	// Source-literal decimals decode to the literal's bits (not as raw bits).
+	whole, whole_ok := decode_fixed("152.0", true)
+	testing.expect(t, whole_ok)
+	testing.expect_value(t, whole, to_fixed(152))
+	half, half_ok := decode_fixed("0.5", true)
+	testing.expect(t, half_ok)
+	testing.expect_value(t, half, fixed_div(FIXED_ONE, to_fixed(2)))
+	neg, neg_ok := decode_fixed("-0.5", true)
+	testing.expect(t, neg_ok)
+	testing.expect_value(t, neg, fixed_neg(fixed_div(FIXED_ONE, to_fixed(2))))
+
+	// In human mode a bare integer is STILL raw Q32.32 bits — the dot discriminates, so
+	// an older raw payload keeps decoding alongside the new decimal spelling.
+	raw, raw_ok := decode_fixed("652835028992", true) // 152.0's bits
+	testing.expect(t, raw_ok)
+	testing.expect_value(t, raw, to_fixed(152))
+
+	// The load path (human=false) NEVER reads a decimal as a value — `152.0` is not a
+	// raw-bits integer, so it refuses rather than silently float-parsing (spec §2.3).
+	_, load_ok := decode_fixed("152.0")
+	testing.expect(t, !load_ok)
+
+	// Round-trip closure: write_source_fixed → decode_fixed(human) reproduces the bits
+	// for a battery spanning whole, dyadic-fraction, negative, and tiny-denominator values.
+	cases := []Fixed {
+		to_fixed(0),
+		to_fixed(1),
+		fixed_neg(to_fixed(70)),
+		fixed_div(FIXED_ONE, to_fixed(2)), // 0.5
+		fixed_div(FIXED_ONE, to_fixed(4)), // 0.25
+		fixed_add(to_fixed(104), fixed_div(FIXED_ONE, to_fixed(8))), // 104.125
+		Fixed(1), // smallest positive — 1 raw bit
+	}
+	for value in cases {
+		b := strings.builder_make(context.temp_allocator)
+		write_source_fixed(&b, value)
+		decoded, ok := decode_fixed(strings.to_string(b), true)
+		testing.expect(t, ok, strings.to_string(b))
+		testing.expect_value(t, decoded, value)
+	}
 }
 
 // The lead-line discipline (§2.1): a sub-record keyword is not a lead line, so a

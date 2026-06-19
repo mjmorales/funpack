@@ -206,7 +206,7 @@ TOOL_SPECS := []Tool_Spec{
 			{name = "field", json_type = "string", required = true, doc = "the field/column to overwrite"},
 			{name = "instance", json_type = "integer", required = false, doc = "the instance id of the row to set (defaults to 0)"},
 			{name = "thing", json_type = "string", required = true, doc = "the thing (table) declaring the field to force"},
-			{name = "value", json_type = "string", required = true, doc = "the new value, encoded against the field's declared type (artifact literal encoding)"},
+			{name = "value", json_type = "string", required = true, doc = "the new value as a source literal — the same spelling inspect_draw_list / inspect_state / inspect_signals render (a Fixed as a decimal '110.0', a vector as 'Vec2(x=2.0,y=104.0)'), so an observed value pastes straight back; a raw Q32.32 integer is also accepted"},
 		},
 	},
 	{
@@ -217,7 +217,7 @@ TOOL_SPECS := []Tool_Spec{
 		session_scoped = true,
 		args           = []Tool_Arg{
 			SESSION_ID_ARG,
-			{name = "fields", json_type = "object", required = false, doc = "field overrides keyed by field name, each encoded against the field's declared type; unspecified fields take the declared default"},
+			{name = "fields", json_type = "object", required = false, doc = "field overrides keyed by field name, each a source literal (a Fixed as '110.0', a vector as 'Vec2(x=2.0,y=104.0)') — the spelling the observe surfaces render; a raw Q32.32 integer is also accepted; unspecified fields take the declared default"},
 			{name = "thing", json_type = "string", required = true, doc = "the thing (table) to spawn an instance of"},
 		},
 	},
@@ -242,7 +242,7 @@ TOOL_SPECS := []Tool_Spec{
 		args           = []Tool_Arg{
 			SESSION_ID_ARG,
 			{name = "signal", json_type = "string", required = true, doc = "the signal type name to emit"},
-			{name = "value", json_type = "string", required = true, doc = "the signal payload, encoded as a record of the signal type (artifact literal encoding)"},
+			{name = "value", json_type = "string", required = true, doc = "the signal payload as a record source literal of the signal type (e.g. 'Goal(side=Side::Left)'); Fixed/vector fields take their decimal source spelling, the same the observe surfaces render; a raw Q32.32 integer is also accepted"},
 		},
 	},
 	{
