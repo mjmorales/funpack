@@ -41,10 +41,13 @@ resolve_bin() {
 bin="$(resolve_bin)" || fail "no funpack binary found — set FUNPACK_BIN to an absolute path, install with funpackctl, or put funpack on PATH"
 
 # A binary that predates the `mcp` verb exits on the unknown subcommand before the
-# JSON-RPC handshake; detect it from the subcommand list and name it instead of
-# letting the client see a bare -32000.
-ver="$("$bin" --version 2>&1 | head -n 1)"
-if ! "$bin" --help 2>&1 | grep -qw mcp; then
+# JSON-RPC handshake. Gate on `mcp --help` exiting cleanly — it is 0 only when the
+# subcommand exists and prints help without starting the stdio server, so it asserts
+# the subcommand specifically (a loose `--help | grep mcp` would falsely pass on a
+# binary whose help merely mentions "mcp"). Name the binary instead of letting the
+# client see a bare -32000. `version` (subcommand, not a `--version` flag) names it.
+ver="$("$bin" version 2>&1 | head -n 1)"
+if ! "$bin" mcp --help >/dev/null 2>&1; then
 	fail "resolved funpack at '$bin' (version ${ver:-unknown}) has no 'mcp' subcommand — it is below the floor that introduced it; install or link a newer funpack (funpackctl install && funpackctl link) or point FUNPACK_BIN at one"
 fi
 
