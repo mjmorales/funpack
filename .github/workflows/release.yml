@@ -1,71 +1,177 @@
-name: Release
+name: CI / Release
 
-# Conventional-commit auto-release on every push to main (mirrors blocko).
-# The `release` job derives the next semver from the commits since the latest
-# tag, prepends CHANGELOG.md, then commits + tags + pushes via the release App
-# (the App is a bypass actor on the protected `main` ruleset, so the
-# `chore(release) [skip ci]` commit pushes past the required odin/go checks
-# that never run on a [skip ci] commit). The [skip ci] marker also stops the
-# pushed release commit from re-triggering this workflow — no loop.
+# Single ordered pipeline (managed by OpenTofu — edit the source at
+# cloud-infra github/files/funpack-release.yml). Replaces the old THREE parallel
+# workflows (CI, Release, Plugin Release) that raced on every push to main.
 #
-# `build` then compiles the SINGLE funpack binary at the freshly-cut tag and
-# `bump-tap` rewrites the Homebrew formula:
-#   funpack — the consolidated compiler + runtime in one executable, built with
-#             FUNPACK_LIVE (links vendor:sdl2; needs SDL2 at runtime, declared as a
-#             Homebrew dependency). The two-binary split (funpack + funpack-live) is gone.
-# Native matrix runners per OS/arch (no cross-compile — SDL2 links natively per arch).
+# On a push to main the stages run as ONE gated chain:
+#   build -> lint -> test -> release -> build-binaries -> bump-tap
+# each job `needs:` the prior, so a failure at the head halts everything
+# downstream — nothing is cut, tagged, built, or published unless the tests and
+# lints pass first. On a pull_request only build + lint + test run.
 #
-# This is the BINARY release line (`v*`). One sibling line is versioned
-# independently: the Claude Code plugin under plugins/ on `plugin-v*`
-# (funpack-plugin-release.yml). The paths-ignore below + the `--match 'v*'` tag
-# scoping + the `:(exclude)` pathspecs keep the two from cutting each other's
-# releases.
-# Managed by OpenTofu (cloud-infra github/files/funpack-release.yml); edit the source there.
+# The `release` job cuts BOTH version lines in ONE job and ONE atomic push:
+#   - binary  v*         (CHANGELOG.md + VERSION)
+#   - plugin  plugin-v*  (plugins/** + .claude-plugin/**)
+# Each line analyses only its own path-scoped commits, so a push touching just
+# one line cuts only that line. Folding both into one push means the two can
+# NEVER race the way two separate workflows did.
+#
+# The release commits carry [skip ci], so the pushed chore(release) commits do
+# not re-trigger this workflow (no loop) and the required build/lint/test checks
+# never run on them — the release App (a bypass actor on the protected main
+# ruleset) pushes them past the required checks. github-actions[bot] cannot
+# bypass, which is why the push authenticates as the App via the App-token URL
+# and the checkout uses persist-credentials: false.
 
 on:
   push:
     branches: [main]
-    # Plugin-only changes cut their own line's release, not a binary one. The
-    # plugin workflow's `paths:` is scoped to exactly what's ignored here.
-    paths-ignore:
-      - 'plugins/**'
-      - '.claude-plugin/**'
+  pull_request:
 
 permissions:
-  contents: write   # cut the tag + create the release + upload assets
+  contents: read
 
 concurrency:
-  # Serialize releases so two quick main pushes can't race the tag/version.
-  group: funpack-release
-  cancel-in-progress: false
+  # All main pushes share one group with cancel-in-progress OFF, so two quick
+  # pushes serialize instead of racing the tag/version. PR runs cancel their own
+  # superseded runs.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
-  # arduino/setup-task has no Node 24 release yet; force it forward ahead of
-  # the runner default flipping (mirrors funpack-ci.yml).
+  # arduino/setup-task has no Node 24 release yet; force it forward ahead of the
+  # runner default flipping.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: dev-2026-05
+      - name: Prepare Odin flake retry wrapper
+        # The pinned Odin dev-2026-05 typechecker crashes nondeterministically
+        # (check_type.cpp:598 'tuple != nullptr', exit 133) before any work runs;
+        # identical trees pass on re-run. Retry ONCE on exit 133 only — every
+        # other exit code propagates unretried, so real failures never get a
+        # second shot. Remove when the pin moves past the upstream fix.
+        run: |
+          cat > "$RUNNER_TEMP/retry-odin.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          "$@"
+          code=$?
+          if [ "$code" -ne 133 ]; then exit "$code"; fi
+          echo "::warning::odin exited 133 (known dev-2026-05 typechecker flake) - retrying once"
+          exec "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/retry-odin.sh"
+      # The root aggregate verbs cover every package (cli, funpack, runtime,
+      # cmd/funpack), so CI never needs editing when the package layout changes —
+      # the Taskfile is the single source of truth. build type-checks the
+      # cmd/funpack entry package in BOTH define modes; the SDL arm is type-checked
+      # (odin check) but NOT linked, so no libsdl2 install is needed on the runner.
+      - name: Build (type-check)
+        run: '"$RUNNER_TEMP/retry-odin.sh" task build'
+
+  lint:
+    name: lint
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: dev-2026-05
+      - name: Prepare Odin flake retry wrapper
+        run: |
+          cat > "$RUNNER_TEMP/retry-odin.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          "$@"
+          code=$?
+          if [ "$code" -ne 133 ]; then exit "$code"; fi
+          echo "::warning::odin exited 133 (known dev-2026-05 typechecker flake) - retrying once"
+          exec "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/retry-odin.sh"
+      - name: Lint (vet + strict style)
+        run: '"$RUNNER_TEMP/retry-odin.sh" task lint'
+
+  test:
+    name: test
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: dev-2026-05
+      - name: Prepare Odin flake retry wrapper
+        run: |
+          cat > "$RUNNER_TEMP/retry-odin.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          "$@"
+          code=$?
+          if [ "$code" -ne 133 ]; then exit "$code"; fi
+          echo "::warning::odin exited 133 (known dev-2026-05 typechecker flake) - retrying once"
+          exec "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/retry-odin.sh"
+      - name: Test
+        run: '"$RUNNER_TEMP/retry-odin.sh" task test'
+
   release:
     name: cut version + tag
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # cut tags + create releases
     outputs:
-      skip: ${{ steps.bump.outputs.skip }}
-      new_version: ${{ steps.bump.outputs.new_version }}
-      tag: v${{ steps.bump.outputs.new_version }}
+      bin_skip: ${{ steps.binbump.outputs.skip }}
+      bin_version: ${{ steps.binbump.outputs.new_version }}
+      bin_tag: v${{ steps.binbump.outputs.new_version }}
+      plugin_skip: ${{ steps.pluginbump.outputs.skip }}
+      plugin_version: ${{ steps.pluginbump.outputs.new_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0 # full history for tag detection + changelog range
           # Don't persist the default GITHUB_TOKEN as a git auth header — the
-          # release push must authenticate as the release App (the ruleset
-          # bypass actor) via the App-token URL set in the push step. A
-          # persisted default-token header would win and the push would be
-          # rejected by the required odin/go checks.
+          # release push must authenticate as the release App (the ruleset bypass
+          # actor) via the App-token URL set in the push step. A persisted
+          # default-token header would win and the push would be rejected by the
+          # required build/lint/test checks.
           persist-credentials: false
 
-      - name: Determine version bump
-        id: bump
+      # ---- Binary line (v*) ----------------------------------------------------
+      - name: Determine binary version bump
+        id: binbump
         run: |
           # The latest BINARY tag is the authoritative current version. `--match
           # 'v*'` excludes the plugin line's `plugin-v*` tags so the two never
@@ -89,9 +195,8 @@ jobs:
             exit 0
           fi
 
-          # Bump type from conventional commits: `!`/BREAKING -> major,
-          # feat -> minor, fix/docs/refactor/perf/style/build -> patch.
-          # chore/ci/test alone -> no release.
+          # `!`/BREAKING -> major, feat -> minor,
+          # fix/docs/refactor/perf/style/build -> patch. chore/ci/test -> none.
           BUMP="none"
           if echo "$COMMITS" | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
             BUMP="major"
@@ -115,15 +220,14 @@ jobs:
           NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
-          echo "Bump: $BUMP ($CURRENT -> $NEW_VERSION)"
+          echo "Binary bump: $BUMP ($CURRENT -> $NEW_VERSION)"
 
-      - name: Generate changelog
-        id: changelog
-        if: steps.bump.outputs.skip != 'true'
+      - name: Generate binary changelog
+        id: binlog
+        if: steps.binbump.outputs.skip != 'true'
         run: |
-          LATEST_TAG="${{ steps.bump.outputs.latest_tag }}"
+          LATEST_TAG="${{ steps.binbump.outputs.latest_tag }}"
           if [ "$LATEST_TAG" = "v0.0.0" ]; then RANGE="HEAD"; else RANGE="${LATEST_TAG}..HEAD"; fi
-          # Match the bump step: keep plugin commits out of the binary changelog.
           EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
 
           {
@@ -150,96 +254,234 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Update CHANGELOG.md
-        if: steps.bump.outputs.skip != 'true'
+      - name: Update CHANGELOG.md + VERSION (binary)
+        if: steps.binbump.outputs.skip != 'true'
         env:
-          # Pass via env (not ${{ }} shell interpolation) so backticks, $(),
-          # and other shell-active characters in commit subjects stay literal.
-          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
-          CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+          # Pass via env (not ${{ }} shell interpolation) so backticks, $(), and
+          # other shell-active characters in commit subjects stay literal.
+          NEW_VERSION: ${{ steps.binbump.outputs.new_version }}
+          CHANGELOG: ${{ steps.binlog.outputs.changelog }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
           ENTRY=$(printf "## [%s] - %s\n\n%s" "$NEW_VERSION" "$DATE" "$CHANGELOG")
           INSERT_LINE=$(grep -n "^## \[" CHANGELOG.md | head -1 | cut -d: -f1)
           if [ -n "$INSERT_LINE" ]; then
             head -n $((INSERT_LINE - 1)) CHANGELOG.md > CHANGELOG.tmp
-            # Trailing blank line guarantees one empty line before the next
-            # version block (cat -s below collapses any accidental doubles).
             printf '%s\n\n' "$ENTRY" >> CHANGELOG.tmp
             tail -n +"${INSERT_LINE}" CHANGELOG.md >> CHANGELOG.tmp
           else
             cp CHANGELOG.md CHANGELOG.tmp
             printf '\n%s\n' "$ENTRY" >> CHANGELOG.tmp
           fi
-          # Normalize spacing: collapse any run of blank lines to exactly one.
           cat -s CHANGELOG.tmp > CHANGELOG.md
           rm -f CHANGELOG.tmp
+          # The repo-root VERSION file is the committed mirror of the cut tag that
+          # the funpack binary embeds at compile time (#load, funpack/version.odin)
+          # so `funpack version` reports the release it was built at. Written ONLY
+          # here; the tag stays the source of truth and this keeps it in lockstep.
+          printf '%s\n' "$NEW_VERSION" > VERSION
 
-      - name: Write VERSION mirror
-        # The repo-root VERSION file is the committed mirror of the cut tag that
-        # the funpack binary embeds at compile time (#load, funpack/version.odin)
-        # so `funpack version` reports the release it was built at. It is written
-        # ONLY here — humans never hand-edit it; the tag stays the source of
-        # truth and this keeps the file in lockstep. Committed in the same
-        # `chore(release)` commit below, so the build job (which checks out the
-        # cut tag) embeds the matching version.
-        if: steps.bump.outputs.skip != 'true'
+      # ---- Plugin line (plugin-v*) --------------------------------------------
+      - name: Determine plugin version bump
+        id: pluginbump
+        run: |
+          # plugin.json is the authoritative current plugin version.
+          CURRENT=$(grep '"version"' plugins/funpack/.claude-plugin/plugin.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          # Latest PLUGIN tag (plugin-v*) bounds the changelog range; the binary
+          # v* tags are invisible to this match, keeping the lines independent.
+          LATEST_TAG=$(git describe --tags --abbrev=0 --match 'plugin-v*' 2>/dev/null || echo "")
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          # Analyse only commits that TOUCHED the plugin artifact paths.
+          PATHS=(plugins .claude-plugin)
+          if [ -z "$LATEST_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- "${PATHS[@]}")
+          else
+            COMMITS=$(git log --pretty=format:"%s%n%b" "${LATEST_TAG}..HEAD" -- "${PATHS[@]}")
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BUMP="none"
+          if echo "$COMMITS" | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+            BUMP="minor"
+          elif echo "$COMMITS" | grep -qE "^(fix|docs|refactor|perf|style|build)(\(.+\))?:"; then
+            BUMP="patch"
+          fi
+
+          if [ "$BUMP" = "none" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Plugin bump: $BUMP ($CURRENT -> $NEW_VERSION)"
+
+      - name: Generate plugin changelog
+        id: pluginlog
+        if: steps.pluginbump.outputs.skip != 'true'
+        run: |
+          LATEST_TAG="${{ steps.pluginbump.outputs.latest_tag }}"
+          if [ -z "$LATEST_TAG" ]; then RANGE="HEAD"; else RANGE="${LATEST_TAG}..HEAD"; fi
+          PATHS=(plugins .claude-plugin)
+
+          {
+            echo "changelog<<CHANGELOG_EOF"
+
+            BREAKING=$(git log --pretty=format:"%s" "$RANGE" -- "${PATHS[@]}" | grep -iE "^[a-z]+(\(.+\))?!:" || true)
+            BREAKING_BODY=$(git log --pretty=format:"%b" "$RANGE" -- "${PATHS[@]}" | grep -A1 "BREAKING CHANGE:" | grep -v "^--$" || true)
+            if [ -n "$BREAKING" ] || [ -n "$BREAKING_BODY" ]; then
+              echo "### Breaking Changes"
+              [ -n "$BREAKING" ] && echo "$BREAKING" | sed 's/^/- /'
+              [ -n "$BREAKING_BODY" ] && echo "$BREAKING_BODY" | sed 's/^/- /'
+              echo ""
+            fi
+
+            FEATURES=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- "${PATHS[@]}" | grep -E "^- feat" || true)
+            if [ -n "$FEATURES" ]; then echo "### Features"; echo "$FEATURES"; echo ""; fi
+
+            FIXES=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- "${PATHS[@]}" | grep -E "^- fix" || true)
+            if [ -n "$FIXES" ]; then echo "### Fixes"; echo "$FIXES"; echo ""; fi
+
+            OTHER=$(git log --pretty=format:"- %s (%h)" "$RANGE" -- "${PATHS[@]}" | grep -E "^- (docs|refactor|perf|style|build)" || true)
+            if [ -n "$OTHER" ]; then echo "### Other"; echo "$OTHER"; echo ""; fi
+
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Stamp plugin version + CHANGELOG
+        if: steps.pluginbump.outputs.skip != 'true'
         env:
-          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
-        run: printf '%s\n' "$NEW_VERSION" > VERSION
+          NEW_VERSION: ${{ steps.pluginbump.outputs.new_version }}
+          CHANGELOG: ${{ steps.pluginlog.outputs.changelog }}
+        run: |
+          # plugin.json has one "version"; marketplace.json has two (top-level +
+          # the plugins[] entry). A global replace stamps all of them.
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/g" plugins/funpack/.claude-plugin/plugin.json
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/g" .claude-plugin/marketplace.json
+          CL=plugins/funpack/CHANGELOG.md
+          [ -f "$CL" ] || printf '# Changelog\n\nAll notable changes to the funpack Claude Code plugin.\n\n' > "$CL"
+          DATE=$(date -u +%Y-%m-%d)
+          ENTRY=$(printf "## [%s] - %s\n\n%s" "$NEW_VERSION" "$DATE" "$CHANGELOG")
+          INSERT_LINE=$(grep -n "^## \[" "$CL" | head -1 | cut -d: -f1)
+          if [ -n "$INSERT_LINE" ]; then
+            head -n $((INSERT_LINE - 1)) "$CL" > "$CL.tmp"
+            printf '%s\n\n' "$ENTRY" >> "$CL.tmp"
+            tail -n +"${INSERT_LINE}" "$CL" >> "$CL.tmp"
+          else
+            cp "$CL" "$CL.tmp"
+            printf '\n%s\n' "$ENTRY" >> "$CL.tmp"
+          fi
+          cat -s "$CL.tmp" > "$CL"
+          rm -f "$CL.tmp"
 
+      # ---- Single atomic push of both lines ------------------------------------
       - name: Generate App token
         id: app-token
-        # Only real releases need to push past the protected `main` ruleset
-        # (the release commit carries [skip ci], so the required odin/go checks
-        # never run on it — github-actions[bot] can't bypass that, but the
-        # release App can). Skipped runs never reach this step, so a no-op
-        # push needs no secrets.
-        if: steps.bump.outputs.skip != 'true'
+        # Only a real release pushes past the protected ruleset; a no-op run
+        # (both lines skip) never needs the App secret.
+        if: steps.binbump.outputs.skip != 'true' || steps.pluginbump.outputs.skip != 'true'
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      - name: Commit, tag, and push
-        if: steps.bump.outputs.skip != 'true'
+      - name: Commit, tag, and push (both lines, one push)
+        if: steps.binbump.outputs.skip != 'true' || steps.pluginbump.outputs.skip != 'true'
         env:
-          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          BIN_SKIP: ${{ steps.binbump.outputs.skip }}
+          BIN_VERSION: ${{ steps.binbump.outputs.new_version }}
+          PLUGIN_SKIP: ${{ steps.pluginbump.outputs.skip }}
+          PLUGIN_VERSION: ${{ steps.pluginbump.outputs.new_version }}
           TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git"
-          git add CHANGELOG.md VERSION
-          if git diff --cached --quiet; then
-            echo "CHANGELOG and VERSION already current, skipping commit."
-          else
-            git commit -m "chore(release): v${NEW_VERSION} [skip ci]"
+
+          # Commit each non-skipped line in order (binary first, then plugin).
+          # Track whether each commit actually landed so the post-rebase tagging
+          # addresses the right commit even if a line's files were already current.
+          BIN_COMMITTED=false
+          if [ "$BIN_SKIP" != "true" ]; then
+            git add CHANGELOG.md VERSION
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(release): v${BIN_VERSION} [skip ci]"
+              BIN_COMMITTED=true
+            fi
           fi
-          # Absorb any commit the plugin release landed first (disjoint files ->
-          # clean rebase), THEN tag so the tag points at the rebased commit that
-          # actually lands on main, then push the binary commit + tag.
+          PLUGIN_COMMITTED=false
+          if [ "$PLUGIN_SKIP" != "true" ]; then
+            git add .claude-plugin/marketplace.json plugins/funpack/.claude-plugin/plugin.json plugins/funpack/CHANGELOG.md
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(plugin-release): plugin-v${PLUGIN_VERSION} [skip ci]"
+              PLUGIN_COMMITTED=true
+            fi
+          fi
+
+          # Absorb anything that landed on main since checkout (rare — main pushes
+          # serialize via the concurrency group; this only catches a direct human
+          # push mid-run). Disjoint files -> clean rebase. Tag AFTER the rebase so
+          # the tags point at the commits that actually land.
           git fetch origin main
           git rebase origin/main
-          git tag "v${NEW_VERSION}"
+
+          if [ "$BIN_COMMITTED" = true ] && [ "$PLUGIN_COMMITTED" = true ]; then
+            git tag "v${BIN_VERSION}" HEAD~1
+            git tag "plugin-v${PLUGIN_VERSION}" HEAD
+          elif [ "$BIN_COMMITTED" = true ]; then
+            git tag "v${BIN_VERSION}" HEAD
+          elif [ "$PLUGIN_COMMITTED" = true ]; then
+            git tag "plugin-v${PLUGIN_VERSION}" HEAD
+          fi
+
           git push origin main --tags
 
-      - name: Create GitHub Release
-        if: steps.bump.outputs.skip != 'true'
+      - name: Create binary GitHub release
+        if: steps.binbump.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.bump.outputs.new_version }}
-          name: v${{ steps.bump.outputs.new_version }}
-          body: ${{ steps.changelog.outputs.changelog }}
+          tag_name: v${{ steps.binbump.outputs.new_version }}
+          name: v${{ steps.binbump.outputs.new_version }}
+          body: ${{ steps.binlog.outputs.changelog }}
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
-  build:
+      - name: Create plugin GitHub release
+        if: steps.pluginbump.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: plugin-v${{ steps.pluginbump.outputs.new_version }}
+          name: plugin-v${{ steps.pluginbump.outputs.new_version }}
+          body: ${{ steps.pluginlog.outputs.changelog }}
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+  build-binaries:
     name: build ${{ matrix.os }}-${{ matrix.arch }}
     needs: release
-    if: needs.release.outputs.skip != 'true'
+    if: needs.release.outputs.bin_skip != 'true'
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write   # attach assets to the release
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -253,9 +495,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # Build the freshly-cut tag, not the main HEAD the push event points
-          # at (under a branch trigger GITHUB_REF_NAME is `main`, not the tag).
-          ref: ${{ needs.release.outputs.tag }}
+          # Build the freshly-cut binary tag, not the main HEAD.
+          ref: ${{ needs.release.outputs.bin_tag }}
       - uses: laytan/setup-odin@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -268,11 +509,6 @@ jobs:
             brew install sdl2
           fi
       - name: Prepare Odin flake retry wrapper
-        # The pinned Odin dev-2026-05 typechecker crashes nondeterministically
-        # (check_type.cpp 'tuple != nullptr', exit 133) before codegen; identical
-        # trees pass on re-run. Retry ONCE on exit 133 only — every other code
-        # propagates unretried. Remove when the pin moves past the upstream fix.
-        # (mirrors funpack-ci.yml)
         run: |
           cat > "$RUNNER_TEMP/retry-odin.sh" <<'SH'
           #!/usr/bin/env bash
@@ -289,7 +525,7 @@ jobs:
         run: '"$RUNNER_TEMP/retry-odin.sh" odin build . -define:FUNPACK_LIVE=true -out:funpack'
       - name: Package
         env:
-          TAG: ${{ needs.release.outputs.tag }}
+          TAG: ${{ needs.release.outputs.bin_tag }}
         run: |
           dist="funpack-${TAG}-${{ matrix.os }}-${{ matrix.arch }}"
           mkdir -p "$dist"
@@ -300,24 +536,24 @@ jobs:
       - name: Attach to the release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.release.outputs.tag }}
+          tag_name: ${{ needs.release.outputs.bin_tag }}
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true
 
-  # After every platform tarball is attached, hash them and rewrite the
-  # Homebrew formula (version + per-platform url/sha256) in mjmorales/homebrew-tap,
-  # pushing the bump directly to its main. HOMEBREW_TAP_TOKEN is the fine-grained
-  # PAT (managed in cloud-infra workflows.tf, shared with claude-env/keel).
+  # After every platform tarball is attached, hash them and rewrite the Homebrew
+  # formula (version + per-platform url/sha256) in mjmorales/homebrew-tap, pushing
+  # the bump directly to its main. HOMEBREW_TAP_TOKEN is the fine-grained PAT
+  # (managed in cloud-infra workflows.tf, shared with claude-env/keel).
   bump-tap:
     name: bump homebrew formula
-    needs: [release, build]
-    if: needs.release.outputs.skip != 'true'
+    needs: [release, build-binaries]
+    if: needs.release.outputs.bin_skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Resolve version from the cut tag
         id: ver
         env:
-          TAG: ${{ needs.release.outputs.tag }}
+          TAG: ${{ needs.release.outputs.bin_tag }}
         run: |
           {
             echo "tag=$TAG"
@@ -327,7 +563,7 @@ jobs:
         id: sha
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.release.outputs.tag }}
+          TAG: ${{ needs.release.outputs.bin_tag }}
         run: |
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.tar.gz' -D dist
           for plat in macos-arm64 linux-arm64 linux-x64; do
