@@ -447,6 +447,8 @@ session_request :: proc(
 		return observe_replay_behavior(s, id, args, allocator)
 	case "draw_list":
 		return observe_draw_list(s, id, args, allocator)
+	case "state":
+		return observe_state(s, id, args, allocator)
 	case "screenshot":
 		return observe_screenshot(s, id, args, allocator)
 	case "load", "run", "pause", "step", "rewind", "reset", "status":
@@ -733,6 +735,99 @@ observe_diff :: proc(
 	}
 	strings.write_string(&b, "]}}")
 	return strings.to_string(b)
+}
+
+// session_head_tick is the latest committed tick ordinal on a lineage — the default
+// `state` reads when no `tick` is supplied. Canonical's head is the last retained
+// version; a live branch's head is its logical tip (the §28 §2 forked position).
+session_head_tick :: proc(s: ^Debug_Session, lineage: Read_Lineage) -> int {
+	if lineage == .Branch && s.has_branch {
+		return branch_tip_tick(s)
+	}
+	return len(s.versions) - 1
+}
+
+// observe_state lists the committed instances of one thing at a tick — the §28 §1
+// read-only STATE inspector (F20). It answers the obvious first debug question, "what
+// instances of thing T exist at tick N, and what are their field values," which the
+// other observe surfaces left unanswerable: draw_list shows what was DRAWN, signals
+// what was ROUTED, diff what CHANGED — none show what state simply EXISTS, so an
+// existence/value check previously had to abuse control_set (a fork-causing WRITE) as a
+// read. This is a pure read of the retained COW chain (no fork, no instrumentation),
+// the natural complement to draw_list and signals. `tick` defaults to the lineage head;
+// an optional `instance` filters to one row; the field values render in the F17 legible
+// projection (a Fixed as `96.0`, a Vec2 as `Vec2(x=96.0,y=90.0)`), keyed by field name.
+@(private = "file")
+observe_state :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	args: json.Object,
+	allocator := context.allocator,
+) -> string {
+	thing, has_thing := json_string_field(args, "thing")
+	if !has_thing {
+		return error_response(id, "state", "missing args.thing", allocator)
+	}
+	lineage, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return error_response(id, "state", "unknown branch — checkout an existing lineage", allocator)
+	}
+	tick, has_tick := json_int_field(args, "tick")
+	target_tick := has_tick ? int(tick) : session_head_tick(s, lineage)
+	version, ver_ok := session_version_on(s, lineage, target_tick)
+	if !ver_ok {
+		return error_response(id, "state", "tick out of range", allocator)
+	}
+	mutable := version
+	table := version_find_table(&mutable, thing)
+	if table == nil {
+		return error_response(id, "state", "unknown thing", allocator)
+	}
+	instance, has_instance := json_int_field(args, "instance")
+	b := strings.builder_make(allocator)
+	ok_response_open(&b, id, "state")
+	fmt.sbprintf(&b, "{{\"tick\":%d,\"thing\":", target_tick)
+	write_json_string(&b, thing)
+	strings.write_string(&b, ",\"instances\":[")
+	wrote := 0
+	for row in table.rows {
+		if has_instance && row.id.raw != Thing_Id(instance) {
+			continue
+		}
+		if wrote > 0 {
+			strings.write_byte(&b, ',')
+		}
+		wrote += 1
+		fmt.sbprintf(&b, "{{\"id\":%d,\"fields\":", row.id.raw)
+		write_state_fields(&b, row.fields, allocator)
+		strings.write_byte(&b, '}')
+	}
+	strings.write_string(&b, "]}}")
+	return strings.to_string(b)
+}
+
+// write_state_fields renders one row's blackboard as a JSON object keyed by field name
+// (sorted — the deterministic order), each value the legible §28 projection. Distinct
+// from write_encoded_blackboard's single `Thing(field=val,…)` string: a keyed object is
+// what a reader actually wants from a state dump (address a field by name), while the
+// blackboard string is the round-trippable control-payload form.
+@(private = "file")
+write_state_fields :: proc(
+	b: ^strings.Builder,
+	fields: map[string]Field_Value,
+	allocator := context.allocator,
+) {
+	strings.write_byte(b, '{')
+	names := sorted_blackboard_names(fields, allocator)
+	for name, i in names {
+		if i > 0 {
+			strings.write_byte(b, ',')
+		}
+		write_json_string(b, name)
+		strings.write_byte(b, ':')
+		write_encoded_field_value(b, fields[name], allocator)
+	}
+	strings.write_byte(b, '}')
 }
 
 // diff_table_json renders one table's delta between two committed row sets, or ""

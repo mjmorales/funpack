@@ -141,6 +141,56 @@ test_introspect_replay_behavior_purity :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
+// The state observe lists a thing's committed instances with their field values — the
+// read-only state inspector (F20), the complement to draw_list/signals/diff. It reads a
+// committed version with no fork and no re-fold; the field values render in the legible
+// projection (a Fixed `pos` as `2.0`, a record verbatim), keyed by sorted field name.
+// The full envelope is pinned: state is a contract surface, not styling.
+@(test)
+test_introspect_state_lists_committed_instance :: proc(t: ^testing.T) {
+	_, session := fixture_session(t, 2)
+	s := session
+	response := session_request(&s, `{"id":5,"cmd":"state","args":{"thing":"Hero","tick":1}}`)
+	expected :=
+		`{"v":1,"id":5,"ok":true,"cmd":"state","result":{"tick":1,"thing":"Hero","instances":[` +
+		`{"id":0,"fields":{"home":"Coord(v=5)","pos":"2.0","score":"0","stats":"Stats(hp=10,mana=4)"}}]}}`
+	testing.expect_value(t, response, expected)
+}
+
+// state defaults `tick` to the lineage head when omitted, and refuses an unknown thing
+// with a Session-class error rather than a fabricated empty list — the existence question
+// gets a real answer, no longer requiring an abuse of control_set (a write) to probe a read.
+@(test)
+test_introspect_state_default_tick_and_unknown_thing :: proc(t: ^testing.T) {
+	_, session := fixture_session(t, 3)
+	s := session
+	// Omitted tick reads the head (tick 2 of a 3-tick run): pos has advanced to 3.0.
+	head := session_request(&s, `{"id":6,"cmd":"state","args":{"thing":"Hero"}}`)
+	testing.expect(t, strings.contains(head, `"ok":true`), head)
+	testing.expect(t, strings.contains(head, `"tick":2`), "an omitted tick reads the lineage head")
+	testing.expect(t, strings.contains(head, `"pos":"3.0"`), head)
+	// An unknown thing refuses.
+	unknown := session_request(&s, `{"id":7,"cmd":"state","args":{"thing":"Nope"}}`)
+	testing.expect(t, strings.contains(unknown, `"ok":false`), "an unknown thing must refuse")
+	testing.expect(t, strings.contains(unknown, "unknown thing"), unknown)
+}
+
+// state filters to one row when `instance` is supplied — pong runs two Paddles, so the
+// filter narrows a multi-instance table to the addressed id (the per-instance read the
+// debugger reaches for after seeing the full list).
+@(test)
+test_introspect_state_instance_filter :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+	all := session_request(&s, `{"id":8,"cmd":"state","args":{"thing":"Paddle","tick":0}}`)
+	testing.expect(t, strings.contains(all, `"ok":true`), all)
+	testing.expect(t, strings.contains(all, `"id":0`), "both paddles listed")
+	testing.expect(t, strings.contains(all, `"id":1`), "both paddles listed")
+	one := session_request(&s, `{"id":9,"cmd":"state","args":{"thing":"Paddle","tick":0,"instance":1}}`)
+	testing.expect(t, strings.contains(one, `"id":1`), one)
+	testing.expect(t, !strings.contains(one, `"id":0`), "the instance filter must exclude the other paddle")
+}
+
 // golden_pong_session opens an observe session over the EXACT golden pong run
 // (the committed acceptance script) — the shared opener for the pong-backed
 // observe tests and the digest-pin acceptance.

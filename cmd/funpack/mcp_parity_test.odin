@@ -2,7 +2,7 @@
 // per-family test covers, expressed as living spec over the REAL framed transport
 // (serve_mcp_connection + the production mcp_jsonrpc_handler), not an arm shortcut:
 //
-//   1. tools/list advertises the WHOLE 45-tool surface — the §28 session tools AND
+//   1. tools/list advertises the WHOLE 46-tool surface — the §28 session tools AND
 //      the server-native (oneshot / docs-health / session-lifecycle) tools — each as
 //      a named entry carrying a well-formed object inputSchema. Each family pins its
 //      own list membership in its own test; this pins the UNION in ONE place over the
@@ -96,18 +96,18 @@ parity_stage_fixture :: proc(t: ^testing.T, name: string) -> (path: string, ok: 
 // group AND the server-native group — and each is a named
 // entry carrying a well-formed object inputSchema. A family unwired from the projection
 // (or a tool dropped from the contract) makes its name absent here. The expected set is
-// the closed 45-tool union; a contract that grows the surface without extending this
+// the closed 46-tool union; a contract that grows the surface without extending this
 // list trips the count assertion, forcing the list to track the real surface.
 @(test)
 test_parity_tools_list_advertises_full_surface :: proc(t: ^testing.T) {
-	// The full 45-tool surface, grouped by family for legibility. This is the union of
+	// The full 46-tool surface, grouped by family for legibility. This is the union of
 	// every family's own list membership, pinned here in one place.
 	expected := []string {
 		// §28 time-travel
 		"time_load", "time_run", "time_pause", "time_step", "time_rewind", "time_reset", "time_status",
 		// §28 inspect / observe
 		"inspect_signals", "inspect_pipeline", "inspect_trace", "inspect_diff",
-		"inspect_replay_behavior", "inspect_draw_list", "inspect_screenshot",
+		"inspect_replay_behavior", "inspect_draw_list", "inspect_state", "inspect_screenshot",
 		// §28 control
 		"control_inject_input", "control_set", "control_spawn", "control_despawn",
 		"control_emit", "control_reload", "control_branch", "control_checkout",

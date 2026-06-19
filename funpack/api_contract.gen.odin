@@ -57,6 +57,7 @@ CMD_TRACE :: "trace"
 CMD_DIFF :: "diff"
 CMD_REPLAY_BEHAVIOR :: "replay_behavior"
 CMD_DRAW_LIST :: "draw_list"
+CMD_STATE :: "state"
 CMD_SCREENSHOT :: "screenshot"
 
 // group "self_heal" (class observe)
@@ -349,6 +350,20 @@ TOOL_SPECS := []Tool_Spec{
 		args           = []Tool_Arg{
 			SESSION_ID_ARG,
 			{name = "tick", json_type = "integer", required = true, doc = "the committed tick whose §20 draw-list to dump (the deterministic, always-serving render projection)"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "inspect_state",
+		command        = "state",
+		group          = "inspect",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "instance", json_type = "integer", required = false, doc = "an optional instance id to filter to one row (default: every instance)"},
+			{name = "thing", json_type = "string", required = true, doc = "the thing (table/singleton) whose committed instances to list"},
+			{name = "tick", json_type = "integer", required = false, doc = "the committed tick to read state at (default: the lineage head)"},
 			BRANCH_ARG,
 		},
 	},
