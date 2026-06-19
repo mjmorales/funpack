@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.11.0] - 2026-06-19
+
+### Features
+- feat(mcp): inspect_screenshot writes PNG to disk, returns a path not base64 (2790c7f)
+
 ## [0.10.3] - 2026-06-19
 
 ## [0.10.2] - 2026-06-19
