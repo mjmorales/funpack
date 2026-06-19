@@ -280,6 +280,17 @@ jobs:
           # so `funpack version` reports the release it was built at. Written ONLY
           # here; the tag stays the source of truth and this keeps it in lockstep.
           printf '%s\n' "$NEW_VERSION" > VERSION
+          # The embedded docs corpus stamps the funpack version it was generated at,
+          # and the binary #loads it from cmd/funpack/mcp/corpus/manifest.json. Restamp
+          # it here so the tagged binary never embeds a corpus from an older version
+          # (ADR 2026-06-19-corpus-regen-rides-version-bump / FRICTION F15). Only the
+          # version stamp moves: the byte/hash corpus-pin gate already proved the shard
+          # CONTENT current on the feat commits, and a full `task docs-regen` would need
+          # a FUNPACK_LIVE build + SDL2 on this runner (and the v* tag does not exist yet
+          # when gen-corpus would run, so spec_ref could not advance anyway), so a sed is
+          # the equivalent, SDL-free path. The in-repo parity test
+          # (test_corpus_pin_version_matches_compiler) is the safety net behind this.
+          sed -i "s/\"funpack_version\": \"[^\"]*\"/\"funpack_version\": \"${NEW_VERSION}\"/" cmd/funpack/mcp/corpus/manifest.json
 
       # ---- Plugin line (plugin-v*) --------------------------------------------
       - name: Determine plugin version bump
@@ -420,7 +431,9 @@ jobs:
           # addresses the right commit even if a line's files were already current.
           BIN_COMMITTED=false
           if [ "$BIN_SKIP" != "true" ]; then
-            git add CHANGELOG.md VERSION
+            # Stage the corpus restamp alongside VERSION so it rides this same
+            # chore(release) commit (ADR 2026-06-19-corpus-regen-rides-version-bump).
+            git add CHANGELOG.md VERSION cmd/funpack/mcp/corpus/manifest.json
             if ! git diff --cached --quiet; then
               git commit -m "chore(release): v${BIN_VERSION} [skip ci]"
               BIN_COMMITTED=true
