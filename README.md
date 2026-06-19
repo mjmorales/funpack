@@ -17,7 +17,8 @@ single executable ([spec §29](spec/29-architecture-governance.md)):
   versioned **Index Contract**. A pure `source → artifact` function: no clock, no database,
   no network, no mutable cross-run state — bit-identical by construction.
 - **`funpack warden`** — the governance *sub-toolchain* and *ethos*, not a separate binary.
-  A pure projection of the index funpack already emitted (`find`/`holes`/`debt`/`graph`),
+  A pure projection of the index funpack already emitted
+  (`find`/`holes`/`probes`/`debt`/`graph`/`tags`/`pipeline`),
   plus the discipline the directives and gates enforce. No clock, no authored state; it
   reports, the agent edits, recompilation re-projects — it never writes source. General
   swarm orchestration (a stateful task DB, leases, dispatch) is the operator's agent
