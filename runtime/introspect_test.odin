@@ -285,6 +285,39 @@ test_introspect_signals_routed_goal :: proc(t: ^testing.T) {
 	testing.expect(t, found, "the golden pong run must route at least one Goal signal")
 }
 
+// A render command whose center-anchored extent crosses the logical bounds is NOT
+// culled by the draw-list projection (F16). The deterministic draw-list is the COMPLETE,
+// viewport-independent render output — culling it would be a determinism break, and the
+// projection carries no bounds logic at all. Forcing the Ball's center off the left edge
+// via a control set (its 3×3 rect extent then crosses x=0), the draw_list still carries
+// the Ball's Rect at the out-of-bounds `at`. This closes F16's open sub-question — a
+// missing band was NEVER a projection drop — and pins the no-cull invariant against a
+// future regression. It also exercises the F16–F20 loop end to end: the set takes a
+// source literal (F18), the draw-list `at` reads as a decimal (F17).
+@(test)
+test_draw_list_keeps_out_of_bounds_rect :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+	set := session_request(
+		&s,
+		`{"id":1,"cmd":"set","args":{"thing":"Ball","instance":0,"field":"pos","value":"Vec2(x=-1.0,y=60.0)"}}`,
+	)
+	testing.expect(t, strings.contains(set, `"ok":true`), set)
+
+	tip := branch_tip_tick(&s)
+	b := strings.builder_make()
+	strings.write_string(&b, `{"id":2,"cmd":"draw_list","args":{"branch":"branch","tick":`)
+	strings.write_int(&b, tip)
+	strings.write_string(&b, `}}`)
+	response := session_request(&s, strings.to_string(b))
+	testing.expect(t, strings.contains(response, `"ok":true`), response)
+	testing.expect(
+		t,
+		strings.contains(response, "Rect(at=Vec2(x=-1.0,y=60.0)"),
+		"the out-of-bounds Ball rect must survive the draw-list projection (no culling)",
+	)
+}
+
 // The draw-list observe dumps the §20 render projection of a committed tick —
 // pong's paddles/ball Rects and the score Text, re-projected post-hoc.
 @(test)
