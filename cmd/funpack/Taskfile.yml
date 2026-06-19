@@ -50,4 +50,4 @@ tasks:
   docs-check:
     desc: Run the corpus-pin drift gate (regenerate in-memory, byte/hash-compare against the committed shards)
     cmds:
-      - odin test . -define:ODIN_TEST_NAMES=main.test_corpus_pin_shards_byte_match,main.test_corpus_pin_per_source_hashes,main.test_corpus_pin_manifest_section_counts,main.test_corpus_pin_mutated_hash_detected_as_drift
+      - odin test . -define:ODIN_TEST_NAMES=main.test_corpus_pin_shards_byte_match,main.test_corpus_pin_per_source_hashes,main.test_corpus_pin_manifest_section_counts,main.test_corpus_pin_mutated_hash_detected_as_drift,main.test_corpus_pin_version_matches_compiler

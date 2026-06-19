@@ -244,6 +244,44 @@ test_corpus_pin_mutated_hash_detected_as_drift :: proc(t: ^testing.T) {
 	testing.expectf(t, len(none) == 0, "identical hash maps reported %d drift(s)", len(none))
 }
 
+// test_corpus_pin_version_matches_compiler is the release-parity gate (dogfood
+// FRICTION F15): the embedded corpus must carry a funpack_version AND it must equal the
+// in-process funpack_version() the binary compiles as. The byte/hash pins above isolate
+// CONTENT from the version (they inject the committed spec_ref so a regen is
+// content-only), so a binary can pass them while embedding a corpus stamped at an OLDER
+// version — the silent skew where a binary ships a corpus generated against an earlier
+// release (the F15 incident). This asserts the same equality the runtime `health` drift
+// detector (docs_detect_drift) computes, turning the silent ship-time lag into a
+// `task test` failure so a binary cannot ship
+// embedding a corpus from an older version. It needs only the embedded manifest + the
+// in-process version, so it runs ALWAYS (no source trees — hermetic-safe, like the
+// mutated-hash control), which is what makes it a genuine release gate.
+@(test)
+test_corpus_pin_version_matches_compiler :: proc(t: ^testing.T) {
+	committed, manifest_ok := load_manifest(context.temp_allocator)
+	testing.expect(t, manifest_ok, "embedded corpus manifest failed to parse")
+	if !manifest_ok {
+		return
+	}
+
+	// A corpus with an empty funpack_version makes docs_detect_drift report a vacuous
+	// no-drift; require the stamp explicitly so a stampless corpus cannot slip the gate.
+	testing.expect(
+		t,
+		strings.trim_space(committed.funpack_version) != "",
+		"embedded corpus manifest carries no funpack_version stamp",
+	)
+
+	drift := docs_detect_drift(committed, context.temp_allocator)
+	testing.expectf(
+		t,
+		!drift.drift,
+		"embedded docs corpus version %q != compiler version %q — this binary would ship a stale corpus; run `task docs-regen` and rebuild so the corpus ships in lockstep with its binary (FRICTION F15)",
+		drift.corpus_version,
+		drift.compiler_version,
+	)
+}
+
 // diff_hash_maps returns the roots whose hashes differ between two source-hash maps
 // — the comparison the per-source pin performs. A root present in want but missing
 // from got is reported too (a dropped source root is drift). Allocated in `allocator`.
