@@ -5,13 +5,13 @@
   "owner": {
     "name": "Manuel Morales"
   },
-  "version": "0.6.0",
+  "version": "0.6.1",
   "plugins": [
     {
       "name": "funpack",
       "source": "./plugins/funpack",
       "description": "Write funpack games: language syntax & semantics, the engine.* API, the things/behaviors/pipelines runtime model, project layout, the asset/level/tilemap/model/UI/audio bake pipelines, and the determinism gates — plus the /funpack:new scaffolding command, the funpack MCP server (the `funpack mcp` verb) whose tools build/check/test/run/inspect/query a game (and search the docs), and author/reviewer agents.",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "author": { "name": "Manuel Morales" },
       "homepage": "https://github.com/mjmorales/funpack",
       "keywords": ["funpack", "game-development", "gamedev", "deterministic", "fixed-point", "agent-first", "language"],

@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.6.1] - 2026-06-19
+
+### Other
+- refactor(funpack): prune unusable engine.render::Font over-declaration (5088890)
+
 ## [0.6.0] - 2026-06-18
 
 ### Features
