@@ -209,20 +209,17 @@ shot_read_u32_be :: proc(src: []u8) -> u32 {
 }
 
 // test_shot_qoi_to_png_round_trip pins the full transcode: a known RGBA frame → QOI →
-// shot_qoi_to_png_base64 → base64-decode → core:image/png decode reproduces the ORIGINAL
-// pixels exactly. This is the §28-pixels → model-visible-image path the arm runs, and it
-// proves the encoder is lossless (stored blocks + filter-0 carry the bytes verbatim).
+// shot_qoi_to_png_bytes → core:image/png decode reproduces the ORIGINAL pixels exactly.
+// This is the §28-pixels → on-disk-image path the arm runs, and it proves the encoder is
+// lossless (stored blocks + filter-0 carry the bytes verbatim).
 @(test)
 test_shot_qoi_to_png_round_trip :: proc(t: ^testing.T) {
 	width, height := 8, 6
 	base64_qoi, raw_rgba := shot_make_qoi_rgba(width, height, context.temp_allocator)
 	testing.expect(t, base64_qoi != "", "the QOI fixture encodes")
 
-	png_b64, ok := shot_qoi_to_png_base64(base64_qoi, context.temp_allocator)
+	png_bytes, ok := shot_qoi_to_png_bytes(base64_qoi, context.temp_allocator)
 	testing.expect(t, ok, "the QOI→PNG transcode succeeds")
-
-	png_bytes, decode_err := base64.decode(png_b64, base64.DEC_TABLE, context.temp_allocator)
-	testing.expect(t, decode_err == nil, "the PNG data field is valid base64")
 
 	// Load + destroy on the default (heap) allocator so png.destroy matches the load.
 	decoded, load_err := png.load_from_bytes(png_bytes, image.Options{})
@@ -236,6 +233,97 @@ test_shot_qoi_to_png_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, decoded.channels, 4)
 	// Exact pixel preservation — the round-trip is lossless.
 	testing.expect(t, bytes.equal(decoded.pixels.buf[:], raw_rgba), "every pixel survives QOI→PNG")
+}
+
+// test_shot_screenshot_path_shape pins the PURE path builder: <dir>/funpack-screenshot-
+// <timestamp>-tick<N>.png. No clock, no IO — the filename shape is deterministic given
+// its inputs, so this fixes the on-disk naming contract the model reads back without
+// touching the filesystem.
+@(test)
+test_shot_screenshot_path_shape :: proc(t: ^testing.T) {
+	p := shot_screenshot_path("/some/dir", 7, "20260619-193245-000000001", context.temp_allocator)
+	testing.expect(t, strings.has_prefix(p, "/some/dir"), "the path joins under the given directory")
+	testing.expect(
+		t,
+		strings.has_suffix(p, "funpack-screenshot-20260619-193245-000000001-tick7.png"),
+		"the filename carries the prefix, timestamp, tick, and .png extension",
+	)
+}
+
+// test_shot_timestamp_shape pins the wall-clock stamp's fixed-width shape (YYYYMMDD-
+// HHMMSS-<ns>): 8+1+6+1+9 = 25 chars with dashes at the two field boundaries. It asserts
+// the SHAPE, not a value (the clock moves), so the lexically-sortable, collision-free
+// filename contract holds without pinning real time.
+@(test)
+test_shot_timestamp_shape :: proc(t: ^testing.T) {
+	stamp := shot_timestamp(context.temp_allocator)
+	testing.expect_value(t, len(stamp), 25)
+	testing.expect_value(t, stamp[8], '-')
+	testing.expect_value(t, stamp[15], '-')
+}
+
+// test_shot_output_dir_default_and_env pins the directory resolver's two arms: unset,
+// FUNPACK_SCREENSHOT_DIR falls back to SHOT_DEFAULT_DIR (the cwd-relative project
+// folder); set to a non-empty value, that value wins verbatim. It mutates the process
+// env and restores it, so it neither leaks nor depends on ambient state.
+@(test)
+test_shot_output_dir_default_and_env :: proc(t: ^testing.T) {
+	saved, had := os.lookup_env(SHOT_DIR_ENV, context.temp_allocator)
+	defer if had {
+		_ = os.set_env(SHOT_DIR_ENV, saved)
+	} else {
+		_ = os.unset_env(SHOT_DIR_ENV)
+	}
+
+	_ = os.unset_env(SHOT_DIR_ENV)
+	testing.expect_value(t, shot_output_dir(context.temp_allocator), SHOT_DEFAULT_DIR)
+
+	_ = os.set_env(SHOT_DIR_ENV, "/custom/shots")
+	testing.expect_value(t, shot_output_dir(context.temp_allocator), "/custom/shots")
+}
+
+// test_shot_write_png_file_round_trip pins the disk-write junction in the DEFAULT floor
+// (no FUNPACK_LIVE): shot_write_png_file creates the directory on demand, writes a real
+// hand-rolled PNG, returns the timestamped path, and a real PNG reader loads the file
+// back with the original geometry. The live capture only runs under FUNPACK_LIVE, so
+// this is where the write path is proven — SDL-free, deterministic.
+@(test)
+test_shot_write_png_file_round_trip :: proc(t: ^testing.T) {
+	width, height := 4, 2
+	pixels := make([]u8, width * height * 4, context.temp_allocator)
+	for i in 0 ..< len(pixels) {
+		pixels[i] = u8((i * 5) & 0xff)
+	}
+	png_bytes, encoded := shot_encode_png(pixels, width, height, 4, context.temp_allocator)
+	testing.expect(t, encoded, "the test PNG encodes")
+
+	base := os.get_env("TMPDIR", context.temp_allocator)
+	if base == "" {
+		base = "/tmp"
+	}
+	dir, _ := filepath.join({base, "funpack-mcp-shot-write-test"}, context.temp_allocator)
+
+	path, ok := shot_write_png_file(dir, png_bytes, 42, "20260619-193245-000000001", context.temp_allocator)
+	testing.expect(t, ok, "the write succeeds (directory created on demand)")
+	defer os.remove(path)
+	defer os.remove(dir)
+	testing.expect(t, os.is_file(path), "the screenshot file exists on disk")
+	testing.expect(
+		t,
+		strings.has_suffix(path, "funpack-screenshot-20260619-193245-000000001-tick42.png"),
+		"the written path carries the timestamped filename",
+	)
+
+	// A real PNG reader loads the file back — the bytes on disk ARE a valid PNG of the
+	// captured geometry. Load + destroy on the default (heap) allocator so png.destroy
+	// matches the load.
+	decoded, load_err := png.load_from_file(path)
+	testing.expect(t, load_err == nil, "core:image/png loads the written file")
+	if decoded != nil {
+		testing.expect_value(t, decoded.width, width)
+		testing.expect_value(t, decoded.height, height)
+		png.destroy(decoded)
+	}
 }
 
 // test_shot_dispatch_declines_other_tools pins the chain contract: the arm claims ONLY
@@ -265,8 +353,8 @@ test_shot_dispatch_declines_other_tools :: proc(t: ^testing.T) {
 //     refuses, and the arm reframes that as a Session-category IsError naming
 //     inspect_draw_list — NEVER a JSON-RPC error, NEVER a transcode over an absent frame.
 //   - FUNPACK_LIVE build (the binary that ships the verb): the dummy SDL driver captures
-//     headlessly, so the arm returns a real image/png content block (isError false) the
-//     model can SEE — the path that actually serves the operator.
+//     headlessly, so the arm writes a PNG to disk and returns a metadata text block
+//     (isError false) carrying the on-disk path the operator reads — no inline pixels.
 //
 // Pinning BOTH arms here keeps the test a living spec of the arm in the build it runs in,
 // not a single-build snapshot that silently passes in the wrong one.
@@ -296,11 +384,15 @@ test_shot_present_boundary_end_to_end :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(line, `"error":{"code"`), "the response is NOT a JSON-RPC error object")
 
 	when #config(FUNPACK_LIVE, false) {
-		// The shipping build captures pixels: a real image/png block, not an error.
+		// The shipping build captures pixels, writes them to disk, and returns the PATH in
+		// a metadata text block — never inline base64, never an image content block.
 		testing.expect(t, strings.contains(line, `"isError":false`), "a live capture is not an error")
-		testing.expect(t, strings.contains(line, `"type":"image"`), "a live capture returns an image content block")
-		testing.expect(t, strings.contains(line, `"mimeType":"image/png"`), "the captured image is a PNG")
-		testing.expect(t, strings.contains(line, `"type":"text"`), "the live capture rides a metadata text block")
+		testing.expect(t, strings.contains(line, `"type":"text"`), "the live capture returns a metadata text block")
+		testing.expect(t, !strings.contains(line, `"type":"image"`), "the live capture carries NO inline image block")
+		// The metadata envelope rides as an ESCAPED JSON string in the text block, so its
+		// quotes are backslash-escaped on the wire (\"path\":\"…/funpack-screenshot-…\").
+		testing.expect(t, strings.contains(line, `\"path\":`), "the metadata carries the on-disk path")
+		testing.expect(t, strings.contains(line, "funpack-screenshot-"), "the path names a funpack screenshot file")
 	} else {
 		// The deterministic floor refuses and points at the sim-pure twin. The envelope
 		// rides as an ESCAPED JSON string in the text block, so its quotes are escaped.
