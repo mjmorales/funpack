@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.8.0] - 2026-06-19
+
+### Features
+- feat(mcp): inspect_screenshot writes PNG to disk, returns a path not base64 (2790c7f)
+
 ## [0.7.2] - 2026-06-19
 
 ### Fixes
