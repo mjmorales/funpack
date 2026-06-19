@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# funpackctl — manage the funpack binary on disk: scan, status, install, update,
+# rollback, and version-pin. The mechanical half of the funpack:ctl skill; the
+# skill's SKILL.md owns the judgment/confirmation half (which channel to use,
+# when to gate a destructive op, how to read drift).
+#
+# Install model: a managed prefix ($FUNPACK_HOME, default ~/.funpack) holds one
+# directory per version under versions/<semver>/ and an active-version symlink at
+# bin/funpack. Switching versions and rolling back are O(1) symlink swaps — no
+# re-download — which is what makes `use` and `rollback` instant. Put
+# $FUNPACK_HOME/bin on PATH (or run `funpackctl link`) so `funpack` resolves to
+# the active version.
+#
+# Distribution source of truth: GitHub releases on mjmorales/funpack. The binary
+# line is tagged v*, with one asset per platform named
+# funpack-v<X.Y.Z>-<plat>.tar.gz for <plat> in {macos-arm64, linux-arm64,
+# linux-x64}. Intel macOS (macos-x64) has no prebuilt asset — build from source.
+
+set -euo pipefail
+
+REPO="mjmorales/funpack"
+FH="${FUNPACK_HOME:-$HOME/.funpack}"
+
+die()  { printf 'funpackctl: %s\n' "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*" >&2; }
+
+# One process-level cleanup of the download/extract scratch dir. A per-function
+# RETURN trap would be the wrong tool here: bash RETURN traps are global and
+# persistent, so one set inside install would re-fire on every later function
+# return with $tmp out of scope. cmd_install assigns this global instead.
+tmp=""
+trap 'rm -rf "${tmp:-}" 2>/dev/null || true' EXIT
+
+# ---- platform -------------------------------------------------------------
+
+_os() {
+	case "$(uname -s)" in
+	Darwin) echo macos ;;
+	Linux) echo linux ;;
+	*) die "unsupported OS: $(uname -s) (funpack ships macos + linux only)" ;;
+	esac
+}
+
+_arch() {
+	case "$(uname -m)" in
+	arm64 | aarch64) echo arm64 ;;
+	x86_64 | amd64) echo x64 ;;
+	*) die "unsupported arch: $(uname -m)" ;;
+	esac
+}
+
+# _platform echoes the release-asset platform tag, or refuses on combos that
+# have no prebuilt asset (Intel macOS), surfacing the build-from-source path
+# rather than silently fetching the wrong arch.
+_platform() {
+	local os arch
+	os="$(_os)"
+	arch="$(_arch)"
+	if [ "$os" = macos ] && [ "$arch" = x64 ]; then
+		die "no prebuilt asset for Intel macOS (macos-x64); build from source ('task binary') or run the arm64 build under Rosetta"
+	fi
+	echo "${os}-${arch}"
+}
+
+# ---- checksum + scratch ---------------------------------------------------
+
+_sha256() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | awk '{print $1}'
+	else
+		echo ""
+	fi
+}
+
+# _scratch makes a throwaway download/extract dir. Prefer the external SSD for
+# this transient I/O, fall back to the internal tmp when it is not mounted (and
+# on machines that have none).
+_scratch() {
+	if [ -d /Volumes/SSD ] && [ -w /Volumes/SSD ]; then
+		mktemp -d /Volumes/SSD/funpackctl.XXXXXX
+	else
+		mktemp -d "${TMPDIR:-/tmp}/funpackctl.XXXXXX"
+	fi
+}
+
+# ---- release queries ------------------------------------------------------
+
+# _release_tags emits every binary-line tag (v<semver>), newest semver first.
+# Filters out the plugin-v* / funpack-mcp-v* lines. Prefers the authenticated gh
+# path, falls back to the public REST API via curl.
+_release_tags() {
+	{
+		if command -v gh >/dev/null 2>&1; then
+			gh api --paginate "repos/$REPO/releases" -q '.[].tag_name' 2>/dev/null
+		else
+			curl -fsSL -H 'Accept: application/vnd.github+json' \
+				"https://api.github.com/repos/$REPO/releases?per_page=100" 2>/dev/null |
+				grep -o '"tag_name":[ ]*"[^"]*"' | sed 's/.*"\([^"]*\)"[^"]*$/\1/'
+		fi
+	} | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV
+}
+
+_latest_tag() { _release_tags | head -1; }
+
+_norm_ver() { printf '%s' "${1#v}"; } # 0.10.2 or v0.10.2 -> 0.10.2
+
+# _bin_version reports the version a funpack binary self-identifies as, or "?"
+# when it cannot be read. Prefers the machine-readable --json face, falls back to
+# the human report's first line.
+_bin_version() {
+	local p="$1" out v
+	[ -x "$p" ] || {
+		echo "?"
+		return
+	}
+	if out="$("$p" version --json 2>/dev/null)"; then
+		v="$(printf '%s' "$out" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+		[ -n "$v" ] && {
+			echo "$v"
+			return
+		}
+	fi
+	if out="$("$p" version 2>/dev/null)"; then
+		v="$(printf '%s' "$out" | head -1 | sed -n 's/^funpack[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p')"
+		[ -n "$v" ] && {
+			echo "$v"
+			return
+		}
+	fi
+	echo "?"
+}
+
+# ---- managed state --------------------------------------------------------
+
+# _active echoes the active version (parsed from the bin/funpack symlink target),
+# empty when nothing is managed.
+_active() {
+	local l="$FH/bin/funpack" t
+	[ -L "$l" ] || return 0
+	t="$(readlink "$l" 2>/dev/null || true)"
+	printf '%s' "$t" | sed -n 's#.*/versions/\([^/]*\)/funpack$#\1#p'
+}
+
+_installed() { # all managed versions, newest semver first
+	[ -d "$FH/versions" ] || return 0
+	ls -1 "$FH/versions" 2>/dev/null | sort -rV
+}
+
+# _activate points bin/funpack at <ver> and records the version it displaced as
+# the rollback target, so rollback toggles between the two most recent actives.
+_activate() {
+	local ver="$1" target="$FH/versions/$1/funpack" cur
+	[ -x "$target" ] || die "version $ver is not installed (run: funpackctl install $ver)"
+	cur="$(_active)"
+	mkdir -p "$FH/bin"
+	if [ -n "$cur" ] && [ "$cur" != "$ver" ]; then printf '%s\n' "$cur" >"$FH/.previous"; fi
+	ln -sfn "$target" "$FH/bin/funpack"
+}
+
+_meta_write() { printf '%s=%s\n' "$2" "$3" >>"$FH/versions/$1/.meta"; }
+
+# ---- commands -------------------------------------------------------------
+
+cmd_install() {
+	local force=0 ver="" a tag plat asset url sha found rep
+	for a in "$@"; do case "$a" in
+		--force) force=1 ;;
+		*) ver="$a" ;;
+		esac done
+	if [ -z "$ver" ]; then
+		tag="$(_latest_tag || true)"
+		[ -n "$tag" ] || die "could not resolve the latest release (network/gh?)"
+		ver="$(_norm_ver "$tag")"
+	else
+		ver="$(_norm_ver "$ver")"
+		tag="v$ver"
+	fi
+
+	if [ -x "$FH/versions/$ver/funpack" ] && [ "$force" -ne 1 ]; then
+		note "v$ver already installed; activating (pass --force to re-download)."
+		_activate "$ver"
+		cmd_status
+		return 0
+	fi
+
+	plat="$(_platform)"
+	asset="funpack-${tag}-${plat}.tar.gz"
+	url="https://github.com/$REPO/releases/download/${tag}/${asset}"
+	tmp="$(_scratch)"
+
+	note "Downloading $asset ..."
+	if command -v gh >/dev/null 2>&1; then
+		gh release download "$tag" -R "$REPO" -p "$asset" -D "$tmp" 2>/dev/null ||
+			curl -fsSL -o "$tmp/$asset" "$url" ||
+			die "download failed: $asset (does release $tag ship a $plat asset?)"
+	else
+		curl -fsSL -o "$tmp/$asset" "$url" || die "download failed: $asset"
+	fi
+
+	sha="$(_sha256 "$tmp/$asset")"
+	tar -xzf "$tmp/$asset" -C "$tmp" || die "extract failed: $asset"
+	found="$(find "$tmp" -type f -name funpack 2>/dev/null | head -1)"
+	[ -n "$found" ] || die "no funpack binary inside $asset"
+
+	mkdir -p "$FH/versions/$ver"
+	cp "$found" "$FH/versions/$ver/funpack"
+	chmod +x "$FH/versions/$ver/funpack"
+	: >"$FH/versions/$ver/.meta"
+	_meta_write "$ver" source github
+	_meta_write "$ver" tag "$tag"
+	_meta_write "$ver" platform "$plat"
+	_meta_write "$ver" sha256 "$sha"
+
+	rep="$(_bin_version "$FH/versions/$ver/funpack")"
+	if [ "$rep" != "$ver" ] && [ "$rep" != "?" ]; then
+		note "warning: $asset self-reports v$rep but was filed as v$ver"
+	fi
+
+	_activate "$ver"
+	note "Installed v$ver and set active."
+	cmd_status
+}
+
+cmd_update() {
+	local tag latest cur
+	tag="$(_latest_tag || true)"
+	[ -n "$tag" ] || die "could not resolve the latest release (network/gh?)"
+	latest="$(_norm_ver "$tag")"
+	cur="$(_active)"
+	if [ "$cur" = "$latest" ]; then
+		note "Already on the latest release (v$latest)."
+		cmd_status
+		return 0
+	fi
+	note "Updating: ${cur:-none} -> v$latest"
+	cmd_install "$latest"
+}
+
+cmd_use() {
+	[ $# -ge 1 ] || die "usage: funpackctl use <version>"
+	local ver
+	ver="$(_norm_ver "$1")"
+	_activate "$ver"
+	note "Active: v$ver"
+	cmd_status
+}
+
+cmd_rollback() {
+	local prev
+	[ -f "$FH/.previous" ] || die "no previous version recorded to roll back to"
+	prev="$(cat "$FH/.previous")"
+	[ -n "$prev" ] || die "no previous version recorded"
+	[ -x "$FH/versions/$prev/funpack" ] || die "previous version v$prev is no longer installed"
+	note "Rolling back -> v$prev"
+	_activate "$prev"
+	cmd_status
+}
+
+cmd_uninstall() {
+	[ $# -ge 1 ] || die "usage: funpackctl uninstall <version>"
+	local ver
+	ver="$(_norm_ver "$1")"
+	[ -d "$FH/versions/$ver" ] || die "v$ver is not installed"
+	[ "$(_active)" != "$ver" ] || die "v$ver is active; switch with 'use'/'rollback' before uninstalling"
+	rm -rf "$FH/versions/$ver"
+	if [ "$(cat "$FH/.previous" 2>/dev/null || true)" = "$ver" ]; then rm -f "$FH/.previous"; fi
+	note "Removed v$ver"
+}
+
+cmd_list() {
+	local active prev v mark any=0
+	active="$(_active || true)"
+	prev="$(cat "$FH/.previous" 2>/dev/null || true)"
+	while IFS= read -r v; do
+		[ -n "$v" ] || continue
+		any=1
+		mark=""
+		[ "$v" = "$active" ] && mark=" (active)"
+		[ "$v" = "$prev" ] && mark="$mark (rollback target)"
+		printf '  v%s%s\n' "$v" "$mark"
+	done < <(_installed)
+	[ "$any" = 1 ] || note "No managed versions installed (run: funpackctl install)."
+}
+
+cmd_releases() {
+	local n="${1:-15}"
+	_release_tags | head -"$n"
+}
+
+_scan_row() { # <path> <source>
+	local p="$1" src="$2" ver arch
+	ver="$(_bin_version "$p")"
+	arch="$(file -bL "$p" 2>/dev/null | grep -oE 'arm64|x86_64|amd64' | head -1 || true)"
+	printf '  %-9s v%-12s %-7s %s\n' "$src" "$ver" "${arch:-?}" "$p"
+}
+
+cmd_scan() {
+	local seen="" p mp bp d
+	printf 'funpack binaries on this machine\n\n'
+	printf '  %-9s %-13s %-7s %s\n' SOURCE VERSION ARCH PATH
+
+	if command -v which >/dev/null 2>&1; then
+		while IFS= read -r p; do
+			[ -n "$p" ] || continue
+			_scan_row "$p" "PATH"
+			seen="$seen|$p"
+		done < <(which -a funpack 2>/dev/null || true)
+	fi
+
+	mp="$FH/bin/funpack"
+	if [ -L "$mp" ] || [ -x "$mp" ]; then
+		case "$seen" in *"|$mp"*) : ;; *) _scan_row "$mp" "managed" ;; esac
+	fi
+
+	if command -v brew >/dev/null 2>&1; then
+		bp="$(brew --prefix funpack 2>/dev/null || true)"
+		if [ -n "$bp" ] && [ -x "$bp/bin/funpack" ]; then
+			case "$seen" in *"|$bp/bin/funpack"*) : ;; *) _scan_row "$bp/bin/funpack" "brew" ;; esac
+		fi
+	fi
+
+	for d in ./funpack.bin ./cmd/funpack/funpack; do
+		[ -f "$d" ] && [ -x "$d" ] && _scan_row "$d" "dev-build"
+	done
+
+	local act
+	act="$(_active || true)"
+	printf '\nManaged prefix: %s   (active: %s)\n' "$FH" "${act:+v}${act:-none}"
+}
+
+cmd_status() {
+	local onpath onpath_ver="" active latest tag cur newest
+	onpath="$(command -v funpack 2>/dev/null || true)"
+	active="$(_active || true)"
+	tag="$(_latest_tag 2>/dev/null || true)"
+	latest="${tag#v}"
+
+	printf 'funpack status\n'
+	printf '  managed prefix : %s\n' "$FH"
+	if [ -n "$active" ]; then printf '  active version : v%s\n' "$active"; else printf '  active version : (none managed)\n'; fi
+	if [ -n "$onpath" ]; then
+		onpath_ver="$(_bin_version "$onpath")"
+		printf '  funpack on PATH: v%s  (%s)\n' "$onpath_ver" "$onpath"
+	else
+		printf '  funpack on PATH: NOT FOUND\n'
+	fi
+	if [ -n "$latest" ]; then printf '  latest release : v%s\n' "$latest"; else printf '  latest release : (unknown — no network/gh)\n'; fi
+
+	cur="${active:-$onpath_ver}"
+	if [ -n "$latest" ] && [ -n "$cur" ] && [ "$cur" != "?" ]; then
+		if [ "$cur" = "$latest" ]; then
+			printf '  => up to date\n'
+		else
+			newest="$(printf '%s\n%s\n' "$cur" "$latest" | sort -rV | head -1)"
+			if [ "$newest" = "$latest" ]; then
+				printf '  => behind: v%s available (funpackctl update)\n' "$latest"
+			else
+				printf '  => ahead of latest release (dev build v%s)\n' "$cur"
+			fi
+		fi
+	fi
+
+	case ":${PATH}:" in
+	*":$FH/bin:"*) : ;;
+	*) [ -n "$active" ] && printf '  note: %s/bin is not on PATH (add it, or run: funpackctl link)\n' "$FH" ;;
+	esac
+}
+
+cmd_link() {
+	local dest="${1:-$HOME/.local/bin}"
+	[ -L "$FH/bin/funpack" ] || die "no active managed version to link (run: funpackctl install)"
+	mkdir -p "$dest"
+	ln -sfn "$FH/bin/funpack" "$dest/funpack"
+	note "Linked $dest/funpack -> $FH/bin/funpack"
+	case ":${PATH}:" in *":$dest:"*) : ;; *) note "note: $dest is not on PATH" ;; esac
+}
+
+cmd_which() { command -v funpack || die "funpack is not on PATH"; }
+
+cmd_doctor() {
+	local ok=1 plat
+	printf 'funpackctl doctor\n'
+
+	if [ -d "$FH" ]; then printf '  ok   managed prefix exists (%s)\n' "$FH"; else
+		printf '  --   managed prefix not created yet (%s)\n' "$FH"
+	fi
+	if [ -x "$FH/bin/funpack" ]; then printf '  ok   active symlink resolves (v%s)\n' "$(_active)"; else
+		printf '  --   no active managed version (run: funpackctl install)\n'
+	fi
+	if command -v funpack >/dev/null 2>&1; then
+		printf '  ok   funpack resolves on PATH (%s)\n' "$(command -v funpack)"
+		if funpack version >/dev/null 2>&1; then printf '  ok   funpack version runs\n'; else
+			printf '  FAIL funpack on PATH does not run (funpack version)\n'
+			ok=0
+		fi
+	else
+		printf '  FAIL funpack not found on PATH\n'
+		ok=0
+	fi
+	plat="$(_platform 2>/dev/null || echo unsupported)"
+	if [ "$plat" != unsupported ]; then printf '  ok   platform has prebuilt assets (%s)\n' "$plat"; else
+		printf '  warn this platform has no prebuilt asset (build from source)\n'
+	fi
+	if command -v gh >/dev/null 2>&1; then printf '  ok   gh present (authenticated release queries)\n'; else
+		printf '  warn gh absent (falls back to curl + public API)\n'
+	fi
+	[ "$ok" = 1 ] && note "healthy" || note "issues found above"
+}
+
+usage() {
+	cat <<EOF
+funpackctl — manage the funpack binary on disk
+
+  scan                 list every funpack binary found (PATH, managed, brew, dev)
+  status               active vs on-PATH vs latest release, with a drift verdict
+  releases [N]         list the newest N binary releases (default 15)
+  list                 list managed versions (marks active + rollback target)
+  install [<ver>]      install a release (default latest) and make it active
+  update               install the latest release if newer than the active one
+  use <ver>            switch the active version to an already-installed one
+  rollback             switch back to the previously-active version
+  uninstall <ver>      remove a cached managed version (refuses the active one)
+  link [<dir>]         symlink the active binary into a PATH dir (default ~/.local/bin)
+  doctor               health-check the install + PATH wiring
+  which                print the path funpack resolves to
+
+Managed prefix: \$FUNPACK_HOME (default ~/.funpack). Put \$FUNPACK_HOME/bin on PATH.
+Source: GitHub releases on $REPO (binary tags v*).
+EOF
+}
+
+main() {
+	local cmd="${1:-status}"
+	shift || true
+	case "$cmd" in
+	scan) cmd_scan "$@" ;;
+	status) cmd_status "$@" ;;
+	releases) cmd_releases "$@" ;;
+	list | installed) cmd_list "$@" ;;
+	install) cmd_install "$@" ;;
+	update | upgrade) cmd_update "$@" ;;
+	use | set) cmd_use "$@" ;;
+	rollback) cmd_rollback "$@" ;;
+	uninstall | remove) cmd_uninstall "$@" ;;
+	link) cmd_link "$@" ;;
+	doctor) cmd_doctor "$@" ;;
+	which | path) cmd_which "$@" ;;
+	-h | --help | help) usage ;;
+	*)
+		usage
+		die "unknown command: $cmd"
+		;;
+	esac
+}
+
+main "$@"
