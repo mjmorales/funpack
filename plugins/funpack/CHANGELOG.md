@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.7.0] - 2026-06-19
+
+### Features
+- feat: add funpack:ctl skill for funpack binary install/update/rollback (cf3d632)
+
 ## [0.6.1] - 2026-06-19
 
 ### Other
