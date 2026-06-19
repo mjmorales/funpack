@@ -133,3 +133,14 @@ Ship the durable fix and the deliberate test, never the stop-gap or the note-to-
 - When a decision, ADR, or bug touches a real seam that will cause user friction, fix it at the source; never ship an incomplete workaround that leaves the seam broken.
 - Write tests that exercise foundational junctions of real code as a living, evolving spec of the language; never write narrowly bug-specific or record-keeping tests (e.g. a "fixes" scratch file), and instead fold the case into the deliberate test that covers its junction.
 - Treat tests as load-bearing spec, not lesser notes; never use a test to log a fix or stand in for a record, and instead capture record-keeping in a scrum task, decision, or ADR.
+
+## Corpus-Pin Gate — Markdown Edits Have Odin-Test Consequences
+
+`funpack mcp gen-corpus` embeds the `plugins/funpack/`, `spec/`, and `stdlib/engine/` trees into committed docs-corpus shards (`cmd/funpack/mcp/corpus/{spec,engine,plugin}.json` + `manifest.json`). A drift test (`test_corpus_pin_*`, run by `task test` / `task cmd:docs-check`) byte/hash-compares a fresh regeneration against the committed shards, so any edit to those trees — including non-Odin files like `SKILL.md` or other markdown — fails `task test` until the shards are regenerated.
+
+- Before committing any change touching `plugins/funpack/`, `spec/`, or `stdlib/engine/`, run `task test` (or at minimum the focused `task cmd:docs-check`).
+- Never skip the test validator assuming a markdown/non-Odin diff is inert; instead, treat the test validator as in-scope for every change to those three trees.
+- When the gate flags drift, run `task docs-regen` and recommit the regenerated shards.
+- Shard regen has two triggers, kept distinct (ADR `2026-06-19-corpus-regen-rides-version-bump`):
+  - **Content regen** — you edited a `SKILL.md`/spec/engine doc and the byte/hash pin flagged drift. Run `task docs-regen` and land the regenerated shards WITH the edit that caused them, labeled `chore` (the shards live under `cmd/funpack/`, the binary release line, so a `feat`/`fix` label would spuriously bump the binary). Never a deferred trailing commit.
+  - **Version regen** — the corpus stamps the funpack version, so when `VERSION` bumps the corpus must restamp. This rides the release pipeline's own `chore(release): vX [skip ci]` commit, which regenerates/restamps `cmd/funpack/mcp/corpus/*` alongside the new `VERSION` so a tagged binary never embeds an older corpus. The parity gate `test_corpus_pin_version_matches_compiler` enforces it: a `VERSION`↔`corpus_version` skew fails `task test`.
