@@ -1,8 +1,7 @@
 {
   "mcpServers": {
     "funpack": {
-      "command": "funpack",
-      "args": ["mcp"]
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/funpack-mcp-launch"
     }
   }
 }

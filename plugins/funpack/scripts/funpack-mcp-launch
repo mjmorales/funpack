@@ -1,0 +1,51 @@
+#!/usr/bin/env sh
+# funpack MCP launcher — deterministic binary resolution + a descriptive preflight.
+#
+# Claude Code spawns this from the plugin .mcp.json. Resolving `funpack` as a bare
+# command lets PATH order pick whichever install comes first — including a stale one
+# that predates the `mcp` subcommand, whose unknown-subcommand
+# exit reaches the client only as an opaque JSON-RPC `-32000` with no binary, version,
+# or reason. This launcher resolves the binary deterministically so a stray older
+# install cannot shadow the intended compiler, and refuses an mcp-incapable binary
+# with a named, versioned error in the server log so the next operator diagnoses it in
+# seconds. See dogfood FRICTION F14.
+set -u
+
+fail() {
+	# Stderr is the MCP server log the operator inspects after a failed (re)connect.
+	printf 'funpack-mcp launcher: %s\n' "$1" >&2
+	exit 1
+}
+
+# Resolution precedence: an explicit FUNPACK_BIN override, then the managed install
+# (funpackctl's ~/.funpack), then PATH — so a stray older funpack on PATH cannot
+# shadow the intended compiler.
+resolve_bin() {
+	if [ -n "${FUNPACK_BIN:-}" ]; then
+		if [ -x "$FUNPACK_BIN" ]; then
+			printf '%s\n' "$FUNPACK_BIN"
+			return 0
+		fi
+		command -v "$FUNPACK_BIN" 2>/dev/null && return 0
+		return 1
+	fi
+	managed="${FUNPACK_HOME:-$HOME/.funpack}/bin/funpack"
+	if [ -x "$managed" ]; then
+		printf '%s\n' "$managed"
+		return 0
+	fi
+	command -v funpack 2>/dev/null && return 0
+	return 1
+}
+
+bin="$(resolve_bin)" || fail "no funpack binary found — set FUNPACK_BIN to an absolute path, install with funpackctl, or put funpack on PATH"
+
+# A binary that predates the `mcp` verb exits on the unknown subcommand before the
+# JSON-RPC handshake; detect it from the subcommand list and name it instead of
+# letting the client see a bare -32000.
+ver="$("$bin" --version 2>&1 | head -n 1)"
+if ! "$bin" --help 2>&1 | grep -qw mcp; then
+	fail "resolved funpack at '$bin' (version ${ver:-unknown}) has no 'mcp' subcommand — it is below the floor that introduced it; install or link a newer funpack (funpackctl install && funpackctl link) or point FUNPACK_BIN at one"
+fi
+
+exec "$bin" mcp

@@ -362,9 +362,23 @@ cmd_status() {
 		fi
 	fi
 
+	# The managed prefix counts as on-PATH when its bin dir is on PATH directly, OR when
+	# `funpackctl link` has put the active managed binary on PATH via a symlink elsewhere
+	# (e.g. ~/.local/bin/funpack -> ~/.funpack/bin/funpack). Resolving that symlink back
+	# into the managed prefix means the channel is canonical, so suppress the note.
 	case ":${PATH}:" in
 	*":$FH/bin:"*) : ;;
-	*) [ -n "$active" ] && printf '  note: %s/bin is not on PATH (add it, or run: funpackctl link)\n' "$FH" ;;
+	*)
+		linked_into_managed=0
+		if [ -n "$onpath" ] && [ -L "$onpath" ]; then
+			case "$(readlink "$onpath" 2>/dev/null)" in
+			"$FH"/*) linked_into_managed=1 ;;
+			esac
+		fi
+		if [ -n "$active" ] && [ "$linked_into_managed" = 0 ]; then
+			printf '  note: %s/bin is not on PATH (add it, or run: funpackctl link)\n' "$FH"
+		fi
+		;;
 	esac
 }
 
