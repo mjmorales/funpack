@@ -81,7 +81,8 @@
       "config": {
         "excludes": [
           ".claude/worktrees/"
-        ]
+        ],
+        "max_file_size": 204800
       }
     },
     "acb": {
