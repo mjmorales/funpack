@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.7.2] - 2026-06-19
+
+### Fixes
+- fix(mcp): gate the launcher on the mcp subcommand, not a loose help grep (5356545)
+
 ## [0.7.1] - 2026-06-19
 
 ### Fixes
