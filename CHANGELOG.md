@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.10.2] - 2026-06-19
+
+### Other
+- docs: list the full funpack warden subcommand surface in the README (01d55a5)
+
 ## [0.10.1] - 2026-06-19
 
 ### Other
