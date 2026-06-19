@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.7.1] - 2026-06-19
+
+### Fixes
+- fix(mcp): launch the MCP server through a deterministic resolver (e41d85f)
+
 ## [0.7.0] - 2026-06-19
 
 ### Features
