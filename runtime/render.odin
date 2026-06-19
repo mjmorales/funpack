@@ -392,6 +392,7 @@ render_version :: proc(
 	input: Input,
 	time: Record_Value,
 	allocator := context.allocator,
+	obs: ^Tick_Observe = nil,
 ) -> Draw_List {
 	committed := version
 	interp := new_interp(program, &committed, nil, input, time, allocator)
@@ -416,7 +417,7 @@ render_version :: proc(
 		if behavior == nil {
 			continue
 		}
-		render_behavior_over_instances(&interp, behavior, &cmds, allocator)
+		render_behavior_over_instances(&interp, step, behavior, &cmds, allocator, obs)
 	}
 	resolve_sprite_textures(program, cmds[:])
 	resolve_tilemap_textures(program, cmds[:], allocator)
@@ -516,17 +517,29 @@ resolve_sprite_textures :: proc(program: ^Program, cmds: []Draw_Cmd) {
 // View (interp.tick is nil), so iteration is the committed stable Id order. A
 // render behavior binds only `self` (it takes no signals, no Rng, no Views), so
 // the env carries the instance blackboard and the body returns a [Draw] list.
+//
+// When `obs` is armed (the §28 trace re-projection — F19), each instance's
+// (self_before, bound reads, returned [Draw] value) is copied into the capture
+// buffer at the SAME seam the interior tick fold taps, so inspect_trace reports a
+// render behavior's in→out exactly as it does an Update behavior — the empty-steps
+// false-negative is gone. The capture is a pure copy-out: it never reads back into
+// the projection, so the draw-list is bit-identical whether the tap fired or not.
 render_behavior_over_instances :: proc(
 	interp: ^Interp,
+	step: Pipeline_Step,
 	behavior: ^Behavior_Decl,
 	cmds: ^[dynamic]Draw_Cmd,
 	allocator := context.allocator,
+	obs: ^Tick_Observe = nil,
 ) {
 	view := view_of_type(interp.version, behavior.on_thing)
 	for i in 0 ..< view_count(view) {
 		row, _ := view_at(view, i)
 		env := render_behavior_env(interp, behavior, row)
 		result, ok := eval_behavior_body(interp, behavior.body, &env)
+		if obs != nil {
+			observe_behavior_step(obs, step, behavior, row, env, result, ok)
+		}
 		if !ok {
 			continue
 		}

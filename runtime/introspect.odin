@@ -540,7 +540,12 @@ observe_signals :: proc(
 // tick — the §28 §3 bounded re-fold ("causality is recomputed, not stored"). Per
 // instance it renders the pre-eval blackboard, the bound reads (the declared
 // params, in declaration order), the returned value, and the post-tick committed
-// blackboard (null when the tick despawned the instance).
+// blackboard (null when the tick despawned the instance). It routes by the
+// behavior's STAGE (F19): an interior behavior is captured by re-folding the sim
+// tick; a RENDER behavior is captured by re-projecting the render stage with the
+// same tap (the sim fold skips render, so a re-fold alone left it silently empty);
+// audio/startup answer an explicit unsupported-stage marker (they are not part of a
+// per-tick fold).
 @(private = "file")
 observe_trace :: proc(
 	s: ^Debug_Session,
@@ -553,17 +558,46 @@ observe_trace :: proc(
 	if !has_tick || !has_behavior {
 		return error_response(id, "trace", "missing args.tick or args.behavior", allocator)
 	}
-	if !observe_refold_on_canonical(s, args) {
-		return error_response(id, "trace", "branch refold unsupported — trace re-folds a recorded tick (canonical only)", allocator)
-	}
 	behavior := program_behavior(s.program, behavior_name)
 	if behavior == nil {
 		return error_response(id, "trace", "unknown behavior", allocator)
 	}
+	// Route by the behavior's STAGE (F19). The interior stages (control/collision/
+	// scoring/…) are captured by re-folding the sim tick. The terminal RENDER stage is
+	// skipped by the sim fold (run_pipeline_fold — render is a post-commit projection),
+	// so re-folding alone left its trace silently empty, indistinguishable from "ran
+	// zero times"; instead the render stage is RE-PROJECTED with the same observe tap
+	// armed, so a render behavior reports its in→out per instance like any other. Audio
+	// (a deferred slot) and startup (runs pre-tick-0, not per-tick) are not part of a
+	// per-tick fold at all, so they answer with an explicit unsupported-stage marker
+	// rather than a misleading empty step list.
 	obs := new_tick_observe(allocator)
-	committed, ok := session_refold_tick(s, int(tick), &obs, allocator)
-	if !ok {
-		return error_response(id, "trace", "tick out of range", allocator)
+	committed: World_Version
+	switch behavior.stage {
+	case "render":
+		lineage, lineage_ok := session_read_lineage(s, args)
+		if !lineage_ok {
+			return error_response(id, "trace", "unknown branch — checkout an existing lineage", allocator)
+		}
+		version, ver_ok := session_version_on(s, lineage, int(tick))
+		if !ver_ok || int(tick) < 0 {
+			return error_response(id, "trace", "tick out of range", allocator)
+		}
+		input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
+		time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
+		render_version(s.program, version, input, time, allocator, &obs)
+		committed = version
+	case "audio", "startup":
+		return trace_unsupported_stage(id, behavior_name, behavior.stage, int(tick), allocator)
+	case:
+		if !observe_refold_on_canonical(s, args) {
+			return error_response(id, "trace", "branch refold unsupported — trace re-folds a recorded tick (canonical only)", allocator)
+		}
+		refolded, ok := session_refold_tick(s, int(tick), &obs, allocator)
+		if !ok {
+			return error_response(id, "trace", "tick out of range", allocator)
+		}
+		committed = refolded
 	}
 	b := strings.builder_make(allocator)
 	ok_response_open(&b, id, "trace")
@@ -597,6 +631,36 @@ observe_trace :: proc(
 		strings.write_byte(&b, '}')
 	}
 	strings.write_string(&b, "]}}")
+	return strings.to_string(b)
+}
+
+// trace_unsupported_stage answers a trace for a behavior whose stage is NOT part of a
+// per-tick fold — `audio` (a deferred §22 slot whose return is never folded into tick
+// state) or `startup` (runs once pre-tick-0, not per-tick). Rather than the silent empty
+// step list that reads as "ran zero times" (the F19 false-negative), it returns an
+// explicit `stage` + `note` so a debugger knows the behavior is real, ran elsewhere, and
+// where to look. The `steps` array stays present and empty so the response shape is a
+// superset of the ordinary trace, never a parse break for an existing reader.
+@(private = "file")
+trace_unsupported_stage :: proc(
+	id: i64,
+	behavior_name: string,
+	stage: string,
+	tick: int,
+	allocator := context.allocator,
+) -> string {
+	b := strings.builder_make(allocator)
+	ok_response_open(&b, id, "trace")
+	fmt.sbprintf(&b, "{{\"tick\":%d,\"behavior\":", tick)
+	write_json_string(&b, behavior_name)
+	strings.write_string(&b, ",\"stage\":")
+	write_json_string(&b, stage)
+	strings.write_string(&b, ",\"steps\":[],\"note\":")
+	note := stage == "audio" \
+		? "the audio stage is a deferred slot, not folded into the interior tick; observe its routed output via inspect_signals" \
+		: "the startup stage runs once before tick 0, not per-tick; it is not part of a per-tick re-fold"
+	write_json_string(&b, note)
+	strings.write_string(&b, "}}")
 	return strings.to_string(b)
 }
 

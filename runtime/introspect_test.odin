@@ -162,6 +162,51 @@ golden_pong_session :: proc(
 	return program, inputs, session
 }
 
+// trace of a RENDER-stage behavior re-projects the render stage with the observe tap
+// armed (F19), so a render behavior reports its in→out per instance instead of the
+// silent empty step list a sim-fold-only trace returned (the sim fold SKIPS render).
+// draw_ball runs once over the single Ball; its trace must carry a real step with the
+// instance and the behavior's returned [Draw] value, never `"steps":[]`.
+@(test)
+test_introspect_trace_render_behavior_captured :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+	response := session_request(&s, `{"id":7,"cmd":"trace","args":{"tick":1,"behavior":"draw_ball"}}`)
+	testing.expect(t, strings.contains(response, `"ok":true`), response)
+	testing.expect(t, strings.contains(response, `"behavior":"draw_ball"`), response)
+	testing.expect(
+		t,
+		!strings.contains(response, `"steps":[]`),
+		"a render behavior that ran must trace a non-empty step list (F19)",
+	)
+	testing.expect(t, strings.contains(response, `"instance":0`), "the single Ball instance must be traced")
+	// The returned [Draw] value is rendered in the debug projection — a Ball draws a
+	// Rect, whose decimal-lane projection (F17) appears in the step's result.
+	testing.expect(t, strings.contains(response, "Rect("), response)
+}
+
+// trace of an AUDIO-stage behavior answers an explicit unsupported-stage marker (F19):
+// audio is a deferred slot, not folded into the interior tick, so a trace returns the
+// stage + a note rather than a misleading empty step list that reads as "ran zero times."
+@(test)
+test_introspect_trace_audio_stage_marker :: proc(t: ^testing.T) {
+	program := new(Program, context.allocator)
+	loaded, err := load_program(KROGNID_ARTIFACT, context.allocator)
+	testing.expect(t, err == .None, "krognid artifact must load")
+	program^ = loaded
+	inputs := make([]Input, 2, context.allocator)
+	for i in 0 ..< len(inputs) {
+		inputs[i] = empty()
+	}
+	session := open_debug_session(program, inputs, NO_SEED, context.allocator)
+	s := session
+	response := session_request(&s, `{"id":7,"cmd":"trace","args":{"tick":0,"behavior":"locomotion"}}`)
+	testing.expect(t, strings.contains(response, `"ok":true`), response)
+	testing.expect(t, strings.contains(response, `"stage":"audio"`), response)
+	testing.expect(t, strings.contains(response, `"steps":[]`), "an unsupported stage carries an empty step list")
+	testing.expect(t, strings.contains(response, `"note":`), "the marker must explain why the stage is not folded")
+}
+
 // The signals observe surfaces the live dataflow: somewhere in the golden pong
 // run the score behavior routes a Goal broadcast, and the observe reports it as
 // a typed funpack record string — signals are data (§28 §1).
