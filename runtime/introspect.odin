@@ -1172,26 +1172,29 @@ sorted_blackboard_names :: proc(
 	return names[:]
 }
 
-// render_field_value_text renders one blackboard column in the artifact literal
-// encoding — the inverse of decode_default_value, so an observe output pastes
-// back as a control `set`/`spawn` payload. Fixed renders as its raw Q32.32 bits
-// in decimal (§16 §2.3 — the only float-free encoding), Vec2/Vec3 as their
-// component constructors, a record as `Type(f=enc,…)` sorted, a list as
-// `[enc,…]`, a unit-variant token verbatim, a String as `Lk:bytes`.
+// render_field_value_text renders one blackboard column in the §28 DEBUG PROJECTION
+// — the inverse of decode_default_value(human=true), so an observe output pastes back
+// as a control `set`/`spawn` payload (the F17/F18 round-trip). Fixed renders as its
+// SOURCE-LITERAL decimal (`96.0` — float-free via write_source_fixed, the legible form
+// an agent reads and writes), Vec2/Vec3 as their component constructors with decimal
+// lanes, a record as `Type(f=enc,…)` sorted, a list as `[enc,…]`, a unit-variant token
+// verbatim, a String as `Lk:bytes`. This is the debug surface, NOT the committed
+// `.artifact` wire format (spec §16 §2.3, raw Q32.32) — that is the compiler's
+// emit.odin, which this renderer never feeds.
 render_field_value_text :: proc(b: ^strings.Builder, value: Field_Value) {
 	switch v in value {
 	case i64:
 		fmt.sbprintf(b, "%d", v)
 	case Fixed:
-		fmt.sbprintf(b, "%d", i64(v))
+		write_source_fixed(b, v)
 	case bool:
 		strings.write_string(b, v ? "true" : "false")
 	case string:
 		strings.write_string(b, v)
 	case Vec2:
-		fmt.sbprintf(b, "Vec2(x=%d,y=%d)", i64(v.x), i64(v.y))
+		write_vec2_decimal(b, v)
 	case Vec3:
-		fmt.sbprintf(b, "Vec3(x=%d,y=%d,z=%d)", i64(v.x), i64(v.y), i64(v.z))
+		write_vec3_decimal(b, v)
 	case Ref:
 		fmt.sbprintf(b, "Ref(thing=%s,id=%d)", v.thing, v.id.raw)
 	case Record_Value:
@@ -1205,22 +1208,46 @@ render_field_value_text :: proc(b: ^strings.Builder, value: Field_Value) {
 	}
 }
 
-// render_value_text renders one interpreter Value in the artifact literal
-// encoding. The transient arms a blackboard never carries (lambda, tuple, Rng,
-// the anim values) render as readable opaque forms — they appear only in trace
-// results, never in a control payload.
+// write_vec2_decimal / write_vec3_decimal render a §10 vector with SOURCE-LITERAL
+// Fixed components (`Vec2(x=96.0,y=90.0)`) — the F17 debug projection, legible at a
+// glance instead of the raw Q32.32 lanes the artifact codec carried. They round-trip
+// through decode_fixed(human=true), so an observed vector pastes back as a control
+// payload (F18). Both lanes go through write_source_fixed: float-free, byte-stable.
+write_vec2_decimal :: proc(b: ^strings.Builder, v: Vec2) {
+	strings.write_string(b, "Vec2(x=")
+	write_source_fixed(b, v.x)
+	strings.write_string(b, ",y=")
+	write_source_fixed(b, v.y)
+	strings.write_byte(b, ')')
+}
+
+write_vec3_decimal :: proc(b: ^strings.Builder, v: Vec3) {
+	strings.write_string(b, "Vec3(x=")
+	write_source_fixed(b, v.x)
+	strings.write_string(b, ",y=")
+	write_source_fixed(b, v.y)
+	strings.write_string(b, ",z=")
+	write_source_fixed(b, v.z)
+	strings.write_byte(b, ')')
+}
+
+// render_value_text renders one interpreter Value in the §28 debug projection
+// (Fixed as a source-literal decimal — see render_field_value_text). The transient
+// arms a blackboard never carries (lambda, tuple, Rng, the anim values) render as
+// readable opaque forms — they appear only in trace results, never in a control
+// payload.
 render_value_text :: proc(b: ^strings.Builder, value: Value) {
 	switch v in value {
 	case i64:
 		fmt.sbprintf(b, "%d", v)
 	case Fixed:
-		fmt.sbprintf(b, "%d", i64(v))
+		write_source_fixed(b, v)
 	case bool:
 		strings.write_string(b, v ? "true" : "false")
 	case Vec2:
-		fmt.sbprintf(b, "Vec2(x=%d,y=%d)", i64(v.x), i64(v.y))
+		write_vec2_decimal(b, v)
 	case Vec3:
-		fmt.sbprintf(b, "Vec3(x=%d,y=%d,z=%d)", i64(v.x), i64(v.y), i64(v.z))
+		write_vec3_decimal(b, v)
 	case Ref:
 		fmt.sbprintf(b, "Ref(thing=%s,id=%d)", v.thing, v.id.raw)
 	case Record_Value:
@@ -1317,23 +1344,25 @@ render_variant_text :: proc(b: ^strings.Builder, variant: Variant_Value) {
 	strings.write_byte(b, ')')
 }
 
-// render_transform_text renders a §16 §7 bone transform with raw-bit lanes.
+// render_transform_text renders a §16 §7 bone transform with SOURCE-LITERAL decimal
+// lanes (the F17 debug projection — see render_field_value_text). Every Q32.32 lane
+// (pos/rot/scale, and the quat's w) goes through write_source_fixed: float-free,
+// byte-stable, legible.
 @(private = "file")
 render_transform_text :: proc(b: ^strings.Builder, t: Transform_Value) {
-	fmt.sbprintf(
-		b,
-		"Transform(pos=Vec3(x=%d,y=%d,z=%d),rot=Quat(x=%d,y=%d,z=%d,w=%d),scale=Vec3(x=%d,y=%d,z=%d))",
-		i64(t.pos.x),
-		i64(t.pos.y),
-		i64(t.pos.z),
-		i64(t.rot.x),
-		i64(t.rot.y),
-		i64(t.rot.z),
-		i64(t.rot.w),
-		i64(t.scale.x),
-		i64(t.scale.y),
-		i64(t.scale.z),
-	)
+	strings.write_string(b, "Transform(pos=")
+	write_vec3_decimal(b, t.pos)
+	strings.write_string(b, ",rot=Quat(x=")
+	write_source_fixed(b, t.rot.x)
+	strings.write_string(b, ",y=")
+	write_source_fixed(b, t.rot.y)
+	strings.write_string(b, ",z=")
+	write_source_fixed(b, t.rot.z)
+	strings.write_string(b, ",w=")
+	write_source_fixed(b, t.rot.w)
+	strings.write_string(b, "),scale=")
+	write_vec3_decimal(b, t.scale)
+	strings.write_byte(b, ')')
 }
 
 // render_pose_text renders the sparse Bone→Transform pose in its deterministic
@@ -1378,8 +1407,8 @@ render_handle_text :: proc(b: ^strings.Builder, handle: Handle_Value) {
 // inspect_draw_list line carries. A NAMED color renders as its palette member name
 // (`White`, `Gray` — so the existing `Color::White` line shape is unchanged after
 // Draw_Color stopped being a bare enum that `%v` printed directly). A Color::Rgb
-// renders as `Rgb(<r>,<g>,<b>)` with the RAW Q32.32 channel ints (the SAME
-// `i64(fixed)` convention the Vec2 `x=%d` lanes use here), so the dump is
+// renders as `Rgb(<r>,<g>,<b>)` with SOURCE-LITERAL decimal channels (the SAME
+// write_source_fixed convention the Vec2 decimal lanes use here — F17), so the dump is
 // deterministic — no float, byte-stable across machines. The string is built in
 // the supplied allocator (temp at the call site). DETERMINISM: this is a §28
 // OBSERVE projection (a read-only string view of the draw-list), never re-entering
@@ -1389,54 +1418,65 @@ color_text :: proc(color: Draw_Color, allocator := context.allocator) -> string 
 	case .Named:
 		return fmt.aprintf("%v", color.palette, allocator = allocator)
 	case .Rgb:
-		return fmt.aprintf("Rgb(%d,%d,%d)", i64(color.r), i64(color.g), i64(color.b), allocator = allocator)
+		// Source-literal decimal channels (`Rgb(1.0,0.5,0.0)`) — the F17 legible
+		// projection, float-free via write_source_fixed, byte-stable across machines.
+		b := strings.builder_make(allocator)
+		strings.write_string(&b, "Rgb(")
+		write_source_fixed(&b, color.r)
+		strings.write_byte(&b, ',')
+		write_source_fixed(&b, color.g)
+		strings.write_byte(&b, ',')
+		write_source_fixed(&b, color.b)
+		strings.write_byte(&b, ')')
+		return strings.to_string(b)
 	}
 	return fmt.aprintf("%v", color.palette, allocator = allocator)
 }
 
 // render_draw_cmd_text renders one §20 draw command in the same constructor
-// style the value encoding uses — the draw-list dump's line items.
+// style the value encoding uses — the draw-list dump's line items. Every Q32.32 lane
+// (every Vec2/Vec3 component and the scalar Fixed fields zoom/rotation/fov) renders as
+// a SOURCE-LITERAL decimal via write_source_fixed (F17): an inspect_draw_list line reads
+// `Rect(at=Vec2(x=96.0,y=90.0),…)`, not the raw Q32.32 bits. Int lanes (Tilemap geometry,
+// Sprite layer) stay decimal integers. The render stays float-free and byte-stable.
 render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 	switch c in cmd {
 	case Draw_Rect:
-		fmt.sbprintf(
-			b,
-			"Rect(at=Vec2(x=%d,y=%d),size=Vec2(x=%d,y=%d),color=Color::%s)",
-			i64(c.at.x),
-			i64(c.at.y),
-			i64(c.size.x),
-			i64(c.size.y),
-			color_text(c.color, context.temp_allocator),
-		)
+		strings.write_string(b, "Rect(at=")
+		write_vec2_decimal(b, c.at)
+		strings.write_string(b, ",size=")
+		write_vec2_decimal(b, c.size)
+		fmt.sbprintf(b, ",color=Color::%s)", color_text(c.color, context.temp_allocator))
 	case Draw_Text:
-		fmt.sbprintf(b, "Text(at=Vec2(x=%d,y=%d),text=L%d:%s,color=Color::%s)", i64(c.at.x), i64(c.at.y), len(c.text), c.text, color_text(c.color, context.temp_allocator))
+		strings.write_string(b, "Text(at=")
+		write_vec2_decimal(b, c.at)
+		fmt.sbprintf(b, ",text=L%d:%s,color=Color::%s)", len(c.text), c.text, color_text(c.color, context.temp_allocator))
 	case Draw_Camera:
-		fmt.sbprintf(b, "Camera(at=Vec2(x=%d,y=%d),zoom=%d,rotation=%d)", i64(c.at.x), i64(c.at.y), i64(c.zoom), i64(c.rotation))
+		strings.write_string(b, "Camera(at=")
+		write_vec2_decimal(b, c.at)
+		strings.write_string(b, ",zoom=")
+		write_source_fixed(b, c.zoom)
+		strings.write_string(b, ",rotation=")
+		write_source_fixed(b, c.rotation)
+		strings.write_byte(b, ')')
 	case Draw3_Camera:
-		fmt.sbprintf(
-			b,
-			"Camera3(eye=Vec3(x=%d,y=%d,z=%d),at=Vec3(x=%d,y=%d,z=%d),fov=%d)",
-			i64(c.eye.x),
-			i64(c.eye.y),
-			i64(c.eye.z),
-			i64(c.at.x),
-			i64(c.at.y),
-			i64(c.at.z),
-			i64(c.fov),
-		)
+		strings.write_string(b, "Camera3(eye=")
+		write_vec3_decimal(b, c.eye)
+		strings.write_string(b, ",at=")
+		write_vec3_decimal(b, c.at)
+		strings.write_string(b, ",fov=")
+		write_source_fixed(b, c.fov)
+		strings.write_byte(b, ')')
 	case Draw3_Light:
-		fmt.sbprintf(b, "Light(dir=Vec3(x=%d,y=%d,z=%d),color=Color::%s)", i64(c.dir.x), i64(c.dir.y), i64(c.dir.z), color_text(c.color, context.temp_allocator))
+		strings.write_string(b, "Light(dir=")
+		write_vec3_decimal(b, c.dir)
+		fmt.sbprintf(b, ",color=Color::%s)", color_text(c.color, context.temp_allocator))
 	case Draw3_Plane:
-		fmt.sbprintf(
-			b,
-			"Plane(at=Vec3(x=%d,y=%d,z=%d),size=Vec2(x=%d,y=%d),color=Color::%s)",
-			i64(c.at.x),
-			i64(c.at.y),
-			i64(c.at.z),
-			i64(c.size.x),
-			i64(c.size.y),
-			color_text(c.color, context.temp_allocator),
-		)
+		strings.write_string(b, "Plane(at=")
+		write_vec3_decimal(b, c.at)
+		strings.write_string(b, ",size=")
+		write_vec2_decimal(b, c.size)
+		fmt.sbprintf(b, ",color=Color::%s)", color_text(c.color, context.temp_allocator))
 	case Draw3_Rigged:
 		strings.write_string(b, "Rigged(skeleton=")
 		render_handle_text(b, c.skeleton)
@@ -1444,7 +1484,9 @@ render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 		render_handle_text(b, c.parts)
 		strings.write_string(b, ",pose=")
 		render_pose_text(b, c.pose)
-		fmt.sbprintf(b, ",at=Vec3(x=%d,y=%d,z=%d))", i64(c.at.x), i64(c.at.y), i64(c.at.z))
+		strings.write_string(b, ",at=")
+		write_vec3_decimal(b, c.at)
+		strings.write_byte(b, ')')
 	case Draw_Tilemap:
 		// The batched §18 §3 layer dumps as its identity + geometry — the cell
 		// content is the artifact's static table (and the digest's full fold),
@@ -1462,17 +1504,13 @@ render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {
 		// The §18 §1 entity sprite dumps its complete lowered state — the atlas
 		// NAME, cell key, at/size, tint, flip token, and layer — the same fields
 		// the digest folds, so the draw-list dump names what diverged.
+		fmt.sbprintf(b, "Sprite(atlas=L%d:%s,cell=L%d:%s,at=", len(c.atlas), c.atlas, len(c.cell), c.cell)
+		write_vec2_decimal(b, c.at)
+		strings.write_string(b, ",size=")
+		write_vec2_decimal(b, c.size)
 		fmt.sbprintf(
 			b,
-			"Sprite(atlas=L%d:%s,cell=L%d:%s,at=Vec2(x=%d,y=%d),size=Vec2(x=%d,y=%d),tint=Color::%s,flip=L%d:%s,layer=%d)",
-			len(c.atlas),
-			c.atlas,
-			len(c.cell),
-			c.cell,
-			i64(c.at.x),
-			i64(c.at.y),
-			i64(c.size.x),
-			i64(c.size.y),
+			",tint=Color::%s,flip=L%d:%s,layer=%d)",
 			color_text(c.tint, context.temp_allocator),
 			len(c.flip),
 			c.flip,

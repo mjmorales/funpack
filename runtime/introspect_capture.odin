@@ -442,7 +442,14 @@ source_decl_fields :: proc(program: ^Program, name: string) -> (fields: []Field_
 // the integer long-multiplication by 10 below extracts each digit with no
 // float anywhere. A `.` is always present (at least `.0`) — the funpack
 // lexeme that separates a Fixed literal from an Int.
-@(private = "file")
+//
+// Package-visible because it is the ONE float-free Fixed→source-literal renderer the
+// runtime owns, shared by two readers: the capture-to-test exporter (here) AND the §28
+// debug projection (introspect.odin's observe renderers), so an inspect_draw_list /
+// inspect_signals / inspect_state value reads as `96.0`, not the raw Q32.32 bits
+// (F17). decode_fixed(human=true) is its exact inverse, closing the observe→control
+// round-trip (F18). The committed `.artifact` wire format is unaffected — that is the
+// compiler's emit.odin, a separate product; this renderer never writes one.
 write_source_fixed :: proc(b: ^strings.Builder, value: Fixed) {
 	bits := i64(value)
 	magnitude: u64

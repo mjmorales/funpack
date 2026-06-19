@@ -93,7 +93,8 @@ test_introspect_pipeline_envelope :: proc(t: ^testing.T) {
 
 // The trace observe re-folds one tick and reports the behavior's (in → out):
 // pre-eval blackboard, bound reads, returned value, post-tick committed
-// blackboard — every funpack value a string in the artifact literal encoding.
+// blackboard — every funpack value a string in the §28 debug projection (a Fixed
+// `pos` reads as the source literal `1.0`, not raw Q32.32 bits — F17).
 @(test)
 test_introspect_trace_behavior_transition :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 3)
@@ -102,11 +103,11 @@ test_introspect_trace_behavior_transition :: proc(t: ^testing.T) {
 	expected :=
 		`{"v":1,"id":7,"ok":true,"cmd":"trace","result":{"tick":1,"behavior":"advance","steps":[` +
 		`{"ordinal":0,"instance":0,` +
-		`"self_before":"Hero(home=Coord(v=5),pos=4294967296,score=0,stats=Stats(hp=10,mana=4))",` +
-		`"reads":{"self":"(home=Coord(v=5),pos=4294967296,score=0,stats=Stats(hp=10,mana=4))"},` +
+		`"self_before":"Hero(home=Coord(v=5),pos=1.0,score=0,stats=Stats(hp=10,mana=4))",` +
+		`"reads":{"self":"(home=Coord(v=5),pos=1.0,score=0,stats=Stats(hp=10,mana=4))"},` +
 		`"ok":true,` +
-		`"result":"(home=Coord(v=5),pos=8589934592,score=0,stats=Stats(hp=10,mana=4))",` +
-		`"self_after":"Hero(home=Coord(v=5),pos=8589934592,score=0,stats=Stats(hp=10,mana=4))"}]}}`
+		`"result":"(home=Coord(v=5),pos=2.0,score=0,stats=Stats(hp=10,mana=4))",` +
+		`"self_after":"Hero(home=Coord(v=5),pos=2.0,score=0,stats=Stats(hp=10,mana=4))"}]}}`
 	testing.expect_value(t, response, expected)
 }
 
@@ -120,7 +121,7 @@ test_introspect_diff_changed_fields :: proc(t: ^testing.T) {
 	expected :=
 		`{"v":1,"id":3,"ok":true,"cmd":"diff","result":{"from":0,"to":1,"tables":[` +
 		`{"thing":"Hero","added":[],"removed":[],"changed":[{"id":0,"fields":[` +
-		`{"field":"pos","from":"4294967296","to":"8589934592"}]}]}]}}`
+		`{"field":"pos","from":"1.0","to":"2.0"}]}]}]}}`
 	testing.expect_value(t, response, expected)
 }
 
@@ -135,7 +136,7 @@ test_introspect_replay_behavior_purity :: proc(t: ^testing.T) {
 	expected :=
 		`{"v":1,"id":4,"ok":true,"cmd":"replay_behavior","result":{"tick":0,"behavior":"advance","instances":[` +
 		`{"instance":0,"ok":true,` +
-		`"result":"(home=Coord(v=5),pos=4294967296,score=0,stats=Stats(hp=10,mana=4))",` +
+		`"result":"(home=Coord(v=5),pos=1.0,score=0,stats=Stats(hp=10,mana=4))",` +
 		`"refold_matches":true}]}}`
 	testing.expect_value(t, response, expected)
 }
@@ -479,12 +480,12 @@ test_draw_list_dump_formats_color_named_and_rgb :: proc(t: ^testing.T) {
 	named_out := strings.to_string(named_b)
 	testing.expect(t, strings.contains(named_out, "color=Color::Gray"), named_out)
 
-	// A Color::Rgb rect dumps `color=Color::Rgb(<r>,<g>,<b>)` with raw Q32.32 ints.
-	// r=1.0 (FIXED_ONE), g=0.5 (half), b=0.0 — so the channels render as their raw
-	// bits: FIXED_ONE = 1<<32 = 4294967296, half = 1<<31 = 2147483648, 0.
+	// A Color::Rgb rect dumps `color=Color::Rgb(<r>,<g>,<b>)` with SOURCE-LITERAL decimal
+	// channels (F17 — the legible debug projection, float-free via write_source_fixed).
+	// r=1.0 (FIXED_ONE), g=0.5 (half), b=0.0 → `Rgb(1.0,0.5,0.0)`.
 	half := fixed_div(FIXED_ONE, to_fixed(2))
 	rgb_b := strings.builder_make(context.temp_allocator)
 	render_draw_cmd_text(&rgb_b, Draw_Rect{at = at, size = size, color = rgb_color(FIXED_ONE, half, Fixed(0))})
 	rgb_out := strings.to_string(rgb_b)
-	testing.expect(t, strings.contains(rgb_out, "color=Color::Rgb(4294967296,2147483648,0)"), rgb_out)
+	testing.expect(t, strings.contains(rgb_out, "color=Color::Rgb(1.0,0.5,0.0)"), rgb_out)
 }
