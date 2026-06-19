@@ -28,6 +28,23 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    # Cut a release on demand even when no qualifying conventional commit exists
+    # (e.g. ship an already-committed corpus restamp — FRICTION F15). Each input
+    # forces that line's bump level; 'none' (the default) leaves the line to its
+    # normal commit-driven detection, so a dispatch can cut one line, both, or
+    # (both 'none') nothing.
+    inputs:
+      binary_bump:
+        description: Force a binary (v*) release at this level
+        type: choice
+        default: none
+        options: [none, patch, minor, major]
+      plugin_bump:
+        description: Force a plugin (plugin-v*) release at this level
+        type: choice
+        default: none
+        options: [none, patch, minor, major]
 
 permissions:
   contents: read
@@ -147,7 +164,9 @@ jobs:
   release:
     name: cut version + tag
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
       contents: write   # cut tags + create releases
@@ -181,29 +200,38 @@ jobs:
           CURRENT="${LATEST_TAG#v}"
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
-          # Exclude the sibling-line paths (plugin) so a mixed push bumps the
-          # binary line only by its own source commits.
-          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
-          if [ "$LATEST_TAG" = "v0.0.0" ]; then
-            COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- . "${EXCLUDES[@]}")
+          # A workflow_dispatch run can force this line's bump even with no
+          # qualifying commit (e.g. ship an already-committed corpus restamp —
+          # FRICTION F15). The manual input wins; 'none' (the default, and the
+          # value on every push event) falls through to commit detection.
+          FORCE="${{ github.event.inputs.binary_bump }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$FORCE" ] && [ "$FORCE" != "none" ]; then
+            BUMP="$FORCE"
           else
-            COMMITS=$(git log --pretty=format:"%s%n%b" "${LATEST_TAG}..HEAD" -- . "${EXCLUDES[@]}")
-          fi
+            # Exclude the sibling-line paths (plugin) so a mixed push bumps the
+            # binary line only by its own source commits.
+            EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
+            if [ "$LATEST_TAG" = "v0.0.0" ]; then
+              COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- . "${EXCLUDES[@]}")
+            else
+              COMMITS=$(git log --pretty=format:"%s%n%b" "${LATEST_TAG}..HEAD" -- . "${EXCLUDES[@]}")
+            fi
 
-          if [ -z "$COMMITS" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+            if [ -z "$COMMITS" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
 
-          # `!`/BREAKING -> major, feat -> minor,
-          # fix/docs/refactor/perf/style/build -> patch. chore/ci/test -> none.
-          BUMP="none"
-          if echo "$COMMITS" | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
-            BUMP="major"
-          elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
-            BUMP="minor"
-          elif echo "$COMMITS" | grep -qE "^(fix|docs|refactor|perf|style|build)(\(.+\))?:"; then
-            BUMP="patch"
+            # `!`/BREAKING -> major, feat -> minor,
+            # fix/docs/refactor/perf/style/build -> patch. chore/ci/test -> none.
+            BUMP="none"
+            if echo "$COMMITS" | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
+              BUMP="major"
+            elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+              BUMP="minor"
+            elif echo "$COMMITS" | grep -qE "^(fix|docs|refactor|perf|style|build)(\(.+\))?:"; then
+              BUMP="patch"
+            fi
           fi
 
           if [ "$BUMP" = "none" ]; then
@@ -306,26 +334,34 @@ jobs:
           LATEST_TAG=$(git describe --tags --abbrev=0 --match 'plugin-v*' 2>/dev/null || echo "")
           echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
-          # Analyse only commits that TOUCHED the plugin artifact paths.
-          PATHS=(plugins .claude-plugin)
-          if [ -z "$LATEST_TAG" ]; then
-            COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- "${PATHS[@]}")
+          # A workflow_dispatch run can force this line's bump even with no
+          # qualifying commit. The manual input wins; 'none' (the default, and the
+          # value on every push event) falls through to commit detection.
+          FORCE="${{ github.event.inputs.plugin_bump }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$FORCE" ] && [ "$FORCE" != "none" ]; then
+            BUMP="$FORCE"
           else
-            COMMITS=$(git log --pretty=format:"%s%n%b" "${LATEST_TAG}..HEAD" -- "${PATHS[@]}")
-          fi
+            # Analyse only commits that TOUCHED the plugin artifact paths.
+            PATHS=(plugins .claude-plugin)
+            if [ -z "$LATEST_TAG" ]; then
+              COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- "${PATHS[@]}")
+            else
+              COMMITS=$(git log --pretty=format:"%s%n%b" "${LATEST_TAG}..HEAD" -- "${PATHS[@]}")
+            fi
 
-          if [ -z "$COMMITS" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+            if [ -z "$COMMITS" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
 
-          BUMP="none"
-          if echo "$COMMITS" | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
-            BUMP="major"
-          elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
-            BUMP="minor"
-          elif echo "$COMMITS" | grep -qE "^(fix|docs|refactor|perf|style|build)(\(.+\))?:"; then
-            BUMP="patch"
+            BUMP="none"
+            if echo "$COMMITS" | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
+              BUMP="major"
+            elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+              BUMP="minor"
+            elif echo "$COMMITS" | grep -qE "^(fix|docs|refactor|perf|style|build)(\(.+\))?:"; then
+              BUMP="patch"
+            fi
           fi
 
           if [ "$BUMP" = "none" ]; then
