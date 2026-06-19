@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.10.1] - 2026-06-19
+
+### Other
+- refactor(funpack): prune unusable engine.render::Font over-declaration (5088890)
+
 ## [0.10.0] - 2026-06-18
 
 ### Features
