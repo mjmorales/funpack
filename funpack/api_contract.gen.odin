@@ -349,6 +349,7 @@ TOOL_SPECS := []Tool_Spec{
 		session_scoped = true,
 		args           = []Tool_Arg{
 			SESSION_ID_ARG,
+			{name = "overlay", json_type = "boolean", required = false, doc = "when true, append the collision-extent debug overlay — each thing's center-anchored (pos,size) extent as a Magenta box outline plus a pos marker, so a top-left-vs-center convention mismatch is visible in the dump (default false)"},
 			{name = "tick", json_type = "integer", required = true, doc = "the committed tick whose §20 draw-list to dump (the deterministic, always-serving render projection)"},
 			BRANCH_ARG,
 		},
@@ -376,6 +377,7 @@ TOOL_SPECS := []Tool_Spec{
 		args           = []Tool_Arg{
 			SESSION_ID_ARG,
 			{name = "include_drawlist", json_type = "boolean", required = false, doc = "when true, the deterministic §20 draw-list rides along with the pixels (default false: visual-only)"},
+			{name = "overlay", json_type = "boolean", required = false, doc = "when true, paint the collision-extent debug overlay into the frame — each thing's center-anchored (pos,size) extent in Magenta, so a top-left-vs-center convention mismatch is visible (default false)"},
 			{name = "tick", json_type = "integer", required = true, doc = "the committed tick to capture as a presented frame (pixels)"},
 			BRANCH_ARG,
 		},

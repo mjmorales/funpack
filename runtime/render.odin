@@ -393,6 +393,7 @@ render_version :: proc(
 	time: Record_Value,
 	allocator := context.allocator,
 	obs: ^Tick_Observe = nil,
+	overlay := false,
 ) -> Draw_List {
 	committed := version
 	interp := new_interp(program, &committed, nil, input, time, allocator)
@@ -419,9 +420,66 @@ render_version :: proc(
 		}
 		render_behavior_over_instances(&interp, step, behavior, &cmds, allocator, obs)
 	}
+	// The §28 collision-extent debug overlay (F16) rides ON TOP of the behavior commands
+	// when requested — a pure post-commit read, gated off the normal projection.
+	if overlay {
+		for cmd in render_overlay_commands(version, allocator) {
+			append(&cmds, cmd)
+		}
+	}
 	resolve_sprite_textures(program, cmds[:])
 	resolve_tilemap_textures(program, cmds[:], allocator)
 	return Draw_List{cmds = cmds[:]}
+}
+
+// render_overlay_commands draws the §28 collision-extent DEBUG overlay (F16): for every
+// committed instance carrying the universal 2D pair (a `pos` and a `size`, both Vec2), it
+// emits the CENTER-ANCHORED extent the engine actually uses — spec §20's `corner = pos −
+// size/2`, the same anchor render and the physics solver apply — as a four-edge Magenta
+// box outline, plus a small Magenta marker at `pos`. Drawn over the normal draw-list, it
+// makes a top-left-vs-center convention mismatch VISIBLE on screen: the outline sits
+// where the engine anchors the entity, so a game that writes top-left collision/spawn math
+// sees its sprite (or its collisions) land size/2 off the outline instead of discovering
+// the gap only at runtime. A thing without a Vec2 pos contributes nothing; a thing with
+// pos but no size gets just the anchor marker. Pure read of the committed version — no
+// behavior runs, no Draw is authored by the game, nothing re-enters the sim. The edges are
+// emitted CENTER-anchored too (each `at` is the edge's midpoint), so the projection lowers
+// them by the same §20 rule as every other rect — the overlay cannot itself be off-anchor.
+render_overlay_commands :: proc(version: World_Version, allocator := context.allocator) -> []Draw_Cmd {
+	cmds := make([dynamic]Draw_Cmd, allocator)
+	v := version
+	for table in v.tables {
+		for row in table.rows {
+			pos_field, has_pos := row.fields["pos"]
+			if !has_pos {
+				continue
+			}
+			pos, pos_ok := pos_field.(Vec2)
+			if !pos_ok {
+				continue
+			}
+			marker := to_fixed(2)
+			append(&cmds, Draw_Rect{at = pos, size = Vec2{marker, marker}, color = named_color(.Magenta)})
+
+			size_field, has_size := row.fields["size"]
+			if !has_size {
+				continue
+			}
+			size, size_ok := size_field.(Vec2)
+			if !size_ok {
+				continue
+			}
+			half_x := fixed_div(size.x, to_fixed(2))
+			half_y := fixed_div(size.y, to_fixed(2))
+			thick := to_fixed(1)
+			// Four center-anchored edge rects forming the box border at [pos ± size/2].
+			append(&cmds, Draw_Rect{at = Vec2{pos.x, fixed_sub(pos.y, half_y)}, size = Vec2{size.x, thick}, color = named_color(.Magenta)})
+			append(&cmds, Draw_Rect{at = Vec2{pos.x, fixed_add(pos.y, half_y)}, size = Vec2{size.x, thick}, color = named_color(.Magenta)})
+			append(&cmds, Draw_Rect{at = Vec2{fixed_sub(pos.x, half_x), pos.y}, size = Vec2{thick, size.y}, color = named_color(.Magenta)})
+			append(&cmds, Draw_Rect{at = Vec2{fixed_add(pos.x, half_x), pos.y}, size = Vec2{thick, size.y}, color = named_color(.Magenta)})
+		}
+	}
+	return cmds[:]
 }
 
 // resolve_tilemap_textures runs the §17/§19 textured-TILE resolution pass over the

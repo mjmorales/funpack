@@ -597,3 +597,42 @@ place_ball_for_render :: proc(
 	}
 	return commit_version(prior, changed, allocator)
 }
+
+// The collision-extent debug overlay (F16) emits, for a thing carrying the universal
+// 2D pair (pos + size, both Vec2), the CENTER-ANCHORED extent the engine actually uses
+// (spec §20: corner = pos − size/2) as a four-edge Magenta box outline plus a pos
+// marker — 5 commands. Each edge is itself center-anchored (its `at` is the edge's
+// midpoint), so the outline lowers by the same §20 rule as every other rect. A box at
+// pos (96,90) size (40,20) spans [76,116]×[80,100]; the test grounds every edge in the
+// kernel. This is what makes a top-left-vs-center convention mismatch visible on screen.
+@(test)
+test_render_overlay_center_anchored_extent :: proc(t: ^testing.T) {
+	fields := make(map[string]Field_Value, context.temp_allocator)
+	fields["pos"] = Vec2{to_fixed(96), to_fixed(90)}
+	fields["size"] = Vec2{to_fixed(40), to_fixed(20)}
+	rows := []Row{Row{id = Id{raw = 0}, fields = fields}}
+	tables := []Version_Table{Version_Table{thing = "Box", rows = rows, next_id = Thing_Id(1)}}
+	version := World_Version{tables = tables}
+
+	cmds := render_overlay_commands(version, context.temp_allocator)
+	testing.expect_value(t, len(cmds), 5) // 1 anchor marker + 4 center-anchored edges
+
+	want := [][2]Vec2 {
+		{Vec2{to_fixed(96), to_fixed(90)}, Vec2{to_fixed(2), to_fixed(2)}},   // pos marker
+		{Vec2{to_fixed(96), to_fixed(80)}, Vec2{to_fixed(40), to_fixed(1)}},  // top edge   (90 − 20/2)
+		{Vec2{to_fixed(96), to_fixed(100)}, Vec2{to_fixed(40), to_fixed(1)}}, // bottom edge (90 + 20/2)
+		{Vec2{to_fixed(76), to_fixed(90)}, Vec2{to_fixed(1), to_fixed(20)}},  // left edge  (96 − 40/2)
+		{Vec2{to_fixed(116), to_fixed(90)}, Vec2{to_fixed(1), to_fixed(20)}}, // right edge (96 + 40/2)
+	}
+	for w in want {
+		found := false
+		for cmd in cmds {
+			rect, is_rect := cmd.(Draw_Rect)
+			if is_rect && rect.at == w[0] && rect.size == w[1] && rect.color.palette == .Magenta {
+				found = true
+				break
+			}
+		}
+		testing.expectf(t, found, "overlay must carry a magenta rect at=%v size=%v", w[0], w[1])
+	}
+}

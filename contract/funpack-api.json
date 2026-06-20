@@ -86,7 +86,10 @@
             "tick": { "type": "integer", "required": true, "doc": "the recorded tick to replay the behavior at" },
             "behavior": { "type": "string", "required": true, "doc": "the behavior name to re-run in isolation from its captured inputs" }
           } },
-          { "name": "draw_list", "args": { "tick": { "type": "integer", "required": true, "doc": "the committed tick whose §20 draw-list to dump (the deterministic, always-serving render projection)" } } },
+          { "name": "draw_list", "args": {
+            "tick": { "type": "integer", "required": true, "doc": "the committed tick whose §20 draw-list to dump (the deterministic, always-serving render projection)" },
+            "overlay": { "type": "boolean", "required": false, "doc": "when true, append the collision-extent debug overlay — each thing's center-anchored (pos,size) extent as a Magenta box outline plus a pos marker, so a top-left-vs-center convention mismatch is visible in the dump (default false)" }
+          } },
           { "name": "state", "args": {
             "thing": { "type": "string", "required": true, "doc": "the thing (table/singleton) whose committed instances to list" },
             "tick": { "type": "integer", "required": false, "doc": "the committed tick to read state at (default: the lineage head)" },
@@ -94,7 +97,8 @@
           } },
           { "name": "screenshot", "args": {
             "tick": { "type": "integer", "required": true, "doc": "the committed tick to capture as a presented frame (pixels)" },
-            "include_drawlist": { "type": "boolean", "required": false, "doc": "when true, the deterministic §20 draw-list rides along with the pixels (default false: visual-only)" }
+            "include_drawlist": { "type": "boolean", "required": false, "doc": "when true, the deterministic §20 draw-list rides along with the pixels (default false: visual-only)" },
+            "overlay": { "type": "boolean", "required": false, "doc": "when true, paint the collision-extent debug overlay into the frame — each thing's center-anchored (pos,size) extent in Magenta, so a top-left-vs-center convention mismatch is visible (default false)" }
           } }
         ]
       },

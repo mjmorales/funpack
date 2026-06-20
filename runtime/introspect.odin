@@ -1042,7 +1042,11 @@ observe_draw_list :: proc(
 	// world, so this is the deterministic branch-tip draw list.
 	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
-	draw := render_version(s.program, version, input, time, allocator)
+	// overlay:true appends the §28 collision-extent debug overlay (F16) — each thing's
+	// center-anchored (pos,size) extent, so a top-left-vs-center convention mismatch is
+	// visible in the dump instead of only at runtime.
+	overlay, _ := json_bool_field(args, "overlay")
+	draw := render_version(s.program, version, input, time, allocator, nil, overlay)
 	b := strings.builder_make(allocator)
 	ok_response_open(&b, id, "draw_list")
 	fmt.sbprintf(&b, "{{\"tick\":%d,\"commands\":[", tick)
@@ -1107,7 +1111,11 @@ observe_screenshot :: proc(
 	// world (identical to observe_draw_list's branch-tip handling).
 	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
-	draw := render_version(s.program, version, input, time, allocator)
+	// overlay:true paints the §28 collision-extent debug overlay (F16) into the captured
+	// frame too — the SAME projection draw_list reads, so the magenta center-anchored
+	// extents are visible in the pixels and in the rode-along draw-list alike.
+	overlay, _ := json_bool_field(args, "overlay")
+	draw := render_version(s.program, version, input, time, allocator, nil, overlay)
 
 	// CROSS THE PRESENT BOUNDARY: capture the rasterized frame as base64-encoded QOI
 	// (the Odin-first lossless encoder; core:image/png is decode-only in this

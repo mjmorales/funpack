@@ -318,6 +318,22 @@ test_draw_list_keeps_out_of_bounds_rect :: proc(t: ^testing.T) {
 	)
 }
 
+// draw_list overlay:true appends the collision-extent debug overlay (F16) — each
+// thing's center-anchored (pos,size) extent in Magenta, on top of the normal draw-list.
+// Without the flag no overlay appears (the projection is unchanged); with it, the magenta
+// commands ride along while the real commands remain, so a convention mismatch is visible.
+@(test)
+test_introspect_draw_list_overlay :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+	plain := session_request(&s, `{"id":5,"cmd":"draw_list","args":{"tick":0}}`)
+	testing.expect(t, !strings.contains(plain, "Color::Magenta"), "no overlay without the flag")
+	over := session_request(&s, `{"id":6,"cmd":"draw_list","args":{"tick":0,"overlay":true}}`)
+	testing.expect(t, strings.contains(over, `"ok":true`), over)
+	testing.expect(t, strings.contains(over, "Color::Magenta"), "overlay:true must add the collision-extent commands")
+	testing.expect(t, strings.contains(over, "Text(at=Vec2("), "the overlay rides on top of, not instead of, the real draw-list")
+}
+
 // The draw-list observe dumps the §20 render projection of a committed tick —
 // pong's paddles/ball Rects and the score Text, re-projected post-hoc.
 @(test)
