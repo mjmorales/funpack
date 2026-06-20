@@ -233,6 +233,29 @@ test_control_set_accepts_source_literal_scalar :: proc(t: ^testing.T) {
 	testing.expect_value(t, i64(vec.y), i64(fixed_add(FIXED_ONE, fixed_div(FIXED_ONE, to_fixed(2))))) // 1.5
 }
 
+// A TYPE-MISMATCHED value is refused, not silently stored (F21). decode_default_value's
+// §6 bare-token fallback never fails for a known-concrete declared type — `not-a-vec`
+// would drop to a string column on a Vec2 field and report success — so the control
+// surface verifies the decoded arm matches the declared type and refuses on mismatch,
+// with the same remedy-bearing error.
+@(test)
+test_control_set_rejects_type_mismatch :: proc(t: ^testing.T) {
+	_, session := pong_control_session(t, 3)
+	s := session
+	response := session_request(
+		&s,
+		`{"id":2,"cmd":"set","args":{"thing":"Ball","instance":0,"field":"pos","value":"not-a-vec"}}`,
+	)
+	testing.expect(t, strings.contains(response, `"ok":false`), "a type-mismatched value must refuse")
+	testing.expect(t, strings.contains(response, "declared type Vec2"), response)
+	// The branch row keeps a Vec2 column — no string token was written.
+	if ball, ok := branch_row(&s, "Ball", 0); ok {
+		pos, _ := row_field(ball, "pos")
+		_, is_vec := pos.(Vec2)
+		testing.expect(t, is_vec, "pos must remain a Vec2 column, never a bare string token")
+	}
+}
+
 // A malformed value (a Vec2 literal whose component is non-numeric) fails with F18's
 // remedy-bearing error: the field name, its declared type, AND a sample source literal —
 // never a bare "does not decode" that left the agent guessing the wire form.

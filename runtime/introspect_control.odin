@@ -389,6 +389,52 @@ parse_player :: proc(name: string) -> (player: PlayerId, ok: bool) {
 	return .P1, false
 }
 
+// control_value_matches_type guards the control decode against the §6 bare-token
+// fallback silently accepting a TYPE-MISMATCHED value (F21). decode_default_value never
+// FAILS for a known-concrete declared type — an undecodable token drops to a bare string
+// column (the fallback the §6 artifact loader needs for unit-enum tokens against unknown
+// data decls) — so `set Ball.pos not-a-vec` would store a string into a Vec2 column and
+// report success. The control surface verifies the decoded arm matches the DECLARED type
+// and refuses on mismatch. It tightens ONLY the known-concrete types (Int/Fixed/Bool/
+// Vec2/Vec3/String/[T]/§3-data-record), where the footgun bites; an enum or §3-less
+// type keeps the loader's bare-token leniency (validating an enum case is the loader's
+// job, not this guard's), so no legitimate control payload regresses.
+@(private = "file")
+control_value_matches_type :: proc(program: ^Program, type_name: string, value: Field_Value) -> bool {
+	switch type_name {
+	case "Int":
+		_, ok := value.(i64)
+		return ok
+	case "Fixed":
+		_, ok := value.(Fixed)
+		return ok
+	case "Bool":
+		_, ok := value.(bool)
+		return ok
+	case "Vec2":
+		_, ok := value.(Vec2)
+		return ok
+	case "Vec3":
+		_, ok := value.(Vec3)
+		return ok
+	case "String":
+		_, ok := value.(String_Value)
+		return ok
+	}
+	if strings.has_prefix(type_name, "[") {
+		_, ok := value.(List_Value)
+		return ok
+	}
+	if program_data(program, type_name) != nil {
+		record, ok := value.(Record_Value)
+		return ok && record.type_name == type_name
+	}
+	// An enum type or a type with no §3 Data_Decl: the legitimate column forms are a
+	// bare unit-variant token, a payload Variant_Value, or a Ref — the loader's
+	// bare-token domain, left untightened.
+	return true
+}
+
 // value_decode_error builds the §28 set/spawn decode-failure message — F18's "state
 // the expected encoding." A bare "does not decode" left the agent guessing the wire
 // form; this names the field, its declared type, and a SAMPLE LITERAL in the exact
@@ -462,7 +508,7 @@ control_set :: proc(
 		return error_response(id, "set", "unknown field", allocator)
 	}
 	decoded, decode_ok := decode_default_value(branch.program, field_type, encoded, allocator, true)
-	if !decode_ok {
+	if !decode_ok || !control_value_matches_type(branch.program, field_type, decoded) {
 		return error_response(id, "set", value_decode_error(field, field_type, allocator), allocator)
 	}
 
@@ -523,7 +569,7 @@ control_spawn :: proc(
 				return error_response(id, "spawn", "field overrides must be encoded strings", allocator)
 			}
 			decoded, decode_ok := decode_default_value(branch.program, fd.type, encoded, allocator, true)
-			if !decode_ok {
+			if !decode_ok || !control_value_matches_type(branch.program, fd.type, decoded) {
 				return error_response(id, "spawn", value_decode_error(fd.name, fd.type, allocator), allocator)
 			}
 			fields[fd.name] = decoded
