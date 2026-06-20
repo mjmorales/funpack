@@ -65,23 +65,24 @@ Tools split into two classes:
 
 | Tool | Use when… |
 |---|---|
+| `inspect_state` | You want to list a thing's committed instances and their field values at a tick — the read-only "what state EXISTS" inspector (the others show what was routed/drawn/changed, never what simply exists). Pure read of the retained COW chain — no fork, no instrumentation; `tick` defaults to the lineage head, an optional `instance` filters to one row. Field values render keyed by name in the source-literal projection (a Fixed as `96.0`, a Vec2 as `Vec2(x=96.0,y=90.0)`), so an observed value pastes straight back into `control_set`/`control_spawn`. |
 | `inspect_signals` | You want every signal routed during one recorded tick, in fold order. |
 | `inspect_pipeline` | You want the flattened pipeline in total order (every step's ordinal, stage, behavior). |
 | `inspect_trace` | You want to trace one behavior's per-instance (in → out) at a tick — the bounded re-fold. |
 | `inspect_diff` | You want the committed-state diff between two retained ticks (per-table row adds/removes/changed fields). |
 | `inspect_replay_behavior` | You want to confirm one behavior re-runs purely from its captured inputs — the purity theorem, checkable (`refold_matches=false` is a bug to file). |
-| `inspect_draw_list` | You want one committed tick's deterministic draw-list (screenshot's sim-pure twin; **always serves headless** — it IS the determinism-path render output, so it is the headless substitute for `inspect_screenshot`). |
-| `inspect_screenshot` | You want to **SEE** one committed tick as a presented PNG frame. It **writes the PNG to disk and returns a file path** (the metadata block's `path` field), not inline pixels — Read that path to view the frame. Captures land in `./.funpack-mcp` by default, or `$FUNPACK_SCREENSHOT_DIR` when the host sets it; filenames are `funpack-screenshot-<timestamp>-tick<N>.png`. Crosses the render/present boundary — only a funpack built with `FUNPACK_LIVE` can serve it (a property of the funpack **binary**, not the built artifact). The shipped funpack binary IS the `FUNPACK_LIVE` build, so this serves even headless (SDL dummy video driver — no display needed); a binary built without it refuses with a precise error pointing at `inspect_draw_list`. |
+| `inspect_draw_list` | You want one committed tick's deterministic draw-list (screenshot's sim-pure twin; **always serves headless** — it IS the determinism-path render output, so it is the headless substitute for `inspect_screenshot`). Pass `overlay:true` to append the collision-extent debug overlay — each thing's center-anchored `(pos,size)` extent as a Magenta box outline plus a `pos` marker, surfacing a top-left-vs-center convention mismatch in the dump. |
+| `inspect_screenshot` | You want to **SEE** one committed tick as a presented PNG frame. It **writes the PNG to disk and returns a file path** (the metadata block's `path` field), not inline pixels — Read that path to view the frame. Captures land in `./.funpack-mcp` by default, or `$FUNPACK_SCREENSHOT_DIR` when the host sets it; filenames are `funpack-screenshot-<timestamp>-tick<N>.png`. Crosses the render/present boundary — only a funpack built with `FUNPACK_LIVE` can serve it (a property of the funpack **binary**, not the built artifact). The shipped funpack binary IS the `FUNPACK_LIVE` build, so this serves even headless (SDL dummy video driver — no display needed); a binary built without it refuses with a precise error pointing at `inspect_draw_list`. Accepts the same `overlay:true` as `inspect_draw_list`, painting the collision-extent overlay into the captured frame so the Magenta extents show in the pixels too. |
 
 ### Control (perturbing — forks a non-warranted branch off the canonical recording)
 
 | Tool | Use when… |
 |---|---|
 | `control_inject_input` | You want to inject one input snapshot on a branch and fold forward (forks a branch). |
-| `control_set` | You want to force one blackboard field on a branch. |
-| `control_spawn` | You want to spawn one new instance of a thing on a branch (returns the minted instance id). |
+| `control_set` | You want to force one blackboard field on a branch. The `value` is a source literal in the same projection the observe surfaces render (so a value read from `inspect_state` pastes straight back; a raw Q32.32 integer is also accepted). A type-mismatched value is refused — never silently stored — with an error naming the field, its declared type, and a sample literal. |
+| `control_spawn` | You want to spawn one new instance of a thing on a branch (returns the minted instance id). Field overrides take the same source-literal encoding as `control_set`. |
 | `control_despawn` | You want to despawn one instance on a branch. |
-| `control_emit` | You want to emit one signal on a branch and fold a full pipeline tick over it. |
+| `control_emit` | You want to emit one signal on a branch and fold a full pipeline tick over it. The `value` is a record source literal of the signal type (e.g. `Goal(side=Side::Left)`), Fixed/vector fields in the same source spelling as `control_set`. |
 | `control_reload` | You want to hot-reload a branch onto a recompiled artifact through the gated atomic swap. |
 | `control_branch` | You want to explicitly fork the canonical recording into a fresh branch at a tick — the git-like "what if?" fork. |
 | `control_checkout` | You want to switch the active lineage (read source) between `branch` and `canonical` — navigates lineages, forks nothing. |
