@@ -186,10 +186,10 @@ test_control_set_forces_branch_field :: proc(t: ^testing.T) {
 }
 
 // set accepts a SOURCE-LITERAL value — `Vec2(x=2.0,y=104.0)`, the exact spelling the
-// observe projection now renders (F17) — and decodes its decimal components float-free
-// to the same Q32.32 bits a `2.0`/`104.0` literal carries. This closes the F18
-// round-trip: an inspect_draw_list / inspect_state value pastes straight back as a
-// control payload, no hand-encoding into raw bits.
+// observe projection renders — and decodes its decimal components float-free to the
+// same Q32.32 bits a `2.0`/`104.0` literal carries. This closes the round-trip: an
+// inspect_draw_list / inspect_state value pastes straight back as a control payload,
+// no hand-encoding into raw bits.
 @(test)
 test_control_set_accepts_source_literal_vec2 :: proc(t: ^testing.T) {
 	_, session := pong_control_session(t, 3)
@@ -233,7 +233,7 @@ test_control_set_accepts_source_literal_scalar :: proc(t: ^testing.T) {
 	testing.expect_value(t, i64(vec.y), i64(fixed_add(FIXED_ONE, fixed_div(FIXED_ONE, to_fixed(2))))) // 1.5
 }
 
-// A TYPE-MISMATCHED value is refused, not silently stored (F21). decode_default_value's
+// A TYPE-MISMATCHED value is refused, not silently stored. decode_default_value's
 // §6 bare-token fallback never fails for a known-concrete declared type — `not-a-vec`
 // would drop to a string column on a Vec2 field and report success — so the control
 // surface verifies the decoded arm matches the declared type and refuses on mismatch,
@@ -256,7 +256,7 @@ test_control_set_rejects_type_mismatch :: proc(t: ^testing.T) {
 	}
 }
 
-// A malformed value (a Vec2 literal whose component is non-numeric) fails with F18's
+// A malformed value (a Vec2 literal whose component is non-numeric) fails with the
 // remedy-bearing error: the field name, its declared type, AND a sample source literal —
 // never a bare "does not decode" that left the agent guessing the wire form.
 @(test)

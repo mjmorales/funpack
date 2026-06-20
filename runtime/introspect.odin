@@ -543,7 +543,7 @@ observe_signals :: proc(
 // instance it renders the pre-eval blackboard, the bound reads (the declared
 // params, in declaration order), the returned value, and the post-tick committed
 // blackboard (null when the tick despawned the instance). It routes by the
-// behavior's STAGE (F19): an interior behavior is captured by re-folding the sim
+// behavior's STAGE: an interior behavior is captured by re-folding the sim
 // tick; a RENDER behavior is captured by re-projecting the render stage with the
 // same tap (the sim fold skips render, so a re-fold alone left it silently empty);
 // audio/startup answer an explicit unsupported-stage marker (they are not part of a
@@ -564,7 +564,7 @@ observe_trace :: proc(
 	if behavior == nil {
 		return error_response(id, "trace", "unknown behavior", allocator)
 	}
-	// Route by the behavior's STAGE (F19). The interior stages (control/collision/
+	// Route by the behavior's STAGE. The interior stages (control/collision/
 	// scoring/…) are captured by re-folding the sim tick. The terminal RENDER stage is
 	// skipped by the sim fold (run_pipeline_fold — render is a post-commit projection),
 	// so re-folding alone left its trace silently empty, indistinguishable from "ran
@@ -639,7 +639,7 @@ observe_trace :: proc(
 // trace_unsupported_stage answers a trace for a behavior whose stage is NOT part of a
 // per-tick fold — `audio` (a deferred §22 slot whose return is never folded into tick
 // state) or `startup` (runs once pre-tick-0, not per-tick). Rather than the silent empty
-// step list that reads as "ran zero times" (the F19 false-negative), it returns an
+// step list that reads as "ran zero times", it returns an
 // explicit `stage` + `note` so a debugger knows the behavior is real, ran elsewhere, and
 // where to look. The `steps` array stays present and empty so the response shape is a
 // superset of the ordinary trace, never a parse break for an existing reader.
@@ -748,14 +748,14 @@ session_head_tick :: proc(s: ^Debug_Session, lineage: Read_Lineage) -> int {
 }
 
 // observe_state lists the committed instances of one thing at a tick — the §28 §1
-// read-only STATE inspector (F20). It answers the obvious first debug question, "what
+// read-only STATE inspector. It answers the obvious first debug question, "what
 // instances of thing T exist at tick N, and what are their field values," which the
 // other observe surfaces left unanswerable: draw_list shows what was DRAWN, signals
 // what was ROUTED, diff what CHANGED — none show what state simply EXISTS, so an
 // existence/value check previously had to abuse control_set (a fork-causing WRITE) as a
 // read. This is a pure read of the retained COW chain (no fork, no instrumentation),
 // the natural complement to draw_list and signals. `tick` defaults to the lineage head;
-// an optional `instance` filters to one row; the field values render in the F17 legible
+// an optional `instance` filters to one row; the field values render in the legible
 // projection (a Fixed as `96.0`, a Vec2 as `Vec2(x=96.0,y=90.0)`), keyed by field name.
 @(private = "file")
 observe_state :: proc(
@@ -1042,7 +1042,7 @@ observe_draw_list :: proc(
 	// world, so this is the deterministic branch-tip draw list.
 	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
-	// overlay:true appends the §28 collision-extent debug overlay (F16) — each thing's
+	// overlay:true appends the §28 collision-extent debug overlay — each thing's
 	// center-anchored (pos,size) extent, so a top-left-vs-center convention mismatch is
 	// visible in the dump instead of only at runtime.
 	overlay, _ := json_bool_field(args, "overlay")
@@ -1111,7 +1111,7 @@ observe_screenshot :: proc(
 	// world (identical to observe_draw_list's branch-tip handling).
 	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
-	// overlay:true paints the §28 collision-extent debug overlay (F16) into the captured
+	// overlay:true paints the §28 collision-extent debug overlay into the captured
 	// frame too — the SAME projection draw_list reads, so the magenta center-anchored
 	// extents are visible in the pixels and in the rode-along draw-list alike.
 	overlay, _ := json_bool_field(args, "overlay")
@@ -1341,7 +1341,7 @@ sorted_blackboard_names :: proc(
 
 // render_field_value_text renders one blackboard column in the §28 DEBUG PROJECTION
 // — the inverse of decode_default_value(human=true), so an observe output pastes back
-// as a control `set`/`spawn` payload (the F17/F18 round-trip). Fixed renders as its
+// as a control `set`/`spawn` payload (the observe→control round-trip). Fixed renders as its
 // SOURCE-LITERAL decimal (`96.0` — float-free via write_source_fixed, the legible form
 // an agent reads and writes), Vec2/Vec3 as their component constructors with decimal
 // lanes, a record as `Type(f=enc,…)` sorted, a list as `[enc,…]`, a unit-variant token
@@ -1376,10 +1376,10 @@ render_field_value_text :: proc(b: ^strings.Builder, value: Field_Value) {
 }
 
 // write_vec2_decimal / write_vec3_decimal render a §10 vector with SOURCE-LITERAL
-// Fixed components (`Vec2(x=96.0,y=90.0)`) — the F17 debug projection, legible at a
+// Fixed components (`Vec2(x=96.0,y=90.0)`) — the debug projection, legible at a
 // glance instead of the raw Q32.32 lanes the artifact codec carried. They round-trip
 // through decode_fixed(human=true), so an observed vector pastes back as a control
-// payload (F18). Both lanes go through write_source_fixed: float-free, byte-stable.
+// payload. Both lanes go through write_source_fixed: float-free, byte-stable.
 write_vec2_decimal :: proc(b: ^strings.Builder, v: Vec2) {
 	strings.write_string(b, "Vec2(x=")
 	write_source_fixed(b, v.x)
@@ -1512,7 +1512,7 @@ render_variant_text :: proc(b: ^strings.Builder, variant: Variant_Value) {
 }
 
 // render_transform_text renders a §16 §7 bone transform with SOURCE-LITERAL decimal
-// lanes (the F17 debug projection — see render_field_value_text). Every Q32.32 lane
+// lanes (the debug projection — see render_field_value_text). Every Q32.32 lane
 // (pos/rot/scale, and the quat's w) goes through write_source_fixed: float-free,
 // byte-stable, legible.
 @(private = "file")
@@ -1575,7 +1575,7 @@ render_handle_text :: proc(b: ^strings.Builder, handle: Handle_Value) {
 // (`White`, `Gray` — so the existing `Color::White` line shape is unchanged after
 // Draw_Color stopped being a bare enum that `%v` printed directly). A Color::Rgb
 // renders as `Rgb(<r>,<g>,<b>)` with SOURCE-LITERAL decimal channels (the SAME
-// write_source_fixed convention the Vec2 decimal lanes use here — F17), so the dump is
+// write_source_fixed convention the Vec2 decimal lanes use here), so the dump is
 // deterministic — no float, byte-stable across machines. The string is built in
 // the supplied allocator (temp at the call site). DETERMINISM: this is a §28
 // OBSERVE projection (a read-only string view of the draw-list), never re-entering
@@ -1585,7 +1585,7 @@ color_text :: proc(color: Draw_Color, allocator := context.allocator) -> string 
 	case .Named:
 		return fmt.aprintf("%v", color.palette, allocator = allocator)
 	case .Rgb:
-		// Source-literal decimal channels (`Rgb(1.0,0.5,0.0)`) — the F17 legible
+		// Source-literal decimal channels (`Rgb(1.0,0.5,0.0)`) — the legible
 		// projection, float-free via write_source_fixed, byte-stable across machines.
 		b := strings.builder_make(allocator)
 		strings.write_string(&b, "Rgb(")
@@ -1603,7 +1603,7 @@ color_text :: proc(color: Draw_Color, allocator := context.allocator) -> string 
 // render_draw_cmd_text renders one §20 draw command in the same constructor
 // style the value encoding uses — the draw-list dump's line items. Every Q32.32 lane
 // (every Vec2/Vec3 component and the scalar Fixed fields zoom/rotation/fov) renders as
-// a SOURCE-LITERAL decimal via write_source_fixed (F17): an inspect_draw_list line reads
+// a SOURCE-LITERAL decimal via write_source_fixed: an inspect_draw_list line reads
 // `Rect(at=Vec2(x=96.0,y=90.0),…)`, not the raw Q32.32 bits. Int lanes (Tilemap geometry,
 // Sprite layer) stay decimal integers. The render stays float-free and byte-stable.
 render_draw_cmd_text :: proc(b: ^strings.Builder, cmd: Draw_Cmd) {

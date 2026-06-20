@@ -522,8 +522,8 @@ decode_default :: proc(
 // to any depth the emitter produces.
 // `human` is the §28 debug-surface flag: when true, a Fixed token may be a
 // source-literal decimal (`110.0`) decoded float-free via fixed_from_decimal, so a
-// control set/spawn payload accepts the legible form the observe projection renders
-// (F17/F18). It threads UNCHANGED through every nested decode (a `Vec2(x=2.0,y=104.0)`
+// control set/spawn payload accepts the legible form the observe projection
+// renders. It threads UNCHANGED through every nested decode (a `Vec2(x=2.0,y=104.0)`
 // component, a list element) so the leniency reaches any depth. The artifact load path
 // leaves it false (the default), keeping the raw Q32.32 decode byte-identical (spec §2.3).
 decode_default_value :: proc(

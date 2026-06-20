@@ -598,7 +598,7 @@ place_ball_for_render :: proc(
 	return commit_version(prior, changed, allocator)
 }
 
-// The collision-extent debug overlay (F16) emits, for a thing carrying the universal
+// The collision-extent debug overlay emits, for a thing carrying the universal
 // 2D pair (pos + size, both Vec2), the CENTER-ANCHORED extent the engine actually uses
 // (spec §20: corner = pos − size/2) as a four-edge Magenta box outline plus a pos
 // marker — 5 commands. Each edge is itself center-anchored (its `at` is the edge's

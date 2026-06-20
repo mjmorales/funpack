@@ -556,8 +556,8 @@ decode_int :: proc(token: string) -> (value: i64, ok: bool) {
 // LOAD path: any float round-trip would break the determinism thesis (spec §10.5).
 //
 // The §28 DEBUG surfaces (control set/spawn) pass human=true to ALSO accept a
-// SOURCE-LITERAL Fixed — `110.0`, `-0.5` — the spelling the observe projection renders
-// (F17) and a human naturally writes (F18), decoded float-free through the
+// SOURCE-LITERAL Fixed — `110.0`, `-0.5` — the spelling the observe projection
+// renders and a human naturally writes, decoded float-free through the
 // fixed_from_decimal kernel (all-integer, bit-exact — never a float). A dot is the
 // discriminator: a dotted token is a source literal, a bare integer is raw Q32.32 bits,
 // so a freshly-observed value AND an older raw payload both decode in human mode. The
@@ -575,7 +575,7 @@ decode_fixed :: proc(token: string, human := false) -> (value: Fixed, ok: bool) 
 
 // decode_fixed_source decodes a source-literal Fixed `[-]int.frac` to Q32.32 bits
 // through the float-free fixed_from_decimal kernel — the exact inverse of
-// write_source_fixed, closing the F17/F18 observe→control round-trip. The sign is
+// write_source_fixed, closing the observe→control round-trip. The sign is
 // peeled here (fixed_from_decimal takes a non-negative magnitude and reapplied via
 // fixed_neg, which saturates at the MIN rail), and both digit runs are validated so a
 // malformed token fails cleanly rather than feeding garbage to the kernel.

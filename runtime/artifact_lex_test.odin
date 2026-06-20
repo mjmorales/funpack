@@ -47,8 +47,8 @@ test_primitive_decoders :: proc(t: ^testing.T) {
 
 // The §28 debug surfaces decode Fixed in HUMAN mode: a source-literal `110.0` lands on
 // the same Q32.32 bits a funpack literal would, decoded float-free through
-// fixed_from_decimal (F18), while a bare integer still reads as raw bits and the artifact
-// LOAD path (human=false) is untouched. This pins the F17/F18 round-trip: every value
+// fixed_from_decimal, while a bare integer still reads as raw bits and the artifact
+// LOAD path (human=false) is untouched. This pins the round-trip: every value
 // write_source_fixed renders decodes back to the IDENTICAL bits via decode_fixed(human).
 @(test)
 test_decode_fixed_human_source_literal :: proc(t: ^testing.T) {

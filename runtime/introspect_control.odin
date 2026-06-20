@@ -18,10 +18,10 @@
 //
 // Command payloads are funpack values as strings, decoded through the §28 DEBUG codec
 // (decode_default_value with human=true): the SAME source-literal spelling the observe
-// side now renders (`Vec2(x=96.0,y=90.0)`, `110.0` — F17), so an observed value pastes
-// back verbatim as a control payload (F18), and an older raw Q32.32 payload still
-// decodes (the dot discriminates). A decode failure names the field, its type, and a
-// sample literal (value_decode_error) instead of a bare rejection.
+// side renders (`Vec2(x=96.0,y=90.0)`, `110.0`), so an observed value pastes back
+// verbatim as a control payload, and an older raw Q32.32 payload still decodes (the dot
+// discriminates). A decode failure names the field, its type, and a sample literal
+// (value_decode_error) instead of a bare rejection.
 package funpack_runtime
 
 import "core:encoding/json"
@@ -390,7 +390,7 @@ parse_player :: proc(name: string) -> (player: PlayerId, ok: bool) {
 }
 
 // control_value_matches_type guards the control decode against the §6 bare-token
-// fallback silently accepting a TYPE-MISMATCHED value (F21). decode_default_value never
+// fallback silently accepting a TYPE-MISMATCHED value. decode_default_value never
 // FAILS for a known-concrete declared type — an undecodable token drops to a bare string
 // column (the fallback the §6 artifact loader needs for unit-enum tokens against unknown
 // data decls) — so `set Ball.pos not-a-vec` would store a string into a Vec2 column and
@@ -435,8 +435,8 @@ control_value_matches_type :: proc(program: ^Program, type_name: string, value: 
 	return true
 }
 
-// value_decode_error builds the §28 set/spawn decode-failure message — F18's "state
-// the expected encoding." A bare "does not decode" left the agent guessing the wire
+// value_decode_error builds the §28 set/spawn decode-failure message that states the
+// expected encoding. A bare "does not decode" left the agent guessing the wire
 // form; this names the field, its declared type, and a SAMPLE LITERAL in the exact
 // source-literal spelling the surface now accepts (the inverse of the observe
 // projection), so the remedy is shown, not just the failure.
@@ -481,7 +481,7 @@ field_type_sample_literal :: proc(field_type: string) -> string {
 // replaced wholesale (the same replace-never-mutate discipline write_blackboard
 // keeps, so the prior version's aliased map is untouched), committed at the
 // boundary. The value decodes against the field's DECLARED type through the §28
-// debug codec (human=true: source-literal Fixed accepted, F18).
+// debug codec (human=true: source-literal Fixed accepted).
 @(private = "file")
 control_set :: proc(
 	s: ^Debug_Session,

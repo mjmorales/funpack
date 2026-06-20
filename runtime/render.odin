@@ -420,7 +420,7 @@ render_version :: proc(
 		}
 		render_behavior_over_instances(&interp, step, behavior, &cmds, allocator, obs)
 	}
-	// The §28 collision-extent debug overlay (F16) rides ON TOP of the behavior commands
+	// The §28 collision-extent debug overlay rides ON TOP of the behavior commands
 	// when requested — a pure post-commit read, gated off the normal projection.
 	if overlay {
 		for cmd in render_overlay_commands(version, allocator) {
@@ -432,7 +432,7 @@ render_version :: proc(
 	return Draw_List{cmds = cmds[:]}
 }
 
-// render_overlay_commands draws the §28 collision-extent DEBUG overlay (F16): for every
+// render_overlay_commands draws the §28 collision-extent DEBUG overlay: for every
 // committed instance carrying the universal 2D pair (a `pos` and a `size`, both Vec2), it
 // emits the CENTER-ANCHORED extent the engine actually uses — spec §20's `corner = pos −
 // size/2`, the same anchor render and the physics solver apply — as a four-edge Magenta
@@ -576,12 +576,13 @@ resolve_sprite_textures :: proc(program: ^Program, cmds: []Draw_Cmd) {
 // render behavior binds only `self` (it takes no signals, no Rng, no Views), so
 // the env carries the instance blackboard and the body returns a [Draw] list.
 //
-// When `obs` is armed (the §28 trace re-projection — F19), each instance's
+// When `obs` is armed (the §28 trace re-projection), each instance's
 // (self_before, bound reads, returned [Draw] value) is copied into the capture
 // buffer at the SAME seam the interior tick fold taps, so inspect_trace reports a
-// render behavior's in→out exactly as it does an Update behavior — the empty-steps
-// false-negative is gone. The capture is a pure copy-out: it never reads back into
-// the projection, so the draw-list is bit-identical whether the tap fired or not.
+// render behavior's in→out exactly as it does an Update behavior — the sim fold
+// skips render, so a re-fold alone would leave its trace empty. The capture is a
+// pure copy-out: it never reads back into the projection, so the draw-list is
+// bit-identical whether the tap fired or not.
 render_behavior_over_instances :: proc(
 	interp: ^Interp,
 	step: Pipeline_Step,

@@ -94,7 +94,7 @@ test_introspect_pipeline_envelope :: proc(t: ^testing.T) {
 // The trace observe re-folds one tick and reports the behavior's (in → out):
 // pre-eval blackboard, bound reads, returned value, post-tick committed
 // blackboard — every funpack value a string in the §28 debug projection (a Fixed
-// `pos` reads as the source literal `1.0`, not raw Q32.32 bits — F17).
+// `pos` reads as the source literal `1.0`, not raw Q32.32 bits).
 @(test)
 test_introspect_trace_behavior_transition :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 3)
@@ -142,7 +142,7 @@ test_introspect_replay_behavior_purity :: proc(t: ^testing.T) {
 }
 
 // The state observe lists a thing's committed instances with their field values — the
-// read-only state inspector (F20), the complement to draw_list/signals/diff. It reads a
+// read-only state inspector, the complement to draw_list/signals/diff. It reads a
 // committed version with no fork and no re-fold; the field values render in the legible
 // projection (a Fixed `pos` as `2.0`, a record verbatim), keyed by sorted field name.
 // The full envelope is pinned: state is a contract surface, not styling.
@@ -213,7 +213,7 @@ golden_pong_session :: proc(
 }
 
 // trace of a RENDER-stage behavior re-projects the render stage with the observe tap
-// armed (F19), so a render behavior reports its in→out per instance instead of the
+// armed, so a render behavior reports its in→out per instance instead of the
 // silent empty step list a sim-fold-only trace returned (the sim fold SKIPS render).
 // draw_ball runs once over the single Ball; its trace must carry a real step with the
 // instance and the behavior's returned [Draw] value, never `"steps":[]`.
@@ -227,15 +227,15 @@ test_introspect_trace_render_behavior_captured :: proc(t: ^testing.T) {
 	testing.expect(
 		t,
 		!strings.contains(response, `"steps":[]`),
-		"a render behavior that ran must trace a non-empty step list (F19)",
+		"a render behavior that ran must trace a non-empty step list",
 	)
 	testing.expect(t, strings.contains(response, `"instance":0`), "the single Ball instance must be traced")
 	// The returned [Draw] value is rendered in the debug projection — a Ball draws a
-	// Rect, whose decimal-lane projection (F17) appears in the step's result.
+	// Rect, whose decimal-lane projection appears in the step's result.
 	testing.expect(t, strings.contains(response, "Rect("), response)
 }
 
-// trace of an AUDIO-stage behavior answers an explicit unsupported-stage marker (F19):
+// trace of an AUDIO-stage behavior answers an explicit unsupported-stage marker:
 // audio is a deferred slot, not folded into the interior tick, so a trace returns the
 // stage + a note rather than a misleading empty step list that reads as "ran zero times."
 @(test)
@@ -286,14 +286,14 @@ test_introspect_signals_routed_goal :: proc(t: ^testing.T) {
 }
 
 // A render command whose center-anchored extent crosses the logical bounds is NOT
-// culled by the draw-list projection (F16). The deterministic draw-list is the COMPLETE,
+// culled by the draw-list projection. The deterministic draw-list is the COMPLETE,
 // viewport-independent render output — culling it would be a determinism break, and the
 // projection carries no bounds logic at all. Forcing the Ball's center off the left edge
 // via a control set (its 3×3 rect extent then crosses x=0), the draw_list still carries
-// the Ball's Rect at the out-of-bounds `at`. This closes F16's open sub-question — a
-// missing band was NEVER a projection drop — and pins the no-cull invariant against a
-// future regression. It also exercises the F16–F20 loop end to end: the set takes a
-// source literal (F18), the draw-list `at` reads as a decimal (F17).
+// the Ball's Rect at the out-of-bounds `at` — a missing band is never a projection drop.
+// This pins the no-cull invariant against a future regression, and exercises the
+// observe→control loop end to end: the set takes a source literal, the draw-list `at`
+// reads back as a decimal.
 @(test)
 test_draw_list_keeps_out_of_bounds_rect :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -318,7 +318,7 @@ test_draw_list_keeps_out_of_bounds_rect :: proc(t: ^testing.T) {
 	)
 }
 
-// draw_list overlay:true appends the collision-extent debug overlay (F16) — each
+// draw_list overlay:true appends the collision-extent debug overlay — each
 // thing's center-anchored (pos,size) extent in Magenta, on top of the normal draw-list.
 // Without the flag no overlay appears (the projection is unchanged); with it, the magenta
 // commands ride along while the real commands remain, so a convention mismatch is visible.
@@ -625,7 +625,7 @@ test_draw_list_dump_formats_color_named_and_rgb :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(named_out, "color=Color::Gray"), named_out)
 
 	// A Color::Rgb rect dumps `color=Color::Rgb(<r>,<g>,<b>)` with SOURCE-LITERAL decimal
-	// channels (F17 — the legible debug projection, float-free via write_source_fixed).
+	// channels (the legible debug projection, float-free via write_source_fixed).
 	// r=1.0 (FIXED_ONE), g=0.5 (half), b=0.0 → `Rgb(1.0,0.5,0.0)`.
 	half := fixed_div(FIXED_ONE, to_fixed(2))
 	rgb_b := strings.builder_make(context.temp_allocator)
