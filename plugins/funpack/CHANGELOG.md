@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.8.1] - 2026-06-21
+
+### Other
+- docs(mcp): document inspect_state + overlay + source-literal control values (fe9c3af)
+
 ## [0.8.0] - 2026-06-19
 
 ### Features
