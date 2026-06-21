@@ -7,6 +7,21 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.12.0] - 2026-06-21
+
+### Features
+- feat(introspect): collision-extent debug overlay for inspect_draw_list/screenshot (F16) (a8fe73b)
+- feat(introspect): add inspect_state, a read-only instance/field inspector (F20) (f63e7cb)
+
+### Fixes
+- fix(control): refuse a type-mismatched set/spawn value (F21) (b7fb70a)
+- fix(introspect): trace render-stage behaviors instead of empty steps (F19) (9c82806)
+- fix(control): accept human source literals in set/spawn/emit (F18) (d72a5c7)
+- fix(introspect): render the §28 debug projection in legible decimals (F17) (8e862b1)
+
+### Other
+- docs(runtime): drop transient friction-item refs from F16-F21 comments (4c38f7a)
+
 ## [0.11.0] - 2026-06-19
 
 ### Features
