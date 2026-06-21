@@ -377,10 +377,10 @@ emit_data :: proc(b: ^strings.Builder, ast: Ast, imported: Imported_Decls) {
 	synthetic := synthetic_data_decls(ast, imported)
 	emit_header(b, "data", len(ast.datas) + len(imported.datas) + len(synthetic))
 	for decl in ast.datas {
-		emit_data_record(b, decl)
+		emit_data_record(b, decl, ast)
 	}
 	for decl in imported.datas {
-		emit_data_record(b, decl)
+		emit_data_record(b, decl, ast)
 	}
 	for decl in synthetic {
 		emit_synthetic_data(b, decl)
@@ -389,7 +389,7 @@ emit_data :: proc(b: ^strings.Builder, ast: Ast, imported: Imported_Decls) {
 
 // emit_data_record writes one [data] record (docs/artifact-format.md §6) —
 // the per-decl half emit_data walks own and imported declarations through.
-emit_data_record :: proc(b: ^strings.Builder, decl: Data_Node) {
+emit_data_record :: proc(b: ^strings.Builder, decl: Data_Node, ast: Ast) {
 	strings.write_string(b, "data ")
 	strings.write_string(b, decl.name)
 	strings.write_byte(b, ' ')
@@ -401,7 +401,7 @@ emit_data_record :: proc(b: ^strings.Builder, decl: Data_Node) {
 	if decl.has_migrate {
 		emit_line(b, "migrate ", decl.migrate.from, " -")
 	}
-	emit_data_fields(b, decl.fields)
+	emit_data_fields(b, decl.fields, ast)
 }
 
 // Synthetic_Data is one emitter-synthesized engine-type data decl — the
@@ -517,22 +517,22 @@ emit_synthetic_data :: proc(b: ^strings.Builder, decl: Synthetic_Data) {
 emit_signals :: proc(b: ^strings.Builder, ast: Ast, imported: []Signal_Node) {
 	emit_header(b, "signals", len(ast.signals) + len(imported))
 	for decl in ast.signals {
-		emit_signal_record(b, decl)
+		emit_signal_record(b, decl, ast)
 	}
 	for decl in imported {
-		emit_signal_record(b, decl)
+		emit_signal_record(b, decl, ast)
 	}
 }
 
 // emit_signal_record writes one [signals] record (docs/artifact-format.md §7) —
 // the per-decl half emit_signals walks own and imported declarations through.
-emit_signal_record :: proc(b: ^strings.Builder, decl: Signal_Node) {
+emit_signal_record :: proc(b: ^strings.Builder, decl: Signal_Node, ast: Ast) {
 	strings.write_string(b, "signal ")
 	strings.write_string(b, decl.name)
 	strings.write_byte(b, ' ')
 	strings.write_int(b, len(decl.fields))
 	emit_line(b, "")
-	emit_fields(b, decl.fields)
+	emit_fields(b, decl.fields, ast)
 }
 
 // emit_things writes one `thing` record per thing/singleton — the entrypoint
@@ -544,16 +544,20 @@ emit_signal_record :: proc(b: ^strings.Builder, decl: Signal_Node) {
 emit_things :: proc(b: ^strings.Builder, ast: Ast, imported: []Thing_Node) {
 	emit_header(b, "things", len(ast.things) + len(imported))
 	for decl in ast.things {
-		emit_thing_record(b, decl)
+		emit_thing_record(b, decl, ast)
 	}
+	// Imported things arrive with their §6 defaults already folded against their
+	// OWN module's lets (collect_imported_decls); re-folding against the entry `ast`
+	// here is a no-op on those closed values, so the entry table never needs the
+	// sibling module's constants.
 	for decl in imported {
-		emit_thing_record(b, decl)
+		emit_thing_record(b, decl, ast)
 	}
 }
 
 // emit_thing_record writes one [things] record (docs/artifact-format.md §8) —
 // the per-decl half emit_things walks own and imported declarations through.
-emit_thing_record :: proc(b: ^strings.Builder, decl: Thing_Node) {
+emit_thing_record :: proc(b: ^strings.Builder, decl: Thing_Node, ast: Ast) {
 	strings.write_string(b, "thing ")
 	strings.write_string(b, decl.name)
 	strings.write_byte(b, ' ')
@@ -564,15 +568,15 @@ emit_thing_record :: proc(b: ^strings.Builder, decl: Thing_Node) {
 	strings.write_int(b, len(decl.fields))
 	emit_line(b, "")
 	emit_gtags(b, decl.gtags)
-	emit_fields(b, decl.fields)
+	emit_fields(b, decl.fields, ast)
 }
 
 // emit_fields writes one `field` line per field (docs/artifact-format.md §6):
 // the field name, its syntactic type (the Type_Ref spelling — `Fixed`,
 // `View[Paddle]`, `[Goal]`), and its default. The default is `-` for a required
 // field or `=ENCODED` for a defaulted one (§03 §1).
-emit_fields :: proc(b: ^strings.Builder, fields: []Field_Decl) {
-	for field in fields {
+emit_fields :: proc(b: ^strings.Builder, fields: []Field_Decl, ast: Ast) {
+	for field in fold_field_decls(fields, ast) {
 		emit_line(b, "field ", field.name, " ", type_ref_string(field.type), " ", field_default_token(field))
 	}
 }
@@ -584,8 +588,8 @@ emit_fields :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 // guarantees at least one present); an unmigrated field emits exactly the
 // shared emit_fields shape, so a migration-free [data] section is
 // byte-identical to the v7 layout.
-emit_data_fields :: proc(b: ^strings.Builder, fields: []Field_Decl) {
-	for field in fields {
+emit_data_fields :: proc(b: ^strings.Builder, fields: []Field_Decl, ast: Ast) {
+	for field in fold_field_decls(fields, ast) {
 		emit_line(b, "field ", field.name, " ", type_ref_string(field.type), " ", field_default_token(field))
 		if field.has_migrate {
 			from := field.migrate.from if field.migrate.has_from else "-"

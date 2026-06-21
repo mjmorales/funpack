@@ -251,6 +251,44 @@ fold_module_const :: proc(fold: ^Setup_Fold, name: string) -> (value: Expr, foun
 	return nil, false
 }
 
+// fold_field_default constant-folds a field's DEFAULT expression against a module's
+// `let` table — the SAME §29 fold the §06 setup batch uses (resolve_setup_spawns) —
+// so a default written as a named const (`ground_y: Fixed = GROUND_Y`) or a const
+// expression lowers to the closed literal/record/variant value the §6 DEFAULT token
+// encodes. Without it a `Name_Expr` default reached encode_literal, which carries no
+// const table and returns "", emitting a bare `=` token the runtime's decode_default
+// silently drops — so a render-only singleton (Stage) spawned with that column ABSENT
+// and its render read nothing. A literal default folds to itself; an
+// expression outside the closed fold vocabulary returns UNCHANGED, so the non-foldable
+// closed forms encode_field_default already handles (an enum variant, empty list, or
+// engine-builder default like `Settings.defaults()`) keep their prior encoding rather
+// than faulting.
+fold_field_default :: proc(expr: Expr, ast: Ast) -> Expr {
+	fold := Setup_Fold{ast = ast, binds = make(map[string]Expr, context.temp_allocator)}
+	if folded, ok := fold_expr(&fold, expr); ok {
+		return folded
+	}
+	return expr
+}
+
+// fold_field_decls returns a copy of a record's field list with every defaulted
+// field's default constant-folded against `ast`'s `let` table. It is the imported-
+// decl half of the §6 default fold: collect_imported_decls runs it against the field's
+// OWNING module (the seam's lets), so a thing/data/signal imported from a sibling
+// module carries folded defaults before it reaches the entrypoint emit, where the
+// entry module's lets cannot resolve the sibling's consts. A field with no default,
+// or one whose default is already a closed value, is copied unchanged.
+fold_field_decls :: proc(fields: []Field_Decl, ast: Ast) -> []Field_Decl {
+	out := make([]Field_Decl, len(fields), context.temp_allocator)
+	for field, i in fields {
+		out[i] = field
+		if field.has_default {
+			out[i].default = fold_field_default(field.default, ast)
+		}
+	}
+	return out
+}
+
 // single_return_expr returns the single `return expr` of a fn body — the setup
 // helper shape (`fn wall_body(size) -> Body { return Body{…} }`). A body that is not
 // exactly one return statement is outside the foldable shape.

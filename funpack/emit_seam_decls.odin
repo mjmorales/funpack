@@ -65,15 +65,24 @@ collect_imported_decls :: proc(entry_ast: Ast, module_asts: map[string]Ast) -> I
 				append(&enums, decl)
 				continue
 			}
+			// A field default written as a sibling-module const must fold against the
+			// SEAM module's `let` table here — the entrypoint emit only has the entry
+			// module's lets, so an imported default left unfolded would reach
+			// encode_literal as a bare Name and emit an empty `=` the runtime drops
+			// (the imported half of the same empty-default defect). Enums carry no
+			// field defaults.
 			if decl, found := find_data(seam_ast, member); found {
+				decl.fields = fold_field_decls(decl.fields, seam_ast)
 				append(&datas, decl)
 				continue
 			}
 			if decl, found := find_signal(seam_ast, member); found {
+				decl.fields = fold_field_decls(decl.fields, seam_ast)
 				append(&signals, decl)
 				continue
 			}
 			if decl, found := schema_thing(seam_ast, member); found {
+				decl.fields = fold_field_decls(decl.fields, seam_ast)
 				append(&things, decl)
 			}
 		}

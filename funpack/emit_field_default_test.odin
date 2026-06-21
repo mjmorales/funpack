@@ -10,6 +10,7 @@
 // freeze-causing forms can never silently regress to a bare `=`.
 package funpack
 
+import "core:strings"
 import "core:testing"
 
 // default_field builds a defaulted Field_Decl over a default expression — the one
@@ -46,6 +47,15 @@ record_lit :: proc(type_name: string, fields: []Record_Field) -> ^Record_Expr {
 empty_list_lit :: proc() -> ^List_Expr {
 	node := new(List_Expr, context.temp_allocator)
 	node^ = List_Expr{elements = {}}
+	return node
+}
+
+// name_expr builds a bare Name reference — a field default written as a module
+// const (`ground_y: Fixed = GROUND_Y`) parses to one of these. Only `.name` is read
+// by the §6 default fold and encode, so the fixtures leave class/span zero.
+name_expr :: proc(name: string) -> ^Name_Expr {
+	node := new(Name_Expr, context.temp_allocator)
+	node^ = Name_Expr{name = name}
 	return node
 }
 
@@ -133,4 +143,57 @@ test_field_default_hunt_composite_pair :: proc(t: ^testing.T) {
 	)
 	testing.expect_value(t, field_default_token(default_field(ai)), "=Hunt::Patrol")
 	testing.expect_value(t, field_default_token(default_field(last_seen)), "=Vec2(x=0,y=0)")
+}
+
+// A field default written as a module const (`ground_y: Fixed = GROUND_Y`) must fold
+// to the constant's value before the §6 DEFAULT token is encoded. encode_literal has
+// no const table and returns "" for a Name_Expr, so the unfolded default emits a bare
+// `=` the runtime's decode_default drops — the column then never reaches the spawned
+// row (a render-only singleton whose only consumer is its render reads the absent
+// field and emits nothing). fold_field_default resolves the const against the
+// module's `let` table so the value survives.
+@(test)
+test_field_default_named_const_folds :: proc(t: ^testing.T) {
+	ast := Ast{lets = []Let_Decl_Node{{name = "GROUND_Y", value = fixed_lit(110)}}}
+	folded := fold_field_default(name_expr("GROUND_Y"), ast)
+	want := strings.concatenate({"=", encode_fixed(to_fixed(110), context.temp_allocator)}, context.temp_allocator)
+	testing.expect_value(t, field_default_token(default_field(folded)), want)
+	// Unresolved (no const table), the Name still degrades to the bare `=` the bug
+	// produced — proving the fold, not encode_literal, is what carries the value.
+	testing.expect_value(t, field_default_token(default_field(name_expr("GROUND_Y"))), "=")
+}
+
+// The fold must be WIRED into the production emit path, not just available: emit_things
+// folds each thing's §6 defaults against the module's lets, so a singleton with a
+// const default lands a populated `field` line instead of the empty `=` the unfolded
+// default dropped. This pins the wiring the unit fold above cannot — removing the fold
+// from emit_fields re-opens the bug here.
+@(test)
+test_emit_things_folds_named_const_default :: proc(t: ^testing.T) {
+	ast := Ast{
+		lets   = []Let_Decl_Node{{name = "GROUND_Y", value = fixed_lit(110)}},
+		things = []Thing_Node{
+			{
+				name         = "Stage",
+				is_singleton = true,
+				fields       = []Field_Decl{
+					{
+						name        = "ground_y",
+						type        = Type_Ref{name = "Fixed"},
+						default     = name_expr("GROUND_Y"),
+						has_default = true,
+					},
+				},
+			},
+		},
+	}
+	b := strings.builder_make(context.temp_allocator)
+	emit_things(&b, ast, nil)
+	out := strings.to_string(b)
+
+	bits := encode_fixed(to_fixed(110), context.temp_allocator)
+	want := strings.concatenate({"field ground_y Fixed =", bits, "\n"}, context.temp_allocator)
+	testing.expect(t, strings.contains(out, want))
+	// The bug form — an empty default token — must never appear.
+	testing.expect(t, !strings.contains(out, "field ground_y Fixed =\n"))
 }
