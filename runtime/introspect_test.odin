@@ -257,6 +257,43 @@ test_introspect_trace_audio_stage_marker :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(response, `"note":`), "the marker must explain why the stage is not folded")
 }
 
+// trace of a STARTUP-stage behavior answers the SAME unsupported-stage marker as
+// audio — startup runs once before tick 0 (the §13 spawn batch), not per-tick, so it
+// is not part of a per-tick re-fold. The defect this pins: a startup behavior (`setup`)
+// exists ONLY as a §11 pipeline step, never as a §10 Behavior_Decl (the spawn batch
+// lives in Program.setup), so program_behavior misses it and the bare trace handler
+// answered the generic "unknown behavior" — a NAME/namespace error a debugger reads as
+// "wrong name, start guessing", contradicting inspect_pipeline which DOES enumerate
+// `setup`. The fix unifies the two surfaces on ONE behavior vocabulary: trace resolves a
+// name through the pipeline (the same namespace pipeline enumerates), so a startup step
+// reaches the self-describing marker. A name in NEITHER namespace still answers
+// "unknown behavior".
+@(test)
+test_introspect_trace_startup_stage_marker :: proc(t: ^testing.T) {
+	_, _, session := golden_pong_session(t)
+	s := session
+	// `setup` is pong's startup behavior — inspect_pipeline lists it as step 0
+	// stage:startup, so inspect_trace must accept it as a known name, not deny it exists.
+	response := session_request(&s, `{"id":7,"cmd":"trace","args":{"tick":0,"behavior":"setup"}}`)
+	testing.expect(t, strings.contains(response, `"ok":true`), response)
+	testing.expect(t, strings.contains(response, `"stage":"startup"`), response)
+	testing.expect(t, strings.contains(response, `"steps":[]`), "an unsupported stage carries an empty step list")
+	testing.expect(
+		t,
+		strings.contains(response, `before tick 0`),
+		"the startup marker note must explain it runs before tick 0, not the generic unknown-behavior refusal",
+	)
+	testing.expect(
+		t,
+		!strings.contains(response, `unknown behavior`),
+		"a behavior inspect_pipeline lists must never be denied as unknown",
+	)
+	// A name in NEITHER the behavior table NOR the pipeline still fails closed.
+	unknown := session_request(&s, `{"id":8,"cmd":"trace","args":{"tick":0,"behavior":"nope"}}`)
+	testing.expect(t, strings.contains(unknown, `"ok":false`), unknown)
+	testing.expect(t, strings.contains(unknown, `unknown behavior`), unknown)
+}
+
 // The signals observe surfaces the live dataflow: somewhere in the golden pong
 // run the score behavior routes a Goal broadcast, and the observe reports it as
 // a typed funpack record string — signals are data (§28 §1).

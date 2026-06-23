@@ -1935,3 +1935,20 @@ program_behavior :: proc(program: ^Program, name: string) -> ^Behavior_Decl {
 	}
 	return nil
 }
+
+// program_pipeline_step finds a §11 pipeline position by its behavior name, or nil.
+// The pipeline is the SUPERSET namespace: it enumerates every behavior name the §11
+// total order schedules — including a startup-stage step (`setup`, the §13 spawn batch
+// that carries NO §10 Behavior_Decl) and an engine-closed stage (`physics`/`solve`,
+// likewise body-less). program_behavior scans only the user [behaviors] table, so it
+// misses those; this lets a name-resolution stay total over the SAME vocabulary
+// inspect_pipeline reports, so the two introspection surfaces never disagree on whether
+// a name exists.
+program_pipeline_step :: proc(program: ^Program, behavior_name: string) -> ^Pipeline_Step {
+	for &step in program.pipeline {
+		if step.behavior == behavior_name {
+			return &step
+		}
+	}
+	return nil
+}

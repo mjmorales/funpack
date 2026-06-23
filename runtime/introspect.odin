@@ -562,6 +562,19 @@ observe_trace :: proc(
 	}
 	behavior := program_behavior(s.program, behavior_name)
 	if behavior == nil {
+		// program_behavior scans only the user [behaviors] table, but inspect_pipeline
+		// enumerates the SUPERSET §11 namespace — a startup step (`setup`, the §13 spawn
+		// batch in Program.setup) and an engine-closed stage (`physics`/`solve`) are real
+		// pipeline positions that carry NO §10 Behavior_Decl. So a name the behavior table
+		// misses might still be one inspect_pipeline lists. Resolving it through the
+		// pipeline keeps the two surfaces on ONE behavior vocabulary: a body-less pipeline
+		// step is not a per-tick-traceable body, so it answers the self-describing
+		// unsupported-stage marker (run elsewhere / not folded) instead of the generic
+		// "unknown behavior" that reads as a name/namespace error. A name in NEITHER
+		// namespace stays genuinely unknown.
+		if step := program_pipeline_step(s.program, behavior_name); step != nil {
+			return trace_unsupported_stage(id, behavior_name, step.stage, int(tick), allocator)
+		}
 		return error_response(id, "trace", "unknown behavior", allocator)
 	}
 	// Route by the behavior's STAGE. The interior stages (control/collision/
@@ -636,13 +649,19 @@ observe_trace :: proc(
 	return strings.to_string(b)
 }
 
-// trace_unsupported_stage answers a trace for a behavior whose stage is NOT part of a
-// per-tick fold — `audio` (a deferred §22 slot whose return is never folded into tick
-// state) or `startup` (runs once pre-tick-0, not per-tick). Rather than the silent empty
-// step list that reads as "ran zero times", it returns an
-// explicit `stage` + `note` so a debugger knows the behavior is real, ran elsewhere, and
-// where to look. The `steps` array stays present and empty so the response shape is a
-// superset of the ordinary trace, never a parse break for an existing reader.
+// trace_unsupported_stage answers a trace for a behavior whose stage carries NO
+// per-instance body the per-tick fold can tap. Three cases reach here, each a behavior
+// inspect_pipeline lists but which is not a per-tick-traceable user body:
+//   - `audio` — a deferred §22 slot whose return is never folded into tick state.
+//   - `startup` — the §13 spawn batch (Program.setup), runs once before tick 0, not
+//     per-tick; it carries no §10 Behavior_Decl, so it resolves through the pipeline.
+//   - an engine-closed stage (`physics`/`solve`) — a real §11 pipeline position run by an
+//     engine battery, with no user Behavior_Decl to trace per instance.
+// Rather than the silent empty step list that reads as "ran zero times" — or the generic
+// "unknown behavior" that reads as a name error — it returns an explicit `stage` + `note`
+// so a debugger knows the behavior is real, ran elsewhere, and where to look. The `steps`
+// array stays present and empty so the response shape is a superset of the ordinary
+// trace, never a parse break for an existing reader.
 @(private = "file")
 trace_unsupported_stage :: proc(
 	id: i64,
@@ -658,9 +677,15 @@ trace_unsupported_stage :: proc(
 	strings.write_string(&b, ",\"stage\":")
 	write_json_string(&b, stage)
 	strings.write_string(&b, ",\"steps\":[],\"note\":")
-	note := stage == "audio" \
-		? "the audio stage is a deferred slot, not folded into the interior tick; observe its routed output via inspect_signals" \
-		: "the startup stage runs once before tick 0, not per-tick; it is not part of a per-tick re-fold"
+	note: string
+	switch stage {
+	case "audio":
+		note = "the audio stage is a deferred slot, not folded into the interior tick; observe its routed output via inspect_signals"
+	case "startup":
+		note = "the startup stage runs once before tick 0, not per-tick; it is not part of a per-tick re-fold"
+	case:
+		note = "this stage is run by an engine battery with no per-instance user behavior body; it is not part of a per-tick re-fold"
+	}
 	write_json_string(&b, note)
 	strings.write_string(&b, "}}")
 	return strings.to_string(b)
