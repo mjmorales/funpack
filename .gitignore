@@ -23,3 +23,8 @@ runtime/testdata/*.replay
 !runtime/testdata/*_golden.replay
 runtime/testdata/*.saves/
 .prove-wt-slug.txt
+
+# dogfood friction log — local-only findings, bubbled into scrum (upstream: tracked:<id>)
+# by the friction skill; the scrum tasks are the durable record, not these files.
+# Root-anchored: must NOT match .claude/skills/friction/ (the tracked skill).
+/friction/
