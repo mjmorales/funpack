@@ -192,7 +192,7 @@ run_module_pipeline_diag :: proc(
 	// from its own vantage.
 	typed, type_verdict := stage_typecheck_located(ast, index, importer_root)
 	if type_verdict.err != .None {
-		return Test_Report{}, .Typecheck_Failed, type_diagnostic(type_verdict.err, type_verdict.line, type_verdict.col, type_verdict.declaration)
+		return Test_Report{}, .Typecheck_Failed, type_diagnostic(type_verdict.err, type_verdict.line, type_verdict.col, type_verdict.declaration, type_verdict.hint)
 	}
 	if verdict := stage_contracts(typed); verdict.err != .None {
 		// A behavior arm resolves its line from the behavior name; the

@@ -241,9 +241,9 @@ read_project :: proc(root: string) -> (project: Project, err: Project_Error, det
 	if read_err != nil {
 		return Project{}, .Missing_Project_Fcfg, ""
 	}
-	identity, parse_err := parse_project_fcfg(string(fcfg_bytes))
+	identity, parse_err, parse_detail := parse_project_fcfg(string(fcfg_bytes))
 	if parse_err != .None {
-		return Project{}, parse_err, ""
+		return Project{}, parse_err, parse_detail
 	}
 	src_sources, src_err, src_detail := collect_sources(root)
 	if src_err != .None {
@@ -354,54 +354,98 @@ Project_Identity :: struct {
 // Any token outside that grammar — a key without `=`, a `use` reference,
 // an expression, a control-flow keyword — is a Malformed_Project_Fcfg
 // rejection. A well-formed block missing `version` is the dedicated
-// Missing_Project_Version diagnostic.
-parse_project_fcfg :: proc(content: string) -> (identity: Project_Identity, err: Project_Error) {
+// Missing_Project_Version diagnostic. The `detail` return is the
+// fix-criteria advisory the CLI appends after the closed arm name
+// (project_refusal_message): a `project.fcfg:LINE: <reason>` line naming
+// the offending construct (the most common being the hyphenated project
+// label), "" when the arm carries no pointed reason yet.
+parse_project_fcfg :: proc(content: string) -> (identity: Project_Identity, err: Project_Error, detail: string) {
 	p := Cfg_Parser{tokens = lex_fcfg(content)}
 	saw_block := false
 	for !cfg_at_end(&p) {
 		#partial switch cfg_peek(&p).kind {
 		case .At:
-			cfg_skip_doc(&p) or_return
+			if doc_err := cfg_skip_doc(&p); doc_err != .None {
+				return Project_Identity{}, doc_err, ""
+			}
 		case .Ident:
 			// The only legal top-level identifier is the `project` block
 			// opener; a stray top-level `key = value` or any other
 			// keyword (a `use` reference, a control-flow word) is not part
 			// of the project-identity grammar.
 			if cfg_peek(&p).text != "project" || saw_block {
-				return Project_Identity{}, .Malformed_Project_Fcfg
+				return Project_Identity{}, .Malformed_Project_Fcfg, ""
 			}
-			identity, err = cfg_parse_block(&p)
-			if err != .None {
-				return Project_Identity{}, err
+			block_identity, block_err, block_detail := cfg_parse_block(&p, content)
+			if block_err != .None {
+				return Project_Identity{}, block_err, block_detail
 			}
+			identity = block_identity
 			saw_block = true
 		case:
-			return Project_Identity{}, .Malformed_Project_Fcfg
+			return Project_Identity{}, .Malformed_Project_Fcfg, ""
 		}
 	}
 	if !saw_block {
-		return Project_Identity{}, .Malformed_Project_Fcfg
+		return Project_Identity{}, .Malformed_Project_Fcfg, ""
 	}
-	return identity, .None
+	return identity, .None, ""
 }
 
 // cfg_parse_block parses `project <name> { … }`. The label is mandatory
 // (a labelless `project { … }` is rejected) and becomes the package name;
 // the body carries `key = value` assignments and `@doc` directives, with
-// `version` required.
-cfg_parse_block :: proc(p: ^Cfg_Parser) -> (identity: Project_Identity, err: Project_Error) {
-	cfg_expect(p, .Ident) or_return // `project`
-	label := cfg_expect(p, .Ident) or_return // the package-name label
-	cfg_expect(p, .L_Brace) or_return
+// `version` required. The label is validated against §14 §4 / §15's
+// LOWER_IDENT rule (a project name is a bare lower identifier — the same
+// name class a module roots at): a label that scans clean but is not a
+// LOWER_IDENT (an UpperCamel head), or — the hyphen case — a
+// name byte the lexer cannot scan as an identifier (a `-`, a `.`) that
+// truncates the label mid-name, carries the pointed `project.fcfg:LINE:`
+// detail naming the rule, rather than the bare Malformed_Project_Fcfg the
+// `expect(.L_Brace)` miss would otherwise surface.
+cfg_parse_block :: proc(p: ^Cfg_Parser, content: string) -> (identity: Project_Identity, err: Project_Error, detail: string) {
+	if _, kw_err := cfg_expect(p, .Ident); kw_err != .None { // `project`
+		return Project_Identity{}, kw_err, ""
+	}
+	label, label_err := cfg_expect(p, .Ident) // the package-name label
+	if label_err != .None {
+		return Project_Identity{}, label_err, ""
+	}
+	// §14 §4 / §15: a project name is a bare LOWER_IDENT (lower_start ident_char*).
+	// A label scanning clean but not lowercase-rooted (an UpperCamel head) names
+	// the rule directly.
+	if !is_lower_ident(label.text) {
+		return Project_Identity{}, .Malformed_Project_Fcfg, project_name_detail(label)
+	}
+	// The hyphen case: `project colony-sim { … }` scans the label as
+	// `colony`, then the `-` is an Invalid punct token that breaks `expect(.L_Brace)`.
+	// When the byte immediately after the label (no whitespace) is a name-ILLEGAL
+	// glyph, the label was truncated mid-name — name the rule rather than reporting
+	// a bare brace miss. A legitimate `project foo {` has whitespace (or the `{`)
+	// after the label, so this fires only on the abutting-glyph case.
+	if next := cfg_peek(p); next.kind != .L_Brace {
+		abut := label.offset + len(label.text)
+		if abut < len(content) && cfg_is_name_truncating_byte(content[abut]) {
+			return Project_Identity{}, .Malformed_Project_Fcfg, project_name_truncated_detail(label, content[abut])
+		}
+	}
+	if _, brace_err := cfg_expect(p, .L_Brace); brace_err != .None {
+		return Project_Identity{}, brace_err, ""
+	}
 	name := label.text
 	version := ""
 	saw_version := false
 	for cfg_peek(p).kind != .R_Brace {
 		#partial switch cfg_peek(p).kind {
 		case .At:
-			cfg_skip_doc(p) or_return
+			if doc_err := cfg_skip_doc(p); doc_err != .None {
+				return Project_Identity{}, doc_err, ""
+			}
 		case .Ident:
-			key, value := cfg_parse_assignment(p) or_return
+			key, value, assign_err := cfg_parse_assignment(p)
+			if assign_err != .None {
+				return Project_Identity{}, assign_err, ""
+			}
 			if key == "version" {
 				version = value
 				saw_version = true
@@ -409,14 +453,60 @@ cfg_parse_block :: proc(p: ^Cfg_Parser) -> (identity: Project_Identity, err: Pro
 		case:
 			// End of input before `}` (Invalid), or any non-assignment,
 			// non-doc construct inside the block.
-			return Project_Identity{}, .Malformed_Project_Fcfg
+			return Project_Identity{}, .Malformed_Project_Fcfg, ""
 		}
 	}
-	cfg_expect(p, .R_Brace) or_return
-	if !saw_version {
-		return Project_Identity{}, .Missing_Project_Version
+	if _, rbrace_err := cfg_expect(p, .R_Brace); rbrace_err != .None {
+		return Project_Identity{}, rbrace_err, ""
 	}
-	return Project_Identity{name = name, version = version}, .None
+	if !saw_version {
+		return Project_Identity{}, .Missing_Project_Version, ""
+	}
+	return Project_Identity{name = name, version = version}, .None, ""
+}
+
+// project_name_detail builds the fix-criteria advisory for a malformed project
+// label: `project.fcfg:LINE: project name must be a bare identifier (lower-case
+// start, then letters/digits/'_') — '<label>' is not`. The LINE is the label
+// token's source line; the rule text is the exact LOWER_IDENT charset the lexer
+// enforces (lower_start ident_char* — lexical-core.ebnf §2), so the message names
+// the rule the parser actually applies, never a guessed regex.
+project_name_detail :: proc(label: Cfg_Token, allocator := context.temp_allocator) -> string {
+	return fmt.aprintf(
+		"project.fcfg:%d: project name must be a bare identifier (a lower-case or '_' start, then letters, digits, or '_') — '%s' is not (spec §14 §4, §15)",
+		label.line,
+		label.text,
+		allocator = allocator,
+	)
+}
+
+// project_name_truncated_detail is the truncated-label advisory: the label
+// scanned as a valid identifier but a name-illegal byte (`-`, `.`) abuts it, so the
+// intended name was truncated mid-spelling. The message names the offending glyph and
+// the same LOWER_IDENT rule, so `project colony-sim { … }` reads as the hyphen being
+// the cause rather than `colony` being wrong.
+project_name_truncated_detail :: proc(label: Cfg_Token, glyph: u8, allocator := context.temp_allocator) -> string {
+	return fmt.aprintf(
+		"project.fcfg:%d: project name must be a bare identifier (a lower-case or '_' start, then letters, digits, or '_'); the '%c' after '%s' is not allowed (spec §14 §4, §15)",
+		label.line,
+		rune(glyph),
+		label.text,
+		allocator = allocator,
+	)
+}
+
+// cfg_is_name_truncating_byte reports whether a byte abutting a scanned label is a
+// name-ILLEGAL glyph that truncated the label mid-name — a `-`, `.`, or any other
+// non-identifier, non-layout, non-brace character. A `{` or whitespace is the legal
+// label terminator (never a truncation); a digit/letter/'_' would have been scanned
+// INTO the label, so it cannot abut it. The hyphen is the canonical case; `.` is
+// the dotted-name instinct; the predicate is closed over "neither a legal terminator
+// nor an identifier continuation".
+cfg_is_name_truncating_byte :: proc(ch: u8) -> bool {
+	if ch == '{' || ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+		return false
+	}
+	return !is_ident_char(ch)
 }
 
 // cfg_parse_assignment parses a single `key = "value"` pair. A key without
@@ -822,8 +912,10 @@ Cfg_Token_Kind :: enum {
 }
 
 Cfg_Token :: struct {
-	kind: Cfg_Token_Kind,
-	text: string,
+	kind:   Cfg_Token_Kind,
+	text:   string,
+	line:   int, // 1-based source line of the token's first byte (0 = unset)
+	offset: int, // 0-based byte offset of the token's first byte in the source
 }
 
 Cfg_Parser :: struct {
@@ -863,18 +955,25 @@ cfg_expect :: proc(p: ^Cfg_Parser, kind: Cfg_Token_Kind) -> (tok: Cfg_Token, err
 lex_fcfg :: proc(content: string) -> []Cfg_Token {
 	tokens := make([dynamic]Cfg_Token, 0, 16, context.temp_allocator)
 	i := 0
+	line := 1
 	for i < len(content) {
 		ch := content[i]
+		start := i
+		start_line := line
 		switch {
 		case ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
+			if ch == '\n' {
+				line += 1
+			}
 			i += 1
+			continue
 		case ch == '"':
 			tok, next := cfg_scan_string(content, i)
-			append(&tokens, tok)
+			append(&tokens, cfg_stamp(tok, start_line, start))
 			i = next
 		case is_ident_start(ch):
 			tok, next := cfg_scan_ident(content, i)
-			append(&tokens, tok)
+			append(&tokens, cfg_stamp(tok, start_line, start))
 			i = next
 		case is_digit(ch):
 			// A leading digit opens a tick-rate value (`60hz`) — a closed
@@ -882,14 +981,25 @@ lex_fcfg :: proc(content: string) -> []Cfg_Token {
 			// admits one, so a bare digit there scans Tick and the parser
 			// rejects it as a non-grammar value.
 			tok, next := cfg_scan_tick(content, i)
-			append(&tokens, tok)
+			append(&tokens, cfg_stamp(tok, start_line, start))
 			i = next
 		case:
-			append(&tokens, cfg_scan_punct(ch))
+			append(&tokens, cfg_stamp(cfg_scan_punct(ch), start_line, start))
 			i += 1
 		}
 	}
 	return tokens[:]
+}
+
+// cfg_stamp records a scanned token's 1-based line and 0-based byte offset — the
+// provenance a malformed-config diagnostic anchors on (project.fcfg:LINE: …). The
+// scan functions are position-agnostic (they return text + next), so the lexer
+// stamps the start position it tracked, keeping the scanners single-purpose.
+cfg_stamp :: proc(tok: Cfg_Token, line: int, offset: int) -> Cfg_Token {
+	stamped := tok
+	stamped.line = line
+	stamped.offset = offset
+	return stamped
 }
 
 cfg_scan_string :: proc(content: string, start: int) -> (tok: Cfg_Token, next: int) {

@@ -135,12 +135,19 @@ Call_Expr :: struct {
 // Member_Expr covers field access, UFCS receivers, and a type's
 // associated members alike (a.b, body.apply_impulse, Fixed.MAX) —
 // which one it is resolves semantically, not structurally.
+// line/col anchor the WHOLE access on the receiver's leftmost byte (the
+// expr_span convention `a.b.c` reports `a` at every level); member_line/member_col
+// anchor the MEMBER NAME's own token, the span a member-precise diagnostic
+// ("no such method on this type", typecheck.odin) puts its caret under — distinct
+// from the construct anchor so an unknown-member fault lands on `b`, not `a`.
 Member_Expr :: struct {
-	receiver: Expr,
-	member:   string,
-	class:    Ident_Class,
-	line:     int,
-	col:      int,
+	receiver:    Expr,
+	member:      string,
+	class:       Ident_Class,
+	line:        int,
+	col:         int,
+	member_line: int,
+	member_col:  int,
 }
 
 // Variant_Expr is an enum-variant value selected with `::` (spec §02 §3).
@@ -497,9 +504,19 @@ parse_postfix :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 			}
 			node := new(Member_Expr, context.temp_allocator)
 			// `a.b` anchors on the receiver `a`, the leftmost byte; a postfix
-			// chain `a.b.c` thus reports `a` at every level.
+			// chain `a.b.c` thus reports `a` at every level. member_line/member_col
+			// keep the member token's OWN span (the `b`), so a member-precise
+			// diagnostic anchors its caret under the offending member name.
 			recv_line, recv_col := expr_span(expr)
-			node^ = Member_Expr{receiver = expr, member = member.text, class = member.class, line = recv_line, col = recv_col}
+			node^ = Member_Expr {
+				receiver    = expr,
+				member      = member.text,
+				class       = member.class,
+				line        = recv_line,
+				col         = recv_col,
+				member_line = member.line,
+				member_col  = member.col,
+			}
 			expr = node
 		case .L_Paren:
 			args := parse_call_args(p) or_return
@@ -691,6 +708,16 @@ parse_if_expr :: proc(p: ^Parser, if_tok: Token) -> (expr: Expr, err: Parse_Erro
 parse_if_branch :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	expect(p, .L_Brace) or_return
 	skip_newlines(p)
+	// A value-block holds a single expression (spec §02 §5). A `return`/`let`
+	// leading the branch is the statement-form-`if`-in-expression-position trip:
+	// a lambda body `fn(acc, x){ if c { return v } return w }` parses its body as
+	// this if-EXPRESSION, whose `{ return v }` branch then leads with `return`.
+	// Name the verdict here (steering the author to the if-EXPRESSION rewrite)
+	// rather than recursing into parse_expression and tripping a bare
+	// Unexpected_Token on the statement keyword.
+	if peek_kind(p) == .Return || peek_kind(p) == .Let {
+		return nil, reject(p, peek_tok(p), .Statement_In_Value_Block)
+	}
 	value := parse_expression(p) or_return
 	skip_newlines(p)
 	expect(p, .R_Brace) or_return

@@ -269,7 +269,7 @@ read_package_identity :: proc(dep_root: string) -> (identity: Project_Identity, 
 	if read_err != nil {
 		return Project_Identity{}, .Malformed_Package_Tree
 	}
-	parsed, parse_err := parse_project_fcfg(string(fcfg_bytes))
+	parsed, parse_err, _ := parse_project_fcfg(string(fcfg_bytes))
 	if parse_err != .None {
 		return Project_Identity{}, .Malformed_Package_Tree
 	}

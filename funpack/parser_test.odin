@@ -165,6 +165,18 @@ test_parse_let_wrong_case_name :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
+// ── reject: let tuple-destructuring ─────────────────────────────────────────────
+@(test)
+test_parse_let_tuple_destructure_rejected :: proc(t: ^testing.T) {
+	// `let (a, b) = …` is the Rust/Swift/Python destructure instinct; §02 §6 binds a
+	// `let` to a SINGLE name, so the `(` after `let` names the dedicated
+	// Let_Tuple_Destructure verdict (steering the author to the `match` rewrite),
+	// not the bare Unexpected_Token expect(.Ident) trips on the paren.
+	tokens := stage_lex("fn draw() -> Int {\n  let (a, b) = pair()\n  return a\n}\n")
+	_, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.Let_Tuple_Destructure)
+}
+
 @(test)
 test_parse_match_well_formed :: proc(t: ^testing.T) {
 	// A well-formed match over the minimal pattern set — variant with

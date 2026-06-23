@@ -9,6 +9,8 @@
 // the Bindings map is insert-and-lookup only.
 package funpack
 
+import "core:fmt"
+import "core:slice"
 import "core:strings"
 
 Decl_Kind :: enum {
@@ -836,6 +838,93 @@ surface_method :: proc(receiver: Type, member: string) -> (signature: Type, foun
 		}
 	}
 	return nil, false
+}
+
+// surface_methods_for_receiver enumerates the method/member NAMES reachable on a
+// receiver type — the available-methods hint an Unknown_Method diagnostic carries so
+// an agent's write→check→fix loop converges without an introspect hunt. It is the
+// §02 §4 resolution order's NAME projection, built from the SAME
+// closed surface tables the checker resolves against, so it can never list a phantom
+// nor drop a real method: (1) the fixed-signature engine value methods, probed over
+// SURFACE_DUMP_METHOD_PROBES for the receiver's engine kind (the surface_dump mirror,
+// drift-gated by test_surface_dump); (2) a ground type's methods (surface_method);
+// and (3) the self-first free functions (Rng's next/range/chance/split, list's
+// len/contains/…), the §02 §4 UFCS forms whose first parameter IS the receiver — every
+// `.Func` decl in STDLIB_SURFACE whose surface_signatures overload leads with a param
+// CONCRETELY equal to the receiver (a nil/placeholder first param is skipped, it would
+// false-match every type). Names are deduplicated and sorted, so the hint is a
+// deterministic function of the receiver type and the rodata alone (no map iteration,
+// no clock). Returns "" when the receiver exposes no methods at all (a bare value), so
+// the caller renders the bare "no such method" sentence with no empty list.
+surface_methods_for_receiver :: proc(receiver: Type, allocator := context.temp_allocator) -> string {
+	names := make([dynamic]string, 0, 8, context.temp_allocator)
+	// (1) Engine value methods: walk the engine-method probe mirror for the
+	// receiver's kind, keeping every member that types live on it.
+	if engine, is_engine := receiver.(^Engine_Type); is_engine {
+		for key in SURFACE_DUMP_METHOD_PROBES {
+			if key.kind != engine.kind {
+				continue
+			}
+			if _, found := surface_engine_method(engine, key.member); found {
+				surface_append_unique(&names, key.member)
+			}
+		}
+	}
+	// (3) Self-first free functions: a `.Func` decl whose surface_signatures overload
+	// leads with the receiver type is reachable as `recv.NAME(…)` through §02 §4 UFCS.
+	for module in STDLIB_SURFACE {
+		for decl in module.decls {
+			if decl.kind != .Func {
+				continue
+			}
+			overloads, found := surface_signatures(decl.name)
+			if !found {
+				continue
+			}
+			for overload in overloads {
+				fn, is_fn := overload.(^Func_Type)
+				if !is_fn || len(fn.params) == 0 || fn.params[0] == nil {
+					continue
+				}
+				if types_compatible(receiver, fn.params[0]) {
+					surface_append_unique(&names, decl.name)
+					break
+				}
+			}
+		}
+	}
+	// (2) Ground-type methods (the Quat set): probed by name, since surface_method
+	// is keyed by (receiver, member) with no enumerable key list.
+	for member in SURFACE_GROUND_METHOD_NAMES {
+		if _, found := surface_method(receiver, member); found {
+			surface_append_unique(&names, member)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	slice.sort(names[:])
+	joined := strings.join(names[:], ", ", allocator)
+	return fmt.aprintf("available methods: %s", joined, allocator = allocator)
+}
+
+// SURFACE_GROUND_METHOD_NAMES mirrors surface_method's ground-type method names (the
+// Quat set) — surface_method is keyed by (receiver, member) with no key list, so the
+// hint enumerator probes these candidates. A name added to surface_method but not here
+// is a hint-completeness gap the surface_method test guards by exercising the set.
+@(rodata)
+SURFACE_GROUND_METHOD_NAMES := []string{"rotate", "mul", "slerp"}
+
+// surface_append_unique appends a name only if absent — the hint's dedup, since a
+// receiver can reach the same member name through two probe paths (rare, but a ground
+// method name could shadow a free fn). Linear scan; the list is small.
+surface_append_unique :: proc(names: ^[dynamic]string, name: string) {
+	for existing in names {
+		if existing == name {
+			return
+		}
+	}
+	append(names, name)
 }
 
 // surface_signatures types the importable free functions as overload

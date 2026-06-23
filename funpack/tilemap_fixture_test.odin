@@ -165,7 +165,12 @@ test_tilemap_fixture_rejects_malformed_shapes :: proc(t: ^testing.T) {
 		"}\n"))
 	testing.expect_value(t, un_parse, Parse_Error.None)
 	_, unknown_err := stage_typecheck(unknown)
-	testing.expect_value(t, unknown_err, Type_Error.Unsupported_Expr)
+	// An unknown method on a KNOWN type (TilemapHandle has no `warp`) is the
+	// dedicated Unknown_Method arm, NOT the Unsupported_Expr catch-all — the
+	// receiver typed clean, so "this method does not exist" is the precise verdict
+	// (the member-name caret + available-methods hint render through the pipeline,
+	// pinned in diagnostics_test.odin).
+	testing.expect_value(t, unknown_err, Type_Error.Unknown_Method)
 }
 
 @(test)

@@ -295,6 +295,31 @@ test_expr_lambda_second_statement_rejected :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Parse_Error.Lambda_Body_Multi_Statement)
 }
 
+// ── reject: a statement-form `if` guard in a lambda body ──────────────────────
+@(test)
+test_expr_lambda_statement_if_guard_rejected :: proc(t: ^testing.T) {
+	// The reflexive named-fn early-return guard inside a lambda body:
+	// `fn(acc, x) { if c { return v } return w }`. The body parses as an
+	// if-EXPRESSION, whose `{ return v }` branch leads with `return` — a statement
+	// where the value-block needs an expression. The named Statement_In_Value_Block
+	// verdict steers the author to the if-EXPRESSION rewrite, not the bare
+	// Unexpected_Token the inner `return` would otherwise trip.
+	_, err := parse_expr_text(
+		"fn(acc, x) { if acc == 0 { return 1 } return acc }",
+	)
+	testing.expect_value(t, err, Parse_Error.Statement_In_Value_Block)
+}
+
+// ── reject: a statement in an if-EXPRESSION branch directly ───────────────────
+@(test)
+test_expr_if_branch_leading_return_rejected :: proc(t: ^testing.T) {
+	// The value-block rule is general to every if-expression branch, not just the
+	// lambda case: a `{ return … }` branch leads with a statement keyword, so an
+	// if-expression whose then-arm is a statement-form block names the verdict.
+	_, err := parse_expr_text("if true { return 1 } else { 0 }")
+	testing.expect_value(t, err, Parse_Error.Statement_In_Value_Block)
+}
+
 // COMPILER-EVAL PARITY: the widened single-statement lambda body (spec §02 §5) is a
 // parser-only change — both evaluators run lambda.body as an EXPRESSION
 // (evaluate.odin apply_lambda → eval_expr, interp_call.odin apply_lambda →

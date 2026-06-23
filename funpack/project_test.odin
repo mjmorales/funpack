@@ -13,7 +13,7 @@ import "core:testing"
 
 @(test)
 test_parse_project_fcfg_happy :: proc(t: ^testing.T) {
-	identity, err := parse_project_fcfg("project numerics {\n  version = \"0.1.0\"\n}\n")
+	identity, err, _ := parse_project_fcfg("project numerics {\n  version = \"0.1.0\"\n}\n")
 	testing.expect_value(t, err, Project_Error.None)
 	testing.expect_value(t, identity.name, "numerics")
 	testing.expect_value(t, identity.version, "0.1.0")
@@ -24,7 +24,7 @@ test_parse_project_fcfg_leading_doc :: proc(t: ^testing.T) {
 	// A grammar-legal top-level @doc preceding the block is accepted and
 	// dropped; identity is unchanged.
 	content := "@doc(\"the numeric kernel\")\nproject numerics {\n  version = \"0.1.0\"\n}\n"
-	identity, err := parse_project_fcfg(content)
+	identity, err, _ := parse_project_fcfg(content)
 	testing.expect_value(t, err, Project_Error.None)
 	testing.expect_value(t, identity.name, "numerics")
 	testing.expect_value(t, identity.version, "0.1.0")
@@ -37,7 +37,7 @@ test_parse_project_fcfg_extra_doc_and_key_same_identity :: proc(t: ^testing.T) {
 	// the parser handles the grammar's surface, not just the two golden
 	// lines.
 	content := "project numerics {\n  @doc(\"version pin\")\n  version = \"0.1.0\"\n  edition = \"2026\"\n}\n"
-	identity, err := parse_project_fcfg(content)
+	identity, err, _ := parse_project_fcfg(content)
 	testing.expect_value(t, err, Project_Error.None)
 	testing.expect_value(t, identity.name, "numerics")
 	testing.expect_value(t, identity.version, "0.1.0")
@@ -49,7 +49,7 @@ test_parse_project_fcfg_extra_doc_and_key_same_identity :: proc(t: ^testing.T) {
 test_parse_project_fcfg_missing_label_rejected :: proc(t: ^testing.T) {
 	// A labelless block has no package name — the label IS the name
 	// (§14.4), so `project { … }` is malformed.
-	_, err := parse_project_fcfg("project {\n  version = \"0.1.0\"\n}\n")
+	_, err, _ := parse_project_fcfg("project {\n  version = \"0.1.0\"\n}\n")
 	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
 }
 
@@ -58,7 +58,7 @@ test_parse_project_fcfg_missing_version_rejected :: proc(t: ^testing.T) {
 	// A well-formed block missing the required version is the dedicated
 	// Missing_Project_Version diagnostic — version is the one required
 	// key, so its absence is never silently accepted.
-	_, err := parse_project_fcfg("project numerics {\n}\n")
+	_, err, _ := parse_project_fcfg("project numerics {\n}\n")
 	testing.expect_value(t, err, Project_Error.Missing_Project_Version)
 }
 
@@ -66,7 +66,7 @@ test_parse_project_fcfg_missing_version_rejected :: proc(t: ^testing.T) {
 test_parse_project_fcfg_key_without_eq_rejected :: proc(t: ^testing.T) {
 	// `=` is the lexical tell that separates config from logic (§14.2); a
 	// key without it is not an assignment.
-	_, err := parse_project_fcfg("project numerics {\n  version \"0.1.0\"\n}\n")
+	_, err, _ := parse_project_fcfg("project numerics {\n  version \"0.1.0\"\n}\n")
 	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
 }
 
@@ -75,7 +75,7 @@ test_parse_project_fcfg_control_flow_rejected :: proc(t: ^testing.T) {
 	// The config grammar has no control flow (§14.2); an `if` inside the
 	// block is a construct outside key=value/block/@doc and rejects. (`if`
 	// lexes as a bare Ident, then the following `{` is not `=`.)
-	_, err := parse_project_fcfg("project numerics {\n  version = \"0.1.0\"\n  if active { }\n}\n")
+	_, err, _ := parse_project_fcfg("project numerics {\n  version = \"0.1.0\"\n  if active { }\n}\n")
 	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
 }
 
@@ -84,7 +84,7 @@ test_parse_project_fcfg_expression_value_rejected :: proc(t: ^testing.T) {
 	// The config grammar has no expressions (§14.2); a value that is an
 	// arithmetic expression rather than a string literal rejects — the
 	// `+` glyph lexes Invalid.
-	_, err := parse_project_fcfg("project numerics {\n  version = 1 + 1\n}\n")
+	_, err, _ := parse_project_fcfg("project numerics {\n  version = 1 + 1\n}\n")
 	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
 }
 
@@ -92,15 +92,88 @@ test_parse_project_fcfg_expression_value_rejected :: proc(t: ^testing.T) {
 test_parse_project_fcfg_use_reference_rejected :: proc(t: ^testing.T) {
 	// `use` references name source and are out of scope for project
 	// identity (§14.2); a top-level `use` is not the project block opener.
-	_, err := parse_project_fcfg("use numerics.{X}\nproject numerics {\n  version = \"0.1.0\"\n}\n")
+	_, err, _ := parse_project_fcfg("use numerics.{X}\nproject numerics {\n  version = \"0.1.0\"\n}\n")
 	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
 }
 
 @(test)
 test_parse_project_fcfg_empty_rejected :: proc(t: ^testing.T) {
 	// No block at all — there is no identity to read.
-	_, err := parse_project_fcfg("")
+	_, err, _ := parse_project_fcfg("")
 	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+}
+
+// ── Malformed-label fix-criteria detail ────────────────────────────────
+// A project name is a bare LOWER_IDENT (§14 §4, §15). A label that violates
+// the rule must reject with the dedicated detail line naming the file, the
+// label line, and the exact charset rule — never the bare arm name that
+// sent the first author guessing. These pin the SCANNED-LABEL byte detail
+// so a wording or rule-cite regression fails loudly.
+
+@(test)
+test_parse_project_fcfg_hyphen_label_detail :: proc(t: ^testing.T) {
+	// The canonical hyphen case: `project colony-sim { … }` scans the label
+	// as `colony`, then the `-` truncates the name and breaks the `{` expect.
+	// The detail names the offending glyph and the rule on line 1 — the
+	// hyphen, not `colony`, is the cause.
+	_, err, detail := parse_project_fcfg("project colony-sim {\n  version = \"0.1.0\"\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:1: project name must be a bare identifier (a lower-case or '_' start, then letters, digits, or '_'); the '-' after 'colony' is not allowed (spec §14 §4, §15)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_uppercase_label_detail :: proc(t: ^testing.T) {
+	// An UpperCamel label scans clean as one ident but is not a LOWER_IDENT
+	// (the name class roots a module, §15). The detail names the rule and the
+	// offending label directly.
+	_, err, detail := parse_project_fcfg("project Colony {\n  version = \"0.1.0\"\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:1: project name must be a bare identifier (a lower-case or '_' start, then letters, digits, or '_') — 'Colony' is not (spec §14 §4, §15)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_dotted_label_detail :: proc(t: ^testing.T) {
+	// A `.` in the label (the dotted-name instinct) is the truncating-glyph
+	// case like the hyphen: `project my.game { … }` scans `my`, then `.` breaks
+	// the name. The detail names the `.` glyph after `my`.
+	_, err, detail := parse_project_fcfg("project my.game {\n  version = \"0.1.0\"\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:1: project name must be a bare identifier (a lower-case or '_' start, then letters, digits, or '_'); the '.' after 'my' is not allowed (spec §14 §4, §15)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_underscore_label_accepted :: proc(t: ^testing.T) {
+	// A '_'-rooted label IS a LOWER_IDENT (lower_start = [a-z] | '_'), so it is
+	// accepted — the rule admits the underscore start the charset names, never
+	// over-rejecting a valid bare identifier.
+	identity, err, detail := parse_project_fcfg("project _scratch {\n  version = \"0.1.0\"\n}\n")
+	testing.expect_value(t, err, Project_Error.None)
+	testing.expect_value(t, identity.name, "_scratch")
+	testing.expect_value(t, detail, "")
+}
+
+@(test)
+test_is_lower_ident_charset :: proc(t: ^testing.T) {
+	// is_lower_ident enforces the LOWER_IDENT charset (lower_start ident_char*),
+	// the §14 §4 / §15 name class: lower/'_' start, then letters/digits/'_'.
+	testing.expect(t, is_lower_ident("colony"))
+	testing.expect(t, is_lower_ident("_scratch"))
+	testing.expect(t, is_lower_ident("combat_melee2"))
+	testing.expect(t, !is_lower_ident("Colony")) // UpperCamel head
+	testing.expect(t, !is_lower_ident("2d")) // digit head
+	testing.expect(t, !is_lower_ident("")) // empty is no identifier
 }
 
 // ── Tree-shaped paths through read_project ─────────────────────────────

@@ -564,3 +564,23 @@ is_ident_start :: proc(ch: u8) -> bool {
 is_ident_char :: proc(ch: u8) -> bool {
 	return is_ident_start(ch) || is_digit(ch)
 }
+
+// is_lower_ident reports whether a whole string is a LOWER_IDENT (lexical-core.ebnf
+// §2: lower_start ident_char* — a lower-case or '_' first byte, then letters, digits,
+// or '_'). The §14 §4 project name / §15 module name class. is_ident_start admits an
+// UPPER head too (it serves both classes), so the dedicated lower-head check here is
+// what rejects an UpperCamel project label; an empty string is not an identifier.
+is_lower_ident :: proc(s: string) -> bool {
+	if len(s) == 0 {
+		return false
+	}
+	if !(s[0] == '_' || (s[0] >= 'a' && s[0] <= 'z')) {
+		return false
+	}
+	for i in 1 ..< len(s) {
+		if !is_ident_char(s[i]) {
+			return false
+		}
+	}
+	return true
+}

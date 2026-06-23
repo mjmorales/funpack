@@ -23,6 +23,7 @@ Type_Error :: enum {
 	Assert_Not_Bool,  // an assert whose expression is not Bool-typed
 	Type_Mismatch,    // differently-typed sides — no implicit promotion
 	Unsupported_Expr, // a parsed form outside the typeable domain
+	Unknown_Method,   // a method/member call `recv.NAME(…)` whose NAME is no method of the receiver's KNOWN type and no §02 §4 UFCS-reachable stdlib free fn — the receiver typed cleanly, so this is "this method does not exist on this type", NOT "this expression form is untypeable" (the .Unsupported_Expr catch-all it splits out of). Anchored on the member NAME (Member_Expr.member_col) with a hint listing the type's real methods, so an agent's write→check→fix loop converges on the right member without an introspect hunt
 	Unknown_Module,   // an import naming a module outside the surface
 	Unknown_Member,   // an import naming a member its module lacks
 	Package_Private,  // a package-edge import (or module-handle access) naming a declaration its package does not @expose — across the §30 §6 boundary an item is importable iff @expose'd; within a project this never fires (public-by-default, spec §15 §4)
@@ -102,7 +103,8 @@ Type_Diag_Site :: struct {
 	line:        int,
 	col:         int,
 	declaration: string,
-	set:         bool, // guards expr_check's first-write-wins span stamp
+	hint:        string, // optional per-instance detail (the receiver type's real methods for Unknown_Method); rides with the first-write-wins span stamp, "" otherwise
+	set:         bool,   // guards expr_check's first-write-wins span stamp
 }
 
 // Type_Verdict pairs a typecheck failure with the offending construct's span and
@@ -118,6 +120,7 @@ Type_Verdict :: struct {
 	line:        int,
 	col:         int,
 	declaration: string,
+	hint:        string, // optional per-instance detail (Unknown_Method's available-methods list); "" otherwise
 }
 
 stage_typecheck :: proc(ast: Ast) -> (typed: Typed_Ast, err: Type_Error) {
@@ -142,7 +145,7 @@ stage_typecheck_located :: proc(ast: Ast, index: Module_Index, importer_root := 
 	if err == .None {
 		return checked, Type_Verdict{}
 	}
-	return checked, Type_Verdict{err = err, line = site.line, col = site.col, declaration = site.declaration}
+	return checked, Type_Verdict{err = err, line = site.line, col = site.col, declaration = site.declaration, hint = site.hint}
 }
 
 // stage_typecheck_indexed types a module against a project-wide Module_Index so a
@@ -657,6 +660,26 @@ stamp_expr :: proc(ctx: Check_Ctx, expr: Expr) {
 	if line != 0 {
 		ctx.diag.line = line
 		ctx.diag.col = col
+		ctx.diag.set = true
+	}
+}
+
+// stamp_member stamps a member-precise span (the member NAME's own token, not the
+// receiver-anchored construct span expr_span would give) plus the available-methods
+// hint into the ctx's sink first-write-wins — the seam for an Unknown_Method reject,
+// so its caret lands under the offending member name with the type's real methods
+// riding the diagnostic. Stamped at the member-call reject site BEFORE expr_check's
+// wrapper unwinds, so the first-write-wins lock holds this member span over the
+// receiver-anchored construct span the wrapper would otherwise claim. A nil sink or
+// an already-set span is a no-op.
+stamp_member :: proc(ctx: Check_Ctx, callee: ^Member_Expr, hint: string) {
+	if ctx.diag == nil || ctx.diag.set {
+		return
+	}
+	if callee.member_line != 0 {
+		ctx.diag.line = callee.member_line
+		ctx.diag.col = callee.member_col
+		ctx.diag.hint = hint
 		ctx.diag.set = true
 	}
 }
@@ -2591,6 +2614,19 @@ method_check :: proc(ctx: Check_Ctx, callee: ^Member_Expr, e: ^Call_Expr) -> (ty
 	// lowering only fires for a receiver with no value method (a list).
 	if err == .Unsupported_Expr && is_stdlib_free_fn(callee.member) {
 		return call_check(ctx, stdlib_ufcs_call(callee, e.args, e.line, e.col))
+	}
+	// The receiver typed CLEAN (expr_check above) but exposes no method of this
+	// name and no §02 §4 UFCS-reachable free fn — so this is "no such method on
+	// this type", NOT "this expression form is untypeable". Split it out of the
+	// .Unsupported_Expr catch-all: a distinct Unknown_Method
+	// anchored on the MEMBER NAME (stamp_member, not the receiver-anchored
+	// expr_span) with a hint listing the receiver type's real methods, so the
+	// fix is one rename rather than an introspect hunt. The receiver itself was a
+	// recognized type (expr_check succeeded); a receiver that did NOT type keeps
+	// its own deeper diagnostic (expr_check already or_return'd above).
+	if err == .Unsupported_Expr {
+		stamp_member(ctx, callee, surface_methods_for_receiver(receiver))
+		return nil, .Unknown_Method
 	}
 	return type, err
 }

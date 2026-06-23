@@ -376,3 +376,51 @@ test_surface_method_quat_only :: proc(t: ^testing.T) {
 	_, fixed_found := surface_method(Ground_Type.Fixed, "rotate")
 	testing.expect(t, !fixed_found)
 }
+
+// ── Unknown method on a known type ─────────────────────────────────────
+// A `recv.NAME(…)` whose receiver typed CLEAN but exposes no method NAME and
+// no §02 §4 UFCS-reachable free fn is the distinct Unknown_Method arm, NOT
+// the Unsupported_Expr catch-all. These pin the SPLIT at the typecheck-arm
+// junction (the rendered member-name caret + hint are pinned through the
+// pipeline in diagnostics_test.odin).
+
+@(test)
+test_unknown_method_on_list_is_unknown_method :: proc(t: ^testing.T) {
+	// A list receiver typed clean (List[Int]); `bogus` is neither a list method
+	// nor a stdlib free fn reachable via UFCS — so the arm is Unknown_Method, not
+	// the Unsupported_Expr that read as "this expression form is illegal".
+	_, err := check_expr_source("[1, 2].bogus(3)\n")
+	testing.expect_value(t, err, Type_Error.Unknown_Method)
+}
+
+@(test)
+test_real_list_method_still_types :: proc(t: ^testing.T) {
+	// The split must not break a REAL UFCS method: `[1,2].len()` lowers to
+	// `len([1,2])` (Int) exactly as before — Unknown_Method fires only when no
+	// method resolves. Driven through the full pipeline so `len` is imported (the
+	// golden expr bindings carry only math + fold, so the lowering would otherwise
+	// hit Unresolved_Name on the bare `len`).
+	source := "import engine.list.len\n" +
+		"test \"list len method types and runs\" {\n" +
+		"  assert [1, 2, 3].len() == 3\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_surface_methods_for_receiver_lists_rng_draws :: proc(t: ^testing.T) {
+	// The Unknown_Method hint enumerates a receiver's real methods from the
+	// closed surface tables. An Rng's self-first signature methods are the
+	// available list: chance/next/range/split (pick is a call-site-inferred
+	// combinator, tracked separately). The hint is deterministic + sorted.
+	hint := surface_methods_for_receiver(engine_type_of(.Rng))
+	testing.expect_value(t, hint, "available methods: chance, next, range, split")
+
+	// A Quat's ground methods come through surface_method (the rotate/mul/slerp
+	// set), sorted into the same hint shape.
+	quat_hint := surface_methods_for_receiver(Ground_Type.Quat)
+	testing.expect_value(t, quat_hint, "available methods: mul, rotate, slerp")
+}

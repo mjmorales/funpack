@@ -505,6 +505,8 @@ Parse_Error :: enum {
 	Bool_Pattern_Unsupported, // a `match` scrutinee dispatched on a bool literal pattern (`true`/`false` arm) — §02 §5 admits a match over a closed enum/tuple, not over Bool's two values, so a Bool match is a named verdict steering the author to `if`/`else` rather than the casing-class Wrong_Case the snake_case `true`/`false` head would otherwise trip (the parser sees `true`/`false` as a snake_case Ident in variant-head position); the Wrong_Case mold, branched ahead of the casing check
 	Newline_Before_Binary_Op, // a statement/expression-start position whose first token is a binary operator (`and`/`or`, a comparison `== != < <= > >=`, or an arithmetic `+ * / %`) — funpack is newline-terminated (spec §02 §1), so the prior line already ended a complete expression and a binary operator cannot continue it across the newline; a named verdict steering the author to keep each line a complete expression (or bind an intermediate `let`) rather than the bare Unexpected_Token the dangling operator would otherwise trip. Unary-capable leads (`-`, `not`) are EXCLUDED — they legally open a fresh expression — so only the binary-only operators arm this verdict
 	Lambda_Body_Multi_Statement, // a lambda body `fn(params){ … }` holding MORE THAN ONE statement — §02 §5 admits a SINGLE statement: one expression (implicit return `fn(x){ x + 1 }`), an if-expression (`fn(x){ if c { a } else { b } }`), or a `return` (`fn(x){ return x + 1 }`) — never a multi-statement block. A leading `let` is the multi-statement case by construction (a `let` binds a name the body must then use, so it cannot be the one statement); a second statement after the first (the `let`-then-`return` body) is the general case. A named verdict steering the author to lift the locals/branches into a named helper `fn` (which CAN hold a `let` sequence and is independently testable) and call it from the one-statement lambda, rather than the bare Unexpected_Token the second statement's lead token would otherwise trip; the Newline_Before_Binary_Op mold — named at the lambda-body seam (the leading `let`, or the first token past the single statement before `}`)
+	Statement_In_Value_Block, // a value-block arm `{ … }` (an if-expression branch, by extension a lambda body that parses as a statement-form `if`) whose first token is a STATEMENT keyword (`return`/`let`), not an expression — §02 §5 makes every value-block hold exactly one expression. The trip is a statement-form `if` written in expression position: `fn(acc, x){ if c { return v } return w }` parses the body as an if-EXPRESSION whose `{ return v }` branch then leads with `return`. A named verdict steering the author to the if-EXPRESSION rewrite (`if c { v } else { w }`, both arms a bare value), rather than the bare Unexpected_Token the inner statement keyword would otherwise trip; the Lambda_Body_Multi_Statement mold — named at the value-block seam (the statement keyword leading the branch)
+	Let_Tuple_Destructure,    // a `let (a, b) = …` binding — §02 §6 binds a `let` to a SINGLE name, never a destructuring pattern (the `(` after `let` opens a pattern no binding form admits). A named verdict steering the author to `match <expr> { (a, b) => … }` (the §02 §5 tuple-destructuring idiom every example threads tuple returns through — rng threading, command+signal pairs), rather than the bare Unexpected_Token the `(` would otherwise trip when `expect(.Ident)` finds a paren; the Lambda_Body_Multi_Statement mold — named at the `let` binding seam (the `(` opening the unsupported destructure)
 }
 
 Parser :: struct {
@@ -1360,6 +1362,13 @@ parse_assert :: proc(p: ^Parser) -> (node: Assert_Node, err: Parse_Error) {
 
 parse_let :: proc(p: ^Parser) -> (node: Let_Node, err: Parse_Error) {
 	expect(p, .Let) or_return
+	// A `(` after `let` is the tuple-destructuring instinct (`let (a, b) = …`):
+	// §02 §6 binds a `let` to a single name, so name the verdict on the `(` and
+	// steer the author to the `match` rewrite, rather than letting expect(.Ident)
+	// trip a bare Unexpected_Token on the paren.
+	if peek_kind(p) == .L_Paren {
+		return node, reject(p, peek_tok(p), .Let_Tuple_Destructure)
+	}
 	name := expect(p, .Ident) or_return
 	// A binding name is a value name: snake_case, or UPPER_SNAKE for a
 	// module-level constant (spec §02).

@@ -44,6 +44,7 @@ Diagnostic :: struct {
 	col:         int,    // 1-based; 0 = unknown
 	declaration: string, // offending decl name (module-qualified); "" if none
 	message:     string, // the fix-criteria sentence for this rule
+	hint:        string, // optional per-instance detail appended after message (e.g. the receiver type's real methods for Unknown_Method); "" for the static-message arms
 	path:        string, // source file; filled by the CLI/project layer
 }
 
@@ -80,6 +81,13 @@ render_diagnostic :: proc(d: Diagnostic, source: string, allocator := context.al
 		fmt.sbprintf(&b, " (%s)", d.declaration)
 	}
 	fmt.sbprintf(&b, ": %s", d.message)
+	// A per-instance hint (the receiver type's real methods for an Unknown_Method,
+	// say) rides after the static fix-sentence — the dynamic detail the static
+	// per-arm message cannot carry, kept OFF the header's machine-stable triple so
+	// it never disturbs rule/declaration parsing. "" for the static-message arms.
+	if d.hint != "" {
+		fmt.sbprintf(&b, " — %s", d.hint)
+	}
 	// Excerpt: only when a line is known. The gutter width is the line number's
 	// decimal width, so the `|` rules align under the header's path and the caret
 	// gutter matches the excerpt gutter exactly.
@@ -222,6 +230,10 @@ parse_diagnostic :: proc(err: Parse_Error, line: int, col: int) -> Diagnostic {
 		d.message = "an expression does not continue across a newline before a binary operator — funpack ends a statement at the newline, so keep each line a complete expression, or bind an intermediate `let` (spec §02 §1)"
 	case .Lambda_Body_Multi_Statement:
 		d.message = "a lambda body is a single statement — one expression, an if-expression, or a `return` — never a multi-statement block; lift the locals into a named helper `fn` and call it from the one-statement lambda (spec §02 §5)"
+	case .Statement_In_Value_Block:
+		d.message = "a value block holds a single expression — a statement-form `if … { return … }` cannot stand here; rewrite it as the if-EXPRESSION `if cond { value } else { value }`, both arms a bare value (spec §02 §5)"
+	case .Let_Tuple_Destructure:
+		d.message = "`let` binds a single name, not a tuple pattern — destructure a tuple with `match <expr> { (a, b) => … }` (spec §02 §5)"
 	}
 	return d
 }
@@ -265,8 +277,8 @@ gate_diagnostic :: proc(err: Gate_Error, line: int, declaration: string) -> Diag
 // owning declaration's name. The `message` is the fix-criteria sentence
 // distilled from the arm's rich doc-comment in typecheck.odin's Type_Error
 // declaration. Total over Type_Error so a new arm is a visible compile gap.
-type_diagnostic :: proc(err: Type_Error, line: int, col: int, declaration: string) -> Diagnostic {
-	d := Diagnostic{stage = .Typecheck, line = line, col = col, declaration = declaration, rule = fmt.tprintf("%v", err)}
+type_diagnostic :: proc(err: Type_Error, line: int, col: int, declaration: string, hint := "") -> Diagnostic {
+	d := Diagnostic{stage = .Typecheck, line = line, col = col, declaration = declaration, rule = fmt.tprintf("%v", err), hint = hint}
 	switch err {
 	case .None:
 		d.rule = ""
@@ -276,6 +288,8 @@ type_diagnostic :: proc(err: Type_Error, line: int, col: int, declaration: strin
 		d.message = "the two sides here have different types — funpack has no implicit promotion, so make the types match (spec §02)"
 	case .Unsupported_Expr:
 		d.message = "this expression form is outside the typeable domain — rewrite it in the supported expression grammar (spec §02)"
+	case .Unknown_Method:
+		d.message = "no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4)"
 	case .Unknown_Module:
 		d.message = "this import names a module outside the surface — check the module name (spec §15)"
 	case .Unknown_Member:
