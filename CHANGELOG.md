@@ -7,6 +7,17 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.13.0] - 2026-06-23
+
+### Features
+- feat(funpack): restore the full engine.rand draw surface (seed/next/range/chance/split) (f058b0b)
+
+### Fixes
+- fix(funpack): make engine.rand.pick self-first (rng.pick(items)) (36855bb)
+- fix(funpack): recognize (Self, Rng) as a productive update-return shape (friction-0001) (fa4cf61)
+- fix(mcp): make inspect_* empty results self-describing (friction-0007) (aad9d1e)
+- fix(funpack): guard argv0-less launch context so `funpack check` cannot segfault (friction-0011) (84be46d)
+
 ## [0.12.1] - 2026-06-21
 
 ### Fixes
