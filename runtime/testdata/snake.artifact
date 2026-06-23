@@ -306,10 +306,10 @@ node name snake 0
 node name c 0
 node return 1
 node match 2 5
-node call 3
-node name pick 0
-node name free 0
+node call 2
+node field pick 1
 node name rng 0
+node name free 0
 node arm tuple 2
 node arm variant_binds Option Some 1 cell
 node arm bare_binder - - 1 next
@@ -446,10 +446,10 @@ node name occ 0
 node name c 0
 node return 1
 node match 2 5
-node call 3
-node name pick 0
-node name free 0
+node call 2
+node field pick 1
 node name rng 0
+node name free 0
 node arm tuple 2
 node arm variant_binds Option Some 1 cell
 node arm bare_binder - - 1 next

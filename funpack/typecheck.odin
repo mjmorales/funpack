@@ -2104,22 +2104,25 @@ get_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error
 	return option_of(elem), .None
 }
 
-// pick_check types pick(list, rng) (spec §04 §1, engine.rand): a List[T] and the
-// threaded Rng handle, yielding the draw pair (Option[T], Rng) — the first
-// result is an option of the list's element (None when the list is empty), the
-// second the advanced RNG stream. The match in `replenish`/`setup` destructures
-// this tuple. The second argument must be the Rng handle.
+// pick_check types pick(self: Rng, items: [T]) (spec §04 §1, engine.rand): the
+// threaded Rng handle FIRST (self-first, matching the other five draws and the
+// rand.fun declaration) then a List[T], yielding the draw pair (Option[T], Rng) —
+// the first result is an option of the list's element (None when the list is
+// empty), the second the advanced RNG stream. The match in `replenish`/`setup`
+// destructures this tuple. pick stays a call-site-inferred combinator (not a
+// fixed surface_signatures row) because T is read off the list argument, but its
+// receiver is the Rng — so the rng.pick(items) UFCS method form lowers here.
 pick_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
 	if len(e.args) != 2 {
 		return nil, .Type_Mismatch
 	}
-	list_type := expr_check(ctx, e.args[0]) or_return
-	rng := expr_check(ctx, e.args[1]) or_return
-	list, is_list := list_type.(^List_Type)
-	if !is_list {
+	rng := expr_check(ctx, e.args[0]) or_return
+	list_type := expr_check(ctx, e.args[1]) or_return
+	if !is_engine(rng, .Rng) {
 		return nil, .Type_Mismatch
 	}
-	if !is_engine(rng, .Rng) {
+	list, is_list := list_type.(^List_Type)
+	if !is_list {
 		return nil, .Type_Mismatch
 	}
 	return tuple_of({option_of(list.elem), engine_type_of(.Rng)}), .None

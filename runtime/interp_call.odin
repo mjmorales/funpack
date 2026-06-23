@@ -356,12 +356,13 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	}
 	// The §26 self-first RNG draws on a threaded Rng receiver — the GAMEPLAY-EVAL
 	// twin of funpack/evaluate.odin's eval_rng_method (the dual-interpreter parity
-	// surface, §10 bit-identity). next()/range(lo,hi)/chance(p)/split() each draw
-	// off the receiver Rng and return the threaded (value, next_rng) tuple the
-	// behavior body destructures with a tuple-pattern match. pick stays the
-	// list-first FREE function (eval_named_call), so it never routes here. Tried
-	// after the resource/intent/handle/record/nav arms so a same-named member on
-	// another receiver still resolves first.
+	// surface, §10 bit-identity). next()/range(lo,hi)/chance(p)/split()/pick(items)
+	// each draw off the receiver Rng and return the threaded (value, next_rng) tuple
+	// the behavior body destructures with a tuple-pattern match. pick is self-first
+	// like the other five (ADR pick-is-self-first-uniform-rng-surface), so snake's
+	// `rng.pick(free)` lowers here as a §02 §4 method call. Tried after the
+	// resource/intent/handle/record/nav arms so a same-named member on another
+	// receiver still resolves first.
 	if rng, is_rng := recv.(Rng); is_rng {
 		switch method {
 		case "next":
@@ -372,6 +373,8 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 			return eval_rng_chance(interp, rng, node, env)
 		case "split":
 			return eval_rng_split(interp, rng, node)
+		case "pick":
+			return eval_rng_pick(interp, rng, node, env)
 		}
 	}
 	// The §08 View iteration + reference surface on a materialized View receiver
@@ -1835,14 +1838,17 @@ builtin_or_else :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	return eval(interp, &node.children[2], env)
 }
 
-// builtin_pick is the §26 seeded draw `pick(list, rng) -> (Option[T], Rng)`
-// (snake's `pick(free, rng)`): it selects a uniform element of `list` and returns
-// the THREADED pair — the drawn element boxed as `Option::Some(elem)` (or
-// `Option::None` for an empty list) and the ADVANCED Rng. The draw is never a
-// silent advance (§04 §1): the Rng is consumed and its successor returned even on
-// the empty (None) arm, so the caller threads `next` forward exactly as the kernel
-// contract requires. The result is a `Tuple_Value{Option, Rng}` a tuple-pattern
-// match destructures into `(Option::Some(cell), next)` / `(Option::None, next)`.
+// builtin_pick is the §26 seeded draw `pick(self: Rng, items: [T]) -> (Option[T],
+// Rng)` (snake's `rng.pick(free)`): it selects a uniform element of the list and
+// returns the THREADED pair — the drawn element boxed as `Option::Some(elem)` (or
+// `Option::None` for an empty list) and the ADVANCED Rng. The Rng is the first
+// argument (the receiver, children[1]) and the list the second (children[2]),
+// self-first like the other five draws and the rand.fun declaration. The draw is
+// never a silent advance (§04 §1): the Rng is consumed and its successor returned
+// even on the empty (None) arm, so the caller threads `next` forward exactly as
+// the kernel contract requires. The result is a `Tuple_Value{Option, Rng}` a
+// tuple-pattern match destructures into `(Option::Some(cell), next)` /
+// `(Option::None, next)`.
 //
 // None-arm boxing: None is a unit `Option::None` (nil payload) via none_value;
 // Some boxes the picked element via some_value (an arena-allocated payload). The
@@ -1854,8 +1860,8 @@ builtin_pick :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	if len(node.children) < 3 {
 		return nil, false
 	}
-	list_val, list_ok := eval(interp, &node.children[1], env)
-	rng_val, rng_ok := eval(interp, &node.children[2], env)
+	rng_val, rng_ok := eval(interp, &node.children[1], env)
+	list_val, list_ok := eval(interp, &node.children[2], env)
 	if !list_ok || !rng_ok {
 		return nil, false
 	}
@@ -1867,13 +1873,27 @@ builtin_pick :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	if !is_rng {
 		return nil, false
 	}
+	return rng_pick_reduce(interp, rng, elements), true
+}
+
+// rng_pick_reduce is the shared seeded-draw reduction both pick forms route
+// through — the bare free call `pick(rng, free)` (builtin_pick) and the self-first
+// method call `rng.pick(free)` (eval_rng_pick) — so the two call shapes are
+// bit-identical by construction, not by parallel maintenance. It boxes the drawn
+// element as `Option::Some` (or `Option::None` for an empty list) and threads the
+// ADVANCED Rng; the draw is never a silent advance (§04 §1: even the empty None
+// arm consumes the Rng and returns its successor). The index reduction is
+// rand_bounded (Lemire multiply-shift), the SAME reduction the kernel rand_pick
+// and the funpack-compiler eval_rand_pick use, so the picked position matches
+// across both interpreters (the §10 dual-interpreter parity floor).
+rng_pick_reduce :: proc(interp: ^Interp, rng: Rng, elements: []Value) -> Value {
 	if len(elements) == 0 {
 		// Empty draw: the None arm, yet the Rng still advances (no silent no-op).
 		_, advanced := rand_next(rng)
-		return pick_tuple(interp, none_value(), advanced), true
+		return pick_tuple(interp, none_value(), advanced)
 	}
 	index, advanced := rand_bounded(rng, len(elements))
-	return pick_tuple(interp, some_value(interp, elements[index]), advanced), true
+	return pick_tuple(interp, some_value(interp, elements[index]), advanced)
 }
 
 // pick_tuple builds pick's `(Option, Rng)` return: the boxed Option in position 0,
@@ -1985,6 +2005,28 @@ eval_rng_split :: proc(interp: ^Interp, rng: Rng, node: ^Node) -> (value: Value,
 	}
 	a, b := rand_split(rng)
 	return rng_draw_tuple(interp, a, b), true
+}
+
+// eval_rng_pick is the GAMEPLAY-EVAL self-first form of the §26 draw `pick(self:
+// Rng, items: [T]) -> (Option[T], Rng)` — snake's `rng.pick(free)` lowered to a
+// §02 §4 method call. The Rng receiver is already evaluated (`rng`); the list is
+// the single method arg at children[1] (the field callee is children[0]). It
+// shares rng_pick_reduce with the bare free-call builtin_pick, so the
+// method-lowered form and the free-call form draw bit-identically — the same
+// Lemire reduction the kernel and the funpack-compiler twin use (§10 parity).
+eval_rng_pick :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	if !list_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	return rng_pick_reduce(interp, rng, elements), true
 }
 
 // builtin_spawn is the §02 §2 command-wrap `Spawn(thing_record)` — the tuple-payload

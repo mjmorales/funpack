@@ -136,7 +136,7 @@ behavior replenish on Snake {
     if is_empty(eaten) { return (rng, []) }
     let occ = occupied(self, foods)
     let free = filter(all_cells(), fn(c) { return not contains(occ, c) })
-    return match pick(free, rng) {
+    return match rng.pick(free) {
       (Option::Some(cell), next) => (next, [Spawn( Food{cell: cell} )])
       (Option::None, next) => (next, [])
     }
@@ -210,7 +210,7 @@ fn bindings() -> Bindings {
 fn setup(rng: Rng) -> (Rng, [Spawn]) {
   let snake = Snake{}
   let free = filter(all_cells(), fn(c) { return not contains(cells(snake), c) })
-  return match pick(free, rng) {
+  return match rng.pick(free) {
     (Option::Some(cell), next) => (next, [Spawn( snake ), Spawn( Food{cell: cell} )])
     (Option::None, next) => (next, [Spawn( snake )])
   }

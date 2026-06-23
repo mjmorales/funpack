@@ -1,7 +1,7 @@
 // Interpreter proof for the seeded-RNG surface (spec §04 §1, §26, §10): the
-// tuple value arm, the tuple-pattern match, and the `pick(list, rng) -> (Option,
-// Rng)` draw — the three connected gaps snake's `match pick(free, rng) { … }`
-// needs. These tests build the node forests by hand (the snake artifact lands with
+// tuple value arm, the tuple-pattern match, and the self-first `pick(self: Rng,
+// items: [T]) -> (Option, Rng)` draw — the three connected gaps snake's `match
+// rng.pick(free) { … }` needs. These tests build the node forests by hand (the snake artifact lands with
 // the golden seam), so the value model and match semantics are asserted on the same
 // hand-built-fixture pattern interp_test.odin uses for pong's bodies.
 //
@@ -197,7 +197,7 @@ test_pick_some_boxes_element_and_advances :: proc(t: ^testing.T) {
 	env.names["free"] = List_Value{elements = list}
 	env.names["rng"] = rand_seed(42)
 
-	// `pick(free, rng)` — a call over the `pick` name with two name args.
+	// `pick(rng, free)` — a self-first call over the `pick` name with two name args.
 	pick_node := pick_call_node()
 	result, ok := eval(&interp, &pick_node, &env)
 	testing.expect(t, ok)
@@ -282,15 +282,16 @@ test_pick_threads_forward_deterministically :: proc(t: ^testing.T) {
 	testing.expect_value(t, r1, idx1)
 }
 
-// pick_call_node builds a `pick(free, rng)` call node forest: a `.Call` over a
-// `.Name` callee `pick` plus two `.Name` args resolving `free`/`rng` from scope —
-// snake's `pick(free, rng)` shape built by hand.
+// pick_call_node builds a `pick(rng, free)` call node forest: a `.Call` over a
+// `.Name` callee `pick` plus two `.Name` args resolving `rng`/`free` from scope —
+// the self-first `pick(rng, free)` shape (snake's `rng.pick(free)` lowered) built
+// by hand. The Rng receiver is children[1], the list children[2].
 @(private = "file")
 pick_call_node :: proc() -> Node {
 	callee := Node{kind = .Name, fields = rng_node_fields("pick")}
-	free_arg := Node{kind = .Name, fields = rng_node_fields("free")}
 	rng_arg := Node{kind = .Name, fields = rng_node_fields("rng")}
-	return Node{kind = .Call, children = rng_node_children(callee, free_arg, rng_arg)}
+	free_arg := Node{kind = .Name, fields = rng_node_fields("free")}
+	return Node{kind = .Call, children = rng_node_children(callee, rng_arg, free_arg)}
 }
 
 // --- the full draw surface through the INTERPRETER (seed/next/range/chance/split) -

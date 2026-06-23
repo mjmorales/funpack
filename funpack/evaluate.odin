@@ -1988,22 +1988,23 @@ eval_rand_split :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Valu
 	return rand_draw_tuple(a, b), true
 }
 
-// eval_rand_pick lowers §26 `pick(list, rng) -> (Option[T], Rng)` — the LIST-first
-// draw (snake's `pick(free, rng)`): a uniform element of the list boxed as
-// Option::Some (Option::None for the empty list), plus the advanced Rng. The Rng
-// advances even on the empty (None) draw — the §04 §1 no-silent-advance contract.
-// The index reduction is the shared rand_bounded (Lemire multiply-shift), so the
-// picked position is bit-identical to runtime/interp_call.odin's builtin_pick. NOTE:
-// the list-first arg order matches the working impl and games, NOT the self-first
-// rand.fun declaration (the documented arg-order drift, surfaced for a separate
-// reconcile).
+// eval_rand_pick lowers §26 `pick(self: Rng, items: [T]) -> (Option[T], Rng)` —
+// the SELF-FIRST draw (snake's `rng.pick(free)`): a uniform element of the list
+// boxed as Option::Some (Option::None for the empty list), plus the advanced Rng.
+// The Rng is arg[0] (the receiver), the list arg[1]. The Rng advances even on the
+// empty (None) draw — the §04 §1 no-silent-advance contract. The index reduction
+// is the shared rand_bounded (Lemire multiply-shift), so the picked position is
+// bit-identical to runtime/interp_call.odin's builtin_pick. The arg order matches
+// the rand.fun declaration and the other five draws (the uniform RNG surface, ADR
+// pick-is-self-first-uniform-rng-surface) — only positions move, not the drawn
+// values.
 eval_rand_pick :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
 	if len(e.args) != 2 {
 		return nil, false
 	}
-	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
-	rng_val := eval_expr(ctx, env, e.args[1]) or_return
+	rng_val := eval_expr(ctx, env, e.args[0]) or_return
 	rng := rng_val.(Rng) or_return
+	elements := eval_list_arg(ctx, env, e, 1, 2) or_return
 	if len(elements) == 0 {
 		_, advanced := rand_next(rng)
 		return rand_draw_tuple(Option_Value{is_some = false, payload = nil}, advanced), true

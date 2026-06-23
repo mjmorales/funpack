@@ -75,13 +75,14 @@ test_tuple_match_destructures_pick_pair :: proc(t: ^testing.T) {
 	// AC (tuple match-destructure + pick's (Option[Cell], Rng)): matching the
 	// pick draw binds `cell` to the option's element (Cell) and `next` to the
 	// second tuple position (Rng); each arm returns the declared (Rng, [Spawn])
-	// pair. This is the snake `replenish`/`setup` shape end to end — pick typed,
-	// its tuple destructured, the binders used in the arm bodies.
+	// pair. This is the snake `replenish`/`setup` shape end to end — the self-first
+	// rng.pick(free) UFCS form typed, its tuple destructured, the binders used in
+	// the arm bodies.
 	err := typecheck_sim(
 		"behavior replenish on Snake {\n" +
 		"  fn step(self: Snake, rng: Rng) -> (Rng, [Spawn]) {\n" +
 		"    let free = filter(all_cells(), fn(c) { return not contains(cells(self), c) })\n" +
-		"    return match pick(free, rng) {\n" +
+		"    return match rng.pick(free) {\n" +
 		"      (Option::Some(cell), next) => (next, [Spawn( Food{cell: cell} )])\n" +
 		"      (Option::None, next) => (next, [])\n" +
 		"    }\n" +
@@ -94,13 +95,14 @@ test_tuple_match_destructures_pick_pair :: proc(t: ^testing.T) {
 
 @(test)
 test_pick_returns_option_element_and_rng :: proc(t: ^testing.T) {
-	// AC (pick typing): pick(list, rng) over a [Cell] yields the pair
-	// (Option[Cell], Rng) — destructured here and the option element bound to a
-	// Cell, written into a Food spawn. A binder typed wrong (cell used as an Rng)
-	// would reject downstream; this asserts the happy destructure types clean.
+	// AC (pick typing): pick(rng, list) — the self-first draw, here in the bare
+	// free-call form — over a [Cell] yields the pair (Option[Cell], Rng),
+	// destructured here and the option element bound to a Cell, written into a Food
+	// spawn. A binder typed wrong (cell used as an Rng) would reject downstream;
+	// this asserts the happy destructure types clean.
 	err := typecheck_sim(
 		"fn draw_one(rng: Rng) -> (Rng, [Spawn]) {\n" +
-		"  return match pick(all_cells(), rng) {\n" +
+		"  return match pick(rng, all_cells()) {\n" +
 		"    (Option::Some(cell), next) => (next, [Spawn( Food{cell: cell} )])\n" +
 		"    (Option::None, next) => (next, [])\n" +
 		"  }\n" +
@@ -109,10 +111,10 @@ test_pick_returns_option_element_and_rng :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_pick_second_arg_must_be_rng :: proc(t: ^testing.T) {
-	// AC (pick arity/type): pick's second argument is the threaded Rng handle, not
-	// a list — passing a second list rejects, so the draw signature is real, not a
-	// wildcard.
+test_pick_receiver_must_be_rng :: proc(t: ^testing.T) {
+	// AC (pick arity/type): pick is self-first — its FIRST argument is the threaded
+	// Rng receiver, not a list. Passing a list where the Rng belongs rejects, so the
+	// draw signature is real, not a wildcard.
 	err := typecheck_sim(
 		"fn bad_pick() -> Bool {\n" +
 		"  return match pick(all_cells(), all_cells()) {\n" +
