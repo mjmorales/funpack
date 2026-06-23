@@ -176,3 +176,110 @@ test_rand_pick_distribution_covers_range :: proc(t: ^testing.T) {
 		testing.expectf(t, hit, "index %d never picked over 64 draws", idx)
 	}
 }
+
+// --- GOLDEN: seed 42 → the full next/range/chance/split draw surface -------
+// These pin the five draws stdlib/engine/rand.fun declares to the EXACT bits
+// the kernel produces, all derived from the same seed-42 splitmix64 stream
+// RAND_SEED_42_NEXT already pins (each value below is a deterministic function
+// of those draws). This is the determinism tripwire for the restored draw
+// surface: a change to the masking, the Lemire span reduction, the Fixed
+// derivation, or the split seeding moves a value here. The funpack-compiler
+// twin (funpack/rand_golden_test.odin) pins the SAME numbers through the
+// compiler evaluator, so the two interpreters cannot diverge silently — the
+// dual-interpreter parity floor.
+
+// next(self) -> (Fixed, Rng): the uniform Fixed in [0, 1) is the LOW 32 bits of
+// the first seed-42 draw reinterpreted as Q32.32 fraction bits. draw[0] as u64
+// is 13679457532755275413; its low 32 bits are 803958421 — a Fixed of ~0.187.
+RAND_SEED_42_NEXT_FIXED :: i64(803958421)
+
+@(test)
+test_rand_next_fixed_golden_and_in_unit_interval :: proc(t: ^testing.T) {
+	rng := rand_seed(42)
+	got, next := rand_next_fixed(rng)
+	testing.expect_value(t, i64(got), RAND_SEED_42_NEXT_FIXED)
+	// Every next() draw lies in [0, 1): the integer part is zero (only the low
+	// 32 fraction bits are set) so 0.0 <= got < 1.0 (FIXED_ONE == 1 << 32).
+	testing.expect(t, i64(got) >= 0 && Fixed(got) < FIXED_ONE)
+	// One draw advances the stream exactly like a plain next — the Fixed
+	// derivation reads the same draw, it does not perturb the generator.
+	_, after_next := rand_next(rng)
+	testing.expect_value(t, next.state, after_next.state)
+}
+
+// range(self, lo, hi) -> (Int, Rng): the Lemire reduction over the span (hi-lo)
+// offset by lo. From seed 42, range(0, 100) maps draw[0] onto index 74.
+@(test)
+test_rand_range_golden_and_bounds :: proc(t: ^testing.T) {
+	rng := rand_seed(42)
+	got, next := rand_range(rng, 0, 100)
+	testing.expect_value(t, got, 74)
+	testing.expect(t, got >= 0 && got < 100)
+	// A non-zero lo offsets the same reduced index: range(10, 110) == 10 + 74.
+	shifted, _ := rand_range(rng, 10, 110)
+	testing.expect_value(t, shifted, 84)
+	// range advances exactly one draw, in lockstep with bounded/next.
+	_, after_next := rand_next(rng)
+	testing.expect_value(t, next.state, after_next.state)
+}
+
+@(test)
+test_rand_range_empty_or_inverted_span_yields_lo_and_advances :: proc(t: ^testing.T) {
+	// An empty (hi == lo) or inverted (hi < lo) span yields lo and STILL advances
+	// the Rng — the §04 §1 no-silent-advance contract, never a fault.
+	rng := rand_seed(42)
+	got_empty, next_empty := rand_range(rng, 5, 5)
+	testing.expect_value(t, got_empty, 5)
+	got_inv, next_inv := rand_range(rng, 9, 2)
+	testing.expect_value(t, got_inv, 9)
+	_, after_next := rand_next(rng)
+	testing.expect_value(t, next_empty.state, after_next.state)
+	testing.expect_value(t, next_inv.state, after_next.state)
+}
+
+@(test)
+test_rand_chance_endpoints_are_total :: proc(t: ^testing.T) {
+	// chance(p) draws the same uniform Fixed in [0, 1) next() does and returns
+	// draw < p. So p == 0.0 is ALWAYS false (no draw is < 0.0) and p == 1.0 is
+	// ALWAYS true (every draw in [0, 1) is < 1.0) — the closed endpoints, total.
+	rng := rand_seed(42)
+	never, next0 := rand_chance(rng, Fixed(0))
+	testing.expect(t, !never)
+	always, next1 := rand_chance(rng, FIXED_ONE)
+	testing.expect(t, always)
+	// Both consume exactly one draw (the same Fixed next() reads), so the state
+	// advances identically regardless of p.
+	_, after_next := rand_next(rng)
+	testing.expect_value(t, next0.state, after_next.state)
+	testing.expect_value(t, next1.state, after_next.state)
+}
+
+@(test)
+test_rand_chance_at_drawn_threshold :: proc(t: ^testing.T) {
+	// With p set exactly to the drawn Fixed, `draw < p` is false (strict <);
+	// one ulp above, it is true. Pins the comparison boundary to the kernel.
+	rng := rand_seed(42)
+	at_draw, _ := rand_chance(rng, Fixed(RAND_SEED_42_NEXT_FIXED))
+	testing.expect(t, !at_draw)
+	above, _ := rand_chance(rng, Fixed(RAND_SEED_42_NEXT_FIXED + 1))
+	testing.expect(t, above)
+}
+
+// split(self) -> (Rng, Rng): two finalized draws off the input seed the two
+// streams. From seed 42, stream A's state is draw[0] as u64 and stream B's is
+// draw[1] as u64 (RAND_SEED_42_NEXT[0]/[1]).
+@(test)
+test_rand_split_golden_decorrelated_streams :: proc(t: ^testing.T) {
+	rng := rand_seed(42)
+	a, b := rand_split(rng)
+	testing.expect_value(t, a.state, u64(13679457532755275413))
+	testing.expect_value(t, b.state, u64(RAND_SEED_42_NEXT[1]))
+	// The two streams are distinct and neither equals the parent — fan-out
+	// without correlation (spec §26 split).
+	testing.expect(t, a.state != b.state)
+	testing.expect(t, a.state != rng.state && b.state != rng.state)
+	// Each child stream then advances independently and divergently.
+	va, _ := rand_next(a)
+	vb, _ := rand_next(b)
+	testing.expect(t, va != vb)
+}

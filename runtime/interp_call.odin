@@ -354,6 +354,26 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	if nav, is_nav := recv.(Nav_Value); is_nav {
 		return eval_nav_fixture_method(interp, nav, method, node, env)
 	}
+	// The §26 self-first RNG draws on a threaded Rng receiver — the GAMEPLAY-EVAL
+	// twin of funpack/evaluate.odin's eval_rng_method (the dual-interpreter parity
+	// surface, §10 bit-identity). next()/range(lo,hi)/chance(p)/split() each draw
+	// off the receiver Rng and return the threaded (value, next_rng) tuple the
+	// behavior body destructures with a tuple-pattern match. pick stays the
+	// list-first FREE function (eval_named_call), so it never routes here. Tried
+	// after the resource/intent/handle/record/nav arms so a same-named member on
+	// another receiver still resolves first.
+	if rng, is_rng := recv.(Rng); is_rng {
+		switch method {
+		case "next":
+			return eval_rng_next(interp, rng, node)
+		case "range":
+			return eval_rng_range(interp, rng, node, env)
+		case "chance":
+			return eval_rng_chance(interp, rng, node, env)
+		case "split":
+			return eval_rng_split(interp, rng, node)
+		}
+	}
 	// The §08 View iteration + reference surface on a materialized View receiver
 	// (world.fun:24-33): a View.of(list) / a tick-passed view row set is a
 	// List_Value, so count/at/ref/resolve dispatch on it — the GAMEPLAY-EVAL twin
@@ -778,6 +798,8 @@ eval_named_call :: proc(
 		return builtin_sound(interp, node, env)
 	case "pick":
 		return builtin_pick(interp, node, env)
+	case "seed":
+		return builtin_seed(interp, node, env)
 	case "Spawn":
 		return builtin_spawn(interp, node, env)
 	case "Despawn":
@@ -1863,6 +1885,106 @@ pick_tuple :: proc(interp: ^Interp, option: Value, advanced: Rng) -> Value {
 	elements[0] = option
 	elements[1] = advanced
 	return Tuple_Value{elements = elements}
+}
+
+// rng_draw_tuple builds the `(value, next_rng)` threaded pair every §26 draw
+// returns (spec §04 §1): the drawn value in position 0, the advanced Rng in
+// position 1 — the positional shape a `(v, next)` tuple-pattern match
+// destructures. The two-element slice is arena-allocated so it outlives the call,
+// exactly like pick_tuple.
+rng_draw_tuple :: proc(interp: ^Interp, value: Value, advanced: Value) -> Value {
+	elements := make([]Value, 2, interp.allocator)
+	elements[0] = value
+	elements[1] = advanced
+	return Tuple_Value{elements = elements}
+}
+
+// builtin_seed is the §26 free constructor `seed(n: Int) -> Rng`: it reads the
+// single Int argument and reinterprets it as the initial u64 RNG state through
+// rand_seed — a pure integer cast, no entropy, so the same seed always yields the
+// same stream (the determinism warranty). A non-Int argument is fail-closed.
+builtin_seed :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	arg, arg_ok := eval(interp, &node.children[1], env)
+	if !arg_ok {
+		return nil, false
+	}
+	n, is_int := arg.(i64)
+	if !is_int {
+		return nil, false
+	}
+	return rand_seed(n), true
+}
+
+// eval_rng_next is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's eval_rng_next
+// — the §26 `next(self) -> (Fixed, Rng)` draw: a uniform Fixed in [0, 1) plus the
+// advanced Rng, via the shared rand_next_fixed kernel (bit-identical to the
+// compiler, §10). No argument (children[0] is the callee). The result threads as
+// `(f, next)`.
+eval_rng_next :: proc(interp: ^Interp, rng: Rng, node: ^Node) -> (value: Value, ok: bool) {
+	if len(node.children) != 1 {
+		return nil, false
+	}
+	drawn, advanced := rand_next_fixed(rng)
+	return rng_draw_tuple(interp, drawn, advanced), true
+}
+
+// eval_rng_range is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
+// eval_rng_range — the §26 `range(self, lo, hi) -> (Int, Rng)` draw: a uniform Int
+// in [lo, hi) plus the advanced Rng, via the shared rand_range kernel (Lemire
+// reduction over the span, bit-identical to the compiler). The two Int args are
+// children[1]/children[2]; a non-Int bound is fail-closed.
+eval_rng_range :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	lo_val, lo_ok := eval(interp, &node.children[1], env)
+	hi_val, hi_ok := eval(interp, &node.children[2], env)
+	if !lo_ok || !hi_ok {
+		return nil, false
+	}
+	lo, lo_is_int := lo_val.(i64)
+	hi, hi_is_int := hi_val.(i64)
+	if !lo_is_int || !hi_is_int {
+		return nil, false
+	}
+	drawn, advanced := rand_range(rng, lo, hi)
+	return rng_draw_tuple(interp, drawn, advanced), true
+}
+
+// eval_rng_chance is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
+// eval_rng_chance — the §26 `chance(self, p) -> (Bool, Rng)` draw: true with
+// probability p (a Fixed in [0, 1]) plus the advanced Rng, via the shared
+// rand_chance kernel (draw < p over exact Q32.32 ordering, bit-identical). The p
+// arg is children[1], coerced through as_fixed (an Int p promotes to Fixed).
+eval_rng_chance :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	p_val, p_ok := eval(interp, &node.children[1], env)
+	if !p_ok {
+		return nil, false
+	}
+	p, p_is_fixed := as_fixed(p_val)
+	if !p_is_fixed {
+		return nil, false
+	}
+	drawn, advanced := rand_chance(rng, p)
+	return rng_draw_tuple(interp, drawn, advanced), true
+}
+
+// eval_rng_split is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
+// eval_rng_split — the §26 `split(self) -> (Rng, Rng)`: two decorrelated streams
+// from one, via the shared rand_split kernel (two finalized splitmix64 draws as
+// the two seeds, bit-identical). No argument. The result threads as `(a, b)`.
+eval_rng_split :: proc(interp: ^Interp, rng: Rng, node: ^Node) -> (value: Value, ok: bool) {
+	if len(node.children) != 1 {
+		return nil, false
+	}
+	a, b := rand_split(rng)
+	return rng_draw_tuple(interp, a, b), true
 }
 
 // builtin_spawn is the §02 §2 command-wrap `Spawn(thing_record)` — the tuple-payload

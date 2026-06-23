@@ -244,14 +244,29 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
-		// engine.rand: the threaded-resource RNG surface. Rng is the §04-style
-		// threaded handle (a behavior takes `rng: Rng` and returns it in its
-		// tuple, so the stream advances deterministically); pick is the
-		// call-site-inferred draw combinator (surface_signatures returns
-		// found = false for it, like the list combinators).
+		// engine.rand: the threaded-resource RNG surface (spec §26). Rng is the
+		// §04-style threaded handle (a behavior takes `rng: Rng` and returns it in
+		// its tuple, so the stream advances deterministically). The six draws are
+		// the full surface stdlib/engine/rand.fun declares. FIVE are fixed-signature
+		// free functions (surface_signatures): seed(n) -> Rng builds the stream from
+		// a seed; next(self) -> (Fixed, Rng), range(self, lo, hi) -> (Int, Rng),
+		// chance(self, p) -> (Bool, Rng), and split(self) -> (Rng, Rng) all take an
+		// Rng RECEIVER first, so the §02 §4 self-first method forms (rng.next(),
+		// rng.range(lo, hi)) lower through UFCS into the same free call. pick is the
+		// odd one out: it is the call-site-inferred draw combinator (surface_signatures
+		// returns found = false for it, like the list combinators), and its receiver
+		// is LIST-first (pick(list, rng)) — the working impl/games shape, NOT the
+		// self-first form rand.fun declares (a documented arg-order drift between the
+		// declaration and the working impl, left for a separate reconcile; the five
+		// fixed-signature draws do not depend on resolving it).
 		path = "engine.rand",
 		decls = {
 			{"Rng", .Type_Name},
+			{"seed", .Func},
+			{"next", .Func},
+			{"range", .Func},
+			{"chance", .Func},
+			{"split", .Func},
 			{"pick", .Func},
 		},
 	},
@@ -829,6 +844,39 @@ surface_method :: proc(receiver: Type, member: string) -> (signature: Type, foun
 // site, which is combinator inference's judgment, not a table's.
 surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 	switch name {
+	case "seed":
+		// §26 engine.rand: build a deterministic Rng stream from an integer seed.
+		return clone_types({func_of({Ground_Type.Int}, engine_type_of(.Rng))}), true
+	case "next":
+		// §26 engine.rand: a uniform Fixed in [0, 1) and the advanced Rng. The Rng
+		// receiver is the first param (self-first), so the rng.next() method form
+		// lowers here through §02 §4 UFCS.
+		return clone_types({
+			func_of({engine_type_of(.Rng)}, tuple_of({Ground_Type.Fixed, engine_type_of(.Rng)})),
+		}), true
+	case "range":
+		// §26 engine.rand: a uniform Int in [lo, hi) and the advanced Rng. Rng
+		// receiver first, then the two Int bounds (rng.range(0, 9) lowers here).
+		return clone_types({
+			func_of(
+				{engine_type_of(.Rng), Ground_Type.Int, Ground_Type.Int},
+				tuple_of({Ground_Type.Int, engine_type_of(.Rng)}),
+			),
+		}), true
+	case "chance":
+		// §26 engine.rand: True with probability p (a Fixed in [0, 1]) and the
+		// advanced Rng. Rng receiver first, then the Fixed probability.
+		return clone_types({
+			func_of(
+				{engine_type_of(.Rng), Ground_Type.Fixed},
+				tuple_of({Ground_Type.Bool, engine_type_of(.Rng)}),
+			),
+		}), true
+	case "split":
+		// §26 engine.rand: two independent Rng streams from one (rng.split()).
+		return clone_types({
+			func_of({engine_type_of(.Rng)}, tuple_of({engine_type_of(.Rng), engine_type_of(.Rng)})),
+		}), true
 	case "sin", "cos", "sqrt", "abs":
 		return clone_types({func_of({Ground_Type.Fixed}, Ground_Type.Fixed)}), true
 	case "clamp", "lerp":

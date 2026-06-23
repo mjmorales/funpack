@@ -28,6 +28,7 @@ Value :: union {
 	Pose_Value,
 	Tilemap_Value,
 	Nav_Value,
+	Rng, // the §26 threaded-RNG handle (engine.rand), a transparent u64 state
 }
 
 // Nav_Value is the §12 test-position navigation handle Nav.of(route) seeds —
@@ -335,6 +336,14 @@ value_equal :: proc(a, b: Value) -> bool {
 	case Pose_Value:
 		bv, ok := b.(Pose_Value)
 		return ok && pose_bones_equal(av.bones, bv.bones)
+	case Rng:
+		// An Rng is a transparent u64 state (§26: Rng is plain `data`), so two are
+		// equal iff their state bits match — the SAME draw sequence follows from an
+		// equal state. A behavior test threading the same seed through the same draws
+		// reaches a bit-identical Rng, so `r1 == r2` is meaningful here, unlike the
+		// receiver-less surface values.
+		bv, ok := b.(Rng)
+		return ok && av.state == bv.state
 	}
 	return false
 }
@@ -495,5 +504,10 @@ value_display_into :: proc(b: ^strings.Builder, v: Value) {
 		fmt.sbprint(b, "<Transform>")
 	case Pose_Value:
 		fmt.sbprint(b, "<Pose>")
+	case Rng:
+		// An Rng IS value-comparable (its state bits, unlike the receiver-less
+		// tags above), so a failed `assert r1 == r2` renders the diverging u64
+		// states — the unambiguous, machine-identical form, like Fixed's raw bits.
+		fmt.sbprintf(b, "Rng(%d)", av.state)
 	}
 }
