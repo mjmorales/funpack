@@ -72,3 +72,32 @@ test_root_verb_set :: proc(t: ^testing.T) {
 	expect_root_reject(t, root, {})
 	expect_root_reject(t, root, {"bogus"})
 }
+
+// test_verb_args_clamps_empty_argv pins the launch-context floor at the startup
+// seam (verb_args, main.odin): the drop-argv0 slice must stay in-bounds for every
+// argv a hostile launcher can hand main, including the argc==0 (no argv0) case BSD
+// `find -execdir` and a bare posix_spawn with argv={NULL} can produce — see
+// verb_args's doc for why the naive os.args[1:] faults there. The two degenerate
+// argvs (argc 0 and 1) must collapse to the empty verb vector, which
+// test_root_verb_set's expect_root_reject(t, root, {}) already proves dispatch
+// renders as a usage block at exit 2 — so together they pin "no crash, clean
+// non-empty diagnostic".
+@(test)
+test_verb_args_clamps_empty_argv :: proc(t: ^testing.T) {
+	// argc==0: no argv0 at all — the crash case. Must clamp to an empty slice.
+	testing.expect_value(t, len(verb_args({})), 0)
+
+	// argc==1: argv0 only (a bare `funpack` invocation) — no verb tokens.
+	testing.expect_value(t, len(verb_args({"funpack"})), 0)
+
+	// argc>=2: argv0 + verb — the drop-argv0 must surface exactly the verb tail.
+	tail := verb_args({"funpack", "check"})
+	testing.expect_value(t, len(tail), 1)
+	testing.expect_value(t, tail[0], "check")
+
+	// A verb with its own arguments keeps the whole post-argv0 vector intact.
+	tail2 := verb_args({"funpack", "warden", "holes"})
+	testing.expect_value(t, len(tail2), 2)
+	testing.expect_value(t, tail2[0], "warden")
+	testing.expect_value(t, tail2[1], "holes")
+}
