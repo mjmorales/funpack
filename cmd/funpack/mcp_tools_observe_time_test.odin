@@ -325,6 +325,122 @@ test_obs_runtime_refusal_is_session_error :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, "tick"), "the runtime's own refusal text rides through")
 }
 
+// test_obs_inspect_empty_unseeded_carries_diagnostic is the friction-0007 junction: an
+// inspect_* probe over a FRESH (seedless) session that returns an empty result set must be
+// SELF-DESCRIBING. The OBS_FIXTURE opens seedless (no replay log), so inspect_signals at a
+// recorded tick reads an empty `routes` — the bare `[]` an agent could not tell apart from
+// a dead swarm or a wrong tick. The enriched lift carries the session precondition
+// (seeded:false) AND a diagnostic naming the missing prerequisite plus the next action, so
+// the emptiness is explained at its source. This is the whole fix, end-to-end through the
+// live registry: the §28 status read-back + the empty-set verdict + the diagnostic attach.
+@(test)
+test_obs_inspect_empty_unseeded_carries_diagnostic :: proc(t: ^testing.T) {
+	path, staged := obs_stage_fixture(t, "funpack-mcp-obs-empty-unseeded.fpk")
+	if !staged {
+		return
+	}
+	defer os.remove(path)
+
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+	id, open_result := mcp_session_registry_open(&registry, path, "", false, "", context.temp_allocator)
+	testing.expect_value(t, open_result, funpack_runtime.Open_Session_Result.Ok)
+
+	// inspect_signals at tick 0: the one-behavior fixture routes no signals, so `routes`
+	// is empty — the friction-0007 shape over a seedless fresh open.
+	args := obs_args(t, strings.concatenate({`{"session_id":"`, id, `","tick":0}`}, context.temp_allocator))
+	result, handled := obs_dispatch_tool(&registry, "inspect_signals", args, context.temp_allocator)
+	testing.expect(t, handled, "inspect_signals is claimed")
+	testing.expect(t, strings.contains(result, `"isError":false`), "an empty-but-clean observe is not a tool error")
+	// The §28 result still rides verbatim under the `result` key — an existing reader
+	// reaches the data (the additive-superset contract).
+	testing.expect(t, strings.contains(result, `\"result\":`), "the §28 result rides under the result key")
+	testing.expect(t, strings.contains(result, `\"routes\":[]`), "the empty routes set is preserved verbatim")
+	// The precondition block surfaces the seedless session shape.
+	testing.expect(t, strings.contains(result, `\"precondition\":`), "the precondition block is present on every inspect return")
+	testing.expect(t, strings.contains(result, `\"seeded\":false`), "the seedless precondition is surfaced")
+	testing.expect(t, strings.contains(result, `\"ticks_recorded\":`), "the recording extent is surfaced")
+	// The diagnostic names the missing prerequisite (seedless) AND the next action.
+	testing.expect(t, strings.contains(result, `\"diagnostic\":`), "an empty result with an unmet precondition carries a diagnostic")
+	testing.expect(t, strings.contains(result, `seedless`), "the diagnostic names the seedless prerequisite — the friction-0007 root cause")
+	testing.expect(t, strings.contains(result, `\"next_action\":`), "the diagnostic names the next action")
+}
+
+// test_obs_inspect_populated_omits_diagnostic pins distinguishability the OTHER way: a
+// POPULATED inspect result carries the precondition block (so the agent always sees the
+// timeline shape) but NO diagnostic — a non-empty result is never a precondition failure,
+// so attaching one would be false-alarm noise. inspect_state of the spawned Hero at tick 0
+// has one instance, the populated case over the same seedless session.
+@(test)
+test_obs_inspect_populated_omits_diagnostic :: proc(t: ^testing.T) {
+	path, staged := obs_stage_fixture(t, "funpack-mcp-obs-populated.fpk")
+	if !staged {
+		return
+	}
+	defer os.remove(path)
+
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+	id, open_result := mcp_session_registry_open(&registry, path, "", false, "", context.temp_allocator)
+	testing.expect_value(t, open_result, funpack_runtime.Open_Session_Result.Ok)
+
+	args := obs_args(t, strings.concatenate({`{"session_id":"`, id, `","thing":"Hero","tick":0}`}, context.temp_allocator))
+	result, handled := obs_dispatch_tool(&registry, "inspect_state", args, context.temp_allocator)
+	testing.expect(t, handled, "inspect_state is claimed")
+	testing.expect(t, strings.contains(result, `"isError":false`), "a populated observe is clean")
+	testing.expect(t, strings.contains(result, `\"instances\":[{`), "the spawned Hero instance is in the result")
+	testing.expect(t, strings.contains(result, `\"precondition\":`), "the precondition block is present even on a populated result")
+	testing.expect(t, !strings.contains(result, `\"diagnostic\":`), "a populated result carries NO diagnostic — only empties with an unmet precondition do")
+}
+
+// test_obs_inspect_valid_empty_seeded_omits_diagnostic pins the third leg of
+// distinguishability: an empty result whose preconditions are ALL met is a genuinely-empty
+// -but-VALID tick, NOT a precondition failure — so it carries the precondition block but no
+// diagnostic. A seeded MCP session needs a replay-log fixture, so this exercises the lift
+// proc directly with a synthesized seeded/recorded precondition and an empty §28 response
+// line — the same junction obs_lift_inspect_response runs end-to-end, isolating the
+// "valid-empty" verdict from the seedless-fixture path the other two tests use.
+@(test)
+test_obs_inspect_valid_empty_seeded_omits_diagnostic :: proc(t: ^testing.T) {
+	seeded := Obs_Precondition {
+		known          = true,
+		loaded         = true,
+		seeded         = true,
+		ticks_recorded = 30,
+	}
+	// A clean §28 draw_list ok response with an empty commands set — the valid-empty shape.
+	response := `{"v":1,"id":1,"ok":true,"cmd":"draw_list","result":{"tick":7,"commands":[]}}`
+	id := Mcp_Id{kind = .Integer, integer = 7}
+	lifted := obs_lift_inspect_response(id, "draw_list", response, seeded, context.temp_allocator)
+
+	testing.expect(t, strings.contains(lifted, `"isError":false`), "a valid-empty result is clean")
+	testing.expect(t, strings.contains(lifted, `\"commands\":[]`), "the empty result rides verbatim")
+	testing.expect(t, strings.contains(lifted, `\"seeded\":true`), "the met precondition is surfaced")
+	testing.expect(t, strings.contains(lifted, `\"ticks_recorded\":30`), "the recording extent is surfaced")
+	testing.expect(t, !strings.contains(lifted, `\"diagnostic\":`), "an empty result with EVERY precondition met carries no diagnostic — it is valid-empty, distinguishable from a precondition failure")
+}
+
+// test_obs_inspect_refusal_stays_verbatim pins that the enriched lift does NOT touch a §28
+// refusal: an ok:false (a runtime-named cause like an out-of-range tick) stays the
+// verbatim Session IsError obs_lift_response renders, with no precondition wrap — the
+// precondition enrichment is for the EMPTY-but-ok case, never the already-named refusal.
+@(test)
+test_obs_inspect_refusal_stays_verbatim :: proc(t: ^testing.T) {
+	pre := Obs_Precondition {
+		known          = true,
+		seeded         = false,
+		ticks_recorded = 64,
+	}
+	response := `{"v":1,"id":1,"ok":false,"cmd":"state","error":"unknown thing"}`
+	id := Mcp_Id{kind = .Integer, integer = 7}
+	lifted := obs_lift_inspect_response(id, "state", response, pre, context.temp_allocator)
+
+	testing.expect(t, strings.contains(lifted, `"isError":true`), "a §28 refusal stays a tool error")
+	testing.expect(t, strings.contains(lifted, `\"category\":\"session\"`), "the refusal maps to the session category")
+	testing.expect(t, strings.contains(lifted, `unknown thing`), "the runtime's own refusal text rides through")
+	testing.expect(t, !strings.contains(lifted, `\"precondition\":`), "a refusal carries no precondition wrap — the runtime already named the cause")
+}
+
 // test_obs_draw_list_round_trip pins the always-headless render projection: inspect_draw
 // _list at a committed tick lifts the §20 draw-list result clean. This is the
 // deterministic screenshot substitute (the ADR's headless-always-serves path) — it runs

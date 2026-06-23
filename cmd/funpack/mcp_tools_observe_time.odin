@@ -84,7 +84,32 @@ mcp_observe_time_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.a
 		), true
 	}
 
+	// The inspect DATA-PROBE commands (state/signals/trace/diff/draw_list/replay_behavior/
+	// pipeline) are the surface whose empty result, lifted bare, is the friction-0007
+	// defect: a swarm-wiped-out, a wrong tick, a behavior that ran nothing, and a
+	// fresh-seedless timeline ALL encode as the same `[]`. So a data-probe result is lifted
+	// SELF-DESCRIBING: it carries the session's seeded/loaded/recorded precondition (read by
+	// folding a status request through the SAME session) and, when the result set is empty
+	// AND a precondition is unmet, a diagnostic naming the missing prerequisite plus the
+	// next action. The time group's returns are position acks or the status payload itself —
+	// already self-describing — and screenshot is a render-capture payload, not a collection
+	// probe (it has its own family, mcp_tools_screenshot.odin), so both lift verbatim.
+	if obs_enriches_command(dispatch.spec) {
+		precondition := obs_read_precondition(dispatch.registry, session_id, allocator)
+		return obs_lift_inspect_response(dispatch.id, dispatch.spec.command, response, precondition, allocator), true
+	}
+
 	return obs_lift_response(dispatch.id, dispatch.spec.command, response, allocator), true
+}
+
+// obs_enriches_command is the precondition-enrichment claim: the inspect group's DATA-PROBE
+// commands whose empty results must be self-describing (friction-0007), EXCLUDING screenshot
+// (a render-capture payload owned by its own family, not a collection probe). The time group
+// lifts verbatim — its position acks ({tick}) and status payload are already self-describing.
+// The check is on the generated Tool_Spec's .group + .command, the same sources obs_owns_
+// command claims by, so a renamed data-probe tool still enriches.
+obs_enriches_command :: proc(spec: funpack.Tool_Spec) -> bool {
+	return spec.group == "inspect" && spec.command != "screenshot"
 }
 
 // obs_owns_command is the family's claim test: it owns exactly the §28 observe-class
@@ -260,4 +285,236 @@ obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocat
 // JSON-RPC error object). The thin wrapper keeps the dispatch arm reading by intent.
 obs_tool_error :: proc(id: Mcp_Id, err: Mcp_Error, allocator := context.allocator) -> string {
 	return mcp_render_tool_result(id, mcp_tool_error_result(err, allocator), allocator)
+}
+
+// --- friction-0007: self-describing empty inspect results -------------------
+
+// Obs_Precondition is the session-shape an inspect result is read AGAINST — the three
+// timeline facts that explain an empty result set. `loaded` is whether the time cursor
+// is armed (time_load); `seeded` is whether the session folds a recorded RNG seed (a
+// FRESH session_start is seedless, so an RNG-driven setup never populates — the
+// friction-0007 root cause); `ticks_recorded` is the recording's extent. `known` is
+// false when the status fold could not be read (a defensive miss, not a fault) — the
+// enricher then omits the precondition block rather than fabricating one. The three
+// facts are exactly what the §28 status command (runtime/introspect_time.odin
+// time_status) reports, read back through the SAME session.
+Obs_Precondition :: struct {
+	known:          bool,
+	loaded:         bool,
+	seeded:         bool,
+	ticks_recorded: i64,
+}
+
+// obs_read_precondition folds a §28 `status` request through the same session and lifts
+// the loaded/seeded/ticks_recorded facts. It is a PURE READ (status is observe-class,
+// runtime/introspect_time.odin) on the session arena, so it never perturbs the session
+// or the result being enriched. A parse miss or a missing field yields known=false (the
+// enricher omits the block) — the enrichment is best-effort context, never a path that
+// can turn a clean inspect into a fault.
+obs_read_precondition :: proc(reg: ^Mcp_Session_Registry, session_id: string, allocator := context.allocator) -> Obs_Precondition {
+	line := "{\"id\":1,\"cmd\":\"status\"}"
+	response, found := mcp_session_registry_request(reg, session_id, line)
+	if !found {
+		return Obs_Precondition{known = false}
+	}
+	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
+	if parse_err != .None {
+		return Obs_Precondition{known = false}
+	}
+	envelope, is_object := parsed.(json.Object)
+	if !is_object {
+		return Obs_Precondition{known = false}
+	}
+	result_field, has_result := envelope["result"]
+	result, result_is_object := result_field.(json.Object)
+	if !has_result || !result_is_object {
+		return Obs_Precondition{known = false}
+	}
+	pre := Obs_Precondition {
+		known = true,
+	}
+	if loaded, ok := result["loaded"].(json.Boolean); ok {
+		pre.loaded = bool(loaded)
+	}
+	if seeded, ok := result["seeded"].(json.Boolean); ok {
+		pre.seeded = bool(seeded)
+	}
+	if ticks, ok := result["ticks_recorded"].(json.Integer); ok {
+		pre.ticks_recorded = i64(ticks)
+	}
+	return pre
+}
+
+// obs_inspect_collection_key maps a data-probe command to the result-object array key whose
+// emptiness is the friction-0007 signal: an empty `instances` (state/replay_behavior),
+// `routes` (signals), `steps` (trace/pipeline), `commands` (draw_list), or `tables`
+// (diff). The key set is the closed data-probe surface (the §28 result shapes,
+// runtime/introspect.odin) — screenshot is excluded upstream (obs_enriches_command), so it
+// never reaches here. An unmapped command is ("", false) — it carries no empty-set signal,
+// so the enricher attaches the precondition block without an emptiness verdict.
+obs_inspect_collection_key :: proc(command: string) -> (key: string, has: bool) {
+	switch command {
+	case "state", "replay_behavior":
+		return "instances", true
+	case "signals":
+		return "routes", true
+	case "trace", "pipeline":
+		return "steps", true
+	case "draw_list":
+		return "commands", true
+	case "diff":
+		return "tables", true
+	}
+	return "", false
+}
+
+// obs_result_collection_empty reports whether the lifted §28 result's primary collection
+// is empty — the emptiness that, paired with an unmet precondition, is the friction-0007
+// defect. A command with no collection key (screenshot), or a result missing the key, or
+// a non-array under it, is empty=false (no empty-set claim made). For a mapped command
+// the verdict is len(array) == 0.
+obs_result_collection_empty :: proc(command: string, result: json.Object) -> bool {
+	key, has_key := obs_inspect_collection_key(command)
+	if !has_key {
+		return false
+	}
+	field, present := result[key]
+	if !present {
+		return false
+	}
+	array, is_array := field.(json.Array)
+	if !is_array {
+		return false
+	}
+	return len(array) == 0
+}
+
+// obs_precondition_diagnostic returns the diagnostic + next-action naming the unmet
+// prerequisite that most likely produced an empty inspect result, or has=false when the
+// preconditions are all met (a genuinely-empty-but-VALID result — the case that must stay
+// distinguishable from a precondition failure). The ordering is causal: an UNSEEDED
+// session is the friction-0007 root (a fresh session_start is seedless, so an RNG-driven
+// setup never populates), so it is named first; an empty recording is named next. A
+// seeded, recorded session with an empty result is valid-empty — no diagnostic.
+obs_precondition_diagnostic :: proc(pre: Obs_Precondition) -> (diagnostic: string, next_action: string, has: bool) {
+	if !pre.known {
+		return "", "", false
+	}
+	if !pre.seeded {
+		return "the session is seedless: a fresh session_start opens without a recorded RNG seed, so an RNG-driven setup (e.g. a spawn-on-start swarm) never populates and every inspect_* reads empty — this is distinct from a genuinely-empty tick",
+			"re-open the session over a recorded replay log (session_start with a recording that pins the seed) to reproduce the seeded run, or use control_spawn / control_set to populate the state you want to inspect",
+			true
+	}
+	if pre.ticks_recorded <= 0 {
+		return "the session has no recorded ticks, so there is no simulated timeline to inspect",
+			"run the timeline forward (time_load then time_run) or attach over a recording before inspecting",
+			true
+	}
+	return "", "", false
+}
+
+// obs_lift_inspect_response is the SELF-DESCRIBING lift for the inspect group — the
+// friction-0007 fix. It runs obs_lift_response's §28→MCP mapping (a §28 ok:false stays a
+// Session refusal, an unparseable/result-less ok stays an Internal fault, both verbatim),
+// then on a CLEAN result wraps the lifted §28 result in an envelope that always carries
+// the session `precondition` (seeded/loaded/ticks_recorded) and, when the result set is
+// empty AND a precondition is unmet, a `diagnostic` + `next_action` naming the missing
+// prerequisite. The wrap is structural, not textual: the §28 `result` rides under a
+// `result` key VERBATIM (no re-typing, the ADR's lift-verbatim contract), so an existing
+// reader still reaches the data — the precondition/diagnostic are an additive superset.
+// A genuinely-empty-but-valid result (all preconditions met) carries the precondition
+// block but NO diagnostic, the distinguishability the acceptance bar requires.
+obs_lift_inspect_response :: proc(
+	id: Mcp_Id,
+	command: string,
+	response: string,
+	precondition: Obs_Precondition,
+	allocator := context.allocator,
+) -> string {
+	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
+	if parse_err != .None {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "session response was not valid JSON", detail = command},
+			allocator,
+		)
+	}
+	envelope, is_object := parsed.(json.Object)
+	if !is_object {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "session response was not a JSON object", detail = command},
+			allocator,
+		)
+	}
+	ok_field, has_ok := envelope["ok"]
+	ok_bool, ok_is_bool := ok_field.(json.Boolean)
+	if !has_ok || !ok_is_bool {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "session response missing ok field", detail = command},
+			allocator,
+		)
+	}
+	if !bool(ok_bool) {
+		// A §28 refusal (bad tick, unknown thing, unsupported branch) — the runtime
+		// already names the cause, so it stays the verbatim Session refusal obs_lift_
+		// response renders; the precondition enrichment is for the EMPTY-but-ok case.
+		message := strings.concatenate({command, ": runtime refused the command"}, allocator)
+		if error_field, has_error := envelope["error"]; has_error {
+			if error_text, error_is_string := error_field.(json.String); error_is_string {
+				message = string(error_text)
+			}
+		}
+		return obs_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
+	}
+	result_field, has_result := envelope["result"]
+	result_object, result_is_object := result_field.(json.Object)
+	if !has_result || !result_is_object {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "session ok response carried no result object", detail = command},
+			allocator,
+		)
+	}
+
+	result_json, marshal_err := json.marshal(result_field, {}, allocator)
+	if marshal_err != nil {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "rendering the session result failed", detail = command},
+			allocator,
+		)
+	}
+
+	empty := obs_result_collection_empty(command, result_object)
+	diagnostic, next_action, has_diagnostic := obs_precondition_diagnostic(precondition)
+	// A diagnostic fires only for an EMPTY result with an unmet precondition — a populated
+	// result (or a valid-empty one with every precondition met) carries the precondition
+	// block alone, so the agent reads the timeline shape without false-alarm noise.
+	attach_diagnostic := empty && has_diagnostic
+
+	b := strings.builder_make(allocator)
+	strings.write_string(&b, "{\"result\":")
+	strings.write_string(&b, string(result_json))
+	if precondition.known {
+		strings.write_string(&b, ",\"precondition\":{\"seeded\":")
+		strings.write_string(&b, precondition.seeded ? "true" : "false")
+		strings.write_string(&b, ",\"loaded\":")
+		strings.write_string(&b, precondition.loaded ? "true" : "false")
+		strings.write_string(&b, ",\"ticks_recorded\":")
+		strings.write_i64(&b, precondition.ticks_recorded)
+		strings.write_byte(&b, '}')
+	}
+	if attach_diagnostic {
+		strings.write_string(&b, ",\"diagnostic\":")
+		funpack_runtime.write_json_string(&b, diagnostic)
+		strings.write_string(&b, ",\"next_action\":")
+		funpack_runtime.write_json_string(&b, next_action)
+	}
+	strings.write_byte(&b, '}')
+
+	content := make([]Mcp_Content, 1, allocator)
+	content[0] = mcp_text_content(strings.to_string(b))
+	return mcp_render_tool_result(id, Mcp_Tool_Result{content = content, is_error = false}, allocator)
 }
