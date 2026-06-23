@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.12.1] - 2026-06-21
+
+### Fixes
+- fix(funpack): const-fold named-const field defaults so they survive to the spawned row (F22) (4724488)
+
 ## [0.12.0] - 2026-06-21
 
 ### Features
