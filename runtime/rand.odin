@@ -85,6 +85,60 @@ rand_bounded :: proc(rng: Rng, n: int) -> (index: int, next: Rng) {
 	return int(product >> 64), advanced
 }
 
+// rand_next_fixed draws a uniform Fixed in [0, 1) and returns it with the
+// advanced Rng (spec §26 `next`). Determinism: the low 32 bits of a fresh
+// splitmix64 draw are reinterpreted as the FRACTIONAL part of a Q32.32 Fixed
+// (FIXED_FRACTION_BITS == 32) — an integer mask, no floating-point. The integer
+// part is 0, so the value lies in [0, 1): the smallest draw is 0.0 (all
+// fraction bits zero) and the largest is (2^32 - 1)/2^32, strictly below 1.0.
+// Using the low 32 bits keeps this draw orthogonal to rand_bounded's high-bit
+// Lemire reduction, and is the SAME masking the compiler's funpack/rand.odin
+// mirrors bit-for-bit (the §10 dual-interpreter determinism contract).
+rand_next_fixed :: proc(rng: Rng) -> (value: Fixed, next: Rng) {
+	draw, advanced := rand_next(rng)
+	return Fixed(i64(u64(draw) & 0xFFFF_FFFF)), advanced
+}
+
+// rand_range draws a uniform Int in [lo, hi) and returns it with the advanced
+// Rng (spec §26 `range`). It reduces a fresh draw with rand_bounded (Lemire
+// multiply-shift) over the half-open span (hi - lo), then offsets by lo, so the
+// distribution and the bit-identity match pick's index reduction exactly. An
+// empty or inverted span (hi <= lo) yields lo and still advances the Rng — the
+// §04 §1 no-silent-advance contract, never a fault.
+rand_range :: proc(rng: Rng, lo: i64, hi: i64) -> (value: i64, next: Rng) {
+	span := hi - lo
+	if span <= 0 {
+		_, advanced := rand_next(rng)
+		return lo, advanced
+	}
+	index, advanced := rand_bounded(rng, int(span))
+	return lo + i64(index), advanced
+}
+
+// rand_chance draws a Bool that is true with probability p (a Fixed in [0, 1])
+// and returns it with the advanced Rng (spec §26 `chance`). It draws the SAME
+// uniform Fixed in [0, 1) rand_next_fixed produces and returns `draw < p`, so a
+// p of 0.0 is always false (no draw is < 0.0) and a p of 1.0 is always true
+// (every draw in [0, 1) is < 1.0). The comparison is exact Q32.32 integer
+// ordering — no floating-point — bit-identical to the compiler mirror.
+rand_chance :: proc(rng: Rng, p: Fixed) -> (value: bool, next: Rng) {
+	draw, advanced := rand_next_fixed(rng)
+	return i64(draw) < i64(p), advanced
+}
+
+// rand_split derives two independent RNG streams from one and returns them
+// (spec §26 `split`), for fan-out without correlation. It takes two successive
+// splitmix64 draws off the input Rng: the first seeds stream A, the second
+// seeds stream B. Because each seed is a finalized splitmix64 output (the full
+// avalanche mix), the two streams decorrelate — neither is a prefix of the
+// other and both differ from the parent's own continuation. Pure integer ops,
+// bit-identical to the compiler mirror.
+rand_split :: proc(rng: Rng) -> (a: Rng, b: Rng) {
+	seed_a, after_a := rand_next(rng)
+	seed_b, _ := rand_next(after_a)
+	return Rng{state = u64(seed_a)}, Rng{state = u64(seed_b)}
+}
+
 // rand_pick selects a uniform element of a non-empty list, advancing the
 // Rng (spec §26 `pick`, snake's `pick(free, rng)`). It is the
 // Option-shaped draw: ok is false (the None arm) for an empty list, and

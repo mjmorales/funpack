@@ -1472,6 +1472,21 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_asset_constructor(ctx, env, e, "SoundHandle")
 	case "atlas":
 		return eval_asset_constructor(ctx, env, e, "AtlasHandle")
+	case "seed":
+		// §26 engine.rand: seed(n: Int) -> Rng. The §02 §4 method forms of the
+		// draws (rng.next(), rng.range(lo, hi), …) lower here through the UFCS
+		// fallback in eval_method_call, so all six route through this one switch.
+		return eval_rand_seed(ctx, env, e)
+	case "next":
+		return eval_rand_next(ctx, env, e)
+	case "range":
+		return eval_rand_range(ctx, env, e)
+	case "chance":
+		return eval_rand_chance(ctx, env, e)
+	case "split":
+		return eval_rand_split(ctx, env, e)
+	case "pick":
+		return eval_rand_pick(ctx, env, e)
 	case "Despawn":
 		// §04 the parameterless self-despawn command constructor. Represent it as
 		// a fieldless, variant-less Record_Value tagged "Despawn" — the same shape
@@ -1886,6 +1901,117 @@ eval_list_arg :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr, i: int, arity: in
 		return nil, false
 	}
 	return list.elements, true
+}
+
+// rand_draw_tuple builds the `(value, next_rng)` threaded pair every §26 draw
+// returns (spec §04 §1): the drawn value in position 0, the advanced Rng in
+// position 1 — the positional shape a `(v, next)` tuple-pattern match
+// destructures. The evaluator twin of runtime/interp_call.odin's rng_draw_tuple.
+rand_draw_tuple :: proc(value: Value, advanced: Value) -> Value {
+	elements := make([]Value, 2, context.temp_allocator)
+	elements[0] = value
+	elements[1] = advanced
+	return Tuple_Value{elements = elements}
+}
+
+// eval_rand_seed lowers §26 `seed(n: Int) -> Rng` — the deterministic Rng
+// builder. It reads the single Int argument and reinterprets it as the initial
+// u64 state through the shared rand_seed kernel (bit-identical to
+// runtime/rand.odin). A non-Int argument is fail-closed.
+eval_rand_seed :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	arg := eval_expr(ctx, env, e.args[0]) or_return
+	n := arg.(i64) or_return
+	return rand_seed(n), true
+}
+
+// eval_rand_next lowers §26 `next(self: Rng) -> (Fixed, Rng)` — a uniform Fixed
+// in [0, 1) plus the advanced Rng, via the shared rand_next_fixed kernel
+// (bit-identical to runtime/rand.odin, the §10 dual-interpreter contract). The
+// receiver is e.args[0] (the UFCS-lowered self). The result threads as `(f, next)`.
+eval_rand_next :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	recv := eval_expr(ctx, env, e.args[0]) or_return
+	rng := recv.(Rng) or_return
+	drawn, advanced := rand_next_fixed(rng)
+	return rand_draw_tuple(drawn, advanced), true
+}
+
+// eval_rand_range lowers §26 `range(self: Rng, lo: Int, hi: Int) -> (Int, Rng)` —
+// a uniform Int in [lo, hi) plus the advanced Rng, via the shared rand_range
+// kernel (Lemire reduction over the span, bit-identical). The receiver is
+// e.args[0], the bounds e.args[1]/e.args[2]; a non-Int bound is fail-closed.
+eval_rand_range :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 3 {
+		return nil, false
+	}
+	recv := eval_expr(ctx, env, e.args[0]) or_return
+	rng := recv.(Rng) or_return
+	lo_val := eval_expr(ctx, env, e.args[1]) or_return
+	hi_val := eval_expr(ctx, env, e.args[2]) or_return
+	lo := lo_val.(i64) or_return
+	hi := hi_val.(i64) or_return
+	drawn, advanced := rand_range(rng, lo, hi)
+	return rand_draw_tuple(drawn, advanced), true
+}
+
+// eval_rand_chance lowers §26 `chance(self: Rng, p: Fixed) -> (Bool, Rng)` — true
+// with probability p plus the advanced Rng, via the shared rand_chance kernel
+// (draw < p over exact Q32.32 ordering, bit-identical). The receiver is e.args[0],
+// the probability e.args[1] coerced through the Fixed/Int draw arg.
+eval_rand_chance :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	recv := eval_expr(ctx, env, e.args[0]) or_return
+	rng := recv.(Rng) or_return
+	p := eval_fixed_arg(ctx, env, e, 1, 2) or_return
+	drawn, advanced := rand_chance(rng, p)
+	return rand_draw_tuple(drawn, advanced), true
+}
+
+// eval_rand_split lowers §26 `split(self: Rng) -> (Rng, Rng)` — two decorrelated
+// streams from one, via the shared rand_split kernel (two finalized splitmix64
+// draws as the seeds, bit-identical). The receiver is e.args[0]; the result
+// threads as `(a, b)`.
+eval_rand_split :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	recv := eval_expr(ctx, env, e.args[0]) or_return
+	rng := recv.(Rng) or_return
+	a, b := rand_split(rng)
+	return rand_draw_tuple(a, b), true
+}
+
+// eval_rand_pick lowers §26 `pick(list, rng) -> (Option[T], Rng)` — the LIST-first
+// draw (snake's `pick(free, rng)`): a uniform element of the list boxed as
+// Option::Some (Option::None for the empty list), plus the advanced Rng. The Rng
+// advances even on the empty (None) draw — the §04 §1 no-silent-advance contract.
+// The index reduction is the shared rand_bounded (Lemire multiply-shift), so the
+// picked position is bit-identical to runtime/interp_call.odin's builtin_pick. NOTE:
+// the list-first arg order matches the working impl and games, NOT the self-first
+// rand.fun declaration (the documented arg-order drift, surfaced for a separate
+// reconcile).
+eval_rand_pick :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	rng_val := eval_expr(ctx, env, e.args[1]) or_return
+	rng := rng_val.(Rng) or_return
+	if len(elements) == 0 {
+		_, advanced := rand_next(rng)
+		return rand_draw_tuple(Option_Value{is_some = false, payload = nil}, advanced), true
+	}
+	index, advanced := rand_bounded(rng, len(elements))
+	boxed := new(Value, context.temp_allocator)
+	boxed^ = elements[index]
+	return rand_draw_tuple(Option_Value{is_some = true, payload = boxed}, advanced), true
 }
 
 // eval_prepend lowers `prepend(elem, list) -> [T]` (spec §08): a fresh list with

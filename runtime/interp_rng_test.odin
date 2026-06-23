@@ -12,6 +12,7 @@
 // generator or the boxing breaks an assertion here.
 package funpack_runtime
 
+import "core:fmt"
 import "core:testing"
 
 // --- node-forest builders (file-private, mirror interp_test.odin) ----------
@@ -290,4 +291,123 @@ pick_call_node :: proc() -> Node {
 	free_arg := Node{kind = .Name, fields = rng_node_fields("free")}
 	rng_arg := Node{kind = .Name, fields = rng_node_fields("rng")}
 	return Node{kind = .Call, children = rng_node_children(callee, free_arg, rng_arg)}
+}
+
+// --- the full draw surface through the INTERPRETER (seed/next/range/chance/split) -
+// These drive eval_named_call (seed, a free call) and eval_method_call (next/
+// range/chance/split, self-first methods on an Rng receiver) — the GAMEPLAY-EVAL
+// path gameplay reaches, NOT the bare kernel. They assert the SAME seed-42 golden
+// values the kernel tests (rand_test.odin) and the funpack-compiler twin
+// (funpack/rand_golden_test.odin) pin, so a draw wired into one interpreter but
+// not the other (the dual-interpreter parity trap) breaks an assertion here.
+
+// rng_method_call_node builds `recv.method(args)` as a `.Call` over a `.Field`
+// callee (the method token over the receiver child) plus the trailing arg nodes —
+// the shape eval_call routes to eval_method_call.
+@(private = "file")
+rng_method_call_node :: proc(method: string, args: ..Node) -> Node {
+	recv := Node{kind = .Name, fields = rng_node_fields("rng")}
+	field := Node{kind = .Field, fields = rng_node_fields(method), children = rng_node_children(recv)}
+	children := make([]Node, len(args) + 1, context.temp_allocator)
+	children[0] = field
+	copy(children[1:], args)
+	return Node{kind = .Call, children = children}
+}
+
+// seed(n) through eval_named_call builds the Rng a kernel rand_seed(n) does —
+// the free-function entry point for the threaded stream.
+@(test)
+test_interp_seed_builds_kernel_rng :: proc(t: ^testing.T) {
+	interp := rng_interp()
+	env := rng_env()
+	callee := Node{kind = .Name, fields = rng_node_fields("seed")}
+	arg := Node{kind = .Int, fields = rng_node_fields("42")}
+	call := Node{kind = .Call, children = rng_node_children(callee, arg)}
+	result, ok := eval(&interp, &call, &env)
+	testing.expect(t, ok)
+	rng, is_rng := result.(Rng)
+	testing.expect(t, is_rng)
+	testing.expect_value(t, rng.state, rand_seed(42).state)
+}
+
+// rng.next() through eval_method_call yields the golden (Fixed, Rng) draw — the
+// uniform Fixed in [0, 1) plus the advanced Rng, matching the kernel and the
+// compiler twin bit-for-bit.
+@(test)
+test_interp_next_yields_golden_fixed_pair :: proc(t: ^testing.T) {
+	interp := rng_interp()
+	env := rng_env()
+	env.names["rng"] = rand_seed(42)
+	call := rng_method_call_node("next")
+	result, ok := eval(&interp, &call, &env)
+	testing.expect(t, ok)
+	tuple := result.(Tuple_Value)
+	testing.expect_value(t, len(tuple.elements), 2)
+	testing.expect_value(t, i64(tuple.elements[0].(Fixed)), i64(803958421))
+	want_fixed, want_next := rand_next_fixed(rand_seed(42))
+	testing.expect_value(t, i64(tuple.elements[0].(Fixed)), i64(want_fixed))
+	testing.expect_value(t, tuple.elements[1].(Rng).state, want_next.state)
+}
+
+// rng.range(0, 100) through eval_method_call yields the golden (Int, Rng) draw —
+// the uniform Int in [lo, hi) plus the advanced Rng (seed 42 → 74).
+@(test)
+test_interp_range_yields_golden_int_pair :: proc(t: ^testing.T) {
+	interp := rng_interp()
+	env := rng_env()
+	env.names["rng"] = rand_seed(42)
+	lo := Node{kind = .Int, fields = rng_node_fields("0")}
+	hi := Node{kind = .Int, fields = rng_node_fields("100")}
+	call := rng_method_call_node("range", lo, hi)
+	result, ok := eval(&interp, &call, &env)
+	testing.expect(t, ok)
+	tuple := result.(Tuple_Value)
+	testing.expect_value(t, tuple.elements[0].(i64), i64(74))
+	_, want_next := rand_range(rand_seed(42), 0, 100)
+	testing.expect_value(t, tuple.elements[1].(Rng).state, want_next.state)
+}
+
+// rng.chance(p) through eval_method_call yields the golden (Bool, Rng) draw —
+// total at the closed endpoints (0.0 never, 1.0 always), the same as the kernel.
+@(test)
+test_interp_chance_endpoints :: proc(t: ^testing.T) {
+	interp := rng_interp()
+	env := rng_env()
+	env.names["rng"] = rand_seed(42)
+	zero := Node{kind = .Fixed, fields = rng_node_fields("0")}
+	never_call := rng_method_call_node("chance", zero)
+	never_res, never_ok := eval(&interp, &never_call, &env)
+	testing.expect(t, never_ok)
+	testing.expect(t, !never_res.(Tuple_Value).elements[0].(bool))
+
+	one := Node{kind = .Fixed, fields = rng_node_fields(fixed_one_token())}
+	always_call := rng_method_call_node("chance", one)
+	always_res, always_ok := eval(&interp, &always_call, &env)
+	testing.expect(t, always_ok)
+	testing.expect(t, always_res.(Tuple_Value).elements[0].(bool))
+}
+
+// rng.split() through eval_method_call yields the golden (Rng, Rng) pair — two
+// decorrelated streams, matching the kernel's two-draw seeding.
+@(test)
+test_interp_split_yields_golden_stream_pair :: proc(t: ^testing.T) {
+	interp := rng_interp()
+	env := rng_env()
+	env.names["rng"] = rand_seed(42)
+	call := rng_method_call_node("split")
+	result, ok := eval(&interp, &call, &env)
+	testing.expect(t, ok)
+	tuple := result.(Tuple_Value)
+	want_a, want_b := rand_split(rand_seed(42))
+	testing.expect_value(t, tuple.elements[0].(Rng).state, want_a.state)
+	testing.expect_value(t, tuple.elements[1].(Rng).state, want_b.state)
+	testing.expect(t, want_a.state != want_b.state)
+}
+
+// fixed_one_token renders the raw Q32.32 bits of 1.0 as the decimal token a
+// `.Fixed` node carries — the artifact lowers a Fixed literal as its raw i64 bits,
+// so 1.0 is FIXED_ONE's integer value.
+@(private = "file")
+fixed_one_token :: proc() -> string {
+	return fmt.tprintf("%d", i64(FIXED_ONE))
 }
