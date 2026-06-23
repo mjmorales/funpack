@@ -91,12 +91,22 @@ mcp_observe_time_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.a
 	// SELF-DESCRIBING: it carries the session's seeded/loaded/recorded precondition (read by
 	// folding a status request through the SAME session) and, when the result set is empty
 	// AND a precondition is unmet, a diagnostic naming the missing prerequisite plus the
-	// next action. The time group's returns are position acks or the status payload itself —
-	// already self-describing — and screenshot is a render-capture payload, not a collection
-	// probe (it has its own family, mcp_tools_screenshot.odin), so both lift verbatim.
+	// next action.
 	if obs_enriches_command(dispatch.spec) {
 		precondition := obs_read_precondition(dispatch.registry, session_id, allocator)
 		return obs_lift_inspect_response(dispatch.id, dispatch.spec.command, response, precondition, allocator), true
+	}
+
+	// time_status is the ORIENTATION read, and the unloaded read disproves the once-held
+	// claim that its payload is always self-describing: on a fresh session it reports
+	// loaded:false alongside ticks_recorded:N, which reads as "N ticks of data are here to
+	// inspect" — so the agent calls time_step / inspect_*, which fail or return empty. The
+	// enriched lift attaches a next_action naming time_load (the required arming step) ONLY
+	// when loaded:false, mirroring the self-describing precondition/next_action shape. A loaded status, the
+	// time position acks ({tick}), and screenshot (a render-capture payload owned by its own
+	// family) carry no hint, so all of those lift verbatim.
+	if obs_enriches_status(dispatch.spec) {
+		return obs_lift_status_response(dispatch.id, dispatch.spec.command, response, allocator), true
 	}
 
 	return obs_lift_response(dispatch.id, dispatch.spec.command, response, allocator), true
@@ -104,12 +114,23 @@ mcp_observe_time_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.a
 
 // obs_enriches_command is the precondition-enrichment claim: the inspect group's DATA-PROBE
 // commands whose empty results must be self-describing (friction-0007), EXCLUDING screenshot
-// (a render-capture payload owned by its own family, not a collection probe). The time group
-// lifts verbatim — its position acks ({tick}) and status payload are already self-describing.
-// The check is on the generated Tool_Spec's .group + .command, the same sources obs_owns_
-// command claims by, so a renamed data-probe tool still enriches.
+// (a render-capture payload owned by its own family, not a collection probe). The time
+// group's position acks ({tick}) lift verbatim; its status read enriches through the
+// SEPARATE obs_enriches_status claim. The check is on the generated
+// Tool_Spec's .group + .command, the same sources obs_owns_command claims by, so a renamed
+// data-probe tool still enriches.
 obs_enriches_command :: proc(spec: funpack.Tool_Spec) -> bool {
 	return spec.group == "inspect" && spec.command != "screenshot"
+}
+
+// obs_enriches_status is the time-status enrichment claim: the time group's `status`
+// command — the orientation read whose loaded:false payload must carry a next_action naming
+// the required time_load step. It is the ONLY time command that enriches: the position acks
+// (load/run/pause/step/rewind/reset) return a {tick} that is already unambiguous. The check
+// is on the generated Tool_Spec's .group + .command (the same sources obs_owns_command
+// claims by), so a renamed status tool that keeps its group + command still enriches.
+obs_enriches_status :: proc(spec: funpack.Tool_Spec) -> bool {
+	return spec.group == "time" && spec.command == "status"
 }
 
 // obs_owns_command is the family's claim test: it owns exactly the §28 observe-class
@@ -511,6 +532,105 @@ obs_lift_inspect_response :: proc(
 		funpack_runtime.write_json_string(&b, diagnostic)
 		strings.write_string(&b, ",\"next_action\":")
 		funpack_runtime.write_json_string(&b, next_action)
+	}
+	strings.write_byte(&b, '}')
+
+	content := make([]Mcp_Content, 1, allocator)
+	content[0] = mcp_text_content(strings.to_string(b))
+	return mcp_render_tool_result(id, Mcp_Tool_Result{content = content, is_error = false}, allocator)
+}
+
+// --- self-describing unloaded time_status -------------------
+
+// OBS_STATUS_LOAD_NEXT_ACTION is the next-step hint stamped on a loaded:false status read.
+// It names the required arming command (time_load) and the calls it unblocks (time_step /
+// inspect_*) so the orientation read carries the SAME guidance the time_step pre-load error
+// ("no timeline loaded — issue load first") already does. The text is fixed (no session
+// detail), so the enriched status payload stays byte-stable for the unloaded case.
+OBS_STATUS_LOAD_NEXT_ACTION :: "time_load — arm the timeline before time_step / inspect_*"
+
+// obs_lift_status_response is the SELF-DESCRIBING lift for time_status. It
+// runs the same §28→MCP mapping obs_lift_response does (an ok:false stays a Session refusal,
+// an unparseable / result-less ok stays an Internal fault), then on a CLEAN result wraps the
+// lifted §28 result in an envelope that, WHEN loaded:false, additively carries a `next_action`
+// naming time_load as the required step. The wrap is structural, not textual: the §28 status
+// `result` rides under a `result` key VERBATIM (loaded/tick/ticks_recorded/ring/branch stay
+// byte-stable), so an existing reader still reaches every field — next_action is a pure
+// additive superset. A loaded:true status carries NO next_action: the timeline is already
+// armed, so the orientation hint would be false-alarm noise (the distinguishability the
+// acceptance bar requires). The `loaded` flag is read off the lifted result object; a
+// missing / non-boolean loaded is treated as loaded (no hint) — the enrichment never turns a
+// clean status into a fault.
+obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, allocator := context.allocator) -> string {
+	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
+	if parse_err != .None {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "session response was not valid JSON", detail = command},
+			allocator,
+		)
+	}
+	envelope, is_object := parsed.(json.Object)
+	if !is_object {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "session response was not a JSON object", detail = command},
+			allocator,
+		)
+	}
+	ok_field, has_ok := envelope["ok"]
+	ok_bool, ok_is_bool := ok_field.(json.Boolean)
+	if !has_ok || !ok_is_bool {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "session response missing ok field", detail = command},
+			allocator,
+		)
+	}
+	if !bool(ok_bool) {
+		// A §28 refusal — the runtime already named the cause, so it stays the verbatim
+		// Session refusal; the next_action enrichment is for the loaded:false ok case.
+		message := strings.concatenate({command, ": runtime refused the command"}, allocator)
+		if error_field, has_error := envelope["error"]; has_error {
+			if error_text, error_is_string := error_field.(json.String); error_is_string {
+				message = string(error_text)
+			}
+		}
+		return obs_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
+	}
+	result_field, has_result := envelope["result"]
+	result_object, result_is_object := result_field.(json.Object)
+	if !has_result || !result_is_object {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "session ok response carried no result object", detail = command},
+			allocator,
+		)
+	}
+
+	result_json, marshal_err := json.marshal(result_field, {}, allocator)
+	if marshal_err != nil {
+		return obs_tool_error(
+			id,
+			Mcp_Error{category = .Internal, message = "rendering the session result failed", detail = command},
+			allocator,
+		)
+	}
+
+	// loaded:false is the unloaded orientation read — the only case that carries the hint.
+	// A missing / non-boolean loaded is treated as loaded (no hint), so the enrichment can
+	// never fabricate a fault out of an unexpected status shape.
+	loaded := true
+	if loaded_field, ok := result_object["loaded"].(json.Boolean); ok {
+		loaded = bool(loaded_field)
+	}
+
+	b := strings.builder_make(allocator)
+	strings.write_string(&b, "{\"result\":")
+	strings.write_string(&b, string(result_json))
+	if !loaded {
+		strings.write_string(&b, ",\"next_action\":")
+		funpack_runtime.write_json_string(&b, OBS_STATUS_LOAD_NEXT_ACTION)
 	}
 	strings.write_byte(&b, '}')
 

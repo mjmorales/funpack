@@ -267,8 +267,49 @@ test_obs_time_load_and_status_round_trip :: proc(t: ^testing.T) {
 	status_result, status_handled := obs_dispatch_tool(&registry, "time_status", session_args, context.temp_allocator)
 	testing.expect(t, status_handled, "time_status is claimed")
 	testing.expect(t, strings.contains(status_result, `"isError":false`), "status is a clean read")
-	testing.expect(t, strings.contains(status_result, `\"loaded\"`), "the status payload reports the loaded flag")
+	testing.expect(t, strings.contains(status_result, `\"loaded\":true`), "after load the status payload reports loaded:true")
 	testing.expect(t, strings.contains(status_result, `\"ticks_recorded\"`), "the status payload reports the recording extent")
+	// The next_action hint is ONLY for the unloaded orientation read — a loaded status is
+	// already coherent (ring populated, cursor armed), so it carries no hint. Pinning its
+	// ABSENCE here keeps the enrichment scoped to the loaded:false case.
+	testing.expect(t, !strings.contains(status_result, `\"next_action\":`), "a loaded status carries no next_action — the timeline is already armed")
+}
+
+// test_obs_time_status_unloaded_carries_next_action is the unloaded-status junction: the
+// FIRST-CONTACT orientation read on a fresh session, BEFORE any time_load. The bare §28
+// status payload reports loaded:false alongside ticks_recorded:N (the recording's extent
+// exists, but the cursor is not armed), which reads to a first-time agent as "N ticks of
+// data are here to inspect" — so it calls time_step / inspect_*, which fail or return
+// empty. The enriched lift attaches a next_action naming time_load as the required step,
+// mirroring the self-describing precondition/diagnostic/next_action pattern
+// so the orientation call carries the same guidance the time_step pre-load error already
+// does. The §28 result still rides verbatim under `result` (the additive-superset
+// contract — loaded/ticks_recorded/ring stay byte-stable, next_action is a pure addition).
+@(test)
+test_obs_time_status_unloaded_carries_next_action :: proc(t: ^testing.T) {
+	path, staged := obs_stage_fixture(t, "funpack-mcp-obs-status-unloaded.fpk")
+	if !staged {
+		return
+	}
+	defer os.remove(path)
+
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+	id, open_result := mcp_session_registry_open(&registry, path, "", false, "", context.temp_allocator)
+	testing.expect_value(t, open_result, funpack_runtime.Open_Session_Result.Ok)
+
+	// A fresh session, NO time_load — exactly the first-contact orientation read.
+	session_args := obs_args(t, strings.concatenate({`{"session_id":"`, id, `"}`}, context.temp_allocator))
+	result, handled := obs_dispatch_tool(&registry, "time_status", session_args, context.temp_allocator)
+	testing.expect(t, handled, "time_status is claimed on a fresh session")
+	testing.expect(t, strings.contains(result, `"isError":false`), "the orientation read is a clean read, never an error")
+	// The §28 result rides verbatim — the machine-stable payload stays a superset.
+	testing.expect(t, strings.contains(result, `\"loaded\":false`), "the unloaded session reports loaded:false")
+	testing.expect(t, strings.contains(result, `\"ticks_recorded\"`), "the recording extent is preserved verbatim")
+	testing.expect(t, strings.contains(result, `\"tick\":null`), "the unarmed cursor's tick stays null")
+	// The additive next_action names time_load as the required next step.
+	testing.expect(t, strings.contains(result, `\"next_action\":`), "the unloaded orientation read carries a next_action hint")
+	testing.expect(t, strings.contains(result, `time_load`), "the next_action names time_load as the required step before time_step / inspect_*")
 }
 
 // test_obs_run_threads_optional_until pins the optional-arg path: time_run with `until`
