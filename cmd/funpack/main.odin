@@ -26,7 +26,23 @@ main :: proc() {
 	root := build_root_cli()
 	ok, message := cli.cli_finalize(root)
 	assert(ok, message)
-	os.exit(cli.cli_dispatch(root, os.args[1:]))
+	os.exit(cli.cli_dispatch(root, verb_args(os.args)))
+}
+
+// verb_args drops argv0 to yield the verb's argument vector, GUARDING the empty-argv
+// launch context. os.args[1:] is an out-of-range slice when the process is started
+// with NO argv0 (argc==0) — a context POSIX permits and that a hostile/adjusted
+// launcher (BSD `find -execdir`, a bare posix_spawn with argv={NULL}) can produce.
+// An unguarded os.args[1:] over a zero-length os.args reads `[1:0]` out of `0..<0`
+// and faults (SIGSEGV / a bounds-check SIGTRAP) BEFORE dispatch emits anything —
+// the worst failure mode: a non-zero exit with an empty stream, indistinguishable
+// to CI or an agent from a hang-kill or a missing binary. Clamping a zero/one-element
+// argv to an empty slice routes it to the no-verb path, which cli_dispatch renders as
+// the usage block (a non-empty stderr diagnostic) and exits 2 — never a crash. Pure:
+// a function of args alone, so the launch-context floor is unit-pinned without a
+// process spawn.
+verb_args :: proc(args: []string) -> []string {
+	return args[1:] if len(args) > 1 else {}
 }
 
 // build_root_cli composes the root from the compiler subtree (the funpack
