@@ -247,18 +247,19 @@ STDLIB_SURFACE := []Module_Surface{
 		// engine.rand: the threaded-resource RNG surface (spec §26). Rng is the
 		// §04-style threaded handle (a behavior takes `rng: Rng` and returns it in
 		// its tuple, so the stream advances deterministically). The six draws are
-		// the full surface stdlib/engine/rand.fun declares. FIVE are fixed-signature
-		// free functions (surface_signatures): seed(n) -> Rng builds the stream from
-		// a seed; next(self) -> (Fixed, Rng), range(self, lo, hi) -> (Int, Rng),
-		// chance(self, p) -> (Bool, Rng), and split(self) -> (Rng, Rng) all take an
-		// Rng RECEIVER first, so the §02 §4 self-first method forms (rng.next(),
-		// rng.range(lo, hi)) lower through UFCS into the same free call. pick is the
-		// odd one out: it is the call-site-inferred draw combinator (surface_signatures
-		// returns found = false for it, like the list combinators), and its receiver
-		// is LIST-first (pick(list, rng)) — the working impl/games shape, NOT the
-		// self-first form rand.fun declares (a documented arg-order drift between the
-		// declaration and the working impl, left for a separate reconcile; the five
-		// fixed-signature draws do not depend on resolving it).
+		// the full surface stdlib/engine/rand.fun declares, and every one is
+		// SELF-FIRST (Rng receiver first), so the §02 §4 self-first method forms
+		// lower through UFCS into the same free call. FIVE are fixed-signature free
+		// functions (surface_signatures): seed(n) -> Rng builds the stream from a
+		// seed; next(self) -> (Fixed, Rng), range(self, lo, hi) -> (Int, Rng),
+		// chance(self, p) -> (Bool, Rng), and split(self) -> (Rng, Rng). pick is the
+		// odd one out only in HOW it is typed, not in arg order: it is the
+		// call-site-inferred draw combinator (surface_signatures returns found =
+		// false for it, like the list combinators, because its element type T is read
+		// off the list at the call site, not from a fixed table). Its receiver is
+		// the Rng first — pick(self: Rng, items: [T]) -> (Option[T], Rng), called
+		// rng.pick(items) — matching its rand.fun declaration and the other five
+		// draws (the uniform RNG surface, ADR pick-is-self-first-uniform-rng-surface).
 		path = "engine.rand",
 		decls = {
 			{"Rng", .Type_Name},

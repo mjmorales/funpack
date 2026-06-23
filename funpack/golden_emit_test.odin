@@ -63,7 +63,7 @@ test_emit_pong_artifact_double_emit_identical :: proc(t: ^testing.T) {
 // acceptance: the production emitter, run over the live snake source, emits a
 // well-formed artifact whose body forest carries the schema-v2 tuple/bare_binder
 // arm shapes the pong golden never reaches. The snake surface is the first to
-// emit a §02 tuple-pattern match (`match pick(free, rng) { (Option::Some(cell),
+// emit a §02 tuple-pattern match (`match rng.pick(free) { (Option::Some(cell),
 // next) => … }`), a [Despawn] command return, and an RNG-threaded (Rng, [Spawn])
 // startup. The check pins three load-bearing properties: the artifact carries the
 // current ARTIFACT_SCHEMA_VERSION, parses well-formed through the funpack
@@ -98,7 +98,7 @@ test_emit_snake_artifact_schema_v2_round_trips :: proc(t: ^testing.T) {
 
 // test_emit_schema_v2_tuple_arm_body_forest_round_trips proves the §2.7 schema-v2
 // body-node change end to end on the funpack side: a behavior body holding a
-// tuple-pattern match — `match pick(free, rng) { (Option::Some(cell), next) => …
+// tuple-pattern match — `match rng.pick(free) { (Option::Some(cell), next) => …
 // (Option::None, next) => … }`, snake's replenish/setup shape — serializes to a
 // node forest whose `tuple` arms carry their positional sub-pattern arms as
 // children, and that forest is well-formed under the funpack reader. Before the
@@ -115,7 +115,7 @@ test_emit_schema_v2_tuple_arm_body_forest_round_trips :: proc(t: ^testing.T) {
 	source := strings.concatenate({SCHEMA_V2_TUPLE_HEADER,
 		"behavior replenish on Snake {\n" +
 		"  fn step(self: Snake, rng: Rng) -> (Rng, [Spawn]) {\n" +
-		"    return match pick(self.free, rng) {\n" +
+		"    return match rng.pick(self.free) {\n" +
 		"      (Option::Some(cell), next) => (next, [Spawn( Food{cell: cell} )])\n" +
 		"      (Option::None, next) => (next, [])\n" +
 		"    }\n" +

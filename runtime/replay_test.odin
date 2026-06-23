@@ -250,15 +250,16 @@ rps_spawner_spawn :: proc() -> Node {
 	return Node{kind = .Call, children = rps_children(rps_name("Spawn"), spawner)}
 }
 
-// rps_draw_match builds `match pick(free, rng) { (Some(cell), next) => (next,
+// rps_draw_match builds `match rng.pick(free) { (Some(cell), next) => (next,
 // some_spawns); (None, next) => (next, none_spawns) }` — the seeded draw common to
 // setup and the per-tick behavior. The matched cell is what the seed selects, so the
-// committed spawn depends on the seed.
+// committed spawn depends on the seed. The scrutinee is the self-first pick(rng,
+// free): the Rng receiver child first, then the list.
 @(private = "file")
 rps_draw_match :: proc(some_spawns, none_spawns: Node) -> Node {
 	pick := Node {
 		kind     = .Call,
-		children = rps_children(rps_name("pick"), rps_name("free"), rps_name("rng")),
+		children = rps_children(rps_name("pick"), rps_name("rng"), rps_name("free")),
 	}
 	some_pat := Node {
 		kind     = .Arm,

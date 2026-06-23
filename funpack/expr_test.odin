@@ -557,7 +557,7 @@ test_expr_tuple_trailing_comma :: proc(t: ^testing.T) {
 
 @(test)
 test_expr_tuple_pattern_with_nested_variant :: proc(t: ^testing.T) {
-	// The snake `match pick(free, rng) { (Option::Some(cell), next) => … }`
+	// The snake `match rng.pick(free) { (Option::Some(cell), next) => … }`
 	// shape (spec §02 §5): a tuple pattern whose first position is a
 	// variant-with-binder sub-pattern and whose second is a bare binder.
 	source := "match picked {\n" +

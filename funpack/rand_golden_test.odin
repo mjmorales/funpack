@@ -129,20 +129,22 @@ test_rand_draw_mismatch_is_a_counted_failure :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_rand_pick_list_first_evaluates :: proc(t: ^testing.T) {
-	// pick(list, rng) is the LIST-first draw (snake's pick(free, rng)): it boxes the
-	// drawn element as Option::Some and threads the advanced Rng. Seed 42 over a
+test_rand_pick_self_first_evaluates :: proc(t: ^testing.T) {
+	// rng.pick(items) is the SELF-FIRST draw (snake's rng.pick(free)): the Rng
+	// receiver lowers through §02 §4 UFCS into pick(rng, items), boxing the drawn
+	// element as Option::Some and threading the advanced Rng. Seed 42 over a
 	// 10-element list picks index 7 first (RAND_SEED_42_BOUNDED_10[0]), so the value
-	// is the 8th element. Pins the documented list-first arg order is what evaluates,
-	// NOT the self-first rand.fun declaration (the arg-order drift surfaced separately).
+	// is the 8th element — the SAME rand_bounded reduction the list-first form drew,
+	// proving only the arg order moved, not the drawn value (ADR
+	// pick-is-self-first-uniform-rng-surface).
 	source :=
 		RAND_HEADER +
 		"fn picked(rng: Rng) -> Int {\n" +
-		"  return match pick([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], rng) {\n" +
+		"  return match rng.pick([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]) {\n" +
 		"    (got, nx) => match got { Option::Some(v) => v, Option::None => -1 }\n" +
 		"  }\n" +
 		"}\n" +
-		"test \"pick list-first\" {\n" +
+		"test \"pick self-first\" {\n" +
 		"  assert picked(seed(42)) == 80\n" +
 		"}\n"
 	report, err := run_test_pipeline(source)

@@ -90,17 +90,17 @@ sr_spawner_spawn :: proc() -> Node {
 }
 
 // sr_draw_match builds the body match common to setup and the behavior:
-//   match pick(free, rng) {
+//   match rng.pick(free) {
 //     (Option::Some(cell), next) => (next, <some_spawns>)
 //     (Option::None, next)       => (next, [])
 //   }
 // some_spawns is the `[Spawn …]` list for the hit arm; the miss arm spawns nothing.
 @(private = "file")
 sr_draw_match :: proc(some_spawns, none_spawns: Node) -> Node {
-	// Scrutinee: pick(free, rng).
+	// Scrutinee: pick(rng, free) — self-first, the Rng receiver child then the list.
 	pick := Node {
 		kind     = .Call,
-		children = sr_children(sr_name("pick"), sr_name("free"), sr_name("rng")),
+		children = sr_children(sr_name("pick"), sr_name("rng"), sr_name("free")),
 	}
 
 	// Some arm pattern: tuple( variant_binds Option Some 1 cell , bare_binder - - 1 next ).
@@ -159,7 +159,7 @@ seeded_draw_program :: proc(pool: int) -> Program {
 	mote_fields[0] = Field_Decl{name = "cell", type = "Int", has_default = true, default_encoded = "0"}
 	things[1] = Thing_Decl{name = "Mote", fields = mote_fields}
 
-	// --- setup body: let free; return match pick(free,rng) { … } ---
+	// --- setup body: let free; return match rng.pick(free) { … } ---
 	setup_some := Node {
 		kind     = .List,
 		children = sr_children(sr_spawner_spawn(), sr_mote_spawn(sr_name("cell"))),
@@ -173,7 +173,7 @@ seeded_draw_program :: proc(pool: int) -> Program {
 	setup_body[0] = sr_let_free(pool)
 	setup_body[1] = setup_return
 
-	// --- behavior body: let free; return match pick(free,rng) { … } ---
+	// --- behavior body: let free; return match rng.pick(free) { … } ---
 	beh_some := Node{kind = .List, children = sr_children(sr_mote_spawn(sr_name("cell")))}
 	beh_none := Node{kind = .List} // empty [] spawn list on the None arm
 	beh_return := Node {
