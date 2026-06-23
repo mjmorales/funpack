@@ -238,16 +238,27 @@ check_startup :: proc(signature: ^Func_Type) -> Contract_Error {
 // or an emitted command list — else it is dead code. The read side (any of
 // blackboard/resources/signals/View) is unconstrained for Update, so only the
 // write obligation is checked here. A return that writes the behavior's own
-// thing blackboard, or any signal/command list, satisfies the contract. An
-// RNG-threaded update returns the §04 §1 pair `(Rng, [command])` — a tuple whose
-// command position is the write and whose other position is the threaded Rng —
-// so the return is unwrapped to its write position before the obligation check
-// (snake's `replenish`, an eat-stage behavior returning `(Rng, [Spawn])`).
+// thing blackboard, or any signal/command list, satisfies the contract.
+//
+// An RNG-threaded update returns the §04 §1 pair whose other position threads
+// the consumed `Rng` resource back (the determinism contract: a behavior that
+// takes an `Rng` returns the advanced one). That sibling is EITHER a write list
+// — `(Rng, [command])`, snake's `replenish` returning `(Rng, [Spawn])` — OR the
+// behavior's own blackboard — `(Self, Rng)` / `(Rng, Self)`, a self-updating
+// behavior that consumed randomness (the §04 §1 shape ruled legal in ADR
+// self-rng-is-a-legal-update-return-shape). Both are real writes, so the
+// tuple is unwrapped to its write position before the obligation check: a list
+// position via write_of_return, an own-blackboard position via
+// writes_own_blackboard_in_return. The `Self` slot of a `(Self, <non-list>)`
+// tuple is a blackboard write exactly as for `(Self, <list>)` — the
+// sibling-is-a-list precondition was the dead-code-analysis hole. A tuple that
+// threads only non-write scalars (`(Rng, Int)`) carries neither, so it is still
+// dead code.
 check_update :: proc(target: string, signature: ^Func_Type) -> Contract_Error {
-	result := write_of_return(signature.result)
-	if writes_own_blackboard(result, target) {
+	if writes_own_blackboard_in_return(signature.result, target) {
 		return .None
 	}
+	result := write_of_return(signature.result)
 	if is_signal_list(result) || is_any_command_list(result) {
 		return .None
 	}
@@ -273,6 +284,33 @@ write_of_return :: proc(result: Type) -> Type {
 		}
 	}
 	return result
+}
+
+// writes_own_blackboard_in_return reports whether a behavior's return WRITES
+// its own thing blackboard — either as the bare return (`self with { ... }`) or
+// as one position of an RNG-threaded tuple (`(Self, Rng)` / `(Rng, Self)`, spec
+// §04 §1; ruled legal in ADR self-rng-is-a-legal-update-return-shape). Unlike
+// write_of_return — which scans a tuple ONLY for the command/signal-list
+// position — this recognizes the own-blackboard `Self` slot whatever its
+// sibling, closing the dead-code hole where the analysis saw the `Self` slot
+// only when paired with a list. It is scoped to the Update contract: Render
+// forbids a blackboard write and Startup requires a [Spawn] return, so neither
+// calls this. A tuple whose every element is a non-write scalar (`(Rng, Int)`)
+// has no own-blackboard position and stays dead code.
+writes_own_blackboard_in_return :: proc(result: Type, target: string) -> bool {
+	if writes_own_blackboard(result, target) {
+		return true
+	}
+	tuple, is_tuple := result.(^Tuple_Type)
+	if !is_tuple {
+		return false
+	}
+	for element in tuple.elements {
+		if writes_own_blackboard(element, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // writes_own_blackboard reports whether a return type writes the behavior's

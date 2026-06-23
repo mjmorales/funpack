@@ -292,12 +292,54 @@ test_contract_update_despawn_is_write :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_contract_update_tuple_self_rng_is_write :: proc(t: ^testing.T) {
+	// AC (§04 §1 self+rng accept; ADR self-rng-is-a-legal-update-return-shape): an
+	// interior-stage behavior that rewrites its own blackboard AND threads the Rng
+	// it consumed returns `(Self, Rng)`. check_update recognizes the own-blackboard
+	// `Self` slot of the tuple as a real write via writes_own_blackboard_in_return,
+	// so the self-updating RNG-consuming behavior clears the Update contract. The
+	// dead-code hole this pins shut: the `Self` slot was recognized only when its
+	// sibling was a list, never when the sibling was the non-list Rng.
+	verdict := contract_sim(
+		"behavior wander on Snake {\n" +
+		"  fn step(self: Snake, rng: Rng) -> (Snake, Rng) {\n" +
+		"    return (self with { head: Cell{x: 1, y: 0} }, rng)\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  eat: [wander]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Contract_Error.None)
+}
+
+@(test)
+test_contract_update_tuple_rng_self_is_write :: proc(t: ^testing.T) {
+	// AC (slot-order independence): the flipped `(Rng, Self)` shape clears the
+	// Update contract exactly as `(Self, Rng)` does — writes_own_blackboard_in_return
+	// scans BOTH tuple positions for the own-blackboard write, so the threaded-Rng
+	// position is order-irrelevant. The flip must accept identically to `(Self, Rng)`;
+	// both rejected identically while the dead-code hole stood.
+	verdict := contract_sim(
+		"behavior wander on Snake {\n" +
+		"  fn step(self: Snake, rng: Rng) -> (Rng, Snake) {\n" +
+		"    return (rng, self with { head: Cell{x: 1, y: 0} })\n" +
+		"  }\n" +
+		"}\n" +
+		"pipeline Game {\n" +
+		"  eat: [wander]\n" +
+		"}\n")
+	testing.expect_value(t, verdict.err, Contract_Error.None)
+}
+
+@(test)
 test_contract_update_tuple_no_command_is_dead :: proc(t: ^testing.T) {
-	// AC (write_of_return falls through): a tuple return with NO command/signal
-	// position — `(Rng, Int)` — carries no write, so write_of_return passes it
-	// through unchanged and check_update rejects it as Update_Dead. The tuple
-	// unwrap admits a tuple-with-command-tail as a write WITHOUT admitting every
-	// tuple as a write; a tuple that threads only scalars is still dead code.
+	// AC (write_of_return falls through; the gate's true-positive is preserved): a
+	// tuple return with NO command/signal position AND no own-blackboard position —
+	// `(Rng, Int)` — carries no write, so check_update rejects it as Update_Dead.
+	// The self+rng accept (writes_own_blackboard_in_return) admits a tuple with an
+	// own-blackboard OR command/signal-list position WITHOUT admitting every tuple
+	// as a write; a tuple that threads only non-write scalars is still dead code.
+	// This is the genuinely-dead case the fix must keep catching.
 	verdict := contract_sim(
 		"behavior bad_update on Snake {\n" +
 		"  fn step(self: Snake, rng: Rng) -> (Rng, Int) {\n" +
