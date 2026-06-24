@@ -2,6 +2,8 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.9.0] - 2026-06-24
+
 ## [0.8.1] - 2026-06-21
 
 ### Other
