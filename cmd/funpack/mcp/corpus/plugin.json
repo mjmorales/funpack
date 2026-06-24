@@ -556,7 +556,7 @@
     "anchor": "skills/funpack-engine-api/references/modules.md#engine-rand",
     "kind": "plugin",
     "title": "engine.rand",
-    "text": "The only nondeterminism, made explicit \u2014 every draw returns `(value, nextRng)`.\n```funpack\ndata Rng { state: Int }\nextern fn seed(n: Int) -> Rng                            // Rng.seed(n)\nextern fn next(self) -> (Fixed, Rng)                     // uniform [0,1)\nextern fn range(self, lo: Int, hi: Int) -> (Int, Rng)\nextern fn pick(self, items: [T]) -> (Option[T], Rng)\nextern fn chance(self, p: Fixed) -> (Bool, Rng)\nextern fn split(self) -> (Rng, Rng)\n```\n**[FLAG]** File is `self`-first (`rng.pick(items)`); snake calls `pick(free, rng)` (list-first).\nVerify arg order against a compile. Always thread the returned `Rng`.",
+    "text": "The only nondeterminism, made explicit \u2014 every draw returns `(value, nextRng)`.\n```funpack\ndata Rng { state: Int }\nextern fn seed(n: Int) -> Rng                            // Rng.seed(n)\nextern fn next(self) -> (Fixed, Rng)                     // uniform [0,1)\nextern fn range(self, lo: Int, hi: Int) -> (Int, Rng)\nextern fn pick(self, items: [T]) -> (Option[T], Rng)\nextern fn chance(self, p: Fixed) -> (Bool, Rng)\nextern fn split(self) -> (Rng, Rng)\n```\nEvery draw is `self`-first: `rng.pick(items)` lowers (UFCS) to `pick(rng, items)` \u2014 snake calls\n`rng.pick(free)`, never list-first. `pick`'s element `T` is call-site-inferred (read off the\nlist), and `funpack introspect` surfaces it with a `call_site_inferred` marker. `Rng.seed(n)` is\nthe static-constructor twin of the bare `seed(n)`. Always thread the returned `Rng`.",
     "source": "skills/funpack-engine-api/references/modules.md"
   },
   {

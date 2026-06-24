@@ -200,8 +200,10 @@ extern fn pick(self, items: [T]) -> (Option[T], Rng)
 extern fn chance(self, p: Fixed) -> (Bool, Rng)
 extern fn split(self) -> (Rng, Rng)
 ```
-**[FLAG]** File is `self`-first (`rng.pick(items)`); snake calls `pick(free, rng)` (list-first).
-Verify arg order against a compile. Always thread the returned `Rng`.
+Every draw is `self`-first: `rng.pick(items)` lowers (UFCS) to `pick(rng, items)` — snake calls
+`rng.pick(free)`, never list-first. `pick`'s element `T` is call-site-inferred (read off the
+list), and `funpack introspect` surfaces it with a `call_site_inferred` marker. `Rng.seed(n)` is
+the static-constructor twin of the bare `seed(n)`. Always thread the returned `Rng`.
 
 ## engine.string
 Build text by interpolation `"{a}{b}"`, never `+`.
