@@ -7,6 +7,15 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.14.0] - 2026-06-24
+
+### Features
+- feat(funpack): recursive multi-project mode for funpack check (1b23c52)
+
+### Fixes
+- fix(funpack): admit Rng.seed as a static constructor so chained unknown methods report Unknown_Method (33f79f6)
+- fix(funpack): introspect surfaces call-site-inferred combinators with a marker (62eb36b)
+
 ## [0.13.1] - 2026-06-24
 
 ### Fixes
