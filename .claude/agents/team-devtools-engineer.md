@@ -16,7 +16,7 @@ tools: Read, Edit, Write, Bash, AskUserQuestion
 
 ## Write commitments
 
-- Record annotations with `claude-prove scrum annotation add` (open to every role).
+- Record annotations with `claude-prove scrum annotation add --target-kind <task|team|decision> --target <ref> --body <text> --author <CT-UUID>` (open to every role).
 - Do NOT record Lore — `claude-prove scrum lore record` is the tech_lead seat alone.
 - Every write stamps `PROVE_AGENT=team-devtools-engineer` and your resolved CT-UUID, so a write is attributable to this seat.
 - Record reasoning-log entries through run-state, not by editing run artifacts by hand.

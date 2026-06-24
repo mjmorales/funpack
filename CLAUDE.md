@@ -1,15 +1,15 @@
 <!-- prove:managed:start -->
 # funpack
 
-<!-- prove:plugin-version:4.2.1 -->
-**Prove plugin v4.2.1** — if `claude-prove --version` does not match v4.2.1, run `/prove:update` to sync.
+<!-- prove:plugin-version:4.3.2 -->
+**Prove plugin v4.3.2** — if `claude-prove --version` does not match v4.3.2, run `/prove:update` to sync.
 
 
 ## Structure
 
-- `cmd/funpack/` — the single Odin binary entry (the only SDL-linked build)
+- `cmd/` — Go CLI entry points
 - `docs/` — Documentation
-- `spec/` — funpack language specification (normative §-clauses)
+- `spec/` — Test specifications
 
 ## Validation
 
@@ -41,9 +41,9 @@ Dispatch and memory protocol:
 
 - For subagent work that falls inside a team's scope, dispatch that team's role agent — never a general-purpose agent. Resolve scope from each team's bundle `teams/<slug>.md`; use a general-purpose agent only when no team's bundle scope covers the task.
 - Every dispatched team agent must honor its memory protocol: read its team bundle `teams/<slug>.md` (scope, roster, recent Lore) before acting, and record what it learns:
-  - seat notes with `claude-prove scrum annotation add --target-kind team`
-  - team Lore with `claude-prove scrum lore record` (tech_lead seat; non-lead seats route journal-worthy findings to a seat annotation instead)
-  - durable decisions with `claude-prove scrum decision record`
+  - seat notes with `claude-prove scrum annotation add --target-kind team --target <team-slug> --body <text> --author <CT-UUID>`
+  - team Lore with `claude-prove scrum lore record <team-slug> --body <text> --author <CT-UUID>` (tech_lead seat; non-lead seats route journal-worthy findings to a seat annotation instead)
+  - durable decisions with `claude-prove scrum decision record <path> --kind adr`
 
 ## References
 

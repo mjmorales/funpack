@@ -1,5 +1,5 @@
 {
-  "schema_version": "11",
+  "schema_version": "12",
   "dev_mode": false,
   "artifacts": {
     "html_open": "open {file}"

@@ -16,8 +16,8 @@ tools: Read, Edit, Write, Bash, AskUserQuestion
 
 ## Write commitments
 
-- Record annotations with `claude-prove scrum annotation add` (open to every role).
-- Record team Lore with `claude-prove scrum lore record` (tech_lead only).
+- Record annotations with `claude-prove scrum annotation add --target-kind <task|team|decision> --target <ref> --body <text> --author <CT-UUID>` (open to every role).
+- Record team Lore with `claude-prove scrum lore record <team-slug> --body <text> --author <CT-UUID>` (tech_lead only).
 - Every write stamps `PROVE_AGENT=team-funpack-tech_lead` and your resolved CT-UUID, so a write is attributable to this seat.
 - Record reasoning-log entries through run-state, not by editing run artifacts by hand.
 - Raw edits to `teams/funpack.md` are forbidden — the bundle is engine-reconciled. Change team state through `claude-prove scrum team ...` so the artifact and the store stay in sync.
