@@ -156,3 +156,10 @@ A capable model has trained on the public (old) funpack and on Lua/GDScript/Rust
 - On any breaking funpack syntax/form change, add a `plugins/funpack/skills/funpack-language/references/anti-priors.md` row pairing old-or-foreign form → current form → Origin in the same change. Never ship the form change without the row; instead treat the row as part of the change's definition of done — the table is corpus-embedded, so regenerate the shards (`task cmd:docs-regen`) and land them with the edit.
 - When the language or runtime model changes, re-align the three prior-defense surfaces to match it — never let them drift from the canonical skills; instead update in lockstep: the `funpack-author` translate-from-known-language on-ramp and its structural-budget escape hatches, the `funpack-game-model` effect-closure worked example (rejected vs closed pair), and the `funpack-reviewer` static-reach scoping (Grep the project before asserting an unclosed signal; downgrade an unconfirmable finding to a Risk, not a Blocker).
 - Two further levers — prompt-caching the invariant MCP docs prefix (anti-priors + grammar + prelude) and GBNF grammar-constrained decoding off the LL(1) grammar for a local-model phase — are tracked-but-unimplemented per decision `frontier-first-agent-prior-defense`. Do not rediscover or re-propose them; instead read that decision for the rationale before touching either.
+
+## Optimize for Long-Term Correctness, Not Low Churn
+
+On every change, choose the option that keeps the codebase healthy long-term, even when it touches more code.
+
+- Never pick the low-effort change to minimize churn or diff size at the cost of codebase health; instead, implement the durable, correct solution and weigh each option by its long-term effect on maintainability and correctness.
+- When the correct option costs more than the minimal patch, take the correct option and state the tradeoff in one line.
