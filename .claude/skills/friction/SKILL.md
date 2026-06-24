@@ -21,7 +21,7 @@ Each `friction/NNNN-<slug>.md` is YAML frontmatter + prose sections. Read both.
 
 | Field | Meaning | This skill writes |
 |---|---|---|
-| `id` | zero-padded ordinal (sparse — gaps are normal) | never |
+| `id` | stable UUID (collision-proof); the filename embeds it. Older reports may carry a zero-padded ordinal — treat it as a legacy human alias, never a key | never |
 | `title` | one-line summary | never |
 | `funpack_version` | toolchain when encountered | never |
 | `game` | dogfood game that surfaced it (may be empty) | never |
@@ -72,8 +72,8 @@ first hit:
 
 1. **Already linked.** `upstream: tracked:<id>` / `fixed:<id>` → load that task, confirm it
    still exists, reconcile its fields. No new task.
-2. **Tag match.** A task carries tag `friction-<id>` → that is the task. Backfill the
-   `upstream` link if missing.
+2. **Tag match.** A task carries the report's `friction-<uuid8>` tag (first 8 chars of the
+   report `id`) → that is the task. Backfill the `upstream` link if missing.
 3. **Semantic match (judgment — confirm, don't guess).** Run `claude-prove scrum task list`
    and `claude-prove scrum status --human`; search by `component` keyword and title. Several
    backlog tasks already cover friction-adjacent surface (the `f10-*` surface-parity line, the
@@ -81,17 +81,23 @@ first hit:
    a candidate plausibly *is* this finding, do **not** auto-link a near-miss — present the
    candidate(s) and the report through `AskUserQuestion` (link to existing vs. create new). A
    wrong link buries the finding; a wrong duplicate fragments the work.
-4. **No match → create.** Mint the task with an explicit `friction-<id>` id (clean
-   `upstream:` link, idempotent re-runs) and bind it to the owning team and milestone in the
-   one create call; tags are a separate verb (`--tag` is not a create flag):
+4. **No match → create.** Create the task with an **auto-generated id** — never `--id
+   "friction-<ordinal>"`. The friction log and the scrum store both key on UUIDs precisely
+   because ordinals collide: the log renumbers, and an ordinal id clashes with a prior run's
+   task (`friction-0002` may already name an unrelated finding). Bind the owning team and
+   milestone in the one create call; tags are a separate verb (`--tag` is not a create flag).
+   Idempotency comes from the `friction-<uuid8>` tag plus the `upstream: tracked:<id>`
+   back-link, not from a guessable id. Anchor the description to the report's stable UUID, not
+   a filename — filenames churn on a renumber:
 
 ```sh
-claude-prove scrum task create --id "friction-<id>" \
+new_id=$(claude-prove scrum task create \
   --title "<report title>" \
-  --description "Friction <id> (friction/NNNN-<slug>.md). <Actual> in one line, plus the durable fix direction. Root-cause fix, not the report's workaround." \
-  --milestone <owning milestone> --team <owning team>
-claude-prove scrum task tag "friction-<id>" friction
-claude-prove scrum task tag "friction-<id>" "<category>"
+  --description "Friction report id <full-uuid> (funpack friction log). <Actual> in one line, plus the durable fix direction. Root-cause fix, not the report's workaround." \
+  --milestone <owning milestone> --team <owning team> | jq -r '.task.id // .id')
+claude-prove scrum task tag "$new_id" friction
+claude-prove scrum task tag "$new_id" "<category>"
+claude-prove scrum task tag "$new_id" "friction-<uuid8>"   # re-run match key
 ```
 
 Capture **Expected** as the task description's fix-direction line now. Do **not** synthesize an
@@ -103,10 +109,13 @@ test that folds in the repro exists. `--bounds` is an agent write-scope
 (`{read?,write?,tools?,budgets?}`), not a metadata bag — set it in Phase 3 only to confine the
 fixing agent to the team's tree; never to stash the repro path.
 
-Then **flip the report**: edit its frontmatter `upstream: not-bubbled` →
-`upstream: tracked:<task-id>`. Editing `friction/*.md` is safe — `friction/` is **not** in the
-docs-corpus embed scope (`plugins/funpack/`, `spec/`, `stdlib/engine/`), so no `docs-regen` is
-owed. Confirm with `task cmd:docs-check` only if you are unsure.
+Then **flip the report**: edit its frontmatter `upstream` → `upstream: tracked:<task-id>`. The
+field reads `not-bubbled` for a fresh report, or `bubbled:<old-path>` after a log-renumber
+migration stamped a breadcrumb (a dead `NNNN-<slug>.md` path) — either way overwrite it with the
+concrete `tracked:` pointer, resolving the placeholder rather than blanking it. Editing
+`friction/*.md` is safe — `friction/` is **not** in the docs-corpus embed scope
+(`plugins/funpack/`, `spec/`, `stdlib/engine/`), so no `docs-regen` is owed. Confirm with
+`task cmd:docs-check` only if you are unsure.
 
 Mechanical scrum writes go through the CLI directly. Route judgment writes — a status
 transition with tradeoffs, linking to a near-miss task, reopening a `done` task — through the
