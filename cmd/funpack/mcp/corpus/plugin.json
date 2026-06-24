@@ -371,6 +371,13 @@
     "source": "skills/funpack-determinism/SKILL.md"
   },
   {
+    "anchor": "skills/funpack-determinism/SKILL.md#a-query-is-a-live-read-not-a-per-tick-snapshot",
+    "kind": "plugin",
+    "title": "A `query` is a live read, not a per-tick snapshot",
+    "text": "A `query` reads the world **at its call point** \u2014 its `all[T]` is the same evolving working table a\ndirect `View[T]` read sees. It is **not** cached within a tick: call the same query twice in one tick\nand, if writes landed between the calls, the second call reflects them. So `View[T]`, `all[T]`, and\n`query` are **one** read rule \u2014 all evolving, all reading the working table \u2014 never three different\nvisibilities. Do not assume a query yields a stable snapshot frozen for the whole tick; if you need one\nvalue held constant across the tick, compute it once and thread it, rather than re-querying and\nexpecting the first answer back.",
+    "source": "skills/funpack-determinism/SKILL.md"
+  },
+  {
     "anchor": "skills/funpack-determinism/SKILL.md#what-an-author-must-do-avoid",
     "kind": "plugin",
     "title": "What an author must do / avoid",

@@ -43,6 +43,16 @@ snapshot-`map`.
 not neutral** — it is decided by spawn `Id` order. Treat a symmetric setup as `Id`-order-biased, and
 fix the expected outcome to whichever instance has the lower `Id`.
 
+### A `query` is a live read, not a per-tick snapshot
+
+A `query` reads the world **at its call point** — its `all[T]` is the same evolving working table a
+direct `View[T]` read sees. It is **not** cached within a tick: call the same query twice in one tick
+and, if writes landed between the calls, the second call reflects them. So `View[T]`, `all[T]`, and
+`query` are **one** read rule — all evolving, all reading the working table — never three different
+visibilities. Do not assume a query yields a stable snapshot frozen for the whole tick; if you need one
+value held constant across the tick, compute it once and thread it, rather than re-querying and
+expecting the first answer back.
+
 ### What an author must do / avoid
 
 | Do | Avoid |
