@@ -374,7 +374,16 @@ parse_project_fcfg :: proc(content: string) -> (identity: Project_Identity, err:
 			// keyword (a `use` reference, a control-flow word) is not part
 			// of the project-identity grammar.
 			if cfg_peek(&p).text != "project" || saw_block {
-				return Project_Identity{}, .Malformed_Project_Fcfg, ""
+				// The canonical bare-key mistake (`name = "..."` with no block,
+				// the TOML/INI instinct): a top-level identifier that is not the
+				// `project` opener, or a second block. Name the brace-block shape
+				// and the label-is-the-name hint so the author sees identity is the
+				// block label, never a top-level `name =` assignment.
+				return Project_Identity{}, .Malformed_Project_Fcfg, project_shape_detail(
+					&p,
+					content,
+					"a project.fcfg is one `project <name> { ... }` block — the block label IS the package name (there is no `name =` key, and identity is not a TOML/INI section)",
+				)
 			}
 			block_identity, block_err, block_detail := cfg_parse_block(&p, content)
 			if block_err != .None {
@@ -383,11 +392,25 @@ parse_project_fcfg :: proc(content: string) -> (identity: Project_Identity, err:
 			identity = block_identity
 			saw_block = true
 		case:
-			return Project_Identity{}, .Malformed_Project_Fcfg, ""
+			// A non-identifier, non-`@doc` token at top level: the canonical TOML
+			// `[project]` section header (the `[` lexes Invalid), or any stray glyph.
+			// Name the brace-block shape so the section instinct is corrected.
+			return Project_Identity{}, .Malformed_Project_Fcfg, project_shape_detail(
+				&p,
+				content,
+				"a project.fcfg is one `project <name> { ... }` brace block, not a `[section]` header",
+			)
 		}
 	}
 	if !saw_block {
-		return Project_Identity{}, .Malformed_Project_Fcfg, ""
+		// An empty or doc-only file reaches end-of-input with no `project` block.
+		// Anchor the detail on the EOF sentinel so the line still names the file and
+		// the required shape rather than a bare arm name.
+		return Project_Identity{}, .Malformed_Project_Fcfg, project_shape_detail(
+			&p,
+			content,
+			"a project.fcfg must declare exactly one `project <name> { ... }` block",
+		)
 	}
 	return identity, .None, ""
 }
@@ -409,7 +432,14 @@ cfg_parse_block :: proc(p: ^Cfg_Parser, content: string) -> (identity: Project_I
 	}
 	label, label_err := cfg_expect(p, .Ident) // the package-name label
 	if label_err != .None {
-		return Project_Identity{}, label_err, ""
+		// A labelless block (`project { ... }`): the label slot holds the `{`,
+		// so the package name is missing. The label IS the name (§14 §4), so
+		// name that hint rather than the bare arm.
+		return Project_Identity{}, label_err, project_shape_detail(
+			p,
+			content,
+			"the block label is the package name — write `project <name> { ... }`, not a labelless `project { ... }`",
+		)
 	}
 	// §14 §4 / §15: a project name is a bare LOWER_IDENT (lower_start ident_char*).
 	// A label scanning clean but not lowercase-rooted (an UpperCamel head) names
@@ -430,7 +460,13 @@ cfg_parse_block :: proc(p: ^Cfg_Parser, content: string) -> (identity: Project_I
 		}
 	}
 	if _, brace_err := cfg_expect(p, .L_Brace); brace_err != .None {
-		return Project_Identity{}, brace_err, ""
+		// The label scanned clean but no `{` opens the body — a name followed by
+		// a non-brace construct. Name the brace-block shape on the offending token.
+		return Project_Identity{}, brace_err, project_shape_detail(
+			p,
+			content,
+			"the package name is followed by a `{ ... }` body block",
+		)
 	}
 	name := label.text
 	version := ""
@@ -442,9 +478,9 @@ cfg_parse_block :: proc(p: ^Cfg_Parser, content: string) -> (identity: Project_I
 				return Project_Identity{}, doc_err, ""
 			}
 		case .Ident:
-			key, value, assign_err := cfg_parse_assignment(p)
+			key, value, assign_detail, assign_err := cfg_parse_assignment(p, content)
 			if assign_err != .None {
-				return Project_Identity{}, assign_err, ""
+				return Project_Identity{}, assign_err, assign_detail
 			}
 			if key == "version" {
 				version = value
@@ -453,16 +489,41 @@ cfg_parse_block :: proc(p: ^Cfg_Parser, content: string) -> (identity: Project_I
 		case:
 			// End of input before `}` (Invalid), or any non-assignment,
 			// non-doc construct inside the block.
-			return Project_Identity{}, .Malformed_Project_Fcfg, ""
+			return Project_Identity{}, .Malformed_Project_Fcfg, project_shape_detail(
+				p,
+				content,
+				"a block body holds `key = \"value\"` assignments and `@doc(...)` directives only",
+			)
 		}
 	}
 	if _, rbrace_err := cfg_expect(p, .R_Brace); rbrace_err != .None {
-		return Project_Identity{}, rbrace_err, ""
+		return Project_Identity{}, rbrace_err, project_shape_detail(
+			p,
+			content,
+			"the block body is closed by `}`",
+		)
 	}
 	if !saw_version {
-		return Project_Identity{}, .Missing_Project_Version, ""
+		return Project_Identity{}, .Missing_Project_Version, project_missing_version_detail(label)
 	}
 	return Project_Identity{name = name, version = version}, .None, ""
+}
+
+// project_missing_version_detail builds the fix-criteria advisory for a
+// well-formed block that omits the one required key: `project.fcfg:LINE: project
+// '<name>' is missing the required `version = "..."` key (spec §14 §1)`. It
+// anchors on the block LABEL token (the project whose version is absent) so the
+// line points at the block, and names the required assignment verbatim so the
+// author adds exactly `version = "..."`. This is the dedicated Missing_Project_Version
+// arm's detail — a sibling to the shape-violation line, distinct because the block
+// is well-formed and only the required key is absent.
+project_missing_version_detail :: proc(label: Cfg_Token, allocator := context.temp_allocator) -> string {
+	return fmt.aprintf(
+		"project.fcfg:%d: project '%s' is missing the required `version = \"...\"` key (spec §14 §1)",
+		label.line,
+		label.text,
+		allocator = allocator,
+	)
 }
 
 // project_name_detail builds the fix-criteria advisory for a malformed project
@@ -509,14 +570,129 @@ cfg_is_name_truncating_byte :: proc(ch: u8) -> bool {
 	return !is_ident_char(ch)
 }
 
+// PROJECT_FCFG_SHAPE is the §14 §1 project.fcfg production named verbatim in every
+// shape-violation detail line — the one-shot fix target an author copies. It is the
+// brace-block form whose LABEL is the package name (no `name =` key) carrying the
+// required `version` string. Naming the exact shape (not just "malformed") turns a
+// multi-guess loop against a yes/no oracle into a single correction: the author sees
+// the TOML/key-form they wrote rejected AND the brace-block they must write instead.
+PROJECT_FCFG_SHAPE :: "project <name> { version = \"...\" }"
+
+// cfg_token_col derives a token's 1-based column (the §9 span-provenance col the
+// first-rate `.fun` diagnostics carry) from its 0-based byte offset by counting bytes
+// back to the prior newline — the cfg lexer stamps line+offset but not col, so col is
+// recovered on demand only at a reject site, keeping the hot lex path single-purpose.
+// An offset past end-of-input (the cfg_peek Invalid sentinel at EOF) clamps to the
+// content length, so an unterminated block reports a col at the trailing byte rather
+// than reading out of bounds.
+cfg_token_col :: proc(content: string, offset: int) -> int {
+	pos := offset
+	if pos > len(content) {
+		pos = len(content)
+	}
+	line_start := 0
+	for i in 0 ..< pos {
+		if content[i] == '\n' {
+			line_start = i + 1
+		}
+	}
+	return pos - line_start + 1
+}
+
+// cfg_found_token renders the offending token as a quoted `found '<glyph>'` clause for
+// a shape-violation detail, or `found end of input` when the parser ran off the end of
+// the source. The EOF case is the in-bounds test (offset past the last byte), NOT a
+// text==""-test: a single unrecognized glyph (`[` of a TOML section, `:` of a
+// `key: value` line) lexes Invalid with an EMPTY text but a valid in-bounds offset, so
+// its raw byte is read straight from the source at the token offset. A scanned token
+// (Ident/String/the `cfg_scan_string` Invalid run) carries its own text. Naming WHAT
+// was found beside the expected shape is the expected-vs-found half of the fix-criteria
+// standard, so the author sees both the construct they wrote and the one funpack wanted.
+cfg_found_token :: proc(tok: Cfg_Token, content: string) -> string {
+	if tok.offset >= len(content) {
+		return "found end of input"
+	}
+	if tok.text != "" {
+		return fmt.tprintf("found '%s'", tok.text)
+	}
+	// A text-less Invalid punct token (`[`, `:`, `+`, …): read its single raw byte
+	// straight from the source at the stamped offset.
+	return fmt.tprintf("found '%c'", rune(content[tok.offset]))
+}
+
+// cfg_offender_token returns the parser's current offending token for a diagnostic,
+// resolving the cfg_peek end-of-input sentinel to a token whose offset/line point at
+// the END of the source rather than the zero-valued (offset 0, line 0) sentinel
+// cfg_peek returns at end. cfg_peek fails closed with a zero token (no content vantage
+// to stamp a real position), so this is the single place that re-anchors a genuine EOF
+// reject on the trailing byte — every detail site reads its offender through here, so
+// EOF reports a real file:line:col and `found end of input`, never a phantom line 0.
+cfg_offender_token :: proc(p: ^Cfg_Parser, content: string) -> Cfg_Token {
+	tok := cfg_peek(p)
+	if cfg_at_end(p) {
+		line := 1
+		for i in 0 ..< len(content) {
+			if content[i] == '\n' {
+				line += 1
+			}
+		}
+		return Cfg_Token{kind = .Invalid, offset = len(content), line = line}
+	}
+	return tok
+}
+
+// project_shape_detail builds a shape-violation fix-criteria advisory anchored on the
+// offending token: `project.fcfg:LINE:COL: expected <shape>, <found> — <hint> (spec
+// §14 §1, §14 §2)`. It is the single source of the brace-block-shape wording every
+// non-label reject in parse_project_fcfg/cfg_parse_block routes through, so the TOML
+// `[project]` form, the bare `name =` key form, and the `key: value` colon form all
+// surface the same actionable line naming the file:line:col, the expected production,
+// what was found, and the label-is-the-name + `=`-not-`:` hints that resolve the four
+// canonical mistakes in one shot. The reason rides the closed Malformed_Project_Fcfg
+// arm's detail channel (project_refusal_message), never replacing the machine-stable
+// arm. The offender is resolved through cfg_offender_token so a genuine end-of-input
+// reject anchors on the trailing byte, never the cfg_peek line-0 sentinel.
+project_shape_detail :: proc(p: ^Cfg_Parser, content: string, hint: string, allocator := context.temp_allocator) -> string {
+	tok := cfg_offender_token(p, content)
+	return fmt.aprintf(
+		"project.fcfg:%d:%d: expected %s, %s — %s (spec §14 §1, §14 §2)",
+		tok.line,
+		cfg_token_col(content, tok.offset),
+		PROJECT_FCFG_SHAPE,
+		cfg_found_token(tok, content),
+		hint,
+		allocator = allocator,
+	)
+}
+
 // cfg_parse_assignment parses a single `key = "value"` pair. A key without
 // `=` (the lexical tell that separates config from logic, §14.2) and a
-// value that is not a string literal both reject as malformed.
-cfg_parse_assignment :: proc(p: ^Cfg_Parser) -> (key: string, value: string, err: Project_Error) {
-	key_tok := cfg_expect(p, .Ident) or_return
-	cfg_expect(p, .Eq) or_return
-	value_tok := cfg_expect(p, .String) or_return
-	return key_tok.text, value_tok.text, .None
+// value that is not a string literal both reject as malformed. The detail
+// return names the offending token and the `key = "value"` shape: the canonical
+// `key: value` colon mistake (the YAML/JSON instinct — `version: "0.1.0"`) lands
+// on the `=`-not-`:` hint, and a non-string value names the string-literal rule,
+// so both surface a `project.fcfg:LINE:COL:` line instead of a bare arm.
+cfg_parse_assignment :: proc(p: ^Cfg_Parser, content: string) -> (key: string, value: string, detail: string, err: Project_Error) {
+	key_tok, key_err := cfg_expect(p, .Ident)
+	if key_err != .None {
+		return "", "", project_shape_detail(p, content, "a block body assignment is `key = \"value\"`"), key_err
+	}
+	if _, eq_err := cfg_expect(p, .Eq); eq_err != .None {
+		return "", "", project_shape_detail(
+			p,
+			content,
+			"an assignment binds with `=`, not `:` — write `version = \"...\"`",
+		), eq_err
+	}
+	value_tok, value_err := cfg_expect(p, .String)
+	if value_err != .None {
+		return "", "", project_shape_detail(
+			p,
+			content,
+			"an assignment value is a double-quoted string literal (`version = \"0.1.0\"`)",
+		), value_err
+	}
+	return key_tok.text, value_tok.text, "", .None
 }
 
 // ── §14.4 builds.fcfg ──────────────────────────────────────────────────

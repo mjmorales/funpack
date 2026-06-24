@@ -176,6 +176,129 @@ test_is_lower_ident_charset :: proc(t: ^testing.T) {
 	testing.expect(t, !is_lower_ident("")) // empty is no identifier
 }
 
+// ── Shape-violation fix-criteria detail ────────────────────────────────
+// The §14 §1 project.fcfg shape is `project <name> { version = "..." }` — the
+// block LABEL is the package name (no `name =` key), the brace-block form, `=`
+// not `:`, never a TOML/INI section. An author who reaches for the wrong shape
+// must get a `project.fcfg:LINE:COL:` line naming the expected production, what
+// was found, and the resolving hint — NOT the bare `Malformed_Project_Fcfg` arm
+// that sent the first dogfooder guessing the grammar against a yes/no oracle.
+// These pin the byte-exact detail for the FOUR canonical wrong-shape instincts
+// (TOML section, bare `name =` key, `key: value` colon, labelless block) plus the
+// EOF and missing-version siblings, so a wording, col-anchor, or rule-cite
+// regression fails loudly. The arm stays the closed machine contract; the detail
+// is the added human body riding project_refusal_message.
+
+@(test)
+test_parse_project_fcfg_toml_section_detail :: proc(t: ^testing.T) {
+	// The TOML `[project]` section instinct: `[` lexes Invalid at top level, so
+	// the brace-block-not-section hint fires anchored on the `[` at 1:1.
+	_, err, detail := parse_project_fcfg("[project]\nname = \"deepseed\"\nversion = \"0.1.0\"\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:1:1: expected project <name> { version = \"...\" }, found '[' — a project.fcfg is one `project <name> { ... }` brace block, not a `[section]` header (spec §14 §1, §14 §2)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_bare_name_key_detail :: proc(t: ^testing.T) {
+	// The bare `name = "..."` key instinct (the TOML/INI form with no block): a
+	// top-level identifier that is not the `project` opener names the
+	// label-is-the-name hint, anchored on `name` at 1:1.
+	_, err, detail := parse_project_fcfg("name = \"deepseed\"\nversion = \"0.1.0\"\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:1:1: expected project <name> { version = \"...\" }, found 'name' — a project.fcfg is one `project <name> { ... }` block — the block label IS the package name (there is no `name =` key, and identity is not a TOML/INI section) (spec §14 §1, §14 §2)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_colon_assignment_detail :: proc(t: ^testing.T) {
+	// The `key: value` colon instinct (YAML/JSON): inside a well-formed block, the
+	// `:` after the key breaks the `=` expect and names the `=`-not-`:` hint,
+	// anchored on the `:` at its line:col (line 2, col 10).
+	_, err, detail := parse_project_fcfg("project deepseed {\n  version: \"0.1.0\"\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:2:10: expected project <name> { version = \"...\" }, found ':' — an assignment binds with `=`, not `:` — write `version = \"...\"` (spec §14 §1, §14 §2)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_labelless_block_detail :: proc(t: ^testing.T) {
+	// The labelless `project { ... }` form: the label slot holds the `{`, so the
+	// package name is missing — the label-is-the-name hint fires anchored on the
+	// `{` at 1:9.
+	_, err, detail := parse_project_fcfg("project { name = \"deepseed\" }\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:1:9: expected project <name> { version = \"...\" }, found '{' — the block label is the package name — write `project <name> { ... }`, not a labelless `project { ... }` (spec §14 §1, §14 §2)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_empty_file_detail :: proc(t: ^testing.T) {
+	// An empty (or doc-only) file reaches end-of-input with no block: the detail
+	// anchors on the trailing byte and reports `found end of input`, naming the
+	// required shape rather than a phantom line-0 sentinel.
+	_, err, detail := parse_project_fcfg("")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:1:1: expected project <name> { version = \"...\" }, found end of input — a project.fcfg must declare exactly one `project <name> { ... }` block (spec §14 §1, §14 §2)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_missing_version_detail :: proc(t: ^testing.T) {
+	// The dedicated Missing_Project_Version sibling: a well-formed block omitting
+	// the one required key surfaces its own detail naming the block and the exact
+	// `version = "..."` assignment to add, anchored on the block label's line.
+	_, err, detail := parse_project_fcfg("project deepseed {\n}\n")
+	testing.expect_value(t, err, Project_Error.Missing_Project_Version)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:1: project 'deepseed' is missing the required `version = \"...\"` key (spec §14 §1)",
+	)
+}
+
+@(test)
+test_parse_project_fcfg_non_string_value_detail :: proc(t: ^testing.T) {
+	// A non-string assignment value (the `version = 1` instinct): the value is not
+	// a string literal, so the string-literal-rule hint fires anchored on the
+	// offending value token (a bare digit lexes Tick at line 2, col 13).
+	_, err, detail := parse_project_fcfg("project deepseed {\n  version = 1\n}\n")
+	testing.expect_value(t, err, Project_Error.Malformed_Project_Fcfg)
+	testing.expect_value(
+		t,
+		detail,
+		"project.fcfg:2:13: expected project <name> { version = \"...\" }, found '1' — an assignment value is a double-quoted string literal (`version = \"0.1.0\"`) (spec §14 §1, §14 §2)",
+	)
+}
+
+@(test)
+test_cfg_token_col_recovers_column :: proc(t: ^testing.T) {
+	// cfg_token_col recovers a 1-based column from a 0-based offset by counting to
+	// the prior newline: the first byte of line 1 is col 1, a mid-line byte counts
+	// from its line start, and an offset past end clamps to the trailing column.
+	content := "ab\ncde"
+	testing.expect_value(t, cfg_token_col(content, 0), 1) // 'a' on line 1
+	testing.expect_value(t, cfg_token_col(content, 1), 2) // 'b' on line 1
+	testing.expect_value(t, cfg_token_col(content, 3), 1) // 'c' first byte of line 2
+	testing.expect_value(t, cfg_token_col(content, 5), 3) // 'e' on line 2
+	testing.expect_value(t, cfg_token_col(content, 99), len(content) - 3 + 1) // clamp past end
+}
+
 // ── Tree-shaped paths through read_project ─────────────────────────────
 
 @(test)
