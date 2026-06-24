@@ -30,8 +30,10 @@ Writes and reads use different paths; this component specifies the read path.
 Read consistency: within a tick the **population is fixed** while **blackboard writes fold forward**,
 so a mid-tick read sees a stable set of rows with evolving columns — at **instance granularity**: a
 later instance in a per-thing stage (higher `Id`) sees earlier same-stage instances' writes through a
-direct `View[T]`, which reads the tick's *working* table ([`07`](07-pipelines.md) §2, §4). Model a
-behavior step as the `Id`-ordered fold it is, **never** a simultaneous `map` over a step-entry
+direct `View[T]` — and through an `all[T]` scan or a `query`, which read that same *working* table.
+**Every** read mechanism resolves the working table at the read point, so all three observe the same
+evolving columns: there is one read rule, not a per-mechanism one ([`07`](07-pipelines.md) §2, §4).
+Model a behavior step as the `Id`-ordered fold it is, **never** a simultaneous `map` over a step-entry
 snapshot — the natural-but-wrong twin that passes a green test suite while diverging from the live
 schedule.
 
@@ -110,15 +112,17 @@ query enemies_near(origin: Cell, r: Fixed) -> [Enemy] {
 }
 ```
 
-A `query` is **read-only and pure over `(version, params)`** — it takes only value parameters, reads
-the world via `all[T]` and `Ref` resolution, takes **no resources** and **emits nothing**. A
-parameter may be a **`Ref[T]`**: it is a serializable value (§1), a stable instance id that resolves
-deterministically through the version, so passing one keeps the query a pure function of
-`(version, params)`. It is **within-tick memoized** (the version is immutable, so every later caller
-pays once); its **derived read-set composes into callers** (so pipeline read-isolation survives
-composition); and its **index requirement is a compiler gate** (a query needing an index must declare
-it; an `@index` no query uses is dead code). Its body is the ordinary combinator surface — no
-comprehension/SQL spelling.
+A `query` is **read-only and pure** — it takes only value parameters, reads the world via `all[T]` and
+`Ref` resolution, takes **no resources** and **emits nothing**. A parameter may be a **`Ref[T]`**: it
+is a serializable value (§1), a stable instance id that resolves deterministically through the version.
+A query reads the world **at its call point**: within a tick its `all[T]` is the *working* table, so it
+observes the same evolving columns a direct `View[T]` read does (read consistency above) — it is **not
+snapshotted or memoized**, so a re-call after intervening same-tick writes reflects them, and two
+callers at different points in a tick may see different rows. It stays a deterministic read (off a fold
+it reads the committed version; the schedule fixes every read's call point). Its **derived read-set
+composes into callers** (so pipeline read-isolation survives composition); and its **index requirement
+is a compiler gate** (a query needing an index must declare it; an `@index` no query uses is dead
+code). Its body is the ordinary combinator surface — no comprehension/SQL spelling.
 
 **The dead-index use relation.** An index counts as *used* when a `query` body reads `all[T]` of the
 indexed `thing`. The relation is **conservative — live-by-doubt**: an index whose `thing`'s

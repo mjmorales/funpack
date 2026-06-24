@@ -7,7 +7,7 @@
       "kind": "spec",
       "ref": "plugin-v0.9.0",
       "sections": 233,
-      "content_hash": "a1f6837292b768bd74ad827ccadbc965e1c0e0b0aae2dd9d5e4049737544e5b8"
+      "content_hash": "8e4cc60d0605e542d0d75f60c1985f75c8db97c1ad7077f500580bdca5f4c1e6"
     },
     {
       "root": "stdlib/engine",
