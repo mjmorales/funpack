@@ -463,6 +463,30 @@ stages_hold_probe :: proc(stages: []Pipeline_Stage) -> bool {
 	return false
 }
 
+// Nesting_Cause distinguishes WHICH KIND of depth tripped the §01 P5 nesting
+// ceiling, so the Nesting_Exceeded diagnostic can prescribe the remedy that
+// actually drops the depth. The metric counts two compositions that deepen in
+// fundamentally different ways:
+//   - Block — accumulated `if` early-return-guard block nesting (a guarded block
+//     opens one statement-container level over the one it sits in). The remedy is
+//     to FLATTEN with early returns: collapse the guard ladder so the body stops
+//     re-entering deeper blocks.
+//   - Expression — computational-composition depth inside ONE statement: nested
+//     call arguments, lambda bodies, `with`-updates, match arm bodies, payload-
+//     variant chains. There is no block and no branch to early-return from
+//     (`np_id(np_id(np_id(np_id(x))))` is a single `return`), so the remedy is to
+//     EXTRACT a named helper or BIND an intermediate `let` — which is what
+//     actually drops the expression depth and passes the gate.
+// Closed like every funpack taxonomy: None is the no-overshoot value, the other
+// two are the two depth sources check_nesting discriminates. A new depth source
+// is a visible compile gap in gate_diagnostic's total switch, never a silently
+// mis-remedied refusal.
+Nesting_Cause :: enum {
+	None,
+	Block,
+	Expression,
+}
+
 // Gate_Verdict pairs a gate failure with the declaration body it indicts, so
 // the diagnostic names the declaration (a fn, a behavior, or a test block) —
 // never a positional test-block index (spec §01 P5: the budget is a
@@ -471,10 +495,14 @@ stages_hold_probe :: proc(stages: []Pipeline_Stage) -> bool {
 // not a single overshooting one. line is the offending declaration's 1-based
 // source line (unit.line — the §15 span the fix-criteria diagnostic anchors at),
 // 0 when no single declaration is named (None, or the duplication gate's pair).
+// nesting_cause is set only on the Nesting_Exceeded arm (None on every other
+// verdict, including a clean .None err) and names which depth source tripped the
+// ceiling so the diagnostic prescribes the fitting remedy.
 Gate_Verdict :: struct {
-	err:         Gate_Error,
-	declaration: string,
-	line:        int,
+	err:           Gate_Error,
+	declaration:   string,
+	line:          int,
+	nesting_cause: Nesting_Cause,
 }
 
 // stage_gates is the pipeline seam: it returns just the first gate error a
@@ -508,8 +536,8 @@ gate_verdict :: proc(ast: Ast) -> Gate_Verdict {
 		if err := check_cyclomatic(unit); err != .None {
 			return Gate_Verdict{err = err, declaration = unit.name, line = unit.line}
 		}
-		if err := check_nesting(unit); err != .None {
-			return Gate_Verdict{err = err, declaration = unit.name, line = unit.line}
+		if err, cause := check_nesting(unit); err != .None {
+			return Gate_Verdict{err = err, declaration = unit.name, line = unit.line, nesting_cause = cause}
 		}
 	}
 	for unit in units {
@@ -853,7 +881,7 @@ is_short_circuit :: proc(op: Token) -> bool {
 // of every AST edge — so the canonical gameplay surface (the pong golden)
 // clears it, while genuine nested computation (four nested calls, a chain of
 // payload-variant constructors) still fires.
-check_nesting :: proc(unit: Gate_Unit) -> Gate_Error {
+check_nesting :: proc(unit: Gate_Unit) -> (err: Gate_Error, cause: Nesting_Cause) {
 	return nesting_walk_body(unit.body, 0)
 }
 
@@ -864,31 +892,57 @@ check_nesting :: proc(unit: Gate_Unit) -> Gate_Error {
 // body itself sits at; a guarded block recurses at depth+1. A condition
 // expression is scored at the body's own depth — the guard does not deepen its
 // own condition.
-nesting_walk_body :: proc(body: []Statement, depth: int) -> Gate_Error {
+//
+// On an overshoot it also reports WHICH depth source tripped the ceiling
+// (Nesting_Cause), so the diagnostic prescribes the remedy that actually drops
+// the depth. The discriminator is the block depth `depth` at the overshoot
+// point: when `depth` alone already meets the ceiling (`depth >=
+// MAX_NESTING_DEPTH`), the accumulated guard-block nesting is what overshot — any
+// statement at that depth tips over regardless of its expression — so the cause
+// is .Block (flatten with early returns). Otherwise the block depth is within
+// budget and it is the statement's own expression-composition depth that pushed
+// it over, so the cause is .Expression (extract a helper / bind an intermediate
+// `let`). A guarded block recurses first-overshoot-wins, so a deeply-nested call
+// inside an `if` block correctly attributes to .Expression and a pure
+// `if`/`if`/`if`/`if` ladder attributes to .Block.
+nesting_walk_body :: proc(body: []Statement, depth: int) -> (err: Gate_Error, cause: Nesting_Cause) {
 	for stmt in body {
 		switch s in stmt {
 		case Let_Node:
 			if depth + nesting_depth(s.value) > MAX_NESTING_DEPTH {
-				return .Nesting_Exceeded
+				return .Nesting_Exceeded, nesting_cause_at(depth)
 			}
 		case Assert_Node:
 			if depth + nesting_depth(s.expr) > MAX_NESTING_DEPTH {
-				return .Nesting_Exceeded
+				return .Nesting_Exceeded, nesting_cause_at(depth)
 			}
 		case Return_Node:
 			if depth + nesting_depth(s.value) > MAX_NESTING_DEPTH {
-				return .Nesting_Exceeded
+				return .Nesting_Exceeded, nesting_cause_at(depth)
 			}
 		case If_Node:
 			if depth + nesting_depth(s.cond) > MAX_NESTING_DEPTH {
-				return .Nesting_Exceeded
+				return .Nesting_Exceeded, nesting_cause_at(depth)
 			}
-			if err := nesting_walk_body(s.body, depth + 1); err != .None {
-				return err
+			if e, c := nesting_walk_body(s.body, depth + 1); e != .None {
+				return e, c
 			}
 		}
 	}
-	return .None
+	return .None, .None
+}
+
+// nesting_cause_at maps the block depth at an overshoot point to its
+// Nesting_Cause: a depth that alone meets the ceiling is accumulated guard-block
+// nesting (.Block — flatten with early returns), otherwise the statement's own
+// expression composition tipped it over (.Expression — extract a helper or bind
+// an intermediate `let`). Keeping the discriminator in one proc means the cause
+// is decided identically at every overshoot site.
+nesting_cause_at :: proc(depth: int) -> Nesting_Cause {
+	if depth >= MAX_NESTING_DEPTH {
+		return .Block
+	}
+	return .Expression
 }
 
 // nesting_depth returns the deepest computational-composition nesting in one

@@ -184,7 +184,7 @@ run_module_pipeline_diag :: proc(
 		return Test_Report{}, .Parse_Failed, parse_diagnostic(parse_verdict.err, parse_verdict.line, parse_verdict.col)
 	}
 	if verdict := gate_verdict(ast); verdict.err != .None {
-		return Test_Report{}, .Gate_Failed, gate_diagnostic(verdict.err, verdict.line, verdict.declaration)
+		return Test_Report{}, .Gate_Failed, gate_diagnostic(verdict.err, verdict.line, verdict.declaration, verdict.nesting_cause)
 	}
 	// importer_root is the module's own §30 package root ("" = a
 	// consuming-project module), so a path-dependency's source — compiled

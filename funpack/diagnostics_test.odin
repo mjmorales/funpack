@@ -292,6 +292,38 @@ test_diag_pin_gate_arity :: proc(t: ^testing.T) {
 	testing.expect_value(t, got, want)
 }
 
+// test_diag_pin_gate_nesting_expression pins the Nesting_Exceeded block for
+// EXPRESSION-driven depth — the friction-report junction (174cbae9). Four nested
+// non-method calls in one `return` reach compositional depth 4 over the budget of
+// 3 with NO block and NO branch, so the gate's Nesting_Cause is .Expression and
+// the rendered remedy says "extract a named helper or bind an intermediate `let`",
+// NOT "flatten with early returns" (which does not fit pure call nesting). The
+// gate offender is declaration-anchored — line set, col 0, the declaration in the
+// header, no caret. Pins the wording byte-for-byte so the call-nesting remedy can
+// never silently regress to the block remedy.
+@(test)
+test_diag_pin_gate_nesting_expression :: proc(t: ^testing.T) {
+	source := "fn np_deep(x: Int) -> Int { return id(id(id(id(x)))) }\n"
+	got := diag_render_through_pipeline(t, source, .Gate_Failed)
+	want := "src/x.fun:1: Nesting_Exceeded (np_deep): an expression here nests deeper than the nesting ceiling (3) — extract a named helper or bind an intermediate `let` so no single expression nests past the ceiling (spec §01 P5)\n  1 | fn np_deep(x: Int) -> Int { return id(id(id(id(x)))) }"
+	testing.expect_value(t, got, want)
+}
+
+// test_diag_pin_gate_nesting_block pins the Nesting_Exceeded block for
+// BLOCK-driven depth — the other side of the cause discriminator. Four nested
+// `if` early-return guards put the innermost `return` at block depth 4 over the
+// budget of 3 with no over-deep expression, so the gate's Nesting_Cause is .Block
+// and the remedy KEEPS "flatten the structure with early returns" — which DOES fit
+// a guard ladder. Together with the expression pin this proves the diagnostic
+// prescribes the remedy that fits the depth source, byte-for-byte.
+@(test)
+test_diag_pin_gate_nesting_block :: proc(t: ^testing.T) {
+	source := "fn deep() -> Int {\n  if true {\n    if true {\n      if true {\n        if true {\n          return 1\n        }\n      }\n    }\n  }\n  return 0\n}\n"
+	got := diag_render_through_pipeline(t, source, .Gate_Failed)
+	want := "src/x.fun:1: Nesting_Exceeded (deep): a block here nests deeper than the nesting ceiling (3) — flatten the structure with early returns (spec §01 P5)\n  1 | fn deep() -> Int {"
+	testing.expect_value(t, got, want)
+}
+
 // test_diag_pin_typecheck_mismatch pins the Typecheck stage's rendered block: a
 // fn declared `-> Int` returning a String rejects with Type_Mismatch, the
 // expression-precise span anchoring at the offending return value's column (the
@@ -571,7 +603,7 @@ test_arm_coverage_gate :: proc(t: ^testing.T) {
 		ast, parse_verdict := stage_parse_located(stage_lex(c.source))
 		testing.expectf(t, parse_verdict.err == .None, "%s: source must parse, got %v", c.arm, parse_verdict.err)
 		verdict := gate_verdict(ast)
-		d := gate_diagnostic(verdict.err, verdict.line, verdict.declaration)
+		d := gate_diagnostic(verdict.err, verdict.line, verdict.declaration, verdict.nesting_cause)
 		expect_located_arm(t, d, c.arm)
 	}
 }

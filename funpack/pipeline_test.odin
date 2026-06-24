@@ -1111,12 +1111,59 @@ test_gate_over_nested_fn_body_fires_named_nesting :: proc(t: ^testing.T) {
 	// An over-nested fn-body return fires the nesting gate, naming the fn. Four
 	// nested non-method calls reach compositional depth 4, over the budget of 3
 	// — the same metric the test-block nesting fixtures pin, now over a fn body.
+	// The overshoot is pure call-EXPRESSION composition (one `return`, no block
+	// and no branch), so the verdict's cause is .Expression — the remedy that
+	// fits (extract a helper / bind an intermediate `let`), not early returns.
 	source := "fn deep() -> Int {\n" +
 		"  return f(f(f(f(1))))\n" +
 		"}\n"
 	verdict := gate_verdict_of(source)
 	testing.expect_value(t, verdict.err, Gate_Error.Nesting_Exceeded)
 	testing.expect_value(t, verdict.declaration, "deep")
+	testing.expect_value(t, verdict.nesting_cause, Nesting_Cause.Expression)
+}
+
+@(test)
+test_gate_call_nesting_is_expression_cause :: proc(t: ^testing.T) {
+	// The friction-report junction (174cbae9): pure call-expression nesting reaches
+	// the ceiling with no block and no branch to early-return from
+	// (`np_id(np_id(np_id(np_id(x))))` is a single `return`). The nesting gate fires
+	// AND attributes the depth to .Expression, so the diagnostic prescribes
+	// extract-a-helper / bind-an-intermediate-`let` — the remedy that actually drops
+	// the depth — never the misleading "flatten with early returns".
+	source := "fn np_id(x: Int) -> Int { return x }\n" +
+		"fn np_deep(x: Int) -> Int { return np_id(np_id(np_id(np_id(x)))) }\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Nesting_Exceeded)
+	testing.expect_value(t, verdict.declaration, "np_deep")
+	testing.expect_value(t, verdict.nesting_cause, Nesting_Cause.Expression)
+}
+
+@(test)
+test_gate_block_nesting_is_block_cause :: proc(t: ^testing.T) {
+	// The other side of the cause discriminator: a guard ladder reaches the ceiling
+	// through accumulated `if` early-return-guard block nesting (no over-deep
+	// expression — the innermost `return 1` is a leaf). Four nested guards put the
+	// `return` at block depth 4, over the budget of 3, so the verdict's cause is
+	// .Block — the diagnostic keeps the "flatten with early returns" remedy, which
+	// DOES fit a guard ladder. Pinning both causes proves the discriminator is the
+	// accumulated block depth, not the statement kind.
+	source := "fn deep() -> Int {\n" +
+		"  if true {\n" +
+		"    if true {\n" +
+		"      if true {\n" +
+		"        if true {\n" +
+		"          return 1\n" +
+		"        }\n" +
+		"      }\n" +
+		"    }\n" +
+		"  }\n" +
+		"  return 0\n" +
+		"}\n"
+	verdict := gate_verdict_of(source)
+	testing.expect_value(t, verdict.err, Gate_Error.Nesting_Exceeded)
+	testing.expect_value(t, verdict.declaration, "deep")
+	testing.expect_value(t, verdict.nesting_cause, Nesting_Cause.Block)
 }
 
 @(test)

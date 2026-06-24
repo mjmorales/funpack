@@ -239,13 +239,20 @@ parse_diagnostic :: proc(err: Parse_Error, line: int, col: int) -> Diagnostic {
 }
 
 // gate_diagnostic builds a Diagnostic from a Gate_Error arm, the offending
-// declaration's line, and its name. Gate offenders are declaration-anchored —
-// the budget is a per-declaration compiler constant (spec §01 P5) — so col is
-// always 0 (no expression column; the whole declaration overshot) and the
-// declaration name rides the header. The duplication gate's offender is a
-// colliding pair, not a single declaration, so its name/line may be "" / 0
-// (gate_verdict leaves them unset there). Total over Gate_Error.
-gate_diagnostic :: proc(err: Gate_Error, line: int, declaration: string) -> Diagnostic {
+// declaration's line, its name, and (for the nesting arm) which depth source
+// tripped the ceiling. Gate offenders are declaration-anchored — the budget is a
+// per-declaration compiler constant (spec §01 P5) — so col is always 0 (no
+// expression column; the whole declaration overshot) and the declaration name
+// rides the header. The duplication gate's offender is a colliding pair, not a
+// single declaration, so its name/line may be "" / 0 (gate_verdict leaves them
+// unset there). `cause` is consulted only on the Nesting_Exceeded arm (it is
+// .None on every other arm); it selects the remedy that actually drops the depth
+// — block nesting flattens with early returns, expression-composition nesting
+// extracts a helper or binds an intermediate `let`. Total over Gate_Error, and
+// the nesting arm is total over Nesting_Cause, so a new gate arm OR a new depth
+// source is a visible compile gap here, never a silently-wordless or
+// mis-remedied refusal.
+gate_diagnostic :: proc(err: Gate_Error, line: int, declaration: string, cause := Nesting_Cause.None) -> Diagnostic {
 	d := Diagnostic{stage = .Gate, line = line, declaration = declaration, rule = fmt.tprintf("%v", err)}
 	switch err {
 	case .None:
@@ -253,7 +260,7 @@ gate_diagnostic :: proc(err: Gate_Error, line: int, declaration: string) -> Diag
 	case .Cyclomatic_Exceeded:
 		d.message = fmt.tprintf("this declaration's branch count exceeds the cyclomatic ceiling (%d) — split it into smaller functions (spec §01 P5)", MAX_CYCLOMATIC)
 	case .Nesting_Exceeded:
-		d.message = fmt.tprintf("a block here nests deeper than the nesting ceiling (%d) — flatten the structure with early returns (spec §01 P5)", MAX_NESTING_DEPTH)
+		d.message = nesting_exceeded_message(cause)
 	case .Fn_Size_Exceeded:
 		d.message = fmt.tprintf("this declaration's body holds more than the statement ceiling (%d) — extract part of it into a helper (spec §01 P5)", MAX_FN_STATEMENTS)
 	case .Arity_Exceeded:
@@ -270,6 +277,33 @@ gate_diagnostic :: proc(err: Gate_Error, line: int, declaration: string) -> Diag
 		d.message = "this declaration-prefix debug probe sits on a declaration the §28 §4 On-table forbids — a decl-prefix probe is admitted only on a behavior (spec §28 §4)"
 	}
 	return d
+}
+
+// nesting_exceeded_message is the §01 P5 nesting refusal's fix sentence, with the
+// remedy clause chosen to fit the depth source that tripped the ceiling — a block
+// here nesting deeper does NOT fit pure call-expression depth (`np_id(np_id(…))`
+// has no block and no branch to early-return from), so the remedy must name what
+// actually drops the depth:
+//   - Block       — flatten the structure with early returns (collapse the
+//                    guard ladder so the body stops re-entering deeper blocks);
+//   - Expression  — extract a named helper or bind an intermediate `let` (pull
+//                    the nested call/composition out so no single expression
+//                    nests past the ceiling).
+// .None is defensive: a Nesting_Exceeded verdict always carries a real cause
+// (check_nesting sets it at the overshoot), but should that ever not hold, name
+// BOTH remedies precisely rather than guess one — never a misleading single
+// remedy. Total over Nesting_Cause, so a new depth source is a visible compile
+// gap here.
+nesting_exceeded_message :: proc(cause: Nesting_Cause) -> string {
+	switch cause {
+	case .Block:
+		return fmt.tprintf("a block here nests deeper than the nesting ceiling (%d) — flatten the structure with early returns (spec §01 P5)", MAX_NESTING_DEPTH)
+	case .Expression:
+		return fmt.tprintf("an expression here nests deeper than the nesting ceiling (%d) — extract a named helper or bind an intermediate `let` so no single expression nests past the ceiling (spec §01 P5)", MAX_NESTING_DEPTH)
+	case .None:
+		return fmt.tprintf("this declaration nests deeper than the nesting ceiling (%d) — for block nesting flatten the structure with early returns, for nested call expressions extract a named helper or bind an intermediate `let` (spec §01 P5)", MAX_NESTING_DEPTH)
+	}
+	return ""
 }
 
 // type_diagnostic builds a Diagnostic from a Type_Error arm, the offending

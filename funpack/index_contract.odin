@@ -382,7 +382,7 @@ derive_gate_results :: proc(typed: Typed_Ast, flat: Flattened_Pipeline) -> []Gat
 	sets := closed_variant_sets(typed.ast)
 	results := make([]Gate_Result, len(Gate_Family), context.temp_allocator)
 	results[Gate_Family.Cyclomatic]     = Gate_Result{gate = .Cyclomatic, passed = !any_unit_fails(units, check_cyclomatic)}
-	results[Gate_Family.Nesting]        = Gate_Result{gate = .Nesting, passed = !any_unit_fails(units, check_nesting)}
+	results[Gate_Family.Nesting]        = Gate_Result{gate = .Nesting, passed = !any_unit_fails(units, check_nesting_err)}
 	results[Gate_Family.Fn_Size]        = Gate_Result{gate = .Fn_Size, passed = !any_unit_fails(units, check_fn_size)}
 	results[Gate_Family.Arity]          = Gate_Result{gate = .Arity, passed = !any_unit_fails(units, gate_arity_unit)}
 	results[Gate_Family.Exhaustiveness] = Gate_Result{gate = .Exhaustiveness, passed = !any_match_fails(units, sets)}
@@ -402,6 +402,16 @@ check_fn_size :: proc(unit: Gate_Unit) -> Gate_Error {
 		return .Fn_Size_Exceeded
 	}
 	return .None
+}
+
+// check_nesting_err is the error-only projection of check_nesting (which also
+// reports the overshoot's Nesting_Cause) so the family-score path scores the
+// nesting family through the same any_unit_fails fold as the other per-unit
+// gates. The cause is irrelevant to a pass/fail family verdict — it shapes the
+// diagnostic remedy, not whether the gate passed — so the family scorer drops it.
+check_nesting_err :: proc(unit: Gate_Unit) -> Gate_Error {
+	err, _ := check_nesting(unit)
+	return err
 }
 
 // any_unit_fails reports whether any declaration unit overshoots a per-unit
