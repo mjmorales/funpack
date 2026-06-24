@@ -2,7 +2,7 @@
 // per-family test covers, expressed as living spec over the REAL framed transport
 // (serve_mcp_connection + the production mcp_jsonrpc_handler), not an arm shortcut:
 //
-//   1. tools/list advertises the WHOLE 46-tool surface — the §28 session tools AND
+//   1. tools/list advertises the WHOLE 47-tool surface — the §28 session tools AND
 //      the server-native (oneshot / docs-health / session-lifecycle) tools — each as
 //      a named entry carrying a well-formed object inputSchema. Each family pins its
 //      own list membership in its own test; this pins the UNION in ONE place over the
@@ -96,11 +96,11 @@ parity_stage_fixture :: proc(t: ^testing.T, name: string) -> (path: string, ok: 
 // group AND the server-native group — and each is a named
 // entry carrying a well-formed object inputSchema. A family unwired from the projection
 // (or a tool dropped from the contract) makes its name absent here. The expected set is
-// the closed 46-tool union; a contract that grows the surface without extending this
+// the closed 47-tool union; a contract that grows the surface without extending this
 // list trips the count assertion, forcing the list to track the real surface.
 @(test)
 test_parity_tools_list_advertises_full_surface :: proc(t: ^testing.T) {
-	// The full 46-tool surface, grouped by family for legibility. This is the union of
+	// The full 47-tool surface, grouped by family for legibility. This is the union of
 	// every family's own list membership, pinned here in one place.
 	expected := []string {
 		// §28 time-travel
@@ -114,7 +114,7 @@ test_parity_tools_list_advertises_full_surface :: proc(t: ^testing.T) {
 		// §28 breakpoints
 		"break", "watch", "clear",
 		// §28 self-heal
-		"capture_test", "audit",
+		"capture_test", "capture_tick", "audit",
 		// server-native one-shot compute
 		"build", "export", "check", "test", "fmt",
 		"warden_find", "warden_graph", "warden_holes", "warden_probes",

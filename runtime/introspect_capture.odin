@@ -1,9 +1,16 @@
-// The §28 §5 capture → test loop — `capture_test`, the observe-class self-heal
-// command: extract one behavior instance's (self, resources, inbound signals)
-// at a recorded tick from the session, take the in-fold pure-step result as the
-// expectation, and emit a complete, idiomatic funpack `test "…" { … }` block —
-// indistinguishable from a hand-written test, ready to land in source as a
-// permanent regression.
+// The §28 §5 capture → test loop — the observe-class self-heal commands that
+// emit complete, idiomatic funpack `test "…" { … }` blocks, indistinguishable
+// from hand-written tests, ready to land in source as permanent regressions:
+//
+//   - `capture_test` extracts one behavior instance's (self, resources, inbound
+//     signals) at a recorded tick and pins its in-fold pure-step result.
+//   - `capture_tick` reads a recorded tick's committed pre-state (version
+//     tick-1) and post-state (version tick) of a thing and pins the WHOLE-TICK
+//     transition against a hand-rolled twin: `assert twin([pre]) == [post]`.
+//     The post-state is the LIVE Id-ordered schedule's committed output, so a
+//     twin modeling the tick as a simultaneous map (the false mental model that
+//     passes a green suite while diverging from the live fold) fails the assert
+//     — the mechanical guard the determinism contract otherwise only warns about.
 //
 // The exported text is funpack SOURCE, built from the deterministic
 // constructors the spec names: record literals `Type{field: value}` in
@@ -128,6 +135,195 @@ render_captured_test :: proc(
 	}
 	strings.write_string(&b, "\n}\n")
 	return strings.to_string(b), ""
+}
+
+// capture_tick_request serves one `capture_tick` command: read the committed
+// pre-state (version tick-1; tick 0's pre is the post-startup version) and
+// post-state (version tick) of the target thing on the addressed lineage, and
+// render a funpack `test` asserting the hand-rolled whole-tick twin reproduces
+// the LIVE Id-ordered schedule — `assert twin([pre rows]) == [post rows]`.
+// Observe-class — the retained chain is read, never written. The pre/post rows
+// render through the same source constructors capture_test uses, so an
+// unconstructible column (a Ref, an anim value) is refused, never approximated.
+capture_tick_request :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	args: json.Object,
+	allocator := context.allocator,
+) -> string {
+	tick, has_tick := json_int_field(args, "tick")
+	thing, has_thing := json_string_field(args, "thing")
+	twin_name, has_twin := json_string_field(args, "twin")
+	if !has_tick || !has_thing || !has_twin {
+		return error_response(id, "capture_tick", "missing args.tick, args.thing, or args.twin", allocator)
+	}
+	twin := program_function(s.program, twin_name)
+	if twin == nil {
+		return error_response(id, "capture_tick", "unknown twin function", allocator)
+	}
+	lineage, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return error_response(id, "capture_tick", "unknown branch — checkout an existing lineage", allocator)
+	}
+	pre_version, pre_ok := session_version_on(s, lineage, int(tick) - 1)
+	post_version, post_ok := session_version_on(s, lineage, int(tick))
+	if !pre_ok || !post_ok {
+		return error_response(id, "capture_tick", "tick out of range", allocator)
+	}
+	pre_mut := pre_version
+	post_mut := post_version
+	pre_table := version_find_table(&pre_mut, thing)
+	post_table := version_find_table(&post_mut, thing)
+	if pre_table == nil || post_table == nil {
+		return error_response(id, "capture_tick", "unknown thing", allocator)
+	}
+	// The twin shape is checked against a thing already confirmed present above, so
+	// an unknown thing reads as "unknown thing", not as a twin-return-type mismatch.
+	takes_view, twin_err := capture_tick_twin_shape(twin, thing, allocator)
+	if twin_err != "" {
+		return error_response(id, "capture_tick", twin_err, allocator)
+	}
+
+	source, render_err := render_captured_tick(
+		s.program,
+		thing,
+		twin_name,
+		takes_view,
+		pre_table.rows,
+		post_table.rows,
+		int(tick),
+		allocator,
+	)
+	if render_err != "" {
+		return error_response(id, "capture_tick", render_err, allocator)
+	}
+
+	b := strings.builder_make(allocator)
+	ok_response_open(&b, id, "capture_tick")
+	fmt.sbprintf(&b, "{{\"tick\":%d,\"thing\":", tick)
+	write_json_string(&b, thing)
+	strings.write_string(&b, ",\"twin\":")
+	write_json_string(&b, twin_name)
+	strings.write_string(&b, ",\"test\":")
+	write_json_string(&b, source)
+	strings.write_string(&b, "}}")
+	return strings.to_string(b)
+}
+
+// capture_tick_twin_shape validates the twin is a whole-tick fold over the
+// target thing: exactly one param typed `[T]` or `View[T]` (T = thing) and a
+// `[T]` return. takes_view is true when the param is `View[T]`, so the rendered
+// call wraps the pre rows in `View.of(…)`. A non-empty err names the violation.
+@(private = "file")
+capture_tick_twin_shape :: proc(
+	twin: ^Function_Decl,
+	thing: string,
+	allocator := context.allocator,
+) -> (
+	takes_view: bool,
+	err: string,
+) {
+	list_type := fmt.aprintf("[%s]", thing, allocator = allocator)
+	if len(twin.params) != 1 {
+		return false, fmt.aprintf(
+			"twin %s must take exactly one param (%s or View[%s])",
+			twin.name,
+			list_type,
+			thing,
+			allocator = allocator,
+		)
+	}
+	if !is_bracket_list(twin.return_type) || signal_type_of(twin.return_type) != thing {
+		return false, fmt.aprintf("twin %s must return %s", twin.name, list_type, allocator = allocator)
+	}
+	param_type := twin.params[0].type
+	switch {
+	case is_view_type(param_type) && view_thing_of(param_type) == thing:
+		return true, ""
+	case is_bracket_list(param_type) && signal_type_of(param_type) == thing:
+		return false, ""
+	}
+	return false, fmt.aprintf(
+		"twin %s param must be %s or View[%s], not %s",
+		twin.name,
+		list_type,
+		thing,
+		param_type,
+		allocator = allocator,
+	)
+}
+
+// render_captured_tick renders the whole-tick twin test block: a @doc naming the
+// provenance, a deterministic test name, and the one assert — the twin applied
+// to the committed pre rows, compared against the committed post rows (the live
+// schedule's Id-ordered output). Returns a non-empty error for the first
+// unconstructible column in either row set.
+@(private = "file")
+render_captured_tick :: proc(
+	program: ^Program,
+	thing: string,
+	twin_name: string,
+	takes_view: bool,
+	pre_rows: []Row,
+	post_rows: []Row,
+	tick: int,
+	allocator := context.allocator,
+) -> (
+	source: string,
+	err: string,
+) {
+	b := strings.builder_make(allocator)
+	fmt.sbprintf(
+		&b,
+		"@doc(\"Captured by capture_tick: %s vs the live schedule for %s over tick %d of a recorded session.\")\n",
+		twin_name,
+		thing,
+		tick,
+	)
+	fmt.sbprintf(&b, "test \"captured tick %d %s twin %s\" {{\n", tick, thing, twin_name)
+	fmt.sbprintf(&b, "  assert %s(", twin_name)
+	list_hint := fmt.aprintf("[%s]", thing, allocator = allocator)
+	if takes_view {
+		strings.write_string(&b, "View.of(")
+	}
+	if pre_err := write_rows_source_list(&b, program, thing, pre_rows, list_hint, allocator); pre_err != "" {
+		return "", pre_err
+	}
+	if takes_view {
+		strings.write_string(&b, ")")
+	}
+	strings.write_string(&b, ") == ")
+	if post_err := write_rows_source_list(&b, program, thing, post_rows, list_hint, allocator); post_err != "" {
+		return "", post_err
+	}
+	strings.write_string(&b, "\n}\n")
+	return strings.to_string(b), ""
+}
+
+// write_rows_source_list renders a committed row slice as a funpack `[T{…}, …]`
+// list literal — each row a record of the thing's declared fields, through the
+// same constructor renderer capture_test uses (write_source_value over a
+// List_Value of Record_Values). Refuses the first column with no source literal.
+@(private = "file")
+write_rows_source_list :: proc(
+	b: ^strings.Builder,
+	program: ^Program,
+	thing: string,
+	rows: []Row,
+	list_hint: string,
+	allocator := context.allocator,
+) -> (
+	err: string,
+) {
+	elements := make([]Value, len(rows), allocator)
+	for row, i in rows {
+		fields := make(map[string]Value, allocator)
+		for k, v in row.fields {
+			fields[k] = field_value_to_value(v)
+		}
+		elements[i] = Record_Value{type_name = thing, fields = fields}
+	}
+	return write_source_value(b, program, List_Value{elements = elements}, list_hint, allocator)
 }
 
 // write_param_fixture renders one declared read as its deterministic source

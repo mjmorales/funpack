@@ -62,6 +62,7 @@ CMD_SCREENSHOT :: "screenshot"
 
 // group "self_heal" (class observe)
 CMD_CAPTURE_TEST :: "capture_test"
+CMD_CAPTURE_TICK :: "capture_tick"
 CMD_AUDIT :: "audit"
 
 // group "time" (class observe)
@@ -393,6 +394,20 @@ TOOL_SPECS := []Tool_Spec{
 			{name = "behavior", json_type = "string", required = true, doc = "name of the behavior whose step to capture into a regression test"},
 			{name = "instance", json_type = "integer", required = false, doc = "optional Thing id to target one behavior instance; omit to take the first instance in fold order"},
 			{name = "tick", json_type = "integer", required = true, doc = "the recorded tick at which to capture the behavior's (self, resources, inbound signals)"},
+			BRANCH_ARG,
+		},
+	},
+	{
+		name           = "capture_tick",
+		command        = "capture_tick",
+		group          = "self_heal",
+		class          = "observe",
+		session_scoped = true,
+		args           = []Tool_Arg{
+			SESSION_ID_ARG,
+			{name = "thing", json_type = "string", required = true, doc = "the thing type whose whole-tick committed pre/post state to capture"},
+			{name = "tick", json_type = "integer", required = true, doc = "the recorded tick whose committed transition (version tick-1 -> version tick; tick 0's pre-state is the post-startup version) to capture"},
+			{name = "twin", json_type = "string", required = true, doc = "name of the hand-rolled whole-tick fn (fn(x: [T]) -> [T] or fn(x: View[T]) -> [T]) to assert against the live Id-ordered schedule"},
 			BRANCH_ARG,
 		},
 	},

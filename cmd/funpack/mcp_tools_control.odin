@@ -41,8 +41,8 @@ import "core:strings"
 // to disambiguate.
 CTRL_REQUEST_ID :: 1
 
-// mcp_control_dispatch is the control + self-heal family's arm. It CLAIMS its ten
-// tools (the eight §28 control commands plus capture_test / audit), folding each
+// mcp_control_dispatch is the control + self-heal family's arm. It CLAIMS its eleven
+// tools (the eight §28 control commands plus capture_test / capture_tick / audit), folding each
 // through the named session, and returns handled=false for any tool it does not own
 // so the call flows on down the chain (the stub contract every family keeps). The map
 // from MCP tool name → §28 command is exactly the generated Tool_Spec.command field
@@ -68,6 +68,8 @@ mcp_control_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 		command = "reload"
 	case "capture_test":
 		command = "capture_test"
+	case "capture_tick":
+		command = "capture_tick"
 	case "audit":
 		command = "audit"
 	case:
@@ -298,13 +300,15 @@ ctrl_tool_command :: proc(tool_name: string) -> (command: string, has: bool) {
 		return "reload", true
 	case "capture_test":
 		return "capture_test", true
+	case "capture_tick":
+		return "capture_tick", true
 	case "audit":
 		return "audit", true
 	}
 	return "", false
 }
 
-// ctrl_family_tools is this family's tool roster — the ten tools mcp_control_dispatch
+// ctrl_family_tools is this family's tool roster — the eleven tools mcp_control_dispatch
 // claims. Kept as a package-level table the family's tests walk (assert each is in
 // TOOL_SPECS, assert ctrl_tool_command resolves it, assert no other family's tool is
 // in the set), so the roster has one source the dispatch and the tests share.
@@ -318,6 +322,7 @@ ctrl_family_tools := [?]string {
 	"control_emit",
 	"control_reload",
 	"capture_test",
+	"capture_tick",
 	"audit",
 }
 

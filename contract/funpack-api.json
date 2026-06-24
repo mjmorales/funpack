@@ -145,6 +145,11 @@
             "tick": { "type": "integer", "required": true, "doc": "the recorded tick at which to capture the behavior's (self, resources, inbound signals)" },
             "instance": { "type": "integer", "required": false, "doc": "optional Thing id to target one behavior instance; omit to take the first instance in fold order" }
           } },
+          { "name": "capture_tick", "args": {
+            "thing": { "type": "string", "required": true, "doc": "the thing type whose whole-tick committed pre/post state to capture" },
+            "tick": { "type": "integer", "required": true, "doc": "the recorded tick whose committed transition (version tick-1 -> version tick; tick 0's pre-state is the post-startup version) to capture" },
+            "twin": { "type": "string", "required": true, "doc": "name of the hand-rolled whole-tick fn (fn(x: [T]) -> [T] or fn(x: View[T]) -> [T]) to assert against the live Id-ordered schedule" }
+          } },
           { "name": "audit", "args": {} }
         ]
       }

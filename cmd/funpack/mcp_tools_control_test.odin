@@ -84,7 +84,7 @@ ctrl_dispatch_tool :: proc(
 }
 
 // test_ctrl_family_claims_exactly_its_tools pins the merge-clean invariant: the family
-// claims each of its ten tools (handled=true) and DECLINES every tool another family
+// claims each of its eleven tools (handled=true) and DECLINES every tool another family
 // owns (handled=false), so the dispatch chain has exactly one owner per tool name.
 @(test)
 test_ctrl_family_claims_exactly_its_tools :: proc(t: ^testing.T) {
