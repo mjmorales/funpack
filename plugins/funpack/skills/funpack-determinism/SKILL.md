@@ -22,7 +22,9 @@ threaded, so **input is the only nondeterminism in user code**:
 - **Input** arrives as the read-only `Input` resource — a per-tick action snapshot recorded for
   replay. Logic queries semantic actions, never devices (see `funpack-engine-api`).
 - **RNG** is the `Rng` resource, **threaded**: a function taking an `Rng` must return the advanced
-  one (`-> (value, next_rng)`); it is never silently advanced.
+  one (`-> (value, next_rng)`); it is never silently advanced. Consume a draw with a tuple destructure
+  — `let (value, next) = rng.range(lo, hi)` — and thread `next` into the next draw; sequential draws
+  chain flat, so a multi-draw generator stays well under the depth gate.
 - **Time** is the `Time` resource — logical time on a fixed timestep; there is no wall clock in sim.
 
 A tick is a **fold over the flattened pipeline**, so a replay re-folds bit-identically.

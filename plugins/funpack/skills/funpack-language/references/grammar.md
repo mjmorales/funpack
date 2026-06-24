@@ -35,10 +35,17 @@ Whole module (`import engine.math`), one item (`import engine.math.max`), or a b
 
 ### let
 ```
-LetDecl ::= 'let' LetName (':' Type)? '=' Expr
+LetDecl ::= 'let' LetName (':' Type)? '=' Expr                          (* module constant *)
+LetStmt ::= 'let' LetBinder (':' Type)? '=' Expr                        (* local binding *)
+LetBinder ::= LOWER_IDENT                                               (* single name *)
+            | '(' LOWER_IDENT (',' LOWER_IDENT)+ ')'                    (* tuple destructure *)
 ```
 `LetName` is `UPPER_IDENT` (module constants) or `LOWER_IDENT` (locals / asset handles). Type
 annotation optional where inferable. The only binding form; locals are immutable.
+A **tuple destructure** `let (a, b, …) = expr` binds each name to its position in a return-position
+tuple — the threaded-`Rng` consume site `let (value, next) = draw(rng)`. The binder count must equal
+the tuple arity; the binders are plain names, not a nested pattern (structural matching stays in
+`match`). The `(` after `let` selects this form.
 
 ### enum
 ```

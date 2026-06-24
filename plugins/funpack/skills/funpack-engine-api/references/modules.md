@@ -205,6 +205,18 @@ Every draw is `self`-first: `rng.pick(items)` lowers (UFCS) to `pick(rng, items)
 list), and `funpack introspect` surfaces it with a `call_site_inferred` marker. `Rng.seed(n)` is
 the static-constructor twin of the bare `seed(n)`. Always thread the returned `Rng`.
 
+**Consume a draw with `let (value, next) = …`** — the tuple destructure binds the value and the
+advanced `Rng` in one statement, and the next draw threads `next`. Sequential draws chain flat (no
+nesting), so a multi-draw generator stays well under the depth gate:
+```funpack
+fn roll_two(rng: Rng) -> (Int, Rng) {
+  let (a, r1) = rng.range(1, 6)
+  let (b, r2) = r1.range(1, 6)
+  return (a + b, r2)              // thread the final Rng out for the caller to continue
+}
+```
+The binder count must equal the tuple arity (a `(value, next)` 2-tuple binds exactly two names).
+
 ## engine.string
 Build text by interpolation `"{a}{b}"`, never `+`.
 ```funpack

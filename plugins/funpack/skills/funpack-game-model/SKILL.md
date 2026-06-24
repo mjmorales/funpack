@@ -74,6 +74,17 @@ exactly one, and it runs **once per instance in stable `Id` order**.
 | `-> [Command]` | engine effects-as-data (`[Spawn]`, `[Draw]`, `[Despawn]`, …) |
 | `-> (Rng, [Spawn])`, `-> ([Despawn], [Delivered])` | combinations (threaded rng + commands; commands + signals) |
 
+**Consume a threaded draw with `let (value, next) = …`** and return the advanced `Rng`. The tuple
+destructure binds both in one statement; sequential draws chain flat (no nesting):
+```funpack
+behavior spawn_food on Spawner {
+  fn step(self, rng: Rng) -> (Rng, [Spawn]) {
+    let (cell, r1) = rng.range(0, 63)        // consume the draw, thread r1 onward
+    return (r1, [ Spawn( Food{cell: cell} ) ])   // return the ADVANCED Rng so the engine threads it
+  }
+}
+```
+
 **The core invariant — read your own, signal the rest:** a behavior writes **only its own thing's
 blackboard**. It may *read* other things through a `View`, but never *write* one. To change a
 different thing — including a singleton — it **emits a signal** the target's own behavior folds

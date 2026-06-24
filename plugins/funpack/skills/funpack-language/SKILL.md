@@ -139,9 +139,11 @@ return Bindings.empty()                         // left-to-right builder chains 
   .axis(PlayerId::P2, Steer::Move, keys_axis(Key::Up, Key::Down))
 ```
 
-- **`let`** is the only local binding; all locals immutable. **No `for`/`while`** — iterate with the
-  list combinators `map`/`filter`/`fold`/`find`; `fold(xs, init, fn(acc, x){…})` is the deterministic
-  loop primitive (strictly left-to-right).
+- **`let`** is the only local binding; all locals immutable. A `let` binds a single name
+  (`let n = e`) or **tuple-destructures a return-position tuple** (`let (value, next) = draw(rng)` —
+  the threaded-`Rng` consume site; the binder count must equal the tuple arity). **No `for`/`while`**
+  — iterate with the list combinators `map`/`filter`/`fold`/`find`; `fold(xs, init, fn(acc, x){…})`
+  is the deterministic loop primitive (strictly left-to-right).
 - **Calls:** `.` is the universal access/call operator (field, UFCS method, or associated fn/const —
   `recv.f(x)`, `Type.empty()`, `Fixed.MAX`); `::` is the enum-variant selector **only**
   (`Dir::Up`, `Option::Some`). A method call and a free-function call are the same function (UFCS:
