@@ -363,3 +363,109 @@ test_time_request_refusals :: proc(t: ^testing.T) {
 	at_end := session_request(&s, `{"id":14,"cmd":"step"}`)
 	testing.expect(t, strings.contains(at_end, `end of recording`), "a step past the recording must be refused")
 }
+
+// TIME_BRANCH_SELECTOR_ARTIFACT is the seedless programmatic-startup Mote fixture —
+// the same one the control junction forks, reused here to exercise the §28 §2
+// `branch=` selector on the advance verbs (the control test keeps its own copy
+// file-private, so the time test #loads its own handle).
+TIME_BRANCH_SELECTOR_ARTIFACT := #load("testdata/seedless_startup_spawn.artifact", string)
+
+// time_branch_session opens a seedless control session over the Mote fixture with a
+// short empty-input canonical recording — enough to load the cursor and fork a
+// branch with room to advance.
+@(private = "file")
+time_branch_session :: proc(
+	t: ^testing.T,
+	ticks: int,
+	allocator := context.allocator,
+) -> (
+	program: ^Program,
+	session: Debug_Session,
+) {
+	program = new(Program, allocator)
+	loaded, err := load_program(TIME_BRANCH_SELECTOR_ARTIFACT, allocator)
+	testing.expect(t, err == .None, "the seedless Mote fixture must load")
+	program^ = loaded
+	inputs := make([]Input, ticks, allocator)
+	for i in 0 ..< ticks {
+		inputs[i] = empty()
+	}
+	session = open_debug_session(program, inputs, NO_SEED, allocator)
+	return program, session
+}
+
+// test_time_advance_branch_selector_must_match_active_lineage is the friction-4102ea74
+// junction: the §28 §2 `branch=` selector on the ADVANCE verbs (run/step) must be
+// honored-or-rejected, never silently ignored. An advance is a fold of the ACTIVE
+// lineage by construction (the canonical chain is read-only, the live branch is the
+// only writable lineage), so a `branch=` naming a NON-active lineage cannot be folded
+// — it must refuse and name the control_checkout that would make it active first.
+//
+// THE BUG (pre-fix): run/step gated solely on time_on_writable_branch (active_branch &&
+// has_branch) and never read `branch`. With canonical the active lineage at its
+// recording end, `step{branch:"branch"}` returned canonical's "end of recording" and
+// `run{branch:"branch"}` reported canonical's last recorded tick — the selector was
+// accepted and discarded, advancing the active lineage instead of the addressed branch.
+//
+// THE FIX (introspect_time.odin): time_advance_lineage_refusal rejects a `branch=`
+// naming a lineage other than the active one (and any unknown token), naming
+// control_checkout. The honored paths are unchanged: no selector, or a selector naming
+// the already-active lineage, advances exactly as before.
+@(test)
+test_time_advance_branch_selector_must_match_active_lineage :: proc(t: ^testing.T) {
+	_, session := time_branch_session(t, 12)
+	s := session
+
+	session_request(&s, `{"id":1,"cmd":"load"}`)
+	session_request(&s, `{"id":2,"cmd":"run"}`) // canonical cursor at the recording end (tick 11); canonical is active
+	cursor_at_end := s.cursor.tick
+
+	// Fork a branch with room past its base (base_tick 4, no folded ticks), but do NOT
+	// check it out — canonical stays the active lineage. The friction's repro shape.
+	forked := session_request(&s, `{"id":3,"cmd":"branch","args":{"tick":4}}`)
+	testing.expect(t, strings.contains(forked, `"ok":true`), forked)
+	testing.expect(t, s.has_branch && !s.active_branch, "the branch must exist but not be checked out")
+
+	// REFUSAL: step{branch:"branch"} names a non-active branch — refuse, naming
+	// control_checkout, and DO NOT silently advance the active canonical cursor.
+	stepped := session_request(&s, `{"id":4,"cmd":"step","args":{"branch":"branch"}}`)
+	testing.expect(t, strings.contains(stepped, `"ok":false`), stepped)
+	testing.expectf(t, strings.contains(stepped, `control_checkout`), "the refusal must name control_checkout: %s", stepped)
+	testing.expect(t, strings.contains(stepped, `not checked out`), stepped)
+	testing.expect(t, !strings.contains(stepped, `end of recording`), "the selector must be honored, not fall through to the active lineage")
+
+	// REFUSAL: run{branch:"branch"} likewise refuses rather than reporting canonical's
+	// recorded head.
+	ran := session_request(&s, `{"id":5,"cmd":"run","args":{"branch":"branch"}}`)
+	testing.expect(t, strings.contains(ran, `"ok":false`), ran)
+	testing.expect(t, strings.contains(ran, `control_checkout`), ran)
+
+	// Neither refusal moved the active cursor — the active lineage is untouched.
+	testing.expect_value(t, s.cursor.tick, cursor_at_end)
+	testing.expect_value(t, s.branch.ticks, 0)
+
+	// An UNKNOWN selector token is likewise rejected (not silently treated as the
+	// active lineage), naming control_checkout.
+	bogus := session_request(&s, `{"id":6,"cmd":"step","args":{"branch":"trunk"}}`)
+	testing.expect(t, strings.contains(bogus, `"ok":false`), bogus)
+	testing.expect(t, strings.contains(bogus, `control_checkout`), bogus)
+
+	// HONORED PATH 1: branch:"canonical" while canonical is active is a truthful,
+	// redundant selector — it proceeds exactly as the active lineage would (here, the
+	// recording-end refusal is canonical's own, NOT a selector refusal).
+	canon := session_request(&s, `{"id":7,"cmd":"step","args":{"branch":"canonical"}}`)
+	testing.expectf(t, strings.contains(canon, `end of recording`), "a canonical selector with canonical active proceeds: %s", canon)
+	testing.expect(t, !strings.contains(canon, `control_checkout`), "the active-lineage selector is not a refusal")
+
+	// HONORED PATH 2: once the branch IS checked out, branch:"branch" advances it (the
+	// selector now names the active lineage), and so does an unselected step.
+	session_request(&s, `{"id":8,"cmd":"checkout","args":{"target":"branch"}}`)
+	tip_before := branch_tip_tick(&s)
+	on_branch := session_request(&s, `{"id":9,"cmd":"step","args":{"branch":"branch"}}`)
+	testing.expect(t, strings.contains(on_branch, `"ok":true`), on_branch)
+	testing.expect_value(t, branch_tip_tick(&s), tip_before + 1)
+
+	unselected := session_request(&s, `{"id":10,"cmd":"step"}`)
+	testing.expect(t, strings.contains(unselected, `"ok":true`), unselected)
+	testing.expect_value(t, branch_tip_tick(&s), tip_before + 2)
+}

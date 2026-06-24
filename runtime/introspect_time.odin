@@ -94,7 +94,7 @@ time_request :: proc(
 	case "pause":
 		return time_position_response(s, id, "pause", allocator)
 	case "step":
-		return time_step(s, id, allocator)
+		return time_step(s, id, args, allocator)
 	case "rewind":
 		return time_rewind(s, id, args, allocator)
 	case "reset":
@@ -133,6 +133,9 @@ time_run :: proc(
 	args: json.Object,
 	allocator := context.allocator,
 ) -> string {
+	if refusal, refuse := time_advance_lineage_refusal(s, id, "run", args, allocator); refuse {
+		return refusal
+	}
 	if time_on_writable_branch(s) {
 		until := i64(branch_tip_tick(s) + 1)
 		if requested, has_until := json_int_field(args, "until"); has_until {
@@ -166,9 +169,19 @@ time_run :: proc(
 // lineage it replays one recorded tick (the end of the recording is a refusal); on
 // the active writable branch (friction-6e7bb2c4) it FOLDS one new pipeline tick onto
 // the branch — there is no "end of recording" on a writable branch, the fold simply
-// extends it.
+// extends it. It takes `args` only to read the §28 §2 `branch` selector for the
+// advance-lineage guard (friction-4102ea74); the fold target itself is implicit (the
+// next tick of the active lineage), so step has no other argument.
 @(private = "file")
-time_step :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -> string {
+time_step :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	args: json.Object,
+	allocator := context.allocator,
+) -> string {
+	if refusal, refuse := time_advance_lineage_refusal(s, id, "step", args, allocator); refuse {
+		return refusal
+	}
 	if time_on_writable_branch(s) {
 		branch_advance_tick(s)
 		return time_position_response(s, id, "step", allocator)
@@ -189,6 +202,80 @@ time_step :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) ->
 @(private = "file")
 time_on_writable_branch :: proc(s: ^Debug_Session) -> bool {
 	return s.active_branch && s.has_branch
+}
+
+// time_advance_lineage_active reports the §28 §2 name of the lineage run/step
+// advance — the SAME name model time_status reports ("branch" once a `checkout`
+// makes the live branch active, "canonical" otherwise). An advance is always a
+// fold of the active lineage by construction (the canonical chain is read-only,
+// the branch is the only writable lineage), so this is the only lineage a
+// `branch=` selector may name without retargeting.
+@(private = "file")
+time_advance_lineage_active :: proc(s: ^Debug_Session) -> string {
+	if s.active_branch && s.has_branch {
+		return "branch"
+	}
+	return "canonical"
+}
+
+// time_advance_lineage_refusal makes the §28 §2 `branch` selector HONEST on the
+// advance verbs (friction-4102ea74). On run/step a `branch=` was accepted and
+// SILENTLY IGNORED — both verbs fold whatever lineage is checked out — so a
+// `branch:"branch"` issued before a `control_checkout` advanced the active
+// canonical cursor and reported ITS state, discarding the selector. An advance is
+// a fold of the ACTIVE lineage by construction; the selector is therefore only a
+// no-op confirmation of the active lineage, never a cross-lineage retarget. The
+// guard:
+//   - no `branch` field         -> ok (the honored path: advance the active lineage)
+//   - `branch` = the active name -> ok (a redundant but truthful selector)
+//   - `branch` naming the OTHER lineage, or an unknown token -> refuse, naming the
+//     `control_checkout` that would make that lineage active first.
+// This honors-or-errors the selector without loosening the active-lineage-only
+// design (the advance verbs do NOT cross-fold a non-active branch).
+@(private = "file")
+time_advance_lineage_refusal :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	cmd: string,
+	args: json.Object,
+	allocator := context.allocator,
+) -> (
+	refusal: string,
+	refuse: bool,
+) {
+	name, has := json_string_field(args, "branch")
+	if !has {
+		return "", false
+	}
+	active := time_advance_lineage_active(s)
+	if name == active {
+		return "", false
+	}
+	switch name {
+	case "canonical":
+		return error_response(
+			id,
+			cmd,
+			"branch \"canonical\" is not the active lineage — checkout it first (control_checkout{target:\"canonical\"})",
+			allocator,
+		), true
+	case "branch":
+		return error_response(
+			id,
+			cmd,
+			"branch \"branch\" is not checked out — advancing it requires control_checkout{target:\"branch\"} first",
+			allocator,
+		), true
+	}
+	return error_response(
+		id,
+		cmd,
+		fmt.tprintf(
+			"unknown branch selector %q — advancing requires the named lineage be the active one (control_checkout first)",
+			name,
+		),
+		allocator,
+	), true
 }
 
 // branch_advance_tick folds ONE new pipeline tick onto the active branch through the
