@@ -1,5 +1,6 @@
 package funpack
 
+import "core:strings"
 import "core:testing"
 
 // check_expr_source lexes and parses a single expression, then types
@@ -391,6 +392,64 @@ test_unknown_method_on_list_is_unknown_method :: proc(t: ^testing.T) {
 	// the Unsupported_Expr that read as "this expression form is illegal".
 	_, err := check_expr_source("[1, 2].bogus(3)\n")
 	testing.expect_value(t, err, Type_Error.Unknown_Method)
+}
+
+// check_let_module types a `let rolled = <EXPR>` body inside a fn under the given
+// import header and returns the typecheck verdict's error — the harness for the
+// arms whose receiver needs a real import (Rng) the golden expr bindings omit.
+check_let_module :: proc(import_header: string, expr: string) -> Type_Error {
+	source := strings.concatenate(
+		{import_header, "fn roll() -> Int {\n  let rolled = ", expr, "\n  return 0\n}\n"},
+		context.temp_allocator,
+	)
+	ast, parse_verdict := stage_parse_located(stage_lex(source))
+	if parse_verdict.err != .None {
+		return .Unsupported_Expr
+	}
+	_, verdict := stage_typecheck_located(ast, Module_Index{})
+	return verdict.err
+}
+
+@(test)
+test_unknown_method_on_call_receiver_is_unknown_method :: proc(t: ^testing.T) {
+	// The friction report's exact repro: a CALL-EXPRESSION receiver. `Rng.seed(1)`
+	// is the §26 §1.10 static constructor, so it types to an Rng — a KNOWN type —
+	// and the chained `.bogus_method` is no method of it, so the arm is
+	// Unknown_Method, NOT the Unsupported_Expr the untypeable receiver gave before
+	// `Rng.seed` was admitted as a static constructor. The diagnostic reaches a
+	// typed call-expression receiver identically to a typed identifier receiver
+	// (the simple-identifier case is test_unknown_method_on_list_is_unknown_method).
+	err := check_let_module("import engine.rand.{Rng}\n", "Rng.seed(1).bogus_method(0, 9)")
+	testing.expect_value(t, err, Type_Error.Unknown_Method)
+}
+
+@(test)
+test_rng_seed_static_constructor_types_to_rng :: proc(t: ^testing.T) {
+	// The receiver of the chained call must itself type CLEAN for the
+	// Unknown_Method split to fire — `Rng.seed(1)` is the §26 §1.10 deterministic
+	// constructor (the Time.at/View.of class), typing to an Rng. A wrong-typed
+	// argument (a Fixed for the Int seed) is a Type_Mismatch through check_args, so
+	// the static form carries the same arity/type checking as the free `seed(n)`.
+	ok_err := check_let_module("import engine.rand.{Rng}\n", "Rng.seed(1)")
+	testing.expect_value(t, ok_err, Type_Error.None)
+	bad_err := check_let_module("import engine.rand.{Rng}\n", "Rng.seed(1.0)")
+	testing.expect_value(t, bad_err, Type_Error.Type_Mismatch)
+}
+
+@(test)
+test_rng_seed_static_constructor_equals_free_seed :: proc(t: ^testing.T) {
+	// The static `Rng.seed(n)` and the free `seed(n)` lower to the SAME rand_seed
+	// kernel, so they evaluate bit-identically — the §10 dual-interpreter contract
+	// over the two constructor spellings. Driven end-to-end so the eval arm
+	// (eval_resource_builder) actually runs, not just the typecheck.
+	source := "import engine.rand.{Rng, seed}\n" +
+		"test \"static seed equals free seed\" {\n" +
+		"  assert Rng.seed(7) == seed(7)\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
 }
 
 @(test)

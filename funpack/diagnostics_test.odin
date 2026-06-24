@@ -320,6 +320,23 @@ test_diag_pin_typecheck_unknown_method :: proc(t: ^testing.T) {
 	testing.expect_value(t, got, want)
 }
 
+// test_diag_pin_typecheck_unknown_method_call_receiver pins the SAME Unknown_Method
+// caret-on-member shape when the receiver is a CALL EXPRESSION, not a simple binding
+// — the friction report's exact `Rng.seed(1).bogus_method(0, 9)` repro. The static
+// constructor `Rng.seed(1)` (§26 §1.10) types to an Rng, so the chained
+// `.bogus_method` resolves against a KNOWN type and the unknown member is
+// Unknown_Method (caret under `bogus_method` at col 28, the §26 rand hint) — NOT the
+// Unsupported_Expr at col 16 the untypeable receiver gave before `Rng.seed` was
+// admitted as a static constructor. Pins that the diagnostic reaches a typed
+// call-expression receiver identically to a typed identifier receiver.
+@(test)
+test_diag_pin_typecheck_unknown_method_call_receiver :: proc(t: ^testing.T) {
+	source := "import engine.rand.{Rng}\n" + "fn roll() -> Int {\n" + "  let rolled = Rng.seed(1).bogus_method(0, 9)\n" + "  return 0\n" + "}\n"
+	got := diag_render_through_pipeline(t, source, .Typecheck_Failed)
+	want := "src/x.fun:3:28: Unknown_Method (roll): no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4) — available methods: chance, next, pick, range, split\n  3 |   let rolled = Rng.seed(1).bogus_method(0, 9)\n    |                            ^"
+	testing.expect_value(t, got, want)
+}
+
 // test_render_diagnostic_unknown_method_hint pins the hint suffix: an Unknown_Method
 // with the receiver type's real methods threaded as `hint` renders the static
 // fix-sentence then ` — <hint>` before the excerpt, so an agent sees the available

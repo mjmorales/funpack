@@ -253,7 +253,10 @@ STDLIB_SURFACE := []Module_Surface{
 		// SELF-FIRST (Rng receiver first), so the §02 §4 self-first method forms
 		// lower through UFCS into the same free call. FIVE are fixed-signature free
 		// functions (surface_signatures): seed(n) -> Rng builds the stream from a
-		// seed; next(self) -> (Fixed, Rng), range(self, lo, hi) -> (Int, Rng),
+		// seed — the ONE draw with no `self`, so it is also the §26 §1.10
+		// deterministic constructor `Rng.seed(n)` (surface_static_method, the
+		// Time.at/View.of class), the Type-name twin of the bare `seed(n)` call;
+		// next(self) -> (Fixed, Rng), range(self, lo, hi) -> (Int, Rng),
 		// chance(self, p) -> (Bool, Rng), and split(self) -> (Rng, Rng). pick is the
 		// odd one out only in HOW it is typed, not in arg order: it is the
 		// call-site-inferred draw combinator (surface_signatures returns found =
@@ -1409,6 +1412,21 @@ surface_enum_variant :: proc(type_name: string, variant: string) -> (type: Type,
 // resource itself) rather than a ground value.
 surface_static_method :: proc(type_name: string, member: string) -> (signature: Type, found: bool) {
 	switch type_name {
+	case "Rng":
+		switch member {
+		case "seed":
+			// §26 §1.10 the deterministic Rng constructor, listed alongside
+			// Time.at / View.of / Nav.of as a "every resource has a deterministic
+			// constructor" factory: Rng.seed(n) builds the stream from an Int seed,
+			// the Type-name twin of the bare `seed(n)` free call (both lower to the
+			// same rand_seed kernel). seed has NO `self` param, so it is a
+			// static constructor here, NOT a self-first UFCS draw (next/range/chance
+			// /split/pick are the self-first draws, reached on an Rng VALUE). Without
+			// this arm `Rng.seed(1)` fell to Unsupported_Expr, which also blinded a
+			// chained `Rng.seed(1).bogus()` to the Unknown_Method diagnostic (the
+			// untyped receiver short-circuits method_check before the member resolves).
+			return func_of({Ground_Type.Int}, engine_type_of(.Rng)), true
+		}
 	case "Bindings":
 		switch member {
 		case "empty":

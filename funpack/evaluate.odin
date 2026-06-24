@@ -2696,6 +2696,25 @@ eval_audio_adder :: proc(ctx: Eval_Ctx, env: ^Env, record: Record_Value, member:
 // through to its other type-name forms.
 eval_resource_builder :: proc(ctx: Eval_Ctx, env: ^Env, type_name, member: string, args: []Expr) -> (value: Value, is_builder: bool) {
 	switch type_name {
+	case "Rng":
+		// §26 §1.10 Rng.seed(n): the Type-name twin of the bare `seed(n)` free
+		// call, lowering to the SAME rand_seed kernel so the static and free
+		// constructor forms are bit-identical (the §10 dual-interpreter contract).
+		// The typecheck side admits this form (surface_static_method); without this
+		// eval arm the form would be admitted but unrunnable — the "funpack does not
+		// grammar-include what it cannot run" invariant. A non-Int argument is
+		// fail-closed (typecheck admits only Int, so it never reaches a passing program).
+		if member == "seed" && len(args) == 1 {
+			seed_value, seed_ok := eval_expr(ctx, env, args[0])
+			if !seed_ok {
+				return nil, false
+			}
+			n, is_int := seed_value.(i64)
+			if !is_int {
+				return nil, false
+			}
+			return rand_seed(n), true
+		}
 	case "TilemapHandle":
 		if member == "of" && len(args) == 2 {
 			return eval_tilemap_fixture(ctx, env, args)
