@@ -27,6 +27,22 @@ threaded, so **input is the only nondeterminism in user code**:
 
 A tick is a **fold over the flattened pipeline**, so a replay re-folds bit-identically.
 
+### Do not model a per-thing stage as a simultaneous `map`
+
+The fold is **instance-granular**: a per-thing behavior runs over its instances in stable `Id`
+order, and a later instance (higher `Id`) observes earlier same-step instances' blackboard writes
+through a direct `View` — the columns evolve *within* the step. So a per-thing stage is an
+`Id`-ordered fold over instances, **never** a simultaneous `map` over a pre-tick snapshot. Modeling
+it as the latter — handing every instance the same frozen snapshot — diverges from the live
+schedule, yet a hand-rolled simultaneous twin passes a green suite, giving false confidence on the
+replay-fidelity property this contract exists to protect. Drive every assertion through the real
+`Id`-ordered fold (per-instance `name.step(...)` with each return folded forward), not a
+snapshot-`map`.
+
+**`Id`-order bias is real:** because the lower `Id` acts first, a **reflection-symmetric matchup is
+not neutral** — it is decided by spawn `Id` order. Treat a symmetric setup as `Id`-order-biased, and
+fix the expected outcome to whichever instance has the lower `Id`.
+
 ### What an author must do / avoid
 
 | Do | Avoid |

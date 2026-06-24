@@ -190,6 +190,18 @@ each stage sees every earlier stage's writes and signals. Two ordering rules clo
 holes: *inter-stage* (the flattened pipeline is one total order) and *intra-stage* (listed behaviors
 run top-to-bottom; a per-thing behavior runs over its instances in stable `Id` order).
 
+**The fold is instance-granular — never model a per-thing stage as a simultaneous `map`.** A
+per-thing behavior is an `Id`-ordered **fold over its instances**, not a parallel `map` over a
+pre-tick snapshot. A later instance (higher `Id`) sees earlier same-step instances' blackboard
+writes through a direct `View` — the columns evolve *within* the step. So
+`map(agents, fn(a){ behave.step(a, View.of(agents)) })` is **not** a faithful twin of the live
+schedule: it hands every instance the same frozen snapshot. Such a hand-rolled twin passes a green
+test suite while silently diverging from what actually runs — false confidence on exactly the
+replay-fidelity property funpack most prizes. Drive every assertion about a per-thing stage through
+the real schedule (`name.step(...)` per instance in `Id` order, folding each return forward), never
+through a snapshot-`map`. **Corollary:** a reflection-symmetric matchup is decided by spawn `Id`
+order (the lower `Id` acts first) — symmetric setups are **not** neutral.
+
 Runtime wiring (`tick` rate, `bindings`, `logical` resolution, `net`) lives in the **entrypoint**
 (`funpack_configs/entrypoints.fcfg`), not the pipeline — see `funpack-project`. The `fn bindings()`
 is wired in by the entrypoint, not listed as a stage.
