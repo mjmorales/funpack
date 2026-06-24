@@ -7,7 +7,9 @@
 
 ## Structure
 
+- `cmd/funpack/` — the single Odin binary entry (the only SDL-linked build)
 - `docs/` — Documentation
+- `spec/` — funpack language specification (normative §-clauses)
 
 ## Validation
 
@@ -17,6 +19,7 @@ Run before committing:
 - **lint**: `task lint`
 - **test**: `task test`
 - **llm**: `skill claude-skills:comment-audit`
+- **llm**: `prompt ci/prompts/engine-api-doc-parity.md`
 
 ## Discovery Protocol
 
@@ -30,6 +33,7 @@ Only fall back to Glob/Grep when the index doesn't cover what you need.
 
 Role-bound team agents registered in `.claude/agents/`:
 
+- **devtools**: `team-devtools-tech_lead`, `team-devtools-engineer`, `team-devtools-implementer`
 - **funpack**: `team-funpack-tech_lead`, `team-funpack-engineer`, `team-funpack-implementer`
 - **runtime**: `team-runtime-tech_lead`, `team-runtime-engineer`, `team-runtime-implementer`
 
