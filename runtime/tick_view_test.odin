@@ -82,6 +82,62 @@ test_view_population_fixed_mid_tick_spawn_invisible :: proc(t: ^testing.T) {
 	testing.expect_value(t, population1.(i64), i64(2))
 }
 
+// SAME-THING intra-stage evolving-columns read consistency (the within-one-stage
+// instance-granular case the two tests above DELIBERATELY do not exercise — they
+// pin the inter-stage CROSS-thing path: a later STAGE's View[Writer] sees an
+// earlier STAGE's write). This pins the gap: within ONE per-thing behavior step in
+// ONE stage, instances run in stable Id order and a later instance's View[SameThing]
+// observes EARLIER same-step instances' blackboard writes — because
+// run_behavior_over_instances (tick.odin) folds each instance's return into the
+// WORKING table in place per iteration, and bind_param binds View[T] to that working
+// table (view_rows_as_list → interp_view_of_type reads table.rows[:]). Ratified by
+// ADR 2026-06-24-intra-stage-read-consistency-is-instance-granular (friction 7b39abe8):
+// the intra-stage same-thing read is INSTANCE-GRANULAR (evolving per instance), NOT a
+// simultaneous tick-start snapshot.
+//
+// THE DISCRIMINATOR. Four Counter instances seeded done=0, mark=0, run ONE behavior
+// `tally` in ONE stage: each reads View[Counter], counts the siblings already marked
+// done this step (fold over c.done), then writes { mark: that count, done: 1 }.
+//   - INSTANCE-GRANULAR (the ratified contract): instance 0 sees 0 done → mark 0;
+//     instance 1 sees instance 0's same-step done → mark 1; instance 2 sees 2 → mark
+//     2; instance 3 sees 3 → mark 3. Committed marks are the Id-ordered, strictly
+//     increasing sequence [0,1,2,3].
+//   - SIMULTANEOUS SNAPSHOT (the rejected model): every instance reads the tick-start
+//     done=0 for ALL siblings → every mark is 0 → committed marks are the CONSTANT
+//     [0,0,0,0]. The increasing-vs-constant split is what makes this test
+//     discriminate evolving columns from a tick-start snapshot.
+@(test)
+test_view_sees_earlier_same_stage_instance_write :: proc(t: ^testing.T) {
+	N :: 4
+	program := build_self_tally_program(N, context.temp_allocator)
+	world := new_world(program, context.temp_allocator)
+	base := run_startup(&program, initial_version(world, context.temp_allocator), context.temp_allocator)
+
+	// Setup spawned N Counters, all seeded mark 0 / done 0.
+	testing.expect_value(t, view_count(view_of_type(&base, "Counter")), N)
+	for i in 0 ..< N {
+		c, _ := view_at(view_of_type(&base, "Counter"), i)
+		m, _ := row_field(c, "mark")
+		d, _ := row_field(c, "done")
+		testing.expect_value(t, m.(i64), i64(0))
+		testing.expect_value(t, d.(i64), i64(0))
+	}
+
+	next := step_tick(&program, base, empty(), tick_time(context.temp_allocator), context.temp_allocator)
+
+	// The committed marks are the Id-ordered, strictly increasing [0,1,2,3]: instance
+	// i saw i earlier same-step siblings already marked done. A simultaneous snapshot
+	// would commit the constant [0,0,0,0] (every instance reads tick-start done=0).
+	prev := i64(-1)
+	for i in 0 ..< N {
+		c, _ := view_at(view_of_type(&next, "Counter"), i)
+		mark, _ := row_field(c, "mark")
+		testing.expect_value(t, mark.(i64), i64(i)) // mark == own Id ordinal
+		testing.expect(t, mark.(i64) > prev) // strictly increasing (evolving, NOT constant)
+		prev = mark.(i64)
+	}
+}
+
 // --- synthetic two-thing, three-stage program fixture ---------------------
 
 // tick_time is the Time resource a synthetic behavior's `time` param binds to —
@@ -256,6 +312,84 @@ inc_fn :: proc(name: string, allocator := context.allocator) -> Function_Decl {
 	body := make([]Node, 1, allocator)
 	body[0] = return_node(sum, allocator)
 	return Function_Decl{name = name, kind = .Fn, params = params, body = body}
+}
+
+// --- synthetic ONE-thing, ONE-stage self-tally fixture --------------------
+
+// build_self_tally_program builds the synthetic program the same-thing intra-stage
+// test folds: ONE thing (Counter, Int `mark`/`done`), ONE per-thing behavior `tally`
+// in ONE stage. `tally` reads View[Counter] and folds the siblings' `done` columns
+// (the count already marked done this step) into `mark`, then sets its own `done` to
+// 1 — so a later instance's View observes the earlier instances' SAME-STEP writes.
+// The fold combiner `count_done` is the §9 helper `f(acc, c) = acc + c.done` (the
+// existing fold_combiner_fn shape). Setup spawns `count` Counters, each seeded
+// mark 0 / done 0, so instance i (in Id order) reads exactly i siblings already done.
+@(private = "file")
+build_self_tally_program :: proc(count: int, allocator := context.allocator) -> Program {
+	things := make([]Thing_Decl, 1, allocator)
+	things[0] = Thing_Decl {
+		name = "Counter",
+		fields = int_fields(allocator, "mark", "done"),
+	}
+
+	functions := make([]Function_Decl, 1, allocator)
+	functions[0] = fold_combiner_fn("count_done", "c", "done", allocator) // acc + c.done
+
+	behaviors := make([]Behavior_Decl, 1, allocator)
+	behaviors[0] = tally_behavior(allocator)
+
+	pipeline := make([]Pipeline_Step, 1, allocator)
+	pipeline[0] = Pipeline_Step{ordinal = 0, stage = "s1", behavior = "tally"}
+
+	setup := make([]Spawn_Command, count, allocator)
+	for i in 0 ..< count {
+		setup[i] = Spawn_Command {
+			thing = "Counter",
+			fields = int_spawn_fields(allocator, {"mark", 0}, {"done", 0}),
+		}
+	}
+
+	return Program {
+		things = things,
+		functions = functions,
+		behaviors = behaviors,
+		pipeline = pipeline,
+		setup = setup,
+	}
+}
+
+// tally_behavior is the single stage `tally` on Counter: it reads View[Counter] and
+// returns `{ Counter mark: fold(counters, 0, count_done), done: 1 }`. The mark is the
+// count of siblings already marked done THIS step (an earlier same-stage instance's
+// write), and `done: 1` records this instance as marked so the next instance's fold
+// sees it — the evolving-column self-observation. The `self` param is unread here but
+// declared so the step is a per-thing behavior over Counter's instances.
+@(private = "file")
+tally_behavior :: proc(allocator := context.allocator) -> Behavior_Decl {
+	params := make([]Param_Decl, 2, allocator)
+	params[0] = Param_Decl{name = "self", type = "Counter"}
+	params[1] = Param_Decl{name = "counters", type = "View[Counter]"}
+	emits := make([]string, 1, allocator)
+	emits[0] = "Counter"
+
+	// return { Counter mark: fold(counters, 0, count_done), done: 1 }
+	mark := fold_node("counters", "count_done", allocator)
+	rec := record_node(
+		"Counter",
+		allocator,
+		Recfield_Spec{"mark", mark},
+		Recfield_Spec{"done", int_node(1, allocator)},
+	)
+	body := make([]Node, 1, allocator)
+	body[0] = return_node(rec, allocator)
+	return Behavior_Decl {
+		name = "tally",
+		on_thing = "Counter",
+		stage = "s1",
+		params = params,
+		emits = emits,
+		body = body,
+	}
 }
 
 // --- descriptor builders (Thing/Field/Spawn) ------------------------------
