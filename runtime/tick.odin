@@ -107,17 +107,6 @@ Tick_State :: struct {
 	// the bounded test/re-fold drivers ignore it (their wholesale temp-free covers
 	// the same maps).
 	superseded:      [dynamic]map[string]Field_Value,
-	// query_memo is the §08 §3 WITHIN-TICK query memoization: evaluated query
-	// results keyed by (query name, canonical argument bytes), living exactly
-	// one tick — the cache is part of the tick state, so the tick boundary
-	// clears it by construction. A query is pure over its arguments (its body
-	// sees only its params plus module consts), so a key hit returns the
-	// identical value the first caller paid for; the hit/miss counters are the
-	// observable the memoization tests pin (a pure cache has no value-level
-	// side effect to assert on).
-	query_memo:        map[string]Value,
-	query_memo_hits:   int,
-	query_memo_misses: int,
 	// allocator is the TRANSIENT eval/working allocator: the working tables' Row
 	// backing, the mailbox routing, the spawn/despawn/persist batches, and every
 	// intermediate value a behavior builds during the fold live here. It is the
@@ -1730,7 +1719,6 @@ new_tick_state :: proc(
 		terrain_commands = make([dynamic]Terrain_Command, allocator),
 		tile_refusals = make([dynamic]Tile_Command_Refusal, allocator),
 		superseded = make([dynamic]map[string]Field_Value, allocator),
-		query_memo = make(map[string]Value, allocator),
 		allocator = allocator,
 		commit_allocator = commit_allocator,
 	}

@@ -1,23 +1,18 @@
 // The §08 §3 query evaluation surface: a call to a declared `query` evaluates
-// its carried body as a PURE READ — the body sees only its bound parameters
-// plus module consts, exactly a §9 helper's scope — and the result is
-// WITHIN-TICK MEMOIZED on (query name, canonical argument bytes). A query is
-// pure over its arguments (it can never mutate, §08 CQRS read side), so a memo
-// hit returns the identical value the first caller paid for and every later
-// caller within the tick pays once (§08 §3). The cache lives on the Tick_State,
-// so the tick boundary clears it by construction; an evaluation with no tick in
-// flight (a read-layer probe off a committed version) evaluates directly.
-//
-// SPEC-TRUE READ SHAPE (schema v10): a query takes only value parameters and
-// reads the world INSIDE its body through the `all[T]` node (interp.odin) and
-// the spatial combinators below, so the memo key is exactly the spec's
-// (version, params) — the version implicitly (the cache lives on the tick,
-// whose working state IS the version in flight), the params by their
-// canonical content encoding.
+// its carried body as a PURE, EVOLVING READ — the body sees only its bound
+// parameters plus module consts (exactly a §9 helper's scope) and reads the
+// world through the `all[T]` node (interp.odin) and the spatial combinators
+// below, over the tick's WORKING table. So a query observes the same evolving
+// columns a direct `View[T]`/`all[T]` read does (§08 read-consistency): it is
+// re-evaluated on every call and NEVER cached, so a re-call after intervening
+// same-tick writes reflects them, and two callers at different tick points may
+// see different rows. The result stays a pure, deterministic function of its
+// arguments and the world at the call point (a query can never mutate, §08 CQRS
+// read side; off a fold it reads the committed version). One uniform read rule
+// across `View[T]`, `all[T]`, and `query` (ADR same-tick-query-reads-are-evolving).
 package funpack_runtime
 
 import "core:slice"
-import "core:strings"
 
 // eval_query_call applies a declared query at a `name(args)` call site: the
 // argument expressions evaluate in the CALLER's scope (left to right, the §9
@@ -48,13 +43,12 @@ eval_query_call :: proc(
 }
 
 // eval_query_values evaluates a query over already-evaluated argument values —
-// the memoized §08 §3 read. A tick in flight consults the tick's memo first
-// (key hit: the cached result, one body fold per distinct key per tick) and
-// records a computed result under its key; no tick, or an argument outside the
-// canonical key encoding (a lambda — nothing a compiled query signature can
-// receive), evaluates directly with no cache. The body folds in a fresh scope
-// binding only the declared params — a query closes over no caller locals, so
-// its result is a pure function of its arguments and the memo is sound.
+// the §08 §3 evolving read. The body folds in a fresh scope binding only the
+// declared params (a query closes over no caller locals), reading the world via
+// `all[T]` and the spatial combinators over the tick's WORKING table — so a
+// query observes the same evolving columns a direct `View[T]`/`all[T]` read
+// does and is re-evaluated on every call, never cached. Its result is a pure,
+// deterministic function of its arguments and the world at the call point.
 eval_query_values :: proc(
 	interp: ^Interp,
 	query: ^Query_Decl,
@@ -65,13 +59,6 @@ eval_query_values :: proc(
 ) {
 	if len(args) != len(query.params) {
 		return nil, false
-	}
-	key, keyed := query_memo_key(query.name, args, context.temp_allocator)
-	if keyed && interp.tick != nil {
-		if cached, hit := interp.tick.query_memo[key]; hit {
-			interp.tick.query_memo_hits += 1
-			return cached, true
-		}
 	}
 	scope := Env {
 		names = make(map[string]Value, interp.allocator),
@@ -88,40 +75,7 @@ eval_query_values :: proc(
 	interp.query_indexes = query.indexes
 	value, ok = eval_body(interp, query.body, &scope)
 	interp.query_indexes = enclosing
-	if ok && keyed && interp.tick != nil {
-		interp.tick.query_memo_misses += 1
-		interp.tick.query_memo[strings.clone(key, interp.allocator)] = value
-	}
 	return value, ok
-}
-
-// query_memo_key builds the canonical memo key: the query name, then each
-// argument's order-preserving canonical encoding length-prefixed — framing
-// every argument so two argument lists can never alias across a boundary
-// (["ab"] + ["c"] never keys like ["a"] + ["bc"]). The value encoding is the
-// index layer's append_value_key, so a key is exact down to the fixed-point
-// bits. ok is false for an argument outside the closed encoding (a transient
-// interpreter arm), which the caller treats as not-memoizable — evaluate
-// directly, never a wrong cache key.
-query_memo_key :: proc(
-	name: string,
-	args: []Value,
-	allocator := context.allocator,
-) -> (
-	key: string,
-	ok: bool,
-) {
-	buf := make([dynamic]u8, 0, 64, allocator)
-	append(&buf, ..transmute([]u8)name)
-	for arg in args {
-		arg_buf := make([dynamic]u8, 0, 32, context.temp_allocator)
-		if !append_value_key(&arg_buf, arg) {
-			return "", false
-		}
-		append_biased_i64(&buf, i64(len(arg_buf)))
-		append(&buf, ..arg_buf[:])
-	}
-	return string(buf[:]), true
 }
 
 // --- The §08 §3 spatial combinators ----------------------------------------

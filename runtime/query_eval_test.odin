@@ -1,12 +1,12 @@
 // The §08 §3 query-evaluation contract: a call to a declared query dispatches
 // through the named-call surface and folds its carried body as a pure read
-// (exact-equality pins per form), the result memoizes WITHIN one tick on the
-// canonical (name, argument-bytes) key — same args hit, different args miss,
-// framed per argument so lists can never alias across a boundary, cleared at
-// the tick boundary by construction — and the @spatial radius query answers
-// nearest-first with fixed-point bounds and the stable-Id tiebreak, failing
-// closed wherever the kernel defines no distance. Hand-built node forests and
-// committed versions per test — the interp_test / index_test molds.
+// (exact-equality pins per form), the body's `all[T]` reads the tick's EVOLVING
+// working table so a re-call within one tick reflects an intervening column
+// write (never cached — one uniform read rule with a direct View[T]/all[T]
+// read, ADR same-tick-query-reads-are-evolving), and the @spatial radius query
+// answers nearest-first with fixed-point bounds and the stable-Id tiebreak,
+// failing closed wherever the kernel defines no distance. Hand-built node
+// forests and working tables per test — the interp_test / index_test molds.
 package funpack_runtime
 
 import "core:testing"
@@ -28,7 +28,7 @@ query_node_children :: proc(nodes: ..Node) -> []Node {
 	return out
 }
 
-// doubled_query builds the §08 §3 memoizable value-parameter form by hand:
+// doubled_query builds a §08 §3 value-parameter query by hand:
 // `query doubled(r: Fixed) -> Fixed { return r * 2.0 }` as its carried forest.
 @(private = "file")
 doubled_query :: proc() -> Query_Decl {
@@ -43,8 +43,8 @@ doubled_query :: proc() -> Query_Decl {
 }
 
 // query_test_interp builds an Interp over a query-bearing program with a tick
-// in flight, so the within-tick memo is live. The version is the empty world —
-// these fixtures read no tables.
+// in flight, so a query body's `all[T]` reads the tick's working table. The
+// version is the empty world; a fixture that needs working rows sets tick.tables.
 @(private = "file")
 query_test_interp :: proc(program: ^Program, version: ^World_Version, tick: ^Tick_State) -> Interp {
 	return new_interp(program, version, tick, Input{}, time_resource(60, context.temp_allocator), context.temp_allocator)
@@ -77,134 +77,101 @@ test_query_call_dispatches_through_named_call :: proc(t: ^testing.T) {
 	testing.expect_value(t, got, to_fixed(6))
 }
 
-@(test)
-test_query_memoizes_within_tick :: proc(t: ^testing.T) {
-	// AC (§08 §3 within-tick memoization): the first call with a key computes
-	// (one miss), a same-args re-call within the tick returns the cached value
-	// (one hit, no second fold), and different args compute their own entry.
-	queries := make([]Query_Decl, 1, context.temp_allocator)
-	queries[0] = doubled_query()
-	program := Program {
-		queries = queries,
-	}
-	version := World_Version{tick = 0}
-	tick := new_tick_state(version, context.temp_allocator, context.temp_allocator)
-	interp := query_test_interp(&program, &version, &tick)
-	query := &program.queries[0]
+// sum_marks_program builds the §08 §3 evolving-read fixture by hand: a thing
+// `Counter { mark: Int }`, a §9 helper `add_mark(acc, c) = acc + c.mark`, and a
+// nullary query `sum_marks() -> Int { return fold(all[Counter], 0, add_mark) }`.
+// The query reads the world through `all[Counter]`, so it observes the tick's
+// working table — the evolving-column discriminator below mutates a row's mark
+// between two calls and the second call must see it.
+@(private = "file")
+sum_marks_program :: proc(allocator := context.temp_allocator) -> Program {
+	cfields := make([]Field_Decl, 1, allocator)
+	cfields[0] = Field_Decl{name = "mark", type = "Int"}
+	things := make([]Thing_Decl, 1, allocator)
+	things[0] = Thing_Decl{name = "Counter", fields = cfields}
 
-	args := make([]Value, 1, context.temp_allocator)
-	args[0] = to_fixed(3)
-	first, first_ok := eval_query_values(&interp, query, args)
-	testing.expect_value(t, first_ok, true)
-	testing.expect_value(t, tick.query_memo_misses, 1)
-	testing.expect_value(t, tick.query_memo_hits, 0)
+	// fn add_mark(acc: Int, c: Counter) -> Int { return acc + c.mark }
+	acc := Node{kind = .Name, fields = query_node_fields("acc")}
+	c := Node{kind = .Name, fields = query_node_fields("c")}
+	c_mark := Node{kind = .Field, fields = query_node_fields("mark"), children = query_node_children(c)}
+	sum := Node{kind = .Binary, fields = query_node_fields("add"), children = query_node_children(acc, c_mark)}
+	add_body := make([]Node, 1, allocator)
+	add_body[0] = Node{kind = .Return, children = query_node_children(sum)}
+	add_params := make([]Param_Decl, 2, allocator)
+	add_params[0] = Param_Decl{name = "acc", type = "Int"}
+	add_params[1] = Param_Decl{name = "c", type = "Counter"}
+	functions := make([]Function_Decl, 1, allocator)
+	functions[0] = Function_Decl{name = "add_mark", kind = .Fn, params = add_params, body = add_body}
 
-	second, second_ok := eval_query_values(&interp, query, args)
-	testing.expect_value(t, second_ok, true)
-	testing.expect_value(t, tick.query_memo_hits, 1)
-	testing.expect_value(t, values_equal(first, second), true)
-
-	other := make([]Value, 1, context.temp_allocator)
-	other[0] = to_fixed(5)
-	third, third_ok := eval_query_values(&interp, query, other)
-	testing.expect_value(t, third_ok, true)
-	testing.expect_value(t, tick.query_memo_misses, 2)
-	got, _ := third.(Fixed)
-	testing.expect_value(t, got, to_fixed(10))
-
-	// The cache lives ON the tick state, so a fresh tick starts empty — the
-	// boundary clears the memo by construction.
-	next_tick := new_tick_state(version, context.temp_allocator, context.temp_allocator)
-	testing.expect_value(t, len(next_tick.query_memo), 0)
-}
-
-@(test)
-test_query_memo_key_frames_each_argument :: proc(t: ^testing.T) {
-	// AC (sound keys): every argument's canonical bytes are length-prefixed, so
-	// two argument lists whose concatenated content matches still key apart —
-	// ("ab", "c") never hits ("a", "bc")'s entry.
-	echo_body := make([]Node, 1, context.temp_allocator)
-	echo_body[0] = Node {
-		kind     = .Return,
-		children = query_node_children(Node{kind = .Name, fields = query_node_fields("a")}),
-	}
-	params := make([]Param_Decl, 2, context.temp_allocator)
-	params[0] = Param_Decl{name = "a", type = "String"}
-	params[1] = Param_Decl{name = "b", type = "String"}
-	queries := make([]Query_Decl, 1, context.temp_allocator)
-	queries[0] = Query_Decl{name = "echo", params = params, return_type = "String", body = echo_body}
-	program := Program {
-		queries = queries,
-	}
-	version := World_Version{tick = 0}
-	tick := new_tick_state(version, context.temp_allocator, context.temp_allocator)
-	interp := query_test_interp(&program, &version, &tick)
-	query := &program.queries[0]
-
-	joined_left := make([]Value, 2, context.temp_allocator)
-	joined_left[0] = String_Value{text = "ab"}
-	joined_left[1] = String_Value{text = "c"}
-	_, left_ok := eval_query_values(&interp, query, joined_left)
-	testing.expect_value(t, left_ok, true)
-
-	joined_right := make([]Value, 2, context.temp_allocator)
-	joined_right[0] = String_Value{text = "a"}
-	joined_right[1] = String_Value{text = "bc"}
-	_, right_ok := eval_query_values(&interp, query, joined_right)
-	testing.expect_value(t, right_ok, true)
-
-	testing.expect_value(t, tick.query_memo_misses, 2)
-	testing.expect_value(t, tick.query_memo_hits, 0)
-}
-
-@(test)
-test_query_view_shaped_argument_memoizes_by_content :: proc(t: ^testing.T) {
-	// AC (the interim View-parameter read memoizes soundly): a query reading
-	// the world through a row-list argument keys on the FULL list content —
-	// the same rows hit, a changed column misses, so a memo answer can never
-	// survive a write it should observe.
-	count_body := make([]Node, 1, context.temp_allocator)
-	count_call := Node {
+	// query sum_marks() -> Int { return fold(all[Counter], 0, add_mark) }
+	all_counter := Node{kind = .All, fields = query_node_fields("Counter")}
+	zero := Node{kind = .Int, fields = query_node_fields("0")}
+	fold_call := Node {
 		kind     = .Call,
 		children = query_node_children(
-			Node{kind = .Name, fields = query_node_fields("len")},
-			Node{kind = .Name, fields = query_node_fields("items")},
+			Node{kind = .Name, fields = query_node_fields("fold")},
+			all_counter,
+			zero,
+			Node{kind = .Name, fields = query_node_fields("add_mark")},
 		),
 	}
-	count_body[0] = Node{kind = .Return, children = query_node_children(count_call)}
-	params := make([]Param_Decl, 1, context.temp_allocator)
-	params[0] = Param_Decl{name = "items", type = "View[Ball]"}
-	queries := make([]Query_Decl, 1, context.temp_allocator)
-	queries[0] = Query_Decl{name = "ball_count", params = params, return_type = "Int", body = count_body}
-	program := Program {
-		queries = queries,
+	q_body := make([]Node, 1, allocator)
+	q_body[0] = Node{kind = .Return, children = query_node_children(fold_call)}
+	queries := make([]Query_Decl, 1, allocator)
+	queries[0] = Query_Decl{name = "sum_marks", return_type = "Int", body = q_body}
+
+	return Program{things = things, functions = functions, queries = queries}
+}
+
+// counter_table builds a working Counter table with the given per-row mark
+// values, Id-ascending — the mid-tick working rows the query's `all[Counter]`
+// reads (the interp_view_of_type working-table path).
+@(private = "file")
+counter_table :: proc(marks: []i64, allocator := context.temp_allocator) -> Tick_Table {
+	rows := make([dynamic]Row, 0, len(marks), allocator)
+	for mark, i in marks {
+		row := Row{id = Id{raw = Thing_Id(i)}, fields = make(map[string]Field_Value, allocator)}
+		row.fields["mark"] = Field_Value(i64(mark))
+		append(&rows, row)
 	}
+	return Tick_Table{thing = "Counter", rows = rows}
+}
+
+@(test)
+test_query_all_read_is_evolving_not_memoized :: proc(t: ^testing.T) {
+	// AC (§08 §3 evolving read, the within-tick contract): a query whose body
+	// folds `all[Counter]` over the mark column, eval'd twice within ONE tick
+	// with a mid-tick column write between, returns the EVOLVED value the second
+	// time — a query reads the working table at the call point exactly as a
+	// direct View[T]/all[T] read does, never a cached first-call value. A
+	// within-tick memo would instead return the stale first sum — the behavior
+	// this test rules out.
+	program := sum_marks_program(context.temp_allocator)
 	version := World_Version{tick = 0}
 	tick := new_tick_state(version, context.temp_allocator, context.temp_allocator)
+	tables := make([]Tick_Table, 1, context.temp_allocator)
+	tables[0] = counter_table({1, 2}, context.temp_allocator) // marks 1, 2 → sum 3
+	tick.tables = tables
+
 	interp := query_test_interp(&program, &version, &tick)
 	query := &program.queries[0]
+	no_args := make([]Value, 0, context.temp_allocator)
 
-	row := make(map[string]Value, context.temp_allocator)
-	row["pos"] = Vec2{to_fixed(1), to_fixed(2)}
-	elements := make([]Value, 1, context.temp_allocator)
-	elements[0] = Record_Value{type_name = "Ball", fields = row}
-	args := make([]Value, 1, context.temp_allocator)
-	args[0] = List_Value{elements = elements}
-
-	first, first_ok := eval_query_values(&interp, query, args)
+	first, first_ok := eval_query_values(&interp, query, no_args)
 	testing.expect_value(t, first_ok, true)
-	count, _ := first.(i64)
-	testing.expect_value(t, count, i64(1))
-	_, again_ok := eval_query_values(&interp, query, args)
-	testing.expect_value(t, again_ok, true)
-	testing.expect_value(t, tick.query_memo_hits, 1)
+	first_sum, first_is_int := first.(i64)
+	testing.expect_value(t, first_is_int, true)
+	testing.expect_value(t, first_sum, i64(3))
 
-	// A same-tick caller observing a DIFFERENT column value misses — the key
-	// is the content, not the parameter name.
-	row["pos"] = Vec2{to_fixed(9), to_fixed(2)}
-	_, moved_ok := eval_query_values(&interp, query, args)
-	testing.expect_value(t, moved_ok, true)
-	testing.expect_value(t, tick.query_memo_misses, 2)
+	// A mid-tick column write evolves the working table in place (the same
+	// fold_behavior_result does per instance) — row 0's mark 1 → 10.
+	tick.tables[0].rows[0].fields["mark"] = Field_Value(i64(10))
+
+	second, second_ok := eval_query_values(&interp, query, no_args)
+	testing.expect_value(t, second_ok, true)
+	second_sum, second_is_int := second.(i64)
+	testing.expect_value(t, second_is_int, true)
+	testing.expect_value(t, second_sum, i64(12)) // 10 + 2 — the evolved read; a within-tick memo would return the stale 3
 }
 
 @(test)
