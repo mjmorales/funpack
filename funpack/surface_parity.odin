@@ -202,11 +202,18 @@ EXCLUDED_SURFACE := []string {
 	// doc-side model, so receiver-method parity is out of scope until a method-aware
 	// doc projection exists.
 	"receiver/static/associated method signatures and their receiver binding",
-	// Combinator typing (engine.list.fold/map/filter, prelude.or_else): the dump
-	// OMITS these from `signatures` entirely (surface_signatures returns found =
-	// false) because their type is inferred at the call site, not fixed. There is no
-	// signature to compare, by the compiler's own design.
-	"combinator signatures (call-site-inferred; the dump omits them by design)",
+	// Combinator typing (engine.list.fold/map/filter, engine.rand.pick,
+	// prelude.or_else): the dump SURFACES these in `signatures` with their canonical
+	// polymorphic signature AND a call_site_inferred = true marker (so a combinator
+	// does not LOOK like an unsigned/broken function), but their typing is
+	// combinator_call_check's call-site inference (surface_signatures returns found =
+	// false), not a fixed table. The
+	// SURFACED string is the .fun-canonical spelling, NOT a checker-Type render, so
+	// it is still NOT signature-compared against the .fun: comparing it would mean
+	// normalizing two independently-authored spellings (the same type-printer-parity
+	// problem the fixed-function and method signatures carry). Presence is implicit;
+	// the rendered signature is out of scope for the gate.
+	"combinator signatures (call-site-inferred; surfaced with a marker but not signature-compared)",
 	// Field TYPES of struct-payload variants (Color::Rgb.r: Fixed): the dump renders
 	// the checker Type, the .fun renders the surface type token; field NAMES
 	// normalize cleanly and ARE compared, field types are not (same type-printer-

@@ -42,7 +42,7 @@ test_surface_dump_carries_schema_version :: proc(t: ^testing.T) {
 	// order), so the JSON opens with it — the version --json envelope convention.
 	testing.expect(
 		t,
-		strings.has_prefix(json, `{"schema_version":1`),
+		strings.has_prefix(json, `{"schema_version":2`),
 		"the dump JSON opens with its schema_version",
 	)
 }
@@ -68,6 +68,9 @@ test_surface_dump_makes_the_restore_visible :: proc(t: ^testing.T) {
 		testing.expect_value(t, len(sig.overloads), 2)
 		testing.expect(t, slice_has(sig.overloads, "fn(Fixed, Fixed) -> Ordering"))
 		testing.expect(t, slice_has(sig.overloads, "fn(Int, Int) -> Ordering"))
+		// compare is a FIXED-signature free function — not call-site-inferred — so it
+		// partitions to the false side of the marker the combinators carry.
+		testing.expect(t, !sig.call_site_inferred, "compare is a fixed-signature function")
 	}
 	testing.expect(t, compare_found, "compare appears in the dumped signatures")
 
@@ -126,6 +129,133 @@ test_surface_dump_makes_the_restore_visible :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expect(t, rgb_found, "Color::Rgb appears in the dumped struct variants")
+}
+
+// test_surface_dump_surfaces_call_site_inferred_combinators is the combinator-
+// surfacing junction: a call-site-inferred combinator (engine.rand.pick and the
+// engine.list [T]-combinators) appears in the dumped signatures WITH its canonical
+// polymorphic signature AND a call_site_inferred = true marker — so an agent reading
+// the dump sees pick's shape (fn(Rng, [T]) -> (Option[T], Rng)) next to its five
+// fixed-signature rand siblings and CANNOT mistake it for a broken/unsigned function.
+// Asserts over the structured dump, so a field rename is caught by the struct. This
+// is the living-spec junction for the combinator surfacing — it pins both the marker
+// partition and the canonical spelling.
+@(test)
+test_surface_dump_surfaces_call_site_inferred_combinators :: proc(t: ^testing.T) {
+	dump := build_surface_dump()
+
+	// (1) engine.rand.pick — the combinator most easily misread as broken next to its
+	// fixed siblings — is surfaced with its canonical self-first signature and the marker.
+	pick_found := false
+	for sig in dump.signatures {
+		if sig.name != "pick" {
+			continue
+		}
+		pick_found = true
+		testing.expect(t, sig.call_site_inferred, "pick is marked call_site_inferred")
+		testing.expect_value(t, len(sig.overloads), 1)
+		testing.expect_value(t, sig.overloads[0], "fn(Rng, [T]) -> (Option[T], Rng)")
+	}
+	testing.expect(t, pick_found, "engine.rand.pick appears in the dumped signatures")
+
+	// (2) at least one list combinator (map AND fold) is surfaced with its canonical
+	// signature and the marker — the same partition pick rides.
+	Want :: struct {
+		name:      string,
+		signature: string,
+	}
+	wants := []Want{{"map", "fn([T], fn(T) -> U) -> [U]"}, {"fold", "fn([T], A, fn(A, T) -> A) -> A"}}
+	for want in wants {
+		found := false
+		for sig in dump.signatures {
+			if sig.name != want.name {
+				continue
+			}
+			found = true
+			testing.expectf(t, sig.call_site_inferred, "%s is marked call_site_inferred", want.name)
+			testing.expect_value(t, len(sig.overloads), 1)
+			testing.expect_value(t, sig.overloads[0], want.signature)
+		}
+		testing.expectf(t, found, "engine.list.%s appears in the dumped signatures", want.name)
+	}
+}
+
+// test_surface_dump_combinator_probe_completeness is the drift gate on the combinator
+// probe table — the twin of test_surface_dump_probe_tables_type_live for the
+// call-site-inferred free combinators. It asserts the bidirectional closure: every
+// SURFACE_DUMP_COMBINATOR_SIGS name (a) is a real `.Func` decl somewhere in
+// STDLIB_SURFACE and (b) is one surface_signatures REJECTS (found = false), so the
+// table holds only genuine call-site-inferred combinators, never a phantom or a
+// fixed-signature function mislabeled; and conversely that EVERY name
+// combinator_call_check types is covered here, so a new combinator added to that
+// switch cannot silently fall out of the dump.
+@(test)
+test_surface_dump_combinator_probe_completeness :: proc(t: ^testing.T) {
+	// (a) every probe name is a live `.Func` decl that surface_signatures rejects.
+	for combinator in SURFACE_DUMP_COMBINATOR_SIGS {
+		is_func_decl := false
+		for module in STDLIB_SURFACE {
+			for decl in module.decls {
+				if decl.name == combinator.name && decl.kind == .Func {
+					is_func_decl = true
+				}
+			}
+		}
+		testing.expectf(t, is_func_decl, "combinator probe %s is a live .Func decl", combinator.name)
+		_, has_fixed := surface_signatures(combinator.name)
+		testing.expectf(
+			t,
+			!has_fixed,
+			"combinator probe %s carries no fixed surface_signatures row",
+			combinator.name,
+		)
+	}
+
+	// (b) every name combinator_call_check types is covered by the probe table — so
+	// the dump cannot silently drop a combinator the checker recognizes.
+	for name in COMBINATOR_CHECK_NAMES {
+		covered := false
+		for combinator in SURFACE_DUMP_COMBINATOR_SIGS {
+			if combinator.name == name {
+				covered = true
+			}
+		}
+		testing.expectf(
+			t,
+			covered,
+			"combinator_call_check name %s is surfaced by the dump's combinator probe table",
+			name,
+		)
+	}
+}
+
+// COMBINATOR_CHECK_NAMES mirrors combinator_call_check's switch arms — the closed set
+// of call-site-inferred free combinators the checker types. Pinned here so the
+// completeness gate above asserts the dump's combinator probe table covers every one;
+// a combinator added to combinator_call_check without a matching probe row fails the
+// gate (and is a visible gap here, the same drift discipline the switch-mirroring
+// probe tables follow).
+@(rodata)
+COMBINATOR_CHECK_NAMES := []string {
+	"fold",
+	"first",
+	"last",
+	"neighbors",
+	"in_bounds",
+	"within",
+	"nearest_first",
+	"or_else",
+	"map",
+	"filter",
+	"concat",
+	"contains",
+	"prepend",
+	"init",
+	"is_empty",
+	"len",
+	"get",
+	"pick",
+	"grid_cells",
 }
 
 // test_surface_dump_lists_the_variant_readmit is the mechanical variant-re-admit

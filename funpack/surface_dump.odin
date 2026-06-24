@@ -54,7 +54,7 @@ import "core:strings"
 // different concern from the compiler's stdlib-surface projection. The dump
 // carries this version inline so a consumer reads it from the artifact itself,
 // with no contract slot.
-SURFACE_DUMP_SCHEMA_VERSION :: 1
+SURFACE_DUMP_SCHEMA_VERSION :: 2
 
 // Surface_Dump is the whole dump as one marshal-able struct: field-declaration
 // order is the emitted JSON key order (the Decl_Record marshal convention), and
@@ -96,13 +96,34 @@ Dump_Reexport :: struct {
 	owner:  string,
 }
 
-// Dump_Signature is one typed free-function overload set: the function name and
-// each overload's rendered signature string (surface_type_string). A combinator
-// row (fold/map/or_else — surface_signatures returns found = false) carries no
-// signature line and so never appears here.
+// Dump_Signature is one typed free-function overload set: the function name, each
+// overload's rendered signature string, and whether its typing is CALL-SITE
+// INFERRED. Two populations share this record, distinguished by call_site_inferred:
+//
+//   - call_site_inferred = false — a FIXED-signature free function
+//     (surface_signatures returns its overload set): seed/range/compare/dot/…. The
+//     overloads ARE the table the checker enforces, rendered through
+//     surface_type_string.
+//
+//   - call_site_inferred = true — a CALL-SITE-INFERRED combinator
+//     (combinator_call_check owns its typing; surface_signatures returns found =
+//     false): pick / fold / map / within / grid_cells / or_else / …. Its parameter
+//     and result types depend on the call site (the element T read off the list,
+//     the @spatial field, the accumulator), so there is no fixed table to render.
+//     The single canonical polymorphic signature is supplied by
+//     SURFACE_DUMP_COMBINATOR_SIGS (the .fun-declared / spec-canonical spelling) so
+//     a reader sees the shape — pick is fn(Rng, [T]) -> (Option[T], Rng), not a
+//     blank — and the marker tells them it is inferred, not a fixed overload. The
+//     marker exists so a call-site-inferred combinator does not LOOK like a
+//     broken/unsigned function next to its fixed-signature siblings (e.g. pick next
+//     to its five fixed engine.rand draws).
+//
+// The two populations sort separately in the section (fixed first, then combinator)
+// so the byte order is deterministic and the marker partitions them cleanly.
 Dump_Signature :: struct {
-	name:      string,
-	overloads: []string,
+	name:               string,
+	overloads:          []string,
+	call_site_inferred: bool,
 }
 
 // Dump_Enum_Variants is one engine enum's full closed variant set: the enum's
@@ -405,6 +426,68 @@ SURFACE_DUMP_ASSOCIATED_PROBES := []Surface_Dump_Variant_Key{
 	{"Quat", "axis_angle"},
 }
 
+// Surface_Dump_Combinator_Sig pairs a call-site-inferred combinator NAME with its
+// single canonical polymorphic SIGNATURE STRING (the .fun-declared / spec-canonical
+// spelling, in the dump's own `fn(...) -> R` notation). The combinator's typing is
+// combinator_call_check's call-site inference (surface_signatures returns found =
+// false), so there is no checker Type to render — the canonical string is the
+// authoritative human-readable shape. The pair is the closed probe set: the parity
+// test (test_surface_dump_combinator_probe_completeness) asserts every NAME is a
+// real .Func decl in STDLIB_SURFACE that surface_signatures rejects AND that EVERY
+// such call-site-inferred Func decl is covered here, so neither a phantom name nor a
+// silent omission can creep in.
+Surface_Dump_Combinator_Sig :: struct {
+	name:      string,
+	signature: string,
+}
+
+// SURFACE_DUMP_COMBINATOR_SIGS is the closed table of the call-site-inferred free
+// FUNCTION combinators — the names combinator_call_check types by call-site
+// inference, mirrored here WITHOUT modifying that switch (the same probe-table
+// drift discipline the enum/struct/method probes follow). Each signature is the
+// canonical polymorphic spelling its stdlib/engine/*.fun declaration (or the spec
+// module map, for the surface-only spatial combinators) declares — self-first,
+// `[T]` for a list, `Option[T]`/`(A, B)` for option/tuple results. Walked by index,
+// so the byte order is deterministic. Receiver methods (View.class/when,
+// TilemapHandle.tile_at, AtlasHandle.cell) are NOT here — they are not free-function
+// combinators; they carry a fixed receiver-keyed signature the engine_methods
+// section already surfaces. `find` and `solve` are NOT here either: `find` has no
+// combinator_call_check arm and no fixed signature (the doc-flagged ambiguous
+// free function), and `solve` is a §11 §3 physics BATTERY name validated in
+// contracts, never a callable — surfacing a signature for either would invent one
+// the checker does not enforce.
+@(rodata)
+SURFACE_DUMP_COMBINATOR_SIGS := []Surface_Dump_Combinator_Sig {
+	// engine.rand: the call-site-inferred draw — the element T is read off the list
+	// at the call site (pick_check), Rng receiver first like its five fixed siblings.
+	{"pick", "fn(Rng, [T]) -> (Option[T], Rng)"},
+	// engine.list: the [T]-combinator surface (the element T / accumulator A / mapped
+	// U are call-site-inferred). Order mirrors stdlib/engine/list.fun's declarations.
+	{"len", "fn([T]) -> Int"},
+	{"is_empty", "fn([T]) -> Bool"},
+	{"get", "fn([T], Int) -> Option[T]"},
+	{"first", "fn([T]) -> Option[T]"},
+	{"last", "fn([T]) -> Option[T]"},
+	{"prepend", "fn([T], T) -> [T]"},
+	{"init", "fn([T]) -> [T]"},
+	{"concat", "fn([T], [T]) -> [T]"},
+	{"contains", "fn([T], T) -> Bool"},
+	{"map", "fn([T], fn(T) -> U) -> [U]"},
+	{"filter", "fn([T], fn(T) -> Bool) -> [T]"},
+	{"fold", "fn([T], A, fn(A, T) -> A) -> A"},
+	// §08 §3 spatial combinators: the origin is the @spatial field's vector
+	// (Vec2 canonical for the 2D filter; the 3D form takes a Vec3), the radius Fixed.
+	{"within", "fn([T], Vec2, Fixed) -> [T]"},
+	{"nearest_first", "fn([T], Vec2) -> [T]"},
+	// engine.grid: the integer-grid helpers — structural over a {x, y} Cell record.
+	{"grid_cells", "fn(Cell) -> [Cell]"},
+	{"neighbors", "fn(Cell) -> [Cell]"},
+	{"in_bounds", "fn(Cell, Cell) -> Bool"},
+	// engine.prelude: the Option fallback (or_else_check) — the only non-list/rand
+	// call-site-inferred free combinator (its T is the Option's element).
+	{"or_else", "fn(Option[T], T) -> T"},
+}
+
 // build_surface_dump assembles the whole dump from the live surface tables. Every
 // section is a forward index walk — STDLIB_SURFACE / STDLIB_REEXPORTS walked
 // directly, the switch-keyed surfaces probed in their probe table's declared
@@ -448,14 +531,17 @@ dump_reexports :: proc() -> []Dump_Reexport {
 	return rows
 }
 
-// dump_signatures probes surface_signatures with every `.Func` decl name across
-// STDLIB_SURFACE — those rows ARE the keys, so the probe set is the surface
-// itself, never a hand-kept list. A combinator row (found = false) is omitted (it
-// has no fixed signature — its typing is the call site's). The walk is over the
-// index-ordered partitions and their index-ordered decls, so the order is
-// deterministic.
+// dump_signatures projects BOTH free-function populations into one section, in two
+// deterministic blocks. First the FIXED-signature functions: probe surface_signatures
+// with every `.Func` decl name across STDLIB_SURFACE (those rows ARE the keys, so the
+// probe set is the surface itself), emitting each with call_site_inferred = false.
+// Then the CALL-SITE-INFERRED combinators, appended from SURFACE_DUMP_COMBINATOR_SIGS
+// (the names combinator_call_check types) with call_site_inferred = true and their
+// canonical polymorphic signature — so a combinator like pick is SURFACED with its
+// shape and its marker rather than silently dropped. Both blocks walk
+// index-ordered slices, so the byte order is deterministic.
 dump_signatures :: proc() -> []Dump_Signature {
-	sigs := make([dynamic]Dump_Signature, 0, 32, context.temp_allocator)
+	sigs := make([dynamic]Dump_Signature, 0, 48, context.temp_allocator)
 	for module in STDLIB_SURFACE {
 		for decl in module.decls {
 			if decl.kind != .Func {
@@ -469,8 +555,26 @@ dump_signatures :: proc() -> []Dump_Signature {
 			for overload, j in overloads {
 				rendered[j] = surface_type_string(overload)
 			}
-			append(&sigs, Dump_Signature{name = decl.name, overloads = rendered})
+			append(
+				&sigs,
+				Dump_Signature{name = decl.name, overloads = rendered, call_site_inferred = false},
+			)
 		}
+	}
+	for combinator in SURFACE_DUMP_COMBINATOR_SIGS {
+		// One canonical polymorphic signature per combinator — a single-element
+		// overload slice (temp-allocated, NOT a stack slice literal, so it outlives
+		// this loop iteration) so the JSON shape matches the fixed-signature rows.
+		overload := make([]string, 1, context.temp_allocator)
+		overload[0] = combinator.signature
+		append(
+			&sigs,
+			Dump_Signature {
+				name = combinator.name,
+				overloads = overload,
+				call_site_inferred = true,
+			},
+		)
 	}
 	return sigs[:]
 }
