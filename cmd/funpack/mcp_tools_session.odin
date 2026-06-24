@@ -81,10 +81,14 @@ sess_owns_command :: proc(spec: funpack.Tool_Spec) -> bool {
 // returning {session_id, negotiated_version} as the clean result. The negotiated version
 // is the §28 protocol version the opened session speaks (INTROSPECT_PROTOCOL_VERSION) —
 // the handle the model uses to confirm the wire contract every later session-scoped tool
-// folds through. NO replay log (the contract carries only `artifact`, so has_replay is
-// false — a fresh seedless window). An absent/non-string artifact is Invalid_Input; any
-// non-Ok open is the runtime's discriminated failure mapped to its category, with NO
-// orphaned arena (the registry open destroys the per-attempt arena before returning).
+// folds through. The OPTIONAL `replay_log` arg mirrors `funpack attach`'s second
+// positional: when present, the recording is pre-folded so the session opens ON the
+// recorded ticks (time_*/inspect_* navigate real gameplay) instead of a fresh empty
+// timeline (friction-9771c0f4); absent, has_replay is false and the session opens fresh.
+// An absent/non-string artifact is Invalid_Input; a non-string replay_log is ignored
+// (treated as absent — an optional arg, not a contract violation); any non-Ok open is the
+// runtime's discriminated failure mapped to its category, with NO orphaned arena (the
+// registry open destroys the per-attempt arena before returning).
 sess_start :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	artifact, has_artifact := sess_string_arg(dispatch.arguments, "artifact")
 	if !has_artifact {
@@ -95,13 +99,18 @@ sess_start :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 		)
 	}
 
+	// The optional replay-log selector: present + a string pre-folds the recording; absent
+	// opens a fresh window. has_replay is the runtime's "fold this recording" flag — false
+	// when the arg is omitted, so the default path is byte-identical to the no-replay open.
+	replay_log, has_replay := sess_string_arg(dispatch.arguments, "replay_log")
+
 	// Open ON a dedicated per-session arena (the F13 lifetime fix lives in the registry):
 	// the session outlives this tool call. The registry struct + entry use the per-call
 	// `allocator`; the session's own state (program, snapshots, COW chain) lives on the
 	// arena the registry mints, reaped whole at session_end.
-	id, open_result := mcp_session_registry_open(dispatch.registry, artifact, "", false, "", allocator)
+	id, open_result := mcp_session_registry_open(dispatch.registry, artifact, replay_log, has_replay, "", allocator)
 	if open_result != .Ok {
-		return sess_tool_error(dispatch.id, sess_open_error(open_result, artifact), allocator)
+		return sess_tool_error(dispatch.id, sess_open_error(open_result, artifact, replay_log), allocator)
 	}
 
 	body := sess_render_start_result(id, funpack_runtime.INTROSPECT_PROTOCOL_VERSION, allocator)
@@ -180,13 +189,15 @@ sess_render_start_result :: proc(id: string, negotiated_version: int, allocator 
 }
 
 // sess_open_error maps a runtime Open_Session_Result failure to the MCP error vocabulary
-// (mcp_error.odin). A read/IO/arena-cap failure is Resolver (the artifact or replay log
-// could not be resolved off disk, or the per-session arena could not be minted — the
-// at-cap path); a malformed/identity-mismatched artifact is Invalid_Input (the bytes the
-// caller pointed at are out of contract). The offending path rides in the detail so the
-// model self-corrects. The switch is exhaustive (no default) so a new Open_Session_Result
-// without a mapping is a compile error — the closed-enum discipline.
-sess_open_error :: proc(result: funpack_runtime.Open_Session_Result, artifact: string) -> Mcp_Error {
+// (mcp_error.odin). A read/IO/arena-cap failure is Resolver (the file could not be
+// resolved off disk, or the per-session arena could not be minted — the at-cap path); a
+// malformed/identity-mismatched input is Invalid_Input (the bytes the caller pointed at are
+// out of contract). The detail names the OFFENDING file: the artifact for an artifact
+// failure, the replay log for a replay failure (so a `replay_log` typo or a mismatched
+// recording self-corrects to the right path, not the artifact). The switch is exhaustive
+// (no default) so a new Open_Session_Result without a mapping is a compile error — the
+// closed-enum discipline.
+sess_open_error :: proc(result: funpack_runtime.Open_Session_Result, artifact: string, replay_log: string) -> Mcp_Error {
 	switch result {
 	case .Ok:
 		// Unreachable: sess_start only calls this on a non-Ok result. Mapped defensively.
@@ -196,11 +207,11 @@ sess_open_error :: proc(result: funpack_runtime.Open_Session_Result, artifact: s
 	case .Artifact_Malformed:
 		return Mcp_Error{category = .Invalid_Input, message = "the artifact bytes did not parse as a funpack build", detail = artifact}
 	case .Replay_Read_Failed:
-		return Mcp_Error{category = .Resolver, message = "the replay log could not be read", detail = artifact}
+		return Mcp_Error{category = .Resolver, message = "the replay log could not be read", detail = replay_log}
 	case .Replay_Malformed:
-		return Mcp_Error{category = .Invalid_Input, message = "the replay log did not parse", detail = artifact}
+		return Mcp_Error{category = .Invalid_Input, message = "the replay log did not parse", detail = replay_log}
 	case .Replay_Identity_Mismatch:
-		return Mcp_Error{category = .Invalid_Input, message = "the replay log was recorded against a different build or seed", detail = artifact}
+		return Mcp_Error{category = .Invalid_Input, message = "the replay log was recorded against a different build or seed", detail = replay_log}
 	}
 	return Mcp_Error{category = .Internal, message = "unmapped open failure", detail = artifact}
 }

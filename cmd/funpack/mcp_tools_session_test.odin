@@ -6,10 +6,14 @@
 // {session_id, negotiated_version} and registering the session, (3) session_list
 // enumerating the live entries, (4) session_end tearing a session down (arena_destroy) and
 // the unknown-id / double-end Session refusal, (5) the open-failure → IsError mapping with
-// no orphaned arena, and (6) the END-TO-END reachability proof: a tools/call routed through
+// no orphaned arena, (6) the END-TO-END reachability proof: a tools/call routed through
 // mcp_handle_tools_call (the production chain) reaches this arm and is NO LONGER the
 // not-implemented / unknown-tool stub — the regression the upstream contract fix
-// (register-mcp-server-native) was the prerequisite for.
+// (register-mcp-server-native) was the prerequisite for, and (7) the optional `replay_log`
+// arg (friction-9771c0f4): a session_start with a recorded replay log pre-folds it so the
+// session navigates the recorded ticks (proven by the recorded-tick count, distinct from a
+// fresh open's ATTACH_FRESH_TICKS window), and an identity-mismatched log is refused
+// Invalid_Input naming the replay path.
 //
 // DEFINE-FREE FLOOR: these run in the default `odin test .` build (no FUNPACK_LIVE, no
 // SDL). Everything the arm drives — open_session_for_artifact, the virtual.Arena
@@ -363,4 +367,190 @@ sess_tools_call_request :: proc(t: ^testing.T, name: string, arguments_literal: 
 	params["name"] = json.String(name)
 	params["arguments"] = sess_args(t, arguments_literal)
 	return Mcp_Request{id = Mcp_Id{kind = .Integer, integer = 11}, method = "tools/call", params = params}
+}
+
+// --- friction-9771c0f4: session_start with a recorded replay log ----------------------
+
+// SESS_REPLAY_TICKS is the tick count the synthesized replay log records — chosen to
+// DIFFER from the fresh-open window (funpack_runtime.ATTACH_FRESH_TICKS, 64) so a
+// session_start that pre-folds the replay reports ticks_recorded == this value, NOT the
+// fresh-open default. The mismatch IS the proof: the recorded ticks were folded, so the
+// time_*/inspect_* surface navigates the recording rather than a synthetic empty window.
+SESS_REPLAY_TICKS :: 10
+
+// sess_stage_replay synthesizes an identity-MATCHED replay log against SESS_FIXTURE and
+// writes it to a uniquely-named temp file. It mirrors how the runtime records a real
+// replay: derive the build identity from the loaded fixture (identity_from_program over the
+// SAME bytes session_start loads), open a writer, record SESS_REPLAY_TICKS empty-input ticks
+// (the fixture is input-free — empty ticks fold its deterministic `pos` advance), finish,
+// and write the bytes. ok=false (the caller skips) on any stage failure. The caller defers
+// os.remove on the returned path.
+@(private = "file")
+sess_stage_replay :: proc(t: ^testing.T, name: string) -> (path: string, ok: bool) {
+	program: funpack_runtime.Program
+	loaded, load_err := funpack_runtime.load_program(SESS_FIXTURE, context.temp_allocator)
+	if load_err != .None {
+		testing.expectf(t, false, "the session fixture must load to derive its replay identity: %v", load_err)
+		return "", false
+	}
+	program = loaded
+	identity := funpack_runtime.identity_from_program(program, SESS_FIXTURE)
+
+	writer := funpack_runtime.open_replay_writer(identity, context.temp_allocator)
+	defer funpack_runtime.delete_replay_writer(&writer)
+	for _ in 0 ..< SESS_REPLAY_TICKS {
+		funpack_runtime.record_tick(&writer, funpack_runtime.empty(), context.temp_allocator)
+	}
+	log_bytes := funpack_runtime.finish_replay(&writer, context.temp_allocator)
+
+	base := os.get_env("TMPDIR", context.temp_allocator)
+	if base == "" {
+		base = "/tmp"
+	}
+	path, _ = filepath.join({base, name}, context.temp_allocator)
+	if !funpack_runtime.write_replay_file(path, log_bytes) {
+		return "", false
+	}
+	return path, true
+}
+
+// sess_status_ticks_recorded opens a session over (artifact, replay_log) through the
+// PRODUCTION registry open, folds a §28 status request through it, and returns the
+// ticks_recorded the status reports — the observable that proves whether the replay was
+// pre-folded. It drives the same open + fold the session-scoped tools navigate, so a
+// recorded-tick count read here is what time_*/inspect_* would address.
+@(private = "file")
+sess_status_ticks_recorded :: proc(
+	t: ^testing.T,
+	artifact: string,
+	replay_log: string,
+	has_replay: bool,
+) -> (
+	ticks_recorded: i64,
+	opened: bool,
+) {
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+	id, open_result := mcp_session_registry_open(&registry, artifact, replay_log, has_replay, "", context.temp_allocator)
+	if open_result != funpack_runtime.Open_Session_Result.Ok {
+		return 0, false
+	}
+	response, found := mcp_session_registry_request(&registry, id, `{"id":1,"cmd":"status"}`)
+	if !found {
+		return 0, false
+	}
+	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	if parse_err != .None {
+		testing.expectf(t, false, "the status response must parse: %v", parse_err)
+		return 0, false
+	}
+	envelope, is_object := parsed.(json.Object)
+	if !is_object {
+		return 0, false
+	}
+	result, has_result := envelope["result"].(json.Object)
+	if !has_result {
+		return 0, false
+	}
+	ticks, has_ticks := result["ticks_recorded"].(json.Integer)
+	if !has_ticks {
+		return 0, false
+	}
+	return i64(ticks), true
+}
+
+// test_sess_start_replay_log_prefolds_recorded_ticks is the friction-9771c0f4 junction:
+// session_start with a `replay_log` arg pre-folds the recorded run so the session opens ON
+// the recorded ticks (time_*/inspect_* navigate real gameplay), not a fresh empty window.
+// The proof is the recorded-tick COUNT: a fresh open folds ATTACH_FRESH_TICKS (64) empty
+// ticks, but a replay-backed open folds exactly the recorded count (SESS_REPLAY_TICKS, 10).
+// The test opens both ways and asserts the replay-backed session reports the recorded count
+// while the fresh open reports the larger default — so the replay arg DEMONSTRABLY changed
+// what the session navigates, the whole point of the bridge.
+@(test)
+test_sess_start_replay_log_prefolds_recorded_ticks :: proc(t: ^testing.T) {
+	artifact, staged := sess_stage_fixture(t, "funpack-mcp-sess-replay.fpk")
+	if !staged {
+		return
+	}
+	defer os.remove(artifact)
+	replay_path, replayed := sess_stage_replay(t, "funpack-mcp-sess-replay.replay")
+	if !replayed {
+		return
+	}
+	defer os.remove(replay_path)
+
+	// A FRESH open (no replay) folds the ATTACH_FRESH_TICKS window — the baseline.
+	fresh_ticks, fresh_opened := sess_status_ticks_recorded(t, artifact, "", false)
+	testing.expect(t, fresh_opened, "the fresh session opens")
+	testing.expect_value(t, fresh_ticks, i64(funpack_runtime.ATTACH_FRESH_TICKS))
+
+	// The replay-backed open folds exactly the recorded ticks — the friction fix.
+	replay_ticks, replay_opened := sess_status_ticks_recorded(t, artifact, replay_path, true)
+	testing.expect(t, replay_opened, "the replay-backed session opens")
+	testing.expect_value(t, replay_ticks, i64(SESS_REPLAY_TICKS))
+	testing.expect(t, replay_ticks != fresh_ticks, "the replay arg pre-folds the recorded ticks, demonstrably distinct from a fresh empty window")
+
+	// The same open through the tools/call dispatch arm is a clean result (the wire path).
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+	args := sess_args(
+		t,
+		strings.concatenate({`{"artifact":"`, artifact, `","replay_log":"`, replay_path, `"}`}, context.temp_allocator),
+	)
+	result, handled := sess_dispatch_tool(&registry, "session_start", args, context.temp_allocator)
+	testing.expect(t, handled, "session_start is claimed")
+	testing.expect(t, strings.contains(result, `"isError":false`), "a replay-backed open is a clean result")
+	testing.expect(t, strings.contains(result, `\"session_id\"`), "the result carries the minted session id")
+	testing.expect_value(t, len(registry.entries), 1)
+}
+
+// test_sess_start_replay_identity_mismatch_is_error pins the §09 §5 identity gate at the MCP
+// surface: a replay log recorded against a DIFFERENT build (a perturbed content_hash) is
+// refused as an Invalid_Input IsError whose detail names the REPLAY path (not the artifact),
+// so a `replay_log` typo or a stale recording self-corrects to the right file. The gate
+// refuses BEFORE folding mismatched inputs, and the surface never opens a session — the
+// fail-closed contract the runtime owns, surfaced truthfully through the dispatch arm.
+@(test)
+test_sess_start_replay_identity_mismatch_is_error :: proc(t: ^testing.T) {
+	artifact, staged := sess_stage_fixture(t, "funpack-mcp-sess-mismatch.fpk")
+	if !staged {
+		return
+	}
+	defer os.remove(artifact)
+
+	// A replay log whose header identity does NOT match the fixture build: derive the true
+	// identity, then perturb the content_hash so the every-field compare fails (the same
+	// mismatch the runtime's open_session_for_artifact identity test constructs).
+	loaded, load_err := funpack_runtime.load_program(SESS_FIXTURE, context.temp_allocator)
+	testing.expect(t, load_err == .None, "the fixture must load to derive its identity")
+	program := loaded
+	identity := funpack_runtime.identity_from_program(program, SESS_FIXTURE)
+	identity.content_hash ~= 0xDEAD_BEEF // a build fingerprint that cannot match the artifact
+
+	writer := funpack_runtime.open_replay_writer(identity, context.temp_allocator)
+	defer funpack_runtime.delete_replay_writer(&writer)
+	funpack_runtime.record_tick(&writer, funpack_runtime.empty(), context.temp_allocator)
+	log_bytes := funpack_runtime.finish_replay(&writer, context.temp_allocator)
+
+	base := os.get_env("TMPDIR", context.temp_allocator)
+	if base == "" {
+		base = "/tmp"
+	}
+	replay_path, _ := filepath.join({base, "funpack-mcp-sess-mismatch.replay"}, context.temp_allocator)
+	testing.expect(t, funpack_runtime.write_replay_file(replay_path, log_bytes), "the mismatched replay log writes")
+	defer os.remove(replay_path)
+
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+	args := sess_args(
+		t,
+		strings.concatenate({`{"artifact":"`, artifact, `","replay_log":"`, replay_path, `"}`}, context.temp_allocator),
+	)
+	result, handled := sess_dispatch_tool(&registry, "session_start", args, context.temp_allocator)
+	testing.expect(t, handled, "session_start is claimed")
+	testing.expect(t, strings.contains(result, `"isError":true`), "an identity-mismatched replay log is a tool error")
+	testing.expect(t, strings.contains(result, `\"category\":\"invalid_input\"`), "the mismatch maps to invalid_input")
+	testing.expect(t, strings.contains(result, "funpack-mcp-sess-mismatch.replay"), "the detail names the REPLAY path, not the artifact")
+	testing.expect_value(t, len(registry.entries), 0)
 }

@@ -649,6 +649,7 @@ TOOL_SPECS := []Tool_Spec{
 		session_scoped = false,
 		args           = []Tool_Arg{
 			{name = "artifact", json_type = "string", required = true, doc = "path to the built funpack game artifact for the attach session to load"},
+			{name = "replay_log", json_type = "string", required = false, doc = "optional path to a recorded replay log (as produced by funpack live/run) to pre-fold before the session opens, mirroring funpack attach's second positional — so time_*/inspect_* navigate the recorded ticks instead of a fresh empty timeline"},
 		},
 	},
 	{
