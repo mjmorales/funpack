@@ -2,6 +2,13 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.9.1] - 2026-06-24
+
+### Other
+- docs(funpack-skills): document capture_tick in the MCP tools reference (45ceefe)
+- docs(funpack-skills): a query is a live read, not a per-tick snapshot (131abb2)
+- docs(funpack-skills): warn against simultaneous-map per-thing modeling (friction 7b39abe8) (87c0cd2)
+
 ## [0.9.0] - 2026-06-24
 
 ## [0.8.1] - 2026-06-21
