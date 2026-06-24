@@ -72,13 +72,21 @@ test_live_attach_dispatch :: proc(t: ^testing.T) {
 // test_run_select_entrypoint pins the entrypoint-name guard: no name is honored
 // (the implicit single-entrypoint default), a named pick is refused with a clear
 // "not yet supported" detail (never silently ignored). Pure — a function of the
-// name alone.
+// name alone. The help text must AGREE with this guard: it marks entrypoint
+// selection as not-yet-implemented and routes the replay-out case to `funpack
+// live`, so the documented [name] never advertises behavior the guard refuses —
+// the help and the refusal cannot drift apart.
 @(test)
 test_run_select_entrypoint :: proc(t: ^testing.T) {
 	testing.expect_value(t, run_select_entrypoint(""), "")
 	refusal := run_select_entrypoint("boss-rush")
 	testing.expect(t, strings.contains(refusal, "not yet supported"))
 	testing.expect(t, strings.contains(refusal, "boss-rush"))
+	testing.expect(t, strings.contains(refusal, "funpack live"))
+
+	cmd := build_run_command(context.temp_allocator)
+	testing.expect(t, strings.contains(cmd.long, "not yet implemented"))
+	testing.expect(t, strings.contains(cmd.long, "funpack live <artifact> <replay-out>"))
 }
 
 // test_run_build_refusal pins the build-half refusal arm: run_run_verb over a root

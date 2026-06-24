@@ -26,7 +26,7 @@ build_run_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 		cli.Cli_Command {
 			use = "run",
 			short = "Build the project and play it in one step",
-			long = "Build the §14 project tree (like `funpack build`), then launch the built artifact in the live SDL runtime — the one-command build-and-play path. The optional [name] selects an entrypoint (§14 §6); any further positionals are forwarded to the runtime (e.g. a replay-out path). To play an ALREADY-built artifact without rebuilding, use `funpack live`.",
+			long = "Build the §14 project tree (like `funpack build`), then launch the built artifact in the live SDL runtime — the one-command build-and-play path. Entrypoint selection by [name] (§14 §6) is not yet implemented: this build runs its single declared entrypoint, so omit the name. Because the first positional is parsed as the (unsupported) [name], record a replay by path with `funpack live <artifact> <replay-out>` instead. To play an ALREADY-built artifact without rebuilding, use `funpack live`.",
 			flags = slice.clone(
 				[]cli.Cli_Flag {
 					{
@@ -121,7 +121,7 @@ run_select_entrypoint :: proc(name: string) -> (refusal: string) {
 		return ""
 	}
 	return fmt.aprintf(
-		"entrypoint selection (run %s) is not yet supported — this build runs its single declared entrypoint; omit the name",
+		"entrypoint selection (run %s) is not yet supported — this build runs its single declared entrypoint; omit the name (to record a replay by path, use `funpack live <artifact> <replay-out>`)",
 		name,
 		allocator = context.temp_allocator,
 	)
