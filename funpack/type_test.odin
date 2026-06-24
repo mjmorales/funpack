@@ -413,14 +413,86 @@ test_real_list_method_still_types :: proc(t: ^testing.T) {
 @(test)
 test_surface_methods_for_receiver_lists_rng_draws :: proc(t: ^testing.T) {
 	// The Unknown_Method hint enumerates a receiver's real methods from the
-	// closed surface tables. An Rng's self-first signature methods are the
-	// available list: chance/next/range/split (pick is a call-site-inferred
-	// combinator, tracked separately). The hint is deterministic + sorted.
+	// closed surface tables. An Rng's available list is its fixed-signature
+	// self-first draws (chance/next/range/split) PLUS the call-site-inferred
+	// pick combinator (path 4), sorted into one deterministic list.
 	hint := surface_methods_for_receiver(engine_type_of(.Rng))
-	testing.expect_value(t, hint, "available methods: chance, next, range, split")
+	testing.expect_value(t, hint, "available methods: chance, next, pick, range, split")
+
+	// A list receiver reaches the call-site-inferred list combinators (path 4): the
+	// source_element family (fold/first/last/map/filter/is_empty/len/get) plus the
+	// List-only concat/contains/init. They carry no fixed signature, so the path-3
+	// free-fn scan cannot reach them; path 4 lists the full reachable set.
+	list_hint := surface_methods_for_receiver(list_of(Ground_Type.Int))
+	testing.expect_value(
+		t,
+		list_hint,
+		"available methods: concat, contains, filter, first, fold, get, init, is_empty, last, len, map",
+	)
+
+	// An Option receiver reaches the self-first or_else combinator (path 4).
+	option_hint := surface_methods_for_receiver(option_of(Ground_Type.Int))
+	testing.expect_value(t, option_hint, "available methods: or_else")
 
 	// A Quat's ground methods come through surface_method (the rotate/mul/slerp
 	// set), sorted into the same hint shape.
 	quat_hint := surface_methods_for_receiver(Ground_Type.Quat)
 	testing.expect_value(t, quat_hint, "available methods: mul, rotate, slerp")
+}
+
+@(test)
+test_surface_combinator_probes_drift_gate :: proc(t: ^testing.T) {
+	// Drift gate on SURFACE_COMBINATOR_PROBES (surface.odin), the path-4
+	// receiver→combinator association. Mirrors test_surface_dump_probe_tables_type_live's
+	// philosophy: every probe must (a) name a LIVE stdlib free fn — a renamed/removed
+	// combinator trips is_stdlib_free_fn — and (b) accept a receiver of its declared
+	// kind through the SAME predicate the checker guards args[0] with, so the table can
+	// never list a name the checker no longer reaches. The exact per-receiver name sets
+	// are pinned end-to-end in test_surface_methods_for_receiver_lists_rng_draws; the
+	// self-first method forms themselves type live in test_real_list_method_still_types
+	// (a list's len) and the rng.pick / or_else fixtures.
+	for probe in SURFACE_COMBINATOR_PROBES {
+		testing.expectf(
+			t,
+			is_stdlib_free_fn(probe.name),
+			"combinator probe %q is a live stdlib free fn",
+			probe.name,
+		)
+		repr := surface_combinator_probe_receiver(probe.receiver)
+		testing.expectf(
+			t,
+			surface_receiver_matches_combinator(repr, probe.receiver),
+			"combinator probe %q accepts a %v receiver at its self position",
+			probe.name,
+			probe.receiver,
+		)
+		// Discrimination: a bare scalar is the self position of NO combinator — the
+		// matcher never false-lists a combinator on a non-source, non-engine receiver.
+		testing.expectf(
+			t,
+			!surface_receiver_matches_combinator(Ground_Type.Int, probe.receiver),
+			"combinator probe %q does not list on a bare Int receiver",
+			probe.name,
+		)
+	}
+	// List_Only is strictly narrower than List: a View[T] is a read source (lists
+	// fold/map/…) but NOT a ^List_Type (concat/contains/init reject it) — the View/List
+	// split the checker enforces in source_element vs the concat/contains type assertion.
+	view := engine_type_of(.View, user_type_of("T", .Data))
+	testing.expect(t, surface_receiver_matches_combinator(view, .List))
+	testing.expect(t, !surface_receiver_matches_combinator(view, .List_Only))
+}
+
+// surface_combinator_probe_receiver builds a representative receiver of a probe's
+// declared kind — the self position the drift gate proves the combinator accepts.
+surface_combinator_probe_receiver :: proc(kind: Surface_Combinator_Receiver) -> Type {
+	switch kind {
+	case .List, .List_Only:
+		return list_of(Ground_Type.Int)
+	case .Rng:
+		return engine_type_of(.Rng)
+	case .Option:
+		return option_of(Ground_Type.Int)
+	}
+	return nil
 }

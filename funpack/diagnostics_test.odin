@@ -308,15 +308,15 @@ test_diag_pin_typecheck_mismatch :: proc(t: ^testing.T) {
 // MEMBER NAME, not the receiver-anchored construct span: a list
 // receiver typed clean but `bogus` is no method of it nor a UFCS-reachable free fn,
 // so the caret sits under `bogus` (col 17), the offending member — NOT under the
-// `[` the receiver-anchored expr_span would give. The hint is empty here (a list's
-// methods are call-site-inferred combinators surface_methods_for_receiver cannot
-// signature-enumerate), so the bare fix-sentence renders with no "available methods"
-// suffix — the hint-bearing rendering is pinned in test_render_diagnostic_unknown_method_hint.
+// `[` the receiver-anchored expr_span would give. The hint lists the list's
+// call-site-inferred combinators (surface.odin path 4), so the fix-sentence carries the
+// available-methods suffix — the hint-rendering mechanics are pinned in
+// test_render_diagnostic_unknown_method_hint.
 @(test)
 test_diag_pin_typecheck_unknown_method :: proc(t: ^testing.T) {
 	source := "fn f() -> Int {\n  return [1, 2].bogus(3)\n}\n"
 	got := diag_render_through_pipeline(t, source, .Typecheck_Failed)
-	want := "src/x.fun:2:17: Unknown_Method (f): no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4)\n  2 |   return [1, 2].bogus(3)\n    |                 ^"
+	want := "src/x.fun:2:17: Unknown_Method (f): no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4) — available methods: concat, contains, filter, first, fold, get, init, is_empty, last, len, map\n  2 |   return [1, 2].bogus(3)\n    |                 ^"
 	testing.expect_value(t, got, want)
 }
 
@@ -334,12 +334,12 @@ test_render_diagnostic_unknown_method_hint :: proc(t: ^testing.T) {
 		col         = 20,
 		declaration = "setup",
 		message     = "no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4)",
-		hint        = "available methods: chance, next, range, split",
+		hint        = "available methods: chance, next, pick, range, split",
 		path        = "src/x.fun",
 	}
 	source := "@gtag(\"startup\")\nfn setup(rng: Rng) -> Int {\n  return 0\n}\n\n  let rolled = rng.bogus_method(0, 9)\n"
 	got := render_diagnostic(d, source, context.temp_allocator)
-	want := "src/x.fun:6:20: Unknown_Method (setup): no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4) — available methods: chance, next, range, split\n  6 |   let rolled = rng.bogus_method(0, 9)\n    |                    ^"
+	want := "src/x.fun:6:20: Unknown_Method (setup): no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4) — available methods: chance, next, pick, range, split\n  6 |   let rolled = rng.bogus_method(0, 9)\n    |                    ^"
 	testing.expect_value(t, got, want)
 }
 

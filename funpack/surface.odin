@@ -847,12 +847,15 @@ surface_method :: proc(receiver: Type, member: string) -> (signature: Type, foun
 // closed surface tables the checker resolves against, so it can never list a phantom
 // nor drop a real method: (1) the fixed-signature engine value methods, probed over
 // SURFACE_DUMP_METHOD_PROBES for the receiver's engine kind (the surface_dump mirror,
-// drift-gated by test_surface_dump); (2) a ground type's methods (surface_method);
-// and (3) the self-first free functions (Rng's next/range/chance/split, list's
-// len/contains/…), the §02 §4 UFCS forms whose first parameter IS the receiver — every
-// `.Func` decl in STDLIB_SURFACE whose surface_signatures overload leads with a param
-// CONCRETELY equal to the receiver (a nil/placeholder first param is skipped, it would
-// false-match every type). Names are deduplicated and sorted, so the hint is a
+// drift-gated by test_surface_dump); (2) a ground type's methods (surface_method); (3)
+// the fixed-signature self-first free functions (Rng's next/range/chance/split), the
+// §02 §4 UFCS forms whose first parameter IS the receiver — every `.Func` decl in
+// STDLIB_SURFACE whose surface_signatures overload leads with a param CONCRETELY equal
+// to the receiver (a nil/placeholder first param is skipped, it would false-match every
+// type); and (4) the call-site-inferred combinators (Rng's pick, a list's
+// len/map/filter/…, an Option's or_else), which carry no fixed signature so path (3)
+// misses them — surfaced through SURFACE_COMBINATOR_PROBES, the drift-gated
+// receiver→combinator association. Names are deduplicated and sorted, so the hint is a
 // deterministic function of the receiver type and the rodata alone (no map iteration,
 // no clock). Returns "" when the receiver exposes no methods at all (a bare value), so
 // the caller renders the bare "no such method" sentence with no empty list.
@@ -893,6 +896,15 @@ surface_methods_for_receiver :: proc(receiver: Type, allocator := context.temp_a
 			}
 		}
 	}
+	// (4) Call-site-inferred combinators: the names combinator_call_check types by
+	// call-site inference carry no fixed surface_signatures row, so path (3) misses
+	// them. A combinator whose self position accepts this receiver is reachable as
+	// `recv.NAME(…)` through §02 §4 UFCS — `rng.pick(items)`, `xs.len()`.
+	for probe in SURFACE_COMBINATOR_PROBES {
+		if surface_receiver_matches_combinator(receiver, probe.receiver) {
+			surface_append_unique(&names, probe.name)
+		}
+	}
 	// (2) Ground-type methods (the Quat set): probed by name, since surface_method
 	// is keyed by (receiver, member) with no enumerable key list.
 	for member in SURFACE_GROUND_METHOD_NAMES {
@@ -906,6 +918,85 @@ surface_methods_for_receiver :: proc(receiver: Type, allocator := context.temp_a
 	slice.sort(names[:])
 	joined := strings.join(names[:], ", ", allocator)
 	return fmt.aprintf("available methods: %s", joined, allocator = allocator)
+}
+
+// Surface_Combinator_Receiver classifies the receiver shape a call-site-inferred
+// combinator is self-first on — the §02 §4 UFCS self position its check guards args[0]
+// against. Only PURE TYPE PREDICATES (no Check_Ctx, no call-context) earn a kind here:
+// a combinator listed for a kind is reachable as `recv.NAME(…)` for ANY receiver of
+// that kind from the receiver Type alone, so the hint can never name a context-dependent
+// phantom. The cell combinators (neighbors/in_bounds/grid_cells need is_cell_shaped's
+// record-schema ctx) and the spatial combinators (within/nearest_first need the
+// enclosing query's @spatial declaration) have no pure-type kind and are excluded.
+Surface_Combinator_Receiver :: enum {
+	List,      // a List[T] or a View[T] — source_element's domain (fold/first/last/map/filter/is_empty/len/get)
+	List_Only, // a List[T] only (^List_Type); a View is rejected (concat/contains/init)
+	Rng,       // the engine.rand Rng handle (pick)
+	Option,    // an Option[T] (or_else)
+}
+
+// Surface_Combinator_Probe pairs a call-site-inferred combinator NAME (a
+// combinator_call_check switch arm) with the receiver kind it is self-first on.
+Surface_Combinator_Probe :: struct {
+	name:     string,
+	receiver: Surface_Combinator_Receiver,
+}
+
+// SURFACE_COMBINATOR_PROBES is the drift-gated receiver→combinator association: the
+// self-first call-site-inferred combinators surface_methods_for_receiver lists in path
+// (4). They carry no fixed surface_signatures row (their parameters are call-site
+// inferred), so the path-(3) free-fn scan cannot reach them — this table supplies the
+// receiver each is callable on. Gated like SURFACE_DUMP_METHOD_PROBES: every probe is
+// proven a live free fn and self-first-reachable on its kind by test_surface_combinator_*.
+//
+// EXCLUDED from combinator_call_check, each with a reason — reachable but not a clean
+// receiver-method, so listing them would add noise or a context-dependent phantom:
+//   prepend                  — its checker reads args[0] as the element PAYLOAD, not a
+//                              container (the stdlib `self: [T]` decl notwithstanding;
+//                              every call site is element-first `prepend(head, body)`)
+//   within / nearest_first   — receiver shape is necessary but not sufficient; they
+//                              also require the enclosing query's @spatial declaration
+//   neighbors / in_bounds /  — receiver must be cell-shaped, a record-schema judgment
+//   grid_cells                 needing the Check_Ctx this enumerator does not carry
+@(rodata)
+SURFACE_COMBINATOR_PROBES := []Surface_Combinator_Probe{
+	{"fold", .List},
+	{"first", .List},
+	{"last", .List},
+	{"map", .List},
+	{"filter", .List},
+	{"is_empty", .List},
+	{"len", .List},
+	{"get", .List},
+	{"concat", .List_Only},
+	{"contains", .List_Only},
+	{"init", .List_Only},
+	{"or_else", .Option},
+	{"pick", .Rng},
+}
+
+// surface_receiver_matches_combinator reports whether `receiver` is the self position
+// of a combinator declared for `kind`. It delegates to the SAME type predicates the
+// combinator checks guard args[0] with — source_element for the list family (so a
+// View[T] lists the read combinators exactly as a List[T] does), the ^List_Type
+// assertion concat/contains/init use, is_engine(.Rng) pick_check uses, and the
+// ^Option_Type assertion or_else_check uses — so the hint's reachability judgment can
+// never diverge from what the checker enforces.
+surface_receiver_matches_combinator :: proc(receiver: Type, kind: Surface_Combinator_Receiver) -> bool {
+	switch kind {
+	case .List:
+		_, ok := source_element(receiver)
+		return ok
+	case .List_Only:
+		_, ok := receiver.(^List_Type)
+		return ok
+	case .Rng:
+		return is_engine(receiver, .Rng)
+	case .Option:
+		_, ok := receiver.(^Option_Type)
+		return ok
+	}
+	return false
 }
 
 // SURFACE_GROUND_METHOD_NAMES mirrors surface_method's ground-type method names (the
