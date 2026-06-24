@@ -223,11 +223,18 @@ time_status :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) 
 	} else {
 		strings.write_string(&b, "null")
 	}
+	// `seeded` is whether THIS session folds a recorded RNG seed; `uses_rng` is whether
+	// the PROGRAM consumes randomness at all (any behavior/function binds an `Rng`
+	// param). The pair is the friction-116a1681 distinction the empty-state diagnostic
+	// reads: seeded=false + uses_rng=true is an unmet precondition (an RNG draw could not
+	// populate without a recorded seed), but seeded=false + uses_rng=false is a genuine
+	// state read of a no-RNG game — its empty result is not a missing-seed defect.
 	fmt.sbprintf(
 		&b,
-		",\"ticks_recorded\":%d,\"seeded\":%s,\"cadence\":%d,\"ring\":{{\"slots\":%d,\"occupied\":%d,",
+		",\"ticks_recorded\":%d,\"seeded\":%s,\"uses_rng\":%s,\"cadence\":%d,\"ring\":{{\"slots\":%d,\"occupied\":%d,",
 		len(s.snapshots),
 		s.seed.has_seed ? "true" : "false",
+		program_uses_rng(s.program) ? "true" : "false",
 		TIME_SNAPSHOT_CADENCE,
 		TIME_RING_SLOTS,
 		s.cursor.ring_len,

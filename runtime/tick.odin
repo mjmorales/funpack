@@ -179,11 +179,41 @@ Pending_Spawn :: struct {
 // So the committed base carries a complete blackboard per row. The committed
 // tables are sorted ascending by Id (the spawn counters mint densely, so they
 // already are; the sort makes the invariant explicit).
+//
+// THE SEEDLESS-BODY FALLBACK (the friction-116a1681 root fix). The §13 [setup]
+// batch is the COMPILE-TIME constant fold of setup()'s body (resolve_setup_spawns):
+// it folds only a literal `return [Spawn(…), …]` list. A seedless setup whose body
+// builds its population PROGRAMMATICALLY — a fold/concat/comprehension over a grid
+// (colony-sim's 144-agent `concat(red, blue)`, where each column is folded) — is NOT
+// a literal list, so the emitter folds it to `[setup 0]` and carries the BODY in
+// [functions] instead. The SEEDED path (run_startup_seeded) already evaluates such a
+// body to thread its Rng, but a seedless game never reaches it (open_debug_session /
+// the live loop take the bare run_startup batch when has_seed=false), so the
+// programmatic startup population silently never spawned — the empty-timeline bug.
+// run_startup closes that gap symmetrically: when the pre-evaluated batch is empty AND
+// a startup body that returns a bare `[Spawn]` list exists, it EVALUATES the body
+// (seedlessly, no Rng) and applies the resulting spawn batch through the SAME
+// queue_commands → apply_spawn_batch seam the seeded path uses, so a seedless and a
+// seeded programmatic setup populate by one code path. A foldable literal setup
+// (yard/pong) keeps `[setup ≥1]` and takes the batch directly — the body fallback is
+// not reached.
 run_startup :: proc(
 	program: ^Program,
 	base: World_Version,
 	allocator := context.allocator,
 ) -> World_Version {
+	// A seedless startup body the compiler could not constant-fold into the [setup]
+	// batch: evaluate it through the shared body seam, identical to the seeded path
+	// minus the Rng thread. Detected by an EMPTY batch + a [Spawn]-returning startup
+	// body — a foldable literal setup carries a non-empty batch and is handled below.
+	if len(program.setup) == 0 {
+		if setup_fn := program_startup(program); setup_fn != nil && len(setup_fn.body) > 0 && is_command_list_type(setup_fn.return_type) {
+			if populated, ran := run_startup_body(program, base, setup_fn, allocator); ran {
+				return populated
+			}
+		}
+	}
+
 	tables := new_tick_tables(base, allocator)
 
 	// Pass 1: the engine mints each singleton's single row before setup runs.
@@ -202,6 +232,59 @@ run_startup :: proc(
 	}
 
 	return commit_tick_tables(base, tables, allocator)
+}
+
+// run_startup_body evaluates a SEEDLESS setup body that returns a bare `[Spawn]`
+// list — the seedless twin of run_startup_seeded, sharing the same eval+commit
+// machinery minus the Rng thread. It is reached only when the compile-time [setup]
+// fold left `[setup 0]` (a programmatic, non-literal population the emitter cannot
+// constant-fold) AND the startup body returns `[Spawn]` (not the seeded `(Rng,
+// [Spawn])` tuple). The body binds no params (a seedless setup takes no Rng), so the
+// env is empty; its `[Spawn]` return queues through dispatch_emit_component's command-
+// list arm exactly as the seeded tuple's [Spawn] half does, and apply_spawn_batch
+// mints the population on top of the engine singletons. ran=false on a body that does
+// not return or returns a non-list — the caller falls back to the (empty) batch path
+// rather than committing a half-evaluated world.
+//
+// DETERMINISM: the body is a pure §29 fold over the schema/constants (no Rng, no
+// input, no committed state beyond defaults), so it evaluates bit-identically every
+// run and the populated version is a pure function of the program — the same
+// invariant the seeded path rests on, minus the seed input.
+run_startup_body :: proc(
+	program: ^Program,
+	base: World_Version,
+	setup_fn: ^Function_Decl,
+	allocator := context.allocator,
+) -> (
+	populated: World_Version,
+	ran: bool,
+) {
+	// Build the working state through new_tick_state (not a bare literal) so every
+	// field — commit_allocator, the superseded list — is initialized; a nil
+	// commit_allocator would corrupt the cloned spawn columns (the same guard the
+	// seeded path documents). Startup is one bounded fold, so eval and commit share
+	// one allocator.
+	state := new_tick_state(base, allocator, allocator)
+	base_version := base
+	interp := new_interp(program, &base_version, &state, empty(), Record_Value{}, allocator)
+
+	env := Env{names = make(map[string]Value, allocator)}
+	result, result_ok := eval_behavior_body(&interp, setup_fn.body, &env)
+	if !result_ok {
+		return {}, false
+	}
+	if _, is_list := result.(List_Value); !is_list {
+		return {}, false
+	}
+	// Engine singletons mint BEFORE setup's [Spawn] batch (§06 §2, §13) — the engine
+	// pass is the sole authoritative singleton minter and a singleton exists before
+	// tick 0, so it runs first; the body's queued spawns mint the ordinary population
+	// on top. The [Spawn] return queues through the same command-list arm the seeded
+	// tuple's [Spawn] half takes (no behavior context: a startup body has no self row).
+	dispatch_emit_component(&interp, &state, nil, Row{}, setup_fn.return_type, result)
+	spawn_engine_singletons(program, state.tables, allocator)
+	apply_spawn_batch(&state)
+	return commit_tick_tables(base, state.tables, allocator), true
 }
 
 // spawn_engine_singletons mints ONE row per `Thing_Decl.singleton == true` thing
@@ -384,6 +467,36 @@ program_is_seeded :: proc(program: ^Program) -> bool {
 	for param in setup_fn.params {
 		if param.type == "Rng" {
 			return true
+		}
+	}
+	return false
+}
+
+// program_uses_rng reports whether the program CONSUMES randomness ANYWHERE — any
+// behavior step or function that binds an `Rng` param (§04 §1: a draw is `rng: Rng`
+// bound, drawn from, threaded back). It is BROADER than program_is_seeded: seeded keys
+// ONLY on the setup function's Rng param (does the run START from a recorded seed),
+// while uses_rng asks whether the program draws from RNG at all — including a per-tick
+// drawing behavior in a game whose setup is seedless. The distinction is the
+// friction-116a1681 root for the empty-state diagnostic: a SEEDLESS session over a
+// game that USES RNG is an unmet-precondition (no seed recorded → an RNG draw never
+// populated), but a SEEDLESS session over a game that uses NO RNG is a genuine state
+// read — its empty result is not an RNG-seed defect. A consumer (the §28 status
+// surface, the MCP empty-state enricher) reads this to tell the two apart instead of
+// blaming a missing seed for every seedless game.
+program_uses_rng :: proc(program: ^Program) -> bool {
+	for behavior in program.behaviors {
+		for param in behavior.params {
+			if param.type == "Rng" {
+				return true
+			}
+		}
+	}
+	for fn in program.functions {
+		for param in fn.params {
+			if param.type == "Rng" {
+				return true
+			}
 		}
 	}
 	return false

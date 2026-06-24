@@ -1,0 +1,101 @@
+funpack-artifact 18
+[meta 2]
+project seedfix
+version L5:0.1.0
+[enums 0]
+[data 0]
+[signals 0]
+[things 1]
+thing Mote false 0 2
+field x Int =0
+field hp Int =3
+[functions 6]
+function mote_at fn 1 return:Spawn 1 span:seedfix:14
+param x Int
+node return 1
+node call 2
+node name Spawn 0
+node record Mote 2 2
+node recfield x 1
+node name x 0
+node recfield hp 1
+node int 3 0
+function zeros fn 1 return:[Int] 2 span:seedfix:19
+param n Int
+node if_return 2
+node binary le 2
+node name n 0
+node int 0 0
+node list 0 0
+node return 1
+node call 3
+node name concat 0
+node list 1 1
+node int 0 0
+node call 2
+node name zeros 0
+node binary sub 2
+node name n 0
+node int 1 0
+function cols fn 0 return:[Int] 1 span:seedfix:25
+node return 1
+node call 4
+node name fold 0
+node call 2
+node name zeros 0
+node int 4 0
+node list 0 0
+node lambda 2 acc _ 1
+node call 3
+node name concat 0
+node name acc 0
+node list 1 1
+node call 2
+node name len 0
+node name acc 0
+function step fn 1 return:Mote 1 span:seedfix:37
+param self Mote
+node return 1
+node record Mote 2 2
+node recfield x 1
+node binary add 2
+node field x 1
+node name self 0
+node int 1 0
+node recfield hp 1
+node field hp 1
+node name self 0
+function bindings bindings 0 return:Bindings 1 span:seedfix:43
+node return 1
+node call 1
+node field empty 1
+node name Bindings 0
+function setup startup 0 return:[Spawn] 1 span:seedfix:31
+node return 1
+node call 4
+node name fold 0
+node call 1
+node name cols 0
+node list 0 0
+node lambda 2 acc x 1
+node call 3
+node name concat 0
+node name acc 0
+node list 1 1
+node call 2
+node name mote_at 0
+node name x 0
+[behaviors 0]
+[pipeline_flattened 2]
+step 0 stage:startup behavior:setup
+step 1 stage:move behavior:step
+[signal_routing 0]
+[setup 0]
+[bindings 0]
+[entrypoint 1]
+entrypoint main pipeline:Field tick_hz:60 logical:160x120 bindings:bindings
+[queries 0]
+[tilemaps 0]
+[nav 0]
+[assets 0]
+[probes 0]

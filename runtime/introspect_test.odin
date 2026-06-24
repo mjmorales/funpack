@@ -191,6 +191,106 @@ test_introspect_state_instance_filter :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(one, `"id":0`), "the instance filter must exclude the other paddle")
 }
 
+// SEEDLESS_STARTUP_ARTIFACT is the friction-116a1681 reproduction fixture: a real
+// funpack build of a SEEDLESS game whose startup population is built PROGRAMMATICALLY
+// (a fold/concat over a length-counted list — colony-sim's `concat(red, blue)` shape).
+// The §13 [setup] fold (resolve_setup_spawns) folds only a LITERAL `return [Spawn(…)]`
+// list, so a programmatic body lands in [functions] and the artifact carries `[setup 0]`
+// — confirmed at build time (its `[setup 0]` + `function setup startup … return:[Spawn]`).
+// The source is committed beside it (testdata/seedless_startup_spawn.fun) so the shape
+// is regenerable. #load embeds it for a hermetic golden — no cwd, no funpack invocation.
+@(private = "file")
+SEEDLESS_STARTUP_ARTIFACT := #load("testdata/seedless_startup_spawn.artifact", string)
+
+// test_introspect_seedless_programmatic_startup_populates is the friction-116a1681
+// junction: a fresh debug session over a SEEDLESS game whose startup spawns
+// PROGRAMMATICALLY must FOLD that startup body and populate the committed timeline —
+// inspect_state must list the spawned instances at the post-startup version AND at
+// every folded tick, not the empty list the bug returned at every ring snapshot.
+//
+// THE BUG (pre-fix): the §13 [setup] batch is the COMPILE-TIME constant fold of the
+// setup body, and the emitter folds only a literal `[Spawn(…)]` list — a fold/concat
+// population is not literal, so the artifact carries `[setup 0]` with the body in
+// [functions]. The SEEDED startup path evaluates such a body to thread its Rng, but a
+// SEEDLESS game (no Rng resource) takes the bare run_startup batch, which applied only
+// the EMPTY [setup 0] — so the programmatic population never spawned and the whole
+// timeline read empty. The MCP empty-state diagnostic then misblamed a missing RNG seed.
+//
+// THE FIX (run_startup_body, tick.odin): run_startup now evaluates a seedless
+// [Spawn]-returning startup body when the pre-evaluated batch is empty, through the
+// SAME queue/commit seam the seeded path uses — so a seedless programmatic startup
+// populates identically to a seeded one. This test is the living spec of that junction:
+// the fixture spawns 4 Motes at startup (cols() = [0,1,2,3]), and they must be present,
+// id-dense, and advancing one cell/tick through the introspection session.
+@(test)
+test_introspect_seedless_programmatic_startup_populates :: proc(t: ^testing.T) {
+	program := new(Program, context.allocator)
+	loaded, err := load_program(SEEDLESS_STARTUP_ARTIFACT, context.allocator)
+	testing.expect(t, err == .None, "the seedless programmatic-startup artifact must load")
+	program^ = loaded
+
+	// Open a fresh session exactly as the MCP session_start path does: empty-input
+	// snapshots, NO_SEED (the game declares no Rng resource). The bug made this session's
+	// whole timeline empty; the fix folds the startup body so it populates.
+	ticks :: 4
+	inputs := make([]Input, ticks, context.allocator)
+	for i in 0 ..< ticks {
+		inputs[i] = empty()
+	}
+	session := open_debug_session(program, inputs, NO_SEED, context.allocator)
+	s := session
+	testing.expect(t, !s.seed.has_seed, "the game is seedless (no Rng resource)")
+
+	// The empty-state diagnostic's distinguishing fact (deliverable #2): status reports
+	// seeded=false AND uses_rng=false — this game draws no RNG anywhere, so an empty
+	// state read is a genuine population fact, NOT the missing-seed precondition the
+	// diagnostic must not blame. A consumer reads uses_rng to tell the two apart.
+	status := session_request(&s, `{"id":0,"cmd":"status"}`)
+	testing.expect(t, strings.contains(status, `"seeded":false`), status)
+	testing.expect(t, strings.contains(status, `"uses_rng":false`), status)
+
+	// The post-startup version (tick -1) is the state tick 0 folds from: it MUST carry
+	// the 4 programmatically-spawned Motes, not the empty list the bug returned.
+	startup := session_request(&s, `{"id":1,"cmd":"state","args":{"thing":"Mote","tick":-1}}`)
+	testing.expect(t, strings.contains(startup, `"ok":true`), startup)
+	for id in 0 ..< 4 {
+		testing.expectf(t, strings.contains(startup, sbprint_id(id)), "Mote#%d must be spawned at startup, got: %s", id, startup)
+	}
+
+	// A real ring snapshot (the friction repro inspected tick 48 of a 64-tick run): every
+	// folded tick must still carry the population. The Motes advance one cell/tick (step),
+	// so tick 2's Mote#0 sits at x = startup_x + 3 (-1 → 0 → 1 → 2 is three advances; the
+	// exact value is the step rule's, asserted only as "present and advancing").
+	tick2 := session_request(&s, `{"id":2,"cmd":"state","args":{"thing":"Mote","tick":2}}`)
+	testing.expect(t, strings.contains(tick2, `"ok":true`), tick2)
+	for id in 0 ..< 4 {
+		testing.expectf(t, strings.contains(tick2, sbprint_id(id)), "Mote#%d must persist at a folded tick, got: %s", id, tick2)
+	}
+
+	// The introspection-driven startup fold is BIT-IDENTICAL to a plain run_startup of
+	// the same program (the determinism warranty for the introspection path): the session
+	// retains exactly the version a CLI fold produces, so the two startup versions are
+	// world_versions_equal. This pins that observing the startup did not perturb it.
+	world := new_world(program^, context.allocator)
+	base := initial_version(world, context.allocator)
+	reference := run_startup(program, base, context.allocator)
+	testing.expect(
+		t,
+		world_versions_equal(s.startup, reference),
+		"the session's folded startup must equal a plain run_startup fold (determinism warranty)",
+	)
+}
+
+// sbprint_id renders the `"id":N` substring a state response carries for instance N —
+// the existence probe the seedless-startup junction asserts against the rendered JSON.
+@(private = "file")
+sbprint_id :: proc(id: int) -> string {
+	b := strings.builder_make(context.allocator)
+	strings.write_string(&b, `"id":`)
+	strings.write_int(&b, id)
+	return strings.to_string(b)
+}
+
 // golden_pong_session opens an observe session over the EXACT golden pong run
 // (the committed acceptance script) — the shared opener for the pong-backed
 // observe tests and the digest-pin acceptance.

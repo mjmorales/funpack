@@ -59,10 +59,12 @@ test_time_load_and_status_envelopes :: proc(t: ^testing.T) {
 	_, session := time_pong_session(t)
 	s := session
 
+	// Pong is seedless AND uses no RNG: seeded=false, uses_rng=false — the no-RNG case
+	// the empty-state diagnostic must NOT blame on a missing seed.
 	unloaded := session_request(&s, `{"id":1,"cmd":"status"}`)
 	expected_unloaded :=
 		`{"v":1,"id":1,"ok":true,"cmd":"status","result":{"loaded":false,"tick":null,` +
-		`"ticks_recorded":600,"seeded":false,"cadence":16,` +
+		`"ticks_recorded":600,"seeded":false,"uses_rng":false,"cadence":16,` +
 		`"ring":{"slots":32,"occupied":0,"oldest":null,"newest":null},"branch":{"live":false,"active":"canonical"}}}`
 	testing.expect_value(t, unloaded, expected_unloaded)
 
@@ -72,7 +74,7 @@ test_time_load_and_status_envelopes :: proc(t: ^testing.T) {
 	armed := session_request(&s, `{"id":3,"cmd":"status"}`)
 	expected_armed :=
 		`{"v":1,"id":3,"ok":true,"cmd":"status","result":{"loaded":true,"tick":-1,` +
-		`"ticks_recorded":600,"seeded":false,"cadence":16,` +
+		`"ticks_recorded":600,"seeded":false,"uses_rng":false,"cadence":16,` +
 		`"ring":{"slots":32,"occupied":0,"oldest":null,"newest":null},"branch":{"live":false,"active":"canonical"}}}`
 	testing.expect_value(t, armed, expected_armed)
 }
@@ -229,6 +231,15 @@ test_time_seeded_rewind_rethreads_rng :: proc(t: ^testing.T) {
 	}
 	session := open_debug_session(program, inputs, seeded_run(42), context.allocator)
 	s := session
+
+	// Snake's replenish draws RNG and the session folds a recorded seed: status reports
+	// seeded=true AND uses_rng=true — the seeded-and-RNG-driven counterpart to pong's
+	// seeded=false/uses_rng=false. The pair is the empty-state diagnostic's distinguishing
+	// fact (friction-116a1681): an empty result on a uses_rng game with no seed is the real
+	// missing-seed precondition, distinct from a no-RNG game's genuine empty read.
+	seeded_status := session_request(&s, `{"id":0,"cmd":"status"}`)
+	testing.expect(t, strings.contains(seeded_status, `"seeded":true`), seeded_status)
+	testing.expect(t, strings.contains(seeded_status, `"uses_rng":true`), seeded_status)
 
 	// The eat tick: the first boundary whose entering Rng differs from the next —
 	// the replenish draw. Derived from the session's retained chain.
