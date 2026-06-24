@@ -412,11 +412,11 @@ check_let_module :: proc(import_header: string, expr: string) -> Type_Error {
 
 @(test)
 test_unknown_method_on_call_receiver_is_unknown_method :: proc(t: ^testing.T) {
-	// The friction report's exact repro: a CALL-EXPRESSION receiver. `Rng.seed(1)`
+	// The exact repro: a CALL-EXPRESSION receiver. `Rng.seed(1)`
 	// is the §26 §1.10 static constructor, so it types to an Rng — a KNOWN type —
 	// and the chained `.bogus_method` is no method of it, so the arm is
-	// Unknown_Method, NOT the Unsupported_Expr the untypeable receiver gave before
-	// `Rng.seed` was admitted as a static constructor. The diagnostic reaches a
+	// Unknown_Method, NOT the Unsupported_Expr an untypeable receiver yields. The
+	// diagnostic reaches a
 	// typed call-expression receiver identically to a typed identifier receiver
 	// (the simple-identifier case is test_unknown_method_on_list_is_unknown_method).
 	err := check_let_module("import engine.rand.{Rng}\n", "Rng.seed(1).bogus_method(0, 9)")

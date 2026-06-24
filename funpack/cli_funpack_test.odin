@@ -146,7 +146,7 @@ test_funpack_build_release_flag :: proc(t: ^testing.T) {
 
 // test_funpack_check_recursive_flag pins the recursive-check seam: check accepts
 // the optional `[root]` positional and the `--recursive`/`-r` bool flag (the
-// friction-0011 multi-project sweep), the long and short spellings parse
+// multi-project sweep), the long and short spellings parse
 // identically, and `--release`/`--recursive` compose. A typo'd flag or a SECOND
 // positional is the usage tier — check takes at most one root, so a stray argument
 // never silently becomes a misread root.

@@ -225,8 +225,8 @@ is_project_root :: proc(dir: string) -> bool {
 	return os.is_dir(configs)
 }
 
-// run_check_recursive_verb is the multi-project face of check (friction-0011
-// source fix): it discovers every §14 project under `root` with the pure Odin
+// run_check_recursive_verb is the multi-project face of check: it discovers
+// every §14 project under `root` with the pure Odin
 // walker (no `find`, no shell-out), adjudicates EACH through the SAME
 // check_project_verdict seam the single-project verb uses, prints one verdict line
 // per project (path + clean/failed + the failing project's refusal body), then an

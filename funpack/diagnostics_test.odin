@@ -322,12 +322,12 @@ test_diag_pin_typecheck_unknown_method :: proc(t: ^testing.T) {
 
 // test_diag_pin_typecheck_unknown_method_call_receiver pins the SAME Unknown_Method
 // caret-on-member shape when the receiver is a CALL EXPRESSION, not a simple binding
-// — the friction report's exact `Rng.seed(1).bogus_method(0, 9)` repro. The static
+// — the exact `Rng.seed(1).bogus_method(0, 9)` repro. The static
 // constructor `Rng.seed(1)` (§26 §1.10) types to an Rng, so the chained
 // `.bogus_method` resolves against a KNOWN type and the unknown member is
 // Unknown_Method (caret under `bogus_method` at col 28, the §26 rand hint) — NOT the
-// Unsupported_Expr at col 16 the untypeable receiver gave before `Rng.seed` was
-// admitted as a static constructor. Pins that the diagnostic reaches a typed
+// Unsupported_Expr at col 16 an untypeable receiver yields. Pins that the diagnostic
+// reaches a typed
 // call-expression receiver identically to a typed identifier receiver.
 @(test)
 test_diag_pin_typecheck_unknown_method_call_receiver :: proc(t: ^testing.T) {

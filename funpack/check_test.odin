@@ -151,7 +151,7 @@ test_check_preexisting_funpack_untouched :: proc(t: ^testing.T) {
 // its absence to Dev, and a typo'd or trailing argument is the usage tier); the
 // integration tests below exercise the resulting exit contract end-to-end.
 
-// ── recursive multi-project sweep (friction-0011 source fix) ─────────────
+// ── recursive multi-project sweep ─────────────
 // `funpack check --recursive [root]` discovers every funpack_configs project
 // under a directory tree with the pure Odin walker (no `find`, no shell-out) and
 // adjudicates each through the SAME single-project seam — so these tests fold the
@@ -284,8 +284,7 @@ test_check_recursive_clean_tree_exits_zero :: proc(t: ^testing.T) {
 
 // test_check_recursive_failing_tree_exits_two_names_it is the failure tier: a
 // games/ tree with ONE broken project sweeps to exit 2, and the report NAMES the
-// failing project on its verdict line (the friction-0011 acceptance: a tree with a
-// failing project exits non-zero naming it) while every clean sibling still reports
+// failing project on its verdict line, while every clean sibling still reports
 // clean — so the failure is localized, not a whole-sweep blackout.
 @(test)
 test_check_recursive_failing_tree_exits_two_names_it :: proc(t: ^testing.T) {
