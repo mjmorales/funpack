@@ -28,9 +28,12 @@ drive_handler :: proc(t: ^testing.T, request_line: string, loc := #caller_locati
 
 // test_mcp_initialize_capabilities pins the handshake: an initialize request returns
 // a well-formed JSON-RPC result advertising capabilities={tools} ONLY (no resources,
-// no prompts), the PINNED MCP protocolVersion, and serverInfo. The protocolVersion
+// no prompts), the PINNED MCP protocolVersion, serverInfo, AND the invariant-core
+// `instructions` (non-empty, leading with the five-things marker). The protocolVersion
 // assertion is the regression guard for the negotiated revision (the bundled plugin
-// client negotiates this exact string).
+// client negotiates this exact string); the instructions assertion is the regression
+// guard for the always-present cacheable core (mcp_core_prefix.odin) — a build that
+// silently drops it (an orphaned curated anchor) would fail here.
 @(test)
 test_mcp_initialize_capabilities :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
@@ -54,6 +57,18 @@ test_mcp_initialize_capabilities :: proc(t: ^testing.T) {
 	testing.expect(t, has_info, "initialize must carry serverInfo")
 	name, _ := server_info["name"].(json.String)
 	testing.expect_value(t, string(name), MCP_SERVER_NAME)
+
+	// The invariant-core prefix must ride in `instructions` — the always-present,
+	// cacheable channel. Non-empty, and leading with the five-things core (the curated
+	// prefix leads with that section), so a silently-dropped or truncated prefix fails.
+	instructions, has_instructions := result["instructions"].(json.String)
+	testing.expect(t, has_instructions, "initialize must advertise the invariant-core instructions")
+	testing.expect(t, len(string(instructions)) > 0, "instructions must be non-empty")
+	testing.expect(
+		t,
+		strings.contains(string(instructions), "five things that trip people up"),
+		"instructions must lead with the funpack-language five-things core",
+	)
 }
 
 // test_mcp_tools_list_projection pins that tools/list is the GENERATED projection

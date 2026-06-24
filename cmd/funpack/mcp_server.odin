@@ -104,9 +104,16 @@ mcp_dispatch_line :: proc(registry: ^Mcp_Session_Registry, line: string, allocat
 }
 
 // mcp_handle_initialize answers the MCP handshake: it advertises THIS server's
-// protocolVersion, capabilities, and serverInfo. capabilities advertises tools ONLY
-// (no resources, no prompts, no logging) — the entire funpack surface is tools. The
-// result shape matches the MCP InitializeResult.
+// protocolVersion, capabilities, serverInfo, AND the invariant-core `instructions`.
+// capabilities advertises tools ONLY (no resources, no prompts, no logging) — the
+// entire funpack surface is tools. `instructions` carries the always-present invariant
+// core (mcp_core_prefix.odin) — the spec-sanctioned channel a client folds into its
+// system prompt, so the prompt cache holds the funpack core ONCE rather than the model
+// re-retrieving it per docs query. The core is assembled from the embedded corpus and
+// is emitted only when it builds; a build failure (a curated anchor that no longer
+// resolves) drops the field rather than shipping a truncated prefix — a fail-loudly the
+// corpus tests guard so the committed binary always carries it. The result shape
+// matches the MCP InitializeResult.
 mcp_handle_initialize :: proc(request: Mcp_Request, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"protocolVersion\":\"")
@@ -118,7 +125,16 @@ mcp_handle_initialize :: proc(request: Mcp_Request, allocator := context.allocat
 	strings.write_string(&b, MCP_SERVER_NAME)
 	strings.write_string(&b, "\",\"version\":")
 	funpack_runtime.write_json_string(&b, funpack.funpack_version())
-	strings.write_string(&b, "}}")
+	strings.write_string(&b, "}")
+	// The invariant-core prefix rides in `instructions` — the always-present, cacheable
+	// channel. Emitted only on a clean build (a missing curated anchor fails loudly to no
+	// instructions, never a partial prefix); the corpus tests keep the build clean so a
+	// shipped binary always carries it.
+	if instructions, ok := core_prefix_build(allocator); ok {
+		strings.write_string(&b, ",\"instructions\":")
+		funpack_runtime.write_json_string(&b, instructions)
+	}
+	strings.write_string(&b, "}")
 	return mcp_render_result(request.id, strings.to_string(b), allocator)
 }
 
