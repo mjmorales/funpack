@@ -7,6 +7,22 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.15.0] - 2026-06-24
+
+### Features
+- feat(mcp): add an optional replay_log arg to session_start so MCP can pre-fold a recorded replay (2fb40fd)
+- feat(mcp): emit InitializeResult.instructions with the invariant-core prefix (9d2aaac)
+
+### Fixes
+- fix(mcp): consume uses_rng so a no-RNG game's empty inspect is not blamed on a missing seed (706d13a)
+- fix(friction): drop colliding --id ordinal from task-create; key idempotency on report UUID (be5b0f4)
+- fix(runtime): fold control edits forward on a writable branch and anchor the implicit fork at the rewound cursor (fd14bd3)
+- fix(runtime): fold a seedless programmatic startup body so a fresh debug session populates (c9e37b2)
+
+### Other
+- docs: document funpack↔MCP contract shared-seam co-ownership rule (df1b372)
+- docs: regenerate CLAUDE.md managed block (new doc-parity validator + devtools team) (d217d82)
+
 ## [0.14.0] - 2026-06-24
 
 ### Features
