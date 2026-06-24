@@ -1,6 +1,6 @@
 ---
 name: funpack-project
-description: How to lay out and configure a funpack game project — the enforced directory tree, the `.fcfg` config layer (project/entrypoints/builds/tags), directory-derived modules, the schema/seam/behavior module split, derived capabilities, and packages/dependencies. Use when scaffolding a new project, fixing a project-structure error, wiring an entrypoint, registering a @gtag, or adding a dependency. Triggers on "funpack project", "funpack_configs", ".fcfg", "entrypoints", "tags.fcfg", "builds.fcfg", "project layout/structure", "funpack module", "funpack package/dependency", "scaffold a funpack game".
+description: How to lay out and configure a funpack game project — the enforced directory tree, the `.fcfg` config layer (project/entrypoints/builds/tags), directory-derived modules, the schema/seam/behavior module split, derived capabilities, and packages/dependencies. Use when scaffolding a new project, fixing a project-structure error, wiring an entrypoint, registering a @gtag, or adding a dependency. Triggers on "funpack project", "funpack_configs", ".fcfg", "entrypoints", "tags.fcfg", "builds.fcfg", "project layout/structure", "funpack module", "funpack package/dependency", "scaffold a funpack game". Also matches setup goals phrased without funpack terms — "how do I start a new game", "where does this file go", "how do I add a sprite or level or asset", "my game won't build because of its structure", "how do I add a dependency".
 ---
 
 # funpack project structure & config

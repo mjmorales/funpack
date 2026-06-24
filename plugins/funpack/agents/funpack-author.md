@@ -24,6 +24,27 @@ like `[Spawn]`/`[Draw]`). A behavior writes **only its own thing** — to affect
 data, never performed — so every behavior, renderers included, is unit-testable by calling
 `name.step(...)`.
 
+## Translate from the model you already know
+
+You know Lua/GDScript/Python/Rust and the ECS/OOP idioms cold — funpack is most of them turned a
+quarter-turn. Before writing, **map the request's native idiom onto the funpack model explicitly**;
+the delta is small, and naming it is what prevents the most common foreign-prior mistakes.
+
+| You're thinking…                               | In funpack that is… |
+|------------------------------------------------|---------------------|
+| ECS component tables (`entity.add(Pos, Vel)`)  | one `thing` whose `data` blackboard holds **all** its state (document-oriented, not column tables) |
+| an OOP class with methods                      | state in a `thing`/`data`; each method becomes a separate `behavior on Thing { fn step }` — no methods-on-data, no inheritance (compose by nesting `data`) |
+| `update()` mutating siblings (`other.hp -= 1`) | a behavior writes **only `self`**; to change another thing it **emits a `signal`** the target folds downstream |
+| a `for`/`while` loop over entities             | the engine runs the behavior once per instance in stable `Id` order; aggregate with `fold`, never a loop |
+| a global / static singleton                    | a `singleton` thing — still write-isolated: reach it by signal, never by writing its blackboard |
+| an event bus / string events / callbacks       | a typed `signal`; its consumer is whatever later stage takes `[Signal]` — and **every** emitted signal needs one (effect closure) |
+| ambient `Time.dt` / `Random.range()`           | declared reads — a `time: Time` / `rng: Rng` **parameter** (and `Rng` is threaded back in the return) |
+| `this.x = v` mutation                          | `self with { x: v }` — state is immutable, evolved by return |
+
+Map first, then write. If you can name the funpack form for each piece, the code falls out; if you
+can't, that is the signal to read `funpack-game-model` (the paradigm) or
+`../skills/funpack-language/references/anti-priors.md` (the form-by-form corrections) before guessing.
+
 ## Non-negotiables — write to these every time
 
 - **Fixed-point, never float in sim.** Sim numbers are `Fixed` (`8.0`, `0.5`). `42.5f` is `Float`,
@@ -41,8 +62,13 @@ data, never performed — so every behavior, renderers included, is unit-testabl
   the consumer in the same or a later stage.
 - **Respect the slot contracts:** a `render:` behavior is output-only (`[Draw]`/`[Draw3]`, no signals,
   no `Rng`); `audio:` returns `[Audio]`; `ui:` returns `View[Msg]`; `startup:` returns `[Spawn]`.
-- **Stay within the structural budgets:** functions ≤ 40 statements, nesting ≤ 3, params ≤ 5,
-  cyclomatic ≤ 10, no duplication. Decompose into named `fn`s; never duplicate a helper.
+- **Stay within the structural budgets — each has a standard escape hatch, so refactor at the
+  limit, never stall against it:** functions ≤ 40 statements (over → extract a named `fn` per match
+  arm or pipeline phase); nesting ≤ 3 (deeper → flatten an `if`-chain into one `match`, or lift the
+  inner block into a helper); params ≤ 5 (more → group related reads into a `data` record and pass
+  that); cyclomatic ≤ 10 (over → replace branch chains with an exhaustive `match`, each arm body a
+  named `fn`); no duplication (extract the shared logic into one `fn`, called UFCS-style). Never
+  duplicate a helper.
 
 ## Workflow
 

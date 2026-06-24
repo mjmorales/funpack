@@ -1,6 +1,6 @@
 ---
 name: funpack-game-model
-description: The funpack runtime model — things, behaviors, signals, commands, and pipelines. Use when designing or reasoning about how a funpack game is structured and scheduled — what a behavior's parameters/return mean, how things communicate via signals, effect closure, the pipeline schedule and tick fold, the slot contracts (Update/Render/Ui/Audio/Startup), and why behaviors are unit-testable. Triggers on "behavior", "signal", "pipeline", "thing", "tick", "spawn/despawn", "effect closure", "render/audio/ui stage", "how does a funpack game work".
+description: The funpack runtime model — things, behaviors, signals, commands, and pipelines. Use when designing or reasoning about how a funpack game is structured and scheduled — what a behavior's parameters/return mean, how things communicate via signals, effect closure, the pipeline schedule and tick fold, the slot contracts (Update/Render/Ui/Audio/Startup), and why behaviors are unit-testable. Triggers on "behavior", "signal", "pipeline", "thing", "tick", "spawn/despawn", "effect closure", "render/audio/ui stage", "how does a funpack game work". Also matches gameplay goals phrased without funpack nouns — "how do I make the player move", "the enemy should chase the player", "make the score go up when the player scores", "how do my objects react to each other", "what runs each frame and in what order".
 ---
 
 # funpack runtime model — things, behaviors, pipelines
@@ -103,6 +103,37 @@ signal Died {}                  // empty payload is legal
 emitting a `Goal` nothing tallies, or dropping a `Saved`, is a compile error. The exception is
 **deferred edges** (UI `Msg`, IO results like `Saved`/`Restored`): they arrive **next tick** and may
 be consumed anywhere, not strictly downstream.
+
+This rule is unusual enough to be worth one worked pair. The failure is almost always the same:
+emit a signal, forget to wire the stage that reads it. A dropped signal would be a silent gameplay
+bug (a goal scored that never increments the score), so the compiler refuses to build it.
+
+```funpack
+// ✗ REJECTED — score emits Goal, but no stage consumes [Goal]
+behavior score on Ball {
+  fn step(self: Ball) -> [Goal] { return [Goal{side: Side::Left}] }
+}
+pipeline Pong {
+  scoring: [score]            // build error: signal `Goal` emitted here has no downstream consumer
+}
+```
+
+```funpack
+// ✓ CLOSED — tally consumes [Goal] later in the same forward-ordered stage
+behavior score on Ball {
+  fn step(self: Ball) -> [Goal] { return [Goal{side: Side::Left}] }
+}
+behavior tally on Scoreboard {
+  fn step(self: Scoreboard, goals: [Goal]) -> Scoreboard { return fold(goals, self, add_goal) }
+}
+pipeline Pong {
+  scoring: [score, tally]     // score emits → tally consumes — same tick, in list order. Closed.
+}
+```
+
+The fix is always the same shape: **wire the consumer** — a stage that takes the signal as a
+`[Signal]` parameter — in the same stage after the emitter, or any later one (next tick, for a
+deferred edge).
 
 ## Commands — effects as data
 

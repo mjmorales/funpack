@@ -1,6 +1,6 @@
 ---
 name: funpack-engine-api
-description: The funpack `engine.*` standard library — the API surface a game calls. Use when you need a function or type signature — vectors & fixed-point math, the world (View/Spawn/Ref), device-agnostic input, 2D/3D draw commands, audio, UI widgets, navigation, list/map/grid/string/rand, and the model/anim/render3 trio. Triggers on "engine.math", "engine.world", "engine.input", "engine.render", "what function does/returns", "how do I clamp/fold/draw/spawn", "Vec2", "View[T]", "Draw::", "Bindings", "Input.value/axis", "funpack stdlib/API".
+description: The funpack `engine.*` standard library — the API surface a game calls. Use when you need a function or type signature — vectors & fixed-point math, the world (View/Spawn/Ref), device-agnostic input, 2D/3D draw commands, audio, UI widgets, navigation, list/map/grid/string/rand, and the model/anim/render3 trio. Triggers on "engine.math", "engine.world", "engine.input", "engine.render", "what function does/returns", "how do I clamp/fold/draw/spawn", "Vec2", "View[T]", "Draw::", "Bindings", "Input.value/axis", "funpack stdlib/API". Also matches capability goals phrased without an API name — "how do I draw a sprite", "how do I read the keyboard or gamepad", "how do I play a sound", "distance between two points", "pick a random number", "clamp a value".
 ---
 
 # funpack engine API — the `engine.*` stdlib

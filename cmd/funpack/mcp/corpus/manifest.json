@@ -20,9 +20,9 @@
       "root": "plugins/funpack",
       "kind": "plugin",
       "ref": "0.14.0",
-      "sections": 150,
-      "content_hash": "e1a2bb5f11d3e28b39324375617bbcc1f21fb7743820f662c0f434d742f449e5"
+      "sections": 151,
+      "content_hash": "fba4db9e9039e628f0a0be62d86d820250355ec7891275fa81d085f33136dfad"
     }
   ],
-  "total_sections": 666
+  "total_sections": 667
 }

@@ -1,6 +1,6 @@
 ---
 name: funpack-language
-description: Write and understand funpack `.fun` source — the language's syntax and semantics. Use when authoring, reading, editing, or explaining funpack code — declarations (thing/behavior/signal/pipeline/fn/enum/data/let/test), types, match, the `with` update, lambdas, string interpolation, the @doc/@gtag/@stub/@todo directives, and modules/imports. Triggers on ".fun", "funpack syntax", "write a funpack ...", "how do I declare", "funpack behavior/thing/signal/pipeline", "funpack match/enum/data".
+description: Write and understand funpack `.fun` source — the language's syntax and semantics. Use when authoring, reading, editing, or explaining funpack code — declarations (thing/behavior/signal/pipeline/fn/enum/data/let/test), types, match, the `with` update, lambdas, string interpolation, the @doc/@gtag/@stub/@todo directives, and modules/imports. Triggers on ".fun", "funpack syntax", "write a funpack ...", "how do I declare", "funpack behavior/thing/signal/pipeline", "funpack match/enum/data". Also matches intent-phrased asks that name no funpack term — "how do I write this in funpack", "why won't this compile", "how do I loop over a list", "how do I update one field", "translate this code to funpack".
 ---
 
 # funpack language — syntax & semantics
@@ -31,6 +31,10 @@ For the runtime paradigm (how behaviors/signals/pipelines compose into a game) s
    the only dated note; `@stub(T)` is a typed hole.
 5. **State is immutable; update with `with`:** `self with { y: clamp(...) }`. `let` is the only
    binding form and all locals are immutable.
+
+If a form you "remember" from old funpack or from another language keeps slipping in, read
+`references/anti-priors.md` — a standing table of deprecated funpack shapes and foreign-language
+priors funpack rejects, each paired with the current form and why the bad prior is there.
 
 ## Declaration forms
 

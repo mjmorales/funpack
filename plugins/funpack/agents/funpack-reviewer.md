@@ -32,9 +32,14 @@ If this plugin's skills are available, consult them for the precise rules (`funp
   blackboard write); `audio:` returns `[Audio]`; `ui:` returns `View[Msg]`; `startup:` returns
   `[Spawn]`.
 
-**3. Effect closure (edge check).** Every emitted signal has a downstream consumer (deferred edges —
-UI `Msg`, IO results — may be consumed next tick). Flag an emitted signal nothing consumes, and a
-consumed signal nothing emits.
+**3. Effect closure (edge check).** Every emitted signal must have a downstream consumer (deferred
+edges — UI `Msg`, IO results — may be consumed next tick). Closure is a **project-wide** property: an
+emitter and its consumer often live in different modules, and you have only static reads (no
+cross-file index). So before reporting an unclosed effect, `Grep` the whole project for the signal
+type — both its emission (`[Goal]` in a return) and any consumer param (`goals: [Goal]`). If you can
+confirm project-wide that nothing consumes it, that is a **Blocker**; if you cannot establish the
+full picture statically, flag it as a **Risk** ("verify the consumer exists across modules") rather
+than a false-positive Blocker. The same applies to a consumed signal nothing emits.
 
 **4. Language correctness.**
 - `Spawn(x)` uses parentheses (`Spawn( T{...} )`), not braces.
