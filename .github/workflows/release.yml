@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
       - uses: arduino/setup-task@v2
         with:
           version: 3.x
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
       - uses: arduino/setup-task@v2
         with:
           version: 3.x
@@ -137,7 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
       - uses: arduino/setup-task@v2
         with:
           version: 3.x
@@ -178,7 +178,7 @@ jobs:
       plugin_version: ${{ steps.pluginbump.outputs.new_version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0 # full history for tag detection + changelog range
           # Don't persist the default GITHUB_TOKEN as a git auth header — the
@@ -209,8 +209,15 @@ jobs:
             BUMP="$FORCE"
           else
             # Exclude the sibling-line paths (plugin) so a mixed push bumps the
-            # binary line only by its own source commits.
-            EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
+            # binary line only by its own source commits. Also exclude the
+            # generated docs-corpus shards: they are a build artifact regenerated
+            # FROM plugin/spec/engine source, not source themselves, so they must
+            # never drive binary semver. Without this exclude, a SKILL.md edit's
+            # mandatory in-commit corpus regen forced the whole commit to `chore`
+            # (to avoid a phantom binary bump), which simultaneously starved the
+            # plugin line — that straddle commit is now free to carry its honest
+            # plugin-facing feat/fix type.
+            EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin' ':(exclude)cmd/funpack/mcp/corpus')
             if [ "$LATEST_TAG" = "v0.0.0" ]; then
               COMMITS=$(git log --pretty=format:"%s%n%b" HEAD -- . "${EXCLUDES[@]}")
             else
@@ -256,7 +263,9 @@ jobs:
         run: |
           LATEST_TAG="${{ steps.binbump.outputs.latest_tag }}"
           if [ "$LATEST_TAG" = "v0.0.0" ]; then RANGE="HEAD"; else RANGE="${LATEST_TAG}..HEAD"; fi
-          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin')
+          # Keep the changelog excludes in lockstep with binbump's detection set
+          # (plugin sibling paths + the generated docs-corpus shards).
+          EXCLUDES=(':(exclude)plugins' ':(exclude).claude-plugin' ':(exclude)cmd/funpack/mcp/corpus')
 
           {
             echo "changelog<<CHANGELOG_EOF"
@@ -504,7 +513,7 @@ jobs:
 
       - name: Create binary GitHub release
         if: steps.binbump.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.binbump.outputs.new_version }}
           name: v${{ steps.binbump.outputs.new_version }}
@@ -515,7 +524,7 @@ jobs:
 
       - name: Create plugin GitHub release
         if: steps.pluginbump.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: plugin-v${{ steps.pluginbump.outputs.new_version }}
           name: plugin-v${{ steps.pluginbump.outputs.new_version }}
@@ -542,7 +551,7 @@ jobs:
           - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
           - { runner: macos-latest,     os: macos, arch: arm64 }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           # Build the freshly-cut binary tag, not the main HEAD.
           ref: ${{ needs.release.outputs.bin_tag }}
@@ -583,7 +592,7 @@ jobs:
           tar -czf "${dist}.tar.gz" "$dist"
           echo "ASSET=${dist}.tar.gz" >> "$GITHUB_ENV"
       - name: Attach to the release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release.outputs.bin_tag }}
           files: ${{ env.ASSET }}
@@ -620,7 +629,7 @@ jobs:
             echo "${plat//-/_}=$sha" >> "$GITHUB_OUTPUT"
           done
       - name: Check out the Homebrew tap
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           repository: mjmorales/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
