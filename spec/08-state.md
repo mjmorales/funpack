@@ -28,7 +28,12 @@ Writes and reads use different paths; this component specifies the read path.
   reintroduce aliasing.
 
 Read consistency: within a tick the **population is fixed** while **blackboard writes fold forward**,
-so a mid-tick query sees a stable set of rows with evolving columns.
+so a mid-tick read sees a stable set of rows with evolving columns — at **instance granularity**: a
+later instance in a per-thing stage (higher `Id`) sees earlier same-stage instances' writes through a
+direct `View[T]`, which reads the tick's *working* table ([`07`](07-pipelines.md) §2, §4). Model a
+behavior step as the `Id`-ordered fold it is, **never** a simultaneous `map` over a step-entry
+snapshot — the natural-but-wrong twin that passes a green test suite while diverging from the live
+schedule.
 
 **One shared world, no per-pipeline partition.** There is a single thing/blackboard space — this
 database — and **every** pipeline and sub-pipeline reads and writes it; pipelines do **not** own

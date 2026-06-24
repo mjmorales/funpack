@@ -59,7 +59,11 @@ close the determinism holes:
 - **Inter-stage** — the flattened pipeline (§3) is one total order; each stage sees all earlier
   blackboard writes and signals.
 - **Intra-stage** — listed behaviors run top-to-bottom; a per-thing behavior runs over its instances
-  in **stable `Id` order**.
+  in **stable `Id` order**, and that order is **observable**: within the step a later instance (higher
+  `Id`) sees earlier instances' same-step blackboard writes through a direct `View` — the per-instance
+  run is **instance-granular** (evolving columns *within* the step, [`08`](08-state.md)), **not** a
+  simultaneous `map` over a step-entry snapshot. A reflection-symmetric population is therefore decided
+  by `Id` order (the lower `Id` moves first).
 
 **Effect closure over the pipeline:** every signal a behavior emits must have a consuming stage
 **downstream in the flattened order** (deferred edges — UI `Msg`, IO results — may be consumed next
@@ -103,7 +107,11 @@ free ([`08`](08-state.md)):
 
 - **Population is fixed within a tick** — `Spawn`/`Despawn` are commands applied as one deterministic
   batch at the **tick boundary**; a thing spawned this tick is first queryable next tick.
-- **Blackboard writes fold forward** — a stage sees every earlier stage's writes.
+- **Blackboard writes fold forward** — a stage sees every earlier stage's writes, and *within* a
+  per-thing stage a later instance (higher `Id`) sees earlier instances' same-stage writes through a
+  direct `View` (instance-granular, [`08`](08-state.md)). The tick is a **fold**, never a simultaneous
+  `map` over a pre-tick snapshot — modeling it as one silently diverges from the live `Id`-ordered
+  schedule.
 - Replay re-folds recorded inputs to a bit-identical frame.
 
 There is a **single top-level tick** over **shared state**.
