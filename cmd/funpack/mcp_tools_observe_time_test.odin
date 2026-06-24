@@ -548,3 +548,90 @@ test_obs_draw_list_round_trip :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `"isError":false`), "the always-headless draw_list serves clean")
 	testing.expect(t, strings.contains(result, `\"tick\":0`), "the draw_list result echoes the requested tick")
 }
+
+// --- friction-6e7bb2c4: forward-fold on a writable branch ---------------------------
+
+// obs_chain_call drives one tools/call through the PRODUCTION dispatch chain
+// (mcp_handle_tools_call), so a test can cross dispatch families in one session — a
+// control_* fold (control family) and a time_*/inspect_* fold (observe family) over the SAME
+// registry. It builds the Mcp_Request exactly as mcp_parse_request does (params.name +
+// params.arguments) and returns the rendered result line. This is the only way to exercise a
+// branch-then-run sequence, which spans two families.
+@(private = "file")
+obs_chain_call :: proc(
+	t: ^testing.T,
+	registry: ^Mcp_Session_Registry,
+	name: string,
+	arguments_literal: string,
+	allocator := context.allocator,
+) -> string {
+	params := make(json.Object, allocator)
+	params["name"] = json.String(name)
+	params["arguments"] = obs_args(t, arguments_literal)
+	request := Mcp_Request{id = Mcp_Id{kind = .Integer, integer = 11}, method = "tools/call", params = params}
+	return mcp_handle_tools_call(registry, request, allocator)
+}
+
+// test_obs_time_run_folds_writable_branch_forward is the friction-6e7bb2c4 junction: on a
+// writable branch, time_run folds the pipeline FORWARD — it computes and records real new
+// ticks, advancing the branch head — rather than advancing a phantom cursor over ticks that
+// were never computed. The sequence mirrors the report's repro end-to-end through the
+// production chain: open + load + run the canonical timeline, fork a writable branch at the
+// post-startup boundary, checkout, spawn a fresh Hero on the branch, then time_run the branch
+// forward. The proof the fold ran:
+//
+//   - time_run on the branch is a CLEAN position ack to the requested tick (no "tick out of
+//     range" phantom),
+//   - inspect_state at that real folded tick is a clean read whose instances are populated —
+//     the spawned Hero's deterministic `pos` advance VISIBLY changed (the pipeline ran),
+//   - the branch head reads back at the advanced tick, not pinned at the spawn tick.
+//
+// This is the surface VERIFICATION that R2's runtime forward-fold is threaded truthfully
+// through the time_run dispatch — the dispatch lifts the runtime's real folded result, never
+// a swallowed phantom.
+@(test)
+test_obs_time_run_folds_writable_branch_forward :: proc(t: ^testing.T) {
+	path, staged := obs_stage_fixture(t, "funpack-mcp-obs-fwd-fold.fpk")
+	if !staged {
+		return
+	}
+	defer os.remove(path)
+
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+	id, open_result := mcp_session_registry_open(&registry, path, "", false, "", context.temp_allocator)
+	testing.expect_value(t, open_result, funpack_runtime.Open_Session_Result.Ok)
+
+	sid := strings.concatenate({`"session_id":"`, id, `"`}, context.temp_allocator)
+
+	// Load + run the canonical timeline, then fork a writable branch at the post-startup
+	// boundary and check it out — the writable lineage a forward fold advances.
+	_ = obs_chain_call(t, &registry, "time_load", strings.concatenate({"{", sid, "}"}, context.temp_allocator), context.temp_allocator)
+	_ = obs_chain_call(t, &registry, "time_run", strings.concatenate({"{", sid, "}"}, context.temp_allocator), context.temp_allocator)
+	branch_result := obs_chain_call(t, &registry, "control_branch", strings.concatenate({"{", sid, `,"tick":-1}`}, context.temp_allocator), context.temp_allocator)
+	testing.expect(t, strings.contains(branch_result, `"isError":false`), "the branch forks cleanly")
+	checkout_result := obs_chain_call(t, &registry, "control_checkout", strings.concatenate({"{", sid, `,"target":"branch"}`}, context.temp_allocator), context.temp_allocator)
+	testing.expect(t, strings.contains(checkout_result, `"isError":false`), "the branch checks out cleanly")
+
+	// Spawn a fresh Hero on the branch — the staged state a forward fold advances.
+	spawn_result := obs_chain_call(t, &registry, "control_spawn", strings.concatenate({"{", sid, `,"thing":"Hero"}`}, context.temp_allocator), context.temp_allocator)
+	testing.expect(t, strings.contains(spawn_result, `"isError":false`), "the spawn on the writable branch is clean")
+
+	// THE FORWARD FOLD: run the branch forward. The runtime folds the pipeline, producing
+	// real new ticks — a CLEAN position ack to the requested tick, not a phantom "tick out of
+	// range".
+	run_result := obs_chain_call(t, &registry, "time_run", strings.concatenate({"{", sid, `,"branch":"branch","until":4}`}, context.temp_allocator), context.temp_allocator)
+	testing.expect(t, strings.contains(run_result, `"isError":false`), "time_run on a writable branch folds forward (no phantom tick-out-of-range)")
+	testing.expect(t, strings.contains(run_result, `\"tick\":4`), "the fold advances the branch head to the requested tick")
+
+	// The real folded tick is inspectable — the pipeline RAN, so the instances are populated.
+	inspect_result := obs_chain_call(t, &registry, "inspect_state", strings.concatenate({"{", sid, `,"thing":"Hero","branch":"branch","tick":4}`}, context.temp_allocator), context.temp_allocator)
+	testing.expect(t, strings.contains(inspect_result, `"isError":false`), "the folded tick is a clean read, not out of range")
+	testing.expect(t, strings.contains(inspect_result, `\"instances\":[{`), "the folded tick carries populated state — the pipeline ran forward")
+
+	// The branch head reads back at the advanced tick (not pinned at the spawn tick) — the
+	// fold COMMITTED the new ticks, the regression the report pinned.
+	head_result := obs_chain_call(t, &registry, "inspect_state", strings.concatenate({"{", sid, `,"thing":"Hero","branch":"branch"}`}, context.temp_allocator), context.temp_allocator)
+	testing.expect(t, strings.contains(head_result, `"isError":false`), "the branch head is a clean read after the fold")
+	testing.expect(t, strings.contains(head_result, `\"tick\":4`), "the branch head advanced to the folded tip, not frozen at the spawn tick")
+}
