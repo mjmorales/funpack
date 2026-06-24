@@ -232,8 +232,6 @@ parse_diagnostic :: proc(err: Parse_Error, line: int, col: int) -> Diagnostic {
 		d.message = "a lambda body is a single statement — one expression, an if-expression, or a `return` — never a multi-statement block; lift the locals into a named helper `fn` and call it from the one-statement lambda (spec §02 §5)"
 	case .Statement_In_Value_Block:
 		d.message = "a value block holds a single expression — a statement-form `if … { return … }` cannot stand here; rewrite it as the if-EXPRESSION `if cond { value } else { value }`, both arms a bare value (spec §02 §5)"
-	case .Let_Tuple_Destructure:
-		d.message = "`let` binds a single name, not a tuple pattern — destructure a tuple with `match <expr> { (a, b) => … }` (spec §02 §5)"
 	}
 	return d
 }
@@ -344,6 +342,8 @@ type_diagnostic :: proc(err: Type_Error, line: int, col: int, declaration: strin
 		d.message = "this signal is declared under an engine-routed name (Trigger/Contact) — rename it so it broadcasts (spec §11 §4)"
 	case .Tuple_Pattern_Arity:
 		d.message = "this tuple match pattern's arity disagrees with its Tuple-typed scrutinee — match every position (spec §02 §5)"
+	case .Let_Tuple_Arity_Mismatch:
+		d.message = "this `let (a, b, …)` destructure's binder count disagrees with the right-hand tuple — bind exactly one name per tuple element, or `let name = …` if the right-hand side is not a tuple (spec §02 §5)"
 	case .Migrate_From_Collision:
 		d.message = "this @migrate's prior name is still live — a renamed-from name must not name a current field/type (spec §05 §6)"
 	case .Migrate_Convert_Unknown:

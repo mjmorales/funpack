@@ -370,6 +370,8 @@ fmt_build_error_name :: proc(err: funpack.Build_Error) -> string {
 		return "debug_directive"
 	case .Asset_Bake_Failed:
 		return "asset_bake_failed"
+	case .Let_Tuple_Unsupported_Wire:
+		return "let_tuple_unsupported_wire"
 	}
 	return "unknown"
 }

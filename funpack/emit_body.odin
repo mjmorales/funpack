@@ -71,6 +71,19 @@ emit_executable_body :: proc(b: ^strings.Builder, holed: bool, has_fallback: boo
 emit_statement :: proc(b: ^strings.Builder, stmt: Statement) {
 	switch node in stmt {
 	case Let_Node:
+		// The single-name `let n = e` carries its name scalar (artifact-format
+		// §2.7, schema v18). A tuple-destructure `let (a, b, …) = e` (ADR
+		// 2026-06-24-let-tuple-destructure-binding) has no v18 wire encoding — the
+		// N-name binder list is a v19 reshape touching the funpack↔runtime contract
+		// (the runtime decoder/interpreter owns the other half, gated by an
+		// exact-match schema check). A tuple-`let` in a GAMEPLAY body is refused
+		// before emission by let_tuple_wire_gate (build.odin), so it never reaches
+		// this serializer — there is no silent malformed-node path (the
+		// dual-interpreter parity trap). The form is fully usable in `test` blocks,
+		// which the compiler evaluator destructures directly (evaluate.odin), off
+		// the wire entirely. This assert names the gate gap should one ever be
+		// bypassed, rather than emitting an undecodable node.
+		assert(!node.is_tuple, "tuple-let reached emit: let_tuple_wire_gate must refuse it before serialization (no v18 wire encoding)")
 		emit_line(b, "node let ", node.name, " 1")
 		emit_expr(b, node.value)
 	case Return_Node:
@@ -92,6 +105,84 @@ emit_statement :: proc(b: ^strings.Builder, stmt: Statement) {
 		// emitter serializes only executable bodies the runtime interprets, so
 		// an assert never reaches here.
 	}
+}
+
+// body_has_tuple_let reports whether a statement body holds a `let (a, b, …) =
+// expr` tuple destructure anywhere — including under an `if cond { … }` early-
+// return guard's nested block. let_tuple_wire_gate uses it to refuse a GAMEPLAY
+// body whose tuple-`let` has no v18 wire encoding (ADR
+// 2026-06-24-let-tuple-destructure-binding); a test body is never walked here (it
+// is evaluated off the wire by the compiler interpreter, which destructures the
+// form directly). The walk mirrors emit_statement's body recursion so a tuple-
+// `let` buried in a guard block is still caught.
+body_has_tuple_let :: proc(body: []Statement) -> bool {
+	for stmt in body {
+		#partial switch node in stmt {
+		case Let_Node:
+			if node.is_tuple {
+				return true
+			}
+		case If_Node:
+			if body_has_tuple_let(node.body) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// let_tuple_wire_gate reports whether any GAMEPLAY-executable body in this module
+// holds a `let (a, b, …) = expr` tuple destructure the artifact cannot carry at
+// schema v18 (ADR 2026-06-24-let-tuple-destructure-binding). The emit-bound
+// gameplay units are the same set gate_units gathers MINUS test blocks — fns
+// (excluding the body-less extern/holed forms), behavior `step` bodies, and query
+// bodies — because only those serialize into the artifact the runtime interprets;
+// a `test` body is evaluated off the wire by the compiler interpreter, which
+// destructures the form directly, so it is never gated here.
+let_tuple_wire_gate :: proc(ast: Ast) -> bool {
+	for fn in ast.fns {
+		if fn.is_extern || fn.holed {
+			continue
+		}
+		if body_has_tuple_let(fn.body) {
+			return true
+		}
+	}
+	for behavior in ast.behaviors {
+		if behavior.step.holed {
+			continue
+		}
+		if body_has_tuple_let(behavior.step.body) {
+			return true
+		}
+	}
+	for query in ast.queries {
+		if body_has_tuple_let(query.body) {
+			return true
+		}
+	}
+	return false
+}
+
+// sibling_fns_have_tuple_let extends the wire gate to the §17 sibling-module fns
+// the entrypoint imports and carries into [functions] (collect_imported_fn_records).
+// A tuple-`let` in any sibling fn that could be carried has the same missing v18
+// encoding, so it refuses the build the same way. It over-approximates by scanning
+// every sibling module AST's fns rather than only the carried subset — a sibling
+// fn with a tuple-`let` is unbuildable regardless of whether THIS entrypoint imports
+// it, and the over-scan never lets an undecodable node onto the wire.
+sibling_fns_have_tuple_let :: proc(module_asts: map[string]Ast) -> bool {
+	for _, sib in module_asts {
+		for fn in sib.fns {
+			if fn.is_extern || fn.holed {
+				continue
+			}
+			if body_has_tuple_let(fn.body) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // single_bare_return reports whether an early-return guard block is the lone

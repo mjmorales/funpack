@@ -661,7 +661,20 @@ fmt_statement :: proc(b: ^strings.Builder, stmt: Statement, indent: int) {
 	case Let_Node:
 		fmt_write_indent(b, indent)
 		strings.write_string(b, "let ")
-		strings.write_string(b, node.name)
+		if node.is_tuple {
+			// A `let (a, b, …) = expr` tuple destructure (spec §02 §5/§8):
+			// the binder list round-trips as `(name, name, …)`.
+			strings.write_string(b, "(")
+			for name, i in node.names {
+				if i > 0 {
+					strings.write_string(b, ", ")
+				}
+				strings.write_string(b, name)
+			}
+			strings.write_string(b, ")")
+		} else {
+			strings.write_string(b, node.name)
+		}
 		strings.write_string(b, " = ")
 		fmt_expr(b, node.value, indent)
 		strings.write_string(b, "\n")

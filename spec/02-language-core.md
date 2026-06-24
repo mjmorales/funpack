@@ -133,6 +133,12 @@ Expression-oriented: `if` and `match` **yield values**. A function nonetheless p
 - **`let`** — `let name: Type = expr` (the type annotation is optional where inferable). The only
   binding form; there is no `var`/`set`. All locals are immutable; state evolves by `with` and by
   returning new values. The sole sanctioned mutation is `mut data` ([`03`](03-data-model.md)).
+  - **Tuple destructure** — `let (a, b, …) = expr` binds each name to its position in a
+    return-position tuple (§5, §8): the threaded-`Rng` consume site `let (value, next) = draw(rng)`,
+    where each `engine.rand` draw returns `(value, nextRng)`. The binder count must equal the tuple
+    arity (a mismatch, or a non-tuple right-hand side, is a compile error). The binder list is a flat
+    sequence of plain names — for anything richer than a return-tuple consume, use `match`. A `(`
+    immediately after `let` selects this form.
 - **`return`** — `return expr`. Mandatory to produce a function's value.
 - **No `for` / `while`.** The functional core has no imperative loops. Iteration is the list
   combinators (`map`, `filter`, `fold`, `find`); `fold` is the deterministic loop primitive, folding

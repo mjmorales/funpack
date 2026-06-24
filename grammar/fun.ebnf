@@ -128,11 +128,17 @@ FnType    ::= 'fn' '(' (Type (',' Type)*)? ')' '->' Type    (* fn(A, T) -> A *)
 
 Block      ::= '{' (Statement (Sep Statement)* Sep?)? '}'
 Statement  ::= LetStmt | ReturnStmt | IfExpr | MatchExpr | ExprStmt
-LetStmt    ::= 'let' LOWER_IDENT (':' Type)? '=' Expr
+LetStmt    ::= 'let' LetBinder (':' Type)? '=' Expr
+LetBinder  ::= LOWER_IDENT                                 (* single name: let n = e *)
+             | '(' LOWER_IDENT (',' LOWER_IDENT)+ ')'      (* tuple destructure: let (a, b) = e (02 §5/§8) *)
 ReturnStmt ::= 'return' Expr
 ExprStmt   ::= Expr
 (* Dispatch: let | return | if | match | <else: Expr>. `if`/`match` are pulled
-   out of ExprStmt so they parse as the if/match constructs. *)
+   out of ExprStmt so they parse as the if/match constructs. The `(` after `let`
+   is the unambiguous one-token signal that selects the tuple-destructure binder
+   over the single name — no backtrack (see fun.ll1.md §4). The binder list is a
+   flat sequence of plain lower-ident names, not a nested pattern; structural
+   matching stays in MatchExpr's Pattern. *)
 
 
 (* 13. Patterns (02 §5, 03 §2) — disjoint FIRST by ident class -------------- *)

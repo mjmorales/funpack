@@ -165,16 +165,46 @@ test_parse_let_wrong_case_name :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
-// ── reject: let tuple-destructuring ─────────────────────────────────────────────
+// ── let tuple-destructure parses (spec §02 §5/§8) ───────────────────────────────
 @(test)
-test_parse_let_tuple_destructure_rejected :: proc(t: ^testing.T) {
-	// `let (a, b) = …` is the Rust/Swift/Python destructure instinct; §02 §6 binds a
-	// `let` to a SINGLE name, so the `(` after `let` names the dedicated
-	// Let_Tuple_Destructure verdict (steering the author to the `match` rewrite),
-	// not the bare Unexpected_Token expect(.Ident) trips on the paren.
+test_parse_let_tuple_destructure :: proc(t: ^testing.T) {
+	// `let (a, b) = expr` destructures a return-position tuple (ADR
+	// 2026-06-24-let-tuple-destructure-binding) — the threaded-Rng consume site
+	// `let (value, next) = draw(rng)`. The `(` immediately after `let` is the LL(1)
+	// signal that selects the tuple form; the binder list parses into Let_Node.names
+	// with is_tuple set, and `name` stays empty.
 	tokens := stage_lex("fn draw() -> Int {\n  let (a, b) = pair()\n  return a\n}\n")
+	ast, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.None)
+	let_node, is_let := ast.fns[0].body[0].(Let_Node)
+	testing.expect(t, is_let)
+	testing.expect(t, let_node.is_tuple)
+	testing.expect_value(t, let_node.name, "")
+	testing.expect_value(t, len(let_node.names), 2)
+	testing.expect_value(t, let_node.names[0], "a")
+	testing.expect_value(t, let_node.names[1], "b")
+}
+
+// A three-binder tuple destructure parses the same way — the binder list is any
+// arity, zipped against the RHS tuple by the type checker.
+@(test)
+test_parse_let_tuple_destructure_three_binders :: proc(t: ^testing.T) {
+	tokens := stage_lex("fn f() -> Int {\n  let (a, b, c) = triple()\n  return a\n}\n")
+	ast, err := stage_parse(tokens)
+	testing.expect_value(t, err, Parse_Error.None)
+	let_node, is_let := ast.fns[0].body[0].(Let_Node)
+	testing.expect(t, is_let)
+	testing.expect(t, let_node.is_tuple)
+	testing.expect_value(t, len(let_node.names), 3)
+}
+
+// A tuple-destructure binder that is not snake_case keeps the parser-wide
+// Wrong_Case verdict (a tuple binder is a local value name).
+@(test)
+test_parse_let_tuple_destructure_wrong_case :: proc(t: ^testing.T) {
+	tokens := stage_lex("fn f() -> Int {\n  let (A, b) = pair()\n  return b\n}\n")
 	_, err := stage_parse(tokens)
-	testing.expect_value(t, err, Parse_Error.Let_Tuple_Destructure)
+	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
 @(test)

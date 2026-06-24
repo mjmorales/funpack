@@ -137,10 +137,16 @@ stage_evaluate_indexed :: proc(typed: Typed_Ast, modules: []Module_Eval, module:
 		for stmt in test.body {
 			switch node in stmt {
 			case Let_Node:
-				// A failed RHS leaves the name unbound; the asserts
-				// reading it then fail rather than trapping.
+				// A failed RHS leaves the name(s) unbound; the asserts
+				// reading them then fail rather than trapping. A tuple
+				// destructure binds each position; a non-tuple/arity-skew RHS
+				// (a typecheck-rejected program reaching eval) leaves them unbound.
 				if value, ok := eval_expr(ctx, env, node.value); ok {
-					env.bindings[node.name] = value
+					if node.is_tuple {
+						bind_let_tuple_value(env, node.names, value)
+					} else {
+						env.bindings[node.name] = value
+					}
 				}
 			case Assert_Node:
 				if eval_assert(ctx, env, node) {
@@ -504,12 +510,32 @@ eval_stub_hole :: proc(ctx: Eval_Ctx, frame: ^Env, fallback: Expr, has_fallback:
 // binds into the frame, an `if cond { return … }` early-return fires its body
 // when the guard is true, and a `return expr` yields. The first return reached
 // is the body's value; reaching the end with no return is ok = false.
+// bind_let_tuple_value destructures a `let (a, b, …) = expr` RHS value into its
+// binders (spec §02 §5/§8; ADR 2026-06-24-let-tuple-destructure-binding). The
+// type checker guarantees a Tuple_Value of matching arity, so this is mechanical;
+// it still fails closed (ok=false, leaving the names unbound) on a non-tuple or an
+// arity skew rather than trapping, mirroring eval_statements' `if` bool guard.
+bind_let_tuple_value :: proc(frame: ^Env, names: []string, v: Value) -> (ok: bool) {
+	tuple, is_tuple := v.(Tuple_Value)
+	if !is_tuple || len(tuple.elements) != len(names) {
+		return false
+	}
+	for name, i in names {
+		frame.bindings[name] = tuple.elements[i]
+	}
+	return true
+}
+
 eval_statements :: proc(ctx: Eval_Ctx, frame: ^Env, body: []Statement) -> (value: Value, ok: bool) {
 	for stmt in body {
 		switch node in stmt {
 		case Let_Node:
 			v := eval_expr(ctx, frame, node.value) or_return
-			frame.bindings[node.name] = v
+			if node.is_tuple {
+				bind_let_tuple_value(frame, node.names, v) or_return
+			} else {
+				frame.bindings[node.name] = v
+			}
 		case If_Node:
 			cond := eval_expr(ctx, frame, node.cond) or_return
 			guard, is_bool := cond.(bool)

@@ -13,9 +13,21 @@ Assert_Node :: struct {
 	expr: Expr,
 }
 
+// Let_Node is a body/test `let` binding (spec §02 §6). It carries one of two
+// binder shapes, told apart by `is_tuple`:
+//   - single name (the common form): `let name = expr` — `name` holds the
+//     binder, `names` is nil.
+//   - tuple destructure (spec §02 §5/§8): `let (a, b, …) = expr` — `names` holds
+//     the positional binders zipped against the RHS tuple's elements, `name` is
+//     "". A `(` immediately after `let` is the unambiguous LL(1) signal that
+//     selects this shape (one token of lookahead, no backtrack).
+// The binder list is a flat sequence of plain lower-ident names — NOT the full
+// nested match-pattern grammar; structural pattern matching stays in `match`.
 Let_Node :: struct {
-	name:  string,
-	value: Expr,
+	name:     string,   // single-name binder; "" when is_tuple
+	names:    []string, // tuple-destructure binders (positional); nil when single-name
+	is_tuple: bool,     // true ⇒ destructure `names` against the RHS tuple
+	value:    Expr,
 }
 
 // Return_Node is the mandatory value-producing statement of a fn body
@@ -506,8 +518,13 @@ Parse_Error :: enum {
 	Newline_Before_Binary_Op, // a statement/expression-start position whose first token is a binary operator (`and`/`or`, a comparison `== != < <= > >=`, or an arithmetic `+ * / %`) — funpack is newline-terminated (spec §02 §1), so the prior line already ended a complete expression and a binary operator cannot continue it across the newline; a named verdict steering the author to keep each line a complete expression (or bind an intermediate `let`) rather than the bare Unexpected_Token the dangling operator would otherwise trip. Unary-capable leads (`-`, `not`) are EXCLUDED — they legally open a fresh expression — so only the binary-only operators arm this verdict
 	Lambda_Body_Multi_Statement, // a lambda body `fn(params){ … }` holding MORE THAN ONE statement — §02 §5 admits a SINGLE statement: one expression (implicit return `fn(x){ x + 1 }`), an if-expression (`fn(x){ if c { a } else { b } }`), or a `return` (`fn(x){ return x + 1 }`) — never a multi-statement block. A leading `let` is the multi-statement case by construction (a `let` binds a name the body must then use, so it cannot be the one statement); a second statement after the first (the `let`-then-`return` body) is the general case. A named verdict steering the author to lift the locals/branches into a named helper `fn` (which CAN hold a `let` sequence and is independently testable) and call it from the one-statement lambda, rather than the bare Unexpected_Token the second statement's lead token would otherwise trip; the Newline_Before_Binary_Op mold — named at the lambda-body seam (the leading `let`, or the first token past the single statement before `}`)
 	Statement_In_Value_Block, // a value-block arm `{ … }` (an if-expression branch, by extension a lambda body that parses as a statement-form `if`) whose first token is a STATEMENT keyword (`return`/`let`), not an expression — §02 §5 makes every value-block hold exactly one expression. The trip is a statement-form `if` written in expression position: `fn(acc, x){ if c { return v } return w }` parses the body as an if-EXPRESSION whose `{ return v }` branch then leads with `return`. A named verdict steering the author to the if-EXPRESSION rewrite (`if c { v } else { w }`, both arms a bare value), rather than the bare Unexpected_Token the inner statement keyword would otherwise trip; the Lambda_Body_Multi_Statement mold — named at the value-block seam (the statement keyword leading the branch)
-	Let_Tuple_Destructure,    // a `let (a, b) = …` binding — §02 §6 binds a `let` to a SINGLE name, never a destructuring pattern (the `(` after `let` opens a pattern no binding form admits). A named verdict steering the author to `match <expr> { (a, b) => … }` (the §02 §5 tuple-destructuring idiom every example threads tuple returns through — rng threading, command+signal pairs), rather than the bare Unexpected_Token the `(` would otherwise trip when `expect(.Ident)` finds a paren; the Lambda_Body_Multi_Statement mold — named at the `let` binding seam (the `(` opening the unsupported destructure)
 }
+// `let (a, b) = …` tuple destructure is LEGAL (spec §02 §5/§8; ADR
+// 2026-06-24-let-tuple-destructure-binding): the parser zips the binder list
+// against the RHS tuple via parse_let_tuple, so there is no parse-stage verdict
+// for the form. A binder-arity disagreement is the TYPE-stage Let_Tuple_Arity_Mismatch
+// (typecheck.odin), not a parse error — the parse always succeeds and the arity is
+// a typing fact.
 
 Parser :: struct {
 	tokens: []Token,
@@ -1362,12 +1379,12 @@ parse_assert :: proc(p: ^Parser) -> (node: Assert_Node, err: Parse_Error) {
 
 parse_let :: proc(p: ^Parser) -> (node: Let_Node, err: Parse_Error) {
 	expect(p, .Let) or_return
-	// A `(` after `let` is the tuple-destructuring instinct (`let (a, b) = …`):
-	// §02 §6 binds a `let` to a single name, so name the verdict on the `(` and
-	// steer the author to the `match` rewrite, rather than letting expect(.Ident)
-	// trip a bare Unexpected_Token on the paren.
+	// A `(` after `let` is the tuple-destructure signal (`let (a, b) = …`, spec
+	// §02 §5/§8): the binding consumes a return-position tuple and zips a flat
+	// binder list against its elements. One token of lookahead selects this shape
+	// vs the single-name form, so the grammar stays LL(1) with no backtrack.
 	if peek_kind(p) == .L_Paren {
-		return node, reject(p, peek_tok(p), .Let_Tuple_Destructure)
+		return parse_let_tuple(p)
 	}
 	name := expect(p, .Ident) or_return
 	// A binding name is a value name: snake_case, or UPPER_SNAKE for a
@@ -1379,6 +1396,37 @@ parse_let :: proc(p: ^Parser) -> (node: Let_Node, err: Parse_Error) {
 	value := parse_expression(p) or_return
 	terminate_statement(p) or_return
 	return Let_Node{name = name.text, value = value}, .None
+}
+
+// parse_let_tuple parses the tuple-destructure binder list of a `let (a, b, …) =
+// expr` (spec §02 §5/§8; grammar/fun.ebnf §12 LetStmt). The opener `(` is already
+// the confirmed lookahead. Each binder is a plain lower-ident value name — NOT a
+// nested pattern (structural matching stays in `match`); a `(`-with-one-binder
+// `let (a) = …` is a single-element tuple pattern, parse-legal but a parenthesized
+// grouping at the binding site, left for the type checker's arity gate to reconcile
+// against the RHS. The names are zipped against the RHS tuple's elements by the
+// checker (Let_Tuple_Arity_Mismatch on a count disagreement).
+parse_let_tuple :: proc(p: ^Parser) -> (node: Let_Node, err: Parse_Error) {
+	expect(p, .L_Paren) or_return
+	names := make([dynamic]string, 0, 2, context.temp_allocator)
+	for {
+		name := expect(p, .Ident) or_return
+		// A binder is a snake_case value name (a tuple binder is a local, never a
+		// module constant, so UPPER_SNAKE is out of place here).
+		if name.class != .Snake_Case {
+			return node, reject(p, name, .Wrong_Case)
+		}
+		append(&names, name.text)
+		if peek_kind(p) != .Comma {
+			break
+		}
+		p.pos += 1 // consume the `,`
+	}
+	expect(p, .R_Paren) or_return
+	expect(p, .Eq) or_return
+	value := parse_expression(p) or_return
+	terminate_statement(p) or_return
+	return Let_Node{names = names[:], is_tuple = true, value = value}, .None
 }
 
 // parse_let_decl parses a module-level constant `let NAME: T = expr`

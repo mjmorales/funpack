@@ -34,6 +34,7 @@ Type_Error :: enum {
 	Unregistered_Layer, // a Body's layer/mask names a value outside any CollisionLayer-kinded enum's variant set (spec §11 §5)
 	Reserved_Signal_Name, // a user signal declared under an engine-routed name (Trigger/Contact, spec §11 §4) — the runtime routes those names per-instance, so the user signal would silently never broadcast
 	Tuple_Pattern_Arity,  // a tuple match pattern whose positional arity disagrees with its Tuple-typed scrutinee (spec §02 §5) — a 2-binder pattern over a 3-tuple can never bind coherently
+	Let_Tuple_Arity_Mismatch, // a `let (a, b, …) = expr` tuple-destructure whose binder count disagrees with the RHS — the RHS is a tuple of a different arity, or not a tuple at all (spec §02 §5/§8; ADR 2026-06-24-let-tuple-destructure-binding). The binding cannot zip coherently, so each name has no element type to take; named at the destructure seam rather than folded into the generic Type_Mismatch
 	Migrate_From_Collision, // a @migrate rename whose prior name is still live (spec §05 §6 + the epic's admissibility rule): a `from:` naming a current field of the same data, or — decl-level — a current type declaration; the "old" name being live contradicts the rename
 	Migrate_Convert_Unknown, // a @migrate `with:` naming no fn this module declares — the conversion must resolve to a declared pure fn (spec §05 §6)
 	Migrate_Convert_Arity,   // a @migrate conversion that is not a single-parameter fn — the spec's shape is `fn(Old) -> New`, exactly one value in (spec §05 §6)
@@ -829,7 +830,11 @@ check_statements :: proc(ctx: Check_Ctx, body: []Statement) -> Type_Error {
 		switch node in stmt {
 		case Let_Node:
 			type := expr_check(ctx, node.value) or_return
-			ctx.scope[node.name] = type
+			if node.is_tuple {
+				bind_let_tuple(&ctx.scope, node.names, type) or_return
+			} else {
+				ctx.scope[node.name] = type
+			}
 		case Return_Node:
 			value := expr_check(ctx, node.value) or_return
 			if !types_compatible(value, ctx.expected_return) {
@@ -866,7 +871,14 @@ check_tests :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, ast:
 					stamp_decl(site, test.name, test.line)
 					return err
 				}
-				ctx.scope[node.name] = type
+				if node.is_tuple {
+					if berr := bind_let_tuple(&ctx.scope, node.names, type); berr != .None {
+						stamp_decl(site, test.name, test.line)
+						return berr
+					}
+				} else {
+					ctx.scope[node.name] = type
+				}
 			case Assert_Node:
 				if err := check_assert(ctx, node); err != .None {
 					stamp_decl(site, test.name, test.line)
@@ -1168,6 +1180,31 @@ if_check :: proc(ctx: Check_Ctx, e: ^If_Expr) -> (type: Type, err: Type_Error) {
 		return else_type, .None
 	}
 	return then_type, .None
+}
+
+// bind_let_tuple binds a `let (a, b, …) = expr` tuple-destructure's binders into
+// the scope (spec §02 §5/§8; ADR 2026-06-24-let-tuple-destructure-binding). The
+// RHS must be a Tuple_Type whose element count equals the binder count; each name
+// takes its positional element type. A non-tuple RHS, or a tuple of a different
+// arity, cannot zip coherently and is Let_Tuple_Arity_Mismatch — named at the
+// destructure seam, never a generic Type_Mismatch. The bound locals are immutable
+// like any single-name `let`.
+//
+// scope is taken by POINTER, not value: an Odin `map` is a value type whose header
+// (backing pointer / len / cap) is copied on pass-by-value, so a write that grows
+// the map reallocates the backing and updates only the LOCAL header — leaving the
+// caller's threaded scope pointing at the stale backing (a flaky later-statement
+// Unresolved_Name). Binding through `scope^` mutates the caller's actual map, so a
+// resize propagates, exactly as check_statements' in-place `ctx.scope[name] = …`.
+bind_let_tuple :: proc(scope: ^Scope, names: []string, rhs: Type) -> Type_Error {
+	tuple, is_tuple := rhs.(^Tuple_Type)
+	if !is_tuple || len(tuple.elements) != len(names) {
+		return .Let_Tuple_Arity_Mismatch
+	}
+	for name, i in names {
+		scope[name] = tuple.elements[i]
+	}
+	return .None
 }
 
 // tuple_check types a tuple expression `(a, b, …)` into a Tuple_Type over its

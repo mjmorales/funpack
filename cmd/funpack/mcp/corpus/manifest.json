@@ -1,25 +1,25 @@
 {
-  "spec_ref": "plugin-v0.9.0",
+  "spec_ref": "plugin-v0.9.1",
   "funpack_version": "0.16.0",
   "sources": [
     {
       "root": "spec",
       "kind": "spec",
-      "ref": "plugin-v0.9.0",
+      "ref": "plugin-v0.9.1",
       "sections": 233,
-      "content_hash": "8e4cc60d0605e542d0d75f60c1985f75c8db97c1ad7077f500580bdca5f4c1e6"
+      "content_hash": "3911edadc9c539bb1d3575adc374beb2e506f2fad682f4f173f3af8cd77f23a2"
     },
     {
       "root": "stdlib/engine",
       "kind": "engine",
-      "ref": "plugin-v0.9.0",
+      "ref": "plugin-v0.9.1",
       "sections": 283,
       "content_hash": "2c1a77a2767ea6b77d602b0def25864e77bbb53d73e4a6b0e97d9c33041d4674"
     },
     {
       "root": "plugins/funpack",
       "kind": "plugin",
-      "ref": "0.15.0",
+      "ref": "0.16.0",
       "sections": 153,
       "content_hash": "22e0376bddaf415070fa440c8cded56d6e23cefb096c3f031f1edabb36ba8c0c"
     }

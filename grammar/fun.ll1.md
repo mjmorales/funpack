@@ -108,6 +108,7 @@ Letters reference §5. "✔" = single-token, disjoint.
 | `NamedType TypeArgs?` | `[`⇒args; else skip | ✔ |
 | `StageValue` | `[`/`ℓ`/`Ʉ` | ✔ |
 | `Statement` / `TestStmt` | `let`/`return`/`assert`/`if`/`match` first; else ExprStmt | ✔ (if/match pulled out) |
+| `LetBinder` (after `let`) | `(`⇒tuple destructure; `ℓ`⇒single name | ✔ (1-token, no backtrack) |
 | `Pattern` | `_`/`ℓ`/`(`/`Ʉ` | ✔ (§1.1) |
 | `VariantPat` | `(`/`{` | ✔ |
 | Expr cascade | lookahead ∈ this level's op set | ✔ |
