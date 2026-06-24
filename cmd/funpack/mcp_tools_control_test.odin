@@ -338,6 +338,86 @@ test_ctrl_capture_test_folds :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"cmd\":\"capture_test\"`), "the lifted envelope is the capture_test response")
 }
 
+// --- friction-c8ce3627: control_spawn after a rewind anchors at the cursor ----------
+
+// ctrl_chain_call drives one tools/call through the PRODUCTION dispatch chain
+// (mcp_handle_tools_call), so a control-family test can fold a time_*/inspect_* command
+// (observe family) over the SAME session — the cursor-anchoring sequence rewinds (observe)
+// then spawns (control), which spans two families. It builds the Mcp_Request exactly as
+// mcp_parse_request does (params.name + params.arguments) and returns the rendered result.
+@(private = "file")
+ctrl_chain_call :: proc(
+	t: ^testing.T,
+	registry: ^Mcp_Session_Registry,
+	name: string,
+	args_json: string,
+) -> string {
+	params := make(json.Object, context.temp_allocator)
+	params["name"] = json.String(name)
+	parsed, err := json.parse(transmute([]u8)args_json, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	testing.expectf(t, err == .None, "chain args must parse: %v", err)
+	object, is_object := parsed.(json.Object)
+	testing.expect(t, is_object, "chain args must be a JSON object")
+	params["arguments"] = object
+	request := Mcp_Request{id = Mcp_Id{kind = .Integer, integer = 11}, method = "tools/call", params = params}
+	return mcp_handle_tools_call(registry, request, context.temp_allocator)
+}
+
+// test_ctrl_spawn_after_rewind_anchors_at_cursor is the friction-c8ce3627 junction: a
+// control_spawn issued AFTER a time_rewind — with no explicit control_branch/control_checkout
+// — anchors the implicit fork at the REWOUND cursor, not at the recording end. The report's
+// repro rewound the cursor into the middle of the recording, spawned, and saw the edit
+// silently anchor to the recording end (base_tick 63) where it was unobservable. With R4's
+// cursor-anchoring fix the spawn's base_tick is the rewound tick, and the spawned row is
+// observable there. This is the surface VERIFICATION that control_spawn surfaces the runtime
+// anchoring truthfully — the lift carries the §28 branch.base_tick verbatim.
+//
+// The sequence runs through the production chain (rewind is observe-family, spawn is
+// control-family): open + load + run the canonical timeline to the recorded head, rewind to
+// an interior tick, then spawn with no prior checkout. The proof:
+//
+//   - the spawn's result reports branch.base_tick == the rewound tick (not the recording end),
+//   - inspect_state on the active branch at that tick shows the spawned Hero — the edit is
+//     observable at the cursor, the dead-end the report hit.
+@(test)
+test_ctrl_spawn_after_rewind_anchors_at_cursor :: proc(t: ^testing.T) {
+	path, staged := ctrl_stage_fixture("funpack-mcp-ctrl-rewind-spawn.fpk")
+	if !staged {
+		return
+	}
+	defer os.remove(path)
+
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+	id, open_result := mcp_session_registry_open(&registry, path, "", false, "", context.temp_allocator)
+	if open_result != .Ok || id == "" {
+		return
+	}
+
+	sid := strings.concatenate({`"session_id":"`, id, `"`}, context.temp_allocator)
+
+	// Load + run the canonical timeline to the recorded head, then rewind the cursor into the
+	// interior — the "edit the past" flow the report followed.
+	_ = ctrl_chain_call(t, &registry, "time_load", strings.concatenate({"{", sid, "}"}, context.temp_allocator))
+	_ = ctrl_chain_call(t, &registry, "time_run", strings.concatenate({"{", sid, "}"}, context.temp_allocator))
+	rewind_result := ctrl_chain_call(t, &registry, "time_rewind", strings.concatenate({"{", sid, `,"tick":2}`}, context.temp_allocator))
+	testing.expect(t, strings.contains(rewind_result, `"isError":false`), "the rewind to an interior tick is clean")
+	testing.expect(t, strings.contains(rewind_result, `\"tick\":2`), "the cursor rewinds to tick 2")
+
+	// control_spawn with NO explicit branch checkout — the implicit fork must anchor at the
+	// rewound cursor (tick 2), the R4 fix. The report saw base_tick 63 here (recording end).
+	spawn_result := ctrl_chain_call(t, &registry, "control_spawn", strings.concatenate({"{", sid, `,"thing":"Hero"}`}, context.temp_allocator))
+	testing.expect(t, strings.contains(spawn_result, `"isError":false`), "the post-rewind spawn is clean")
+	testing.expect(t, strings.contains(spawn_result, `\"base_tick\":2`), "the implicit fork anchors at the rewound cursor (tick 2), NOT the recording end")
+	testing.expect(t, strings.contains(spawn_result, `\"instance\":`), "the spawn surfaces the minted instance id")
+
+	// The spawned row is OBSERVABLE at the rewound tick on the active branch — the dead-end
+	// the report hit (the agent never showed up) is fixed.
+	inspect_result := ctrl_chain_call(t, &registry, "inspect_state", strings.concatenate({"{", sid, `,"thing":"Hero","branch":"branch","tick":2}`}, context.temp_allocator))
+	testing.expect(t, strings.contains(inspect_result, `"isError":false`), "the spawned state is a clean read at the cursor tick")
+	testing.expect(t, strings.contains(inspect_result, `\"instances\":[{`), "the spawned Hero is observable at the rewound tick — the edit anchors at the cursor, not off at the recording end")
+}
+
 // ctrl_session_args builds an MCP arguments JSON object string with the session_id
 // selector plus an optional pre-rendered `,extra` field run — the small helper the
 // fold tests build their arguments through so each test reads as its tool's call.
