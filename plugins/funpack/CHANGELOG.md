@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.10.0] - 2026-06-24
+
+### Features
+- feat(funpack-language): document let tuple-destructure as the threaded-Rng consume idiom (829e274)
+
 ## [0.9.1] - 2026-06-24
 
 ### Other
