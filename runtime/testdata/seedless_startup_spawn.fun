@@ -1,4 +1,4 @@
-@doc("A minimal seedless game whose startup population is built programmatically (concat over a fold), so the compiler cannot constant-fold it into the [setup] literal batch and emits [setup 0] with the body in [functions] — the colony-sim shape that reproduces friction 116a1681.")
+@doc("A minimal seedless game whose startup population is built programmatically (concat over a fold), so the compiler cannot constant-fold it into the [setup] literal batch and emits [setup 0] with the body in [functions] — the colony-sim shape that reproduces friction 116a1681. It also carries a real move behavior so a forward fold visibly advances state (friction 6e7bb2c4).")
 
 import engine.world.{Spawn}
 import engine.list.{fold, concat, len}
@@ -32,10 +32,12 @@ fn setup() -> [Spawn] {
   return fold(cols(), [], fn(acc, x) { return concat(acc, [mote_at(x)]) })
 }
 
-@doc("Advance each mote one cell per tick — a pure self-update, no signals, no Rng.")
+@doc("Advance each mote one cell per tick — a pure self-update, no signals, no Rng. A real move behavior so a forward fold visibly changes state.")
 @gtag("game")
-fn step(self: Mote) -> Mote {
-  return Mote{x: self.x + 1, hp: self.hp}
+behavior march on Mote {
+  fn step(self: Mote) -> Mote {
+    return self with { x: self.x + 1 }
+  }
 }
 
 @doc("No device input.")
@@ -48,5 +50,5 @@ fn bindings() -> Bindings {
 @gtag("game")
 pipeline Field {
   startup: [setup]
-  move:    [step]
+  move:    [march]
 }

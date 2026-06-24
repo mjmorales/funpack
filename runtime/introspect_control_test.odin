@@ -9,6 +9,7 @@
 // why it forks.
 package funpack_runtime
 
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 
@@ -474,6 +475,231 @@ test_control_refusals_leave_branch_untouched :: proc(t: ^testing.T) {
 		"a refused control must leave the branch head untouched",
 	)
 	testing.expect_value(t, s.branch.ticks, ticks_before)
+}
+
+// SEEDLESS_CONTROL_ARTIFACT is the seedless programmatic-startup fixture (the
+// friction-116a1681 build), reused for the branch forward-fold and rewound-cursor
+// junctions: it spawns 4 Motes at startup and carries a real `march` behavior that
+// advances each Mote's `x` one cell/tick — so a forward fold VISIBLY changes state
+// (the proof a fold actually ran, not a phantom cursor). #load-embedded for a
+// hermetic golden.
+@(private = "file")
+SEEDLESS_CONTROL_ARTIFACT := #load("testdata/seedless_startup_spawn.artifact", string)
+
+// seedless_control_session opens a control session over the seedless Mote fixture with
+// a short empty-input canonical recording — the branch perturbations + forward folds
+// diverge from it.
+@(private = "file")
+seedless_control_session :: proc(
+	t: ^testing.T,
+	ticks: int,
+	allocator := context.allocator,
+) -> (
+	program: ^Program,
+	session: Debug_Session,
+) {
+	program = new(Program, allocator)
+	loaded, err := load_program(SEEDLESS_CONTROL_ARTIFACT, allocator)
+	testing.expect(t, err == .None, "the seedless Mote fixture must load")
+	program^ = loaded
+	inputs := make([]Input, ticks, allocator)
+	for i in 0 ..< ticks {
+		inputs[i] = empty()
+	}
+	session = open_debug_session(program, inputs, NO_SEED, allocator)
+	return program, session
+}
+
+// test_introspect_branch_forward_fold_advances_and_runs_behaviors is the friction-6e7bb2c4
+// junction: time_run / time_step on a WRITABLE branch must FOLD THE PIPELINE FORWARD —
+// compute and commit new ticks in which the branch behaviors run (state visibly changes)
+// and advance the branch head — not advance a phantom cursor while the head stays pinned
+// and the requested ticks read tick-out-of-range.
+//
+// THE BUG (pre-fix): the time group folds ONLY over s.snapshots (the recording) and
+// refuses any target >= len(s.snapshots). A control_spawn on a branch then time_run /
+// time_step advanced the cursor's tick number but computed no tick — the branch head
+// stayed frozen at the spawn tick and the requested ticks were "tick out of range", so
+// the staged battle never resolved. The surface was a replay navigator, not a simulator.
+//
+// THE FIX (introspect_time.odin): when the active lineage is the writable branch, the
+// time group ADVANCES THE BRANCH — folding new ticks through the SAME step_tick seam
+// control_inject_input uses (empty input past the fork, the branch Rng, per-tick Time
+// from the branch's logical tick) — so the cursor tracks the branch tip and every
+// advanced tick is a real committed fold. This test stages 4 Motes on a branch, runs the
+// branch forward, and asserts the Motes ADVANCED (x grew by the run length) and the
+// branch tip moved — and that the branch-forward fold is BIT-IDENTICAL to a plain
+// step_tick fold of the same staged state (the determinism warranty for the branch fold).
+@(test)
+test_introspect_branch_forward_fold_advances_and_runs_behaviors :: proc(t: ^testing.T) {
+	// A short canonical recording so the cursor can be loaded; the branch forks off the
+	// post-startup version (tick -1) and diverges from the (empty-input) recording.
+	_, session := seedless_control_session(t, 2)
+	s := session
+
+	// Fork the post-startup version (the 4 startup-spawned Motes), check it out as the
+	// active writable lineage, then load the timeline and stage one more Mote on the
+	// branch — the friction's "hand-stage a battle on a writable branch" flow.
+	session_request(&s, `{"id":1,"cmd":"branch","args":{"tick":-1}}`)
+	session_request(&s, `{"id":2,"cmd":"checkout","args":{"target":"branch"}}`)
+	session_request(&s, `{"id":3,"cmd":"load"}`)
+	spawned := session_request(&s, `{"id":4,"cmd":"spawn","args":{"thing":"Mote","fields":{"x":"100","hp":"5"}}}`)
+	testing.expect(t, strings.contains(spawned, `"ok":true`), spawned)
+
+	// The branch head before the fold: 5 Motes (4 startup + 1 staged), x=100 on the
+	// staged one. The spawn committed one branch tick, so the branch tip is its logical
+	// tick (base -1 + the spawn commit).
+	tip_before := branch_tip_tick(&s)
+	staged_before, ok_before := branch_row(&s, "Mote", 4) // the staged Mote (Id 4, after 0..3)
+	if !testing.expect(t, ok_before, "the staged Mote must be live on the branch before the fold") {
+		return
+	}
+	x_before, _ := staged_before.fields["x"].(i64)
+	testing.expect_value(t, x_before, 100)
+
+	// RUN THE BRANCH FORWARD: fold 5 ticks past the current branch tip. The march
+	// behavior advances every Mote's x by 1/tick, so 5 folds advance the staged Mote to
+	// x = 105 — the proof the pipeline actually ran, not a phantom cursor.
+	run_target := tip_before + 5
+	ran := session_request(&s, fmt.tprintf(`{{"id":5,"cmd":"run","args":{{"until":%d}}}}`, run_target))
+	testing.expect(t, strings.contains(ran, `"ok":true`), ran)
+	testing.expectf(t, strings.contains(ran, fmt.tprintf(`"tick":%d`, run_target)), "run must report the folded tip: %s", ran)
+
+	// The branch tip advanced by the 5 folded ticks; the head is no longer frozen.
+	testing.expect_value(t, branch_tip_tick(&s), run_target)
+	staged_after, ok_after := branch_row(&s, "Mote", 4)
+	if !testing.expect(t, ok_after, "the staged Mote must persist through the fold") {
+		return
+	}
+	x_after, _ := staged_after.fields["x"].(i64)
+	testing.expectf(t, x_after == 105, "the march behavior must run on every folded tick (x 100 -> 105), got x=%d", x_after)
+
+	// inspect_state at the folded tip must now resolve (not "tick out of range") and show
+	// the advanced population — the friction's failing read, inverted.
+	at_tip := session_request(&s, fmt.tprintf(`{{"id":6,"cmd":"state","args":{{"thing":"Mote","branch":"branch","tick":%d}}}}`, run_target))
+	testing.expect(t, strings.contains(at_tip, `"ok":true`), at_tip)
+	testing.expect(t, strings.contains(at_tip, `"x":"105"`), at_tip)
+
+	// DETERMINISM: the branch-forward fold is bit-identical to a plain step_tick fold of
+	// the same staged base. Re-fold the staged base (the branch head right after the
+	// spawn) forward 5 ticks the long way and compare the final committed world.
+	reference := branch_forward_reference(&s, staged_base_head(&s), 5)
+	testing.expect(
+		t,
+		world_versions_equal(s.branch.head, reference),
+		"the branch-forward fold must equal a plain step_tick re-fold of the staged base (determinism warranty)",
+	)
+}
+
+// test_introspect_control_spawn_honors_rewound_cursor is the friction-c8ce3627
+// junction: after a time_rewind into the middle of the recording, a control_spawn with
+// no active writable branch must fork the implicit branch AT THE CURSOR TICK — so the
+// edit lands at the rewound position and is observable — not silently anchor to the
+// recording end and become unobservable + unadvanceable.
+//
+// THE BUG (pre-fix): ensure_branch forked at len(s.versions)-1 (the recording head),
+// ignoring s.cursor.tick. So `rewind to 5 -> control_spawn` reported base_tick = the
+// recording end, and the spawned row was unobservable at the rewound tick (the
+// "recommended workaround" from the 116a1681 diagnostic was a dead end).
+//
+// THE FIX (ensure_branch, introspect_control.odin): the implicit fork anchors at the
+// cursor's current tick when the timeline is loaded (else the recording head, the prior
+// behavior for an unloaded session). The cursor IS the agent's navigation position, so
+// the implicit fork honors it — `rewind -> spawn` lands at the rewound tick, and with
+// the R2 forward-fold the edit is immediately advanceable. The branch base_tick now
+// reflects the cursor, removing the silent-anchor surprise.
+@(test)
+test_introspect_control_spawn_honors_rewound_cursor :: proc(t: ^testing.T) {
+	// A canonical recording long enough to rewind into the middle (12 ticks of the
+	// seedless Mote march).
+	_, session := seedless_control_session(t, 12)
+	s := session
+
+	session_request(&s, `{"id":1,"cmd":"load"}`)
+	session_request(&s, `{"id":2,"cmd":"run"}`) // cursor at the recording end (tick 11)
+	rewound := session_request(&s, `{"id":3,"cmd":"rewind","args":{"tick":5}}`)
+	testing.expect(t, strings.contains(rewound, `"tick":5`), rewound)
+	testing.expect_value(t, s.cursor.tick, 5)
+
+	// control_spawn with NO active branch: the implicit fork must anchor at the cursor
+	// tick (5), not the recording end (11). The minted Mote (Id 4, after the 4 startup
+	// Motes) is observable at the rewound position.
+	spawned := session_request(&s, `{"id":4,"cmd":"spawn","args":{"thing":"Mote","fields":{"x":"77","hp":"9"}}}`)
+	testing.expect(t, strings.contains(spawned, `"ok":true`), spawned)
+	testing.expect(t, strings.contains(spawned, `"base_tick":5`), fmt.tprintf("the implicit fork must anchor at the rewound cursor tick 5, got: %s", spawned))
+	testing.expect_value(t, s.branch.base_tick, 5)
+
+	// The staged Mote is observable on the branch (it was unobservable in the bug).
+	staged, ok := branch_row(&s, "Mote", 4)
+	if !testing.expect(t, ok, "the spawned Mote must be observable on the rewound-anchored branch") {
+		return
+	}
+	x, _ := staged.fields["x"].(i64)
+	testing.expect_value(t, x, 77)
+
+	// And — composing with the R2 forward-fold — the rewound-anchored edit is
+	// advanceable: checkout the branch and step it once, the march behavior runs (x 78).
+	session_request(&s, `{"id":5,"cmd":"checkout","args":{"target":"branch"}}`)
+	stepped := session_request(&s, `{"id":6,"cmd":"step"}`)
+	testing.expect(t, strings.contains(stepped, `"ok":true`), stepped)
+	advanced, ok2 := branch_row(&s, "Mote", 4)
+	if !testing.expect(t, ok2, "the staged Mote must persist through the forward fold") {
+		return
+	}
+	x2, _ := advanced.fields["x"].(i64)
+	testing.expect_value(t, x2, 78)
+}
+
+// test_introspect_control_spawn_anchors_recording_head_when_unloaded pins the fallback:
+// with no timeline loaded (no cursor armed), the implicit fork keeps the prior behavior
+// — anchor at the recording head — so a session that never navigated still edits at the
+// latest committed tick. The cursor-honoring path is reached ONLY once the timeline is
+// loaded, so the existing no-load control flow is unchanged.
+@(test)
+test_introspect_control_spawn_anchors_recording_head_when_unloaded :: proc(t: ^testing.T) {
+	_, session := seedless_control_session(t, 6)
+	s := session
+	// No `load` — the cursor is unarmed. The implicit fork falls back to the recording
+	// head (tick 5, the last of 6).
+	spawned := session_request(&s, `{"id":1,"cmd":"spawn","args":{"thing":"Mote","fields":{"x":"1","hp":"1"}}}`)
+	testing.expect(t, strings.contains(spawned, `"ok":true`), spawned)
+	testing.expect_value(t, s.branch.base_tick, 5)
+}
+
+// staged_base_head reconstructs the branch head as it stood right after the spawn (5
+// Motes, the staged one at x=100) by re-forking + re-spawning on a throwaway session — the
+// independent base the determinism re-fold folds forward from. It mirrors the production
+// fork+spawn so the reference shares no aliasing with the live branch.
+@(private = "file")
+staged_base_head :: proc(s: ^Debug_Session) -> World_Version {
+	// The branch head minus the forward folds is not retained, so rebuild it: the spawn
+	// committed exactly one branch tick onto the post-startup version. Re-derive by
+	// re-running the same staged spawn on a fresh fork of the SAME canonical startup.
+	ref := s^
+	ref.has_branch = false
+	ref.active_branch = false
+	session_request(&ref, `{"id":1,"cmd":"branch","args":{"tick":-1}}`)
+	session_request(&ref, `{"id":2,"cmd":"checkout","args":{"target":"branch"}}`)
+	session_request(&ref, `{"id":3,"cmd":"spawn","args":{"thing":"Mote","fields":{"x":"100","hp":"5"}}}`)
+	return ref.branch.head
+}
+
+// branch_forward_reference folds a staged base forward `n` ticks the production way —
+// the plain step_tick seam with empty input and a branch-logical Time derivation — the
+// bit-identity reference the branch-forward fold must reproduce.
+@(private = "file")
+branch_forward_reference :: proc(s: ^Debug_Session, base: World_Version, n: int, allocator := context.allocator) -> World_Version {
+	head := base
+	tick_hz := s.program.entrypoint.tick_hz
+	// The staged base sits at the branch tip after the spawn: base_tick -1 + 1 spawn
+	// commit, so the next folded tick's logical ordinal is that tip + 1.
+	next_logical := s.branch.base_tick + 1 + 1
+	for _ in 0 ..< n {
+		time := time_resource_at(tick_hz, next_logical, allocator)
+		head = step_tick(s.program, head, empty(), time, allocator)
+		next_logical += 1
+	}
+	return head
 }
 
 // control_reference_capture folds the golden run untouched — the canonical

@@ -120,9 +120,12 @@ time_load :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) ->
 	return time_position_response(s, id, "load", allocator)
 }
 
-// time_run folds the recorded inputs forward from the cursor to args.until
-// (default: the last recorded tick) — the synchronous `run`. A target behind
-// the cursor is rewind's job and is refused as such.
+// time_run folds forward to args.until — the synchronous `run`. On the CANONICAL
+// lineage it replays the recorded inputs to a recorded tick (default: the last
+// recorded tick); on the ACTIVE WRITABLE BRANCH (§28 §2, friction-6e7bb2c4) it folds
+// the PIPELINE FORWARD past the recording, computing and committing new branch ticks
+// so a staged what-if actually simulates (default: one tick past the branch tip). A
+// target behind the position is rewind's job and is refused as such.
 @(private = "file")
 time_run :: proc(
 	s: ^Debug_Session,
@@ -130,6 +133,19 @@ time_run :: proc(
 	args: json.Object,
 	allocator := context.allocator,
 ) -> string {
+	if time_on_writable_branch(s) {
+		until := i64(branch_tip_tick(s) + 1)
+		if requested, has_until := json_int_field(args, "until"); has_until {
+			until = requested
+		}
+		if int(until) < branch_tip_tick(s) {
+			return error_response(id, "run", "target behind branch tip — rewind instead", allocator)
+		}
+		for branch_tip_tick(s) < int(until) {
+			branch_advance_tick(s)
+		}
+		return time_position_response(s, id, "run", allocator)
+	}
 	until := i64(len(s.snapshots) - 1)
 	if requested, has_until := json_int_field(args, "until"); has_until {
 		until = requested
@@ -146,15 +162,54 @@ time_run :: proc(
 	return time_position_response(s, id, "run", allocator)
 }
 
-// time_step single-ticks the cursor — one recorded tick through the production
-// fold. The end of the recording is a refusal, never a silent no-op.
+// time_step single-ticks forward through the production fold. On the canonical
+// lineage it replays one recorded tick (the end of the recording is a refusal); on
+// the active writable branch (friction-6e7bb2c4) it FOLDS one new pipeline tick onto
+// the branch — there is no "end of recording" on a writable branch, the fold simply
+// extends it.
 @(private = "file")
 time_step :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -> string {
+	if time_on_writable_branch(s) {
+		branch_advance_tick(s)
+		return time_position_response(s, id, "step", allocator)
+	}
 	if s.cursor.tick >= len(s.snapshots) - 1 {
 		return error_response(id, "step", "end of recording", allocator)
 	}
 	time_advance_cursor(s)
 	return time_position_response(s, id, "step", allocator)
+}
+
+// time_on_writable_branch reports whether the time group's run/step should fold the
+// BRANCH forward rather than replay the canonical recording: true only when a live
+// branch is the active lineage (a `checkout` made it active). The canonical chain is
+// read-only — it cannot be folded past its recording — so a forward fold is a branch
+// operation by construction (§28 §2: control perturbs, so it forks; the branch is the
+// only writable lineage).
+@(private = "file")
+time_on_writable_branch :: proc(s: ^Debug_Session) -> bool {
+	return s.active_branch && s.has_branch
+}
+
+// branch_advance_tick folds ONE new pipeline tick onto the active branch through the
+// production seam — the SAME step_tick fold control_inject_input drives, here with an
+// EMPTY input (a forward fold past the recording carries no recorded snapshot, exactly
+// as observe_draw_list / screenshot read empty input past the fork) and the per-tick
+// Time derived from the branch's logical tick. The fold threads the branch Rng for a
+// seeded run and writes back the advanced head + tick count, so the branch tip is a
+// real committed version (time_position_response then reports it). This is the
+// friction-6e7bb2c4 forward-fold: a what-if edit actually simulates.
+@(private = "file")
+branch_advance_tick :: proc(s: ^Debug_Session) {
+	branch := &s.branch
+	logical := branch_tip_tick(s) + 1
+	time := time_resource_at(s.program.entrypoint.tick_hz, logical, s.allocator)
+	if branch.has_rng {
+		branch.head = step_tick(branch.program, branch.head, empty(), time, s.allocator, &branch.rng)
+	} else {
+		branch.head = step_tick(branch.program, branch.head, empty(), time, s.allocator)
+	}
+	branch.ticks += 1
 }
 
 // time_rewind restores the nearest snapshot at-or-before args.tick and
@@ -265,7 +320,10 @@ time_status :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) 
 }
 
 // time_position_response is the shared success envelope for the position-only
-// time commands: the cursor tick is the whole result.
+// time commands: the tick is the whole result. On the canonical lineage the position
+// is the cursor tick; on the active writable branch (after a forward fold) it is the
+// branch's logical tip — so a `run`/`step`/`pause` on a branch reports the branch's
+// real position, not a stale canonical cursor.
 @(private = "file")
 time_position_response :: proc(
 	s: ^Debug_Session,
@@ -273,9 +331,10 @@ time_position_response :: proc(
 	cmd: string,
 	allocator := context.allocator,
 ) -> string {
+	tick := time_on_writable_branch(s) ? branch_tip_tick(s) : s.cursor.tick
 	b := strings.builder_make(allocator)
 	ok_response_open(&b, id, cmd)
-	fmt.sbprintf(&b, "{{\"tick\":%d}}}}", s.cursor.tick)
+	fmt.sbprintf(&b, "{{\"tick\":%d}}}}", tick)
 	return strings.to_string(b)
 }
 

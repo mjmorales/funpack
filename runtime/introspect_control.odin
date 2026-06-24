@@ -104,15 +104,22 @@ fork_branch :: proc(s: ^Debug_Session, tick: int) -> bool {
 	return true
 }
 
-// ensure_branch makes a control command's implicit fork: when no branch is
-// live, fork at the canonical head (the latest committed tick; -1 when the
-// recorded run is empty). A live branch is kept — control commands chain on it.
+// ensure_branch makes a control command's implicit fork (friction-c8ce3627). When no
+// branch is live, it forks at the CURSOR'S CURRENT TICK if the timeline is loaded —
+// the cursor IS the agent's navigation position, so a `rewind to N -> control_spawn`
+// honors the rewound cursor and lands the edit at tick N (observable there, and with
+// the forward-fold advanceable), instead of silently anchoring to the recording end
+// and ignoring the rewind. When the timeline is NOT loaded (no cursor armed), it falls
+// back to the canonical head (the latest committed tick; -1 when the recorded run is
+// empty) — the prior behavior for a session that never navigated. A live branch is
+// kept — control commands chain on it.
 @(private = "file")
 ensure_branch :: proc(s: ^Debug_Session) {
 	if s.has_branch {
 		return
 	}
-	fork_branch(s, len(s.versions) - 1)
+	anchor := s.cursor.loaded ? s.cursor.tick : len(s.versions) - 1
+	fork_branch(s, anchor)
 }
 
 // branch_logical_tick is the tick ordinal the NEXT branch fold represents — the
