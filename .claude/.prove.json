@@ -32,6 +32,11 @@
       "name": "comment-audit",
       "skill": "claude-skills:comment-audit",
       "phase": "llm"
+    },
+    {
+      "name": "engine-api-doc-parity",
+      "prompt": "ci/prompts/engine-api-doc-parity.md",
+      "phase": "llm"
     }
   ],
   "reporters": [],
