@@ -7,6 +7,21 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.16.0] - 2026-06-24
+
+### Features
+- feat(mcp): capture_tick asserts a hand-rolled whole-tick twin equals the live schedule (64962f4)
+
+### Fixes
+- fix(spec): state the uniform evolving same-tick read model (no query memo) (871a2f8)
+- fix(runtime): same-tick query reads are evolving, not within-tick memoized (4a531b8)
+- fix(runtime): honor-or-reject the branch= selector on time advance verbs (friction 4102ea74) (f620f9e)
+- fix(funpack): nesting refusal remedy fits the depth cause (friction 174cbae9) (d73f013)
+- fix(funpack): align `funpack run --help` with the entrypoint-selection refusal (friction 02bb25ec) (baeed2c)
+
+### Other
+- docs(spec): state instance-granular intra-stage same-thing read visibility (ADR intra-stage-read-consistency) (0792563)
+
 ## [0.15.0] - 2026-06-24
 
 ### Features
