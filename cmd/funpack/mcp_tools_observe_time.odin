@@ -310,19 +310,23 @@ obs_tool_error :: proc(id: Mcp_Id, err: Mcp_Error, allocator := context.allocato
 
 // --- friction-0007: self-describing empty inspect results -------------------
 
-// Obs_Precondition is the session-shape an inspect result is read AGAINST — the three
+// Obs_Precondition is the session-shape an inspect result is read AGAINST — the
 // timeline facts that explain an empty result set. `loaded` is whether the time cursor
-// is armed (time_load); `seeded` is whether the session folds a recorded RNG seed (a
-// FRESH session_start is seedless, so an RNG-driven setup never populates — the
-// friction-0007 root cause); `ticks_recorded` is the recording's extent. `known` is
-// false when the status fold could not be read (a defensive miss, not a fault) — the
-// enricher then omits the precondition block rather than fabricating one. The three
-// facts are exactly what the §28 status command (runtime/introspect_time.odin
-// time_status) reports, read back through the SAME session.
+// is armed (time_load); `seeded` is whether the session folds a recorded RNG seed;
+// `uses_rng` is whether the PROGRAM draws randomness anywhere (any behavior/function
+// binds an `Rng` param); `ticks_recorded` is the recording's extent. The seeded/uses_rng
+// PAIR is the friction-116a1681 distinction: a missing seed only explains an empty result
+// when the game actually consumes RNG (uses_rng && !seeded is an unmet precondition); a
+// no-RNG game's empty result is a genuine state read, NOT a missing-seed defect. `known`
+// is false when the status fold could not be read (a defensive miss, not a fault) — the
+// enricher then omits the precondition block rather than fabricating one. The facts are
+// exactly what the §28 status command (runtime/introspect_time.odin time_status) reports,
+// read back through the SAME session.
 Obs_Precondition :: struct {
 	known:          bool,
 	loaded:         bool,
 	seeded:         bool,
+	uses_rng:       bool,
 	ticks_recorded: i64,
 }
 
@@ -359,6 +363,9 @@ obs_read_precondition :: proc(reg: ^Mcp_Session_Registry, session_id: string, al
 	}
 	if seeded, ok := result["seeded"].(json.Boolean); ok {
 		pre.seeded = bool(seeded)
+	}
+	if uses_rng, ok := result["uses_rng"].(json.Boolean); ok {
+		pre.uses_rng = bool(uses_rng)
 	}
 	if ticks, ok := result["ticks_recorded"].(json.Integer); ok {
 		pre.ticks_recorded = i64(ticks)
@@ -413,22 +420,43 @@ obs_result_collection_empty :: proc(command: string, result: json.Object) -> boo
 // obs_precondition_diagnostic returns the diagnostic + next-action naming the unmet
 // prerequisite that most likely produced an empty inspect result, or has=false when the
 // preconditions are all met (a genuinely-empty-but-VALID result — the case that must stay
-// distinguishable from a precondition failure). The ordering is causal: an UNSEEDED
-// session is the friction-0007 root (a fresh session_start is seedless, so an RNG-driven
-// setup never populates), so it is named first; an empty recording is named next. A
-// seeded, recorded session with an empty result is valid-empty — no diagnostic.
+// distinguishable from a precondition failure). The ordering is causal:
+//
+//   - A program that DRAWS RNG but folds NO recorded seed (uses_rng && !seeded) is the
+//     friction-0007 root — an RNG-driven setup cannot populate without a seed, so this is
+//     named first as the unmet precondition.
+//   - A program that uses NO RNG (!uses_rng) can never be seedless-broken: its empty
+//     result is a genuine state read, named with the no-RNG-by-design diagnostic that does
+//     NOT blame a missing seed (the friction-116a1681 misdiagnosis fix). It still points at
+//     control_spawn / control_set as the way to populate the state to inspect.
+//   - An empty recording (no ticks) is named next, for either RNG class.
+//
+// A recorded, seeded (or no-RNG) session whose empty probe is NOT the no-RNG genuine-empty
+// shape is valid-empty — no diagnostic.
 obs_precondition_diagnostic :: proc(pre: Obs_Precondition) -> (diagnostic: string, next_action: string, has: bool) {
 	if !pre.known {
 		return "", "", false
 	}
-	if !pre.seeded {
-		return "the session is seedless: a fresh session_start opens without a recorded RNG seed, so an RNG-driven setup (e.g. a spawn-on-start swarm) never populates and every inspect_* reads empty — this is distinct from a genuinely-empty tick",
-			"re-open the session over a recorded replay log (session_start with a recording that pins the seed) to reproduce the seeded run, or use control_spawn / control_set to populate the state you want to inspect",
-			true
-	}
+	// An empty recording is the root cause for EITHER RNG class — there is no timeline to
+	// inspect — so it is named first, ahead of the RNG-class split.
 	if pre.ticks_recorded <= 0 {
 		return "the session has no recorded ticks, so there is no simulated timeline to inspect",
 			"run the timeline forward (time_load then time_run) or attach over a recording before inspecting",
+			true
+	}
+	// uses_rng && !seeded is the genuine friction-0007 precondition failure: an RNG-driven
+	// setup cannot populate without a recorded seed.
+	if pre.uses_rng && !pre.seeded {
+		return "the session is seedless: this game draws RNG, but a fresh session_start opens without a recorded RNG seed, so an RNG-driven setup (e.g. a spawn-on-start swarm) never populates and every inspect_* reads empty — this is distinct from a genuinely-empty tick",
+			"re-open the session over a recorded replay log (session_start with a recording that pins the seed) to reproduce the seeded run, or use control_spawn / control_set to populate the state you want to inspect",
+			true
+	}
+	// A no-RNG game can NEVER be seedless-broken: a missing seed cannot explain its empty
+	// result (the friction-116a1681 misdiagnosis). Name the no-RNG-by-design cause instead of
+	// blaming a missing seed — the result is a genuine state read of a deterministic game.
+	if !pre.uses_rng {
+		return "this game uses no RNG (no behavior or function draws from an Rng), so a missing seed cannot explain the empty result — the inspected tick genuinely produced no instances for this thing",
+			"verify the thing name and tick, or use control_spawn / control_set to populate the state you want to inspect",
 			true
 	}
 	return "", "", false
@@ -521,6 +549,8 @@ obs_lift_inspect_response :: proc(
 	if precondition.known {
 		strings.write_string(&b, ",\"precondition\":{\"seeded\":")
 		strings.write_string(&b, precondition.seeded ? "true" : "false")
+		strings.write_string(&b, ",\"uses_rng\":")
+		strings.write_string(&b, precondition.uses_rng ? "true" : "false")
 		strings.write_string(&b, ",\"loaded\":")
 		strings.write_string(&b, precondition.loaded ? "true" : "false")
 		strings.write_string(&b, ",\"ticks_recorded\":")

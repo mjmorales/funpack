@@ -366,17 +366,19 @@ test_obs_runtime_refusal_is_session_error :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, "tick"), "the runtime's own refusal text rides through")
 }
 
-// test_obs_inspect_empty_unseeded_carries_diagnostic is the friction-0007 junction: an
-// inspect_* probe over a FRESH (seedless) session that returns an empty result set must be
-// SELF-DESCRIBING. The OBS_FIXTURE opens seedless (no replay log), so inspect_signals at a
-// recorded tick reads an empty `routes` — the bare `[]` an agent could not tell apart from
-// a dead swarm or a wrong tick. The enriched lift carries the session precondition
-// (seeded:false) AND a diagnostic naming the missing prerequisite plus the next action, so
-// the emptiness is explained at its source. This is the whole fix, end-to-end through the
-// live registry: the §28 status read-back + the empty-set verdict + the diagnostic attach.
+// test_obs_inspect_empty_no_rng_diagnostic_live is the friction-116a1681 junction END-TO-END:
+// an inspect_* probe over a live FRESH session of a NO-RNG game that returns an empty result
+// set must be SELF-DESCRIBING WITHOUT blaming a missing RNG seed. The OBS_FIXTURE is a no-RNG
+// game (its one behavior binds no Rng — the runtime status reports uses_rng:false), so
+// inspect_signals at a recorded tick reads an empty `routes` — the bare `[]` an agent could
+// not tell apart from a dead swarm or a wrong tick. The enriched lift reads uses_rng off the
+// §28 status read-back and carries the precondition (uses_rng:false) plus a diagnostic naming
+// the no-RNG-by-design cause and the next action, NEVER the false missing-seed premise. This
+// is the whole fix, end-to-end through the live registry: the §28 status read-back (which
+// carries uses_rng) + the empty-set verdict + the corrected diagnostic attach.
 @(test)
-test_obs_inspect_empty_unseeded_carries_diagnostic :: proc(t: ^testing.T) {
-	path, staged := obs_stage_fixture(t, "funpack-mcp-obs-empty-unseeded.fpk")
+test_obs_inspect_empty_no_rng_diagnostic_live :: proc(t: ^testing.T) {
+	path, staged := obs_stage_fixture(t, "funpack-mcp-obs-empty-no-rng.fpk")
 	if !staged {
 		return
 	}
@@ -388,7 +390,7 @@ test_obs_inspect_empty_unseeded_carries_diagnostic :: proc(t: ^testing.T) {
 	testing.expect_value(t, open_result, funpack_runtime.Open_Session_Result.Ok)
 
 	// inspect_signals at tick 0: the one-behavior fixture routes no signals, so `routes`
-	// is empty — the friction-0007 shape over a seedless fresh open.
+	// is empty — the friction shape over a live no-RNG fresh open.
 	args := obs_args(t, strings.concatenate({`{"session_id":"`, id, `","tick":0}`}, context.temp_allocator))
 	result, handled := obs_dispatch_tool(&registry, "inspect_signals", args, context.temp_allocator)
 	testing.expect(t, handled, "inspect_signals is claimed")
@@ -397,13 +399,14 @@ test_obs_inspect_empty_unseeded_carries_diagnostic :: proc(t: ^testing.T) {
 	// reaches the data (the additive-superset contract).
 	testing.expect(t, strings.contains(result, `\"result\":`), "the §28 result rides under the result key")
 	testing.expect(t, strings.contains(result, `\"routes\":[]`), "the empty routes set is preserved verbatim")
-	// The precondition block surfaces the seedless session shape.
+	// The precondition block surfaces the no-RNG session shape (the new uses_rng fact).
 	testing.expect(t, strings.contains(result, `\"precondition\":`), "the precondition block is present on every inspect return")
-	testing.expect(t, strings.contains(result, `\"seeded\":false`), "the seedless precondition is surfaced")
+	testing.expect(t, strings.contains(result, `\"uses_rng\":false`), "the no-RNG class is surfaced — read off the §28 status envelope")
 	testing.expect(t, strings.contains(result, `\"ticks_recorded\":`), "the recording extent is surfaced")
-	// The diagnostic names the missing prerequisite (seedless) AND the next action.
-	testing.expect(t, strings.contains(result, `\"diagnostic\":`), "an empty result with an unmet precondition carries a diagnostic")
-	testing.expect(t, strings.contains(result, `seedless`), "the diagnostic names the seedless prerequisite — the friction-0007 root cause")
+	// The diagnostic names the no-RNG cause AND the next action — and NEVER blames a seed.
+	testing.expect(t, strings.contains(result, `\"diagnostic\":`), "an empty no-RNG result carries a distinguishing diagnostic")
+	testing.expect(t, strings.contains(result, `uses no RNG`), "the diagnostic names the no-RNG-by-design cause")
+	testing.expect(t, !strings.contains(result, `seedless`), "the diagnostic NEVER blames a missing seed for a no-RNG game (the friction-116a1681 misdiagnosis)")
 	testing.expect(t, strings.contains(result, `\"next_action\":`), "the diagnostic names the next action")
 }
 
@@ -434,19 +437,23 @@ test_obs_inspect_populated_omits_diagnostic :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(result, `\"diagnostic\":`), "a populated result carries NO diagnostic — only empties with an unmet precondition do")
 }
 
-// test_obs_inspect_valid_empty_seeded_omits_diagnostic pins the third leg of
-// distinguishability: an empty result whose preconditions are ALL met is a genuinely-empty
-// -but-VALID tick, NOT a precondition failure — so it carries the precondition block but no
-// diagnostic. A seeded MCP session needs a replay-log fixture, so this exercises the lift
-// proc directly with a synthesized seeded/recorded precondition and an empty §28 response
-// line — the same junction obs_lift_inspect_response runs end-to-end, isolating the
-// "valid-empty" verdict from the seedless-fixture path the other two tests use.
+// test_obs_inspect_valid_empty_seeded_omits_diagnostic pins the valid-empty leg of
+// distinguishability for an RNG game: an empty result on a session that DRAWS RNG and folds
+// a recorded seed over a non-empty recording is a genuinely-empty-but-VALID tick, NOT a
+// precondition failure — so it carries the precondition block but no diagnostic. A seeded
+// MCP session needs a replay-log fixture, so this exercises the lift proc directly with a
+// synthesized seeded/uses_rng/recorded precondition and an empty §28 response line — the
+// same junction obs_lift_inspect_response runs end-to-end, isolating the "valid-empty"
+// verdict from the fixture paths the other tests use. The uses_rng:true + seeded:true pair
+// is the REALISTIC valid-empty for an RNG game (a no-RNG game's empty result is its own
+// distinguishable case, pinned by test_obs_inspect_no_rng_diagnostic).
 @(test)
 test_obs_inspect_valid_empty_seeded_omits_diagnostic :: proc(t: ^testing.T) {
 	seeded := Obs_Precondition {
 		known          = true,
 		loaded         = true,
 		seeded         = true,
+		uses_rng       = true,
 		ticks_recorded = 30,
 	}
 	// A clean §28 draw_list ok response with an empty commands set — the valid-empty shape.
@@ -457,8 +464,44 @@ test_obs_inspect_valid_empty_seeded_omits_diagnostic :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(lifted, `"isError":false`), "a valid-empty result is clean")
 	testing.expect(t, strings.contains(lifted, `\"commands\":[]`), "the empty result rides verbatim")
 	testing.expect(t, strings.contains(lifted, `\"seeded\":true`), "the met precondition is surfaced")
+	testing.expect(t, strings.contains(lifted, `\"uses_rng\":true`), "the RNG class is surfaced")
 	testing.expect(t, strings.contains(lifted, `\"ticks_recorded\":30`), "the recording extent is surfaced")
-	testing.expect(t, !strings.contains(lifted, `\"diagnostic\":`), "an empty result with EVERY precondition met carries no diagnostic — it is valid-empty, distinguishable from a precondition failure")
+	testing.expect(t, !strings.contains(lifted, `\"diagnostic\":`), "an empty result with EVERY precondition met (seeded RNG game, recorded) carries no diagnostic — it is valid-empty, distinguishable from a precondition failure")
+}
+
+// test_obs_inspect_no_rng_diagnostic is the friction-116a1681 junction: an inspect_* probe
+// over a NO-RNG game whose empty result must NOT blame a missing RNG seed. The §28 status
+// envelope reports uses_rng, and the enricher reads it: when the program draws no RNG, an
+// empty result is a genuine state read of a deterministic game, and the diagnostic names the
+// no-RNG-by-design cause rather than the false missing-seed premise. Exercises the lift proc
+// directly with a no-RNG precondition (uses_rng:false, recorded) and an empty §28 response —
+// the misdiagnosis the report reproduced over colony-sim, folded into the living spec at its
+// source. The invariant this pins: seeded:false alone NEVER fires the seedless diagnostic —
+// it fires only when uses_rng is also true, so a no-RNG game (which has no seed) is never
+// misdiagnosed as seedless-broken.
+@(test)
+test_obs_inspect_no_rng_diagnostic :: proc(t: ^testing.T) {
+	no_rng := Obs_Precondition {
+		known          = true,
+		loaded         = true,
+		seeded         = false,
+		uses_rng       = false,
+		ticks_recorded = 64,
+	}
+	// A clean §28 state ok response with an empty instances set over a no-RNG game.
+	response := `{"v":1,"id":1,"ok":true,"cmd":"state","result":{"thing":"Mote","tick":0,"instances":[]}}`
+	id := Mcp_Id{kind = .Integer, integer = 7}
+	lifted := obs_lift_inspect_response(id, "state", response, no_rng, context.temp_allocator)
+
+	testing.expect(t, strings.contains(lifted, `"isError":false`), "an empty-but-clean no-RNG observe is not a tool error")
+	testing.expect(t, strings.contains(lifted, `\"instances\":[]`), "the empty result rides verbatim")
+	testing.expect(t, strings.contains(lifted, `\"uses_rng\":false`), "the no-RNG class is surfaced in the precondition")
+	// The diagnostic fires (the empty result is explained) but names the no-RNG cause, NOT a
+	// missing seed — the misdiagnosis fix.
+	testing.expect(t, strings.contains(lifted, `\"diagnostic\":`), "an empty no-RNG result carries a distinguishing diagnostic")
+	testing.expect(t, strings.contains(lifted, `uses no RNG`), "the diagnostic names the no-RNG-by-design cause")
+	testing.expect(t, !strings.contains(lifted, `seedless`), "the no-RNG diagnostic NEVER blames a missing seed (the friction-116a1681 misdiagnosis)")
+	testing.expect(t, !strings.contains(lifted, `RNG seed`), "the no-RNG diagnostic NEVER mentions a missing RNG seed")
 }
 
 // test_obs_inspect_refusal_stays_verbatim pins that the enriched lift does NOT touch a §28
