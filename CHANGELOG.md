@@ -7,6 +7,15 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.17.0] - 2026-06-24
+
+### Features
+- feat(lang): let destructures a tuple return — let (a, b) = expr (ee43f7f)
+- feat(funpack): name file:line:col + expected shape on malformed project.fcfg (3cbf06b)
+
+### Other
+- docs: add "Optimize for Long-Term Correctness, Not Low Churn" directive (62fb9df)
+
 ## [0.16.0] - 2026-06-24
 
 ### Features
