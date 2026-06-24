@@ -12,6 +12,9 @@ package funpack
 
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
+import "core:slice"
+import "core:strings"
 
 // Warden_Command is the closed `funpack warden` subcommand set (§29 §1) — one
 // member per index query the sub-toolchain answers. The set is closed under
@@ -143,13 +146,129 @@ run_build_verb :: proc(mode: Build_Mode) -> int {
 // run_build_verb's fixed ".") so the side-effect-free verb body is unit-tested
 // end-to-end against temp trees; main always passes ".".
 run_check_verb :: proc(root: string, mode: Build_Mode) -> int {
-	_, verdict := stage_build(root, mode, context.temp_allocator)
+	verdict := check_project_verdict(root, mode)
 	if verdict.err != .None {
 		eprint_build_refusal("funpack check", verdict)
 		return 2
 	}
 	fmt.println("funpack check: clean")
 	return 0
+}
+
+// check_project_verdict is the PURE single-project adjudication seam both the
+// single-project (run_check_verb) and recursive (run_check_recursive_verb) check
+// faces share: it runs stage_build over one tree at `root`, discards the computed
+// product bytes (check writes nothing), and returns ONLY the Build_Verdict — the
+// closed Build_Error arm plus the module-qualified offender on the release arms,
+// or .None for a clean tree. Factoring the adjudication out of run_check_verb is
+// what lets the recursive driver loop the SAME judgment over N discovered roots
+// without duplicating the check logic or rendering twice.
+check_project_verdict :: proc(root: string, mode: Build_Mode) -> Build_Verdict {
+	_, verdict := stage_build(root, mode, context.temp_allocator)
+	return verdict
+}
+
+// FUNPACK_RECURSIVE_PRUNE_DIRS is the closed set of directory NAMES the recursive
+// discovery walk never descends into: VCS metadata (.git), the build-output dir
+// (.funpack — a check writes nothing, but a prior build's output is not a project
+// tree), and the dependency/vendor roots a deps walk owns. Pruning these keeps the
+// sweep fast and never mis-reads a build-output or vendored subtree as a project.
+FUNPACK_RECURSIVE_PRUNE_DIRS :: []string{".git", FUNPACK_BUILD_DIR, "node_modules", ".vendor"}
+
+// discover_project_roots walks the directory tree at `root` with the core:os
+// breadth-first walker (Odin-first — no shell-out, no `find`, no process spawn)
+// and returns every §14 project root under it: a directory P is a project iff
+// P/funpack_configs is itself a directory. The returned roots are SORTED by path
+// so the recursive verdict stream is byte-stable regardless of the filesystem's
+// walk order. Pruning keeps the sweep correct: a discovered project's own subtree
+// is NOT descended (projects do not nest — the first project on a path wins), and
+// the FUNPACK_RECURSIVE_PRUNE_DIRS names (.git, .funpack, vendor roots) are
+// skipped wholesale. The root itself is tested separately because the walker
+// yields a start directory's children, never the start directory.
+discover_project_roots :: proc(root: string, allocator := context.allocator) -> []string {
+	roots := make([dynamic]string, 0, 8, context.temp_allocator)
+	// The walker yields `root`'s children but not `root` itself, so adjudicate the
+	// root as a project up front. A root that is itself a project is the whole
+	// answer — projects do not nest, so its subtree is not swept for more.
+	if is_project_root(root) {
+		append(&roots, strings.clone(root, allocator))
+		return roots[:]
+	}
+	walker := os.walker_create(root)
+	defer os.walker_destroy(&walker)
+	for info in os.walker_walk(&walker) {
+		if info.type != .Directory {
+			continue
+		}
+		if slice.contains(FUNPACK_RECURSIVE_PRUNE_DIRS, info.name) {
+			os.walker_skip_dir(&walker)
+			continue
+		}
+		if is_project_root(info.fullpath) {
+			append(&roots, strings.clone(info.fullpath, allocator))
+			// A project's own subtree is not swept for nested projects.
+			os.walker_skip_dir(&walker)
+		}
+	}
+	sorted := roots[:]
+	slice.sort(sorted)
+	return sorted
+}
+
+// is_project_root reports whether `dir` is a §14 project root by the same rule
+// read_project rejects against: it owns a funpack_configs/ child directory. A pure
+// filesystem predicate (os.is_dir over the joined path) — the recursive discovery's
+// single project-membership test, kept distinct from read_project so discovery
+// never recompiles a tree just to learn it exists.
+is_project_root :: proc(dir: string) -> bool {
+	configs, _ := filepath.join({dir, "funpack_configs"}, context.temp_allocator)
+	return os.is_dir(configs)
+}
+
+// run_check_recursive_verb is the multi-project face of check (friction-0011
+// source fix): it discovers every §14 project under `root` with the pure Odin
+// walker (no `find`, no shell-out), adjudicates EACH through the SAME
+// check_project_verdict seam the single-project verb uses, prints one verdict line
+// per project (path + clean/failed + the failing project's refusal body), then an
+// aggregate summary line — ALWAYS non-empty output, never a silent stream. The
+// exit contract extends check's: 0 IFF every discovered project is clean; 2 if any
+// project refuses (the failing project(s) named on their verdict line), and 2 with
+// a dedicated message when `root` contains NO project at all (a no-op sweep is a
+// usage error, not a silent success). The per-project judgment and its {0, 2}
+// tiers are byte-unchanged from the single-project verb — recursive only aggregates.
+run_check_recursive_verb :: proc(root: string, mode: Build_Mode) -> int {
+	roots := discover_project_roots(root, context.temp_allocator)
+	if len(roots) == 0 {
+		fmt.eprintfln("funpack check: no funpack_configs project found under %s", root)
+		return 2
+	}
+	output, failed := check_recursive_report(roots, mode, context.temp_allocator)
+	fmt.print(output)
+	return 2 if failed > 0 else 0
+}
+
+// check_recursive_report is the PURE renderer the recursive verb prints: given the
+// already-discovered (sorted) project roots and the build mode, it adjudicates each
+// through check_project_verdict and returns the FULL output block — one
+// "<root>: clean" / "<root>: failed — <refusal>" line per project in the given
+// order, then the "funpack check: N projects, M clean, K failed" aggregate — plus
+// the failed count. Splitting the renderer from the verb (the warden_command_output
+// precedent) is what lets a test byte-pin the multi-project output, including the
+// NAMED failing project, as a deterministic function of (roots, mode).
+check_recursive_report :: proc(roots: []string, mode: Build_Mode, allocator := context.allocator) -> (output: string, failed: int) {
+	b := strings.builder_make(allocator)
+	for project_root in roots {
+		verdict := check_project_verdict(project_root, mode)
+		if verdict.err != .None {
+			failed += 1
+			fmt.sbprintfln(&b, "%s: failed — %s", project_root, build_refusal_message(verdict, allocator))
+		} else {
+			fmt.sbprintfln(&b, "%s: clean", project_root)
+		}
+	}
+	clean := len(roots) - failed
+	fmt.sbprintfln(&b, "funpack check: %d projects, %d clean, %d failed", len(roots), clean, failed)
+	return strings.to_string(b), failed
 }
 
 // eprint_build_refusal eprints a Build_Verdict refusal: a Compile_Failed arm

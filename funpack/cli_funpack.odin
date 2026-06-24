@@ -188,6 +188,7 @@ build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli
 		cli.Cli_Command {
 			use = "check",
 			short = "Adjudicate the project tree, writing no products",
+			long = "Adjudicate the §14 project tree through the full checked pipeline and write no products (exit 0 clean, 2 for any compile/gate failure). With --recursive it sweeps a directory tree, discovering and checking every funpack_configs project under [root] (default cwd) in one invocation — one verdict line per project plus an aggregate summary, exit 2 if any project fails (named).",
 			flags = slice.clone(
 				[]cli.Cli_Flag {
 					{
@@ -195,10 +196,16 @@ build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli
 						kind = .Bool,
 						usage = "Ban typed holes and debug directives (shippability verdict)",
 					},
+					{
+						name = "recursive",
+						shorthand = 'r',
+						kind = .Bool,
+						usage = "Discover and check every funpack_configs project under [root]",
+					},
 				},
 				allocator,
 			),
-			args = cli.cli_no_args(),
+			args = cli.cli_range_args(0, 1),
 			run = cli_run_check,
 		},
 		allocator,
@@ -252,7 +259,11 @@ cli_run_build :: proc(inv: ^cli.Cli_Invocation) -> int {
 }
 
 cli_run_check :: proc(inv: ^cli.Cli_Invocation) -> int {
-	return run_check_verb(".", cli_build_mode(inv))
+	root := inv.args[0] if len(inv.args) == 1 else "."
+	if cli.cli_flag_bool(inv, "recursive") {
+		return run_check_recursive_verb(root, cli_build_mode(inv))
+	}
+	return run_check_verb(root, cli_build_mode(inv))
 }
 
 cli_run_fmt :: proc(inv: ^cli.Cli_Invocation) -> int {

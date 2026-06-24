@@ -144,6 +144,46 @@ test_funpack_build_release_flag :: proc(t: ^testing.T) {
 	expect_funpack_reject(t, root, {"check", "--relase"})
 }
 
+// test_funpack_check_recursive_flag pins the recursive-check seam: check accepts
+// the optional `[root]` positional and the `--recursive`/`-r` bool flag (the
+// friction-0011 multi-project sweep), the long and short spellings parse
+// identically, and `--release`/`--recursive` compose. A typo'd flag or a SECOND
+// positional is the usage tier — check takes at most one root, so a stray argument
+// never silently becomes a misread root.
+@(test)
+test_funpack_check_recursive_flag :: proc(t: ^testing.T) {
+	root := build_compiler_test_root()
+
+	// No flag: not recursive, root is cwd (no positional).
+	inv := expect_funpack_ok(t, root, {"check"})
+	testing.expect_value(t, cli.cli_flag_bool(&inv, "recursive"), false)
+	testing.expect_value(t, len(inv.args), 0)
+
+	// Long flag with an explicit root positional.
+	inv = expect_funpack_ok(t, root, {"check", "--recursive", "games"})
+	testing.expect_value(t, cli.cli_flag_bool(&inv, "recursive"), true)
+	testing.expect_value(t, len(inv.args), 1)
+	testing.expect_value(t, inv.args[0], "games")
+
+	// Short flag parses identically to the long spelling.
+	inv = expect_funpack_ok(t, root, {"check", "-r", "games"})
+	testing.expect_value(t, cli.cli_flag_bool(&inv, "recursive"), true)
+	testing.expect_value(t, inv.args[0], "games")
+
+	// --release and --recursive compose (a recursive shippability sweep).
+	inv = expect_funpack_ok(t, root, {"check", "--recursive", "--release", "games"})
+	testing.expect_value(t, cli.cli_flag_bool(&inv, "recursive"), true)
+	testing.expect_value(t, cli_build_mode(&inv), Build_Mode.Release)
+
+	// A bare root positional (no flag) is the single-project check at that root.
+	inv = expect_funpack_ok(t, root, {"check", "games"})
+	testing.expect_value(t, cli.cli_flag_bool(&inv, "recursive"), false)
+	testing.expect_value(t, inv.args[0], "games")
+
+	expect_funpack_reject(t, root, {"check", "--recursiv"})
+	expect_funpack_reject(t, root, {"check", "--recursive", "a", "b"})
+}
+
 // test_funpack_fmt_check_flag pins the fmt `--check` seam: no flag is Write,
 // `--check` is Check, and a typo or trailing argument is the usage tier.
 @(test)
