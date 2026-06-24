@@ -92,6 +92,7 @@ Tools split into two classes:
 | Tool | Use when… |
 |---|---|
 | `capture_test` | You want to capture one behavior instance's step at a recorded tick into a complete, idiomatic funpack `test` block, ready to fold into the project as a permanent regression. |
+| `capture_tick` | You want to assert a hand-rolled whole-tick twin (`fn(x: [T]) -> [T]` or `fn(x: View[T]) -> [T]`) equals the live `Id`-ordered schedule. Captures a thing's committed pre-state (version `tick-1`) and post-state (version `tick`) and emits `assert twin([pre]) == [post]` — the post is the live fold's output, so a twin that models the tick as a simultaneous map over the pre-snapshot fails the assert. The mechanical guard against a green suite silently encoding the wrong tick model. |
 | `audit` | You want the determinism-warranty audit — re-fold the recording from its snapshot+seed and confirm it reproduces every recorded frame digest bit-identically (returns the first diverging tick + digest diff on failure). |
 
 ## Replacement mapping (old CLI → MCP)
