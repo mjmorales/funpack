@@ -7,6 +7,14 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.13.1] - 2026-06-24
+
+### Fixes
+- fix(funpack): Unknown_Method hint lists call-site-inferred combinators (61358eb)
+- fix(mcp): time_status carries a next_action when the timeline is unloaded (2adc98b)
+- fix(runtime): trace resolves startup behaviors through the pipeline namespace (e2c80fd)
+- fix(funpack): targeted frontend diagnostics for four friction-log cases (e8dbf2a)
+
 ## [0.13.0] - 2026-06-23
 
 ### Features
