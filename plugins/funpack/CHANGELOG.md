@@ -2,6 +2,12 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.11.1] - 2026-06-25
+
+### Other
+- docs(funpack): note on-disk docs traversal in funpack-author agent (d2a3899)
+- docs(funpack): document on-disk docs deep-link traversal (d23e035)
+
 ## [0.11.0] - 2026-06-25
 
 ### Features

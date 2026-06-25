@@ -7,6 +7,17 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.19.0] - 2026-06-25
+
+### Features
+- feat(editors): VS Code/Cursor extension — TextMate base + tree-sitter semantic tokens (0ad3e49)
+- feat(editors): scaffold 6 deferred grammar stubs + family docs (f194c54)
+- feat(editors): .fcfg tree-sitter grammar + queries + corpus (842641e)
+- feat(editors): .fun highlight/locals/injections queries (b9499d7)
+- feat(editors): .fun tree-sitter grammar + same-line scanner (e8981d9)
+- feat(mcp): materialize docs corpus to on-disk deep-link projection (fbacb29)
+- feat(editors): scaffold tree-sitter-funpack monorepo + shared lexical core (973a172)
+
 ## [0.18.1] - 2026-06-25
 
 ### Other
