@@ -61,6 +61,37 @@ a cross-reference, or expand context around a hit:
 The `path` field is omitted only when no writable managed home exists — `docs_search`/`docs_get` still
 return the full inline content regardless.
 
+## Headless record (produce a replay log for the session surface)
+
+| Tool | Use when… |
+|---|---|
+| `record` | You want to **headlessly produce a replay log** an agent can then open with `session_start replay_log=…`. Folds a scripted `(seed, input-script)` over a built artifact into a `.replay` log — no interactive SDL session, no human at the keyboard. This is how an autonomous agent bootstraps the recorded timeline the `time_*` / `inspect_*` / self-heal tools navigate (previously only an interactive `funpack live` could produce one). |
+
+`record` takes an `artifact` path, an ordered `script`, an optional `seed`, and an optional `out` path
+(default `<artifact-stem>.replay` beside the artifact). The `script` is an array of **segments**, each
+holding one input snapshot for a run of ticks — the same per-tick snapshot vocabulary
+`control_inject_input` takes, plus a `ticks` count:
+
+```jsonc
+{
+  "artifact": ".funpack/artifact",
+  "seed": 42,                              // optional; else the entrypoint config seed, then the engine default
+  "script": [
+    { "ticks": 600 },                                                        // 600 idle ticks
+    { "ticks": 100, "held":    [{ "player": "P1", "action": "Move::Steer" }] },
+    { "ticks": 1,   "pressed": [{ "player": "P1", "action": "Fire::Shoot" }] }
+  ],
+  "out": "run.replay"                      // optional
+}
+```
+
+A segment's `pressed` / `held` / `values` / `axes` are the same `{player, action[, value | x, y]}`
+records `control_inject_input` reads (`values`/`axes` carry Fixed raw-bit strings); `ticks` defaults to
+1 and must be ≥ 1. The result reports `{path, ticks, has_seed, seed}` — the recorded length and the
+tick-0 root seed pinned in the log header. A **`uses_rng` game is recorded seeded automatically** (the
+seed rides the header, §25 §60), so `session_start` re-feeds that exact seed and the recorded run
+re-folds populated instead of black. Feed `path` straight to `session_start`'s `replay_log`.
+
 ## Session-scoped tools (over a live `funpack attach` session)
 
 ### Lifecycle
@@ -125,7 +156,8 @@ The old `/funpack:build|run|test|warden` slash commands are **gone**. Use the MC
 |---|---|
 | `/funpack:build` · `funpack build` / `check` / `fmt` | `build`, `export`, `check`, `fmt` (one-shot) |
 | `/funpack:test` · `funpack test` | `test` (one-shot) |
-| `/funpack:run` · `funpack run` / `funpack live` | `session_start` → the `time_*` / `inspect_*` / `control_*` / self-heal tools → `session_end` |
+| `/funpack:run` · `funpack run` / `funpack live` | `session_start` → the `time_*` / `inspect_*` / `control_*` / self-heal tools → `session_end` (bootstrap the replay log headlessly with `record`) |
+| `funpack live <artifact> <replay-out>` (interactive record) | `record` (headless: scripted `(seed, input-script)` → `.replay`, no SDL window) |
 | `/funpack:warden <cmd>` · `funpack warden <cmd>` | `warden_find` / `warden_holes` / `warden_probes` / `warden_debt` / `warden_tags` / `warden_pipeline` / `warden_graph` |
 | Looking up an engine API, a spec `§`, or any funpack concept | `docs_search` (then `docs_get` on a hit's anchor) — **not** memorized prose |
 

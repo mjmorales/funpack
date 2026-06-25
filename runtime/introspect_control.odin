@@ -250,7 +250,7 @@ control_inject_input :: proc(
 ) -> string {
 	ensure_branch(s)
 	branch := &s.branch
-	snapshot, build_err := build_injected_input(branch.program, args, allocator)
+	snapshot, build_err := build_input_snapshot(branch.program, args, allocator)
 	if build_err != "" {
 		return error_response(id, "inject_input", build_err, allocator)
 	}
@@ -274,12 +274,17 @@ control_inject_input :: proc(
 	return control_ok_response(s, id, "inject_input", "", allocator)
 }
 
-// build_injected_input assembles one §23 action snapshot from the request args.
+// build_input_snapshot assembles one §23 action snapshot from a request args object.
 // Actions resolve through the program's deterministic action registry (the same
 // minting a binding resolves through); analog values are Fixed raw-bit strings
-// (§16 §2.3). Returns a non-empty error string on the first unresolvable entry.
-@(private = "file")
-build_injected_input :: proc(
+// (§16 §2.3). Returns a non-empty error string on the first unresolvable entry. It is
+// the SHARED snapshot vocabulary: the in-session `inject_input` control command
+// (control_inject_input above) AND the headless scripted-record path
+// (replay_scripted.odin, marshalled by the cmd-layer `record` tool) both build their
+// per-tick snapshot through this ONE proc, so a recorded segment and an injected tick
+// name actions, players, and analogs identically — package-visible (not file-private)
+// for exactly that cross-file reuse.
+build_input_snapshot :: proc(
 	program: ^Program,
 	args: json.Object,
 	allocator := context.allocator,

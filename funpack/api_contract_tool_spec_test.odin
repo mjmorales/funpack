@@ -384,8 +384,8 @@ test_tool_specs_cover_every_command_const :: proc(t: ^testing.T) {
 }
 
 // SERVER_NATIVE_TOOLS is the closed set of server-native tool names the contract's
-// server_tools section declares — the oneshot / docs_health / session families. It
-// is the deliberate floor those families dispatch against: every one must be present
+// server_tools section declares — the oneshot / docs_health / record / session families.
+// It is the deliberate floor those families dispatch against: every one must be present
 // in TOOL_SPECS as a NON-session-scoped tool for tools/list to advertise it and
 // mcp_lookup_tool to resolve it. Adding a server-native tool means declaring it in
 // the contract, regenerating, and extending this list.
@@ -393,6 +393,7 @@ SERVER_NATIVE_TOOLS :: []string{
 	"build", "export", "check", "test", "fmt",
 	"warden_find", "warden_graph", "warden_holes", "warden_probes", "warden_debt", "warden_tags", "warden_pipeline",
 	"docs_get", "docs_search", "health",
+	"record",
 	"session_start", "session_list", "session_end",
 }
 

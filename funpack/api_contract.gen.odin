@@ -659,6 +659,19 @@ TOOL_SPECS := []Tool_Spec{
 		},
 	},
 	{
+		name           = "record",
+		command        = "record",
+		group          = "record",
+		class          = "compute",
+		session_scoped = false,
+		args           = []Tool_Arg{
+			{name = "artifact", json_type = "string", required = true, doc = "path to the built funpack game artifact to record a replay log over"},
+			{name = "out", json_type = "string", required = false, doc = "optional output path for the .replay log; default is <artifact-stem>.replay beside the artifact"},
+			{name = "script", json_type = "array", required = true, doc = "ordered input-script: an array of segments, each an object {ticks, pressed, held, values, axes} — the same per-tick snapshot vocabulary control_inject_input takes (pressed/held/values/axes are arrays of {player, action[, value|x, y]} records) plus a `ticks` count (>=1, default 1) holding that snapshot for that many recorded ticks"},
+			{name = "seed", json_type = "integer", required = false, doc = "optional tick-0 root RNG seed override (§25 §60); pinned in the replay header so the run re-folds seeded. Omit to use the entrypoint config seed, then the fixed engine default. Ignored for a game that draws no RNG"},
+		},
+	},
+	{
 		name           = "session_start",
 		command        = "session_start",
 		group          = "session",
@@ -666,7 +679,7 @@ TOOL_SPECS := []Tool_Spec{
 		session_scoped = false,
 		args           = []Tool_Arg{
 			{name = "artifact", json_type = "string", required = true, doc = "path to the built funpack game artifact for the attach session to load"},
-			{name = "replay_log", json_type = "string", required = false, doc = "optional path to a recorded replay log (as produced by funpack live/run) to pre-fold before the session opens, mirroring funpack attach's second positional — so time_*/inspect_* navigate the recorded ticks instead of a fresh empty timeline"},
+			{name = "replay_log", json_type = "string", required = false, doc = "optional path to a recorded replay log (as produced by funpack live/run or the record tool) to pre-fold before the session opens, mirroring funpack attach's second positional — so time_*/inspect_* navigate the recorded ticks instead of a fresh empty timeline"},
 		},
 	},
 	{

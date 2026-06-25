@@ -308,6 +308,7 @@ MCP_DISPATCH_CHAIN := [?]Mcp_Tool_Dispatch {
 	mcp_oneshot_dispatch,
 	mcp_docs_tool_dispatch,
 	mcp_session_tool_dispatch,
+	mcp_record_dispatch,
 	mcp_observe_time_dispatch,
 	mcp_control_dispatch,
 	mcp_screenshot_dispatch,
