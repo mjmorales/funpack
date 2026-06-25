@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.10.3] - 2026-06-25
+
+### Fixes
+- fix(plugin-agents): grant funpack-author/reviewer the full tool surface, pin scope in persona (4fed70b)
+
 ## [0.10.2] - 2026-06-25
 
 ### Other
