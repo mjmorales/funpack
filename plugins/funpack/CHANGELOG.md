@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.10.1] - 2026-06-25
+
+### Fixes
+- fix(plugin-agents): grant funpack-author/reviewer the MCP query/verify subset (66a246b)
+
 ## [0.10.0] - 2026-06-24
 
 ### Features
