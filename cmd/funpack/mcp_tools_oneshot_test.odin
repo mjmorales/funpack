@@ -40,6 +40,13 @@ ONESHOT_MINI_SOURCE :: "@doc(\"Minimal buildable module: an empty pipeline and a
 // release (export) refuses it (Holed_Declaration), the exit-code-as-data fixture.
 ONESHOT_HOLED_SOURCE :: ONESHOT_MINI_SOURCE + "\n@doc(\"A typed hole: dev compiles it, release refuses to ship it.\")\nfn approx_speed() -> Fixed @stub(Fixed)\n"
 
+// ONESHOT_UNKNOWN_MEMBER_SOURCE is a module whose first line imports a member engine.list
+// does NOT export — the §15 Unknown_Member compile error, the single most common in-loop
+// event (the friction repro b7845c3d: a stubbed `import engine.list.{…}` naming a
+// non-exported member). check / test must surface the structured diagnostic (code +
+// file:line:col + message + caret excerpt), never the bare `Compile_Failed` / source path.
+ONESHOT_UNKNOWN_MEMBER_SOURCE :: "@doc(\"A module importing a member engine.list does not export.\")\n\nimport engine.list.{nonexistent_member}\n\n@doc(\"No bindings — the minimal deviceless map.\")\nfn bindings() -> Bindings {\n  return Bindings.empty()\n}\n\n@doc(\"The empty schedule.\")\npipeline Loop {\n}\n"
+
 // oneshot_temp_root returns a uniquely-named scratch directory path under TMPDIR for a
 // fixture tree, cleared if it already exists.
 @(private = "file")
@@ -193,6 +200,38 @@ test_oneshot_check_clean_tree_ok :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"ok\":true`), "the clean check verdict is ok:true data")
 }
 
+// test_oneshot_check_compile_error_surfaces_diagnostics pins the diagnostic-passthrough
+// contract (friction b7845c3d): a check over a tree with an Unknown_Member import is an
+// ok:false refusal that carries the STRUCTURED `diagnostics` array — the code, the
+// file:line:col, the message, and the rendered caret excerpt — mirroring what the CLI
+// prints in full, NOT a bare `Compile_Failed` label. This is the in-loop self-verify
+// surface's whole point: the agent fixes from the tool result without shelling out.
+@(test)
+test_oneshot_check_compile_error_surfaces_diagnostics :: proc(t: ^testing.T) {
+	root, ok := oneshot_write_tree("funpack-mcp-oneshot-check-diag", ONESHOT_UNKNOWN_MEMBER_SOURCE)
+	if !ok {
+		return
+	}
+	defer os.remove_all(root)
+
+	result, handled := oneshot_dispatch_tool("check", oneshot_dir_args(root))
+	testing.expect(t, handled, "check is claimed")
+	testing.expect(t, strings.contains(result, `"isError":false`), "a compile error is exit-code-as-DATA, never an IsError")
+	testing.expect(t, strings.contains(result, `\"ok\":false`), "the refused check verdict is ok:false data")
+	testing.expect(t, strings.contains(result, `\"error\":\"compile_failed\"`), "the closed Build_Error arm is the machine field")
+	// The structured diagnostic — the fix this junction owns. Each field is present so an
+	// agent reads WHICH member, WHICH line, and WHY from the tool result alone.
+	testing.expect(t, strings.contains(result, `\"diagnostics\":[{`), "the diagnostics array rides the failed result")
+	testing.expect(t, strings.contains(result, `\"code\":\"Unknown_Member\"`), "the closed rule code is surfaced (not the bare Compile_Failed)")
+	testing.expect(t, strings.contains(result, `\"stage\":\"typecheck\"`), "the offending pipeline stage is surfaced")
+	testing.expect(t, strings.contains(result, `\"line\":3`), "the 1-based offending line is surfaced")
+	testing.expect(t, strings.contains(result, `\"col\":1`), "the 1-based offending column is surfaced")
+	testing.expect(t, strings.contains(result, `\"file\":`), "the offending source file is surfaced")
+	testing.expect(t, strings.contains(result, `\"rendered\":`), "the full caret-excerpt render rides alongside the machine fields")
+	// The rendered block is the verbatim CLI text: the offending source line is excerpted.
+	testing.expect(t, strings.contains(result, `import engine.list.{nonexistent_member}`), "the rendered excerpt carries the offending source line")
+}
+
 // test_oneshot_export_holed_tree_is_data_refusal is the EXIT-CODE-AS-DATA headline: export
 // is build --release, and a §05 typed hole refuses a release build (Holed_Declaration,
 // the CLI's exit 2). That refusal is a NORMAL ok:false result (isError:FALSE) carrying the
@@ -230,6 +269,32 @@ test_oneshot_test_clean_tree_reports_counts :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `"isError":false`), "a clean test run is not an error")
 	testing.expect(t, strings.contains(result, `\"passed\":`), "the passed count is surfaced")
 	testing.expect(t, strings.contains(result, `\"failed\":`), "the failed count is surfaced")
+}
+
+// test_oneshot_test_compile_error_surfaces_diagnostics is the test-side twin of the
+// check-side diagnostic-passthrough contract (friction b7845c3d): a module compile error
+// (exit 2, never a counted failure) is an ok:false refusal carrying the SAME structured
+// `diagnostics` array — code + file:line:col + message + caret excerpt — not a bare
+// source path. The message still names the failing module's path (the offender line);
+// the diagnostics carry the detail.
+@(test)
+test_oneshot_test_compile_error_surfaces_diagnostics :: proc(t: ^testing.T) {
+	root, ok := oneshot_write_tree("funpack-mcp-oneshot-test-diag", ONESHOT_UNKNOWN_MEMBER_SOURCE)
+	if !ok {
+		return
+	}
+	defer os.remove_all(root)
+
+	result, handled := oneshot_dispatch_tool("test", oneshot_dir_args(root))
+	testing.expect(t, handled, "test is claimed")
+	testing.expect(t, strings.contains(result, `"isError":false`), "a compile error is exit-code-as-DATA, never an IsError")
+	testing.expect(t, strings.contains(result, `\"ok\":false`), "the refused test verdict is ok:false data")
+	testing.expect(t, strings.contains(result, `\"error\":\"compile_failed\"`), "a module compile error is the compile_failed arm (exit 2)")
+	testing.expect(t, strings.contains(result, `\"diagnostics\":[{`), "the diagnostics array rides the failed result")
+	testing.expect(t, strings.contains(result, `\"code\":\"Unknown_Member\"`), "the closed rule code is surfaced (not the bare source path)")
+	testing.expect(t, strings.contains(result, `\"line\":3`), "the 1-based offending line is surfaced")
+	testing.expect(t, strings.contains(result, `\"rendered\":`), "the full caret-excerpt render rides alongside the machine fields")
+	testing.expect(t, strings.contains(result, `import engine.list.{nonexistent_member}`), "the rendered excerpt carries the offending source line")
 }
 
 // test_oneshot_fmt_canonical_tree_no_drift pins fmt wired to fmt_drift: the minimal source

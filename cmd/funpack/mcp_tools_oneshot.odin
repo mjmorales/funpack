@@ -34,6 +34,7 @@ package main
 import "../../funpack"
 import funpack_runtime "../../runtime"
 import "core:encoding/json"
+import "core:os"
 import "core:strings"
 
 // mcp_oneshot_dispatch is the one-shot family's arm. It CLAIMS its tools — build,
@@ -142,6 +143,13 @@ oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocato
 		funpack_runtime.write_json_string(&b, fmt_build_error_name(verdict.err))
 		strings.write_string(&b, ",\"message\":")
 		funpack_runtime.write_json_string(&b, funpack.build_refusal_message(verdict, allocator))
+		// The Compile_Failed arm carries the inner fix-criteria Diagnostic (the §15 stage
+		// rejection's file:line:col + code + message + caret excerpt). Surface it as a
+		// `diagnostics` array mirroring the CLI's eprint_build_refusal render, so an agent's
+		// in-loop check sees WHICH member, WHICH line, and WHY without shelling out to the
+		// CLI. Other arms name their offender on the message line above; only the compile
+		// floor has a per-stage diagnostic, so the array is conditional on a captured rule.
+		oneshot_write_diagnostics(&b, verdict.diagnostic, allocator)
 		strings.write_byte(&b, '}')
 		return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
 	}
@@ -177,18 +185,21 @@ oneshot_test :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> 
 
 	project, project_err, project_detail := funpack.read_project(dir)
 	if project_err != .None {
-		return oneshot_test_refusal(dispatch.id, dir, "malformed_tree", funpack.project_refusal_message(project_err, project_detail, allocator), allocator)
+		return oneshot_test_refusal(dispatch.id, dir, "malformed_tree", funpack.project_refusal_message(project_err, project_detail, allocator), funpack.Diagnostic{}, allocator)
 	}
 	report := funpack.run_project_pipeline(funpack.project_pipeline_sources(project))
 	if report.index_err != .None {
-		return oneshot_test_refusal(dispatch.id, dir, "index_failed", report.failed_path, allocator)
+		return oneshot_test_refusal(dispatch.id, dir, "index_failed", report.failed_path, funpack.Diagnostic{}, allocator)
 	}
 	if report.module_err != .None {
 		// A module compile error (exit 2) — the failing module's path names where to
-		// look. The bare path is the message (the CLI renders a richer per-stage
-		// diagnostic to stderr; the structured tool result carries the machine fields).
-		message := report.failed_path
-		return oneshot_test_refusal(dispatch.id, dir, "compile_failed", message, allocator)
+		// look, and report.diagnostic carries the same inner fix-criteria Diagnostic the
+		// CLI's eprint_module_diagnostic renders (file:line:col + code + message + caret
+		// excerpt, path already = failed_path). Thread it through as a `diagnostics` array
+		// so the in-loop test surface tells an agent WHY the module failed to compile,
+		// not just the bare path. The message stays the failing module's path (the
+		// offender line); the structured diagnostics carry the detail.
+		return oneshot_test_refusal(dispatch.id, dir, "compile_failed", report.failed_path, report.diagnostic, allocator)
 	}
 
 	b := strings.builder_make(allocator)
@@ -209,7 +220,10 @@ oneshot_test :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> 
 // oneshot_test_refusal renders the test verb's exit-2 refusal (malformed tree / index
 // failure / module compile error) as a NORMAL ok:false data result — exit-code-as-data,
 // not an IsError. error is the machine arm; message is the offender line the agent reads.
-oneshot_test_refusal :: proc(id: Mcp_Id, dir: string, error_name: string, message: string, allocator := context.allocator) -> string {
+// diag is the inner fix-criteria Diagnostic the module-compile arm carries (zero, rule="",
+// for malformed_tree / index_failed — those have no per-stage diagnostic); when populated
+// it rides as a `diagnostics` array mirroring the CLI's eprint_module_diagnostic render.
+oneshot_test_refusal :: proc(id: Mcp_Id, dir: string, error_name: string, message: string, diag: funpack.Diagnostic, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"tool\":\"test\",\"dir\":")
 	funpack_runtime.write_json_string(&b, dir)
@@ -217,6 +231,7 @@ oneshot_test_refusal :: proc(id: Mcp_Id, dir: string, error_name: string, messag
 	funpack_runtime.write_json_string(&b, error_name)
 	strings.write_string(&b, ",\"message\":")
 	funpack_runtime.write_json_string(&b, message)
+	oneshot_write_diagnostics(&b, diag, allocator)
 	strings.write_byte(&b, '}')
 	return oneshot_text_result(id, strings.to_string(b), allocator)
 }
@@ -335,6 +350,75 @@ oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allo
 	funpack_runtime.write_json_string(&b, output)
 	strings.write_byte(&b, '}')
 	return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
+}
+
+// oneshot_write_diagnostics appends the failed result's `diagnostics` array — the
+// MCP-layer passthrough of the inner fix-criteria Diagnostic the compile floor produces
+// (the §15 stage rejection's code/span/message + caret excerpt). It is the structured
+// mirror of the CLI's eprint_build_refusal / eprint_module_diagnostic render: the same
+// Diagnostic the compiler already threaded (verdict.diagnostic / report.diagnostic),
+// lifted into the tool result so an agent's in-loop check/test sees WHICH construct,
+// WHICH line, and WHY — never collapsed to the bare enum label / source path.
+//
+// A zero diagnostic (rule == "" — every non-compile arm, and a Compile_Failed with no
+// captured per-stage cause) appends NOTHING, so the result shape is unchanged for those
+// arms (the message line still names their offender). When populated, exactly one entry
+// rides the array (the first failing module's first stage rejection, the same one the CLI
+// renders) carrying both the machine fields (code/stage/file/line/col/declaration/message/
+// hint) and `rendered` — the full render_diagnostic block (file:line:col: code: message +
+// caret excerpt) so the agent gets the verbatim CLI text without re-rendering it.
+// `rendered` re-reads the source off diag.path exactly as the CLI does (the one host read,
+// owned here at the MCP boundary, mirroring main.odin); a source it cannot re-read yields
+// the header-only render (fail-open, never a crash). line/col of 0 are the unknown halves
+// (a declaration-anchored offender / synthetic node), emitted as 0 so the consumer reads
+// "unknown position" uniformly.
+oneshot_write_diagnostics :: proc(b: ^strings.Builder, diag: funpack.Diagnostic, allocator := context.allocator) {
+	if diag.rule == "" {
+		return
+	}
+	source := ""
+	if bytes, read_err := os.read_entire_file_from_path(diag.path, allocator); read_err == nil {
+		source = string(bytes)
+	}
+	strings.write_string(b, ",\"diagnostics\":[{\"code\":")
+	funpack_runtime.write_json_string(b, diag.rule)
+	strings.write_string(b, ",\"stage\":")
+	funpack_runtime.write_json_string(b, oneshot_diag_stage_wire(diag.stage))
+	strings.write_string(b, ",\"file\":")
+	funpack_runtime.write_json_string(b, diag.path)
+	strings.write_string(b, ",\"line\":")
+	strings.write_int(b, diag.line)
+	strings.write_string(b, ",\"col\":")
+	strings.write_int(b, diag.col)
+	strings.write_string(b, ",\"declaration\":")
+	funpack_runtime.write_json_string(b, diag.declaration)
+	strings.write_string(b, ",\"message\":")
+	funpack_runtime.write_json_string(b, diag.message)
+	strings.write_string(b, ",\"hint\":")
+	funpack_runtime.write_json_string(b, diag.hint)
+	strings.write_string(b, ",\"rendered\":")
+	funpack_runtime.write_json_string(b, funpack.render_diagnostic(diag, source, allocator))
+	strings.write_string(b, "}]")
+}
+
+// oneshot_diag_stage_wire maps a Diag_Stage to its lower-case wire name for the
+// diagnostics array's `stage` field. Exhaustive over the closed stage enum (no default)
+// so a new pipeline stage without a wire name is a compile error here, never a silently
+// stringified `%v` — the closed-enum discipline the rest of this file's wire mappings hold.
+oneshot_diag_stage_wire :: proc(stage: funpack.Diag_Stage) -> string {
+	switch stage {
+	case .Parse:
+		return "parse"
+	case .Gate:
+		return "gate"
+	case .Typecheck:
+		return "typecheck"
+	case .Contract:
+		return "contract"
+	case .Closure:
+		return "closure"
+	}
+	return "unknown"
 }
 
 // oneshot_mode_wire is the Build_Mode → wire string for the build/check/export result
