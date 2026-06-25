@@ -367,6 +367,52 @@ test_combinator_filter_none :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(as_cells(result)), 0)
 }
 
+// find(list, pred) is first's mandatory-predicate form — the first element the
+// predicate accepts as Some, else None. Driven through eval_named_call so the
+// "find" dispatch case (which lowers to builtin_first) is the junction under
+// test: the gameplay-eval twin of the compiler's eval_find — both evaluators must
+// admit find in lockstep or gameplay silently drops it.
+@(test)
+test_combinator_find :: proc(t: ^testing.T) {
+	interp := bare_interp()
+	// `c => c.x == target` with target=2: the first matching cell is (2, 0).
+	env := scope2("cells", cell_list(cell(1, 0), cell(2, 0), cell(2, 9)), "target", i64(2))
+	pred_body := Node {
+		kind     = .Binary,
+		fields   = bin_fields("eq"),
+		children = bin_children(field_node("x", name_node("c")), name_node("target")),
+	}
+	lam := lambda_node(pred_body, "c")
+	node := call_node("find", name_node("cells"), lam)
+
+	result, ok := eval_named_call(&interp, "find", &node, &env)
+	testing.expect(t, ok)
+	some, is_some := result.(Variant_Value)
+	testing.expect(t, is_some)
+	testing.expect_value(t, some.case_name, "Some")
+	expect_cell(t, some.payload^, 2, 0)
+}
+
+// find that matches nothing yields Option::None (never a fault).
+@(test)
+test_combinator_find_none :: proc(t: ^testing.T) {
+	interp := bare_interp()
+	env := scope2("cells", cell_list(cell(1, 0), cell(3, 0)), "target", i64(2))
+	pred_body := Node {
+		kind     = .Binary,
+		fields   = bin_fields("eq"),
+		children = bin_children(field_node("x", name_node("c")), name_node("target")),
+	}
+	lam := lambda_node(pred_body, "c")
+	node := call_node("find", name_node("cells"), lam)
+
+	result, ok := eval_named_call(&interp, "find", &node, &env)
+	testing.expect(t, ok)
+	none_variant, is_variant := result.(Variant_Value)
+	testing.expect(t, is_variant)
+	testing.expect_value(t, none_variant.case_name, "None")
+}
+
 // bin_fields / bin_children build a `binary OP` node's parts for the predicate
 // lambdas (an `eq` over a field read and a captured target).
 @(private = "file")

@@ -731,6 +731,12 @@ eval_named_call :: proc(
 		return builtin_clamp(interp, node, env)
 	case "first":
 		return builtin_first(interp, node, env)
+	case "find":
+		// find(xs, pred) is first's mandatory-predicate form — the first element
+		// the predicate accepts as Some, else None — so it lowers to the same
+		// builtin (builtin_first's predicate branch). Without this case gameplay
+		// `find` silently drops where the compiler evaluator (eval_find) admits it.
+		return builtin_first(interp, node, env)
 	case "fold":
 		return builtin_fold(interp, node, env)
 	case "within":

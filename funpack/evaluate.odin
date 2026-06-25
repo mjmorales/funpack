@@ -1458,6 +1458,8 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_fold(ctx, env, e)
 	case "first":
 		return eval_first(ctx, env, e)
+	case "find":
+		return eval_find(ctx, env, e)
 	case "or_else":
 		return eval_or_else(ctx, env, e)
 	case "last":
@@ -1821,6 +1823,29 @@ eval_first :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok
 		if len(e.args) == 1 {
 			return some_value(element), true
 		}
+		verdict := apply_combinator(ctx, env, e.args[1], {element}) or_return
+		accepted, is_bool := verdict.(bool)
+		if is_bool && accepted {
+			return some_value(element), true
+		}
+	}
+	return Option_Value{is_some = false, payload = nil}, true
+}
+
+// eval_find lowers the §08 list combinator find(source, pred) -> Option[T]: the
+// first element the predicate accepts wrapped in Some, or None when none match —
+// first's predicate form named at the §08 surface (the textbook
+// `find(monsters, fn(m) { m.cell == here })`). It rides the same
+// combinator-application seam first/filter use, so the method form
+// `xs.find(pred)` lowers identically to the free call (the §02 §4 "same
+// function" guarantee).
+eval_find :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	source := eval_expr(ctx, env, e.args[0]) or_return
+	list := source.(List_Value) or_return
+	for element in list.elements {
 		verdict := apply_combinator(ctx, env, e.args[1], {element}) or_return
 		accepted, is_bool := verdict.(bool)
 		if is_bool && accepted {

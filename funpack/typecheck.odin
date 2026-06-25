@@ -1937,6 +1937,9 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "first":
 		t, fe := first_check(ctx, e)
 		return t, true, fe
+	case "find":
+		t, fe := find_check(ctx, e)
+		return t, true, fe
 	case "last":
 		t, le := last_check(ctx, e)
 		return t, true, le
@@ -2316,6 +2319,28 @@ first_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Err
 	return option_of(elem), .None
 }
 
+// find types find(source, pred) -> Option[T] (spec §08, stdlib engine.list
+// `find(self: [T], pred: fn(T) -> Bool) -> Option[T]`): the source is a List[T]
+// or a §08 View[T], the predicate is (T) -> Bool inferred from the element type,
+// and the result is Option[T] — the first element the predicate accepts, or None.
+// It is first's predicate form named at the §08 surface (the textbook
+// `find(monsters, fn(m) { m.cell == here })`), so it reads the element through
+// source_element and types the predicate through combinator_check exactly as
+// first(view, pred) and filter do — the same combinator inference, never a
+// fixed-table signature (find's parameters depend on the call site's element).
+find_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	elem, ok := source_element(source)
+	if !ok {
+		return nil, .Type_Mismatch
+	}
+	combinator_check(ctx, e.args[1], {elem}, Ground_Type.Bool) or_return
+	return option_of(elem), .None
+}
+
 // last is last(list: [T]) -> Option[T] (the stdlib engine.list signature) —
 // first's one-argument form read from the other end, the warren's
 // drifted-route probe (`last(route.steps)`). The element type comes off the
@@ -2678,6 +2703,7 @@ is_stdlib_free_fn :: proc(name: string) -> bool {
 	switch name {
 	case "fold",
 	     "first",
+	     "find",
 	     "last",
 	     "neighbors",
 	     "in_bounds",

@@ -932,7 +932,7 @@ surface_methods_for_receiver :: proc(receiver: Type, allocator := context.temp_a
 // record-schema ctx) and the spatial combinators (within/nearest_first need the
 // enclosing query's @spatial declaration) have no pure-type kind and are excluded.
 Surface_Combinator_Receiver :: enum {
-	List,      // a List[T] or a View[T] — source_element's domain (fold/first/last/map/filter/is_empty/len/get)
+	List,      // a List[T] or a View[T] — source_element's domain (fold/first/find/last/map/filter/is_empty/len/get)
 	List_Only, // a List[T] only (^List_Type); a View is rejected (concat/contains/init)
 	Rng,       // the engine.rand Rng handle (pick)
 	Option,    // an Option[T] (or_else)
@@ -965,6 +965,7 @@ Surface_Combinator_Probe :: struct {
 SURFACE_COMBINATOR_PROBES := []Surface_Combinator_Probe{
 	{"fold", .List},
 	{"first", .List},
+	{"find", .List},
 	{"last", .List},
 	{"map", .List},
 	{"filter", .List},

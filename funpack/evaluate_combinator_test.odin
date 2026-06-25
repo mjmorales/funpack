@@ -80,6 +80,23 @@ test_list_combinator_ufcs_agrees_with_free_call :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.failed, 0)
 }
 
+// find(xs, pred) -> Option[T] is first's predicate form named at the §08 surface
+// (the textbook find(monsters, fn(m){ m.cell == here })). The junction is the
+// CALL, not the import: find takes the same fn(T)->Bool lambda filter/map/fold do,
+// so it must typecheck AND evaluate, not merely resolve as a name — a hit returns
+// Some(elem), a miss None.
+@(test)
+test_find_predicate_evaluates_to_some_then_none :: proc(t: ^testing.T) {
+	source := "import engine.list.{find}\n" + "test \"find returns Some on a hit and None on a miss\" {\n" +
+		"  assert find([1, 2, 3], fn(x) { return x == 2 }) == Option::Some(2)\n" +
+		"  assert find([1, 2, 3], fn(x) { return x == 9 }) == Option::None\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 2)
+	testing.expect_value(t, report.failed, 0)
+}
+
 // ── §11 §2 Body.apply_impulse accumulates the Vec2 impulse ────────────────────
 
 @(test)

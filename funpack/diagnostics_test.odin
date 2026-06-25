@@ -348,7 +348,7 @@ test_diag_pin_typecheck_mismatch :: proc(t: ^testing.T) {
 test_diag_pin_typecheck_unknown_method :: proc(t: ^testing.T) {
 	source := "fn f() -> Int {\n  return [1, 2].bogus(3)\n}\n"
 	got := diag_render_through_pipeline(t, source, .Typecheck_Failed)
-	want := "src/x.fun:2:17: Unknown_Method (f): no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4) — available methods: concat, contains, filter, first, fold, get, init, is_empty, last, len, map\n  2 |   return [1, 2].bogus(3)\n    |                 ^"
+	want := "src/x.fun:2:17: Unknown_Method (f): no such method on this type — `recv.NAME(…)` names neither a method of the receiver's type nor a stdlib free fn reachable through it (spec §02 §4) — available methods: concat, contains, filter, find, first, fold, get, init, is_empty, last, len, map\n  2 |   return [1, 2].bogus(3)\n    |                 ^"
 	testing.expect_value(t, got, want)
 }
 
