@@ -480,13 +480,13 @@ test_surface_methods_for_receiver_lists_rng_draws :: proc(t: ^testing.T) {
 
 	// A list receiver reaches the call-site-inferred list combinators (path 4): the
 	// source_element family (fold/first/find/last/map/filter/is_empty/len/get) plus the
-	// List-only concat/contains/init. They carry no fixed signature, so the path-3
-	// free-fn scan cannot reach them; path 4 lists the full reachable set.
+	// List-only append/concat/contains/init/reverse. They carry no fixed signature, so
+	// the path-3 free-fn scan cannot reach them; path 4 lists the full reachable set.
 	list_hint := surface_methods_for_receiver(list_of(Ground_Type.Int))
 	testing.expect_value(
 		t,
 		list_hint,
-		"available methods: concat, contains, filter, find, first, fold, get, init, is_empty, last, len, map",
+		"available methods: append, concat, contains, filter, find, first, fold, get, init, is_empty, last, len, map, reverse",
 	)
 
 	// An Option receiver reaches the self-first or_else combinator (path 4).

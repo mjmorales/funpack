@@ -97,6 +97,27 @@ test_find_predicate_evaluates_to_some_then_none :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.failed, 0)
 }
 
+// append(list, item) puts the item at the BACK and reverse(list) flips order —
+// both declared in stdlib engine.list (append: prepend's other-end twin; reverse:
+// init's order-reversing unary twin). The junction is the whole path: the import
+// must resolve AND the calls must produce the back-appended / reversed list.
+// Pinned by element reads (get/len) rather than whole-list equality so the
+// assertion exercises the produced order directly.
+@(test)
+test_append_to_back_and_reverse_flip_order :: proc(t: ^testing.T) {
+	source := "import engine.list.{append, reverse, len, get}\n" +
+		"test \"append appends, reverse reverses\" {\n" +
+		"  assert len(append([1, 2], 3)) == 3\n" +
+		"  assert get(append([1, 2], 3), 2) == Option::Some(3)\n" +
+		"  assert get(reverse([1, 2, 3]), 0) == Option::Some(3)\n" +
+		"  assert get(reverse([1, 2, 3]), 2) == Option::Some(1)\n" +
+		"}\n"
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 4)
+	testing.expect_value(t, report.failed, 0)
+}
+
 // ── §11 §2 Body.apply_impulse accumulates the Vec2 impulse ────────────────────
 
 @(test)

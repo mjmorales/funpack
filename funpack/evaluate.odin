@@ -1474,6 +1474,10 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_nearest_first(ctx, env, e)
 	case "prepend":
 		return eval_prepend(ctx, env, e)
+	case "append":
+		return eval_append(ctx, env, e)
+	case "reverse":
+		return eval_reverse(ctx, env, e)
 	case "init":
 		return eval_init(ctx, env, e)
 	case "contains":
@@ -2094,6 +2098,34 @@ eval_init :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 	out := make([]Value, len(elements) - 1, context.temp_allocator)
 	for i in 0 ..< len(elements) - 1 {
 		out[i] = elements[i]
+	}
+	return List_Value{elements = out}, true
+}
+
+// eval_append lowers `append(list, item) -> [T]` (spec §08): a fresh list with
+// every element of `list` in order then `item` at the back — prepend's other-end
+// twin. The input list is never mutated.
+eval_append :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	elem := eval_expr(ctx, env, e.args[1]) or_return
+	out := make([]Value, len(elements) + 1, context.temp_allocator)
+	for element, i in elements {
+		out[i] = element
+	}
+	out[len(elements)] = elem
+	return List_Value{elements = out}, true
+}
+
+// eval_reverse lowers `reverse(list) -> [T]` (spec §08): a fresh list with the
+// elements in reversed order. The input list is never mutated.
+eval_reverse :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	elements := eval_list_arg(ctx, env, e, 0, 1) or_return
+	out := make([]Value, len(elements), context.temp_allocator)
+	for element, i in elements {
+		out[len(elements) - 1 - i] = element
 	}
 	return List_Value{elements = out}, true
 }

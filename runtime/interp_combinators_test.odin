@@ -413,6 +413,39 @@ test_combinator_find_none :: proc(t: ^testing.T) {
 	testing.expect_value(t, none_variant.case_name, "None")
 }
 
+// append(list, item) puts the item at the BACK (prepend's other-end twin) — the
+// receiver is the container, so args[0] is the list and args[1] the element. The
+// gameplay-eval twin of the compiler's eval_append.
+@(test)
+test_combinator_append :: proc(t: ^testing.T) {
+	interp := bare_interp()
+	env := scope2("cells", cell_list(cell(1, 0), cell(2, 0)), "item", cell(9, 9))
+	node := call_node("append", name_node("cells"), name_node("item"))
+
+	result, ok := builtin_append(&interp, &node, &env)
+	testing.expect(t, ok)
+	out := as_cells(result)
+	testing.expect_value(t, len(out), 3)
+	expect_cell(t, out[0], 1, 0)
+	expect_cell(t, out[2], 9, 9)
+}
+
+// reverse(list) flips the element order — init's order-reversing unary twin, the
+// gameplay-eval twin of the compiler's eval_reverse.
+@(test)
+test_combinator_reverse :: proc(t: ^testing.T) {
+	interp := bare_interp()
+	env := scope1("cells", cell_list(cell(1, 0), cell(2, 0), cell(3, 0)))
+	node := call_node("reverse", name_node("cells"))
+
+	result, ok := builtin_reverse(&interp, &node, &env)
+	testing.expect(t, ok)
+	out := as_cells(result)
+	testing.expect_value(t, len(out), 3)
+	expect_cell(t, out[0], 3, 0)
+	expect_cell(t, out[2], 1, 0)
+}
+
 // bin_fields / bin_children build a `binary OP` node's parts for the predicate
 // lambdas (an `eq` over a field read and a captured target).
 @(private = "file")

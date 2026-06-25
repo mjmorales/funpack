@@ -1973,6 +1973,12 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "prepend":
 		t, pe := prepend_check(ctx, e)
 		return t, true, pe
+	case "append":
+		t, ae := append_check(ctx, e)
+		return t, true, ae
+	case "reverse":
+		t, re := reverse_check(ctx, e)
+		return t, true, re
 	case "init":
 		t, ie := init_check(ctx, e)
 		return t, true, ie
@@ -2105,6 +2111,49 @@ prepend_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_E
 // its last element dropped — `init(extended)` drops the snake's tail cell. The
 // element type is unchanged.
 init_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	list_type := expr_check(ctx, e.args[0]) or_return
+	list, is_list := list_type.(^List_Type)
+	if !is_list {
+		return nil, .Type_Mismatch
+	}
+	return list_of(list.elem), .None
+}
+
+// append_check types append(list, item) (spec §08, stdlib engine.list
+// `append(self: [T], item: T) -> [T]`): a List[T] and a value of the element
+// type, yielding a [T] with the value pushed to the BACK — prepend's other-end
+// twin (the `concat(xs, [item])` an author first reaches for). Unlike prepend
+// the receiver IS the container (args[0] the list, args[1] the element), so the
+// UFCS form `xs.append(item)` lowers cleanly. The result element is the unified
+// element (the value's type over the nil-element empty list).
+append_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	list_type := expr_check(ctx, e.args[0]) or_return
+	value := expr_check(ctx, e.args[1]) or_return
+	list, is_list := list_type.(^List_Type)
+	if !is_list {
+		return nil, .Type_Mismatch
+	}
+	if !types_compatible(list.elem, value) {
+		return nil, .Type_Mismatch
+	}
+	elem := list.elem
+	if elem == nil {
+		elem = value
+	}
+	return list_of(elem), .None
+}
+
+// reverse_check types reverse(list) (spec §08, stdlib engine.list
+// `reverse(self: [T]) -> [T]`): a List[T] yielding the same [T] in reversed
+// order — init's unary shape, order-reversing instead of last-dropping, so the
+// element type is unchanged.
+reverse_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
 	if len(e.args) != 1 {
 		return nil, .Type_Mismatch
 	}
@@ -2715,6 +2764,8 @@ is_stdlib_free_fn :: proc(name: string) -> bool {
 	     "concat",
 	     "contains",
 	     "prepend",
+	     "append",
+	     "reverse",
 	     "init",
 	     "is_empty",
 	     "len",

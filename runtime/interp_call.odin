@@ -781,6 +781,10 @@ eval_named_call :: proc(
 		return builtin_up(interp, node, env)
 	case "prepend":
 		return builtin_prepend(interp, node, env)
+	case "append":
+		return builtin_append(interp, node, env)
+	case "reverse":
+		return builtin_reverse(interp, node, env)
 	case "init":
 		return builtin_init(interp, node, env)
 	case "contains":
@@ -1508,6 +1512,54 @@ builtin_prepend :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	out[0] = elem_val
 	for elem, i in elements {
 		out[i + 1] = elem
+	}
+	return List_Value{elements = out}, true
+}
+
+// builtin_append is the §08 list combinator `append(list, item) -> [T]`: a new
+// list with every element of `list` in order then `item` at the back —
+// prepend's other-end twin (args[0] the list, args[1] the element). The list is
+// rebuilt fresh in the evaluation arena (immutable data — the input is never
+// mutated, §08).
+builtin_append :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 3 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	elem_val, elem_ok := eval(interp, &node.children[2], env)
+	if !list_ok || !elem_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	out := make([]Value, len(elements) + 1, interp.allocator)
+	for elem, i in elements {
+		out[i] = elem
+	}
+	out[len(elements)] = elem_val
+	return List_Value{elements = out}, true
+}
+
+// builtin_reverse is the §08 list combinator `reverse(list) -> [T]`: a new list
+// with the elements in reversed order. The list is rebuilt fresh in the
+// evaluation arena (immutable data — the input is never mutated, §08).
+builtin_reverse :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) < 2 {
+		return nil, false
+	}
+	list_val, list_ok := eval(interp, &node.children[1], env)
+	if !list_ok {
+		return nil, false
+	}
+	elements, elems_ok := as_elements(interp, list_val)
+	if !elems_ok {
+		return nil, false
+	}
+	out := make([]Value, len(elements), interp.allocator)
+	for elem, i in elements {
+		out[len(elements) - 1 - i] = elem
 	}
 	return List_Value{elements = out}, true
 }
