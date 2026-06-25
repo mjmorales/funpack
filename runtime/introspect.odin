@@ -116,7 +116,7 @@ open_debug_session :: proc(
 
 	if run_seed.has_seed {
 		rngs := make([]Rng, len(snapshots) + 1, allocator)
-		startup, advanced := run_startup_seeded(program, base, rand_seed(run_seed.seed), allocator)
+		startup, advanced := run_startup_rooted(program, base, run_seed.seed, allocator)
 		current := advanced
 		prior := startup
 		for snapshot, i in snapshots {

@@ -440,6 +440,73 @@ test_load_entrypoint :: proc(t: ^testing.T) {
 	testing.expect_value(t, program.entrypoint.logical_w, 160)
 	testing.expect_value(t, program.entrypoint.logical_h, 120)
 	testing.expect_value(t, program.entrypoint.bindings, "bindings")
+	// The golden bakes no config seed — the 6-field record loads has_seed=false, so the
+	// runtime resolves the engine default at launch.
+	testing.expect(t, !program.entrypoint.has_seed)
+}
+
+// load_entrypoint parses the OPTIONAL trailing `seed:N` field (§25 §60): a 7-field
+// record carries the baked config seed (has_seed=true); a 6-field record is seedless;
+// and a malformed 7th field (wrong prefix or non-integer) fails closed rather than
+// silently ignoring a baked seed.
+@(test)
+test_load_entrypoint_config_seed :: proc(t: ^testing.T) {
+	seeded_section := Artifact_Section {
+		name = "entrypoint",
+		count = 1,
+		records = []Artifact_Record {
+			{lead = "entrypoint main pipeline:Pong tick_hz:60 logical:160x120 bindings:bindings seed:1234"},
+		},
+	}
+	seeded, seeded_err := load_entrypoint(seeded_section)
+	testing.expect_value(t, seeded_err, Artifact_Error.None)
+	testing.expect(t, seeded.has_seed)
+	testing.expect_value(t, seeded.seed, i64(1234))
+	// A negative seed round-trips (the seed is raw §10 integer bits).
+	neg_section := Artifact_Section {
+		name = "entrypoint",
+		count = 1,
+		records = []Artifact_Record {
+			{lead = "entrypoint main pipeline:Pong tick_hz:60 logical:160x120 bindings:bindings seed:-7"},
+		},
+	}
+	neg, neg_err := load_entrypoint(neg_section)
+	testing.expect_value(t, neg_err, Artifact_Error.None)
+	testing.expect(t, neg.has_seed)
+	testing.expect_value(t, neg.seed, i64(-7))
+
+	// 6 fields → seedless (has_seed=false).
+	bare_section := Artifact_Section {
+		name = "entrypoint",
+		count = 1,
+		records = []Artifact_Record {
+			{lead = "entrypoint main pipeline:Pong tick_hz:60 logical:160x120 bindings:bindings"},
+		},
+	}
+	bare, bare_err := load_entrypoint(bare_section)
+	testing.expect_value(t, bare_err, Artifact_Error.None)
+	testing.expect(t, !bare.has_seed)
+
+	// A 7th field with the wrong prefix or a non-integer value fails closed.
+	wrong_prefix := Artifact_Section {
+		name = "entrypoint",
+		count = 1,
+		records = []Artifact_Record {
+			{lead = "entrypoint main pipeline:Pong tick_hz:60 logical:160x120 bindings:bindings warp:1"},
+		},
+	}
+	_, wrong_err := load_entrypoint(wrong_prefix)
+	testing.expect_value(t, wrong_err, Artifact_Error.Bad_Field)
+
+	non_int := Artifact_Section {
+		name = "entrypoint",
+		count = 1,
+		records = []Artifact_Record {
+			{lead = "entrypoint main pipeline:Pong tick_hz:60 logical:160x120 bindings:bindings seed:xyz"},
+		},
+	}
+	_, non_int_err := load_entrypoint(non_int)
+	testing.expect_value(t, non_int_err, Artifact_Error.Bad_Field)
 }
 
 // parse_logical_field pins the §15 logical:WxH conversion directly: the WxH

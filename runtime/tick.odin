@@ -491,6 +491,61 @@ program_uses_rng :: proc(program: ^Program) -> bool {
 	return false
 }
 
+// RUNTIME_DEFAULT_SEED is the fixed root seed a fresh run/live falls back to when
+// neither an explicit `--seed` override nor an entrypoint config seed is supplied —
+// the lowest tier of the §25 §60 seed-source precedence. It is a FIXED CONSTANT,
+// never a wall-clock draw, so a bare `funpack run` of a uses_rng game is
+// reproducible out of the box (the same first RNG draw on every launch); a project
+// that wants per-launch variation passes `--seed` or bakes a captured seed into the
+// entrypoint config, and that value is recorded like any other determinism input.
+// The exact number is arbitrary — determinism rests only on it being fixed and
+// recorded — but it reads as "SEED" in a hex log for at-a-glance recognition.
+RUNTIME_DEFAULT_SEED :: i64(0x5EED)
+
+// resolve_root_seed picks a fresh run's root seed by the §25 §60 precedence,
+// highest first: an explicit `--seed` override, then the entrypoint config seed
+// (entrypoints.fcfg `seed = N`), then the fixed engine default. Pure over its two
+// inputs so the precedence is unit-tested without a live session.
+resolve_root_seed :: proc(override: Maybe(i64), entrypoint: Entrypoint) -> i64 {
+	if seed, ok := override.?; ok {
+		return seed
+	}
+	if entrypoint.has_seed {
+		return entrypoint.seed
+	}
+	return RUNTIME_DEFAULT_SEED
+}
+
+// run_startup_rooted runs setup from a resolved root seed, returning the committed
+// base version AND the root Rng entering tick 0. It separates two concerns the
+// callers used to conflate under a single "seeded" flag:
+//
+//   - SETUP CONSUMES THE SEED (program_is_seeded — setup binds `rng: Rng` and
+//     returns `(Rng, [Spawn])`, snake): run_startup_seeded evaluates the body and
+//     the Rng it returns (advanced past setup's draws) enters tick 0.
+//   - SETUP IS SEEDLESS but a PER-TICK behavior draws (a `uses_rng` game whose
+//     setup is `setup() -> [Spawn]`, deepseed): run_startup applies the
+//     pre-evaluated batch and the UNADVANCED root Rng (rand_seed(seed)) enters
+//     tick 0 for the per-tick behaviors to thread.
+//
+// The second arm is what closes the unseeded-black-screen path: such a game used to
+// get no root Rng (the run was classified seedless because setup did not bind Rng),
+// so its drawing behaviors never folded. Now it carries a real root Rng.
+run_startup_rooted :: proc(
+	program: ^Program,
+	base: World_Version,
+	seed: i64,
+	allocator := context.allocator,
+) -> (
+	version: World_Version,
+	rng: Rng,
+) {
+	if program_is_seeded(program) {
+		return run_startup_seeded(program, base, rand_seed(seed), allocator)
+	}
+	return run_startup(program, base, allocator), rand_seed(seed)
+}
+
 // build_spawn_blackboard evaluates one Spawn_Command into a complete row
 // blackboard: every supplied setup field decoded to its column value, then every
 // thing field the command omitted filled from its Field_Decl default. A Fixed

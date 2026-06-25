@@ -861,13 +861,17 @@ Entrypoints :: struct {
 // fn (§23/§07, §20 §3). pipeline and bindings are source names validated
 // against the module; tick is the `<digits>hz` rate value as written; logical
 // is the `WxH` extent value as written (the fixed logical space §20 §3
-// letterboxes to, in integer world units).
+// letterboxes to, in integer world units). seed is the OPTIONAL `seed = N` baked
+// root-seed value as written (§25 §60) — "" when the block declares none, in which
+// case the artifact omits the seed field entirely; select_entrypoint parses the
+// integer.
 Entrypoint :: struct {
 	name:     string,
 	pipeline: string,
 	tick:     string,
 	logical:  string,
 	bindings: string,
+	seed:     string,
 }
 
 // Entrypoints_Error is closed with one arm per way entrypoints.fcfg can
@@ -936,11 +940,13 @@ cfg_parse_use :: proc(p: ^Cfg_Parser) -> (module: string, members: []string, err
 }
 
 // cfg_parse_entrypoint parses one `entrypoint <name> { pipeline = N, tick =
-// Rhz, logical = WxH, bindings = N }` block. The four keys are required and
-// each is read by name, so key order does not matter; a missing key or an
-// unknown key is malformed. tick demands a `<digits>hz` value; logical demands
-// a `WxH` extent (a digit-led token whose W/H integers select_entrypoint
-// validates); pipeline and bindings demand a bare name.
+// Rhz, logical = WxH, bindings = N, [seed = N] }` block. The four pipeline/tick/
+// logical/bindings keys are REQUIRED and each is read by name, so key order does
+// not matter; a missing required key or an unknown key is malformed. tick demands a
+// `<digits>hz` value; logical demands a `WxH` extent (a digit-led token whose W/H
+// integers select_entrypoint validates); pipeline and bindings demand a bare name.
+// seed is OPTIONAL (the §25 §60 baked root seed) — a bare integer whose value
+// select_entrypoint parses; omitting it is legal.
 cfg_parse_entrypoint :: proc(p: ^Cfg_Parser) -> (block: Entrypoint, err: Entrypoints_Error) {
 	cfg_take(p, .Ident, "entrypoint") or_return
 	name := cfg_take(p, .Ident) or_return
@@ -975,6 +981,13 @@ cfg_parse_entrypoint :: proc(p: ^Cfg_Parser) -> (block: Entrypoint, err: Entrypo
 			value := cfg_take(p, .Tick) or_return
 			block.logical = value.text
 			saw_logical = true
+		case "seed":
+			// The OPTIONAL §25 §60 baked root seed. A bare integer lexes as a
+			// digit-led Tick token (the same scan tick/logical ride); the integer
+			// parse is select_entrypoint's job. Not in the required-key set below,
+			// so omitting it is legal and leaves block.seed == "".
+			value := cfg_take(p, .Tick) or_return
+			block.seed = value.text
 		case:
 			return Entrypoint{}, .Malformed_Entrypoints_Fcfg
 		}

@@ -348,6 +348,174 @@ test_seeded_draw_empty_pool_threads_but_spawns_nothing :: proc(t: ^testing.T) {
 	testing.expect_value(t, run_rng.state, hand.state)
 }
 
+// --- seedless setup + per-tick RNG: the unseeded-black-screen junction -------
+
+// per_tick_rng_program assembles a program whose SETUP IS SEEDLESS (`setup() ->
+// [Spawn]`, binds no Rng) but whose per-tick `seed_draw` behavior DRAWS from the Rng
+// — the deepseed black-screen shape. program_is_seeded is false (setup binds no Rng)
+// yet program_uses_rng is true (the behavior binds Rng), so the run carries a root
+// seed delivered per-tick even though setup never consumed one. It is
+// seeded_draw_program with the setup's Rng param + draw stripped: setup spawns the
+// Spawner unconditionally, the behavior is unchanged.
+@(private = "file")
+per_tick_rng_program :: proc(pool: int) -> Program {
+	things := make([]Thing_Decl, 2, context.temp_allocator)
+	things[0] = Thing_Decl{name = "Spawner", singleton = false}
+	mote_fields := make([]Field_Decl, 1, context.temp_allocator)
+	mote_fields[0] = Field_Decl{name = "cell", type = "Int", has_default = true, default_encoded = "0"}
+	things[1] = Thing_Decl{name = "Mote", fields = mote_fields}
+
+	// --- SEEDLESS setup body: return [Spawn(Spawner{})] (no rng param, no draw) ---
+	setup_return := Node {
+		kind     = .Return,
+		children = sr_children(Node{kind = .List, children = sr_children(sr_spawner_spawn())}),
+	}
+	setup_body := make([]Node, 1, context.temp_allocator)
+	setup_body[0] = setup_return
+
+	// --- behavior body: let free; return match rng.pick(free) { … } (draws) ---
+	beh_some := Node{kind = .List, children = sr_children(sr_mote_spawn(sr_name("cell")))}
+	beh_none := Node{kind = .List}
+	beh_return := Node{kind = .Return, children = sr_children(sr_draw_match(beh_some, beh_none))}
+	beh_body := make([]Node, 2, context.temp_allocator)
+	beh_body[0] = sr_let_free(pool)
+	beh_body[1] = beh_return
+
+	// --- functions: a SEEDLESS Startup setup returning a bare [Spawn] list ---
+	functions := make([]Function_Decl, 1, context.temp_allocator)
+	functions[0] = Function_Decl {
+		name        = "setup",
+		kind        = .Startup,
+		return_type = "[Spawn]",
+		body        = setup_body,
+	}
+
+	// --- behaviors: seed_draw on Spawner, BINDS rng (the per-tick draw) ---
+	behaviors := make([]Behavior_Decl, 1, context.temp_allocator)
+	beh_params := make([]Param_Decl, 2, context.temp_allocator)
+	beh_params[0] = Param_Decl{name = "self", type = "Spawner"}
+	beh_params[1] = Param_Decl{name = "rng", type = "Rng"}
+	beh_emits := make([]string, 1, context.temp_allocator)
+	beh_emits[0] = "(Rng, [Spawn])"
+	behaviors[0] = Behavior_Decl {
+		name     = "seed_draw",
+		on_thing = "Spawner",
+		stage    = "eat",
+		params   = beh_params,
+		emits    = beh_emits,
+		body     = beh_body,
+	}
+
+	pipeline := make([]Pipeline_Step, 1, context.temp_allocator)
+	pipeline[0] = Pipeline_Step{ordinal = 0, stage = "eat", behavior = "seed_draw"}
+
+	return Program{things = things, functions = functions, behaviors = behaviors, pipeline = pipeline}
+}
+
+// pr_run folds a seedless-setup uses_rng program from a root seed through the SAME
+// run_startup_rooted + step_tick(&rng) seam the live loop and the replay re-fold drive
+// — the path that closes the black-screen gap. Returns the final committed version and
+// the final root Rng.
+@(private = "file")
+pr_run :: proc(
+	program: ^Program,
+	seed: i64,
+	ticks: int,
+	allocator := context.temp_allocator,
+) -> (
+	final: World_Version,
+	rng: Rng,
+) {
+	world := new_world(program^, allocator)
+	base := initial_version(world, allocator)
+	version, current := run_startup_rooted(program, base, seed, allocator)
+	for _ in 0 ..< ticks {
+		version = step_tick(program, version, empty(), Record_Value{}, allocator, &current)
+	}
+	return version, current
+}
+
+// THE BLACK-SCREEN JUNCTION: a program whose setup is seedless but whose per-tick
+// behavior draws (program_uses_rng=true, program_is_seeded=false). Gating the root
+// seed on program_is_seeded would classify it seedless and thread it no root Rng, so
+// its drawing behaviors would never fold and the world would stay empty (the deepseed
+// black screen). Gating on uses_rng and threading a root seed through
+// run_startup_rooted, the per-tick draws fold: setup spawns the Spawner, and each
+// tick's seed_draw spawns one Mote — a NON-EMPTY world that renders.
+@(test)
+test_per_tick_rng_seedless_setup_folds :: proc(t: ^testing.T) {
+	program := per_tick_rng_program(10)
+
+	// The classification that drives the live gate: draws RNG, but not in setup.
+	testing.expect(t, program_uses_rng(&program))
+	testing.expect(t, !program_is_seeded(&program))
+
+	final, _ := pr_run(&program, 42, 2, context.temp_allocator)
+
+	// Setup spawned the Spawner; each of the two ticks drew and spawned a Mote — the
+	// world is NON-EMPTY (2 Motes), the proof the per-tick draws actually folded.
+	testing.expect_value(t, view_count(view_of_type(&final, "Spawner")), 1)
+	testing.expect_value(t, view_count(view_of_type(&final, "Mote")), 2)
+}
+
+// The seedless-setup uses_rng fold is DETERMINISTIC: two runs from the same root seed
+// commit a bit-identical world — exactly the property the replay re-fold (run_startup_
+// rooted + step_tick over recorded snapshots) relies on to reproduce the run. A
+// different seed diverges, so the root seed is a genuine recorded determinism input
+// even though setup never consumed it.
+@(test)
+test_per_tick_rng_seedless_setup_deterministic :: proc(t: ^testing.T) {
+	program := per_tick_rng_program(10)
+
+	first, first_rng := pr_run(&program, 42, 2, context.temp_allocator)
+	second, second_rng := pr_run(&program, 42, 2, context.temp_allocator)
+	testing.expect(t, world_versions_equal(first, second))
+	testing.expect_value(t, first_rng.state, second_rng.state)
+
+	other, _ := pr_run(&program, 7, 2, context.temp_allocator)
+	testing.expect(t, !world_versions_equal(first, other))
+}
+
+// run_startup_rooted ROUTES by setup-seeding, not by the mere presence of a root seed:
+//   - SEEDED setup (seeded_draw_program — setup binds Rng): identical to
+//     run_startup_seeded(rand_seed(seed)) — setup draws and the returned Rng is
+//     advanced past the draw.
+//   - SEEDLESS setup (per_tick_rng_program): identical to run_startup, and the
+//     returned root Rng is rand_seed(seed) UNADVANCED — setup drew nothing, so tick 0
+//     starts from the bare seed.
+// This is the single decision point every re-fold site now shares (live, replay,
+// introspect), so pinning it pins them all.
+@(test)
+test_run_startup_rooted_routes_by_setup_seeding :: proc(t: ^testing.T) {
+	// Seeded-setup arm: rooted == run_startup_seeded.
+	seeded := seeded_draw_program(10)
+	sworld := new_world(seeded, context.temp_allocator)
+	sbase := initial_version(sworld, context.temp_allocator)
+	rooted_v, rooted_rng := run_startup_rooted(&seeded, sbase, 42, context.temp_allocator)
+
+	seeded2 := seeded_draw_program(10)
+	s2world := new_world(seeded2, context.temp_allocator)
+	s2base := initial_version(s2world, context.temp_allocator)
+	ref_v, ref_rng := run_startup_seeded(&seeded2, s2base, rand_seed(42), context.temp_allocator)
+	testing.expect(t, world_versions_equal(rooted_v, ref_v))
+	testing.expect_value(t, rooted_rng.state, ref_rng.state)
+	// Setup drew once, so the rooted Rng is NOT the bare seed.
+	testing.expect(t, rooted_rng.state != rand_seed(42).state)
+
+	// Seedless-setup arm: rooted == run_startup, Rng is the bare seed.
+	pertick := per_tick_rng_program(10)
+	pworld := new_world(pertick, context.temp_allocator)
+	pbase := initial_version(pworld, context.temp_allocator)
+	prooted_v, prooted_rng := run_startup_rooted(&pertick, pbase, 42, context.temp_allocator)
+
+	pertick2 := per_tick_rng_program(10)
+	p2world := new_world(pertick2, context.temp_allocator)
+	p2base := initial_version(p2world, context.temp_allocator)
+	bare_v := run_startup(&pertick2, p2base, context.temp_allocator)
+	testing.expect(t, world_versions_equal(prooted_v, bare_v))
+	testing.expect_value(t, prooted_rng.state, rand_seed(42).state)
+}
+
 // --- seeded-detection: the Rng param, never mere Startup presence ----------
 
 // program_is_seeded keys on setup's Rng param, NOT on a Startup function existing:

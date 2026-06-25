@@ -1170,16 +1170,20 @@ load_bindings :: proc(
 // --- §15 entrypoint --------------------------------------------------------
 
 // load_entrypoint reads the single `entrypoint NAME pipeline:P tick_hz:HZ
-// logical:WxH bindings:B` record — the runtime wiring (§15). tick_hz is the
-// one fixed tick rate (60 for pong); logical is the fixed §20 §3 draw space in
+// logical:WxH bindings:B [seed:N]` record — the runtime wiring (§15). tick_hz is
+// the one fixed tick rate (60 for pong); logical is the fixed §20 §3 draw space in
 // integer world units the present pass letterboxes to — both dimensions must
-// be positive, so a degenerate extent is refused at load, never projected.
+// be positive, so a degenerate extent is refused at load, never projected. The
+// trailing `seed:N` field is OPTIONAL (the §25 §60 baked config seed): a project
+// that bakes `seed = N` in entrypoints.fcfg emits a 7th field, and an artifact with
+// no config seed emits the 6 fields only — a 6-field record loads has_seed=false, so
+// the seed field is purely additive and never required.
 load_entrypoint :: proc(section: Artifact_Section) -> (entry: Entrypoint, err: Artifact_Error) {
 	if len(section.records) != 1 {
 		return {}, .Section_Count_Mismatch
 	}
 	f := record_fields(section.records[0])
-	// entrypoint NAME pipeline:PIPELINE tick_hz:HZ logical:WxH bindings:BINDINGS
+	// entrypoint NAME pipeline:PIPELINE tick_hz:HZ logical:WxH bindings:BINDINGS [seed:N]
 	if len(f) < 6 || f[0] != "entrypoint" {
 		return {}, .Bad_Field
 	}
@@ -1191,6 +1195,19 @@ load_entrypoint :: proc(section: Artifact_Section) -> (entry: Entrypoint, err: A
 	if !logical_ok {
 		return {}, .Bad_Field
 	}
+	has_seed := false
+	seed := i64(0)
+	if len(f) >= 7 {
+		if !strings.has_prefix(f[6], "seed:") {
+			return {}, .Bad_Field
+		}
+		parsed_seed, seed_ok := strconv.parse_i64(strings.trim_prefix(f[6], "seed:"))
+		if !seed_ok {
+			return {}, .Bad_Field
+		}
+		has_seed = true
+		seed = parsed_seed
+	}
 	return Entrypoint {
 			name = f[1],
 			pipeline = strings.trim_prefix(f[2], "pipeline:"),
@@ -1198,6 +1215,8 @@ load_entrypoint :: proc(section: Artifact_Section) -> (entry: Entrypoint, err: A
 			logical_w = logical_w,
 			logical_h = logical_h,
 			bindings = strings.trim_prefix(f[5], "bindings:"),
+			has_seed = has_seed,
+			seed = seed,
 		},
 		.None
 }

@@ -1376,7 +1376,10 @@ builder_call_string :: proc(expr: Expr) -> string {
 // §15): the pipeline ↔ tick ↔ logical ↔ bindings wiring lifted from
 // funpack_configs/entrypoints.fcfg (§14 §4), which a pipeline carries no
 // configuration for. tick_hz is the integer Hz of the `60hz` tick; logical is
-// the `WxH` draw-space extent in integer world units (§20 §3).
+// the `WxH` draw-space extent in integer world units (§20 §3). The trailing
+// `seed:N` field is emitted ONLY when the entrypoint baked a `seed = N` config seed
+// (§25 §60); a no-config-seed build emits the bare 6-field record, which the runtime
+// loads as has_seed=false.
 emit_entrypoint :: proc(b: ^strings.Builder, entrypoint: Entrypoint_Config) {
 	emit_header(b, "entrypoint", 1)
 	strings.write_string(b, "entrypoint ")
@@ -1389,7 +1392,13 @@ emit_entrypoint :: proc(b: ^strings.Builder, entrypoint: Entrypoint_Config) {
 	strings.write_int(b, entrypoint.logical_w)
 	strings.write_byte(b, 'x')
 	strings.write_int(b, entrypoint.logical_h)
-	emit_line(b, " bindings:", entrypoint.bindings)
+	strings.write_string(b, " bindings:")
+	strings.write_string(b, entrypoint.bindings)
+	if entrypoint.has_seed {
+		strings.write_string(b, " seed:")
+		strings.write_i64(b, entrypoint.seed)
+	}
+	strings.write_byte(b, '\n')
 }
 
 // ───────────────────────────────────────────────────────────────────────────

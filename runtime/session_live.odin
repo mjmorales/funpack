@@ -758,8 +758,13 @@ when #config(FUNPACK_LIVE, false) {
 			fmt.eprintln(usage)
 			return 2
 		}
-		artifact_path := args[1]
-		override := len(args) >= 3 ? args[2] : ""
+		live_args, args_ok := parse_live_argv(args)
+		if !args_ok {
+			fmt.eprintln(usage)
+			return 2
+		}
+		artifact_path := live_args.artifact
+		override := live_args.out_override
 
 		// Read the raw bytes ourselves so the replay identity's content hash is over
 		// the exact bytes loaded (load_artifact_file does not surface them); load the
@@ -823,31 +828,36 @@ when #config(FUNPACK_LIVE, false) {
 		table := build_bindings_table(program, IDENTITY_OVERLAY)
 		queue := new_device_queue()
 
-		// SEED PICK (§25 §60): a program whose setup BINDS AN RNG PARAM is SEEDED — its
-		// tick-0 population is drawn from an RNG (snake's first food cell). The seed is
-		// a RUN-TIME determinism input the artifact does not carry, so the live session
-		// picks it ONCE here from the wall clock and RECORDS it in the header — that
-		// turns the only live nondeterminism (the seed pick) into a recorded determinism
-		// input, so a re-fold re-feeds the exact seed and reproduces the run. A seedless
-		// program (pong, hunt, yard) pins the bare build identity (has_seed = false) and
-		// runs the pre-evaluated [Spawn] batch unchanged. A Startup function alone is
-		// NOT seeded: a seedless `setup() -> [Spawn]` body is already folded into
-		// program.setup, so the check keys on the Rng param, never mere presence.
-		seeded := program_is_seeded(&program)
-		seed := i64(sdl.GetPerformanceCounter())
+		// ROOT SEED (§25 §60): a program that DRAWS randomness ANYWHERE — its setup OR
+		// any per-tick behavior (program_uses_rng) — needs a tick-0 root seed, which is
+		// a RUN-TIME determinism input the artifact does not carry. The live session
+		// RESOLVES one by precedence (resolve_root_seed: a `--seed` override, then the
+		// baked entrypoint config seed, then the fixed engine default) and RECORDS it in
+		// the header — that turns the seed into a recorded determinism input, so a
+		// re-fold re-feeds the exact seed and reproduces the run. The default is a FIXED
+		// constant, not a wall-clock draw, so a bare run is reproducible out of the box.
+		// A program that draws NO RNG (pong, hunt, yard) carries no seed (has_seed=false)
+		// and runs the pre-evaluated [Spawn] batch. The gate is uses_rng, NOT
+		// program_is_seeded: a game whose setup is seedless but whose per-tick behaviors
+		// draw is still a seeded run. Gating on program_is_seeded misclassifies it
+		// seedless and threads it no root Rng, so its drawing behaviors never fold and
+		// the window renders black — the defect this gate closes.
+		uses_rng := program_uses_rng(&program)
+		root_seed := resolve_root_seed(live_args.seed, program.entrypoint)
 
 		identity :=
-			seeded ? identity_from_program_seeded(program, string(artifact_bytes), seed) : identity_from_program(program, string(artifact_bytes))
+			uses_rng ? identity_from_program_seeded(program, string(artifact_bytes), root_seed) : identity_from_program(program, string(artifact_bytes))
 		writer := open_replay_writer(identity)
 
 		world := new_world(program)
-		// rng is the run's persistent tick-0 Rng for a seeded program; nil-threaded
-		// (left zero, passed only when seeded) for a seedless one.
+		// rng is the run's persistent tick-0 Rng for a uses_rng program (advanced past
+		// setup when setup itself draws, else the bare root Rng); nil-threaded for a
+		// program that draws no RNG.
 		base := initial_version(world)
 		version: World_Version
 		rng: Rng
-		if seeded {
-			version, rng = run_startup_seeded(&program, base, rand_seed(seed))
+		if uses_rng {
+			version, rng = run_startup_rooted(&program, base, root_seed)
 		} else {
 			version = run_startup(&program, base)
 		}
@@ -925,8 +935,8 @@ when #config(FUNPACK_LIVE, false) {
 			// consumed THIS tick (the fold reads it, record_tick serializes it) and is
 			// freed explicitly below — it does not enter the committed version.
 			snapshot, held_after, levels_after := resolve_tick(table, &queue, prev_held, prev_levels, persistent)
-			// Thread the persistent Rng through a seeded run so each tick observes the
-			// prior tick's draws (§04 §1); a seedless run threads nothing (rng stays nil).
+			// Thread the persistent Rng through a uses_rng run so each tick observes the
+			// prior tick's draws (§04 §1); a no-RNG run threads nothing (rng stays nil).
 			// The persist carrier threads alongside it: this tick delivers a PRIOR
 			// tick's Save/Restore outcomes into the mailbox and hands its own emitted
 			// commands to the store for next-tick delivery (§24 §1 one-tick deferral).
@@ -936,7 +946,7 @@ when #config(FUNPACK_LIVE, false) {
 			// and survives. reclaim_live=true retires the now-dead PRIOR version O(delta)
 			// inside the call — render/audio below read only the NEW committed version, so
 			// retiring the prior immediately after the commit is safe.
-			version, carrier = step_tick_persist(&program, version, snapshot, time, carrier, scratch_alloc, seeded ? &rng : nil, persistent, true)
+			version, carrier = step_tick_persist(&program, version, snapshot, time, carrier, scratch_alloc, uses_rng ? &rng : nil, persistent, true)
 			// Render and audio project the COMMITTED version onto the per-tick scratch and
 			// are consumed SAME-TICK (present_frame / audio_live_apply), so the arena reset
 			// at the loop's end reclaims the draw-list + audio scene + their interp garbage

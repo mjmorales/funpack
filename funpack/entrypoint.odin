@@ -22,8 +22,11 @@ import "core:strings"
 // §15): the entrypoint block label, the root pipeline whose flattened order the
 // artifact carries, the fixed tick rate in integer Hz, the logical draw-space
 // extent in integer world units (§20 §3 — the fixed space the engine
-// letterboxes to), and the bindings fn whose resolved table the artifact's
-// [bindings] section carries.
+// letterboxes to), the bindings fn whose resolved table the artifact's
+// [bindings] section carries, and the OPTIONAL baked root seed (§25 §60): has_seed
+// is false (seed 0) when the block declared no `seed = N`, so the emit path omits
+// the artifact's trailing seed field and a seedless-config build emits the bare
+// 6-field record.
 Entrypoint_Config :: struct {
 	name:      string,
 	pipeline:  string,
@@ -31,6 +34,8 @@ Entrypoint_Config :: struct {
 	logical_w: int,
 	logical_h: int,
 	bindings:  string,
+	has_seed:  bool,
+	seed:      i64,
 }
 
 // select_entrypoint selects the wiring the artifact's [entrypoint 1] section
@@ -40,7 +45,7 @@ Entrypoint_Config :: struct {
 // never a silent first-block pick. A tick whose digits do not parse as an
 // integer rate (`60khz` passes the grammar's `hz`-suffix check but is not a
 // rate) rejects as malformed, as does a logical extent whose W/H are not
-// positive integers.
+// positive integers, or a baked `seed = N` whose value is not an integer.
 select_entrypoint :: proc(parsed: Entrypoints) -> (config: Entrypoint_Config, err: Entrypoints_Error) {
 	if len(parsed.entrypoints) != 1 {
 		return Entrypoint_Config{}, .Multiple_Entrypoints
@@ -54,6 +59,10 @@ select_entrypoint :: proc(parsed: Entrypoints) -> (config: Entrypoint_Config, er
 	if !logical_ok {
 		return Entrypoint_Config{}, .Malformed_Entrypoints_Fcfg
 	}
+	has_seed, seed, seed_ok := parse_seed_field(block.seed)
+	if !seed_ok {
+		return Entrypoint_Config{}, .Malformed_Entrypoints_Fcfg
+	}
 	return Entrypoint_Config{
 			name = block.name,
 			pipeline = block.pipeline,
@@ -61,8 +70,26 @@ select_entrypoint :: proc(parsed: Entrypoints) -> (config: Entrypoint_Config, er
 			logical_w = w,
 			logical_h = h,
 			bindings = block.bindings,
+			has_seed = has_seed,
+			seed = seed,
 		},
 		.None
+}
+
+// parse_seed_field resolves the OPTIONAL `seed = N` baked root seed (§25 §60). An
+// empty value (the block declared no seed) is the seedless config — has_seed false,
+// ok true — so omitting the key is legal. A present value must parse as an integer
+// (the raw §10 seed bits, reinterpreted to u64 state at run start); a non-integer
+// value is a Malformed_Entrypoints_Fcfg reject (ok false), never a silent default.
+parse_seed_field :: proc(text: string) -> (has_seed: bool, seed: i64, ok: bool) {
+	if text == "" {
+		return false, 0, true
+	}
+	value, parse_ok := strconv.parse_i64(text)
+	if !parse_ok {
+		return false, 0, false
+	}
+	return true, value, true
 }
 
 // parse_tick_hz extracts the integer Hz from a `Nhz` tick token (`60hz` → 60).

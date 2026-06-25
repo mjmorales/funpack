@@ -268,6 +268,8 @@ Entrypoint :: struct {
 	logical_w: int,
 	logical_h: int,
 	bindings:  string, // the bindings function name
+	has_seed:  bool, // whether entrypoints.fcfg baked a `seed = N` config seed (§25 §60)
+	seed:      i64, // the baked config seed (raw integer, §10); 0 when has_seed is false
 }
 
 // Project_Meta is the §4 (project.fcfg) identity: name + version. No build clock,

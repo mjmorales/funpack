@@ -133,17 +133,23 @@ loaded_run_identity :: proc(
 
 // replay_refold restarts the artifact FROM THE RECORDED SEED and re-feeds the
 // recorded snapshots over the existing tick loop — the execution path the identity
-// gate guards. It runs the SAME setup + step_tick seam a live run uses, but the
-// startup and Rng threading depend on whether the recorded identity carries a seed:
+// gate guards. It runs the SAME setup + step_tick seam a live run uses, routed by
+// whether the recorded identity carries a root seed:
 //
-//   - SEEDED (snake): run_startup_seeded evaluates setup's body with the recorded
-//     tick-0 seed Rng bound (the first food cell is drawn from the seed) and
-//     retains the advanced Rng; each tick threads that persistent Rng through
+//   - SEEDED (any uses_rng game): run_startup_rooted restarts from the recorded
+//     tick-0 seed and retains the root Rng (advanced past setup when setup itself
+//     draws, as in snake's first food cell; the bare seed Rng when setup is seedless
+//     but per-tick behaviors draw); each tick threads that persistent Rng through
 //     step_tick(&rng), so the re-fold re-feeds the EXACT seed and reproduces every
-//     RNG-driven spawn (§25 §60, §04 §1) — the determinism warranty starts at
-//     setup, so a re-fold that started at tick 0 would diverge on the seeded setup.
-//   - SEEDLESS (pong, hunt): bare run_startup applies the pre-evaluated [Spawn]
-//     batch and step_tick threads no Rng — the existing path, unchanged.
+//     RNG-driven spawn (§25 §60, §04 §1) — the determinism warranty starts at the
+//     root seed, so a re-fold that ignored it would diverge.
+//   - SEEDLESS (pong, hunt — no RNG): bare run_startup applies the pre-evaluated
+//     [Spawn] batch and step_tick threads no Rng.
+//
+// has_seed gates the ROOT-SEED threading, not the startup shape: run_startup_rooted
+// chooses run_startup_seeded vs run_startup internally by program_is_seeded, so a
+// seedless-setup uses_rng game (recorded has_seed=true) re-folds correctly instead of
+// being fed to run_startup_seeded over a setup that returns no Rng.
 //
 // Either way each tick's Input comes from the recorded snapshot rather than live
 // resolution, the only substitution; it terminates when the stream is exhausted,
@@ -161,7 +167,7 @@ replay_refold :: proc(
 	time := time_resource(program.entrypoint.tick_hz, allocator)
 
 	if identity.has_seed {
-		version, rng := run_startup_seeded(program, base, rand_seed(identity.seed), allocator)
+		version, rng := run_startup_rooted(program, base, identity.seed, allocator)
 		current := rng
 		for snapshot in snapshots {
 			version = step_tick(program, version, snapshot, time, allocator, &current)
@@ -225,8 +231,8 @@ replay_capture :: proc(
 
 // refold_capture restarts the artifact FROM THE RECORDED SEED and re-feeds the
 // recorded snapshots over the existing tick loop — the SAME seam replay_refold uses
-// (seeded run_startup_seeded + step_tick(&rng) when the identity carries a seed,
-// bare run_startup + seedless step_tick otherwise) — while capturing each committed
+// (run_startup_rooted + step_tick(&rng) when the identity carries a seed, bare
+// run_startup + seedless step_tick otherwise) — while capturing each committed
 // tick's frame digest over the world state and its §20 draw-list, then folds the
 // session digest. The render projection (render.odin) runs per committed tick purely
 // to build the digest surface; it perturbs no committed state (it is an OBSERVE-class
@@ -252,7 +258,7 @@ refold_capture :: proc(
 	// across live and re-fold. A control-only game ignores `t`, so this is
 	// byte-identical to the prior single-bind path for pong/snake/hunt/yard.
 	if identity.has_seed {
-		version, rng := run_startup_seeded(program, base, rand_seed(identity.seed), allocator)
+		version, rng := run_startup_rooted(program, base, identity.seed, allocator)
 		current := rng
 		for snapshot, i in snapshots {
 			time := time_resource_at(tick_hz, i, allocator)

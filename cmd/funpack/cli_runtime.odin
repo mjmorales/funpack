@@ -23,20 +23,37 @@ build_live_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 		cli.Cli_Command {
 			use = "live",
 			short = "Play a prebuilt game artifact (no rebuild)",
-			long = "Launch an ALREADY-built artifact (from `funpack build`, default .funpack/artifact) in the live SDL session, without rebuilding. The artifact path is required; an optional second positional is the replay-out path. Use `funpack run` to build and play in one step.",
+			long = "Launch an ALREADY-built artifact (from `funpack build`, default .funpack/artifact) in the live SDL session, without rebuilding. The artifact path is required; an optional second positional is the replay-out path. --seed overrides the root RNG seed (§25 §60) for this run. Use `funpack run` to build and play in one step.",
 			args = cli.cli_range_args(1, 2),
+			flags = slice.clone(
+				[]cli.Cli_Flag {
+					{
+						name = "seed",
+						kind = .Int,
+						usage = "Root RNG seed for this run (§25 §60); overrides the entrypoints.fcfg config seed and the fixed engine default. Recorded in the replay header so the run re-folds",
+					},
+				},
+				allocator,
+			),
 			run = cli_run_live,
 		},
 		allocator,
 	)
 }
 
-// cli_run_live marshals {artifact, [replay-out]} into run_live_session's argv:
-// argv[0] is ignored, argv[1] is the artifact, argv[2] the optional replay-out.
+// cli_run_live marshals {artifact, [replay-out]} + --seed into run_live_session's
+// argv: argv[0] is ignored, argv[1] is the artifact, argv[2] the optional
+// replay-out. A passed `--seed N` is appended as the `--seed N` pair the runtime
+// parses (the cli_run_attach marshalling pattern); an unset flag is left off so the
+// runtime resolves the config seed / engine default.
 cli_run_live :: proc(inv: ^cli.Cli_Invocation) -> int {
-	live_args := make([dynamic]string, 0, 1 + len(inv.args), context.temp_allocator)
+	live_args := make([dynamic]string, 0, 3 + len(inv.args), context.temp_allocator)
 	append(&live_args, "funpack live")
 	append(&live_args, ..inv.args)
+	if _, passed := inv.flags["seed"]; passed {
+		append(&live_args, "--seed")
+		append(&live_args, fmt.tprintf("%d", cli.cli_flag_int(inv, "seed")))
+	}
 	return funpack_runtime.run_live_session(live_args[:])
 }
 

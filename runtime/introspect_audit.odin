@@ -157,14 +157,14 @@ first_frame_divergence :: proc(
 // audit_refold_capture re-folds the session's recording INDEPENDENTLY of its
 // retained chain and captures the per-tick frame digests — the "re-run" half of the
 // warranty audit. It composes the SAME public production primitives session_capture
-// and reference_unobserved_capture compose (run_startup / run_startup_seeded +
+// and reference_unobserved_capture compose (run_startup_rooted / run_startup +
 // step_tick + render_version + time_resource_at + capture_frame + finish_capture),
 // driven from the session's OWN s.snapshots + s.seed, building a fresh committed
 // chain into request scratch. It never reads s.versions, so the comparison is a
 // genuine reproduction from inputs — not a re-digest of the same retained state —
 // and it never writes the canonical chain, so it is observe-class (§28 §2). The
-// seeded arm restarts from the recorded tick-0 seed (run_startup_seeded) and threads
-// the advanced Rng through step_tick, exactly as the live run and the replay re-fold
+// seeded arm restarts from the recorded tick-0 seed (run_startup_rooted) and threads
+// the root Rng through step_tick, exactly as the live run and the replay re-fold
 // do, so every RNG-driven spawn reproduces; the seedless arm threads no Rng.
 @(private = "file")
 audit_refold_capture :: proc(s: ^Debug_Session, allocator := context.allocator) -> Frame_Capture {
@@ -174,7 +174,7 @@ audit_refold_capture :: proc(s: ^Debug_Session, allocator := context.allocator) 
 	per_tick := make([dynamic]Frame_Digest, 0, len(s.snapshots), allocator)
 
 	if s.seed.has_seed {
-		version, rng := run_startup_seeded(s.program, base, rand_seed(s.seed.seed), allocator)
+		version, rng := run_startup_rooted(s.program, base, s.seed.seed, allocator)
 		current := rng
 		for snapshot, i in s.snapshots {
 			time := time_resource_at(tick_hz, i, allocator)

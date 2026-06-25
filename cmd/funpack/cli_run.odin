@@ -34,6 +34,11 @@ build_run_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 						kind = .Bool,
 						usage = "Build in release mode (ban typed holes and debug directives) before running",
 					},
+					{
+						name = "seed",
+						kind = .Int,
+						usage = "Root RNG seed for this run (§25 §60); overrides the entrypoints.fcfg config seed and the fixed engine default. Recorded in the replay header so the run re-folds",
+					},
 				},
 				allocator,
 			),
@@ -46,9 +51,18 @@ build_run_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 // cli_run_run adapts the `funpack run` invocation onto run_run_verb: `--release`
 // maps to the build mode (the same funpack.cli_build_mode build/check share), the
 // first positional is the optional [name] entrypoint pick, and every later
-// positional is forwarded verbatim to the runtime.
+// positional is forwarded verbatim to the runtime. A passed `--seed N` is appended
+// to the forwarded args as the `--seed N` pair run_live_session parses (the
+// cli_run_attach marshalling pattern) — an unset flag is left off so the runtime
+// resolves the config seed / engine default instead.
 cli_run_run :: proc(inv: ^cli.Cli_Invocation) -> int {
-	return run_run_verb(cli_run_name(inv), cli_run_extra_args(inv), funpack.cli_build_mode(inv))
+	forwarded := make([dynamic]string, 0, 2 + len(cli_run_extra_args(inv)), context.temp_allocator)
+	append(&forwarded, ..cli_run_extra_args(inv))
+	if _, passed := inv.flags["seed"]; passed {
+		append(&forwarded, "--seed")
+		append(&forwarded, fmt.tprintf("%d", cli.cli_flag_int(inv, "seed")))
+	}
+	return run_run_verb(cli_run_name(inv), forwarded[:], funpack.cli_build_mode(inv))
 }
 
 // run_run_verb is the `funpack run [name]` core: BUILD the project tree (the same
