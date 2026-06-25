@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.18.0] - 2026-06-25
+
+### Features
+- feat(funpack): carry let-tuple destructure into the v19 gameplay artifact wire (f537c3a)
+
 ## [0.17.0] - 2026-06-24
 
 ### Features
