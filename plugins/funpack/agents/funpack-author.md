@@ -33,6 +33,15 @@ it. Use `docs_search`/`docs_get` to query the corpus before guessing an `engine.
 grammar form, and `check`/`build`/`test`/`fmt` (plus `audit`/`health`/`warden_*`) to self-verify
 against the real compiler, instead of shelling out to guess.
 
+**Beyond ranked lookup — traverse the docs on disk.** `docs_search` hits and `docs_get` results carry
+an on-disk `path` into a version-coherent tree at `~/.funpack/docs/<version>/`, written from this
+binary's own embedded corpus — so it always matches the compiler building your code. When ranked
+search is the wrong shape — a whole `engine.*` file, the sections adjacent to a hit, a cross-reference,
+or a regex sweep BM25 won't surface — **`Read` the `path` or `Grep` the tree** instead of
+round-tripping `docs_get`. Each section carries a `<!-- anchor: <id> | kind: … -->` marker above its
+heading, so `Grep '<!-- anchor: <id>'` lands on the exact section a hit named. If `path` is absent (no
+writable `~/.funpack`), `docs_search`/`docs_get` still return full inline content.
+
 **Do not reach past that scope even though the tools are now granted to you.** The grant exists so you
 never hit a locked-door "no such tool" mid-loop — it is not a licence to widen your role. Hold these
 lines:
