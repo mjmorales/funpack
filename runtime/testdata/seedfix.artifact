@@ -1,0 +1,59 @@
+funpack-artifact 19
+[meta 2]
+project seedfix
+version L5:0.1.0
+[enums 0]
+[data 0]
+[signals 0]
+[things 2]
+thing Spawner false 0 1
+field ticks Int =0
+thing Mote false 0 1
+field cell Int =0
+[functions 2]
+function bindings bindings 0 return:Bindings 1 span:seedfix:32
+node return 1
+node call 1
+node field empty 1
+node name Bindings 0
+function setup startup 0 return:[Spawn] 1 span:seedfix:18
+node return 1
+node list 1 1
+node call 2
+node name Spawn 0
+node record Spawner 0 0
+[behaviors 1]
+behavior seed_draw on:Spawner stage:step contract:Update 1 2 1 2
+gtag L3:rng
+param self Spawner
+param rng Rng
+emit (Rng,[Spawn])
+node let_tuple 2 cell next 1
+node call 3
+node field range 1
+node name rng 0
+node int 0 0
+node int 10 0
+node return 1
+node tuple 2 2
+node name next 0
+node list 1 1
+node call 2
+node name Spawn 0
+node record Mote 1 1
+node recfield cell 1
+node name cell 0
+[pipeline_flattened 2]
+step 0 stage:startup behavior:setup
+step 1 stage:step behavior:seed_draw
+[signal_routing 0]
+[setup 1]
+spawn Spawner 0
+[bindings 0]
+[entrypoint 1]
+entrypoint main pipeline:Seedfix tick_hz:8 logical:160x120 bindings:bindings
+[queries 0]
+[tilemaps 0]
+[nav 0]
+[assets 0]
+[probes 0]

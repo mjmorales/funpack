@@ -1,0 +1,8 @@
+use seedfix.{Seedfix, bindings}
+
+entrypoint main {
+  pipeline = Seedfix
+  tick     = 8hz
+  logical  = 160x120
+  bindings = bindings
+}
