@@ -1,0 +1,327 @@
+================================================================================
+imports and let
+================================================================================
+import engine.math.{Vec2, abs, clamp}
+import engine.world
+
+let BOARD: Vec2 = Vec2{x: 160.0, y: 120.0}
+let speed = 90.0
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_decl
+    (lower_ident)
+    (import_tail
+      (lower_ident))
+    (import_tail
+      (upper_ident)
+      (lower_ident)
+      (lower_ident)))
+  (import_decl
+    (lower_ident)
+    (import_tail
+      (lower_ident)))
+  (directed_decl
+    (let_decl
+      (upper_ident)
+      (type
+        (named_type
+          (upper_ident)))
+      (expression
+        (upper_atom
+          (upper_ident)
+          (braced_init
+            (field_init
+              (lower_ident)
+              (expression
+                (fixed)))
+            (field_init
+              (lower_ident)
+              (expression
+                (fixed))))))))
+  (directed_decl
+    (let_decl
+      (lower_ident)
+      (expression
+        (fixed)))))
+
+================================================================================
+data and enum with kind ascription
+================================================================================
+data Vec2 { x: Fixed, y: Fixed }
+mut data Score { left: Int = 0, right: Int = 0 }
+
+enum Side { Left, Right }
+enum Drive: Axis { Strafe, Forward }
+enum Shape { Circle(Fixed), Box{ w: Fixed, h: Fixed } }
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (data_decl
+      (upper_ident)
+      (record_body
+        (field_decl
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident))))
+        (field_decl
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))))))
+  (directed_decl
+    (data_decl
+      (upper_ident)
+      (record_body
+        (field_decl
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))
+          (expression
+            (int)))
+        (field_decl
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))
+          (expression
+            (int))))))
+  (directed_decl
+    (enum_decl
+      (upper_ident)
+      (variant
+        (upper_ident))
+      (variant
+        (upper_ident))))
+  (directed_decl
+    (enum_decl
+      (upper_ident)
+      (kind_asc
+        (upper_ident))
+      (variant
+        (upper_ident))
+      (variant
+        (upper_ident))))
+  (directed_decl
+    (enum_decl
+      (upper_ident)
+      (variant
+        (upper_ident)
+        (variant_payload
+          (type
+            (named_type
+              (upper_ident)))))
+      (variant
+        (upper_ident)
+        (variant_payload
+          (field_decl
+            (lower_ident)
+            (type
+              (named_type
+                (upper_ident))))
+          (field_decl
+            (lower_ident)
+            (type
+              (named_type
+                (upper_ident)))))))))
+
+================================================================================
+thing, singleton, signal
+================================================================================
+thing Paddle { y: Fixed, speed: Fixed }
+singleton World { tick: Int }
+signal Scored { side: Side }
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (thing_decl
+      (upper_ident)
+      (record_body
+        (field_decl
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident))))
+        (field_decl
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))))))
+  (directed_decl
+    (thing_decl
+      (upper_ident)
+      (record_body
+        (field_decl
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))))))
+  (directed_decl
+    (signal_decl
+      (upper_ident)
+      (record_body
+        (field_decl
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident))))))))
+
+================================================================================
+behavior with step method
+================================================================================
+behavior paddle_move on Paddle {
+  fn step(self: Paddle, in: Input) -> (Paddle, [Spawn]) {
+    return (self, [])
+  }
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (behavior_decl
+      (lower_ident)
+      (upper_ident)
+      (step_method
+        (lower_ident)
+        (param_list
+          (param
+            (lower_ident)
+            (type
+              (named_type
+                (upper_ident))))
+          (param
+            (lower_ident)
+            (type
+              (named_type
+                (upper_ident)))))
+        (return_type
+          (type
+            (tuple_type
+              (type
+                (named_type
+                  (upper_ident)))
+              (type
+                (list_type
+                  (type
+                    (named_type
+                      (upper_ident))))))))
+        (block
+          (return_stmt
+            (expression
+              (paren_expression
+                (expression
+                  (lower_ident))
+                (expression
+                  (list_literal))))))))))
+
+================================================================================
+fn, query, extern, pipeline, test
+================================================================================
+fn clampf(v: Fixed, lo: Fixed, hi: Fixed) -> Fixed {
+  return max(lo, min(v, hi))
+}
+
+extern fn now() -> Fixed
+extern type View[T]
+
+pipeline Game {
+  update: [paddle_move, ball_move]
+  physics: solve
+  combat: Combat
+}
+
+test "score starts at zero" {
+  let s = Score{}
+  assert s.left == 0
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (fn_decl
+      (lower_ident)
+      (param_list
+        (param
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident))))
+        (param
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident))))
+        (param
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))))
+      (return_type
+        (type
+          (named_type
+            (upper_ident))))
+      (block
+        (return_stmt
+          (expression
+            (call_expression
+              (lower_ident)
+              (call_args
+                (expression
+                  (lower_ident))
+                (expression
+                  (call_expression
+                    (lower_ident)
+                    (call_args
+                      (expression
+                        (lower_ident))
+                      (expression
+                        (lower_ident))))))))))))
+  (directed_decl
+    (extern_decl
+      (extern_fn
+        (lower_ident)
+        (return_type
+          (type
+            (named_type
+              (upper_ident)))))))
+  (directed_decl
+    (extern_decl
+      (extern_type
+        (upper_ident)
+        (type_params
+          (upper_ident)))))
+  (directed_decl
+    (pipeline_decl
+      (upper_ident)
+      (stage_entry
+        (lower_ident)
+        (behavior_ref
+          (lower_ident))
+        (behavior_ref
+          (lower_ident)))
+      (stage_entry
+        (lower_ident)
+        (lower_ident))
+      (stage_entry
+        (lower_ident)
+        (upper_ident))))
+  (directed_decl
+    (test_decl
+      (raw_string)
+      (let_stmt
+        (lower_ident)
+        (expression
+          (upper_atom
+            (upper_ident)
+            (braced_init))))
+      (assert_stmt
+        (expression
+          (binary_expression
+            (member_expression
+              (lower_ident)
+              (lower_ident))
+            (int)))))))

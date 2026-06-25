@@ -1,0 +1,124 @@
+================================================================================
+string interpolation and escapes
+================================================================================
+fn label(m: Model) -> String {
+  return "score {m.score} of {m.total}"
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (fn_decl
+      (lower_ident)
+      (param_list
+        (param
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))))
+      (return_type
+        (type
+          (named_type
+            (upper_ident))))
+      (block
+        (return_stmt
+          (expression
+            (string
+              (expression
+                (member_expression
+                  (lower_ident)
+                  (lower_ident)))
+              (expression
+                (member_expression
+                  (lower_ident)
+                  (lower_ident))))))))))
+
+================================================================================
+raw directive strings keep literal braces and escaped quotes
+================================================================================
+@doc("Building text is interpolation (\"{a}{b}\"), never +. enum Drive: Axis { Strafe }.")
+@gtag("game", "render")
+let TAU: Fixed = 6.28
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (annotation
+      (directive
+        (raw_string)))
+    (annotation
+      (directive
+        (raw_string)
+        (raw_string)))
+    (let_decl
+      (upper_ident)
+      (type
+        (named_type
+          (upper_ident)))
+      (expression
+        (fixed)))))
+
+================================================================================
+field and debug directives
+================================================================================
+thing Player {
+  @doc("hit points")
+  hp: Int = 100
+  @watch(self.hp)
+  shield: Int = 0
+}
+
+@todo("tune damping", T-0042)
+fn damp(v: Fixed) -> Fixed {
+  return v
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (thing_decl
+      (upper_ident)
+      (record_body
+        (field_decl
+          (annotation
+            (directive
+              (raw_string)))
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))
+          (expression
+            (int)))
+        (field_decl
+          (annotation
+            (debug_directive
+              (expression
+                (member_expression
+                  (lower_ident)
+                  (lower_ident)))))
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))
+          (expression
+            (int))))))
+  (directed_decl
+    (annotation
+      (directive
+        (raw_string)))
+    (fn_decl
+      (lower_ident)
+      (param_list
+        (param
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))))
+      (return_type
+        (type
+          (named_type
+            (upper_ident))))
+      (block
+        (return_stmt
+          (expression
+            (lower_ident)))))))

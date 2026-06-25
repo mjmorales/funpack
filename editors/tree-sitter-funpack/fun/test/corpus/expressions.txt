@@ -1,0 +1,292 @@
+================================================================================
+binary precedence and unary
+================================================================================
+fn f() -> Bool {
+  return a + b * c - d > e and not flag or g == h
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (fn_decl
+      (lower_ident)
+      (return_type
+        (type
+          (named_type
+            (upper_ident))))
+      (block
+        (return_stmt
+          (expression
+            (binary_expression
+              (binary_expression
+                (binary_expression
+                  (binary_expression
+                    (binary_expression
+                      (lower_ident)
+                      (binary_expression
+                        (lower_ident)
+                        (lower_ident)))
+                    (lower_ident))
+                  (lower_ident))
+                (unary_expression
+                  (lower_ident)))
+              (binary_expression
+                (lower_ident)
+                (lower_ident)))))))))
+
+================================================================================
+with-update, member chains, calls, index
+================================================================================
+fn f(self: Ball) -> Ball {
+  return self with { pos: self.pos.add(self.vel), n: items[0] }
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (fn_decl
+      (lower_ident)
+      (param_list
+        (param
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))))
+      (return_type
+        (type
+          (named_type
+            (upper_ident))))
+      (block
+        (return_stmt
+          (expression
+            (with_expression
+              (lower_ident)
+              (with_body
+                (field_init
+                  (lower_ident)
+                  (expression
+                    (call_expression
+                      (member_expression
+                        (member_expression
+                          (lower_ident)
+                          (lower_ident))
+                        (lower_ident))
+                      (call_args
+                        (expression
+                          (member_expression
+                            (lower_ident)
+                            (lower_ident)))))))
+                (field_init
+                  (lower_ident)
+                  (expression
+                    (index_expression
+                      (lower_ident)
+                      (expression
+                        (int)))))))))))))
+
+================================================================================
+leading-dot builder chain across newlines
+================================================================================
+fn binds() -> Bindings {
+  return Bindings.empty()
+    .axis(Drive::Strafe, Key::A, Key::D)
+    .button(Fire, Key::Space)
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (fn_decl
+      (lower_ident)
+      (return_type
+        (type
+          (named_type
+            (upper_ident))))
+      (block
+        (return_stmt
+          (expression
+            (call_expression
+              (member_expression
+                (call_expression
+                  (member_expression
+                    (call_expression
+                      (member_expression
+                        (upper_atom
+                          (upper_ident))
+                        (lower_ident))
+                      (call_args))
+                    (lower_ident))
+                  (call_args
+                    (expression
+                      (upper_atom
+                        (upper_ident)
+                        (upper_ident)))
+                    (expression
+                      (upper_atom
+                        (upper_ident)
+                        (upper_ident)))
+                    (expression
+                      (upper_atom
+                        (upper_ident)
+                        (upper_ident)))))
+                (lower_ident))
+              (call_args
+                (expression
+                  (upper_atom
+                    (upper_ident)))
+                (expression
+                  (upper_atom
+                    (upper_ident)
+                    (upper_ident)))))))))))
+
+================================================================================
+if-expression and match with patterns
+================================================================================
+fn step(self: Snake) -> Snake {
+  let next = if self.alive { self.head } else { self.tail }
+  return match dir {
+    Dir::Up => self with { y: self.y - 1.0 }
+    (Option::Some(c), rest) => rest
+    _ => self
+  }
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (fn_decl
+      (lower_ident)
+      (param_list
+        (param
+          (lower_ident)
+          (type
+            (named_type
+              (upper_ident)))))
+      (return_type
+        (type
+          (named_type
+            (upper_ident))))
+      (block
+        (let_stmt
+          (lower_ident)
+          (expression
+            (if_expr
+              (expression
+                (member_expression
+                  (lower_ident)
+                  (lower_ident)))
+              (block
+                (expression
+                  (member_expression
+                    (lower_ident)
+                    (lower_ident))))
+              (block
+                (expression
+                  (member_expression
+                    (lower_ident)
+                    (lower_ident)))))))
+        (return_stmt
+          (expression
+            (match_expr
+              (expression
+                (lower_ident))
+              (match_arm
+                (pattern
+                  (upper_ident)
+                  (upper_ident))
+                (expression
+                  (with_expression
+                    (lower_ident)
+                    (with_body
+                      (field_init
+                        (lower_ident)
+                        (expression
+                          (binary_expression
+                            (member_expression
+                              (lower_ident)
+                              (lower_ident))
+                            (fixed))))))))
+              (match_arm
+                (pattern
+                  (pattern
+                    (upper_ident)
+                    (upper_ident)
+                    (variant_pat
+                      (pattern
+                        (lower_ident))))
+                  (pattern
+                    (lower_ident)))
+                (expression
+                  (lower_ident)))
+              (match_arm
+                (pattern
+                  (wildcard))
+                (expression
+                  (lower_ident))))))))))
+
+================================================================================
+lambda, list, tuple, stub, command-wrap
+================================================================================
+fn f() -> [Spawn] {
+  let g = fn(x) { return x + 1.0 }
+  let pair = (1, 2.0)
+  let hole = @stub(Fixed, 0.0)
+  return [Spawn( Ball{} ), Despawn()]
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (directed_decl
+    (fn_decl
+      (lower_ident)
+      (return_type
+        (type
+          (list_type
+            (type
+              (named_type
+                (upper_ident))))))
+      (block
+        (let_stmt
+          (lower_ident)
+          (expression
+            (lambda
+              (lower_ident)
+              (return_stmt
+                (expression
+                  (binary_expression
+                    (lower_ident)
+                    (fixed)))))))
+        (let_stmt
+          (lower_ident)
+          (expression
+            (paren_expression
+              (expression
+                (int))
+              (expression
+                (fixed)))))
+        (let_stmt
+          (lower_ident)
+          (expression
+            (stub_expr
+              (type
+                (named_type
+                  (upper_ident)))
+              (expression
+                (fixed)))))
+        (return_stmt
+          (expression
+            (list_literal
+              (expression
+                (call_expression
+                  (upper_atom
+                    (upper_ident))
+                  (call_args
+                    (expression
+                      (upper_atom
+                        (upper_ident)
+                        (braced_init))))))
+              (expression
+                (call_expression
+                  (upper_atom
+                    (upper_ident))
+                  (call_args))))))))))
