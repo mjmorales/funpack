@@ -1,0 +1,138 @@
+================================================================================
+project, entrypoint, build, tags
+================================================================================
+project hunt {
+  version = "0.1.0"
+}
+
+use hunt.{Hunt, bindings}
+
+entrypoint main {
+  pipeline = Hunt
+  tick     = 60hz
+  logical  = 160x120
+  bindings = bindings
+}
+
+build native {
+  platform = desktop
+}
+
+tags {
+  game
+  startup
+  render
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (config_item
+    (project_block
+      (lower_ident)
+      (assignment
+        (lower_ident)
+        (value
+          (string)))))
+  (config_item
+    (use_decl
+      (module_ref
+        (lower_ident)
+        (upper_ident)
+        (lower_ident))))
+  (config_item
+    (entrypoint_block
+      (lower_ident)
+      (assignment
+        (lower_ident)
+        (value
+          (name_ref
+            (upper_ident))))
+      (assignment
+        (lower_ident)
+        (value
+          (tickrate)))
+      (assignment
+        (lower_ident)
+        (value
+          (resolution)))
+      (assignment
+        (lower_ident)
+        (value
+          (name_ref
+            (lower_ident))))))
+  (config_item
+    (build_block
+      (lower_ident)
+      (assignment
+        (lower_ident)
+        (value
+          (name_ref
+            (lower_ident))))))
+  (config_item
+    (tags_block
+      (tag_name
+        (lower_ident))
+      (tag_name
+        (lower_ident))
+      (tag_name
+        (lower_ident)))))
+
+================================================================================
+net modifier and variant name refs
+================================================================================
+entrypoint online {
+  net     = p2p(rollback)
+  mode    = Mode::Ranked
+  authority = authoritative
+}
+--------------------------------------------------------------------------------
+
+(source_file
+  (config_item
+    (entrypoint_block
+      (lower_ident)
+      (assignment
+        (lower_ident)
+        (value
+          (name_ref
+            (lower_ident)
+            (lower_ident))))
+      (assignment
+        (lower_ident)
+        (value
+          (name_ref
+            (upper_ident)
+            (upper_ident))))
+      (assignment
+        (lower_ident)
+        (value
+          (name_ref
+            (lower_ident)))))))
+
+================================================================================
+dependency declarations
+================================================================================
+use hexgrid version "0.4" hash "sha256:abcd"
+use localpkg path "../local"
+use bare
+--------------------------------------------------------------------------------
+
+(source_file
+  (config_item
+    (use_decl
+      (dep_decl
+        (lower_ident)
+        (dep_clause
+          (string))
+        (dep_clause
+          (string)))))
+  (config_item
+    (use_decl
+      (dep_decl
+        (lower_ident)
+        (dep_clause
+          (string)))))
+  (config_item
+    (use_decl
+      (module_ref
+        (lower_ident)))))
