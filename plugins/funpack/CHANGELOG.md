@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.11.3] - 2026-06-25
+
+### Other
+- docs(funpack): document the root RNG seed contract and the seed config/flag (friction e67f101e) (6aa56f1)
+
 ## [0.11.2] - 2026-06-25
 
 ### Other
