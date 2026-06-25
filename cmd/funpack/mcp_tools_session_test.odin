@@ -37,7 +37,7 @@ import funpack_runtime "../../runtime"
 // 1.0/tick) — the same shape the registry's F13 test uses, inlined here so this file
 // stands alone. A session opens cleanly over it, which is all the lifecycle arm needs
 // (it never folds an observe command — that is the observe family's junction).
-SESS_FIXTURE :: "funpack-artifact 18\n" +
+SESS_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
 	"version L5:0.1.0\n" +

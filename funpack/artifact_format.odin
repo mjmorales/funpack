@@ -321,7 +321,33 @@ import "core:strings"
 // probe-free artifact (every release artifact, plus a probe-free dev build) moves to v18 by
 // the version stamp plus this constant tail (the v7 stamp-only restamp / [nav 0] tail
 // precedent). ADRs 2026-06-12-probes-ride-the-artifact, 2026-06-12-28-value-language-node-forests.
-ARTIFACT_SCHEMA_VERSION :: 18
+//
+// Version 19 carries a `let (a, b, …) = expr` TUPLE-DESTRUCTURE through to the
+// gameplay wire (ADR 2026-06-24-let-tuple-destructure-binding). The form parses,
+// typechecks, and runs in `test` blocks at v18 (off the wire, via the compiler
+// evaluator), but the v18 §2.7 body grammar encodes a `let` as ONE name scalar
+// (`node let NAME 1`), so an N-name binder list had no encoding — a gameplay-body
+// tuple-`let` was refused before emission (the v18 let_tuple_wire_gate →
+// Build_Error.Let_Tuple_Unsupported_Wire, exit 2). v19 adds ONE new §2.7 body-node
+// KIND, `let_tuple`, to the closed node-kind set: `node let_tuple BINDER_COUNT
+// name1 … nameN 1`. BINDER_COUNT is the count of the positional binder names that
+// follow it (≥ 2 — a single-name `let` stays the `let` kind), the nameI are the
+// snake_case binders in source order, and the trailing `1` is the generic child
+// count — the single value subtree that follows, evaluated to a tuple whose
+// elements bind positionally to name1…nameN (the runtime mirrors evaluate.odin
+// bind_let_tuple_value). The binder list rides BEFORE the trailing child count, so
+// node_child_count reads the count the generic way (last token) with NO special
+// case — the `string`/`arm` exceptions are untouched — and node_scalar_fields
+// returns [BINDER_COUNT, name1, …, nameN] (every token between the kind tag and the
+// trailing count) with NO special case. `let_tuple` is a body `node` line, so
+// SUB_RECORD_KEYWORDS is unchanged (the single `node` keyword already frames it).
+// A new node KIND is a layout change: 18 → 19 (§1). Every tuple-`let`-free artifact
+// (any gameplay code that never destructures) moves to v19 by the version stamp
+// alone — the new KIND only appears
+// when a gameplay body actually destructures (the v10 `all` / v7 `stub` born-staged
+// node-KIND precedent: a new node kind costs nothing until a body emits it).
+// ADR 2026-06-24-let-tuple-destructure-binding.
+ARTIFACT_SCHEMA_VERSION :: 19
 
 // ARTIFACT_MAGIC is the first token of line 1, before the version integer:
 // `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the

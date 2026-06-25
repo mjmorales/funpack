@@ -242,8 +242,29 @@ eval_behavior_body :: proc(interp: ^Interp, body: []Node, env: ^Env) -> (value: 
 
 // --- Statement / body evaluation ------------------------------------------
 
+// bind_let_tuple_value destructures a `let (a, b, …) = expr` RHS value into its
+// binders POSITIONALLY (schema v19, ADR 2026-06-24-let-tuple-destructure-binding).
+// It is the runtime twin of funpack/evaluate.odin bind_let_tuple_value — MIRRORED
+// behavior, never linked code (the §29 process boundary). The type checker
+// guarantees a Tuple_Value of matching arity reaches here, so the bind is
+// mechanical; it still FAILS CLOSED (ok=false, leaving the names unbound) on a
+// non-tuple or an arity skew rather than trapping, mirroring the `if` bool guard.
+// `names` are node_scalar_fields[1:] — the BINDER_COUNT scalar at [0] is the wire
+// count, the binders follow it in source order — so element_i binds to name_i.
+bind_let_tuple_value :: proc(env: ^Env, names: []string, v: Value) -> (ok: bool) {
+	tuple, is_tuple := v.(Tuple_Value)
+	if !is_tuple || len(tuple.elements) != len(names) {
+		return false
+	}
+	for name, i in names {
+		env.names[name] = tuple.elements[i]
+	}
+	return true
+}
+
 // eval_body folds a forest of statements top-to-bottom: a `let` binds a name and
-// continues, an `if_return` returns when its guard holds, a `return` ends the
+// continues, a `let_tuple` evaluates its value to a tuple and binds each element
+// positionally, an `if_return` returns when its guard holds, a `return` ends the
 // body with its value. The fold threads one environment so a later statement
 // sees every earlier `let`. The first statement that returns wins; reaching the
 // end with no return is a malformed body (ok=false).
@@ -257,6 +278,18 @@ eval_body :: proc(interp: ^Interp, body: []Node, env: ^Env) -> (value: Value, ok
 				return nil, false
 			}
 			env.names[stmt.fields[0]] = bound
+		case .Let_Tuple:
+			// `let (a, b, …) = expr` (v19): evaluate the one value child to a
+			// tuple, bind its elements positionally to the binder names. fields[0]
+			// is the wire BINDER_COUNT; fields[1:] are the binders in source order
+			// (the SAME positional contract as evaluate.odin bind_let_tuple_value).
+			bound, bound_ok := eval(interp, &stmt.children[0], env)
+			if !bound_ok {
+				return nil, false
+			}
+			if !bind_let_tuple_value(env, stmt.fields[1:], bound) {
+				return nil, false
+			}
 		case .If_Return:
 			// `if cond { … }`: child[0] is the guard, child[1] the outcome — the
 			// returned value expression (the single-bare-return shape), or a
@@ -323,6 +356,19 @@ eval_guard_block :: proc(interp: ^Interp, stmts: []Node, env: ^Env) -> (value: V
 				return nil, false, false
 			}
 			scope.names[stmt.fields[0]] = bound
+		case .Let_Tuple:
+			// `let (a, b, …) = expr` block-scoped (v19): bind into the child
+			// scope so a guard-block-local tuple binding never leaks into the
+			// enclosing body (§02 block scoping), the SAME positional contract
+			// the body fold uses. WITHOUT this arm a tuple-let inside a guard
+			// block silently would not bind.
+			bound, bound_ok := eval(interp, &stmt.children[0], &scope)
+			if !bound_ok {
+				return nil, false, false
+			}
+			if !bind_let_tuple_value(&scope, stmt.fields[1:], bound) {
+				return nil, false, false
+			}
 		case .If_Return:
 			cond, cond_ok := eval(interp, &stmt.children[0], &scope)
 			if !cond_ok {
@@ -429,11 +475,12 @@ eval :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool
 		// behavior's View[T] param reads, so a query observes exactly the §08
 		// mid-tick read-consistency rule (population fixed, columns folding).
 		return view_rows_as_list(interp, node.fields[0]), true
-	case .Recfield, .Arm, .Let, .If_Return, .Return, .Stub, .Block:
+	case .Recfield, .Arm, .Let, .Let_Tuple, .If_Return, .Return, .Stub, .Block:
 		// These appear only as children of their owning construct (a `stub`
 		// only as a holed body's sole statement, a `block` only in if_return's
-		// outcome position), never as a standalone expression — reaching one
-		// here is a malformed body.
+		// outcome position, a `let`/`let_tuple` only at statement position),
+		// never as a standalone expression — reaching one here is a malformed
+		// body.
 		return nil, false
 	}
 	return nil, false

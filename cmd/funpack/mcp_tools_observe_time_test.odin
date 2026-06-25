@@ -32,7 +32,7 @@ import funpack_runtime "../../runtime"
 // stands alone. It gives a session a canonical recorded chain to observe (pipeline /
 // trace / draw_list / diff) and a cursor to walk (time_load / status / run), without a
 // live runtime — the whole observe+time surface re-folds this recording in-process.
-OBS_FIXTURE :: "funpack-artifact 18\n" +
+OBS_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
 	"version L5:0.1.0\n" +

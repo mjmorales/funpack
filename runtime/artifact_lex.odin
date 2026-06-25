@@ -289,7 +289,28 @@ import "core:strings"
 // free dev build likewise writes `[probes 0]` (the [assets 0]/[nav 0] tail
 // precedent): the header always emits, so a reader reads a fixed §3 header sequence
 // and never needs the build mode (which the artifact cannot carry).
-ARTIFACT_SCHEMA_VERSION :: 18
+//
+// v19 carries a `let (a, b, …) = expr` TUPLE-DESTRUCTURE through to the gameplay
+// wire (ADR 2026-06-24-let-tuple-destructure-binding). The form parses, typechecks,
+// and runs in `test` blocks at v18 (off the wire, via the compiler evaluator), but
+// the v18 §2.7 body grammar encoded a `let` as ONE name scalar (`node let NAME 1`),
+// so an N-name binder list had no encoding — a gameplay-body tuple-`let` was refused
+// before emission. v19 adds ONE new §2.7 body-node KIND, `let_tuple`, to the closed
+// Node_Kind set: `node let_tuple BINDER_COUNT name1 … nameN 1`. BINDER_COUNT (≥ 2 — a
+// single-name `let` stays the `let` kind) is the count of the positional binder names
+// that follow, the nameI are the snake_case binders in source order, and the trailing
+// `1` is the generic child count — the single value subtree, evaluated to a tuple
+// whose elements bind positionally to name1…nameN (this runtime mirrors
+// funpack/evaluate.odin bind_let_tuple_value). The binder list rides BEFORE the
+// trailing child count, so node_child_count reads the count the generic way (last
+// token) and node_scalar_fields returns [BINDER_COUNT, name1, …, nameN] — both with
+// NO reader special case (the `string`/`arm` exceptions are untouched). `let_tuple` is
+// a body `node` line, so SUB_RECORD_KEYWORDS is unchanged. A new node KIND is a layout
+// change: 18 → 19 (funpack/docs/artifact-format.md §1, §2.7). Every tuple-`let`-free
+// artifact moves to v19 by the version stamp alone — the new KIND only appears when a
+// gameplay body actually destructures (the v10 `all` / v7 `stub` born-staged
+// node-KIND precedent).
+ARTIFACT_SCHEMA_VERSION :: 19
 
 // ARTIFACT_STAMP is the literal keyword on line 1 before the version integer.
 ARTIFACT_STAMP :: "funpack-artifact"

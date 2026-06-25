@@ -109,7 +109,7 @@ eval_nav_path :: proc(
 // adj[1] is observable — the bit-stable tie-break does not depend on emission
 // order.
 NAV_FIXTURE_ARTIFACT ::
-	"funpack-artifact 18\n" +
+	"funpack-artifact 19\n" +
 	"[nav 1]\n" +
 	"nav ground 3 2\n" +
 	"navnode 34359738368 171798691840\n" + // (8, 40) raw Q32.32
@@ -148,7 +148,7 @@ test_load_navs_decodes :: proc(t: ^testing.T) {
 test_load_navs_empty_section_still_loads :: proc(t: ^testing.T) {
 	// The `[nav 0]` tail every level-less artifact emits keeps loading clean
 	// with zero graphs (no special case).
-	program, err := load_program("funpack-artifact 18\n[nav 0]\n", context.temp_allocator)
+	program, err := load_program("funpack-artifact 19\n[nav 0]\n", context.temp_allocator)
 	testing.expect_value(t, err, Artifact_Error.None)
 	testing.expect_value(t, len(program.navs), 0)
 }
@@ -174,25 +174,25 @@ test_load_navs_malformed_refused :: proc(t: ^testing.T) {
 	// Each case bends exactly one §12 shape rule of the well-formed fixture.
 	malformed := [?]string {
 		// lead line: wrong arity (a trailing token — nav carries NO grid metadata)
-		"funpack-artifact 18\n[nav 1]\nnav ground 1 0 16\nnavnode 0 0\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 1 0 16\nnavnode 0 0\n",
 		// lead line: non-numeric node count
-		"funpack-artifact 18\n[nav 1]\nnav ground x 0\nnavnode 0 0\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground x 0\nnavnode 0 0\n",
 		// lead line: non-numeric edge count
-		"funpack-artifact 18\n[nav 1]\nnav ground 1 x\nnavnode 0 0\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 1 x\nnavnode 0 0\n",
 		// sub-record run: a missing navnode line (declared NODE_COUNT=2, one present)
-		"funpack-artifact 18\n[nav 1]\nnav ground 2 0\nnavnode 0 0\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 2 0\nnavnode 0 0\n",
 		// sub-record run: a surplus navedge line (declared EDGE_COUNT=0, one present)
-		"funpack-artifact 18\n[nav 1]\nnav ground 1 0\nnavnode 0 0\nnavedge 0 0\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 1 0\nnavnode 0 0\nnavedge 0 0\n",
 		// navnode: wrong arity (missing FIXED_Y)
-		"funpack-artifact 18\n[nav 1]\nnav ground 1 0\nnavnode 0\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 1 0\nnavnode 0\n",
 		// navnode: a non-numeric coordinate
-		"funpack-artifact 18\n[nav 1]\nnav ground 1 0\nnavnode 0 z\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 1 0\nnavnode 0 z\n",
 		// navedge: an index past the node range (NODE_COUNT=2, index 2 invalid)
-		"funpack-artifact 18\n[nav 1]\nnav ground 2 1\nnavnode 0 0\nnavnode 16 0\nnavedge 0 2\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 2 1\nnavnode 0 0\nnavnode 16 0\nnavedge 0 2\n",
 		// navedge: a negative index
-		"funpack-artifact 18\n[nav 1]\nnav ground 2 1\nnavnode 0 0\nnavnode 16 0\nnavedge 0 -1\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 2 1\nnavnode 0 0\nnavnode 16 0\nnavedge 0 -1\n",
 		// navedge: wrong arity (missing B)
-		"funpack-artifact 18\n[nav 1]\nnav ground 2 1\nnavnode 0 0\nnavnode 16 0\nnavedge 0\n",
+		"funpack-artifact 19\n[nav 1]\nnav ground 2 1\nnavnode 0 0\nnavnode 16 0\nnavedge 0\n",
 	}
 	for artifact in malformed {
 		_, err := load_program(artifact, context.temp_allocator)

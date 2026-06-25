@@ -35,7 +35,7 @@ import "core:testing"
 // SESSION_FIXTURE) so the dispatch-arm tests can open a real headless session and fold a
 // §28 screenshot through it — exercising the present-boundary refusal. Inlined per the
 // self-contained-test standard (the runtime fixture is file-private).
-SHOT_FIXTURE :: "funpack-artifact 18\n" +
+SHOT_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
 	"version L5:0.1.0\n" +

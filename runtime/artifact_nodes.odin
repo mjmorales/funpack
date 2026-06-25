@@ -41,6 +41,18 @@ Node_Kind :: enum {
 	Match,
 	Arm,
 	Let,
+	// Let_Tuple is a `let (a, b, …) = e` tuple destructure (schema v19, §2.7):
+	// `node let_tuple BINDER_COUNT name1 … nameN 1`. BINDER_COUNT (≥ 2 — a
+	// single-name `let` stays the `Let` kind) is the count of positional binder
+	// names that follow, the nameI are the snake_case binders in source order,
+	// and the trailing `1` is the generic child count — the single value subtree,
+	// evaluated to a tuple whose elements bind positionally to name1…nameN
+	// (the runtime mirrors funpack/evaluate.odin bind_let_tuple_value;
+	// ADR 2026-06-24-let-tuple-destructure-binding). The binder list rides BEFORE
+	// the trailing child count by design, so node_child_count reads the count the
+	// generic way (last token) and node_scalar_fields returns
+	// [BINDER_COUNT, name1, …, nameN] — both with NO special case.
+	Let_Tuple,
 	If_Return,
 	// If_Expr is the value-producing if-expression (§2.7): `node if_expr 3`
 	// over its three ordered children — condition, then arm, else arm — the
@@ -119,6 +131,12 @@ node_kind_from_tag :: proc(tag: string) -> (kind: Node_Kind, ok: bool) {
 		return .Arm, true
 	case "let":
 		return .Let, true
+	case "let_tuple":
+		// A `let_tuple` node is count-driven the generic way: its BINDER_COUNT +
+		// N binder names are scalar fields between the tag and the trailing child
+		// count `1` (the single value subtree), so no special handling beyond this
+		// tag mapping (§2.7, schema v19).
+		return .Let_Tuple, true
 	case "if_return":
 		return .If_Return, true
 	case "if_expr":

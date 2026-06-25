@@ -36,7 +36,7 @@ import "core:testing"
 // driver re-folds this run with the honor tap armed (session_honor_probes) and counts
 // the firings, never compiling source (§28 §2).
 @(private = "file")
-PROBED_DRIVER_FIXTURE :: "funpack-artifact 18\n" +
+PROBED_DRIVER_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project probed_driver\n" +
 	"version L5:0.1.0\n" +

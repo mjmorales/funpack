@@ -105,16 +105,6 @@ Build_Error :: enum {
 	// whole build before either emission surface runs. The offender line names
 	// the offending asset/file and the specific bake error (asset_bake_refusal_message).
 	Asset_Bake_Failed,
-	// Let_Tuple_Unsupported_Wire is the deferred-wire refusal for a `let (a, b, …)
-	// = expr` tuple destructure in a GAMEPLAY body (ADR
-	// 2026-06-24-let-tuple-destructure-binding). The form parses, typechecks, and
-	// runs in `test` blocks (off the wire), but the artifact format at this schema
-	// (v18) has no N-name binder encoding — that is a v19 funpack↔runtime reshape.
-	// Distinct from Compile_Failed because there is NO checked-pipeline fault to
-	// re-derive a file:line:col diagnostic from (the program is well-formed); the
-	// refusal carries its own actionable message instead. Maps to exit 2, no
-	// product — never a silently undecodable wire node (the parity trap).
-	Let_Tuple_Unsupported_Wire,
 }
 
 // Build_Verdict is the build seam's refusal verdict: the closed Build_Error arm
@@ -146,15 +136,6 @@ Build_Verdict :: struct {
 // (spec §29 §3) — but the line is deterministic (a pure function of the
 // verdict) so goldens may pin it byte-for-byte.
 build_refusal_message :: proc(verdict: Build_Verdict, allocator := context.allocator) -> string {
-	if verdict.err == .Let_Tuple_Unsupported_Wire {
-		// The well-formed program holds a `let (a, b, …) = expr` tuple destructure in
-		// a gameplay body the artifact cannot carry yet (ADR
-		// 2026-06-24-let-tuple-destructure-binding). The message names the fix path:
-		// the form runs in `test` blocks today; a gameplay body must thread the value
-		// through a single-name `let` over a `data` carrier until the v19 artifact
-		// reshape lands.
-		return "Let_Tuple_Unsupported_Wire: a `let (a, b, …)` tuple destructure cannot be carried into the gameplay artifact yet — use it in a `test` block (it runs there), or thread the value through a `data` carrier with single-name `let`s in gameplay code until the artifact format gains the binder list"
-	}
 	if verdict.offender == "" {
 		return fmt.aprintf("%v", verdict.err, allocator = allocator)
 	}
@@ -328,15 +309,6 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 	if is_game {
 		emit_err: Emit_Error
 		artifact, emit_err = emit_tree_artifact(root, project, sources, allocator)
-		if emit_err == .Let_Tuple_Unsupported_Wire {
-			// The well-formed program holds a tuple-`let` in a gameplay body with no
-			// v18 wire encoding (ADR 2026-06-24-let-tuple-destructure-binding). There
-			// is no checked-pipeline fault to re-derive a diagnostic from, so this
-			// arm carries its own actionable refusal rather than the bare
-			// Compile_Failed (compile_failed_verdict would find no fault and fall back
-			// to the bare arm name).
-			return Build_Product{}, Build_Verdict{err = .Let_Tuple_Unsupported_Wire}
-		}
 		if emit_err != .None {
 			return Build_Product{}, compile_failed_verdict(sources, allocator)
 		}

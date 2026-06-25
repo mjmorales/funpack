@@ -39,7 +39,7 @@ import "core:testing"
 // 1.0/tick) — the same shape the family tests use, inlined per the self-contained-test
 // standard so this file stands alone. A session opens cleanly over it, giving the
 // round-trip's observe / control / screenshot legs a real session id to address.
-PARITY_FIXTURE :: "funpack-artifact 18\n" +
+PARITY_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
 	"version L5:0.1.0\n" +

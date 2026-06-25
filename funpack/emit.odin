@@ -106,18 +106,6 @@ Emit_Error :: enum {
 	// product — the same exit-2 compile class as the other emission floors (the
 	// build verb maps it to Compile_Failed), never a silently ambiguous artifact.
 	Whole_Module_Collision,
-	// Let_Tuple_Unsupported_Wire is the deferred-wire refusal for a `let (a, b, …)
-	// = expr` tuple destructure in a GAMEPLAY-executable body (fn / behavior step /
-	// query, ADR 2026-06-24-let-tuple-destructure-binding). The form parses,
-	// typechecks, and runs in `test` blocks (off the wire), but the artifact format
-	// at this schema (v18) encodes a `let` as one name scalar — the N-name binder
-	// list is a v19 reshape that touches the funpack↔runtime contract (the runtime
-	// decoder/interpreter owns the other half, gated by an exact-match schema
-	// check). Until that coordinated reshape lands, a tuple-`let` in an emitted body
-	// is refused before emission — the same exit-2 compile class as the other
-	// emission floors (mapped to Compile_Failed), never a silently undecodable wire
-	// node (the dual-interpreter parity trap).
-	Let_Tuple_Unsupported_Wire,
 }
 
 // stage_emit is the single-source → artifact seam: it runs the full checked
@@ -195,16 +183,6 @@ stage_emit_indexed :: proc(
 	}
 	if stage_gates(ast) != .None {
 		return "", .Gate_Failed
-	}
-	// A `let (a, b, …) = expr` tuple destructure (ADR
-	// 2026-06-24-let-tuple-destructure-binding) has no v18 wire encoding, so it is
-	// refused in any GAMEPLAY-executable body (fn/behavior/query) the artifact would
-	// carry — the entrypoint module's bodies plus the §17 sibling fns imported into
-	// [functions]. The form stays fully legal in `test` blocks (evaluated off the
-	// wire). This is a deferred-wire floor, not a permanent ban: it lifts when the
-	// v19 funpack↔runtime artifact reshape lands.
-	if let_tuple_wire_gate(ast) || sibling_fns_have_tuple_let(module_asts) {
-		return "", .Let_Tuple_Unsupported_Wire
 	}
 	typed, type_err := stage_typecheck_indexed(ast, index)
 	if type_err != .None {

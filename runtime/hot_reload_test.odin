@@ -22,7 +22,7 @@ import "core:testing"
 // RELOAD_ARTIFACT_A is the running build: identical to the restore fixture's
 // build A (Stats{hp,mana}, Coord{v}, the Hero, advance-by-1.0).
 @(private = "file")
-RELOAD_ARTIFACT_A :: "funpack-artifact 18\n" +
+RELOAD_ARTIFACT_A :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project mig\n" +
 	"version L5:0.1.0\n" +
@@ -63,7 +63,7 @@ RELOAD_ARTIFACT_A :: "funpack-artifact 18\n" +
 // `advance` body — `node fixed 8589934592` is 2.0 in Q32.32, so a post-swap
 // tick moves pos by 2.0 (the re-resolution probe).
 @(private = "file")
-RELOAD_ARTIFACT_B :: "funpack-artifact 18\n" +
+RELOAD_ARTIFACT_B :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project mig\n" +
 	"version L5:0.1.0\n" +
@@ -112,7 +112,7 @@ RELOAD_ARTIFACT_B :: "funpack-artifact 18\n" +
 // RELOAD_ARTIFACT_B_GHOST is B with a false rename claim (`migrate ghost -`) —
 // the kernel's Unknown_Source refusal, which must leave the old build running.
 @(private = "file")
-RELOAD_ARTIFACT_B_GHOST :: "funpack-artifact 18\n" +
+RELOAD_ARTIFACT_B_GHOST :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project mig\n" +
 	"version L5:0.1.0\n" +
@@ -137,7 +137,7 @@ RELOAD_ARTIFACT_B_GHOST :: "funpack-artifact 18\n" +
 // executor refuses it fail-closed (Thing_Set_Delta) instead of inventing
 // spawn-on-reload semantics.
 @(private = "file")
-RELOAD_ARTIFACT_B_NEW_THING :: "funpack-artifact 18\n" +
+RELOAD_ARTIFACT_B_NEW_THING :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project mig\n" +
 	"version L5:0.1.0\n" +

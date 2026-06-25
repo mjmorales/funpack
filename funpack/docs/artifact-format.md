@@ -324,6 +324,24 @@ funpack-artifact 18
   artifact (every release artifact, plus a probe-free dev build) moves to v18 by the
   version stamp plus this constant tail (the v7 stamp-only restamp / `[nav 0]` tail
   precedent).
+- **v19** carries a `let (a, b, …) = e` **tuple destructure** through to the gameplay
+  wire (ADR 2026-06-24-let-tuple-destructure-binding). The form parses, typechecks,
+  and runs in `test` blocks at v18 (off the wire, via the compiler evaluator), but the
+  v18 §2.7 body grammar encodes a `let` as one name scalar (`node let NAME 1`), so an
+  N-name binder list had no encoding — a gameplay-body tuple-`let` was refused before
+  emission. v19 adds **one new §2.7 node KIND**, `let_tuple` (§2.7): `node let_tuple
+  binder_count name1 … nameN 1` — a count-driven binder list (the count then the N
+  snake_case binders in source order) then the trailing generic child count `1` for the
+  single value subtree, evaluated to a tuple whose elements bind positionally. The
+  binder list rides **before** the trailing child count, so `child_count` is read the
+  generic way (last token) with no special case (the `arm`/`string` exceptions are
+  untouched) and the scalar-field reader returns `[binder_count, name1, …, nameN]`. It
+  is a body `node` line, so the §2.1 sub-record keyword set is unchanged. A new node
+  KIND is a layout change: 18 → 19. Every tuple-`let`-free artifact (every artifact
+  emitted before this, plus gameplay code that never destructures) moves to v19 by the
+  version stamp alone — the new KIND appears only when a gameplay body destructures
+  (the v10 `all` / v7 `stub` born-staged node-KIND precedent: a new kind costs nothing
+  until a body emits it).
 - A runtime reads the stamp and **refuses a mismatch**: it loads only the exact
   version it was built for and rejects every other with a fix-it diagnostic,
   never a best-effort parse. An under- or over-shaped artifact is an error. This
@@ -509,6 +527,7 @@ subtree shape:
 | `arm` (scalar) | `pat:name` `type:name` `case:name` `binder_count:Int` `binders:name…` | 0 (fixed by kind; no trailing `child_count`) | a `wildcard`/`bare_variant`/`variant_binds`/`bare_binder` pattern (its body is the following sibling) |
 | `arm` (tuple, v2) | `tuple` `child_count:Int` | `child_count` = the positional sub-pattern `arm` subtrees | a `(p, q, …)` tuple pattern, e.g. `(Option::Some(cell), next)` |
 | `let` | `name:name` | 1 = the bound value expr | `let n = e` |
+| `let_tuple` (v19) | `binder_count:Int` `binders:name…` | 1 = the bound value expr (evaluated to a tuple, bound positionally) | `let (a, b, …) = e` tuple destructure |
 | `if_return` | (none) | 2 = condition, then the **outcome**: the returned value expr (single-bare-return guard) or a `block` (v14) | early-return `if cond { return v }` / `if cond { let x = …; return y }` |
 | `if_expr` | (none) | 3 = condition, then arm, else arm | a value-producing `if c { a } else { b }` in expression position |
 | `block` (v14) | (none) | `child_count` = the guard block's statement subtrees (`let`/`if_return`/`return`) | a multi-statement guard block in `if_return`'s outcome position; `let`s are block-scoped, completing without `return` falls through |
@@ -550,6 +569,39 @@ subtree shape:
   evaluation; evaluating `stub bare` is the **defined fail-closed no-value
   outcome** — the behavior instance folds nothing this tick, a calling
   expression fails closed — never a trap or undefined behavior.
+- A **tuple-destructure** `let (a, b, …) = e` (v19) is the `let_tuple` node, a
+  distinct kind from the single-name `let` so the latter's wire stays byte-stable
+  (no discriminator field is added to a `let` line). Its scalar fields are a
+  **count-driven binder list** — `binder_count` (always ≥ 2; a one-name binding is
+  the `let` kind) then the `binder_count` snake_case binder names in source order —
+  and its single child is the bound value subtree, which evaluates to a tuple whose
+  elements bind positionally (`a` ← element 0, `b` ← element 1, …; the §02 §8
+  return-position tuple, e.g. a threaded `rng.range(0, 10) -> (Int, Rng)` draw). The
+  binder list rides **before** the trailing `child_count`, so the count is read the
+  generic way (the last token) with no special case — unlike `arm`, whose binder
+  list is its trailing field; `let_tuple` keeps the `1` child count last so a reader
+  never special-cases it. The binders are flat plain lower-idents, never a nested
+  pattern (structural matching stays in `match`, §13). A runtime evaluating
+  `let_tuple` evaluates the value child, requires a tuple of matching arity, and
+  binds each element to its binder for the rest of the body — the same semantics the
+  compiler interpreter applies off the wire (spec §02 §5/§8).
+
+Example — a gameplay fn body `let (v, r1) = rng.range(0, 10)` then `return v`
+serializes to two top-level statement subtrees, the first being:
+
+```
+node let_tuple 2 v r1 1
+node call 3
+node field range 1
+node name rng 0
+node int 0 0
+node int 10 0
+```
+
+The `let_tuple` declares `binder_count` 2 (`v`, `r1`) then 1 child — the value
+subtree, here the §02 §4 UFCS lowering of `rng.range(0, 10)` to a `call` of
+`field range` over `rng` with the two `int` args. The runtime evaluates that call to
+a `(Int, Rng)` tuple and binds `v` to element 0 and `r1` to element 1.
 
 Example — `goal_side`'s body (`if at.x < 0.0 { return Option::Some(Side::Right) }`
 then `if at.x > BOARD.w { … }` then `return Option::None`) serializes to three

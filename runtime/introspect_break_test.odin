@@ -29,7 +29,7 @@ import "core:testing"
 // per-tick digest). Identical behavior to probes_test.odin's PROBED_FIXTURE minus the
 // in-code [probes] records — the live group adds them at session time instead.
 @(private = "file")
-LIVE_BREAK_FIXTURE :: "funpack-artifact 18\n" +
+LIVE_BREAK_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project livebreak\n" +
 	"version L5:0.1.0\n" +

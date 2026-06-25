@@ -183,7 +183,7 @@ test_dev_build_emits_probe_section_with_node_forest_bodies :: proc(t: ^testing.T
 
 	// The v18 stamp and the [probes] section with all SIX records (four behavior
 	// probes + the field @watch + the stage @trace).
-	testing.expect(t, strings.contains(artifact, "funpack-artifact 18\n"))
+	testing.expect(t, strings.contains(artifact, "funpack-artifact 19\n"))
 	testing.expect(t, strings.contains(artifact, "[probes 6]\n"))
 
 	// The §28 §4 FIELD-PROBE position: @watch(self.bias) on DriftLog's `bias` field

@@ -41,7 +41,7 @@ import "core:testing"
 //   probe trace Loop.control 0   — QUALIFIED `<pipeline>.<stage>`: honored at the step
 //   probe trace tick_counter 0   — bare behavior name: honored (the base shape)
 @(private = "file")
-QUALIFIED_FIXTURE :: "funpack-artifact 18\n" +
+QUALIFIED_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project qualified\n" +
 	"version L5:0.1.0\n" +
@@ -199,7 +199,7 @@ test_honor_field_watch_data_fails_closed :: proc(t: ^testing.T) {
 test_honor_unknown_stage_target_fails_closed :: proc(t: ^testing.T) {
 	// `Loop.collision` names a real pipeline but a stage no step in this fixture runs;
 	// `Other.control` names a pipeline that is not the entrypoint's. Both fail closed.
-	unknown_stage := "funpack-artifact 18\n" +
+	unknown_stage := "funpack-artifact 19\n" +
 		"[meta 2]\n" +
 		"project unknownstage\n" +
 		"version L5:0.1.0\n" +

@@ -35,7 +35,7 @@ import "core:testing"
 // the section reconciles under the same lead-line discipline a [functions] record
 // does.
 @(private = "file")
-PROBED_FIXTURE :: "funpack-artifact 18\n" +
+PROBED_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project probed\n" +
 	"version L5:0.1.0\n" +
@@ -142,18 +142,18 @@ test_load_probes_section :: proc(t: ^testing.T) {
 @(test)
 test_load_probes_malformed_refused :: proc(t: ^testing.T) {
 	// An unknown probe KIND is a schema mismatch.
-	unknown_kind := "funpack-artifact 18\n[probes 1]\nprobe poke tick_counter 0\n"
+	unknown_kind := "funpack-artifact 19\n[probes 1]\nprobe poke tick_counter 0\n"
 	_, kind_err := load_program(unknown_kind, context.temp_allocator)
 	testing.expect_value(t, kind_err, Artifact_Error.Bad_Field)
 
 	// A body run that under-shapes the declared body_count (declares 1, carries 0).
-	short_body := "funpack-artifact 18\n[probes 1]\nprobe break tick_counter 1\n"
+	short_body := "funpack-artifact 19\n[probes 1]\nprobe break tick_counter 1\n"
 	_, body_err := load_program(short_body, context.temp_allocator)
 	testing.expect_value(t, body_err, Artifact_Error.Body_Count_Mismatch)
 
 	// A body run that over-shapes it (declares 0, carries a node) — the @trace shape
 	// with a stray body subtree.
-	long_body := "funpack-artifact 18\n[probes 1]\nprobe trace tick_counter 0\nnode int 1 0\n"
+	long_body := "funpack-artifact 19\n[probes 1]\nprobe trace tick_counter 0\nnode int 1 0\n"
 	_, long_err := load_program(long_body, context.temp_allocator)
 	testing.expect_value(t, long_err, Artifact_Error.Body_Count_Mismatch)
 }
@@ -360,7 +360,7 @@ test_honor_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 // (§28 §4 "release artifacts hold no introspection machinery").
 @(test)
 test_load_empty_probes_tail :: proc(t: ^testing.T) {
-	probe_free := "funpack-artifact 18\n[meta 2]\nproject bare\nversion L5:0.1.0\n[probes 0]\n"
+	probe_free := "funpack-artifact 19\n[meta 2]\nproject bare\nversion L5:0.1.0\n[probes 0]\n"
 	program, err := load_program(probe_free, context.temp_allocator)
 	testing.expect_value(t, err, Artifact_Error.None)
 	testing.expect_value(t, len(program.probes), 0)

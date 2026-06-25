@@ -25,7 +25,7 @@ import "core:testing"
 // gives the session a canonical chain to fork a branch off and a column (`pos`) a `set`
 // can force on that branch — the substrate the F13 retention test reads back. Inlined
 // here per the self-contained-test standard (the runtime fixture is file-private).
-SESSION_FIXTURE :: "funpack-artifact 18\n" +
+SESSION_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
 	"version L5:0.1.0\n" +

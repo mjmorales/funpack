@@ -27,7 +27,7 @@ import "core:testing"
 // transport returns byte-identical observe responses, so it needs the identical
 // session the local-fold envelope tests pin against.
 @(private = "file")
-ATTACH_FIXTURE :: "funpack-artifact 18\n" +
+ATTACH_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
 	"version L5:0.1.0\n" +
