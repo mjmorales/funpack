@@ -111,9 +111,15 @@ docs_dispatch_get :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator
 		)
 	}
 
+	// Resolve the on-disk projection root so the resolved section carries a `path` deep-link
+	// the agent can Read/Grep directly (the server materialized this tree at startup). A
+	// missing managed home yields an empty root and the `path` field is simply omitted.
+	manifest, _ := load_manifest(allocator)
+	docs_root, _ := docs_export_root(manifest, allocator)
+
 	for section in sections {
 		if section.anchor == anchor {
-			return mcp_render_tool_result(dispatch.id, docs_get_result(section, allocator), allocator)
+			return mcp_render_tool_result(dispatch.id, docs_get_result(section, docs_root, allocator), allocator)
 		}
 	}
 
@@ -128,10 +134,12 @@ docs_dispatch_get :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator
 }
 
 // docs_get_result renders one resolved section as the docs_get success result: a single
-// text content block holding {anchor,title,kind,text} JSON. The key set is the
-// docs_get output contract a client reads. Built with the byte-stable
-// write_json_string idiom the §28 renderers use.
-docs_get_result :: proc(section: Corpus_Section, allocator := context.allocator) -> Mcp_Tool_Result {
+// text content block holding {anchor,title,kind,text,path?} JSON. `path` (the on-disk
+// deep-link into the materialized projection, docs_root + section.source) is present only
+// when docs_root resolved — a client without a managed home still gets the full inline
+// section. The key set is the docs_get output contract a client reads. Built with the
+// byte-stable write_json_string idiom the §28 renderers use.
+docs_get_result :: proc(section: Corpus_Section, docs_root: string, allocator := context.allocator) -> Mcp_Tool_Result {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"anchor\":")
 	funpack_runtime.write_json_string(&b, section.anchor)
@@ -141,11 +149,26 @@ docs_get_result :: proc(section: Corpus_Section, allocator := context.allocator)
 	funpack_runtime.write_json_string(&b, section.kind)
 	strings.write_string(&b, ",\"text\":")
 	funpack_runtime.write_json_string(&b, section.text)
+	docs_write_path(&b, docs_root, section.source, allocator)
 	strings.write_byte(&b, '}')
 
 	content := make([]Mcp_Content, 1, allocator)
 	content[0] = mcp_text_content(strings.to_string(b))
 	return Mcp_Tool_Result{content = content, is_error = false}
+}
+
+// docs_write_path appends the optional `path` field — the on-disk deep-link into the
+// materialized projection (docs_root joined with the section's corpus-relative source) —
+// to a docs result object. It is OMITTED when docs_root is empty (no managed home, the
+// server could not materialize) or the source is unknown, so a client without an on-disk
+// tree never receives a dangling path. The agent Reads this file and greps the section's
+// anchor marker ("<!-- anchor: <id>") to land on the passage.
+docs_write_path :: proc(b: ^strings.Builder, docs_root, source: string, allocator := context.allocator) {
+	if docs_root == "" || source == "" {
+		return
+	}
+	strings.write_string(b, ",\"path\":")
+	funpack_runtime.write_json_string(b, corpus_join({docs_root, source}, allocator))
 }
 
 // docs_dispatch_search resolves docs_search: a required `query` and an optional `limit`
@@ -187,26 +210,40 @@ docs_dispatch_search :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 		)
 	}
 	manifest, _ := load_manifest(allocator) // a missing manifest yields a zeroed drift, never a failure
+	docs_root, _ := docs_export_root(manifest, allocator) // empty when no managed home — `path` is then omitted
 
 	engine := search_engine_build(sections, allocator)
 	hits := search_engine_search(&engine, query, limit, allocator)
 
-	return mcp_render_tool_result(dispatch.id, docs_search_result(hits, manifest, allocator), allocator)
+	return mcp_render_tool_result(dispatch.id, docs_search_result(hits, manifest, sections, docs_root, allocator), allocator)
 }
 
 // docs_search_result renders the ranked hits plus provenance as the docs_search success
 // result: one text content block holding {hits:[…],corpus_version,corpus_drift}. Each
-// hit carries {anchor,title,kind,score,snippet,source} — anchor re-feeds docs_get,
-// source tags which ranker produced it. This key set is the docs_search output
-// contract a client reads.
-docs_search_result :: proc(hits: []Search_Result, manifest: Corpus_Manifest, allocator := context.allocator) -> Mcp_Tool_Result {
+// hit carries {anchor,title,kind,score,snippet,source,path?} — anchor re-feeds docs_get,
+// source tags which ranker produced it, and `path` (present when docs_root resolved) is
+// the on-disk deep-link into the materialized projection. `sections` supplies the
+// anchor→file-source map the `path` needs (the ranker hit carries the corpus anchor, not
+// the source file). This key set is the docs_search output contract a client reads.
+docs_search_result :: proc(
+	hits: []Search_Result,
+	manifest: Corpus_Manifest,
+	sections: []Corpus_Section,
+	docs_root: string,
+	allocator := context.allocator,
+) -> Mcp_Tool_Result {
+	src_by_anchor := make(map[string]string, len(sections), allocator)
+	for s in sections {
+		src_by_anchor[s.anchor] = s.source
+	}
+
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"hits\":[")
 	for hit, i in hits {
 		if i > 0 {
 			strings.write_byte(&b, ',')
 		}
-		docs_write_hit(&b, hit)
+		docs_write_hit(&b, hit, docs_root, src_by_anchor[hit.anchor], allocator)
 	}
 	strings.write_string(&b, "],\"corpus_version\":")
 	funpack_runtime.write_json_string(&b, docs_corpus_version(manifest, allocator))
@@ -219,10 +256,12 @@ docs_search_result :: proc(hits: []Search_Result, manifest: Corpus_Manifest, all
 	return Mcp_Tool_Result{content = content, is_error = false}
 }
 
-// docs_write_hit renders one Search_Result as the MCP hit object (docs_search.go Hit):
-// {anchor,title,kind,score,snippet,source}. The score is the blended relative rank key,
-// only comparable within this response; source is the lowercase ranker label.
-docs_write_hit :: proc(b: ^strings.Builder, hit: Search_Result) {
+// docs_write_hit renders one Search_Result as the MCP hit object:
+// {anchor,title,kind,score,snippet,source,path?}. The score is the blended relative rank
+// key, only comparable within this response; source is the lowercase ranker label; `path`
+// (the on-disk deep-link, docs_root + the hit's file source) is appended only when both
+// resolve, so a host without a materialized tree gets the same hit minus `path`.
+docs_write_hit :: proc(b: ^strings.Builder, hit: Search_Result, docs_root, source: string, allocator := context.allocator) {
 	strings.write_string(b, "{\"anchor\":")
 	funpack_runtime.write_json_string(b, hit.anchor)
 	strings.write_string(b, ",\"title\":")
@@ -235,6 +274,7 @@ docs_write_hit :: proc(b: ^strings.Builder, hit: Search_Result) {
 	funpack_runtime.write_json_string(b, hit.snippet)
 	strings.write_string(b, ",\"source\":")
 	funpack_runtime.write_json_string(b, search_source_label(hit.source))
+	docs_write_path(b, docs_root, source, allocator)
 	strings.write_byte(b, '}')
 }
 

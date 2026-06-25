@@ -28,6 +28,7 @@ build_mcp_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 		[]^cli.Cli_Command {
 			build_mcp_gen_corpus_command(allocator),
 			build_mcp_gen_contract_command(allocator),
+			build_mcp_docs_export_command(allocator),
 		},
 		allocator,
 	)

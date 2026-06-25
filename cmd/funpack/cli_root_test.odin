@@ -67,6 +67,9 @@ test_root_verb_set :: proc(t: ^testing.T) {
 	// `funpack mcp` serves the stdio server; `funpack mcp gen-corpus` is its child.
 	testing.expect_value(t, expect_root_ok(t, root, {"mcp"}).command.use, "mcp")
 	testing.expect_value(t, expect_root_ok(t, root, {"mcp", "gen-corpus"}).command.use, "gen-corpus")
+	// `funpack mcp docs-export` is the runtime materializer child (the on-disk docs
+	// projection), beside the dev-time codegen children.
+	testing.expect_value(t, expect_root_ok(t, root, {"mcp", "docs-export"}).command.use, "docs-export")
 
 	// The bare program and an unknown verb are the usage tier.
 	expect_root_reject(t, root, {})

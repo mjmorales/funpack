@@ -45,6 +45,13 @@ MCP_SERVER_NAME :: "funpack-mcp"
 // opened it). It is threaded into the handler via userdata so the session-family
 // dispatch arm reaches it without the transport knowing its shape.
 run_mcp_verb :: proc(allocator := context.allocator) -> int {
+	// Best-effort, startup-once: materialize the version-keyed on-disk docs projection so an
+	// agent can traverse the docs natively (Read/Grep/follow-anchor) alongside the in-process
+	// docs tools. Idempotent (a matching sentinel is a no-op) and non-fatal (a missing or
+	// read-only ~/.funpack home degrades to no on-disk tree, reported to stderr) — it never
+	// aborts the serve loop, and docs_search stays a pure in-process function regardless.
+	mcp_materialize_docs_projection(allocator)
+
 	registry := mcp_session_registry_make(allocator)
 	defer mcp_session_registry_destroy(&registry, allocator)
 	serve_mcp_stdio(mcp_jsonrpc_handler(&registry), allocator)
