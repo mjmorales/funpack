@@ -26,8 +26,8 @@ Tools split into two classes:
 | `check` | You want the build's verdict with **no product written** — type-check + static analysis only. |
 | `fmt` | You want to format the project (or, in check mode, ask whether it is already formatted). |
 | `test` | You want to run every `test "…" { assert … }` block and get a structured pass/fail summary (counts + each failing test's name and detail). |
-| `docs_search` | You need to look up an engine API, a spec section, or any funpack concept — search the docs corpus for ranked hits; each hit's anchor feeds `docs_get`. **Use this instead of relying on memorized prose.** |
-| `docs_get` | You have an anchor from `docs_search` and want the full text of that one documentation section. |
+| `docs_search` | You need to look up an engine API, a spec section, or any funpack concept — search the docs corpus for ranked hits; each hit's `anchor` feeds `docs_get` and each hit's `path` (when present) is the on-disk file you can `Read`/`Grep` directly. **Use this instead of relying on memorized prose.** |
+| `docs_get` | You have an anchor from `docs_search` and want the full text of that one documentation section (also returns its on-disk `path`). |
 | `warden_find` | You're about to write a helper and want a pre-hoc reuse check — does a declaration with this name-substring already exist in the committed index? |
 | `warden_holes` | You want every open typed hole (`@stub`) in the committed index. |
 | `warden_probes` | You want every outstanding debug probe (`@break`/`@log`/`@watch`/`@trace`) in the committed index. |
@@ -38,6 +38,28 @@ Tools split into two classes:
 
 > `warden_*` tools are **pure projections** over the `.funpack/index.ndjson` that `build` emits. They
 > never write source — the agent edits source; a recompile re-derives the projection.
+
+### Docs on disk (deep-link traversal)
+
+The funpack docs corpus is embedded in the binary, and the MCP server also materializes it to a
+traversable on-disk tree at **`~/.funpack/docs/<version>/`** (written once at startup; re-emit or
+relocate with `funpack mcp docs-export [--dir <path>]`). The tree is a **projection** of the embedded
+corpus — written by the binary from its own bytes, so it always matches the toolchain that produced it
+and can never drift.
+
+Use it when ranked search isn't the right shape — to read a whole file, scan adjacent sections, follow
+a cross-reference, or expand context around a hit:
+
+- A `docs_search` hit's `path` (and a `docs_get` result's `path`) points at the on-disk file. `Read` it
+  directly instead of round-tripping `docs_get`.
+- Each section is delimited by a greppable marker `<!-- anchor: <id> | kind: <spec|engine|plugin> -->`
+  immediately above its heading, so `Grep '<!-- anchor: engine/anim#bone'` lands you on the exact
+  section a hit names — the deep-link target.
+- `Grep` across `~/.funpack/docs/<version>/` for substring/regex sweeps the BM25 ranker won't surface;
+  use `docs_search` for conceptual/ranked lookup and `Grep`/`Read` for traversal.
+
+The `path` field is omitted only when no writable managed home exists — `docs_search`/`docs_get` still
+return the full inline content regardless.
 
 ## Session-scoped tools (over a live `funpack attach` session)
 
