@@ -1,0 +1,110 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "funpack",
+  "scopeName": "source.fun",
+  "patterns": [
+    { "include": "#directives" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#booleans" },
+    { "include": "#numbers" },
+    { "include": "#declaration-names" },
+    { "include": "#calls" },
+    { "include": "#types" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "directives": {
+      "comment": "The closed @-directive set (lexical-core §5 + §28 debug + @stub).",
+      "match": "@(doc|gtag|todo|index|spatial|migrate|expose|server|client|break|log|watch|trace|stub)\\b",
+      "name": "entity.name.tag.directive.fun"
+    },
+    "strings": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.fun",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.fun" },
+        {
+          "comment": "Interpolation hole {expr} — recursively highlight the embedded expression.",
+          "begin": "\\{",
+          "end": "\\}",
+          "name": "meta.interpolation.fun",
+          "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.fun" } },
+          "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.fun" } },
+          "patterns": [
+            { "include": "#booleans" },
+            { "include": "#numbers" },
+            { "include": "#types" },
+            { "include": "#calls" },
+            { "include": "#operators" }
+          ]
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "comment": "Declaration + statement keywords (06 §1 contextual, but coloured uniformly).",
+          "match": "\\b(import|let|mut|data|enum|thing|singleton|signal|behavior|on|pipeline|query|test|extern|type|assert|return|if|else|match|with)\\b",
+          "name": "keyword.control.fun"
+        },
+        { "match": "\\bfn\\b", "name": "keyword.declaration.function.fun" },
+        { "match": "\\b(and|or|not)\\b", "name": "keyword.operator.logical.fun" }
+      ]
+    },
+    "booleans": {
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.boolean.fun"
+    },
+    "numbers": {
+      "patterns": [
+        { "match": "\\b[0-9]+\\.[0-9]+f\\b", "name": "constant.numeric.float.fun" },
+        { "match": "\\b[0-9]+hz\\b", "name": "constant.numeric.tickrate.fun" },
+        { "match": "\\b[0-9]+\\.[0-9]+\\b", "name": "constant.numeric.fixed.fun" },
+        { "match": "\\b[0-9]+\\b", "name": "constant.numeric.integer.fun" }
+      ]
+    },
+    "declaration-names": {
+      "patterns": [
+        {
+          "comment": "fn / behavior / query name after the keyword.",
+          "match": "\\b(fn|behavior|query)\\s+([a-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.function.fun" },
+            "2": { "name": "entity.name.function.fun" }
+          }
+        },
+        {
+          "comment": "type/thing/signal/pipeline/data/enum name (UpperCamel) after the keyword.",
+          "match": "\\b(data|enum|thing|singleton|signal|pipeline|type)\\s+([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.fun" },
+            "2": { "name": "entity.name.type.fun" }
+          }
+        }
+      ]
+    },
+    "calls": {
+      "comment": "lower_ident immediately before '(' is a call.",
+      "match": "\\b([a-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+      "name": "entity.name.function.call.fun"
+    },
+    "types": {
+      "comment": "UpperCamel / UPPER_SNAKE / type vars — refined by the semantic-token layer.",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+      "name": "entity.name.type.fun"
+    },
+    "operators": {
+      "match": "(==|!=|<=|>=|->|=>|::|<|>|\\+|-|\\*|/|%|=|\\.)",
+      "name": "keyword.operator.fun"
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": "[(){}\\[\\]]", "name": "punctuation.section.brackets.fun" },
+        { "match": "[,:]", "name": "punctuation.separator.fun" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "funpack",
+  "displayName": "funpack",
+  "description": "Syntax highlighting for the funpack language family (.fun, .fcfg) — TextMate base + tree-sitter semantic tokens. Works in VS Code and Cursor.",
+  "version": "0.1.0",
+  "publisher": "mjmorales",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/mjmorales/funpack" },
+  "engines": { "vscode": "^1.84.0" },
+  "categories": ["Programming Languages"],
+  "main": "./out/extension.js",
+  "activationEvents": ["onLanguage:fun", "onLanguage:fcfg"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "fun",
+        "aliases": ["funpack", "fun"],
+        "extensions": [".fun", ".gen.fun"],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "fcfg",
+        "aliases": ["funpack config", "fcfg"],
+        "extensions": [".fcfg"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      { "language": "fun", "scopeName": "source.fun", "path": "./syntaxes/fun.tmLanguage.json" },
+      { "language": "fcfg", "scopeName": "source.fcfg", "path": "./syntaxes/fcfg.tmLanguage.json" }
+    ]
+  },
+  "scripts": {
+    "build-wasm": "cd ../tree-sitter-funpack && for d in fun fcfg; do (cd $d && ../node_modules/.bin/tree-sitter build --wasm --docker -o ../../vscode-funpack/wasm/tree-sitter-$d.wasm .); done",
+    "sync": "node scripts/sync-grammars.js",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "web-tree-sitter": "^0.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.84.0",
+    "typescript": "^5.4.0"
+  }
+}

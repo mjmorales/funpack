@@ -1,0 +1,10 @@
+# Source / build inputs not needed at runtime (out/ is the compiled output).
+src/**
+scripts/**
+tsconfig.json
+.gitignore
+**/*.ts
+**/*.map
+.vscode/**
+# node_modules is pruned to runtime deps by vsce; keep web-tree-sitter (it ships the
+# wasm runtime the semantic-token provider loads).
