@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-funpack",
+  "version": "0.1.0",
+  "private": true,
+  "description": "tree-sitter grammars for the funpack file-type family (.fun/.fcfg/.fpm/.flvl/.fui/.tiles/.atlas/.manifest)",
+  "license": "MIT",
+  "keywords": ["tree-sitter", "funpack", "parser", "syntax-highlighting"],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  },
+  "scripts": {
+    "generate": "for d in $IMPLEMENTED; do (cd \"$d\" && tree-sitter generate) || exit 1; done",
+    "test": "for d in $IMPLEMENTED; do (cd \"$d\" && tree-sitter generate && tree-sitter test) || exit 1; done"
+  },
+  "config": {
+    "note": "IMPLEMENTED is set by the Taskfile / validation gate to the list of grammar dirs that are fully implemented (fun fcfg). Stub dirs are excluded."
+  }
+}
