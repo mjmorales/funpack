@@ -84,8 +84,9 @@ EVENT_DIVERGED :: "diverged"
 //
 // Generated FROM contract/funpack-api.json: each §28 command_groups command AND
 // each server_tools tool becomes one MCP tool in the SAME table. A §28 command's
-// input_schema is the wire `args` shape PLUS the always-present session_id and
-// (for observe-class commands) the optional `branch` selector; a server-native
+// input_schema is the wire `args` shape PLUS the always-present session_id, any
+// MCP-render-only `mcp_args` the command declares, and (for observe-class
+// commands) the optional `branch` selector; a server-native
 // tool's input_schema is its `args` verbatim. tools/list reads TOOL_SPECS;
 // tools/call dispatches on .command / .group — one source so the advertised
 // schema cannot drift from dispatch.
@@ -380,6 +381,7 @@ TOOL_SPECS := []Tool_Spec{
 			{name = "include_drawlist", json_type = "boolean", required = false, doc = "when true, the deterministic §20 draw-list rides along with the pixels (default false: visual-only)"},
 			{name = "overlay", json_type = "boolean", required = false, doc = "when true, paint the collision-extent debug overlay into the frame — each thing's center-anchored (pos,size) extent in Magenta, so a top-left-vs-center convention mismatch is visible (default false)"},
 			{name = "tick", json_type = "integer", required = true, doc = "the committed tick to capture as a presented frame (pixels)"},
+			{name = "include_pixels", json_type = "boolean", required = false, doc = "when true, return the captured PNG inline as an MCP image content block ALONGSIDE the on-disk path; default false returns only the path (the model-cheap image link Claude Code's Read opens with its own image optimization). Raw pixels are never returned unless this is opted into. MCP-render-only — never rides the §28 wire (§28 always returns pixels; this only chooses whether the server inlines them)"},
 			BRANCH_ARG,
 		},
 	},

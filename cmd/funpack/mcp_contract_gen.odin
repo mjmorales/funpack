@@ -141,8 +141,9 @@ render_tool_specs :: proc(b: ^strings.Builder, introspect: json.Object, root: js
 	strings.write_string(b, "//\n")
 	strings.write_string(b, "// Generated FROM contract/funpack-api.json: each §28 command_groups command AND\n")
 	strings.write_string(b, "// each server_tools tool becomes one MCP tool in the SAME table. A §28 command's\n")
-	strings.write_string(b, "// input_schema is the wire `args` shape PLUS the always-present session_id and\n")
-	strings.write_string(b, "// (for observe-class commands) the optional `branch` selector; a server-native\n")
+	strings.write_string(b, "// input_schema is the wire `args` shape PLUS the always-present session_id, any\n")
+	strings.write_string(b, "// MCP-render-only `mcp_args` the command declares, and (for observe-class\n")
+	strings.write_string(b, "// commands) the optional `branch` selector; a server-native\n")
 	strings.write_string(b, "// tool's input_schema is its `args` verbatim. tools/list reads TOOL_SPECS;\n")
 	strings.write_string(b, "// tools/call dispatches on .command / .group — one source so the advertised\n")
 	strings.write_string(b, "// schema cannot drift from dispatch.\n\n")
@@ -223,6 +224,12 @@ render_tool_specs :: proc(b: ^strings.Builder, introspect: json.Object, root: js
 			strings.write_string(b, "\t\t\tSESSION_ID_ARG,\n")
 			args, _ := contract_object(command, "args")
 			render_arg_entries(b, args)
+			// MCP-render-only args: projected into the tool input_schema after the wire
+			// args, but never marshalled onto the §28 wire (the dispatch arm consumes them
+			// as presentation toggles, e.g. screenshot's include_pixels).
+			if mcp_args, has_mcp := contract_object(command, "mcp_args"); has_mcp {
+				render_arg_entries(b, mcp_args)
+			}
 			if class == "observe" {
 				strings.write_string(b, "\t\t\tBRANCH_ARG,\n")
 			}

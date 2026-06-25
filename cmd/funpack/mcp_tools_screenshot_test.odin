@@ -263,9 +263,9 @@ test_shot_timestamp_shape :: proc(t: ^testing.T) {
 }
 
 // test_shot_output_dir_default_and_env pins the directory resolver's two arms: unset,
-// FUNPACK_SCREENSHOT_DIR falls back to SHOT_DEFAULT_DIR (the cwd-relative project
-// folder); set to a non-empty value, that value wins verbatim. It mutates the process
-// env and restores it, so it neither leaks nor depends on ambient state.
+// FUNPACK_SCREENSHOT_DIR falls back to SHOT_DEFAULT_DIR (the /tmp-rooted default); set
+// to a non-empty value, that value wins verbatim. It mutates the process env and
+// restores it, so it neither leaks nor depends on ambient state.
 @(test)
 test_shot_output_dir_default_and_env :: proc(t: ^testing.T) {
 	saved, had := os.lookup_env(SHOT_DIR_ENV, context.temp_allocator)
@@ -277,9 +277,60 @@ test_shot_output_dir_default_and_env :: proc(t: ^testing.T) {
 
 	_ = os.unset_env(SHOT_DIR_ENV)
 	testing.expect_value(t, shot_output_dir(context.temp_allocator), SHOT_DEFAULT_DIR)
+	// The default is an absolute /tmp-rooted path, not a cwd-relative folder.
+	testing.expect(t, strings.has_prefix(SHOT_DEFAULT_DIR, "/tmp/"), "the default lands under /tmp")
 
 	_ = os.set_env(SHOT_DIR_ENV, "/custom/shots")
 	testing.expect_value(t, shot_output_dir(context.temp_allocator), "/custom/shots")
+}
+
+// test_shot_build_content_pixels_opt_in pins the content-assembly contract: by default
+// (include_pixels=false) the result is the link ONLY — a single text block carrying the
+// path metadata, NEVER inline pixels. Opting in (include_pixels=true) ADDS an MCP image
+// block carrying the base64 PNG ALONGSIDE the link (text first, image second). This is
+// the SDL-free junction proving "raw pixels never returned unless opted into".
+@(test)
+test_shot_build_content_pixels_opt_in :: proc(t: ^testing.T) {
+	meta := `{"tick":0,"width":4,"height":2,"path":"/tmp/funpack-mcp/x.png"}`
+	png := []u8{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02}
+
+	// Default: link only — one text block, no image block.
+	off := shot_build_content(meta, png, false, context.temp_allocator)
+	testing.expect_value(t, len(off), 1)
+	testing.expect_value(t, off[0].kind, Mcp_Content_Kind.Text)
+	testing.expect_value(t, off[0].text, meta)
+
+	// Opt-in: link PLUS the inline image, in that order.
+	on := shot_build_content(meta, png, true, context.temp_allocator)
+	testing.expect_value(t, len(on), 2)
+	testing.expect_value(t, on[0].kind, Mcp_Content_Kind.Text)
+	testing.expect_value(t, on[0].text, meta)
+	testing.expect_value(t, on[1].kind, Mcp_Content_Kind.Image)
+	testing.expect_value(t, on[1].mime_type, "image/png")
+	testing.expect_value(t, on[1].data, base64.encode(png, base64.ENC_TABLE, context.temp_allocator))
+}
+
+// test_shot_build_request_line_marshals_optionals pins the §28 request marshalling: tick
+// is always present; include_drawlist, overlay, and branch are each EMITTED when set and
+// ELIDED when unset (so the runtime applies its own defaults). overlay coverage pins the
+// invariant that a contract-declared arg the MCP tool advertises actually rides the §28
+// wire — the advertised tool schema and the wire marshalling must agree.
+@(test)
+test_shot_build_request_line_marshals_optionals :: proc(t: ^testing.T) {
+	// Bare tick: no optional keys at all.
+	bare := shot_build_request_line(0, false, false, false, false, "", false, context.temp_allocator)
+	testing.expect(t, strings.contains(bare, `"cmd":"screenshot"`), "the command is screenshot")
+	testing.expect(t, strings.contains(bare, `"tick":0`), "tick is always marshalled")
+	testing.expect(t, !strings.contains(bare, "include_drawlist"), "an unset include_drawlist is elided")
+	testing.expect(t, !strings.contains(bare, "overlay"), "an unset overlay is elided")
+	testing.expect(t, !strings.contains(bare, "branch"), "an unset branch is elided")
+
+	// All optionals set: each rides the wire with its value.
+	full := shot_build_request_line(3, true, true, true, true, "fork-1", true, context.temp_allocator)
+	testing.expect(t, strings.contains(full, `"tick":3`), "tick carries its value")
+	testing.expect(t, strings.contains(full, `"include_drawlist":true`), "include_drawlist rides when set")
+	testing.expect(t, strings.contains(full, `"overlay":true`), "overlay rides the wire when set (the dropped-arg fix)")
+	testing.expect(t, strings.contains(full, `"branch":"fork-1"`), "branch rides when set")
 }
 
 // test_shot_write_png_file_round_trip pins the disk-write junction in the DEFAULT floor

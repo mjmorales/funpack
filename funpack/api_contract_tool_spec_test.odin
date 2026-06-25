@@ -31,7 +31,7 @@ contract_path :: proc() -> string {
 // expected_tool is the fresh-walk projection of one contract tool into the shape
 // the generator emits: the advertised tool name, the command/group/class dispatch
 // hints, whether the tool is session-scoped, and the full input_schema arg name set
-// (a §28 command projects session_id + wire args + branch for observe; a
+// (a §28 command projects session_id + wire args + mcp_args + branch for observe; a
 // server-native tool projects its args verbatim). The test compares the committed
 // TOOL_SPECS entry against this.
 Expected_Tool :: struct {
@@ -91,10 +91,11 @@ walk_contract_tools :: proc(t: ^testing.T, allocator := context.allocator) -> (t
 
 // walk_introspect_commands projects every §28 introspect.command_groups command
 // into an Expected_Tool, applying the generator's §28 rules: the per-group
-// tool_prefix, the universal session_id arg first, the per-command wire args, and a
-// trailing branch arg for every observe-class command (the committed table emits
-// session_id first, sorted wire args, branch last — a different order but the same
-// set; the test compares as sets). Every §28 command is session-scoped.
+// tool_prefix, the universal session_id arg first, the per-command wire args, any
+// MCP-render-only mcp_args, and a trailing branch arg for every observe-class command
+// (the committed table emits session_id first, sorted wire args + mcp_args, branch
+// last — a different order but the same set; the test compares as sets). Every §28
+// command is session-scoped.
 walk_introspect_commands :: proc(t: ^testing.T, root: json.Object, out: ^[dynamic]Expected_Tool, allocator := context.allocator) {
 	introspect, has_introspect := root["introspect"].(json.Object)
 	if !has_introspect {
@@ -131,6 +132,17 @@ walk_introspect_commands :: proc(t: ^testing.T, root: json.Object, out: ^[dynami
 			append(&names, "session_id")
 			if args, has_args := command["args"].(json.Object); has_args {
 				for arg_name in args {
+					if arg_name == "$comment" {
+						continue
+					}
+					append(&names, arg_name)
+				}
+			}
+			// MCP-render-only args (mcp_args) project into the tool input_schema too —
+			// they ride the same superset as the wire args (the generator emits them
+			// after args, before branch). Optional: most commands have none.
+			if mcp_args, has_mcp := command["mcp_args"].(json.Object); has_mcp {
+				for arg_name in mcp_args {
 					if arg_name == "$comment" {
 						continue
 					}

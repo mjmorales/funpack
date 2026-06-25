@@ -3,10 +3,12 @@
 // session. Per the resolved ADR this arm hand-rolls a minimal stored-block PNG encoder
 // (core has no PNG encoder — core:image/png is decode-only) so the captured frame is a
 // renderable image/png. To stay context-cheap the arm WRITES that PNG to disk and
-// returns a FILE PATH, never base64 pixels inline: a frame is hundreds of KB of base64
-// that would flood the model's context, so the result is a small metadata text block
-// carrying the on-disk path the caller reads on demand. This file is ONE dispatch seam
-// — it owns ONLY this file's dispatch proc, never mcp_handle_tools_call.
+// returns a FILE PATH as the primary result — the model-cheap image link Claude Code's
+// Read opens with its own image optimization. Raw base64 pixels are NEVER returned
+// unless the caller opts in with include_pixels:true, which inlines the PNG as an MCP
+// image content block ALONGSIDE the path (a frame is hundreds of KB of base64 that
+// floods context, so it is off by default). This file is ONE dispatch seam — it owns
+// ONLY this file's dispatch proc, never mcp_handle_tools_call.
 //
 // THE PIPELINE (QOI → PNG file over Odin core):
 //   §28 screenshot fold → base64-QOI pixels → base64.decode → qoi.load_from_bytes
@@ -15,8 +17,9 @@
 //   → a metadata text block carrying {tick,width,height,path,commands?}.
 //
 // THE OUTPUT DIRECTORY is configurable via the FUNPACK_SCREENSHOT_DIR env var (an MCP
-// host sets it in the server's env block); unset, it defaults to ./.funpack-mcp (a
-// cwd-relative project folder). The directory is created on demand; the filename is
+// host sets it in the server's env block); unset, it defaults to /tmp/funpack-mcp (a
+// predictable, writable location that does not pollute the driven project's tree). The
+// directory is created on demand; the filename is
 // `funpack-screenshot-<YYYYMMDD-HHMMSS-ns>-tick<N>.png`, a wall-clock timestamp that
 // makes captures sortable and collision-free. Wall-clock here is sound: screenshot is
 // the one command that crosses the present boundary, so it is already non-deterministic.
@@ -62,13 +65,14 @@ SHOT_DEFLATE_MAX_STORED :: 65535
 
 // SHOT_DIR_ENV is the env var an MCP host sets to choose where screenshot PNGs land
 // (set in the server's env block). Unset, the arm falls back to SHOT_DEFAULT_DIR (the
-// cwd-relative ./.funpack-mcp) — see shot_output_dir.
+// /tmp-rooted /tmp/funpack-mcp) — see shot_output_dir.
 SHOT_DIR_ENV :: "FUNPACK_SCREENSHOT_DIR"
 
 // SHOT_DEFAULT_DIR is the directory screenshots default to when FUNPACK_SCREENSHOT_DIR
-// is unset: a cwd-relative project folder, so captures land beside the project the MCP
-// host is driving rather than in a transient temp root.
-SHOT_DEFAULT_DIR :: "./.funpack-mcp"
+// is unset: a /tmp-rooted folder, so a host that sets no dir still gets captures in a
+// predictable, writable location rather than polluting the driven project's tree. A
+// host that wants captures beside the project sets FUNPACK_SCREENSHOT_DIR.
+SHOT_DEFAULT_DIR :: "/tmp/funpack-mcp"
 
 // SHOT_FILE_PREFIX prefixes every written screenshot filename
 // (funpack-screenshot-<timestamp>-tick<N>.png) so a directory of captures is
@@ -109,12 +113,15 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		}, allocator)
 	}
 
-	// Marshal the §28 args (tick, optional include_drawlist, optional branch) into a
-	// request line. An unset optional is elided so the runtime defaults (visual-only,
-	// canonical timeline) — exactly as observe_screenshot reads its args.
+	// Marshal the §28 args (tick, optional include_drawlist, optional overlay, optional
+	// branch) into a request line. An unset optional is elided so the runtime defaults
+	// (visual-only, no overlay, canonical timeline) — exactly as observe_screenshot reads
+	// its args. include_pixels is NOT marshalled here: it is an MCP-render-only toggle
+	// (the §28 result always carries the pixels), consumed below when assembling content.
 	include, has_include := funpack_runtime.json_bool_field(dispatch.arguments, "include_drawlist")
+	overlay, has_overlay := funpack_runtime.json_bool_field(dispatch.arguments, "overlay")
 	branch, has_branch := funpack_runtime.json_string_field(dispatch.arguments, "branch")
-	line := shot_build_request_line(tick, include, has_include, branch, has_branch, allocator)
+	line := shot_build_request_line(tick, include, has_include, overlay, has_overlay, branch, has_branch, allocator)
 
 	response, found := mcp_session_registry_request(dispatch.registry, session_id, line)
 	if !found {
@@ -157,10 +164,12 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		}, allocator)
 	}
 
-	// Write the PNG to disk and return its PATH, not the bytes: a frame is hundreds of
-	// KB of base64 that would flood the model's context. The directory is configurable
-	// (FUNPACK_SCREENSHOT_DIR, else ./.funpack-mcp) and created on demand; the filename
-	// carries a wall-clock timestamp so captures are sortable and never collide.
+	// Write the PNG to disk and return its PATH: a frame is hundreds of KB of base64 that
+	// would flood the model's context, so the path is ALWAYS the primary result — the
+	// model-cheap image link Claude Code's Read opens with its own image optimization.
+	// The directory is configurable (FUNPACK_SCREENSHOT_DIR, else /tmp/funpack-mcp) and
+	// created on demand; the filename carries a wall-clock timestamp so captures are
+	// sortable and never collide.
 	dir := shot_output_dir(allocator)
 	path, written := shot_write_png_file(dir, png_bytes, tick, shot_timestamp(allocator), allocator)
 	if !written {
@@ -171,13 +180,33 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		}, allocator)
 	}
 
-	// One text block: the geometry metadata plus the on-disk PATH the caller reads to
-	// SEE the frame. {tick,width,height,path,commands?} — no inline pixels.
+	// The metadata text block ({tick,width,height,path,commands?}) carrying the on-disk
+	// link is ALWAYS present; include_pixels:true additionally inlines the PNG as an MCP
+	// image content block (opt-in, since raw pixels are never returned by default).
+	include_pixels, _ := funpack_runtime.json_bool_field(dispatch.arguments, "include_pixels")
 	meta := shot_render_metadata(result_obj, include && has_include, path, allocator)
-	content := make([]Mcp_Content, 1, allocator)
-	content[0] = mcp_text_content(meta)
+	content := shot_build_content(meta, png_bytes, include_pixels, allocator)
 	tool_result := Mcp_Tool_Result{content = content, is_error = false}
 	return mcp_render_tool_result(dispatch.id, tool_result, allocator)
+}
+
+// shot_build_content assembles the screenshot result content blocks. The path-bearing
+// metadata text block is ALWAYS first — it is the model-cheap image link Claude Code's
+// Read tool opens with its own image optimization, so the frame is viewable without
+// flooding context. When the caller opts in with include_pixels:true, an MCP image
+// content block carrying the base64 PNG rides ALONGSIDE the link, for hosts that render
+// inline image parts directly. Default (false): link only — raw pixels are never
+// returned. SDL-free and pure given its inputs, so a deterministic test pins both arms.
+shot_build_content :: proc(meta: string, png: []u8, include_pixels: bool, allocator := context.allocator) -> []Mcp_Content {
+	if !include_pixels {
+		content := make([]Mcp_Content, 1, allocator)
+		content[0] = mcp_text_content(meta)
+		return content
+	}
+	content := make([]Mcp_Content, 2, allocator)
+	content[0] = mcp_text_content(meta)
+	content[1] = mcp_image_content(base64.encode(png, base64.ENC_TABLE, allocator), "image/png")
+	return content
 }
 
 // shot_error_line renders a domain failure as a SUCCESSFUL tools/call carrying the
@@ -194,6 +223,8 @@ shot_build_request_line :: proc(
 	tick: i64,
 	include: bool,
 	has_include: bool,
+	overlay: bool,
+	has_overlay: bool,
 	branch: string,
 	has_branch: bool,
 	allocator := context.allocator,
@@ -206,6 +237,10 @@ shot_build_request_line :: proc(
 	if has_include {
 		strings.write_string(&b, `,"include_drawlist":`)
 		strings.write_string(&b, include ? "true" : "false")
+	}
+	if has_overlay {
+		strings.write_string(&b, `,"overlay":`)
+		strings.write_string(&b, overlay ? "true" : "false")
 	}
 	if has_branch {
 		strings.write_string(&b, `,"branch":`)
