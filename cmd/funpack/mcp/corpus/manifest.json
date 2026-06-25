@@ -1,6 +1,6 @@
 {
   "spec_ref": "plugin-v0.11.1",
-  "funpack_version": "0.20.1",
+  "funpack_version": "0.21.0",
   "sources": [
     {
       "root": "spec",
