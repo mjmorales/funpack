@@ -56,3 +56,10 @@ tasks:
     desc: Compile the single funpack binary (links vendor:sdl2 via FUNPACK_LIVE)
     cmds:
       - task: cmd:binary
+
+  editors:check:
+    desc: tree-sitter drift gate — parse every real .fun/.fcfg with the editor grammars
+    dir: editors/tree-sitter-funpack
+    cmds:
+      - '[ -d node_modules ] || npm install'
+      - ./scripts/check-corpus.sh

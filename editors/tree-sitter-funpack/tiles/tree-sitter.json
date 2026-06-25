@@ -1,0 +1,8 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    { "name": "tiles", "camelcase": "Tiles", "scope": "source.tiles", "path": ".", "file-types": ["tiles"], "injection-regex": "^tiles$" }
+  ],
+  "metadata": { "version": "0.1.0", "license": "MIT", "description": "funpack .tiles grammar for tree-sitter (lexical stub)", "links": { "repository": "https://github.com/mjmorales/funpack" } },
+  "bindings": { "c": false, "go": false, "node": false, "python": false, "rust": false, "swift": false }
+}
