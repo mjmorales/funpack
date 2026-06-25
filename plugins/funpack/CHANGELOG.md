@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.11.0] - 2026-06-25
+
+### Features
+- feat(plugin-agents): index commands/skills + route new projects to /funpack:new (4aed2c5)
+
 ## [0.10.3] - 2026-06-25
 
 ### Fixes
