@@ -20,6 +20,7 @@ Run before committing:
 - **test**: `task test`
 - **llm**: `skill claude-skills:comment-audit`
 - **llm**: `prompt ci/prompts/engine-api-doc-parity.md`
+- **llm**: `prompt ci/prompts/companion-doc-parity.md`
 
 ## Discovery Protocol
 

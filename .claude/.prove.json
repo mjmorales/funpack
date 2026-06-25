@@ -37,6 +37,11 @@
       "name": "engine-api-doc-parity",
       "prompt": "ci/prompts/engine-api-doc-parity.md",
       "phase": "llm"
+    },
+    {
+      "name": "companion-doc-parity",
+      "prompt": "ci/prompts/companion-doc-parity.md",
+      "phase": "llm"
     }
   ],
   "reporters": [],
