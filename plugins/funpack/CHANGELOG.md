@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.11.2] - 2026-06-25
+
+### Other
+- docs(funpack): document inspect_screenshot include_pixels + /tmp screenshot default (c1fba99)
+
 ## [0.11.1] - 2026-06-25
 
 ### Other

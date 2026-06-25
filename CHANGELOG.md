@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.20.0] - 2026-06-25
+
+### Features
+- feat(mcp): inspect_screenshot opt-in inline pixels, /tmp default, forward overlay (3b50aad)
+
 ## [0.19.0] - 2026-06-25
 
 ### Features
