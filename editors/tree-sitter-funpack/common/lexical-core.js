@@ -62,21 +62,27 @@ function listOf(rule) {
 }
 
 // ---------------------------------------------------------------------------
-// §4 String literal with `{ hole }` interpolation. STRING_TEXT is any run that
-// is not an unescaped '"' '{' '}'; `\{` `\}` escape a brace; the importing
-// grammar fills the hole (.fun -> Expr, .fui -> Path). Pass `holeRule = null`
-// for an opaque string (config/manifest treat `{ }` as ordinary text).
+// §4 String literal. Two flavours selected by `holeRule`:
+//   - holeRule set  -> INTERPOLATING string: `{ hole }` is an interpolation the
+//     importing grammar fills (.fun -> Expr, .fui -> Path); braces are structural.
+//   - holeRule null -> RAW string: braces are ordinary text (directive/doc args,
+//     config/manifest values). This is why `@doc("… { Strafe, Forward } …")` is
+//     legal — a doc never interpolates.
 //
-// String inner pieces are `token.immediate` so the global whitespace `extras`
-// do not leak into string content.
+// Escapes are `\` + any char (`\"` `\{` `\}` `\\` …); the funpack lexer admits an
+// escaped quote even though lexical-core.ebnf only lists the brace escapes. Inner
+// pieces are `token.immediate` so the global whitespace `extras` never leak into
+// string content; the interpolation hole itself parses with normal whitespace.
 // ---------------------------------------------------------------------------
 function stringLit(holeRule) {
-  const text = token.immediate(prec.right(/[^"{}\\]+/));
-  const escapedBrace = token.immediate(/\\[{}]/);
-  const pieces = holeRule
-    ? choice(text, escapedBrace, seq(token.immediate('{'), field('interpolation', holeRule), '}'))
-    : choice(text, escapedBrace, token.immediate(/[{}]/));
-  return seq('"', repeat(pieces), token.immediate('"'));
+  const escape = token.immediate(/\\./);
+  if (holeRule) {
+    const text = token.immediate(/[^"{}\\]+/);
+    const interpolation = seq(token.immediate('{'), field('interpolation', holeRule), '}');
+    return seq('"', repeat(choice(text, escape, interpolation)), token.immediate('"'));
+  }
+  const rawText = token.immediate(/[^"\\]+/);
+  return seq('"', repeat(choice(rawText, escape)), token.immediate('"'));
 }
 
 // ---------------------------------------------------------------------------
