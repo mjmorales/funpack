@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.10.2] - 2026-06-25
+
+### Other
+- docs(funpack): document the SDL2 runtime dependency + agent self-heal (7005f68)
+
 ## [0.10.1] - 2026-06-25
 
 ### Fixes
