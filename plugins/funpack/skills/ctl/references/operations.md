@@ -89,6 +89,7 @@ instead, run `status` and confirm the **on-PATH** version moved before reporting
 | Symptom | Check |
 |---|---|
 | `funpack: command not found` | `doctor` — is `$FUNPACK_HOME/bin` (or a `link` dir) on PATH? |
+| dyld `Library not loaded: …libSDL2-2.0.0.dylib` on `run`/`live`/`attach` | the binary links SDL2 at a baked-in Homebrew path; install the provider — macOS `brew install sdl2-compat`, Linux `apt install libsdl2-dev`. The pure verbs (`build`/`check`/`test`) need no SDL2. The loader fails before `main`, so funpack cannot report it itself. |
 | `funpack version` shows old version after update | brew/dev build earlier in PATH — `scan`, fix PATH order or `link` |
 | download fails for a real tag | platform without a prebuilt asset (Intel macOS), or network/`gh` auth — `doctor` |
 | `rollback` errors "no longer installed" | the prior version was `uninstall`ed; `install <ver>` it again |

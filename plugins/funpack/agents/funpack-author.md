@@ -100,6 +100,14 @@ can't, that is the signal to read `funpack-game-model` (the paradigm) or
    to green. If the server is unavailable, review your own code against the gates above before
    finishing. (The intent → tool map is in `../references/mcp-tools.md`.)
 
+   **Self-heal — missing SDL2 runtime.** If the funpack MCP server won't start, or a CLI
+   `funpack` invocation dies with `dyld: Library not loaded: …/libSDL2-2.0.0.dylib`, the single
+   binary links SDL2 at load time and the runtime provider is missing — it is never a code fault.
+   Fix it and retry: macOS `brew install sdl2-compat` (the maintained SDL2-ABI-over-SDL3 provider
+   `brew install sdl2` aliases to), Linux `apt install libsdl2-dev`. The error fires before `main`,
+   so funpack cannot report it itself; recognize the dyld signature and resolve the dependency
+   rather than treating it as a build failure.
+
 ## When to stop and surface
 
 - If a needed `engine.*` API is uncertain (the signature files, prose, and examples sometimes

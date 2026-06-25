@@ -57,6 +57,12 @@ projections, `docs_search` / `docs_get` for the spec and engine API, and the ses
 attach`. The intent → tool map is in `references/mcp-tools.md`. `/funpack:new` (scaffolding the
 enforced project tree) is the one remaining slash command — it has no MCP equivalent.
 
+**Runtime prerequisite — SDL2.** The MCP server *is* the funpack binary, which links SDL2 at load
+time, so a missing SDL2 provider stops the server from starting (and every CLI verb, including
+`build`/`check`/`test`). Install it once: `brew install sdl2-compat` (macOS — the maintained
+SDL2-ABI-over-SDL3 provider `sdl2` now aliases to) / `apt install libsdl2-dev` (Linux). The loader
+fails before `main`, so the symptom is the server simply not coming up.
+
 ## Source
 
 Distilled from the in-repo funpack spec (`spec/`). The examples

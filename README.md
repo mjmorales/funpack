@@ -36,6 +36,21 @@ agent → │ funpack (pure: src → artifact + index; `funpack warden` projects
                 one-way data: source → index → projection.  warden NEVER writes source.
 ```
 
+## Runtime prerequisite — SDL2
+
+The live verbs (`funpack run` / `live` / `attach`) link **SDL2** dynamically; the pure
+compiler verbs (`build` / `check` / `test` / `fmt` / `warden`) do not. The prebuilt binary
+resolves SDL2 through Homebrew's **`sdl2-compat`** (the maintained SDL2-ABI-over-SDL3
+provider — upstream SDL2 is EOL and Homebrew migrated the `sdl2` formula to it). Install it
+once before running a game:
+
+- **macOS:** `brew install sdl2-compat`
+- **Linux:** `apt-get install libsdl2-dev` (or your distribution's SDL2 runtime)
+
+A machine missing it fails in the dynamic loader *before any funpack code runs* —
+`dyld: Library not loaded: …/libSDL2-2.0.0.dylib` — so funpack cannot report the gap
+itself. The compiler-only verbs keep working without SDL2 present.
+
 ## The contract with the spec
 
 The spec is normative; the toolchain is measured against it. Three in-repo sources bind the

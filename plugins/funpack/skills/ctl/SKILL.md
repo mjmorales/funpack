@@ -39,6 +39,15 @@ Source of truth for releases: GitHub releases on `mjmorales/funpack`, binary lin
 `v*`, one asset per platform (`macos-arm64`, `linux-arm64`, `linux-x64`). Intel macOS has
 no prebuilt asset — build from source there.
 
+**Runtime prerequisite — SDL2.** The `run`/`live`/`attach` verbs link SDL2 dynamically at a
+build-time-baked absolute path; the pure verbs (`build`/`check`/`test`/`warden`) do not. The
+prebuilt macOS binary resolves SDL2 through Homebrew's `sdl2-compat` (the maintained
+SDL2-ABI-over-SDL3 provider — Homebrew migrated the `sdl2` formula to it), so a machine
+missing it dies in dyld before `main` with `Library not loaded: …/libSDL2-2.0.0.dylib`.
+Install the provider once — macOS `brew install sdl2-compat`, Linux `apt install
+libsdl2-dev`. funpack cannot self-diagnose this; the loader fails before any funpack code
+runs.
+
 **Critical PATH fact:** what `funpack` actually runs is whatever PATH resolves first.
 A managed `install`/`update` only re-points `~/.funpack/bin/funpack`; it does **not**
 change PATH or override a brew shim. If the user is on brew and you install into the
