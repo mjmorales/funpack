@@ -1206,7 +1206,7 @@ wiring that a pipeline carries **no** configuration for (§07 §1 — wiring liv
 the entrypoint, never the pipeline):
 
 ```
-entrypoint NAME pipeline:PIPELINE tick_hz:HZ logical:WxH bindings:BINDINGS
+entrypoint NAME pipeline:PIPELINE tick_hz:HZ logical:WxH bindings:BINDINGS [seed:N]
 ```
 
 - `NAME` is the entrypoint block label (`main`).
@@ -1221,6 +1221,13 @@ entrypoint NAME pipeline:PIPELINE tick_hz:HZ logical:WxH bindings:BINDINGS
   zero/negative or malformed extent is refused at fcfg parse and at load.
 - `bindings:BINDINGS` names the `bindings` function (§14, §23) whose resolved
   table is §14's `[bindings]`.
+- `seed:N` is the **optional** trailing field carrying the baked root RNG seed
+  (spec 09 §6) lifted from the entrypoint block's `seed = N` (§14 §4) — the raw
+  integer seed (§10), the middle tier of the run's seed-source precedence
+  (`--seed` flag › this config seed › the fixed engine default). It is emitted
+  **only** when the project baked a config seed: a game with none emits the
+  6-field record above, which loads as no-config-seed, so the field is purely
+  additive and a pre-existing seedless-config artifact is byte-unchanged.
 
 `net:` topology (§25) is absent for pong; when present it would add a
 `net:TOPOLOGY` field — its absence is the no-netcode capability (§14 §4 derives

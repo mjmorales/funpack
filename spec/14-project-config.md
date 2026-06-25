@@ -73,6 +73,11 @@ every tick**; **config is deployment shape consumed by tools**, never per-tick c
   here, beside `tick`, because it is runtime wiring the pipeline carries no configuration for
   ([`07`](07-pipelines.md) §1); the sim's own constants (Pong's `BOARD`) remain ordinary game code,
   and the engine letterboxes to the *declared* extent.
+  `seed = N` is an **optional** baked root RNG seed ([`09`](09-runtime.md) §6) — the integer a
+  `uses_rng` run starts from when no `--seed` override is passed. It is the middle tier of the
+  seed-source precedence (`--seed` flag › this config seed › the fixed engine default); a game that
+  bakes none is reproducible from the engine default. Omit it for the common case; bake it only to pin
+  a specific layout into the build.
 - **`builds.fcfg`** — the **presentation** platform targets (`desktop`, `wasm`) and nothing else.
   **No `realm` field**: the server/client split is derived from source realm + switched on by `net:`
   in the entrypoint ([`25`](25-netcode.md)).

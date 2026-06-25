@@ -69,10 +69,15 @@ entrypoint main {
   tick     = 60hz            // sim rate (e.g. 60hz, 8hz)
   logical  = 160x120         // fixed logical draw space WxH in integer world units (REQUIRED)
   bindings = bindings        // the bindings table
+  seed     = 1234            // OPTIONAL baked root RNG seed (omit to use the engine default)
 }
 ```
 This lifts the wiring a `pipeline` carries no config for. `logical` is the extent the engine scales
-and letterboxes to the window — declared here because it is runtime wiring. Multiple `entrypoint`
+and letterboxes to the window — declared here because it is runtime wiring. `seed` is **optional**: a
+game that draws from `engine.rand` (a `uses_rng` game) is seeded automatically — the engine supplies
+and records a root seed, so a bare `funpack run` is reproducible out of the box. Precedence is
+`--seed N` flag › this `seed = N` config seed › the fixed engine default; bake `seed` only to pin a
+specific RNG layout into the build (a game that draws no RNG ignores it). Multiple `entrypoint`
 blocks are legal as **distinct sims** (a benchmark, a tutorial), not client/server; selection is
 inferred (one = default; several = a named CLI pick — there is no `default =` field). An optional
 `net = authoritative | p2p | p2p(rollback)` turns on netcode.

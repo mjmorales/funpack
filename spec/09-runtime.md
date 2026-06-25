@@ -148,7 +148,29 @@ write ([`18`](18-tilemaps.md) §4, [`12`](12-navigation.md)).
   changes the runtime binary; its **content-hash is pinned in the session header** and lockstep peers
   agree it at handshake and refuse a mismatch, exactly as they refuse a mod-manifest mismatch.
 
-## 6. Implementation
+## 6. The root RNG seed
+
+A run that **draws randomness anywhere** — its `setup` or any per-tick behavior binds the engine
+`Rng` ([`26`](26-stdlib.md)) — is a `uses_rng` run, and the engine supplies it a **root seed**. The
+seed is a run-time determinism input the artifact does not carry, recorded **symmetric to `Input`**
+([`23`](23-input.md)): `Input` is the per-tick recorded source of nondeterminism, the root seed is the
+**run-scoped** one. It is recorded **once** in the replay-log header (the `Rng` then evolves
+deterministically by folding), so a re-fold re-feeds the exact seed and reproduces every RNG-driven
+spawn/despawn/grow bit-identically ([`28`](28-introspection.md)).
+
+- **Seed-source precedence**, highest first: an explicit `--seed N` flag on `funpack run`/`live`; the
+  `entrypoints.fcfg` `seed = N` config seed ([`14`](14-project-config.md) §3); a **fixed engine
+  default constant**. The default is fixed, never a wall-clock draw, so a bare `funpack run` of a
+  `uses_rng` game is **reproducible out of the box** — a project opts into per-launch variation
+  explicitly by passing `--seed`, and that value is recorded like any other.
+- **The gate is `uses_rng`, not "does setup draw"**: a game whose `setup` is seedless (`setup() ->
+  [Spawn]`) but whose per-tick behaviors draw is still a seeded run. The engine delivers the root
+  `Rng` to behaviors through the existing slot contract ([`06`](06-things-behaviors.md)) — advanced
+  past `setup` when `setup` itself draws, the bare seed otherwise — so its behaviors fold and it
+  renders. A game that draws **no** RNG (Input is its sole nondeterminism) carries **no** seed: the
+  header records its absence (`has_seed = false`), distinct from a seed that happens to be `0`.
+
+## 7. Implementation
 
 The native runtime is implemented in **Odin**, chosen for its vendored output/IO/asset/transport
 batteries (Vulkan/Metal/wgpu/SDL, miniaudio, stb + cgltf, ENet). The deterministic sim core
