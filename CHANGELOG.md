@@ -7,6 +7,17 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.20.1] - 2026-06-25
+
+### Fixes
+- fix(funpack): seed every uses_rng run from a recorded root seed (friction e67f101e) (2b65492)
+- fix(funpack): implement engine.list append and reverse (friction b5acdb7c) (899b1bd)
+- fix(funpack): engine.list find(xs, pred) typechecks and evaluates (friction d224dbaf) (6519e2c)
+- fix(mcp): surface structured diagnostics on failed check/test (friction b7845c3d) (f0679cf)
+
+### Other
+- docs(funpack): document the root RNG seed contract and the seed config/flag (friction e67f101e) (6aa56f1)
+
 ## [0.20.0] - 2026-06-25
 
 ### Features
