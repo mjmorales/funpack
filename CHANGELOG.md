@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.18.1] - 2026-06-25
+
+### Other
+- docs(funpack): document the SDL2 runtime dependency + agent self-heal (7005f68)
+
 ## [0.18.0] - 2026-06-25
 
 ### Features
