@@ -53,10 +53,12 @@ List_Value :: struct {
 // fresh slice in the interp arena; nothing mutates. Equality is POSITIONAL over
 // the pairs (values_equal), the List model — a differently-built map differs.
 //
-// A Map is an in-flight value — built and folded within a behavior body, never
-// read or committed as a blackboard column — so it joins the Lambda/Tuple/Rng/Nav
-// in-flight-only arms in the closed value type-switches (serialization, frame
-// digest, state commit/read), which carry no Map case.
+// A Map commits as a real blackboard column (a dungeon's `tiles: Map[Cell, Tile]`),
+// so — unlike the in-flight-only Lambda/Tuple/Rng/Nav arms — it carries a case in
+// every closed value type-switch over committed state: serialization (snap_write_map/
+// snap_read_map), the frame digest (write_map_column), schema migration (migrate_map),
+// reclaim (free_map_value), and state commit/read — deep-cloned into the tick arena
+// like List/Record.
 Map_Value :: struct {
 	entries: []Map_Entry,
 }
