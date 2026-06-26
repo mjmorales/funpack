@@ -25,15 +25,9 @@
 // independent of map-iteration order, and byte-stable.
 package eir
 
-import "core:encoding/json"
 import "core:fmt"
 import "core:odin/ast"
 import "core:slice"
-import "core:strings"
-
-// NEAR_REPORT_SCHEMA_VERSION leads the JSON object so a consumer reads the shape version
-// before the pairs — the self-describing lead the dup report and baseline both use.
-NEAR_REPORT_SCHEMA_VERSION :: 1
 
 // NEAR_SHINGLE_FLOOR is the subtree-size floor for a fingerprint: finer than the clone
 // floor (a near-miss is built from sub-proc blocks, not whole clones), but above bare
@@ -67,14 +61,6 @@ Near_Options :: struct {
 	fold_literals:  bool,
 }
 
-// NEAR_INDENT and NEAR_GAP are the human table's fixed two-space lead-in and inter-column
-// separators (eir_report.odin's equivalents are file-private to it, so the near table
-// carries its own); the per-column widths are computed from the data.
-@(private = "file")
-NEAR_INDENT :: "  "
-@(private = "file")
-NEAR_GAP :: "  "
-
 // near_default_options returns the engine defaults the verb runs with absent overriding
 // flags.
 near_default_options :: proc() -> Near_Options {
@@ -105,6 +91,7 @@ Near_Candidate :: struct {
 	is_test:      bool,
 	line_start:   int,
 	line_end:     int,
+	col:          int,
 	decl_hash:    u64,
 	node_count:   int,
 	weights:      []Hash_Weight,
@@ -112,12 +99,14 @@ Near_Candidate :: struct {
 }
 
 // Near_Site is one declaration's location in a reported pair: where it sits, its test tag,
-// and its node_count, so a consumer can scope and size the near-miss.
+// its start column (the `file:line:col` point the diagnostic surface reports it by), and its
+// node_count, so a consumer can scope and size the near-miss.
 Near_Site :: struct {
 	path:       string,
 	is_test:    bool,
 	line_start: int,
 	line_end:   int,
+	col:        int,
 	node_count: int,
 }
 
@@ -267,6 +256,7 @@ collect_near_candidates :: proc(
 					is_test = loaded.is_test,
 					line_start = decl.pos.line,
 					line_end = decl.end.line,
+					col = decl.pos.column,
 					decl_hash = decl_hash,
 					node_count = n,
 					weights = aggregate_weights(subs, shingle_cap, allocator),
@@ -381,6 +371,7 @@ candidate_site :: proc(c: Near_Candidate) -> Near_Site {
 		is_test = c.is_test,
 		line_start = c.line_start,
 		line_end = c.line_end,
+		col = c.col,
 		node_count = c.node_count,
 	}
 }
@@ -412,116 +403,44 @@ sites_equal :: proc(a, b: Near_Site) -> bool {
 	return a.path == b.path && a.line_start == b.line_start && a.line_end == b.line_end
 }
 
-// Near_Report is the whole --json payload as one marshal-able struct: field-declaration
-// order is the key order and every field is a scalar or an index-ordered slice (no map),
-// so json.marshal over the same pair set is byte-identical. similarity_threshold records
-// the cutoff the scan used so a consumer reads the scan's parameter alongside its results.
-Near_Report :: struct {
-	schema_version:       int,
-	similarity_threshold: int,
-	pairs:                []Near_Pair_Record,
-}
-
-// Near_Pair_Record is one ranked near-miss in the JSON: 1-based rank, the similarity as
-// integer per-mille (853 = 85.3% — exact, no float-precision loss across a consumer's
-// parser), and the two sites.
-Near_Pair_Record :: struct {
-	rank:                int,
-	similarity_permille: int,
-	a:                   Near_Site,
-	b:                   Near_Site,
-}
-
-// render_near_json renders the near-miss pairs as one byte-stable JSON object: a compact
-// marshal of the ordered Near_Report (no map anywhere), so a double render over the same
-// pairs is byte-identical. An empty pair set renders an empty `pairs` array (never null).
-// No trailing newline — the caller adds one — matching the dup --json convention.
-render_near_json :: proc(
-	pairs: []Near_Pair,
-	threshold_pct: int,
-	allocator := context.allocator,
-) -> string {
-	records := make([]Near_Pair_Record, len(pairs), context.temp_allocator)
+// near_diagnostics projects the near-miss pairs onto the shared diagnostic surface in their
+// reported order (similarity-descending): one Warning per pair, its primary location site a
+// and the counterpart attached as a `note:` related location. The message carries the
+// similarity percent and names the counterpart so the pair reads at a glance without the
+// related line. The diagnostics borrow the loader's path strings; keep the loader alive while
+// reading them. Allocated in `allocator`.
+near_diagnostics :: proc(pairs: []Near_Pair, allocator := context.allocator) -> []Diagnostic {
+	out := make([]Diagnostic, len(pairs), allocator)
 	for p, i in pairs {
-		records[i] = Near_Pair_Record {
-			rank                = i + 1,
-			similarity_permille = p.similarity_permille,
-			a                   = p.a,
-			b                   = p.b,
+		sim := format_permille(p.similarity_permille)
+		related := make([]Related_Location, 1, allocator)
+		related[0] = Related_Location {
+			file = p.b.path,
+			line = p.b.line_start,
+			col  = p.b.col,
+			note = fmt.aprintf("near-miss counterpart (%s)", sim, allocator = allocator),
+		}
+		out[i] = Diagnostic {
+			file     = p.a.path,
+			line     = p.a.line_start,
+			col      = p.a.col,
+			severity = .Warning,
+			rule     = "near",
+			message  = fmt.aprintf(
+				"%s near-miss with %s:%d",
+				sim,
+				p.b.path,
+				p.b.line_start,
+				allocator = allocator,
+			),
+			related  = related,
 		}
 	}
-	report := Near_Report {
-		schema_version       = NEAR_REPORT_SCHEMA_VERSION,
-		similarity_threshold = threshold_pct,
-		pairs                = records,
-	}
-	bytes, _ := json.marshal(report, {}, context.temp_allocator)
-	return strings.clone(string(bytes), allocator)
-}
-
-// render_near_human renders the near-miss pairs as an aligned text table — rank, the
-// similarity percent (per-mille rendered as `NN.N%`), and the two file:line-line spans. An
-// empty pair set renders the single "no near-miss clones found" line. Allocated in
-// `allocator`.
-render_near_human :: proc(pairs: []Near_Pair, allocator := context.allocator) -> string {
-	b := strings.builder_make(allocator)
-	if len(pairs) == 0 {
-		strings.write_string(&b, "no near-miss clones found\n")
-		return strings.to_string(b)
-	}
-
-	rank_w := len("rank")
-	sim_w := len("sim")
-	for p, i in pairs {
-		rank_w = max(rank_w, len(fmt.tprintf("%d", i + 1)))
-		sim_w = max(sim_w, len(format_permille(p.similarity_permille)))
-	}
-
-	write_near_prefix(&b, "rank", "sim", rank_w, sim_w)
-	strings.write_string(&b, "sites")
-	strings.write_byte(&b, '\n')
-
-	cont_prefix := len(NEAR_INDENT) + rank_w + len(NEAR_GAP) + sim_w + len(NEAR_GAP)
-	for p, i in pairs {
-		write_near_prefix(&b, fmt.tprintf("%d", i + 1), format_permille(p.similarity_permille), rank_w, sim_w)
-		fmt.sbprintf(&b, "%s:%d-%d", p.a.path, p.a.line_start, p.a.line_end)
-		strings.write_byte(&b, '\n')
-		write_near_spaces(&b, cont_prefix)
-		fmt.sbprintf(&b, "%s:%d-%d", p.b.path, p.b.line_start, p.b.line_end)
-		strings.write_byte(&b, '\n')
-	}
-	return strings.to_string(b)
+	return out
 }
 
 // format_permille renders an integer per-mille as a one-decimal percent: 853 -> "85.3%".
 @(private = "file")
 format_permille :: proc(permille: int) -> string {
 	return fmt.tprintf("%d.%d%%", permille / 10, permille % 10)
-}
-
-// write_near_prefix writes the two left-aligned scalar columns (rank, sim) of a row, each
-// padded to its width and followed by the inter-column gap, leaving the builder at the
-// sites column. Header and data rows share this layout, so a header sits over its cells.
-@(private = "file")
-write_near_prefix :: proc(b: ^strings.Builder, rank, sim: string, rank_w, sim_w: int) {
-	strings.write_string(b, NEAR_INDENT)
-	write_near_cell(b, rank, rank_w)
-	strings.write_string(b, NEAR_GAP)
-	write_near_cell(b, sim, sim_w)
-	strings.write_string(b, NEAR_GAP)
-}
-
-// write_near_cell writes a left-aligned cell: the value, then padding to width.
-@(private = "file")
-write_near_cell :: proc(b: ^strings.Builder, value: string, width: int) {
-	strings.write_string(b, value)
-	write_near_spaces(b, width - len(value))
-}
-
-// write_near_spaces writes n spaces (a no-op for n <= 0).
-@(private = "file")
-write_near_spaces :: proc(b: ^strings.Builder, n: int) {
-	for _ in 0 ..< n {
-		strings.write_byte(b, ' ')
-	}
 }

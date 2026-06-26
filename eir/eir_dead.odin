@@ -19,23 +19,20 @@
 // directly-unreferenced, and deleting them exposes the next layer for the following run.
 package eir
 
-import "core:encoding/json"
 import "core:fmt"
 import "core:odin/ast"
 import "core:slice"
 import "core:strings"
 
-// DEAD_REPORT_SCHEMA_VERSION leads the JSON object so a consumer reads the shape version
-// before the body — the self-describing lead the dup and near reports share.
-DEAD_REPORT_SCHEMA_VERSION :: 1
-
-// Dead_Decl is one unreferenced file-private declaration: where it sits, its test tag (so a
-// consumer can scope production vs test dead code), its name, and a coarse kind
+// Dead_Decl is one unreferenced file-private declaration: where it sits (line and start
+// column — the `file:line:col` point the diagnostic surface reports it by), its test tag (so
+// a consumer can scope production vs test dead code), its name, and a coarse kind
 // (proc/type/const/var) for the report label.
 Dead_Decl :: struct {
 	path:    string,
 	is_test: bool,
 	line:    int,
+	col:     int,
 	name:    string,
 	kind:    string,
 }
@@ -74,6 +71,7 @@ find_dead_decls :: proc(result: Load_Result, allocator := context.allocator) -> 
 							path = loaded.path,
 							is_test = loaded.is_test,
 							line = decl.pos.line,
+							col = decl.pos.column,
 							name = id.name,
 							kind = kind,
 						},
@@ -184,73 +182,28 @@ dead_less :: proc(a, b: Dead_Decl) -> bool {
 	return a.name < b.name
 }
 
-// Dead_Report is the whole --json payload as one marshal-able struct: field-declaration
-// order is the key order and dead_decls is an index-ordered slice (no map), so json.marshal
-// over the same set is byte-identical.
-Dead_Report :: struct {
-	schema_version: int,
-	dead_decls:     []Dead_Decl,
-}
-
-// render_dead_json renders the dead declarations as one byte-stable JSON object: a compact
-// marshal of the ordered Dead_Report. An empty set renders an empty dead_decls array (never
-// null). No trailing newline — the caller adds one — matching the dup/near --json
-// convention. Allocated in `allocator`.
-render_dead_json :: proc(decls: []Dead_Decl, allocator := context.allocator) -> string {
-	report := Dead_Report {
-		schema_version = DEAD_REPORT_SCHEMA_VERSION,
-		dead_decls     = decls,
+// dead_diagnostics projects the dead declarations onto the shared diagnostic surface in their
+// reported order (by path, then line): one Warning per declaration, a point finding with no
+// related sites. The message names the kind and the declaration so the operator knows what to
+// delete. The diagnostics borrow the loader's path strings; keep the loader alive while
+// reading them. Allocated in `allocator`.
+dead_diagnostics :: proc(decls: []Dead_Decl, allocator := context.allocator) -> []Diagnostic {
+	out := make([]Diagnostic, len(decls), allocator)
+	for d, i in decls {
+		out[i] = Diagnostic {
+			file     = d.path,
+			line     = d.line,
+			col      = d.col,
+			severity = .Warning,
+			rule     = "dead",
+			message  = fmt.aprintf(
+				"dead file-private %s '%s' never referenced",
+				d.kind,
+				d.name,
+				allocator = allocator,
+			),
+			related  = nil,
+		}
 	}
-	bytes, _ := json.marshal(report, {}, context.temp_allocator)
-	return strings.clone(string(bytes), allocator)
-}
-
-// render_dead_human renders the dead declarations as an aligned text table — kind, name, and
-// the file:line site. An empty set renders the single "no dead file-private declarations
-// found" line. Allocated in `allocator`.
-render_dead_human :: proc(decls: []Dead_Decl, allocator := context.allocator) -> string {
-	b := strings.builder_make(allocator)
-	if len(decls) == 0 {
-		strings.write_string(&b, "no dead file-private declarations found\n")
-		return strings.to_string(b)
-	}
-
-	kind_w := len("kind")
-	name_w := len("name")
-	for d in decls {
-		kind_w = max(kind_w, len(d.kind))
-		name_w = max(name_w, len(d.name))
-	}
-
-	write_dead_row(&b, "kind", "name", kind_w, name_w)
-	strings.write_string(&b, "site")
-	strings.write_byte(&b, '\n')
-
-	for d in decls {
-		write_dead_row(&b, d.kind, d.name, kind_w, name_w)
-		fmt.sbprintf(&b, "%s:%d", d.path, d.line)
-		strings.write_byte(&b, '\n')
-	}
-	return strings.to_string(b)
-}
-
-// write_dead_row writes the two left-aligned scalar columns (kind, name) of a row, each
-// padded to its width and followed by the two-space gap, leaving the builder at the site
-// column. Header and data rows share this layout, so a header sits over its cells.
-@(private = "file")
-write_dead_row :: proc(b: ^strings.Builder, kind, name: string, kind_w, name_w: int) {
-	strings.write_string(b, "  ")
-	write_dead_cell(b, kind, kind_w)
-	strings.write_string(b, "  ")
-	write_dead_cell(b, name, name_w)
-	strings.write_string(b, "  ")
-}
-
-// write_dead_cell writes a left-aligned cell: the value, then spaces padding it to width.
-@(private = "file")
-write_dead_cell :: proc(b: ^strings.Builder, value: string, width: int) {
-	strings.write_string(b, value)
-	for _ in 0 ..< width - len(value) {
-		strings.write_byte(b, ' ')
-	}
+	return out
 }

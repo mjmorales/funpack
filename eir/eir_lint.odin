@@ -43,7 +43,7 @@ lint_registry := []Lint {
 	{
 		name = "dup",
 		short = "Report Type-1/Type-2 AST clones in the source tree (DRY checker)",
-		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report duplicated AST subtrees — Type-1 exact and Type-2 renamed clones — following the dup_class doctrine. Prints a ranked human table by default, or --json for a byte-stable clone-class array an agent can rank to the highest-leverage dedup target.",
+		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report duplicated AST subtrees — Type-1 exact and Type-2 renamed clones — following the dup_class doctrine. Prints a leverage-ranked GNU-style diagnostic stream (`file:line:col: warning: ... [dup]`, extra sites as note: lines) by default, or --json for a byte-stable diagnostic array an agent can rank to the highest-leverage dedup target.",
 		flags = []cli.Cli_Flag {
 			// --exclude is a comma-separated glob list, not a repeatable flag: the cli
 			// framework rejects a second occurrence of one flag as Duplicate_Flag, so a
@@ -67,7 +67,7 @@ lint_registry := []Lint {
 			{
 				name = "json",
 				kind = .Bool,
-				usage = "Emit the ranked clone classes as byte-stable JSON instead of the human table",
+				usage = "Emit the ranked clones as a byte-stable diagnostic JSON array instead of the human stream",
 			},
 			// --baseline turns dup from a report into a ratchet GATE: the scan is
 			// compared against the committed baseline file and the verb exits 1 on a
@@ -89,7 +89,7 @@ lint_registry := []Lint {
 	{
 		name = "near",
 		short = "Report Type-3 near-miss (gapped/parameterized) clones as ranked declaration pairs",
-		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report NEAR-MISS clones — top-level declarations whose canonical subtree sets overlap at or above --similarity (default 80%) — on a surface SEPARATE from the exact dup tier. A pair is two declarations sharing most of their structure but diverging in a few statements (the gapped/parameterized copy exact hashing cannot collapse); exact whole-declaration clones are excluded, since those belong to `eir dup`. Prints a ranked human table by default, or --json for a byte-stable pair array.",
+		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report NEAR-MISS clones — top-level declarations whose canonical subtree sets overlap at or above --similarity (default 80%) — on a surface SEPARATE from the exact dup tier. A pair is two declarations sharing most of their structure but diverging in a few statements (the gapped/parameterized copy exact hashing cannot collapse); exact whole-declaration clones are excluded, since those belong to `eir dup`. Prints a similarity-ranked GNU-style diagnostic stream (`file:line:col: warning: ... [near]`, the counterpart as a note: line) by default, or --json for a byte-stable diagnostic array.",
 		flags = []cli.Cli_Flag {
 			{
 				name = "exclude",
@@ -116,7 +116,7 @@ lint_registry := []Lint {
 			{
 				name = "json",
 				kind = .Bool,
-				usage = "Emit the ranked near-miss pairs as byte-stable JSON instead of the human table",
+				usage = "Emit the ranked near-miss pairs as a byte-stable diagnostic JSON array instead of the human stream",
 			},
 		},
 		args = cli.cli_range_args(0, 1),
@@ -125,7 +125,7 @@ lint_registry := []Lint {
 	{
 		name = "dead",
 		short = "Report dead (unreferenced) file-private package-level declarations",
-		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report every `@(private=\"file\")` package-level declaration that nothing in its file references — definitively dead code, since a file-private declaration is reachable only from its own file. Odin's -vet does not flag an unused file-private proc/type/const, so this closes that gap. Prints a human table by default, or --json for a byte-stable record array. The analysis is conservative (any ambiguous reference counts as a use), so it under-reports rather than condemn live code.",
+		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report every `@(private=\"file\")` package-level declaration that nothing in its file references — definitively dead code, since a file-private declaration is reachable only from its own file. Odin's -vet does not flag an unused file-private proc/type/const, so this closes that gap. Prints a GNU-style diagnostic stream (`file:line:col: warning: ... [dead]`) by default, or --json for a byte-stable diagnostic array. The analysis is conservative (any ambiguous reference counts as a use), so it under-reports rather than condemn live code.",
 		flags = []cli.Cli_Flag {
 			{
 				name = "exclude",
@@ -135,7 +135,7 @@ lint_registry := []Lint {
 			{
 				name = "json",
 				kind = .Bool,
-				usage = "Emit the dead declarations as byte-stable JSON instead of the human table",
+				usage = "Emit the dead declarations as a byte-stable diagnostic JSON array instead of the human stream",
 			},
 		},
 		args = cli.cli_range_args(0, 1),
@@ -171,8 +171,8 @@ build_lint_subtree :: proc(allocator := context.allocator) -> []^cli.Cli_Command
 
 // run_dup_lint handles `eir dup`: scan the optional [root] (default cwd) for Odin
 // sources under the flag-driven options and run the clone engine over the parsed trees.
-// Without --baseline it RENDERS the ranked report — the human table by default, the
-// byte-stable JSON under --json — and returns 0 even when clones are found, because a
+// Without --baseline it RENDERS the ranked report — the human diagnostic stream by default,
+// the byte-stable JSON under --json — and returns 0 even when clones are found, because a
 // bare report is informational, not a gate (exit contract {0 informational, 2 usage};
 // a non-resolvable [root] is the only non-zero report path). With --baseline it hands
 // the same scan to the ratchet gate, whose contract adds a 1 for a debt regression.
@@ -220,10 +220,11 @@ run_dup_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 		)
 	}
 
+	diags := dup_diagnostics(classes, .Warning, scan)
 	if cli.cli_flag_bool(inv, "json") {
-		fmt.println(render_dup_json(classes, scan))
+		fmt.println(render_diagnostics_json(diags, scan))
 	} else {
-		fmt.print(render_dup_human(classes, scan))
+		fmt.print(render_diagnostics_human(diags, scan))
 	}
 	return 0
 }
@@ -301,7 +302,7 @@ run_dup_gate :: proc(
 
 // run_near_lint handles `eir near`: scan the optional [root] (default cwd) for Odin
 // sources, fingerprint every top-level declaration, and report the ranked near-miss PAIRS
-// at or above --similarity — the human table by default, byte-stable JSON under --json.
+// at or above --similarity — the human diagnostic stream by default, byte-stable JSON under --json.
 // Like dup it is a REPORT, not a gate (exit contract {0 informational, 2 usage}): the near
 // tier is advisory and lives on a surface SEPARATE from the exact tier, so the exact
 // surface stays precision-pure. The whole scan — loader cache, parsed trees, fingerprints,
@@ -328,10 +329,11 @@ run_near_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 
 	pairs := find_near_clones(result, opts, scan)
 
+	diags := near_diagnostics(pairs, scan)
 	if cli.cli_flag_bool(inv, "json") {
-		fmt.println(render_near_json(pairs, opts.similarity_pct, scan))
+		fmt.println(render_diagnostics_json(diags, scan))
 	} else {
-		fmt.print(render_near_human(pairs, scan))
+		fmt.print(render_diagnostics_human(diags, scan))
 	}
 	return 0
 }
@@ -357,10 +359,11 @@ run_dead_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 
 	dead := find_dead_decls(result, scan)
 
+	diags := dead_diagnostics(dead, scan)
 	if cli.cli_flag_bool(inv, "json") {
-		fmt.println(render_dead_json(dead, scan))
+		fmt.println(render_diagnostics_json(diags, scan))
 	} else {
-		fmt.print(render_dead_human(dead, scan))
+		fmt.print(render_diagnostics_human(diags, scan))
 	}
 	return 0
 }

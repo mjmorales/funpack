@@ -100,6 +100,12 @@ test_gate_fails_on_new_class :: proc(t: ^testing.T) {
 	testing.expect(t, verdict.regressed, "a new clone class must regress the gate")
 	testing.expect(t, verdict.current_total > verdict.baseline_total, "the total must rise")
 	testing.expect_value(t, len(verdict.new_classes), 1)
+	if len(verdict.new_classes) == 1 {
+		// The verdict carries the CURRENT-scan class with its full site list, so the gate
+		// failure can emit a diagnostic per site — not just name the class.
+		testing.expect_value(t, verdict.new_classes[0].hash, u64(0xC3))
+		testing.expect_value(t, len(verdict.new_classes[0].instances), 2)
+	}
 }
 
 // test_gate_fails_on_grown_class pins the instance-growth regression: the SAME content id

@@ -54,12 +54,14 @@ dup_default_options :: proc() -> Dup_Options {
 // Clone_Instance is one occurrence of a clone class: where the duplicated subtree
 // sits. path borrows the loader's path string (valid for the loader's lifetime),
 // is_test carries the discovery tag so a report can scope test vs production code,
-// and the line span comes from the node's start/end tokens.
+// the line span comes from the node's start/end tokens, and col is the start token's
+// column — the `file:line:col` point the diagnostic surface reports the site by.
 Clone_Instance :: struct {
 	path:       string,
 	is_test:    bool,
 	line_start: int,
 	line_end:   int,
+	col:        int,
 }
 
 // Clone_Class is one set of structurally-identical subtrees (modulo bound-name
@@ -93,6 +95,7 @@ Subtree_Record :: struct {
 	is_test:    bool,
 	line_start: int,
 	line_end:   int,
+	col:        int,
 }
 
 // Dup_Engine is the per-scan state the hashing walk threads: the options, the
@@ -679,6 +682,7 @@ dup_canon :: proc(
 				is_test = eng.cur_is_test,
 				line_start = node.pos.line,
 				line_end = node.end.line,
+				col = node.pos.column,
 			},
 		)
 	}
@@ -996,6 +1000,7 @@ cluster_and_suppress :: proc(
 					is_test    = r.is_test,
 					line_start = r.line_start,
 					line_end   = r.line_end,
+					col        = r.col,
 				}
 			}
 			slice.sort_by(insts, instance_less)

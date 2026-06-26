@@ -2,13 +2,13 @@
 // reported, with its kind, while a file-private one that IS referenced is not, (2) the
 // lint is scoped to FILE-private — a package-visible or `@(private)` unused declaration is
 // NOT reported (it could be used from another file, so single-file analysis cannot condemn
-// it), (3) the empty case renders the "no dead" forms, and (4) the --json render is
-// byte-stable and round-trips. Each fixture is a real source parsed through the loader
-// (load_source_fixture, shared from eir_discover_test.odin), so the tests exercise the lint
-// over genuine core:odin/ast trees.
+// it), (3) every file-private decl being referenced yields an empty projection, and (4) each
+// dead decl projects to one `dead` Warning point-finding whose message names the kind and the
+// declaration. Each fixture is a real source parsed through the loader (load_source_fixture,
+// shared from eir_discover_test.odin), so the tests exercise the lint over genuine
+// core:odin/ast trees.
 package eir
 
-import "core:encoding/json"
 import "core:strings"
 import "core:testing"
 
@@ -100,19 +100,14 @@ test_dead_reports_unreferenced_file_private :: proc(t: ^testing.T) {
 	}
 }
 
-// test_dead_all_referenced: every file-private decl is used, so the lint finds nothing and
-// renders the empty forms.
+// test_dead_all_referenced: every file-private decl is used, so the lint finds nothing and the
+// projection is empty (the shared renderer turns that into the "no findings" line).
 @(test)
 test_dead_all_referenced :: proc(t: ^testing.T) {
 	result := load_source_fixture("dead_allused", ALL_USED_SRC)
 	dead := find_dead_decls(result, context.temp_allocator)
 	testing.expect_value(t, len(dead), 0)
-
-	human := render_dead_human(dead, context.temp_allocator)
-	testing.expect(t, strings.contains(human, "no dead file-private declarations found"), "an empty scan must say so")
-
-	body := render_dead_json(dead, context.temp_allocator)
-	testing.expect(t, strings.contains(body, "\"dead_decls\":[]"), "an empty scan's JSON must carry an empty array")
+	testing.expect_value(t, len(dead_diagnostics(dead, context.temp_allocator)), 0)
 }
 
 // test_dead_scoped_to_file_private: an unused package-visible decl and an unused
@@ -125,25 +120,22 @@ test_dead_scoped_to_file_private :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(dead), 0)
 }
 
-// test_dead_json_byte_stable_and_valid: two renders of the same dead set are byte-identical,
-// the output parses as valid JSON, and it round-trips into Dead_Report with the recorded
-// shape (schema version and the per-decl fields).
+// test_dead_diagnostics_projection: each dead declaration projects to one `dead` Warning — a
+// point finding with no related sites — whose message names the kind and the declaration to
+// delete, in the lint's (path, line) order.
 @(test)
-test_dead_json_byte_stable_and_valid :: proc(t: ^testing.T) {
-	result := load_source_fixture("dead_json", DEAD_SRC)
+test_dead_diagnostics_projection :: proc(t: ^testing.T) {
+	result := load_source_fixture("dead_diag", DEAD_SRC)
 	dead := find_dead_decls(result, context.temp_allocator)
 
-	first := render_dead_json(dead, context.temp_allocator)
-	second := render_dead_json(dead, context.temp_allocator)
-	testing.expect(t, first == second, "the dead JSON must be byte-stable across renders")
-
-	report: Dead_Report
-	err := json.unmarshal_string(first, &report, allocator = context.temp_allocator)
-	testing.expect(t, err == nil, "the JSON must parse into Dead_Report")
-	testing.expect_value(t, report.schema_version, DEAD_REPORT_SCHEMA_VERSION)
-	testing.expect_value(t, len(report.dead_decls), 3)
-	if len(report.dead_decls) == 3 {
-		testing.expect_value(t, report.dead_decls[0].name, "DEAD_LIMIT")
-		testing.expect_value(t, report.dead_decls[2].kind, "type")
+	diags := dead_diagnostics(dead, context.temp_allocator)
+	testing.expect_value(t, len(diags), 3)
+	if len(diags) == 3 {
+		testing.expect_value(t, diags[0].severity, Severity.Warning)
+		testing.expect_value(t, diags[0].rule, "dead")
+		testing.expect_value(t, len(diags[0].related), 0) // a point finding carries no related sites
+		testing.expect(t, strings.contains(diags[0].message, "DEAD_LIMIT"), "the message names the declaration")
+		testing.expect(t, strings.contains(diags[0].message, "const"), "the message names the kind")
+		testing.expect(t, strings.contains(diags[2].message, "Dead_Type"), "projection preserves the lint's order")
 	}
 }

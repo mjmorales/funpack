@@ -2,14 +2,14 @@
 // single statement are reported as ONE near-miss pair above a low cutoff, (2) two
 // EXACT clones (identical modulo bound-name renaming) are NOT reported — that is the dup
 // tier's, and the two surfaces stay disjoint, (3) raising the cutoff past the pair's
-// similarity drops it (the cutoff is real), (4) two unrelated declarations produce no
-// pair and the empty renderings, and (5) the --json render is byte-stable and round-trips.
-// Each fixture is a real multi-declaration source parsed through the loader, so the tests
-// exercise the tier over genuine core:odin/ast trees. The shared fixture helpers
-// (fixture_root / write_fixture / remove_tree) come from eir_discover_test.odin.
+// similarity drops it (the cutoff is real), (4) two unrelated declarations produce no pair
+// (an empty projection), and (5) the reported pair projects to one `near` Warning whose
+// message carries the similarity and attaches the counterpart as a note. Each fixture is a
+// real multi-declaration source parsed through the loader, so the tests exercise the tier
+// over genuine core:odin/ast trees. The shared fixture helpers (fixture_root / write_fixture
+// / remove_tree) come from eir_discover_test.odin.
 package eir
 
-import "core:encoding/json"
 import "core:strings"
 import "core:testing"
 
@@ -121,41 +121,32 @@ test_near_respects_threshold :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(high), 0)
 }
 
-// test_near_no_pairs_form: unrelated declarations yield no pair and the empty renderings —
-// the "no near-miss clones found" human line and an empty JSON pairs array.
+// test_near_diagnostics_projection: the reported pair projects to one `near` Warning whose
+// message carries the similarity percent and names the counterpart, with the b-site attached
+// as the single related note — the near tier's whole projection onto the shared surface.
 @(test)
-test_near_no_pairs_form :: proc(t: ^testing.T) {
+test_near_diagnostics_projection :: proc(t: ^testing.T) {
+	result := load_source_fixture("near_diag", NEAR_SRC)
+	pairs := find_near_clones(result, near_opts(50), context.temp_allocator)
+	testing.expect_value(t, len(pairs), 1)
+
+	diags := near_diagnostics(pairs, context.temp_allocator)
+	testing.expect_value(t, len(diags), 1)
+	if len(diags) == 1 {
+		testing.expect_value(t, diags[0].severity, Severity.Warning)
+		testing.expect_value(t, diags[0].rule, "near")
+		testing.expect(t, strings.contains(diags[0].message, "near-miss"), "the message names the relation")
+		testing.expect(t, strings.contains(diags[0].message, "%"), "the message carries the similarity percent")
+		testing.expect_value(t, len(diags[0].related), 1) // the counterpart site
+	}
+}
+
+// test_near_no_pairs_empty: unrelated declarations yield no pair, so the projection is empty —
+// the shared renderer turns that into the "no findings" line (pinned in the diagnostic test).
+@(test)
+test_near_no_pairs_empty :: proc(t: ^testing.T) {
 	result := load_source_fixture("near_distinct", DISTINCT_SRC)
 	pairs := find_near_clones(result, near_opts(50), context.temp_allocator)
 	testing.expect_value(t, len(pairs), 0)
-
-	human := render_near_human(pairs, context.temp_allocator)
-	testing.expect(t, strings.contains(human, "no near-miss clones found"), "an empty scan must say so")
-
-	body := render_near_json(pairs, 50, context.temp_allocator)
-	testing.expect(t, strings.contains(body, "\"pairs\":[]"), "an empty scan's JSON must carry an empty pairs array")
-}
-
-// test_near_json_byte_stable_and_valid: two renders of the same pair set are byte-identical,
-// the output parses as valid JSON, and it round-trips into Near_Report with the ranked
-// shape (schema version, recorded threshold, 1-based ranks, per-mille similarity).
-@(test)
-test_near_json_byte_stable_and_valid :: proc(t: ^testing.T) {
-	result := load_source_fixture("near_json", NEAR_SRC)
-	pairs := find_near_clones(result, near_opts(50), context.temp_allocator)
-
-	first := render_near_json(pairs, 50, context.temp_allocator)
-	second := render_near_json(pairs, 50, context.temp_allocator)
-	testing.expect(t, first == second, "the near JSON must be byte-stable across renders")
-
-	report: Near_Report
-	err := json.unmarshal_string(first, &report, allocator = context.temp_allocator)
-	testing.expect(t, err == nil, "the JSON must parse into Near_Report")
-	testing.expect_value(t, report.schema_version, NEAR_REPORT_SCHEMA_VERSION)
-	testing.expect_value(t, report.similarity_threshold, 50)
-	testing.expect_value(t, len(report.pairs), 1)
-	if len(report.pairs) == 1 {
-		testing.expect_value(t, report.pairs[0].rank, 1)
-		testing.expect(t, report.pairs[0].similarity_permille > 0, "a reported pair carries a positive similarity")
-	}
+	testing.expect_value(t, len(near_diagnostics(pairs, context.temp_allocator)), 0)
 }

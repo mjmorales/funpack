@@ -14,9 +14,9 @@
 // refactor that shifts code without adding duplication leaves the total untouched, and
 // only genuinely new or grown duplication pushes it up and trips the gate.
 //
-// The per-class set is recorded too (content-addressed by the class's fnv64a digest, the
-// same id the --json report exposes) so a failure can NAME which class is new or grew,
-// not just report that the total moved. The set is diagnostic; the total is the verdict.
+// The per-class set is recorded too — content-addressed by the class's fnv64a digest — so
+// the gate can tell which class is new or grew by matching ids and surface the offending
+// sites, not just report that the total moved. The set is diagnostic; the total is the verdict.
 package eir
 
 import "core:encoding/json"
@@ -45,9 +45,9 @@ Dup_Baseline :: struct {
 }
 
 // Baseline_Class is one clone class as recorded debt: id is the class's fnv64a digest as
-// a zero-padded 16-hex string (the content address — the same id the --json report
-// exposes, stable across line drift), and kind/node_count/instances/dedup_value mirror
-// the class so a gate failure can describe it without re-deriving anything.
+// a zero-padded 16-hex string (the content address — stable across line drift), and
+// kind/node_count/instances/dedup_value mirror the class so the committed baseline file is
+// human-readable and a gate run can match a current class to its prior instance count by id.
 Baseline_Class :: struct {
 	id:          string,
 	kind:        string,
@@ -59,14 +59,16 @@ Baseline_Class :: struct {
 // Gate_Verdict is the comparison outcome: regressed is the verdict (current debt exceeds
 // the baseline ceiling), the two totals frame it, and new_classes/grown_classes pinpoint
 // what moved — content-ids absent from the baseline, and content-ids present in both
-// whose instance count rose. The diagnostic lists may be empty on a fnv64a-collision edge
-// even when regressed is true; the totals are always authoritative.
+// whose instance count rose. They carry the CURRENT-scan Clone_Class (with its full site
+// list, not just the recorded summary) so a gate failure can emit a `file:line:col`
+// diagnostic per offending site — the actionable form CI fails on. The lists may be empty on
+// a fnv64a-collision edge even when regressed is true; the totals are always authoritative.
 Gate_Verdict :: struct {
 	regressed:      bool,
 	baseline_total: int,
 	current_total:  int,
-	new_classes:    []Baseline_Class,
-	grown_classes:  []Baseline_Class,
+	new_classes:    []Clone_Class,
+	grown_classes:  []Clone_Class,
 }
 
 // build_baseline projects the engine's clone classes onto the recorded debt set: each
@@ -183,12 +185,12 @@ baseline_scan_matches :: proc(
 	return true
 }
 
-// compare_baseline runs the ratchet: project the current classes, sum the current total,
-// and decide regressed = current_total > baseline_total. The diagnostics walk the current
-// set against the baseline's id→instances map — an id absent from the baseline is a new
-// class, an id present whose instance count rose is a grown one. The verdict turns on the
-// totals alone (collision-proof); the diagnostic lists are best-effort labels for the
-// failure message.
+// compare_baseline runs the ratchet: sum the current debt and decide regressed =
+// current_total > baseline_total. The diagnostics walk the current CLASSES directly (not the
+// recorded summary) against the baseline's id→instances map — an id absent from the baseline
+// is a new class, an id present whose instance count rose is a grown one — so each offending
+// class keeps its full site list for the failure diagnostic. The verdict turns on the totals
+// alone (collision-proof); the offending lists are best-effort labels for the failure output.
 compare_baseline :: proc(
 	baseline: Dup_Baseline,
 	current: []Clone_Class,
@@ -196,37 +198,42 @@ compare_baseline :: proc(
 	excludes: []string,
 	allocator := context.allocator,
 ) -> Gate_Verdict {
-	current_baseline := build_baseline(current, opts, excludes, context.temp_allocator)
-
 	prior := make(map[string]int, len(baseline.classes), context.temp_allocator)
 	for bc in baseline.classes {
 		prior[bc.id] = bc.instances
 	}
 
-	new_classes := make([dynamic]Baseline_Class, 0, 8, allocator)
-	grown_classes := make([dynamic]Baseline_Class, 0, 8, allocator)
-	for cc in current_baseline.classes {
-		prior_instances, seen := prior[cc.id]
+	current_total := 0
+	new_classes := make([dynamic]Clone_Class, 0, 8, allocator)
+	grown_classes := make([dynamic]Clone_Class, 0, 8, allocator)
+	for cc in current {
+		current_total += class_dedup_value(cc)
+		id := fmt.aprintf("%016x", cc.hash, allocator = context.temp_allocator)
+		prior_instances, seen := prior[id]
 		if !seen {
 			append(&new_classes, cc)
-		} else if cc.instances > prior_instances {
+		} else if len(cc.instances) > prior_instances {
 			append(&grown_classes, cc)
 		}
 	}
 
 	return Gate_Verdict {
-		regressed      = current_baseline.total_dedup_value > baseline.total_dedup_value,
+		regressed      = current_total > baseline.total_dedup_value,
 		baseline_total = baseline.total_dedup_value,
-		current_total  = current_baseline.total_dedup_value,
+		current_total  = current_total,
 		new_classes    = new_classes[:],
 		grown_classes  = grown_classes[:],
 	}
 }
 
-// render_gate_failure renders the human explanation of a regressed verdict: the two
-// totals, then the new and grown classes that account for the rise. It is only called on
-// a regression — a pass prints its own one-line note — so it always has a delta to show.
-// Allocated in `allocator`.
+// render_gate_failure renders the human explanation of a regressed verdict: the framing
+// total line, then a `file:line:col: error:` diagnostic for every site of every offending
+// class (new classes first, then grown), so the CI failure points straight at the clones to
+// dedup instead of naming a class id the operator must then go hunt for. The offending
+// classes are projected through dup_diagnostics at Error severity — leverage-ranked, with the
+// extra sites as `note:` lines — and the closing line says how to tighten once the debt is
+// paid down. It is only called on a regression, so it always has a delta to show. Allocated
+// in `allocator`.
 render_gate_failure :: proc(verdict: Gate_Verdict, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	fmt.sbprintfln(
@@ -235,30 +242,16 @@ render_gate_failure :: proc(verdict: Gate_Verdict, allocator := context.allocato
 		verdict.baseline_total,
 		verdict.current_total,
 	)
-	for nc in verdict.new_classes {
-		fmt.sbprintfln(
-			&b,
-			"  new clone class %s (%s, %d nodes x %d sites, dedup_value %d)",
-			nc.id,
-			nc.kind,
-			nc.node_count,
-			nc.instances,
-			nc.dedup_value,
-		)
-	}
-	for gc in verdict.grown_classes {
-		fmt.sbprintfln(
-			&b,
-			"  grown clone class %s (%s, now %d sites, dedup_value %d)",
-			gc.id,
-			gc.kind,
-			gc.instances,
-			gc.dedup_value,
-		)
-	}
+
+	offending := make([dynamic]Clone_Class, 0, len(verdict.new_classes) + len(verdict.grown_classes), context.temp_allocator)
+	append(&offending, ..verdict.new_classes)
+	append(&offending, ..verdict.grown_classes)
+	diags := dup_diagnostics(offending[:], .Error, context.temp_allocator)
+	strings.write_string(&b, render_diagnostics_human(diags, context.temp_allocator))
+
 	strings.write_string(
 		&b,
-		"run `eir dup` to see the clones, dedup them, then `eir dup --baseline <file> --update-baseline` to tighten\n",
+		"dedup the clones above, then `eir dup --baseline <file> --update-baseline` to tighten\n",
 	)
 	return strings.to_string(b)
 }
