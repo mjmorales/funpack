@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.12.1] - 2026-06-26
+
+### Fixes
+- fix(funpack): seed bare introspection sessions for uses_rng games (71e02a2)
+
 ## [0.12.0] - 2026-06-25
 
 ### Features
