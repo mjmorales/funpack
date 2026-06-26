@@ -93,6 +93,14 @@ The spec it conforms to lives in-repo — no sibling checkout. Reading order: st
 runtime model (`06-things-behaviors`, `07-pipelines`), then the toolchain seam
 (`29-architecture-governance`).
 
+## Repo-local developer tooling
+
+`eir` is a repo-local Odin lint CLI for working in *this* tree — **not** part of the shipped
+funpack product and off the release/binary path (no SDL, no `FUNPACK_LIVE`). Its first lint,
+`eir dup`, is a high-fidelity AST DRY/clone checker over the Odin implementation source
+(`core:odin/parser`, Type-1 + alpha-renamed Type-2). Built/linted/tested in CI as a normal
+Odin arm. See [`docs/eir.md`](docs/eir.md).
+
 ## Claude Code plugin
 
 This repo is also the **funpack Claude Code marketplace** — the `.claude-plugin/marketplace.json`
