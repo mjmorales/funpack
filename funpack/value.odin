@@ -18,6 +18,7 @@ Value :: union {
 	Vec3_Value,
 	Quat_Value,
 	List_Value,
+	Map_Value,
 	Tuple_Value,
 	Lambda_Value,
 	Enum_Value,
@@ -84,6 +85,28 @@ Pose_Bone_Transform :: struct {
 
 List_Value :: struct {
 	elements: []Value,
+}
+
+// Map_Value is the runtime engine.map Map[K, V] (decision
+// 2026-06-25-engine-map-insertion-ordered): an insertion-ordered slice of
+// key→value pairs with unique keys, mirroring the immutable insertion-ordered
+// List model. set appends a new key or replaces an existing key's value IN PLACE
+// (never moving it); remove drops a pair and closes the gap; keys()/values()
+// project in this order. Key lookup (get/has) is a linear scan on value_equal, so
+// a key needs only the structural equality every funpack value already has — no
+// Hash/Ord. Every operation rebuilds a fresh slice in the evaluation arena;
+// nothing mutates. Equality is POSITIONAL over the pairs (value_equal below): two
+// maps are equal iff they carry the same key→value pairs in the same insertion
+// order — the List equality model, so a differently-built map differs, the
+// observable order the frame digest also folds.
+Map_Value :: struct {
+	entries: []Map_Entry,
+}
+
+// Map_Entry is one insertion-ordered key→value pair of a Map_Value.
+Map_Entry :: struct {
+	key:   Value,
+	value: Value,
 }
 
 // Tuple_Value is a fixed-arity positional aggregate — the §04 §1 `(value,
@@ -267,6 +290,22 @@ value_equal :: proc(a, b: Value) -> bool {
 		}
 		for element, i in av.elements {
 			if !value_equal(element, bv.elements[i]) {
+				return false
+			}
+		}
+		return true
+	case Map_Value:
+		// Positional over the insertion-ordered pairs, mirroring List: same length
+		// and each position's key AND value compare equal. Two maps with the same
+		// entries built in a different order are NOT equal — order is the observable
+		// the decision pins (and the frame digest folds).
+		bv, ok := b.(Map_Value)
+		if !ok || len(av.entries) != len(bv.entries) {
+			return false
+		}
+		for entry, i in av.entries {
+			if !value_equal(entry.key, bv.entries[i].key) ||
+			   !value_equal(entry.value, bv.entries[i].value) {
 				return false
 			}
 		}
@@ -458,6 +497,19 @@ value_display_into :: proc(b: ^strings.Builder, v: Value) {
 			value_display_into(b, element)
 		}
 		fmt.sbprint(b, "]")
+	case Map_Value:
+		// Insertion-ordered `Map{k0: v0, k1: v1}` so a failed `assert m1 == m2`
+		// renders the diverging pairs in the order equality compares them.
+		fmt.sbprint(b, "Map{")
+		for entry, i in av.entries {
+			if i > 0 {
+				fmt.sbprint(b, ", ")
+			}
+			value_display_into(b, entry.key)
+			fmt.sbprint(b, ": ")
+			value_display_into(b, entry.value)
+		}
+		fmt.sbprint(b, "}")
 	case Tuple_Value:
 		fmt.sbprint(b, "(")
 		for element, i in av.elements {

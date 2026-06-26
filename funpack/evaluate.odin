@@ -1490,6 +1490,18 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_len(ctx, env, e)
 	case "get":
 		return eval_get(ctx, env, e)
+	case "empty":
+		return eval_map_empty(ctx, env, e)
+	case "has":
+		return eval_map_has(ctx, env, e)
+	case "set":
+		return eval_map_set(ctx, env, e)
+	case "remove":
+		return eval_map_remove(ctx, env, e)
+	case "keys":
+		return eval_map_keys(ctx, env, e)
+	case "values":
+		return eval_map_values(ctx, env, e)
 	case "map":
 		return eval_map(ctx, env, e)
 	case "filter":
@@ -2175,8 +2187,20 @@ eval_is_empty :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value,
 // shape mirrors eval_is_empty (the same list-arg materialization), differing
 // only in projecting the count instead of the emptiness predicate.
 eval_len :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
-	elements := eval_list_arg(ctx, env, e, 0, 1) or_return
-	return i64(len(elements)), true
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	source := eval_expr(ctx, env, e.args[0]) or_return
+	// len is polymorphic over a Map (engine.map): the entry count. The list/view
+	// form is the List_Value branch below.
+	if m, is_map := source.(Map_Value); is_map {
+		return i64(len(m.entries)), true
+	}
+	list, is_list := source.(List_Value)
+	if !is_list {
+		return nil, false
+	}
+	return i64(len(list.elements)), true
 }
 
 // eval_get lowers `get(list, i) -> Option[T]` (spec §08): the element at index i
@@ -2187,16 +2211,156 @@ eval_get :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: 
 	if len(e.args) != 2 {
 		return nil, false
 	}
-	elements := eval_list_arg(ctx, env, e, 0, 2) or_return
+	source := eval_expr(ctx, env, e.args[0]) or_return
+	// Map form (engine.map): the total keyed lookup — a linear scan for a key that
+	// value_equals the argument, Option::Some(value) on a hit, Option::None on a
+	// miss. The list/view index form is the List_Value branch below.
+	if m, is_map := source.(Map_Value); is_map {
+		key := eval_expr(ctx, env, e.args[1]) or_return
+		for entry in m.entries {
+			if value_equal(entry.key, key) {
+				return some_value(entry.value), true
+			}
+		}
+		return Option_Value{is_some = false, payload = nil}, true
+	}
+	list, is_list := source.(List_Value)
+	if !is_list {
+		return nil, false
+	}
 	index_value := eval_expr(ctx, env, e.args[1]) or_return
 	i, is_int := index_value.(i64)
 	if !is_int {
 		return nil, false
 	}
-	if i < 0 || int(i) >= len(elements) {
+	if i < 0 || int(i) >= len(list.elements) {
 		return Option_Value{is_some = false, payload = nil}, true
 	}
-	return some_value(elements[i]), true
+	return some_value(list.elements[i]), true
+}
+
+// eval_map_empty lowers `empty() -> Map[K, V]` (engine.map): the empty map. K/V
+// are a type-level concern; the value carries only its (initially zero) pairs. The
+// idiomatic `Map.empty()` static form lands the same value through eval_method_call.
+eval_map_empty :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 0 {
+		return nil, false
+	}
+	return Map_Value{}, true
+}
+
+// eval_map_has lowers `has(map, key) -> Bool` (engine.map): a linear scan for a
+// key that value_equals the argument — the membership twin of get.
+eval_map_has :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	source := eval_expr(ctx, env, e.args[0]) or_return
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	key := eval_expr(ctx, env, e.args[1]) or_return
+	for entry in m.entries {
+		if value_equal(entry.key, key) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+// eval_map_set lowers `set(map, key, value) -> Map[K, V]` (engine.map): a fresh
+// map with the key bound to the value. An existing key (value_equal) is replaced
+// IN PLACE keeping its insertion position; a new key appends. The input map is
+// never mutated — the rebuild allocates a fresh entries slice in the arena.
+eval_map_set :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 3 {
+		return nil, false
+	}
+	source := eval_expr(ctx, env, e.args[0]) or_return
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	key := eval_expr(ctx, env, e.args[1]) or_return
+	val := eval_expr(ctx, env, e.args[2]) or_return
+	for entry, i in m.entries {
+		if value_equal(entry.key, key) {
+			out := make([]Map_Entry, len(m.entries), context.temp_allocator)
+			copy(out, m.entries)
+			out[i] = Map_Entry{key = entry.key, value = val}
+			return Map_Value{entries = out}, true
+		}
+	}
+	out := make([]Map_Entry, len(m.entries) + 1, context.temp_allocator)
+	copy(out, m.entries)
+	out[len(m.entries)] = Map_Entry{key = key, value = val}
+	return Map_Value{entries = out}, true
+}
+
+// eval_map_remove lowers `remove(map, key) -> Map[K, V]` (engine.map): a fresh map
+// without the key, the gap closed so insertion order is preserved among the rest.
+// A key not present yields the map unchanged (total, never faulting).
+eval_map_remove :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 2 {
+		return nil, false
+	}
+	source := eval_expr(ctx, env, e.args[0]) or_return
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	key := eval_expr(ctx, env, e.args[1]) or_return
+	idx := -1
+	for entry, i in m.entries {
+		if value_equal(entry.key, key) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return m, true
+	}
+	out := make([]Map_Entry, len(m.entries) - 1, context.temp_allocator)
+	copy(out[:idx], m.entries[:idx])
+	copy(out[idx:], m.entries[idx + 1:])
+	return Map_Value{entries = out}, true
+}
+
+// eval_map_keys lowers `keys(map) -> [K]` (engine.map): the keys as a list, in
+// insertion order — the determinism contract the iteration model rests on.
+eval_map_keys :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	source := eval_expr(ctx, env, e.args[0]) or_return
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	out := make([]Value, len(m.entries), context.temp_allocator)
+	for entry, i in m.entries {
+		out[i] = entry.key
+	}
+	return List_Value{elements = out}, true
+}
+
+// eval_map_values lowers `values(map) -> [V]` (engine.map): the values as a list,
+// in the same insertion order keys() projects — so keys()[i] and values()[i] pair.
+eval_map_values :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	source := eval_expr(ctx, env, e.args[0]) or_return
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	out := make([]Value, len(m.entries), context.temp_allocator)
+	for entry, i in m.entries {
+		out[i] = entry.value
+	}
+	return List_Value{elements = out}, true
 }
 
 // eval_max lowers `max(a, b)` (spec §10/§26): the larger of two same-typed
@@ -2423,6 +2587,16 @@ eval_method_call :: proc(ctx: Eval_Ctx, env: ^Env, callee: ^Member_Expr, args: [
 			}
 			if recv.name == "Pose" {
 				return eval_pose_static(ctx, env, callee.member, args)
+			}
+			// §26 engine.map: the idiomatic `Map.empty()` static constructor, the
+			// Type-name twin of the bare `empty()` free call — both build the empty
+			// insertion-ordered map. A type name is never an env binding, so this
+			// branch only fires for the Map.empty() static-method form.
+			if recv.name == "Map" && callee.member == "empty" {
+				if len(args) != 0 {
+					return nil, false
+				}
+				return Map_Value{}, true
 			}
 			// The §22 audio constructors: Sound.sfx(clip)/.sfx_at(clip, pos) and
 			// Audio.track(key, clip) build the one-shot / sustained record values the
