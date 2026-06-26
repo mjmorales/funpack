@@ -145,6 +145,56 @@ find_clones :: proc(
 	return cluster_and_suppress(eng.records[:], allocator)
 }
 
+// Subtree_Fingerprint is one subtree's identity for the near-miss tier: the canonical
+// hash the exact tier clusters on, and node_count as its weight (a larger shared subtree
+// is stronger evidence of similarity than a tiny one). Package-private so the near tier
+// (eir_near.odin) consumes it while the canon walk that produces it stays file-private.
+@(private)
+Subtree_Fingerprint :: struct {
+	hash:       u64,
+	node_count: int,
+}
+
+// canon_fingerprint canonicalizes ONE top-level declaration and returns every subtree at
+// or above `floor` as a (hash, node_count), plus the whole declaration's own hash and
+// node count. The near-miss tier compares two declarations by the OVERLAP of these
+// subtree multisets, so it measures similarity over the SAME canonical form the exact
+// tier clusters on — a renamed-but-near-identical proc shares almost every subtree hash.
+// Only the floor differs from a clone scan: it is finer (sub-proc shingles, not the
+// 30-node clone floor) so a small shared block still registers. The walk is dup_canon
+// itself — the near tier never re-implements the canonicalization, so the two tiers can
+// never drift apart (and the near walk can never become the clone the gate would flag).
+// decl_hash lets a caller drop exact-clone pairs (identical whole-decl canon), which
+// belong to the exact tier, keeping the two surfaces disjoint. Allocated in `allocator`.
+@(private)
+canon_fingerprint :: proc(
+	decl: ^ast.Node,
+	floor: int,
+	fold_literals: bool,
+	allocator := context.allocator,
+) -> (
+	decl_hash: u64,
+	decl_node_count: int,
+	subtrees: []Subtree_Fingerprint,
+) {
+	min_nodes := floor
+	if min_nodes < 1 {
+		min_nodes = 1
+	}
+	eng := Dup_Engine {
+		opts    = Dup_Options{min_nodes = min_nodes, fold_literals = fold_literals},
+		records = make([dynamic]Subtree_Record, 0, 64, context.temp_allocator),
+	}
+	alpha := make([dynamic]string, 0, 16, context.temp_allocator)
+	canon, n := dup_canon(&eng, decl, &alpha, false)
+
+	out := make([]Subtree_Fingerprint, len(eng.records), allocator)
+	for r, i in eng.records {
+		out[i] = Subtree_Fingerprint{hash = r.hash, node_count = r.node_count}
+	}
+	return hash.fnv64a(transmute([]byte)canon), n, out
+}
+
 // dup_canon computes the canonical bytes of the subtree rooted at `node`, threading
 // the alpha frame and recording the subtree when it meets the floor. canon folds the
 // kind tag, the node's kept free spellings, and the children's canonical bytes
@@ -1056,17 +1106,25 @@ instance_spans :: proc(outer, inner: Clone_Instance) -> bool {
 	)
 }
 
-// instance_less is the total order on instances within a class: by path, then by line
-// span. Deterministic, and human-friendly for a report.
+// span_less is the total order on source spans — (path, line_start, line_end) ascending.
+// Both clone tiers tie-break their report ordering by location, so the comparison lives
+// here once (package-visible) and every surface — clone instances, near-miss sites —
+// delegates, keeping the ordering identical and un-duplicated across them.
+span_less :: proc(a_path: string, a_start, a_end: int, b_path: string, b_start, b_end: int) -> bool {
+	if a_path != b_path {
+		return a_path < b_path
+	}
+	if a_start != b_start {
+		return a_start < b_start
+	}
+	return a_end < b_end
+}
+
+// instance_less orders clone instances within a class by span. Deterministic, and
+// human-friendly for a report.
 @(private = "file")
 instance_less :: proc(a, b: Clone_Instance) -> bool {
-	if a.path != b.path {
-		return a.path < b.path
-	}
-	if a.line_start != b.line_start {
-		return a.line_start < b.line_start
-	}
-	return a.line_end < b.line_end
+	return span_less(a.path, a.line_start, a.line_end, b.path, b.line_start, b.line_end)
 }
 
 // class_less is the total order on clone classes: by hash, then by first-instance

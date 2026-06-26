@@ -6,29 +6,11 @@
 // admits at-floor clones, (5) maximal-only suppression drops a fragment wholly
 // contained in a larger same-instance-set clone, (6) --fold-literals collapses a
 // constant-only difference into a collision, and (7) the output is deterministic.
-// Each fixture is a real source string parsed through the loader (load_clone_fixture),
+// Each fixture is a real source string parsed through the loader (load_source_fixture),
 // so the tests exercise the engine over genuine core:odin/ast trees.
 package eir
 
 import "core:testing"
-
-// load_clone_fixture writes one source to a fresh temp tree, parses the tree through
-// the loader, removes the temp files (the parsed tree lives in the temp allocator,
-// independent of disk), and returns the Load_Result the engine consumes. The shared
-// fixture helpers (fixture_root / write_fixture / remove_tree) come from
-// eir_discover_test.odin.
-@(private = "file")
-load_clone_fixture :: proc(label, src: string) -> Load_Result {
-	root := fixture_root(label)
-	write_fixture(root, "fix.odin", src)
-
-	l: Loader
-	loader_init(&l, context.temp_allocator)
-	result, _ := load_dir(&l, root, nil)
-
-	remove_tree(root)
-	return result
-}
 
 // opts is a terse Dup_Options constructor for the tests.
 @(private = "file")
@@ -60,7 +42,7 @@ beta :: proc(a: int) -> int {
 // proc-literal clone.
 @(test)
 test_dup_type1_exact_clone :: proc(t: ^testing.T) {
-	result := load_clone_fixture("type1", TYPE1_SRC)
+	result := load_source_fixture("type1", TYPE1_SRC)
 	classes := find_clones(result, opts(4, false), context.temp_allocator)
 
 	testing.expect_value(t, len(classes), 1)
@@ -93,7 +75,7 @@ delta :: proc(q: int) -> int {
 // class — proving a bound name canonicalizes to its binding slot, not its spelling.
 @(test)
 test_dup_type2_alpha_renamed :: proc(t: ^testing.T) {
-	result := load_clone_fixture("type2", TYPE2_SRC)
+	result := load_source_fixture("type2", TYPE2_SRC)
 	classes := find_clones(result, opts(4, false), context.temp_allocator)
 
 	testing.expect_value(t, len(classes), 1)
@@ -122,7 +104,7 @@ zet :: proc(a: int) -> int {
 // clone — the complement of the Type-2 case, proving free names keep their spelling.
 @(test)
 test_dup_free_name_difference_no_collide :: proc(t: ^testing.T) {
-	result := load_clone_fixture("freename", FREE_NAME_SRC)
+	result := load_source_fixture("freename", FREE_NAME_SRC)
 	classes := find_clones(result, opts(2, false), context.temp_allocator)
 
 	testing.expect_value(t, len(classes), 0)
@@ -146,7 +128,7 @@ m2 :: proc(a: int) -> int {
 // admits it — the noise gate that keeps trivial shared shapes out of the report.
 @(test)
 test_dup_min_nodes_floor :: proc(t: ^testing.T) {
-	result := load_clone_fixture("floor", FLOOR_SRC)
+	result := load_source_fixture("floor", FLOOR_SRC)
 
 	above := find_clones(result, opts(20, false), context.temp_allocator)
 	testing.expect_value(t, len(above), 0)
@@ -197,7 +179,7 @@ g2 :: proc(a: int) -> int {
 // suppressed. A broken suppressor would surface the fragments as extra classes.
 @(test)
 test_dup_maximal_only_suppression :: proc(t: ^testing.T) {
-	result := load_clone_fixture("maximal", MULTI_CLASS_SRC)
+	result := load_source_fixture("maximal", MULTI_CLASS_SRC)
 	classes := find_clones(result, opts(3, false), context.temp_allocator)
 
 	testing.expect_value(t, len(classes), 2)
@@ -230,7 +212,7 @@ c2 :: proc(a: int) -> int {
 // clone under --fold-literals.
 @(test)
 test_dup_fold_literals :: proc(t: ^testing.T) {
-	result := load_clone_fixture("fold", FOLD_SRC)
+	result := load_source_fixture("fold", FOLD_SRC)
 
 	distinct_classes := find_clones(result, opts(3, false), context.temp_allocator)
 	testing.expect_value(t, len(distinct_classes), 0)
@@ -274,7 +256,7 @@ test_dup_collision_does_not_merge :: proc(t: ^testing.T) {
 // fixture gives multiple classes so the ordering is meaningful.
 @(test)
 test_dup_deterministic :: proc(t: ^testing.T) {
-	result := load_clone_fixture("determinism", MULTI_CLASS_SRC)
+	result := load_source_fixture("determinism", MULTI_CLASS_SRC)
 	o := opts(3, false)
 
 	a := find_clones(result, o, context.temp_allocator)

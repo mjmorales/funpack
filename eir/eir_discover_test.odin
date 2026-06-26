@@ -166,6 +166,22 @@ remove_tree :: proc(root: string) {
 	_ = os.remove(root)
 }
 
+// load_source_fixture writes one source to a fresh temp tree, parses it through the
+// loader, removes the temp files (the parsed tree lives in the temp allocator, independent
+// of disk), and returns the Load_Result a lint-engine test consumes. Shared by the clone
+// and near tiers' tests so neither carries its own copy of this setup.
+load_source_fixture :: proc(label, src: string) -> Load_Result {
+	root := fixture_root(label)
+	write_fixture(root, "fix.odin", src)
+
+	l: Loader
+	loader_init(&l, context.temp_allocator)
+	result, _ := load_dir(&l, root, nil)
+
+	remove_tree(root)
+	return result
+}
+
 // has_basename reports whether any discovered source has the given file name,
 // independent of the temp-dir prefix the test cannot predict.
 has_basename :: proc(sources: []Discovered, name: string) -> bool {

@@ -69,22 +69,58 @@ lint_registry := []Lint {
 				kind = .Bool,
 				usage = "Emit the ranked clone classes as byte-stable JSON instead of the human table",
 			},
-				// --baseline turns dup from a report into a ratchet GATE: the scan is
-				// compared against the committed baseline file and the verb exits 1 on a
-				// debt rise. Its presence (a non-empty path) is the mode switch.
-				{
-					name = "baseline",
-					kind = .String,
-					usage = "Path to the committed clone-debt baseline; with it set, dup runs as a ratchet gate (exit 1 on debt above baseline)",
-				},
-				{
-					name = "update-baseline",
-					kind = .Bool,
-					usage = "With --baseline, re-snapshot the current clone debt to the baseline file and exit 0 (the monotone-tighten path)",
-				},
+			// --baseline turns dup from a report into a ratchet GATE: the scan is
+			// compared against the committed baseline file and the verb exits 1 on a
+			// debt rise. Its presence (a non-empty path) is the mode switch.
+			{
+				name = "baseline",
+				kind = .String,
+				usage = "Path to the committed clone-debt baseline; with it set, dup runs as a ratchet gate (exit 1 on debt above baseline)",
+			},
+			{
+				name = "update-baseline",
+				kind = .Bool,
+				usage = "With --baseline, re-snapshot the current clone debt to the baseline file and exit 0 (the monotone-tighten path)",
+			},
 		},
 		args = cli.cli_range_args(0, 1),
 		run = run_dup_lint,
+	},
+	{
+		name = "near",
+		short = "Report Type-3 near-miss (gapped/parameterized) clones as ranked declaration pairs",
+		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report NEAR-MISS clones — top-level declarations whose canonical subtree sets overlap at or above --similarity (default 80%) — on a surface SEPARATE from the exact dup tier. A pair is two declarations sharing most of their structure but diverging in a few statements (the gapped/parameterized copy exact hashing cannot collapse); exact whole-declaration clones are excluded, since those belong to `eir dup`. Prints a ranked human table by default, or --json for a byte-stable pair array.",
+		flags = []cli.Cli_Flag {
+			{
+				name = "exclude",
+				kind = .String,
+				usage = "Comma-separated glob list of paths to skip (e.g. 'cmd/funpack/mcp/corpus/,*.gen.odin')",
+			},
+			{
+				name = "min-nodes",
+				kind = .Int,
+				usage = "Whole-declaration node-count floor below which a declaration is not a near-miss candidate",
+				default = NEAR_DEFAULT_MIN_NODES,
+			},
+			{
+				name = "similarity",
+				kind = .Int,
+				usage = "Similarity cutoff in percent [1,100]; a declaration pair at or above it is reported",
+				default = NEAR_DEFAULT_SIMILARITY,
+			},
+			{
+				name = "fold-literals",
+				kind = .Bool,
+				usage = "Collapse every literal to one token so constant-only differences collide",
+			},
+			{
+				name = "json",
+				kind = .Bool,
+				usage = "Emit the ranked near-miss pairs as byte-stable JSON instead of the human table",
+			},
+		},
+		args = cli.cli_range_args(0, 1),
+		run = run_near_lint,
 	},
 }
 
@@ -254,6 +290,61 @@ run_dup_gate :: proc(
 		verdict.current_total,
 		baseline.total_dedup_value,
 	)
+	return 0
+}
+
+// run_near_lint handles `eir near`: scan the optional [root] (default cwd) for Odin
+// sources, fingerprint every top-level declaration, and report the ranked near-miss PAIRS
+// at or above --similarity — the human table by default, byte-stable JSON under --json.
+// Like dup it is a REPORT, not a gate (exit contract {0 informational, 2 usage}): the near
+// tier is advisory and lives on a surface SEPARATE from the exact tier, so the exact
+// surface stays precision-pure. The whole scan — loader cache, parsed trees, fingerprints,
+// and the rendered report — lives in one growing arena freed on return.
+run_near_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
+	root := "."
+	if len(inv.args) > 0 {
+		root = inv.args[0]
+	}
+
+	arena: vmem.Arena
+	if arena_err := vmem.arena_init_growing(&arena); arena_err != .None {
+		fmt.eprintln("eir near: cannot initialize the scan arena")
+		return 2
+	}
+	defer vmem.arena_destroy(&arena)
+	scan := vmem.arena_allocator(&arena)
+
+	excludes := parse_exclude_flag(cli.cli_flag_string(inv, "exclude"), scan)
+	opts := Near_Options {
+		min_nodes      = cli.cli_flag_int(inv, "min-nodes"),
+		similarity_pct = cli.cli_flag_int(inv, "similarity"),
+		fold_literals  = cli.cli_flag_bool(inv, "fold-literals"),
+	}
+
+	l: Loader
+	loader_init(&l, scan)
+	defer loader_destroy(&l)
+
+	result, ok := load_dir(&l, root, excludes)
+	if !ok {
+		fmt.eprintfln("eir near: cannot scan %q", root)
+		return 2
+	}
+
+	pairs := find_near_clones(result, opts, scan)
+
+	if result.parse_failures > 0 {
+		fmt.eprintfln(
+			"eir near: %d file(s) failed to parse and were skipped",
+			result.parse_failures,
+		)
+	}
+
+	if cli.cli_flag_bool(inv, "json") {
+		fmt.println(render_near_json(pairs, opts.similarity_pct, scan))
+	} else {
+		fmt.print(render_near_human(pairs, scan))
+	}
 	return 0
 }
 
