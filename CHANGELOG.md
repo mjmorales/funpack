@@ -7,6 +7,14 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.28.0] - 2026-06-26
+
+### Features
+- feat(eir): unify lint output onto a shared GNU-style diagnostic surface (145769b)
+
+### Other
+- refactor(runtime): extract the shared §2 line-codec into record_codec.odin (e178b8b)
+
 ## [0.27.0] - 2026-06-26
 
 ### Features
