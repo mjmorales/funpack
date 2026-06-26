@@ -174,7 +174,7 @@ gather_bodies :: proc(state: ^Tick_State, allocator := context.allocator) -> []S
 		table := &state.tables[table_idx]
 		for row_idx in 0 ..< len(table.rows) {
 			row := table.rows[row_idx]
-			body, is_body := parse_body(row, table_idx, row_idx)
+			body, is_body := parse_body(row, table_idx, row_idx, allocator)
 			if !is_body {
 				continue
 			}
@@ -191,8 +191,10 @@ gather_bodies :: proc(state: ^Tick_State, allocator := context.allocator) -> []S
 // `shape` variant, the `mass`/`friction` Fixed scalars, the `sensor` Bool, the
 // `mask` list, and the `impulse` Vec2. The `pos`/`vel` columns are read off the
 // ROW (not the body record) — they are the reserved top-level fields the solver
-// integrates. A Static body has no `vel` column, so vel defaults to zero.
-parse_body :: proc(row: Row, table_idx, row_idx: int) -> (body: Solver_Body, is_body: bool) {
+// integrates. A Static body has no `vel` column, so vel defaults to zero. The
+// retained enum-token strings (`layer`, `mask`) clone onto `allocator` — the
+// gather/eval arena gather_bodies threads — so they share the tick's reclaim.
+parse_body :: proc(row: Row, table_idx, row_idx: int, allocator: Runtime_Allocator) -> (body: Solver_Body, is_body: bool) {
 	body_col, has_body := row.fields[SOLVER_BODY_FIELD]
 	if !has_body {
 		return {}, false
@@ -204,13 +206,13 @@ parse_body :: proc(row: Row, table_idx, row_idx: int) -> (body: Solver_Body, is_
 
 	body.table_idx = table_idx
 	body.row_idx = row_idx
-	body.kind = parse_body_kind(rec)
+	body.kind = parse_body_kind(rec, allocator)
 	body.shape = parse_body_shape(rec)
 	body.mass = body_record_fixed(rec, "mass", to_fixed(1)) // §11 §2 default mass 1.0
 	body.friction = body_record_fixed(rec, "friction", fixed_from_decimal(0, "5")) // default 0.5
 	body.sensor = body_record_bool(rec, "sensor")
-	body.layer = body_record_token(rec, "layer")
-	body.mask = body_record_mask(rec)
+	body.layer = body_record_token(rec, "layer", allocator)
+	body.mask = body_record_mask(rec, allocator)
 	body.impulse = body_record_vec2(rec, "impulse")
 	body.pos = row_vec2(row, SOLVER_POS_FIELD)
 	body.vel = row_vec2(row, SOLVER_VEL_FIELD)
@@ -541,8 +543,8 @@ write_body_back :: proc(state: ^Tick_State, body: Solver_Body) {
 // "BodyKind::Static"/"::Dynamic"/"::Kinematic" token maps to its arm; an
 // absent/unrecognized kind defaults to Static (the safe inert default — an
 // unparsable body never integrates).
-parse_body_kind :: proc(rec: Record_Value) -> Body_Kind {
-	token := body_record_token(rec, "kind")
+parse_body_kind :: proc(rec: Record_Value, allocator: Runtime_Allocator) -> Body_Kind {
+	token := body_record_token(rec, "kind", allocator)
 	switch token_case(token) {
 	case "Dynamic":
 		return .Dynamic
@@ -586,8 +588,11 @@ parse_body_shape :: proc(rec: Record_Value) -> Solver_Shape {
 // enum fields are carried as Variant_Values (the `Field_Value`→string token
 // flattening applies only to a TOP-LEVEL blackboard column, not to a field inside
 // a Record_Value column). The Variant renders to its "Enum::Case" token via
-// variant_to_token; an absent/non-enum column is "".
-body_record_token :: proc(rec: Record_Value, name: string) -> string {
+// variant_to_token; an absent/non-enum column is "". The token clones onto the
+// gather `allocator` (the tick's eval arena) so it shares the per-tick reclaim
+// rather than reaching for context.temp_allocator (a separate arena the live loop
+// never resets — see gather_bodies).
+body_record_token :: proc(rec: Record_Value, name: string, allocator: Runtime_Allocator) -> string {
 	col, present := rec.fields[name]
 	if !present {
 		return ""
@@ -596,7 +601,7 @@ body_record_token :: proc(rec: Record_Value, name: string) -> string {
 	if !is_variant {
 		return ""
 	}
-	return variant_to_token(variant, context.temp_allocator)
+	return variant_to_token(variant, allocator)
 }
 
 // body_record_mask reads the §11 §5 `mask: [Layer]` list column into its layer
@@ -604,7 +609,7 @@ body_record_token :: proc(rec: Record_Value, name: string) -> string {
 // element renders to its token string (a string column verbatim, a Variant_Value
 // via variant_to_token). An absent/non-list mask is an empty mask (the body
 // collides with nothing).
-body_record_mask :: proc(rec: Record_Value) -> []string {
+body_record_mask :: proc(rec: Record_Value, allocator: Runtime_Allocator) -> []string {
 	col, present := rec.fields["mask"]
 	if !present {
 		return nil
@@ -613,9 +618,9 @@ body_record_mask :: proc(rec: Record_Value) -> []string {
 	if !is_list {
 		return nil
 	}
-	tokens := make([]string, len(list.elements), context.temp_allocator)
+	tokens := make([]string, len(list.elements), allocator)
 	for elem, i in list.elements {
-		tokens[i] = value_to_layer_token(elem)
+		tokens[i] = value_to_layer_token(elem, allocator)
 	}
 	return tokens
 }
@@ -625,12 +630,12 @@ body_record_mask :: proc(rec: Record_Value) -> []string {
 // list-of-enum column carries Variants, not flattened string tokens); the Variant
 // renders to its token via variant_to_token. A non-enum element is "" (never
 // matched by mask_contains, so an off-shape element is inert).
-value_to_layer_token :: proc(v: Value) -> string {
+value_to_layer_token :: proc(v: Value, allocator: Runtime_Allocator) -> string {
 	variant, is_variant := v.(Variant_Value)
 	if !is_variant {
 		return ""
 	}
-	return variant_to_token(variant, context.temp_allocator)
+	return variant_to_token(variant, allocator)
 }
 
 // body_record_fixed reads a Fixed scalar column off the Body record (`mass`/
