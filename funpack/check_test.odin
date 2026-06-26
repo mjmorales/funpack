@@ -251,6 +251,34 @@ test_check_recursive_discovers_every_project :: proc(t: ^testing.T) {
 	log.infof("check recursive discover: %d sibling projects discovered, nested + .git/.funpack pruned", len(roots))
 }
 
+// test_check_recursive_prunes_the_vendor_dir pins the VENDOR_DIR prune: a vendored
+// dependency at <root>/packages/<dep> (a real funpack_configs tree a deps walk owns)
+// must NOT be adjudicated as a standalone project by the recursive sweep. A sibling
+// real game IS discovered, so the prune is scoped to the packages/ vendor root, not
+// the whole walk. Before the prune named VENDOR_DIR (it named the foreign node_modules/
+// .vendor instead), the sweep descended into packages/ and double-counted every dep.
+@(test)
+test_check_recursive_prunes_the_vendor_dir :: proc(t: ^testing.T) {
+	parent, ok := write_games_tree("vendor", []string{"game"}, "")
+	if !ok {
+		log.warnf("SKIP check recursive vendor-prune: cannot materialize games tree")
+		return
+	}
+	defer remove_scratch_tree(parent)
+	if _, wrote := write_project_under(scratch_join({parent, VENDOR_DIR}), "dep", MINI_SOURCE); !wrote {
+		log.warnf("SKIP check recursive vendor-prune: cannot materialize vendored dep")
+		return
+	}
+
+	roots := discover_project_roots(parent, context.temp_allocator)
+	testing.expect_value(t, len(roots), 1)
+	testing.expect_value(t, filepath.base(roots[0]), "game")
+	for r in roots {
+		testing.expect(t, !strings.contains(r, VENDOR_DIR), "no discovered root lives under the packages/ vendor dir")
+	}
+	log.infof("check recursive vendor-prune: packages/<dep> not double-counted, sibling game discovered")
+}
+
 // test_check_recursive_clean_tree_exits_zero is the all-clean sweep: a games/ tree
 // of N clean projects adjudicates exit 0 in one invocation, and the byte-stable
 // report lists every project clean plus the aggregate "N projects, N clean, 0

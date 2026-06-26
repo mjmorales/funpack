@@ -171,9 +171,11 @@ check_project_verdict :: proc(root: string, mode: Build_Mode) -> Build_Verdict {
 // FUNPACK_RECURSIVE_PRUNE_DIRS is the closed set of directory NAMES the recursive
 // discovery walk never descends into: VCS metadata (.git), the build-output dir
 // (.funpack — a check writes nothing, but a prior build's output is not a project
-// tree), and the dependency/vendor roots a deps walk owns. Pruning these keeps the
-// sweep fast and never mis-reads a build-output or vendored subtree as a project.
-FUNPACK_RECURSIVE_PRUNE_DIRS :: []string{".git", FUNPACK_BUILD_DIR, "node_modules", ".vendor"}
+// tree), and the vendored-dependency root (packages, VENDOR_DIR — a deps walk owns
+// it, and each packages/<dep>/ tree is a vendored project, not one to re-adjudicate).
+// Pruning these keeps the sweep fast and never mis-reads a build-output or a vendored
+// subtree as a standalone project.
+FUNPACK_RECURSIVE_PRUNE_DIRS :: []string{".git", FUNPACK_BUILD_DIR, VENDOR_DIR}
 
 // discover_project_roots walks the directory tree at `root` with the core:os
 // breadth-first walker (Odin-first — no shell-out, no `find`, no process spawn)
