@@ -7,6 +7,14 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.23.1] - 2026-06-26
+
+### Fixes
+- fix(runtime): thread the gather allocator through the solver body readers (4bbae35)
+
+### Other
+- perf(runtime): build the action registry once per program, key inputs by struct (eb5b3b3)
+
 ## [0.23.0] - 2026-06-26
 
 ### Features
