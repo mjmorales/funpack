@@ -323,13 +323,12 @@ frame_digest :: proc(
 	draw: Maybe(Draw_List),
 	allocator := context.allocator,
 ) -> Frame_Digest {
-	buf := make([dynamic]u8, allocator)
-	defer delete(buf)
-	write_world_state(&buf, version)
-	if list, has_draw := draw.?; has_draw {
-		write_draw_list(&buf, list)
-	}
-	return Frame_Digest{tick = version.tick, digest = u64(xxhash.XXH64(buf[:]))}
+	// Hash the SAME bytes frame_bytes defines — one source for the canonical tick
+	// stream, so the production digest and the test-asserted byte oracle can never
+	// drift apart.
+	buf := frame_bytes(version, draw, allocator)
+	defer delete(buf, allocator)
+	return Frame_Digest{tick = version.tick, digest = u64(xxhash.XXH64(buf))}
 }
 
 // FRAME_SESSION_SEED is the FIXED seed the session fold opens with. It is

@@ -32,6 +32,11 @@ load_artifact_file :: proc(
 	if read_err != nil {
 		return {}, .None, false
 	}
+	// build_program clones every string field it keeps (load_meta/load_entrypoint
+	// included), so the returned Program is self-owned and the raw artifact bytes are
+	// dead once load_program returns — free them rather than leak for the allocator's
+	// life.
+	defer delete(bytes, allocator)
 	loaded, load_err := load_program(string(bytes), allocator)
 	return loaded, load_err, true
 }
@@ -68,7 +73,7 @@ build_program :: proc(
 	for section in doc.sections {
 		switch section.name {
 		case "meta":
-			program.meta = load_meta(section) or_return
+			program.meta = load_meta(section, allocator) or_return
 		case "enums":
 			program.enums = load_enums(section, allocator) or_return
 		case "data":
@@ -90,7 +95,7 @@ build_program :: proc(
 		case "bindings":
 			program.bindings = load_bindings(section, allocator) or_return
 		case "entrypoint":
-			program.entrypoint = load_entrypoint(section) or_return
+			program.entrypoint = load_entrypoint(section, allocator) or_return
 		case "queries":
 			program.queries = load_queries(section, allocator) or_return
 		case "tilemaps":
@@ -128,7 +133,13 @@ build_program :: proc(
 // --- §4 meta ---------------------------------------------------------------
 
 // load_meta reads the two §4 records: `project NAME` and `version L5:0.1.0`.
-load_meta :: proc(section: Artifact_Section) -> (meta: Project_Meta, err: Artifact_Error) {
+load_meta :: proc(
+	section: Artifact_Section,
+	allocator := context.allocator,
+) -> (
+	meta: Project_Meta,
+	err: Artifact_Error,
+) {
 	if len(section.records) != 2 {
 		return {}, .Section_Count_Mismatch
 	}
@@ -136,7 +147,10 @@ load_meta :: proc(section: Artifact_Section) -> (meta: Project_Meta, err: Artifa
 	if len(project_fields) < 2 || project_fields[0] != "project" {
 		return {}, .Bad_Field
 	}
-	meta.name = project_fields[1]
+	// Clone onto `allocator` so the Program owns its identity strings independent of
+	// the source artifact bytes — the sibling loaders' clone-everything invariant,
+	// and the strings feed identity_from_program / the replay-determinism header.
+	meta.name = strings.clone(project_fields[1], allocator)
 
 	version_fields := record_fields(section.records[1])
 	if len(version_fields) < 2 || version_fields[0] != "version" {
@@ -146,7 +160,7 @@ load_meta :: proc(section: Artifact_Section) -> (meta: Project_Meta, err: Artifa
 	if !ok {
 		return {}, .Bad_Field
 	}
-	meta.version = v
+	meta.version = strings.clone(v, allocator)
 	return meta, .None
 }
 
@@ -1178,7 +1192,13 @@ load_bindings :: proc(
 // that bakes `seed = N` in entrypoints.fcfg emits a 7th field, and an artifact with
 // no config seed emits the 6 fields only — a 6-field record loads has_seed=false, so
 // the seed field is purely additive and never required.
-load_entrypoint :: proc(section: Artifact_Section) -> (entry: Entrypoint, err: Artifact_Error) {
+load_entrypoint :: proc(
+	section: Artifact_Section,
+	allocator := context.allocator,
+) -> (
+	entry: Entrypoint,
+	err: Artifact_Error,
+) {
 	if len(section.records) != 1 {
 		return {}, .Section_Count_Mismatch
 	}
@@ -1208,13 +1228,15 @@ load_entrypoint :: proc(section: Artifact_Section) -> (entry: Entrypoint, err: A
 		has_seed = true
 		seed = parsed_seed
 	}
+	// Clone the three view-into-`content` strings onto `allocator` so the Program is
+	// self-owned (matches the sibling loaders; unblocks freeing the raw bytes).
 	return Entrypoint {
-			name = f[1],
-			pipeline = strings.trim_prefix(f[2], "pipeline:"),
+			name = strings.clone(f[1], allocator),
+			pipeline = strings.clone(strings.trim_prefix(f[2], "pipeline:"), allocator),
 			tick_hz = hz,
 			logical_w = logical_w,
 			logical_h = logical_h,
-			bindings = strings.trim_prefix(f[5], "bindings:"),
+			bindings = strings.clone(strings.trim_prefix(f[5], "bindings:"), allocator),
 			has_seed = has_seed,
 			seed = seed,
 		},

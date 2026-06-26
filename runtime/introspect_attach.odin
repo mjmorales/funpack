@@ -727,6 +727,9 @@ when #config(FUNPACK_LIVE, false) {
 			}
 			transport := attach_socket_transport(client)
 			serve_attach_connection(s, auth, transport)
+			// attach_socket_transport heap-boxes the socket into userdata; free it per
+			// connection so the infinite accept loop does not leak one box per client.
+			free(transport.userdata)
 			net.close(client)
 		}
 	}

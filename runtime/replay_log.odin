@@ -80,8 +80,11 @@ Replay_Log :: struct {
 	snapshots: []Input,
 }
 
-// delete_replay_log frees every parsed snapshot's tables and the snapshot slice.
+// delete_replay_log frees every parsed snapshot's tables, the snapshot slice, and
+// the two cloned identity strings read_replay owns (see read_replay's clone).
 delete_replay_log :: proc(log: Replay_Log) {
+	delete(log.identity.project_name)
+	delete(log.identity.project_version)
 	for snapshot in log.snapshots {
 		delete_input(snapshot)
 	}
@@ -134,6 +137,14 @@ read_replay :: proc(
 		append(&snapshots, snapshot)
 	}
 
+	// parse_identity_record returns the two project strings as length-prefixed VIEWS
+	// into log_bytes; clone them onto `allocator` so the returned Replay_Log owns its
+	// identity independent of the source-bytes lifetime (read_replay_file frees the
+	// file bytes on return, and the §09 §5 identity gate compares these strings after
+	// that). Cloned here, only on the success path, so an error return above never
+	// allocates them — delete_replay_log frees them for the owned log.
+	identity.project_name = strings.clone(identity.project_name, allocator)
+	identity.project_version = strings.clone(identity.project_version, allocator)
 	return Replay_Log{identity = identity, snapshots = snapshots[:]}, true
 }
 

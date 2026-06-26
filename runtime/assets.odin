@@ -28,6 +28,7 @@
 package funpack_runtime
 
 import "core:encoding/base64"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 
@@ -212,10 +213,8 @@ asset_sets_equal :: proc(a, b: Asset_Set) -> bool {
 		   len(image.pixels) != len(other.pixels) {
 			return false
 		}
-		for px, j in image.pixels {
-			if px != other.pixels[j] {
-				return false
-			}
+		if !slice.equal(image.pixels, other.pixels) {
+			return false
 		}
 	}
 	for atlas, i in a.atlases {
@@ -313,6 +312,9 @@ load_asset_image :: proc(
 	// fail-closed (the exact-match floor, never a partial image the renderer would
 	// blit garbage from).
 	if len(decoded) != width * height * 4 {
+		// Fail-closed on a dim mismatch — free the decoded buffer first so the refusal
+		// path does not leak it (the happy path below hands ownership to pixels).
+		delete(decoded, allocator)
 		return {}, .Bad_Field
 	}
 	return Asset_Image {
