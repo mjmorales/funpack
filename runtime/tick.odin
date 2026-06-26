@@ -1562,32 +1562,33 @@ write_blackboard :: proc(
 	if table == nil {
 		return
 	}
-	for i in 0 ..< len(table.rows) {
-		if table.rows[i].id != id {
-			continue
-		}
-		// The fresh map AND its cloned columns target the PERSISTENT commit allocator
-		// (not the eval scratch), so the committed row survives the per-tick scratch
-		// reset in the live loop — the determinism floor is unchanged (same bytes,
-		// different heap). In bounded paths commit_allocator == the eval allocator.
-		next := make(map[string]Field_Value, state.commit_allocator)
-		for k, v in record.fields {
-			if fv, ok := value_to_field_value(v, state.commit_allocator); ok {
-				next[k] = fv
-			}
-		}
-		// The map this write REPLACES is no longer reachable from the next committed
-		// version (the row now carries `next`): on the FIRST write of a row this tick
-		// it is the PRIOR version's aliased map, on a later write it is this tick's
-		// earlier intermediate map — both freeable once the tick commits. Collect it
-		// for the live generational reclaimer (reclaim.odin); the bounded drivers
-		// ignore the list. A nil map (a row with no prior blackboard) is skipped.
-		if table.rows[i].fields != nil {
-			append(&state.superseded, table.rows[i].fields)
-		}
-		table.rows[i].fields = next
+	// Working rows stay Id-ascending mid-tick (a behavior never reorders them), so the
+	// row is a logarithmic lookup, not a linear scan — and the order find_row_by_id
+	// relies on is the order the working table preserves.
+	i, found := find_row_by_id(table.rows[:], id)
+	if !found {
 		return
 	}
+	// The fresh map AND its cloned columns target the PERSISTENT commit allocator
+	// (not the eval scratch), so the committed row survives the per-tick scratch
+	// reset in the live loop — the determinism floor is unchanged (same bytes,
+	// different heap). In bounded paths commit_allocator == the eval allocator.
+	next := make(map[string]Field_Value, state.commit_allocator)
+	for k, v in record.fields {
+		if fv, ok := value_to_field_value(v, state.commit_allocator); ok {
+			next[k] = fv
+		}
+	}
+	// The map this write REPLACES is no longer reachable from the next committed
+	// version (the row now carries `next`): on the FIRST write of a row this tick
+	// it is the PRIOR version's aliased map, on a later write it is this tick's
+	// earlier intermediate map — both freeable once the tick commits. Collect it
+	// for the live generational reclaimer (reclaim.odin); the bounded drivers
+	// ignore the list. A nil map (a row with no prior blackboard) is skipped.
+	if table.rows[i].fields != nil {
+		append(&state.superseded, table.rows[i].fields)
+	}
+	table.rows[i].fields = next
 }
 
 // --- Spawn / Despawn batch (§07 §4 tick boundary) -------------------------

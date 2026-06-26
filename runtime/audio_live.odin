@@ -202,10 +202,13 @@ when #config(FUNPACK_LIVE, false) {
 	// track carries); the reconciler's START/BEND/STOP lifecycle above is the part
 	// this story wires.
 	audio_voice_feed :: proc(live: ^Live_Audio, key: string) {
-		// Intentional no-op until the §19 sound-asset decode lands: the voice's device
-		// is open and (un)paused by the lifecycle above, so the start/stop/bend regime
-		// is live; the sample fill is the asset-pipeline seam. Reading the voice keeps
-		// the key referenced so the lifecycle is observable.
+		// UNIMPLEMENTED — pending the §19 sound-asset decode. This seam WILL decode the
+		// voice's clip and queue its gain/pitch-applied samples onto the open device;
+		// until that lands there are no sample bytes to feed, so it is DELIBERATELY a
+		// no-op — not a silent stub: the start/stop/bend lifecycle above is fully wired,
+		// only the sample fill waits on the asset pipeline. The map read below is an
+		// EXPLICIT reference-keeper, documenting the seam's (live, key) dependency so the
+		// contract the decode fills is visible here rather than implied — not dead code.
 		_, _ = live.voices[key]
 	}
 

@@ -85,89 +85,21 @@ audio_version :: proc(
 	interp := new_interp(program, &committed, nil, input, time, allocator)
 
 	tracks := make([dynamic]Audio_Track, allocator)
-	for step in program.pipeline {
-		if step.stage != "audio" {
-			continue
-		}
-		behavior := program_behavior(program, step.behavior)
-		if behavior == nil {
-			continue
-		}
-		audio_behavior_over_instances(&interp, behavior, &tracks, allocator)
-	}
+	// Shares render's projection walk (project_stage in render.odin) — the audio stage
+	// folds each behavior's [Audio] list through audio_track_from_record. obs is never
+	// armed for audio (the §28 trace re-projection is render-only).
+	project_stage(&interp, program, "audio", &tracks, audio_track_from_record)
 	return Audio_Scene{tracks = tracks[:]}
 }
 
-// audio_behavior_over_instances runs one audio behavior once per instance of its
-// on-Thing in stable Id order (§08 §2), evaluating the body to its [Audio] list
-// and appending each lowered track. The instances come from the committed View
-// (interp.tick is nil), so iteration is the committed stable Id order. An audio
-// behavior binds only `self` (it takes no signals, no Rng, no Views — the slot
-// contract enforces the no-blackboard-write, no-signal shape compiler-side), so
-// the env carries the instance blackboard and the body returns an [Audio] list.
-audio_behavior_over_instances :: proc(
-	interp: ^Interp,
-	behavior: ^Behavior_Decl,
-	tracks: ^[dynamic]Audio_Track,
-	allocator := context.allocator,
-) {
-	view := view_of_type(interp.version, behavior.on_thing)
-	for i in 0 ..< view_count(view) {
-		row, _ := view_at(view, i)
-		env := audio_behavior_env(interp, behavior, row)
-		result, ok := eval_behavior_body(interp, behavior.body, &env)
-		if !ok {
-			continue
-		}
-		append_audio_tracks(tracks, result)
-	}
-}
-
-// audio_behavior_env binds an audio behavior's params for one instance — the same
-// shape render_behavior_env binds: `self` to the committed row's record, an
-// Input/Time param to the resource it observes but never writes through. An audio
-// behavior declares no signal/View params (the Audio slot contract), so this is
-// the whole binding it needs; the runtime honors the contract by binding only
-// what audio reads.
-audio_behavior_env :: proc(interp: ^Interp, behavior: ^Behavior_Decl, self_row: Row) -> Env {
-	env := Env{names = make(map[string]Value, interp.allocator)}
-	for param in behavior.params {
-		switch param.type {
-		case "Input":
-			env.names[param.name] = input_marker(interp)
-		case "Time":
-			env.names[param.name] = interp.time
-		case:
-			// `self` (the on-Thing type) reads the committed instance blackboard;
-			// audio's only such param is self.
-			env.names[param.name] = row_to_record(interp, self_row)
-		}
-	}
-	return env
-}
-
 // append_audio_tracks lowers an audio behavior's returned [Audio] list into the
-// scene, appending each track in emitted order. The return is a List_Value of
-// Audio records (the [Audio] emit shape, built by the Audio.track(...) builder
-// chain); a non-list return (the body fell through) contributes nothing, and a
-// list element that is not a well-formed Audio record is skipped — a malformed
-// audio body adds no track rather than faulting the projection (the same
-// fail-closed discipline append_draw_commands follows). A standing creature's
-// locomotion returns [], so the scene stays empty and the engine stops its voice.
+// scene (fold_emitted_list over audio_track_from_record) — a non-list return or a
+// malformed Audio record is skipped, the same fail-closed discipline render's
+// append_draw_commands follows. Kept as a named entry point for the standalone
+// audio-lowering test (a standing creature's locomotion returns [], so the scene stays
+// empty and the engine stops its voice).
 append_audio_tracks :: proc(tracks: ^[dynamic]Audio_Track, result: Value) {
-	list, is_list := result.(List_Value)
-	if !is_list {
-		return
-	}
-	for elem in list.elements {
-		record, is_record := elem.(Record_Value)
-		if !is_record {
-			continue
-		}
-		if track, ok := audio_track_from_record(record); ok {
-			append(tracks, track)
-		}
-	}
+	fold_emitted_list(tracks, result, audio_track_from_record)
 }
 
 // audio_track_from_record lowers one evaluated Audio record into an Audio_Track.
@@ -195,18 +127,11 @@ audio_track_from_record :: proc(record: Record_Value) -> (track: Audio_Track, ok
 
 // --- audio-record field readers -------------------------------------------
 
-// audio_record_string reads a String_Value field off an Audio record — the
-// track's stable diff `key`. ok is false when the field is absent or not a String.
+// audio_record_string reads a String_Value field off an Audio record — the track's
+// stable diff `key` (the shared record_name_field mold). ok is false when the field is
+// absent or not a String.
 audio_record_string :: proc(record: Record_Value, name: string) -> (text: string, ok: bool) {
-	field, present := record.fields[name]
-	if !present {
-		return "", false
-	}
-	str, is_str := field.(String_Value)
-	if !is_str {
-		return "", false
-	}
-	return str.text, true
+	return record_name_field(record, name)
 }
 
 // audio_record_clip reads the played sound's asset name off an Audio record's
@@ -223,7 +148,7 @@ audio_record_clip :: proc(record: Record_Value, name: string) -> (clip: string, 
 	if !is_record || handle.type_name != "SoundHandle" {
 		return "", false
 	}
-	return audio_record_string(handle, "name")
+	return record_name_field(handle, "name")
 }
 
 // audio_record_fixed reads a Fixed gain/pitch field off an Audio record. A built

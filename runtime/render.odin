@@ -410,29 +410,19 @@ render_version :: proc(
 	for &layer in version.tilemaps {
 		append(&cmds, Draw_Tilemap{layer = layer})
 	}
-	for step in program.pipeline {
-		if step.stage != "render" {
-			continue
-		}
-		behavior := program_behavior(program, step.behavior)
-		if behavior == nil {
-			continue
-		}
-		render_behavior_over_instances(&interp, step, behavior, &cmds, allocator, obs)
-	}
+	project_stage(&interp, program, "render", &cmds, draw_command_from_record, obs)
 	// The §28 collision-extent debug overlay rides ON TOP of the behavior commands
 	// when requested — a pure post-commit read, gated off the normal projection.
+	// Appended straight into the draw-list (no intermediate slice to abandon).
 	if overlay {
-		for cmd in render_overlay_commands(version, allocator) {
-			append(&cmds, cmd)
-		}
+		append_overlay_commands(&cmds, version)
 	}
 	resolve_sprite_textures(program, cmds[:])
 	resolve_tilemap_textures(program, cmds[:], allocator)
 	return Draw_List{cmds = cmds[:]}
 }
 
-// render_overlay_commands draws the §28 collision-extent DEBUG overlay: for every
+// append_overlay_commands draws the §28 collision-extent DEBUG overlay: for every
 // committed instance carrying the universal 2D pair (a `pos` and a `size`, both Vec2), it
 // emits the CENTER-ANCHORED extent the engine actually uses — spec §20's `corner = pos −
 // size/2`, the same anchor render and the physics solver apply — as a four-edge Magenta
@@ -445,8 +435,7 @@ render_version :: proc(
 // behavior runs, no Draw is authored by the game, nothing re-enters the sim. The edges are
 // emitted CENTER-anchored too (each `at` is the edge's midpoint), so the projection lowers
 // them by the same §20 rule as every other rect — the overlay cannot itself be off-anchor.
-render_overlay_commands :: proc(version: World_Version, allocator := context.allocator) -> []Draw_Cmd {
-	cmds := make([dynamic]Draw_Cmd, allocator)
+append_overlay_commands :: proc(cmds: ^[dynamic]Draw_Cmd, version: World_Version) {
 	v := version
 	for table in v.tables {
 		for row in table.rows {
@@ -459,7 +448,7 @@ render_overlay_commands :: proc(version: World_Version, allocator := context.all
 				continue
 			}
 			marker := to_fixed(2)
-			append(&cmds, Draw_Rect{at = pos, size = Vec2{marker, marker}, color = named_color(.Magenta)})
+			append(cmds, Draw_Rect{at = pos, size = Vec2{marker, marker}, color = named_color(.Magenta)})
 
 			size_field, has_size := row.fields["size"]
 			if !has_size {
@@ -473,12 +462,20 @@ render_overlay_commands :: proc(version: World_Version, allocator := context.all
 			half_y := fixed_div(size.y, to_fixed(2))
 			thick := to_fixed(1)
 			// Four center-anchored edge rects forming the box border at [pos ± size/2].
-			append(&cmds, Draw_Rect{at = Vec2{pos.x, fixed_sub(pos.y, half_y)}, size = Vec2{size.x, thick}, color = named_color(.Magenta)})
-			append(&cmds, Draw_Rect{at = Vec2{pos.x, fixed_add(pos.y, half_y)}, size = Vec2{size.x, thick}, color = named_color(.Magenta)})
-			append(&cmds, Draw_Rect{at = Vec2{fixed_sub(pos.x, half_x), pos.y}, size = Vec2{thick, size.y}, color = named_color(.Magenta)})
-			append(&cmds, Draw_Rect{at = Vec2{fixed_add(pos.x, half_x), pos.y}, size = Vec2{thick, size.y}, color = named_color(.Magenta)})
+			append(cmds, Draw_Rect{at = Vec2{pos.x, fixed_sub(pos.y, half_y)}, size = Vec2{size.x, thick}, color = named_color(.Magenta)})
+			append(cmds, Draw_Rect{at = Vec2{pos.x, fixed_add(pos.y, half_y)}, size = Vec2{size.x, thick}, color = named_color(.Magenta)})
+			append(cmds, Draw_Rect{at = Vec2{fixed_sub(pos.x, half_x), pos.y}, size = Vec2{thick, size.y}, color = named_color(.Magenta)})
+			append(cmds, Draw_Rect{at = Vec2{fixed_add(pos.x, half_x), pos.y}, size = Vec2{thick, size.y}, color = named_color(.Magenta)})
 		}
 	}
+}
+
+// render_overlay_commands is the slice-returning wrapper over append_overlay_commands,
+// kept for the standalone overlay test (render_version appends straight into its
+// draw-list). It allocates a fresh draw-list, folds the overlay in, and returns it.
+render_overlay_commands :: proc(version: World_Version, allocator := context.allocator) -> []Draw_Cmd {
+	cmds := make([dynamic]Draw_Cmd, allocator)
+	append_overlay_commands(&cmds, version)
 	return cmds[:]
 }
 
@@ -569,51 +566,14 @@ resolve_sprite_textures :: proc(program: ^Program, cmds: []Draw_Cmd) {
 	}
 }
 
-// render_behavior_over_instances runs one render behavior once per instance of
-// its on-Thing in stable Id order (§08 §2), evaluating the body to its [Draw]
-// list and appending each lowered command. The instances come from the committed
-// View (interp.tick is nil), so iteration is the committed stable Id order. A
-// render behavior binds only `self` (it takes no signals, no Rng, no Views), so
-// the env carries the instance blackboard and the body returns a [Draw] list.
-//
-// When `obs` is armed (the §28 trace re-projection), each instance's
-// (self_before, bound reads, returned [Draw] value) is copied into the capture
-// buffer at the SAME seam the interior tick fold taps, so inspect_trace reports a
-// render behavior's in→out exactly as it does an Update behavior — the sim fold
-// skips render, so a re-fold alone would leave its trace empty. The capture is a
-// pure copy-out: it never reads back into the projection, so the draw-list is
-// bit-identical whether the tap fired or not.
-render_behavior_over_instances :: proc(
-	interp: ^Interp,
-	step: Pipeline_Step,
-	behavior: ^Behavior_Decl,
-	cmds: ^[dynamic]Draw_Cmd,
-	allocator := context.allocator,
-	obs: ^Tick_Observe = nil,
-) {
-	view := view_of_type(interp.version, behavior.on_thing)
-	for i in 0 ..< view_count(view) {
-		row, _ := view_at(view, i)
-		env := render_behavior_env(interp, behavior, row)
-		result, ok := eval_behavior_body(interp, behavior.body, &env)
-		if obs != nil {
-			observe_behavior_step(obs, step, behavior, row, env, result, ok)
-		}
-		if !ok {
-			continue
-		}
-		append_draw_commands(cmds, result)
-	}
-}
-
-// render_behavior_env binds a render behavior's params for one instance. A render
-// behavior reads only `self` — its on-Thing blackboard — so `self` binds to the
-// committed row's record and an Input/Time param binds to the resource it
-// observes but never writes through. A render behavior declares no signal/View
-// params, so this is the whole binding it needs (the slot contract enforces the
-// no-blackboard-write, no-signal shape compiler-side; the runtime honors it by
-// binding only what render reads).
-render_behavior_env :: proc(interp: ^Interp, behavior: ^Behavior_Decl, self_row: Row) -> Env {
+// projection_behavior_env binds a render OR audio behavior's params for one instance —
+// the two projection stages bind the SAME shape (the byte-identical env both build). A
+// projection behavior reads only `self` — its on-Thing blackboard — so `self` binds to
+// the committed row's record and an Input/Time param binds to the resource it observes
+// but never writes through. Neither stage declares signal/View params (the slot contract
+// enforces the no-blackboard-write, no-signal shape compiler-side), so this is the whole
+// binding either needs; the runtime honors the contract by binding only what they read.
+projection_behavior_env :: proc(interp: ^Interp, behavior: ^Behavior_Decl, self_row: Row) -> Env {
 	env := Env{names = make(map[string]Value, interp.allocator)}
 	for param in behavior.params {
 		switch param.type {
@@ -623,19 +583,67 @@ render_behavior_env :: proc(interp: ^Interp, behavior: ^Behavior_Decl, self_row:
 			env.names[param.name] = interp.time
 		case:
 			// `self` (the on-Thing type) and any other thing-typed param read the
-			// committed instance blackboard; render's only such param is self.
+			// committed instance blackboard; a projection's only such param is self.
 			env.names[param.name] = row_to_record(interp, self_row)
 		}
 	}
 	return env
 }
 
-// append_draw_commands lowers a render behavior's returned [Draw] list into the
-// draw-list, appending each command in emitted order. The return is a List_Value
-// of Draw::Rect / Draw::Text records (the [Draw] emit shape); a non-list return
-// or a record that is not a known draw command is skipped, so a malformed render
-// body contributes nothing rather than faulting the projection.
-append_draw_commands :: proc(cmds: ^[dynamic]Draw_Cmd, result: Value) {
+// project_stage is the shared §20/§22 projection walk for render AND audio: it walks the
+// flattened pipeline (§11) for stage `stage`, and for each matching step runs that
+// behavior once per instance of its on-Thing in stable Id order (§08 §2), folding every
+// instance's emitted list into `out` through `lower` (the per-record lowering proc — a
+// Draw_Cmd or an Audio_Track). The instances come from the committed View (interp.tick is
+// nil), so iteration is the committed stable Id order, and `out` accumulates in emitted
+// order across steps and instances. T is inferred from `out`, so render passes
+// (Draw_Cmd, draw_command_from_record) and audio (Audio_Track, audio_track_from_record).
+//
+// When `obs` is armed (the §28 render trace re-projection — audio never arms it), each
+// instance's (self_before, bound reads, returned list) is copied into the capture buffer
+// at the SAME seam the interior tick fold taps, so inspect_trace reports a projection
+// behavior's in→out exactly as it does an Update behavior — the sim fold skips render, so
+// a re-fold alone would leave its trace empty. The capture is a pure copy-out: it never
+// reads back into the projection, so the output is bit-identical whether the tap fired or
+// not.
+project_stage :: proc(
+	interp: ^Interp,
+	program: ^Program,
+	stage: string,
+	out: ^[dynamic]$T,
+	lower: proc(record: Record_Value) -> (T, bool),
+	obs: ^Tick_Observe = nil,
+) {
+	for step in program.pipeline {
+		if step.stage != stage {
+			continue
+		}
+		behavior := program_behavior(program, step.behavior)
+		if behavior == nil {
+			continue
+		}
+		view := view_of_type(interp.version, behavior.on_thing)
+		for i in 0 ..< view_count(view) {
+			row, _ := view_at(view, i)
+			env := projection_behavior_env(interp, behavior, row)
+			result, ok := eval_behavior_body(interp, behavior.body, &env)
+			if obs != nil {
+				observe_behavior_step(obs, step, behavior, row, env, result, ok)
+			}
+			if !ok {
+				continue
+			}
+			fold_emitted_list(out, result, lower)
+		}
+	}
+}
+
+// fold_emitted_list folds a projection behavior's returned [Draw]/[Audio] list into `out`,
+// appending each lowered element in emitted order. The return is a List_Value of records
+// (the emit shape); a non-list return or a list element that is not a record, or one
+// `lower` rejects (ok=false), is skipped — a malformed projection body contributes
+// nothing rather than faulting the projection. T is inferred from `out`.
+fold_emitted_list :: proc(out: ^[dynamic]$T, result: Value, lower: proc(record: Record_Value) -> (T, bool)) {
 	list, is_list := result.(List_Value)
 	if !is_list {
 		return
@@ -645,10 +653,17 @@ append_draw_commands :: proc(cmds: ^[dynamic]Draw_Cmd, result: Value) {
 		if !is_record {
 			continue
 		}
-		if cmd, ok := draw_command_from_record(record); ok {
-			append(cmds, cmd)
+		if v, ok := lower(record); ok {
+			append(out, v)
 		}
 	}
+}
+
+// append_draw_commands lowers a render behavior's returned [Draw] list into the
+// draw-list (fold_emitted_list over draw_command_from_record). Kept as a named entry
+// point for the standalone draw-lowering tests.
+append_draw_commands :: proc(cmds: ^[dynamic]Draw_Cmd, result: Value) {
+	fold_emitted_list(cmds, result, draw_command_from_record)
 }
 
 // draw_command_from_record lowers one evaluated Draw::* record into a Draw_Cmd by
@@ -778,47 +793,19 @@ record_vec2 :: proc(record: Record_Value, name: string) -> (v: Vec2, ok: bool) {
 }
 
 // record_vec3 reads a Vec3 field off a Draw3 command record — the eye/at of a
-// Draw3::Camera, the dir of a Draw3::Light, the at of a Draw3::Plane / Draw3::Rigged.
-// It accepts BOTH shapes a Vec3 reaches the lowering as: the Vec3 union value
-// (eval_record collapses a `Vec3{x,y,z}` literal to it, and a hand-built fixture
-// passes it directly) AND, defensively, a Record_Value{type_name="Vec3"} with x/y/z
-// Fixed fields (the pre-collapse shape any path that bypasses eval_record's Vec3 arm
-// would carry) — so the reader is robust to either producer. ok is false when the
-// field is absent or is neither shape.
+// Draw3::Camera, the dir of a Draw3::Light, the at of a Draw3::Plane / Draw3::Rigged. A
+// Vec3 reaches the lowering ONLY as the Vec3 union value: eval_record collapses every
+// `Vec3{x,y,z}` literal to it (a malformed literal fails there, never a generic record),
+// a blackboard-stored Vec3 is a Field_Value.Vec3 arm that lifts back as a Vec3, and a
+// `with`-update on a Vec3 refuses — so a pre-collapse Record_Value{"Vec3"} cannot reach
+// here. ok is false when the field is absent or not a Vec3.
 record_vec3 :: proc(record: Record_Value, name: string) -> (v: Vec3, ok: bool) {
 	field, present := record.fields[name]
 	if !present {
 		return Vec3{}, false
 	}
-	#partial switch f in field {
-	case Vec3:
-		return f, true
-	case Record_Value:
-		if f.type_name != "Vec3" {
-			return Vec3{}, false
-		}
-		x, x_ok := record_value_fixed(f, "x")
-		y, y_ok := record_value_fixed(f, "y")
-		z, z_ok := record_value_fixed(f, "z")
-		if !x_ok || !y_ok || !z_ok {
-			return Vec3{}, false
-		}
-		return Vec3{x = x, y = y, z = z}, true
-	}
-	return Vec3{}, false
-}
-
-// record_value_fixed reads a Fixed-valued field off a record's field map — the x/y/z
-// of a pre-collapse Vec3 Record_Value. ok is false when the field is absent or not a
-// Fixed (a Vec3 component must be a kernel Fixed; never lifted from an Int here, as a
-// Vec3 literal's components are §10 Fixed).
-record_value_fixed :: proc(record: Record_Value, name: string) -> (v: Fixed, ok: bool) {
-	field, present := record.fields[name]
-	if !present {
-		return Fixed(0), false
-	}
-	value, is_fixed := field.(Fixed)
-	return value, is_fixed
+	vec, is_vec := field.(Vec3)
+	return vec, is_vec
 }
 
 // record_handle reads an opaque anim Handle_Value field off a Draw3::Rigged record —
@@ -892,21 +879,7 @@ record_handle_name :: proc(record: Record_Value, name: string) -> (atlas: string
 	if !present {
 		return "", false
 	}
-	#partial switch f in field {
-	case Record_Value:
-		inner, inner_present := f.fields["name"]
-		if !inner_present {
-			return "", false
-		}
-		str, is_str := inner.(String_Value)
-		if !is_str {
-			return "", false
-		}
-		return str.text, true
-	case String_Value:
-		return f.text, true
-	}
-	return "", false
+	return handle_value_name(field)
 }
 
 // record_variant_token reads a §18 §1 flip token off a Draw::Sprite record's `flip`

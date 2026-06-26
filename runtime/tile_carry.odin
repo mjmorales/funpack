@@ -123,13 +123,7 @@ tile_carry_apply :: proc(
 	fresh := make([]bool, len(layers), allocator)
 
 	for edit in delta.edits {
-		index := -1
-		for &layer, i in layers {
-			if layer.name == edit.layer_name {
-				index = i
-				break
-			}
-		}
+		index := find_layer_index(layers, edit.layer_name)
 		if index < 0 {
 			continue // layer absent from the new bake: drop (new-bake-wins)
 		}
@@ -141,12 +135,9 @@ tile_carry_apply :: proc(
 		if palette < 0 {
 			continue // tile name left the new palette: drop
 		}
-		if !fresh[index] {
-			cells := make([]int, len(layer.cells), allocator)
-			copy(cells, layer.cells)
-			layer.cells = cells
-			fresh[index] = true
-		}
+		// Same layer-level COW the live fold uses (cow_layer_cells), pinned to this
+		// carry's own allocator: copy `cells` once, then write the carried cell in place.
+		cow_cells(layer, index, fresh, allocator)
 		layer.cells[edit.row * layer.cols + edit.col] = palette
 	}
 	return layers

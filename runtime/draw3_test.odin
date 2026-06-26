@@ -18,7 +18,7 @@
 //
 // The bodies are folded through the user-fn path (the same eval_body draw_krognid's
 // render behavior step takes), then lowered via append_draw_commands (exactly what
-// render_behavior_over_instances calls per instance) — so the test exercises the real
+// project_stage folds per instance) — so the test exercises the real
 // lowering flow, not the readers in isolation.
 package funpack_runtime
 
@@ -419,7 +419,7 @@ d3_krognid_self :: proc(pos: Vec3) -> Record_Value {
 // draw_scene over the Field singleton, then draw_krognid over the Krognid instance —
 // the flattened render order draw_scene-then-draw_krognid (stroll.fun's render slot).
 // Each body folds through eval_body and lowers through append_draw_commands, the same
-// path render_behavior_over_instances takes per instance.
+// path project_stage folds per instance.
 @(private = "file")
 d3_fold_scene :: proc(interp: ^Interp, program: ^Program, self: Record_Value) -> Draw_List {
 	cmds := make([dynamic]Draw_Cmd, context.temp_allocator)

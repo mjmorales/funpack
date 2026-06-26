@@ -142,16 +142,10 @@ control_ok_response :: proc(
 	allocator := context.allocator,
 ) -> string {
 	b := strings.builder_make(allocator)
+	ok_response_open(&b, id, cmd)
 	fmt.sbprintf(
 		&b,
-		"{{\"v\":%d,\"id\":%d,\"ok\":true,\"cmd\":",
-		INTROSPECT_PROTOCOL_VERSION,
-		id,
-	)
-	write_json_string(&b, cmd)
-	fmt.sbprintf(
-		&b,
-		",\"result\":{{\"branch\":{{\"base_tick\":%d,\"ticks\":%d}},\"warranted\":false%s}}}}",
+		"{{\"branch\":{{\"base_tick\":%d,\"ticks\":%d}},\"warranted\":false%s}}}}",
 		s.branch.base_tick,
 		s.branch.ticks,
 		extras,
@@ -225,7 +219,8 @@ checkout_ok_response :: proc(
 	allocator := context.allocator,
 ) -> string {
 	b := strings.builder_make(allocator)
-	fmt.sbprintf(&b, "{{\"v\":%d,\"id\":%d,\"ok\":true,\"cmd\":\"checkout\",\"result\":{{\"active\":", INTROSPECT_PROTOCOL_VERSION, id)
+	ok_response_open(&b, id, "checkout")
+	strings.write_string(&b, "{\"active\":")
 	if s.active_branch {
 		fmt.sbprintf(&b, "\"branch\",\"warranted\":false,\"branch\":{{\"base_tick\":%d,\"ticks\":%d}}}}}}", s.branch.base_tick, s.branch.ticks)
 	} else {

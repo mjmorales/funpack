@@ -243,6 +243,78 @@ branch_tip_tick :: proc(s: ^Debug_Session) -> int {
 	return s.branch.base_tick + s.branch.ticks
 }
 
+// session_lineage_input selects the input snapshot a render re-projection reads for one
+// addressed (lineage, tick): the canonical chain replays its recorded snapshot, but a
+// branch tick PAST the fork point carries no recorded snapshot (the branch advanced
+// through control folds, not the recording), so it reads empty input there. Render is a
+// pure post-commit projection of the committed world, so this is the deterministic
+// branch-tip input trace/draw_list/screenshot share.
+session_lineage_input :: proc(s: ^Debug_Session, lineage: Read_Lineage, tick: int) -> Input {
+	if lineage == .Branch && tick > s.branch.base_tick {
+		return empty()
+	}
+	return s.snapshots[tick]
+}
+
+// resolve_observe_version resolves the addressed (lineage, version) for one tick — the
+// observe-addressing preamble every lineage-keyed read shares: read the lineage (refusing
+// `unknown branch` on a bad `branch` arg), then resolve the version (refusing `tick out of
+// range` when the tick is not retained on that lineage). On a miss it returns the
+// pre-rendered refusal envelope and ok=false; the caller returns `refusal` verbatim. It
+// does NOT apply the `tick < 0` floor some callers add on top (draw_list/screenshot refuse
+// the pre-tick-0 startup version; diff/capture_tick accept tick -1 as the startup base),
+// so that floor stays at the caller.
+resolve_observe_version :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	cmd: string,
+	args: json.Object,
+	tick: int,
+	allocator := context.allocator,
+) -> (
+	version: World_Version,
+	lineage: Read_Lineage,
+	refusal: string,
+	ok: bool,
+) {
+	lin, lineage_ok := session_read_lineage(s, args)
+	if !lineage_ok {
+		return {}, lin, err_unknown_branch(id, cmd, allocator), false
+	}
+	ver, ver_ok := session_version_on(s, lin, tick)
+	if !ver_ok {
+		return {}, lin, err_tick_out_of_range(id, cmd, allocator), false
+	}
+	return ver, lin, "", true
+}
+
+// refold_tick_obs re-folds one recorded tick into a FRESH observe buffer and returns the
+// buffer plus the re-committed version — the obs+refold+range-refusal core the bounded
+// re-fold commands (signals / trace / replay_behavior / capture_test) share. It does NOT
+// apply the canonical-only guard (signals/trace/replay_behavior gate that BEFORE calling,
+// each in its own control-flow position; capture_test has no such gate), so the guard
+// stays at the caller. A tick outside the recorded range returns the pre-rendered `tick
+// out of range` refusal and ok=false.
+refold_tick_obs :: proc(
+	s: ^Debug_Session,
+	id: i64,
+	cmd: string,
+	tick: int,
+	allocator := context.allocator,
+) -> (
+	obs: Tick_Observe,
+	committed: World_Version,
+	refusal: string,
+	ok: bool,
+) {
+	obs = new_tick_observe(allocator)
+	refolded, refold_ok := session_refold_tick(s, tick, &obs, allocator)
+	if !refold_ok {
+		return obs, {}, err_tick_out_of_range(id, cmd, allocator), false
+	}
+	return obs, refolded, "", true
+}
+
 // session_capture digests the session's retained canonical chain exactly as the
 // production capture drivers do — per committed tick, render_version's §20
 // draw-list projection over the SAME per-tick Time derivation, capture_frame,
@@ -506,11 +578,11 @@ observe_signals :: proc(
 		return error_response(id, "signals", "missing args.tick", allocator)
 	}
 	if !observe_refold_on_canonical(s, args) {
-		return error_response(id, "signals", "branch refold unsupported — signals re-folds a recorded tick (canonical only)", allocator)
+		return err_refold_canonical_only(id, "signals", allocator)
 	}
-	obs := new_tick_observe(allocator)
-	if _, ok := session_refold_tick(s, int(tick), &obs, allocator); !ok {
-		return error_response(id, "signals", "tick out of range", allocator)
+	obs, _, refusal, ok := refold_tick_obs(s, id, "signals", int(tick), allocator)
+	if !ok {
+		return refusal
 	}
 	b := strings.builder_make(allocator)
 	ok_response_open(&b, id, "signals")
@@ -591,15 +663,14 @@ observe_trace :: proc(
 	committed: World_Version
 	switch behavior.stage {
 	case "render":
-		lineage, lineage_ok := session_read_lineage(s, args)
-		if !lineage_ok {
-			return error_response(id, "trace", "unknown branch — checkout an existing lineage", allocator)
+		version, lineage, refusal, ok := resolve_observe_version(s, id, "trace", args, int(tick))
+		if !ok {
+			return refusal
 		}
-		version, ver_ok := session_version_on(s, lineage, int(tick))
-		if !ver_ok || int(tick) < 0 {
-			return error_response(id, "trace", "tick out of range", allocator)
+		if int(tick) < 0 {
+			return err_tick_out_of_range(id, "trace", allocator)
 		}
-		input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
+		input := session_lineage_input(s, lineage, int(tick))
 		time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
 		render_version(s.program, version, input, time, allocator, &obs)
 		committed = version
@@ -607,12 +678,13 @@ observe_trace :: proc(
 		return trace_unsupported_stage(id, behavior_name, behavior.stage, int(tick), allocator)
 	case:
 		if !observe_refold_on_canonical(s, args) {
-			return error_response(id, "trace", "branch refold unsupported — trace re-folds a recorded tick (canonical only)", allocator)
+			return err_refold_canonical_only(id, "trace", allocator)
 		}
-		refolded, ok := session_refold_tick(s, int(tick), &obs, allocator)
-		if !ok {
-			return error_response(id, "trace", "tick out of range", allocator)
+		refolded_obs, refolded, refusal, refold_ok := refold_tick_obs(s, id, "trace", int(tick), allocator)
+		if !refold_ok {
+			return refusal
 		}
+		obs = refolded_obs
 		committed = refolded
 	}
 	b := strings.builder_make(allocator)
@@ -730,14 +802,13 @@ observe_diff :: proc(
 	if !has_from || !has_to {
 		return error_response(id, "diff", "missing args.from or args.to", allocator)
 	}
-	lineage, lineage_ok := session_read_lineage(s, args)
-	if !lineage_ok {
-		return error_response(id, "diff", "unknown branch — checkout an existing lineage", allocator)
+	from_version, _, from_refusal, from_ok := resolve_observe_version(s, id, "diff", args, int(from_tick))
+	if !from_ok {
+		return from_refusal
 	}
-	from_version, from_ok := session_version_on(s, lineage, int(from_tick))
-	to_version, to_ok := session_version_on(s, lineage, int(to_tick))
-	if !from_ok || !to_ok {
-		return error_response(id, "diff", "tick out of range", allocator)
+	to_version, _, to_refusal, to_ok := resolve_observe_version(s, id, "diff", args, int(to_tick))
+	if !to_ok {
+		return to_refusal
 	}
 	b := strings.builder_make(allocator)
 	ok_response_open(&b, id, "diff")
@@ -794,15 +865,18 @@ observe_state :: proc(
 	if !has_thing {
 		return error_response(id, "state", "missing args.thing", allocator)
 	}
+	// State resolves its tick from the lineage HEAD when none is given, so the lineage
+	// read is interleaved with the tick default — it does not fit resolve_observe_version's
+	// caller-supplied-tick shape, but the refusal strings are centralized all the same.
 	lineage, lineage_ok := session_read_lineage(s, args)
 	if !lineage_ok {
-		return error_response(id, "state", "unknown branch — checkout an existing lineage", allocator)
+		return err_unknown_branch(id, "state", allocator)
 	}
 	tick, has_tick := json_int_field(args, "tick")
 	target_tick := has_tick ? int(tick) : session_head_tick(s, lineage)
 	version, ver_ok := session_version_on(s, lineage, target_tick)
 	if !ver_ok {
-		return error_response(id, "state", "tick out of range", allocator)
+		return err_tick_out_of_range(id, "state", allocator)
 	}
 	mutable := version
 	table := version_find_table(&mutable, thing)
@@ -987,15 +1061,15 @@ observe_replay_behavior :: proc(
 		return error_response(id, "replay_behavior", "missing args.tick or args.behavior", allocator)
 	}
 	if !observe_refold_on_canonical(s, args) {
-		return error_response(id, "replay_behavior", "branch refold unsupported — replay_behavior re-folds a recorded tick (canonical only)", allocator)
+		return err_refold_canonical_only(id, "replay_behavior", allocator)
 	}
 	behavior := program_behavior(s.program, behavior_name)
 	if behavior == nil {
 		return error_response(id, "replay_behavior", "unknown behavior", allocator)
 	}
-	obs := new_tick_observe(allocator)
-	if _, ok := session_refold_tick(s, int(tick), &obs, allocator); !ok {
-		return error_response(id, "replay_behavior", "tick out of range", allocator)
+	obs, _, refusal, ok := refold_tick_obs(s, id, "replay_behavior", int(tick), allocator)
+	if !ok {
+		return refusal
 	}
 
 	// The isolated re-run reads the prior COMMITTED version (tick = nil): the
@@ -1053,20 +1127,19 @@ observe_draw_list :: proc(
 	if !has_tick {
 		return error_response(id, "draw_list", "missing args.tick", allocator)
 	}
-	lineage, lineage_ok := session_read_lineage(s, args)
-	if !lineage_ok {
-		return error_response(id, "draw_list", "unknown branch — checkout an existing lineage", allocator)
+	version, lineage, refusal, ok := resolve_observe_version(s, id, "draw_list", args, int(tick))
+	if !ok {
+		return refusal
 	}
-	version, ok := session_version_on(s, lineage, int(tick))
-	if !ok || int(tick) < 0 {
-		return error_response(id, "draw_list", "tick out of range", allocator)
+	if int(tick) < 0 {
+		return err_tick_out_of_range(id, "draw_list", allocator)
 	}
 	// The recorded snapshot drives render-behavior input on the canonical chain;
 	// a branch tick at-or-beyond the fork carries no recorded snapshot (the branch
 	// advanced through control folds, not the recording), so the projection reads
 	// empty input there — render is a pure post-commit projection of the committed
 	// world, so this is the deterministic branch-tip draw list.
-	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
+	input := session_lineage_input(s, lineage, int(tick))
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
 	// overlay:true appends the §28 collision-extent debug overlay — each thing's
 	// center-anchored (pos,size) extent, so a top-left-vs-center convention mismatch is
@@ -1076,14 +1149,7 @@ observe_draw_list :: proc(
 	b := strings.builder_make(allocator)
 	ok_response_open(&b, id, "draw_list")
 	fmt.sbprintf(&b, "{{\"tick\":%d,\"commands\":[", tick)
-	for cmd, i in draw.cmds {
-		if i > 0 {
-			strings.write_byte(&b, ',')
-		}
-		encoded := strings.builder_make(allocator)
-		render_draw_cmd_text(&encoded, cmd)
-		write_json_string(&b, strings.to_string(encoded))
-	}
+	write_draw_commands_json(&b, draw.cmds, allocator)
 	strings.write_string(&b, "]}}")
 	return strings.to_string(b)
 }
@@ -1123,19 +1189,18 @@ observe_screenshot :: proc(
 	if !has_tick {
 		return error_response(id, "screenshot", "missing args.tick", allocator)
 	}
-	lineage, lineage_ok := session_read_lineage(s, args)
-	if !lineage_ok {
-		return error_response(id, "screenshot", "unknown branch — checkout an existing lineage", allocator)
+	version, lineage, refusal, ok := resolve_observe_version(s, id, "screenshot", args, int(tick))
+	if !ok {
+		return refusal
 	}
-	version, ok := session_version_on(s, lineage, int(tick))
-	if !ok || int(tick) < 0 {
-		return error_response(id, "screenshot", "tick out of range", allocator)
+	if int(tick) < 0 {
+		return err_tick_out_of_range(id, "screenshot", allocator)
 	}
 	// Re-project the committed tick to the draw-list (the SAME projection draw_list
 	// reads): a branch tick past the fork carries no recorded snapshot, so it projects
 	// empty input there — render is a pure post-commit projection of the committed
 	// world (identical to observe_draw_list's branch-tip handling).
-	input := lineage == .Branch && int(tick) > s.branch.base_tick ? empty() : s.snapshots[int(tick)]
+	input := session_lineage_input(s, lineage, int(tick))
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
 	// overlay:true paints the §28 collision-extent debug overlay into the captured
 	// frame too — the SAME projection draw_list reads, so the magenta center-anchored
@@ -1169,18 +1234,27 @@ observe_screenshot :: proc(
 	// emits. The default (absent/false) is the lean visual-only capture.
 	if include, _ := json_bool_field(args, "include_drawlist"); include {
 		strings.write_string(&b, ",\"commands\":[")
-		for cmd, i in draw.cmds {
-			if i > 0 {
-				strings.write_byte(&b, ',')
-			}
-			cmd_text := strings.builder_make(allocator)
-			render_draw_cmd_text(&cmd_text, cmd)
-			write_json_string(&b, strings.to_string(cmd_text))
-		}
+		write_draw_commands_json(&b, draw.cmds, allocator)
 		strings.write_byte(&b, ']')
 	}
 	strings.write_string(&b, "}}")
 	return strings.to_string(b)
+}
+
+// write_draw_commands_json writes a §20 draw-list as a comma-separated JSON array BODY
+// (no enclosing brackets — the caller writes `[`/`]`): each command rendered to its text
+// form via render_draw_cmd_text, then JSON-string-escaped. The SAME encoding draw_list
+// emits and screenshot{include_drawlist} rides along with, so the two surfaces stay
+// byte-identical.
+write_draw_commands_json :: proc(b: ^strings.Builder, cmds: []Draw_Cmd, allocator := context.allocator) {
+	for cmd, i in cmds {
+		if i > 0 {
+			strings.write_byte(b, ',')
+		}
+		encoded := strings.builder_make(allocator)
+		render_draw_cmd_text(&encoded, cmd)
+		write_json_string(b, strings.to_string(encoded))
+	}
 }
 
 // --- The envelope builders ---------------------------------------------------
@@ -1212,6 +1286,34 @@ error_response :: proc(
 	write_json_string(&b, message)
 	strings.write_byte(&b, '}')
 	return strings.to_string(b)
+}
+
+// err_tick_out_of_range is the §28 refusal for an addressed tick outside the retained
+// chain — the one wire string every observe/capture command shares. Centralized so the
+// exact bytes stay identical across the 8+ sites that refuse it (the session log is
+// byte-stable, §28 §3).
+err_tick_out_of_range :: proc(id: i64, cmd: string, allocator := context.allocator) -> string {
+	return error_response(id, cmd, "tick out of range", allocator)
+}
+
+// err_unknown_branch is the §28 refusal for a `branch` arg naming no checked-out lineage
+// — the shared wire string the lineage-addressed reads refuse with.
+err_unknown_branch :: proc(id: i64, cmd: string, allocator := context.allocator) -> string {
+	return error_response(id, cmd, "unknown branch — checkout an existing lineage", allocator)
+}
+
+// err_refold_canonical_only is the §28 refusal for a re-fold command (signals / trace /
+// replay_behavior) addressed at a branch lineage: a re-fold replays a RECORDED tick,
+// which only the canonical chain retains. The command name is interpolated into the
+// message AND is the envelope cmd, so each command refuses in its own voice while the
+// shared shape stays byte-identical.
+err_refold_canonical_only :: proc(id: i64, cmd: string, allocator := context.allocator) -> string {
+	message := fmt.aprintf(
+		"branch refold unsupported — %s re-folds a recorded tick (canonical only)",
+		cmd,
+		allocator = allocator,
+	)
+	return error_response(id, cmd, message, allocator)
 }
 
 // write_json_string writes one JSON string literal with the mandatory escapes

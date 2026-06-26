@@ -408,18 +408,11 @@ tilemap_of_handle :: proc(interp: ^Interp, handle: Record_Value) -> ^Tile_Layer 
 }
 
 // tilemap_handle_name reads the `name` String field off a `TilemapHandle{name}`
-// record value — the one field the handle carries. ok=false on a missing or
-// non-String field (a malformed handle fails closed, never a guessed layer).
+// record value — the one field the handle carries (the shared record_name_field mold).
+// ok=false on a missing or non-String field (a malformed handle fails closed, never a
+// guessed layer).
 tilemap_handle_name :: proc(handle: Record_Value) -> (name: string, ok: bool) {
-	field, present := handle.fields["name"]
-	if !present {
-		return "", false
-	}
-	text, is_string := field.(String_Value)
-	if !is_string {
-		return "", false
-	}
-	return text.text, true
+	return record_name_field(handle, "name")
 }
 
 // cell_arg reads a `Cell{x, y}` record argument into its integer cell
@@ -629,7 +622,10 @@ buildlayer_apply :: proc(record: Record_Value, layers: []Tile_Layer, fresh: []bo
 		return
 	}
 	// Validate EVERY override before writing — the whole command is all-or-nothing.
-	for override in overrides {
+	// Each override's palette index is captured here into a parallel slice and reused in
+	// the commit loop, so the resolution runs ONCE per override, not twice.
+	override_indices := make([]int, len(overrides), state.allocator)
+	for override, i in overrides {
 		override_index := tilemap_palette_index(layer, override.tile)
 		if override_index < 0 {
 			append(&state.tile_refusals, Tile_Command_Refusal{command = .Build_Layer, kind = .Unknown_Tile, layer = layer_name, tile = override.tile, col = override.cell.x, row = override.cell.y})
@@ -639,15 +635,15 @@ buildlayer_apply :: proc(record: Record_Value, layers: []Tile_Layer, fresh: []bo
 			append(&state.tile_refusals, Tile_Command_Refusal{command = .Build_Layer, kind = .Cell_Out_Of_Grid, layer = layer_name, tile = override.tile, col = override.cell.x, row = override.cell.y})
 			return
 		}
+		override_indices[i] = override_index
 	}
 	// Commit the whole-layer write: fill every cell, then the overrides in order.
 	cow_layer_cells(layer, index, fresh, state)
 	for i in 0 ..< len(layer.cells) {
 		layer.cells[i] = fill_index
 	}
-	for override in overrides {
-		palette := tilemap_palette_index(layer, override.tile) // re-resolved: validated above
-		layer.cells[override.cell.y * layer.cols + override.cell.x] = palette
+	for override, i in overrides {
+		layer.cells[override.cell.y * layer.cols + override.cell.x] = override_indices[i]
 	}
 }
 
@@ -663,21 +659,26 @@ find_layer_index :: proc(layers: []Tile_Layer, name: string) -> int {
 	return -1
 }
 
-// cow_layer_cells copies a touched layer's `cells` backing ONCE per tick onto the
-// commit allocator, then leaves it fresh for in-place writes — the layer-level
-// COW the fold and the carry kernel share (a SetTile single-cell write and a
-// BuildLayer whole-layer write both go through it). `fresh[index]` gates the
-// copy so repeated writes to the same layer this tick reuse the one copy; the
-// name/palette ALWAYS alias the prior version (only `cells` is per-version owned,
-// which the live reclaimer retires).
-cow_layer_cells :: proc(layer: ^Tile_Layer, index: int, fresh: []bool, state: ^Tick_State) {
+// cow_cells copies a touched layer's `cells` backing ONCE onto `allocator`, then leaves
+// it fresh for in-place writes — the allocator-explicit COW core shared by BOTH consumers
+// (a SetTile single-cell write, a BuildLayer whole-layer write, and the hot-reload/save
+// carry re-apply all go through it). `fresh[index]` gates the copy so repeated writes to
+// the same layer reuse the one copy; the name/palette ALWAYS alias the prior version
+// (only `cells` is per-version owned, which the live reclaimer retires).
+cow_cells :: proc(layer: ^Tile_Layer, index: int, fresh: []bool, allocator := context.allocator) {
 	if fresh[index] {
 		return
 	}
-	cells := make([]int, len(layer.cells), state.commit_allocator)
+	cells := make([]int, len(layer.cells), allocator)
 	copy(cells, layer.cells)
 	layer.cells = cells
 	fresh[index] = true
+}
+
+// cow_layer_cells is the live-fold entry point onto cow_cells: it pins the COW copy to
+// the tick's commit allocator so the per-version `cells` survives the eval-scratch reset.
+cow_layer_cells :: proc(layer: ^Tile_Layer, index: int, fresh: []bool, state: ^Tick_State) {
+	cow_cells(layer, index, fresh, state.commit_allocator)
 }
 
 // Settile_Cell is the integer target cell one parsed SetTile command names.

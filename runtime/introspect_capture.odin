@@ -54,9 +54,9 @@ capture_test_request :: proc(
 	if behavior == nil {
 		return error_response(id, "capture_test", "unknown behavior", allocator)
 	}
-	obs := new_tick_observe(allocator)
-	if _, ok := session_refold_tick(s, int(tick), &obs, allocator); !ok {
-		return error_response(id, "capture_test", "tick out of range", allocator)
+	obs, _, refusal, ok := refold_tick_obs(s, id, "capture_test", int(tick), allocator)
+	if !ok {
+		return refusal
 	}
 
 	instance, instance_given := json_int_field(args, "instance")
@@ -161,14 +161,13 @@ capture_tick_request :: proc(
 	if twin == nil {
 		return error_response(id, "capture_tick", "unknown twin function", allocator)
 	}
-	lineage, lineage_ok := session_read_lineage(s, args)
-	if !lineage_ok {
-		return error_response(id, "capture_tick", "unknown branch — checkout an existing lineage", allocator)
+	pre_version, _, pre_refusal, pre_ok := resolve_observe_version(s, id, "capture_tick", args, int(tick) - 1)
+	if !pre_ok {
+		return pre_refusal
 	}
-	pre_version, pre_ok := session_version_on(s, lineage, int(tick) - 1)
-	post_version, post_ok := session_version_on(s, lineage, int(tick))
-	if !pre_ok || !post_ok {
-		return error_response(id, "capture_tick", "tick out of range", allocator)
+	post_version, _, post_refusal, post_ok := resolve_observe_version(s, id, "capture_tick", args, int(tick))
+	if !post_ok {
+		return post_refusal
 	}
 	pre_mut := pre_version
 	post_mut := post_version

@@ -11,11 +11,11 @@ import "core:strings"
 // concern apart from the request/response fold.
 
 // write_encoded_value JSON-quotes one interpreter Value rendered in the artifact
-// literal encoding.
+// literal encoding — the JSON-quoted twin of probes.odin's encode_value_text (the shared
+// primitive), so a Value renders identically whether quoted here or emitted plain in an
+// async-event payload.
 write_encoded_value :: proc(b: ^strings.Builder, value: Value, allocator := context.allocator) {
-	encoded := strings.builder_make(allocator)
-	render_value_text(&encoded, value)
-	write_json_string(b, strings.to_string(encoded))
+	write_json_string(b, encode_value_text(value, allocator))
 }
 
 // write_encoded_field_value JSON-quotes one blackboard column rendered in the
@@ -32,27 +32,16 @@ write_encoded_field_value :: proc(
 
 // write_encoded_blackboard JSON-quotes one row's whole blackboard as a
 // `Thing(field=enc,…)` record literal in sorted field-name order — the
-// serialization-closure dump (§28 §1: dump any blackboard at any tick).
+// serialization-closure dump (§28 §1: dump any blackboard at any tick). The JSON-quoted
+// twin of probes.odin's encode_blackboard_text (the shared primitive), so a blackboard
+// renders identically whether quoted here or emitted plain in an async-event payload.
 write_encoded_blackboard :: proc(
 	b: ^strings.Builder,
 	thing: string,
 	fields: map[string]Field_Value,
 	allocator := context.allocator,
 ) {
-	encoded := strings.builder_make(allocator)
-	strings.write_string(&encoded, thing)
-	strings.write_byte(&encoded, '(')
-	names := sorted_blackboard_names(fields, allocator)
-	for name, i in names {
-		if i > 0 {
-			strings.write_byte(&encoded, ',')
-		}
-		strings.write_string(&encoded, name)
-		strings.write_byte(&encoded, '=')
-		render_field_value_text(&encoded, fields[name])
-	}
-	strings.write_byte(&encoded, ')')
-	write_json_string(b, strings.to_string(encoded))
+	write_json_string(b, encode_blackboard_text(thing, fields, allocator))
 }
 
 // sorted_blackboard_names returns a blackboard's field names in sorted order —

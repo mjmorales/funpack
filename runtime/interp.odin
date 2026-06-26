@@ -1308,6 +1308,37 @@ record_to_vec3 :: proc(fields: map[string]Value) -> (v: Value, ok: bool) {
 	return Vec3{x = x, y = y, z = z}, true
 }
 
+// record_name_field reads a String_Value field off a record fail-closed — the one mold
+// every typed-handle reader shares (a NavHandle/TilemapHandle/SoundHandle `name`, an
+// Audio `key`). ok is false when the field is absent or is not a String, so a malformed
+// handle resolves to nothing rather than a guessed name.
+record_name_field :: proc(record: Record_Value, field: string) -> (name: string, ok: bool) {
+	value, present := record.fields[field]
+	if !present {
+		return "", false
+	}
+	text, is_string := value.(String_Value)
+	if !is_string {
+		return "", false
+	}
+	return text.text, true
+}
+
+// handle_value_name reads a handle NAME off a value that is EITHER a typed handle record
+// carrying a `name` String (atlas("…")/AtlasHandle{name}/mesh("…")/MeshHandle) OR a bare
+// String (the name carried directly when the asset graph is not yet wired) — the
+// record-or-bare-String mold the sprite-atlas and mesh-arg readers share. ok is false on
+// any other shape (fail-closed — the malformed reference drops rather than guessing).
+handle_value_name :: proc(value: Value) -> (name: string, ok: bool) {
+	#partial switch v in value {
+	case Record_Value:
+		return record_name_field(v, "name")
+	case String_Value:
+		return v.text, true
+	}
+	return "", false
+}
+
 // field_value_to_value lifts a blackboard Field_Value (state.odin's stored
 // column type) into the interpreter's Value. The two unions overlap on the
 // scalar/Bool/Vec2/Ref and the structural Record/List arms; a stored enum token

@@ -283,6 +283,26 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	if !recv_ok {
 		return nil, false
 	}
+	return eval_value_receiver_method(interp, recv, method, node, env)
+}
+
+// eval_value_receiver_method dispatches a method call whose receiver is an already-
+// evaluated VALUE (the §22 type-name static-constructor forms are intercepted upstream
+// in eval_method_call before the receiver is evaluated). The arm order is load-bearing:
+// the resource/intent methods (Input snapshot reads, Body apply_impulse) resolve first,
+// then the value-typed receivers (Pose, Handle, Record, Nav fixture, Rng, View list,
+// Map) so a same-named member on another receiver never routes to the wrong arm. An
+// unknown receiver/method is ok=false.
+eval_value_receiver_method :: proc(
+	interp: ^Interp,
+	recv: Value,
+	method: string,
+	node: ^Node,
+	env: ^Env,
+) -> (
+	value: Value,
+	ok: bool,
+) {
 	switch method {
 	case "value":
 		return eval_input_value(interp, node, env)
@@ -619,11 +639,55 @@ settings_defaults :: proc(interp: ^Interp) -> Value {
 	return Record_Value{type_name = "Settings", fields = settings_fields}
 }
 
+// resolve_input_action resolves the (player, action) arg pair shared by the §23 §2
+// input reads input.value/axis/pressed/released/held(player, action). It applies the
+// arity guard, evaluates both args, asserts each is a Variant, maps the player name to a
+// PlayerId and the action variant to its stable ActionId through the program's action
+// registry (minted once per program in new_interp, so the lookup is an index read, not a
+// per-instance rebuild). ok is false on a bad arity, an eval failure, or a non-Variant
+// arg — the caller returns ok=false. resolved is false when the player or the action is
+// unknown — the caller returns its own snapshot default with ok=true so a behavior never
+// faults on input. When resolved is true the caller reads the snapshot through its own
+// accessor (pressed/released/held/value/axis).
+resolve_input_action :: proc(
+	interp: ^Interp,
+	node: ^Node,
+	env: ^Env,
+) -> (
+	player: PlayerId,
+	action: ActionId,
+	resolved: bool,
+	ok: bool,
+) {
+	if len(node.children) < 3 {
+		return {}, {}, false, false
+	}
+	player_val, player_ok := eval(interp, &node.children[1], env)
+	action_val, action_ok := eval(interp, &node.children[2], env)
+	if !player_ok || !action_ok {
+		return {}, {}, false, false
+	}
+	player_variant, is_player := player_val.(Variant_Value)
+	action_variant, is_action := action_val.(Variant_Value)
+	if !is_player || !is_action {
+		return {}, {}, false, false
+	}
+	resolved_player, player_resolved := player_from_string(player_variant.case_name)
+	if !player_resolved {
+		return {}, {}, false, true
+	}
+	action_name := variant_to_token(action_variant, interp.allocator)
+	def, action_found := interp.registry.by_name[action_name]
+	if !action_found {
+		return {}, {}, false, true
+	}
+	return resolved_player, def.id, true, true
+}
+
 // eval_input_button evaluates a digital Button query `input.pressed/released/held(
 // player, action)` — the §23 §2 edge/level read snake's control stage turns on. It
-// resolves the PlayerId and action-variant args, maps the action to its stable
-// ActionId through the program's action registry, and reads the snapshot through
-// the supplied reader (one of pressed/released/held), returning a Bool. An
+// resolves the (player, action) pair (resolve_input_action) and reads the snapshot
+// through the supplied reader (one of pressed/released/held), returning a Bool. An
 // unresolved player or action reads false (the snapshot default), mirroring
 // eval_input_value's zero default so a behavior never faults on input.
 eval_input_button :: proc(
@@ -635,97 +699,46 @@ eval_input_button :: proc(
 	result: Value,
 	ok: bool,
 ) {
-	if len(node.children) < 3 {
+	player, action, resolved, args_ok := resolve_input_action(interp, node, env)
+	if !args_ok {
 		return nil, false
 	}
-	player_val, player_ok := eval(interp, &node.children[1], env)
-	action_val, action_ok := eval(interp, &node.children[2], env)
-	if !player_ok || !action_ok {
-		return nil, false
-	}
-	player_variant, is_player := player_val.(Variant_Value)
-	action_variant, is_action := action_val.(Variant_Value)
-	if !is_player || !is_action {
-		return nil, false
-	}
-	player, player_resolved := player_from_string(player_variant.case_name)
-	if !player_resolved {
+	if !resolved {
 		return false, true
 	}
-	action_name := variant_to_token(action_variant, interp.allocator)
-	def, action_found := interp.registry.by_name[action_name]
-	if !action_found {
-		return false, true
-	}
-	return reader(interp.input, player, def.id), true
+	return reader(interp.input, player, action), true
 }
 
 // eval_input_value evaluates `input.value(self.player, Steer::Move)`: resolve the
-// PlayerId arg and the action variant arg, map the action to its stable ActionId
-// through the program's action registry, and read the snapshot's 1D analog value
-// (§23 §2). An unresolved player or action reads zero (the snapshot default), so
-// a behavior never faults on input.
+// (player, action) pair (resolve_input_action) and read the snapshot's 1D analog value
+// (§23 §2). An unresolved player or action reads zero (the snapshot default), so a
+// behavior never faults on input.
 eval_input_value :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Value, ok: bool) {
-	if len(node.children) < 3 {
+	player, action, resolved, args_ok := resolve_input_action(interp, node, env)
+	if !args_ok {
 		return nil, false
 	}
-	player_val, player_ok := eval(interp, &node.children[1], env)
-	action_val, action_ok := eval(interp, &node.children[2], env)
-	if !player_ok || !action_ok {
-		return nil, false
-	}
-	player_variant, is_player := player_val.(Variant_Value)
-	action_variant, is_action := action_val.(Variant_Value)
-	if !is_player || !is_action {
-		return nil, false
-	}
-	player, player_resolved := player_from_string(player_variant.case_name)
-	if !player_resolved {
+	if !resolved {
 		return Fixed(0), true
 	}
-	// The registry is minted once per program (new_interp), so this read is an
-	// index lookup, not a per-instance rebuild.
-	action_name := variant_to_token(action_variant, interp.allocator)
-	def, action_found := interp.registry.by_name[action_name]
-	if !action_found {
-		return Fixed(0), true
-	}
-	return value(interp.input, player, def.id), true
+	return value(interp.input, player, action), true
 }
 
 // eval_input_axis evaluates `input.axis(self.player, Drive::Move)`: resolve the
-// PlayerId arg and the action variant arg, map the action to its stable ActionId
-// through the program's action registry, and read the snapshot's 2D analog axis
-// (§23 §2), a Vec2 whose components are each in [-1, 1]. An unresolved player or
-// action reads VEC2_ZERO (the snapshot default), mirroring eval_input_value's
-// zero default — a behavior never faults on input. hunt's drive body multiplies
-// this Vec2 by P_SPEED*time.dt, so the 2D read is the player-move path.
+// (player, action) pair (resolve_input_action) and read the snapshot's 2D analog axis
+// (§23 §2), a Vec2 whose components are each in [-1, 1]. An unresolved player or action
+// reads VEC2_ZERO (the snapshot default), mirroring eval_input_value's zero default — a
+// behavior never faults on input. hunt's drive body multiplies this Vec2 by
+// P_SPEED*time.dt, so the 2D read is the player-move path.
 eval_input_axis :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Value, ok: bool) {
-	if len(node.children) < 3 {
+	player, action, resolved, args_ok := resolve_input_action(interp, node, env)
+	if !args_ok {
 		return nil, false
 	}
-	player_val, player_ok := eval(interp, &node.children[1], env)
-	action_val, action_ok := eval(interp, &node.children[2], env)
-	if !player_ok || !action_ok {
-		return nil, false
-	}
-	player_variant, is_player := player_val.(Variant_Value)
-	action_variant, is_action := action_val.(Variant_Value)
-	if !is_player || !is_action {
-		return nil, false
-	}
-	player, player_resolved := player_from_string(player_variant.case_name)
-	if !player_resolved {
+	if !resolved {
 		return VEC2_ZERO, true
 	}
-	// The registry is minted once per program (new_interp), so this read is an
-	// index lookup, not a per-instance rebuild.
-	action_name := variant_to_token(action_variant, interp.allocator)
-	def, action_found := interp.registry.by_name[action_name]
-	if !action_found {
-		return VEC2_ZERO, true
-	}
-	return axis(interp.input, player, def.id), true
+	return axis(interp.input, player, action), true
 }
 
 // eval_named_call dispatches a `name(args)` call: an engine builtin first (the

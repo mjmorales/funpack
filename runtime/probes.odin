@@ -458,9 +458,10 @@ eval_probe_body :: proc(interp: ^Interp, probe: Probe_Decl, env: ^Env) -> (value
 
 // encode_value_text renders one interpreter Value in the artifact literal encoding
 // (the §28 §2 wire form — Int decimal, Fixed raw Q32.32 bits, records/lists/variants
-// in their inline forms), the same render_value_text the observe trace uses. Kept as
-// a plain string (not JSON-quoted) here; the event renderer JSON-quotes it.
-@(private = "file")
+// in their inline forms). It is the PRIMITIVE both the async-event renderers (plain,
+// unquoted) and write_encoded_value (which JSON-quotes the result) build on, so the two
+// surfaces render one Value identically. Package-visible for that shared use.
+@(private)
 encode_value_text :: proc(value: Value, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	render_value_text(&b, value)
@@ -469,9 +470,10 @@ encode_value_text :: proc(value: Value, allocator := context.allocator) -> strin
 
 // encode_blackboard_text renders one row's whole blackboard as a `Thing(field=enc,…)`
 // record literal in sorted field-name order — the serialization-closure dump (§28 §1)
-// the breakpoint_hit/trace payloads carry. It mirrors write_encoded_blackboard's body
-// without the JSON quoting (the event renderer quotes it).
-@(private = "file")
+// the breakpoint_hit/trace payloads carry. It is the PRIMITIVE the async-event renderers
+// (plain, unquoted) and write_encoded_blackboard (which JSON-quotes the result) share, so
+// a blackboard renders identically on both surfaces. Package-visible for that shared use.
+@(private)
 encode_blackboard_text :: proc(
 	thing: string,
 	fields: map[string]Field_Value,

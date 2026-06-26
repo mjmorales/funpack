@@ -426,21 +426,7 @@ eval_mesh_name_arg :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (name: st
 	if !value_ok {
 		return "", false
 	}
-	#partial switch v in value {
-	case Record_Value:
-		field, present := v.fields["name"]
-		if !present {
-			return "", false
-		}
-		text, is_string := field.(String_Value)
-		if !is_string {
-			return "", false
-		}
-		return text.text, true
-	case String_Value:
-		return v.text, true
-	}
-	return "", false
+	return handle_value_name(value)
 }
 
 // transforms_equal compares two §16 §7 transforms by their kernel-stable Q32.32

@@ -171,13 +171,7 @@ derive_nav_graph_from_layer :: proc(
 			}
 		}
 	}
-	adj := make([][]int, node_count, allocator)
-	for &list, i in lists {
-		nav_sort_ascending(list[:])
-		neighbors := make([]int, len(list), allocator)
-		copy(neighbors, list[:])
-		adj[i] = neighbors
-	}
+	adj := freeze_adjacency(lists, allocator)
 	return Nav_Graph{name = layer.name, centers = centers, adj = adj}
 }
 
@@ -783,18 +777,10 @@ nav_of_handle :: proc(interp: ^Interp, handle: Record_Value) -> ^Nav_Graph {
 }
 
 // nav_handle_name reads the `name` String field off a `NavHandle{name}` record
-// value (the tilemap_handle_name mold). ok=false on a missing or non-String
+// value (the shared record_name_field mold). ok=false on a missing or non-String
 // field — a malformed handle fails closed, never a guessed graph.
 nav_handle_name :: proc(handle: Record_Value) -> (name: string, ok: bool) {
-	field, present := handle.fields["name"]
-	if !present {
-		return "", false
-	}
-	text, is_string := field.(String_Value)
-	if !is_string {
-		return "", false
-	}
-	return text.text, true
+	return record_name_field(handle, "name")
 }
 
 // --- the §12 [nav] loader (schema v13) -------------------------------------
@@ -910,14 +896,23 @@ load_nav_edges :: proc(
 		append(&lists[a], b)
 		append(&lists[b], a)
 	}
-	out := make([][]int, node_count, allocator)
+	return freeze_adjacency(lists, allocator), .None
+}
+
+// freeze_adjacency sorts each mutable per-node neighbor list ascending and copies it
+// into an OWNED slice on `allocator` — the "freeze adjacency" tail both nav-graph
+// builders share (the layer-derived graph and the [nav]-loaded graph). Sorting before
+// the copy makes the BFS tie-break bit-stable regardless of edge emission order; the
+// copy detaches the frozen slice from the temp-allocated build lists.
+freeze_adjacency :: proc(lists: [][dynamic]int, allocator := context.allocator) -> [][]int {
+	adj := make([][]int, len(lists), allocator)
 	for &list, i in lists {
 		nav_sort_ascending(list[:])
 		neighbors := make([]int, len(list), allocator)
 		copy(neighbors, list[:])
-		out[i] = neighbors
+		adj[i] = neighbors
 	}
-	return out, .None
+	return adj
 }
 
 // nav_sort_ascending sorts a small adjacency list in place by insertion sort —
