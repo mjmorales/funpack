@@ -126,6 +126,26 @@ test_fpm_gate_names_offending_binding :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fpm_gate_intersect_verdict_is_operand_order_independent :: proc(t: ^testing.T) {
+	// An intersect's manifold verdict must not depend on operand order. A
+	// self-intersecting big operand (box.scale(-1), volume 8) intersected with a
+	// smaller clean operand (box, volume 1) is self-intersecting EITHER way — the OR
+	// accumulates over all operands, not just the min-volume one. Before the fix, the
+	// big-first order dropped the inverted-surface flag when `out` was replaced by the
+	// smaller clean operand, so only the clean-first order fired the gate.
+	big_first := `model BigFirst {
+  emit intersect(box(2, 2, 2).scale(-1), box(1, 1, 1))
+}
+`
+	clean_first := `model CleanFirst {
+  emit intersect(box(1, 1, 1), box(2, 2, 2).scale(-1))
+}
+`
+	testing.expect_value(t, fpm_gate(t, big_first).err, Fpm_Gate_Error.Self_Intersecting)
+	testing.expect_value(t, fpm_gate(t, clean_first).err, Fpm_Gate_Error.Self_Intersecting)
+}
+
+@(test)
 test_fpm_stage_gates_returns_first_error :: proc(t: ^testing.T) {
 	// stage_fpm_gates is the pipeline seam — it returns just the first hard error,
 	// the form the bake driver consumes (mirrors stage_gates for .fun).

@@ -346,20 +346,33 @@ fpm_difference_geometry :: proc(operands: []Fpm_Solid) -> Fpm_Geometry {
 // minimum; an empty operand (zero volume) makes the whole intersect empty (the
 // §16.3 zero-volume case for a degenerate intersect). The triangle/component
 // shape tracks the smallest operand (the overlap lives inside it).
+//
+// The topology flags accumulate over ALL operands, order-independent — exactly as
+// fpm_union/fpm_difference do: the intersect is watertight only if EVERY operand is
+// (AND), and self-intersecting if ANY operand is (OR). Only the tris/component shape
+// tracks the minimum-volume operand; seeding `out` from a smaller operand must not
+// drop an earlier operand's open/inverted-surface flag.
 fpm_intersect_geometry :: proc(operands: []Fpm_Solid) -> Fpm_Geometry {
 	out := fpm_geometry(operands[0])
 	min_vol := out.volume
+	watertight := out.watertight
+	self_intersecting := out.self_intersecting
 	for i in 1 ..< len(operands) {
 		g := fpm_geometry(operands[i])
+		if !g.watertight {
+			watertight = false
+		}
+		if g.self_intersecting {
+			self_intersecting = true
+		}
 		if g.volume < min_vol {
 			min_vol = g.volume
 			out = g
 		}
-		if g.self_intersecting {
-			out.self_intersecting = true
-		}
 	}
 	out.volume = min_vol
+	out.watertight = watertight
+	out.self_intersecting = self_intersecting
 	return out
 }
 
