@@ -223,12 +223,10 @@ Nesting :: struct {
 
 // Bracket_Frame is one open bracket's role on the nesting stack. suppress is
 // whether a newline inside this frame is layout (dropped) rather than a
-// statement/arm/element separator (kept). is_record is carried so a `}` knows
-// it is closing a record-brace frame for the diagnostic-free pop; it is not read
-// for the suppression decision (suppress already encodes it).
+// statement/arm/element separator (kept) — the only state the pop and the
+// suppression decision read.
 Bracket_Frame :: struct {
-	suppress:  bool,
-	is_record: bool,
+	suppress: bool,
 }
 
 newline_suppressed :: proc(n: ^Nesting, source: string, after: int) -> bool {
@@ -282,7 +280,7 @@ update_nesting :: proc(n: ^Nesting, tok: Token, prev: Token_Kind, at_stmt_start:
 		// interior is a statement / arm / member sequence).
 		is_record := (prev == .Ident || prev == .With) && !n.block_pending
 		n.block_pending = false
-		append(&n.frames, Bracket_Frame{suppress = is_record, is_record = is_record})
+		append(&n.frames, Bracket_Frame{suppress = is_record})
 	case .R_Brace:
 		pop_frame(n)
 	}

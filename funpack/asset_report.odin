@@ -176,7 +176,7 @@ emit_report_asset_line :: proc(
 	tail := is_stripped ? REPORT_STRIP_RATIONALE : strings.concatenate({"<- ", verdict.referencer}, context.temp_allocator)
 
 	strings.write_string(b, "  ")
-	write_padded_right(b, label, REPORT_LABEL_WIDTH)
+	write_left_justified(b, label, REPORT_LABEL_WIDTH)
 	strings.write_string(b, REPORT_LABEL_GAP)
 	write_name_and_size(b, name_field, kb)
 	strings.write_string(b, REPORT_REFS_GAP)
@@ -207,11 +207,11 @@ write_name_and_size :: proc(b: ^strings.Builder, name: string, kb: int) {
 	strings.write_string(b, " KB")
 }
 
-// write_padded_right writes `text` left-justified in a `width`-column field,
+// write_left_justified writes `text` left-justified in a `width`-column field,
 // padding with trailing spaces; a text already at or over the width is written
 // verbatim (no truncation). The LABEL column uses this so a kind shorter than the
 // column still lands the name field at its fixed start.
-write_padded_right :: proc(b: ^strings.Builder, text: string, width: int) {
+write_left_justified :: proc(b: ^strings.Builder, text: string, width: int) {
 	strings.write_string(b, text)
 	for _ in len(text) ..< width {
 		strings.write_byte(b, ' ')
@@ -219,25 +219,12 @@ write_padded_right :: proc(b: ^strings.Builder, text: string, width: int) {
 }
 
 // asset_kind_label maps an Asset_Kind onto its lowercase report label — the LABEL
-// column for a kept asset and the inline kind prefix for a stripped one. The
-// mapping is total over the closed kind set: Model → "model", Atlas → "atlas",
-// Audio → "audio", Tileset → "tileset", Image → "image" (the kind word the §5
-// report renders, distinct from the handle TYPE asset_handle_type renders for
-// the seam).
+// column for a kept asset and the inline kind prefix for a stripped one. The report
+// label IS the manifest kind word (asset_kind_word, asset_bake.odin) — one canonical
+// lowercase kind string, so the §5 report and the manifest can never drift. (Distinct
+// from the handle TYPE asset_handle_type renders for the seam.)
 asset_kind_label :: proc(kind: Asset_Kind) -> string {
-	switch kind {
-	case .Model:
-		return "model"
-	case .Atlas:
-		return "atlas"
-	case .Audio:
-		return "audio"
-	case .Tileset:
-		return "tileset"
-	case .Image:
-		return "image"
-	}
-	return ""
+	return asset_kind_word(kind)
 }
 
 // sum_asset_sizes totals the KB of every asset in `entries`, looking each size up

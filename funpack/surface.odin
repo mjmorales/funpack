@@ -156,7 +156,7 @@ STDLIB_SURFACE := []Module_Surface{
 		// only bindable as a digital pad button). stick_x/stick_y are the
 		// horizontal/vertical twins: a gamepad stick into a single-axis source
 		// (krognid binds the left stick's x to Strafe and its y to Forward).
-		// `key(Key)` was dropped as redundant with the single-element [Key::W] list.
+		// `key(Key)` is intentionally absent — redundant with the single-element [Key::W] list.
 		// dpad() lowers to the runtime Pad_Quad source (emit.odin); like mouse it
 		// rides the v18 open window parsed-but-unemitted until a committed artifact
 		// binds it (ADR 2026-06-15-engine-input-source-helpers-split).
@@ -471,9 +471,9 @@ STDLIB_SURFACE := []Module_Surface{
 		// closed widget-builder set, and the UiAction/Theme handles. View is owned by
 		// engine.world (§08) and RE-EXPORTED here (§26 §3 / §21: the §08 read table
 		// doubles as the §21 view tree) — a declared STDLIB_REEXPORTS row, never a
-		// second owning decl. The eleven builders (text/button/row/col/field/slider/
-		// class/when/map plus the layout/content/input rest) are the closed §21 §1
-		// widget set the hand-authored escape hatch uses; each is call-site-inferred
+		// second owning decl. The closed §21 §1 widget-builder set (enumerated below as
+		// the .Func rows — the list is the source of truth, not a hard count) is what the
+		// hand-authored escape hatch uses; each is call-site-inferred
 		// over the screen's Msg type (its signature depends on the View[Msg] receiver
 		// /elements, so surface_signatures returns found = false and the typing rule is
 		// the call site's — surface_engine_method for the value-receiver builders, the
@@ -906,7 +906,7 @@ surface_methods_for_receiver :: proc(receiver: Type, allocator := context.temp_a
 				continue
 			}
 			if _, found := surface_engine_method(engine, key.member); found {
-				surface_append_unique(&names, key.member)
+				append_unique(&names, key.member)
 			}
 		}
 	}
@@ -927,7 +927,7 @@ surface_methods_for_receiver :: proc(receiver: Type, allocator := context.temp_a
 					continue
 				}
 				if types_compatible(receiver, fn.params[0]) {
-					surface_append_unique(&names, decl.name)
+					append_unique(&names, decl.name)
 					break
 				}
 			}
@@ -939,14 +939,14 @@ surface_methods_for_receiver :: proc(receiver: Type, allocator := context.temp_a
 	// `recv.NAME(…)` through §02 §4 UFCS — `rng.pick(items)`, `xs.len()`.
 	for probe in SURFACE_COMBINATOR_PROBES {
 		if surface_receiver_matches_combinator(receiver, probe.receiver) {
-			surface_append_unique(&names, probe.name)
+			append_unique(&names, probe.name)
 		}
 	}
 	// (2) Ground-type methods (the Quat set): probed by name, since surface_method
 	// is keyed by (receiver, member) with no enumerable key list.
 	for member in SURFACE_GROUND_METHOD_NAMES {
 		if _, found := surface_method(receiver, member); found {
-			surface_append_unique(&names, member)
+			append_unique(&names, member)
 		}
 	}
 	if len(names) == 0 {
@@ -1060,17 +1060,6 @@ surface_receiver_matches_combinator :: proc(receiver: Type, kind: Surface_Combin
 @(rodata)
 SURFACE_GROUND_METHOD_NAMES := []string{"rotate", "mul", "slerp"}
 
-// surface_append_unique appends a name only if absent — the hint's dedup, since a
-// receiver can reach the same member name through two probe paths (rare, but a ground
-// method name could shadow a free fn). Linear scan; the list is small.
-surface_append_unique :: proc(names: ^[dynamic]string, name: string) {
-	for existing in names {
-		if existing == name {
-			return
-		}
-	}
-	append(names, name)
-}
 
 // surface_signatures types the importable free functions as overload
 // sets: most names carry one signature; dot/length/normalize carry one
@@ -1799,7 +1788,7 @@ surface_engine_method :: proc(receiver: ^Engine_Type, member: string) -> (signat
 	case .Audio:
 		// §22 §2 the sustained self-first adders (same shape as Sound's), each
 		// returning a new Audio so they chain (Audio.track(k, c).gain(g).bus(b)).
-		// (Task 5.1 owns the sustained regime; shared for the music-bed test.)
+		// Audio mirrors Sound's sustained-adder shape.
 		switch member {
 		case "gain", "pitch":
 			return func_of({Ground_Type.Fixed}, engine_type_of(.Audio)), true

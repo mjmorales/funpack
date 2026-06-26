@@ -77,15 +77,6 @@ arena_seam :: proc(allocator := context.allocator) -> Seam {
 	}
 }
 
-// slice_lit copies a fixed-array literal into an allocator-backed slice, so a
-// Seam carrying it can be returned from a proc without dangling into the caller's
-// stack frame.
-slice_lit :: proc(items: []string, allocator := context.allocator) -> []string {
-	out := make([]string, len(items), allocator)
-	copy(out, items)
-	return out
-}
-
 // resolve_arena_gen_path resolves the committed arena.gen.fun exemplar: the
 // FUNPACK_ARENA_GEN env override when set, else the sibling-checkout default
 // anchored at the main checkout root (resolve_spec_dir handles the worktree

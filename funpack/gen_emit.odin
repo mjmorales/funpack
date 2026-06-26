@@ -259,3 +259,13 @@ emit_seam_extern_fn :: proc(b: ^strings.Builder, fn: Seam_Extern_Fn) {
 	strings.write_string(b, fn.return_type)
 	strings.write_string(b, "\n")
 }
+
+// slice_lit copies a fixed-array literal into an allocator-backed slice, so a
+// Seam carrying it can be returned from a proc without dangling into the caller's
+// stack frame. Used by the production seam emitters (flvl_emit/fpm_emit), so it
+// lives in this production file rather than a _test file.
+slice_lit :: proc(items: []string, allocator := context.allocator) -> []string {
+	out := make([]string, len(items), allocator)
+	copy(out, items)
+	return out
+}

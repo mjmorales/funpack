@@ -35,6 +35,7 @@
 // byte-identical. The module_asts map is read by key, never iterated.
 package funpack
 
+import "core:slice"
 import "core:strings"
 
 // whole_module_user_imports returns the §15 names of the entrypoint AST's
@@ -182,7 +183,7 @@ collect_refs_in_expr :: proc(refs: ^[dynamic]Whole_Module_Ref, expr: Expr, impor
 	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^All_Expr:
 		// Leaves carry no nested expression.
 	case ^Member_Expr:
-		if name, is_name := e.receiver.(^Name_Expr); is_name && string_in(imports, name.name) {
+		if name, is_name := e.receiver.(^Name_Expr); is_name && slice.contains(imports, name.name) {
 			append(refs, Whole_Module_Ref{module = name.name, member = e.member})
 			return
 		}
@@ -252,18 +253,6 @@ concat_function_records :: proc(first: []Function_Record, second: []Function_Rec
 	return out[:]
 }
 
-// string_in reports whether a string is present in a slice — the whole-module
-// import-name membership test, walked by index (never a map, the determinism
-// tripwire the bake/emit walks honor throughout).
-string_in :: proc(haystack: []string, needle: string) -> bool {
-	for s in haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
-}
-
 // ── the bare-name lowering (the v6 qualified→bare rewrite) ────────────────
 
 // Whole_Module_Lower_Error is the lowering's closed refusal set. None is the clean
@@ -317,7 +306,7 @@ lower_whole_module_refs :: proc(entry_ast: ^Ast, module_asts: map[string]Ast) ->
 		if _, found := find_let(seam_ast, ref.member); !found {
 			continue
 		}
-		if string_in(own_names, ref.member) {
+		if slice.contains(own_names, ref.member) {
 			return Whole_Module_Lower_Verdict{err = .Bare_Name_Collision, name = ref.member}
 		}
 	}
@@ -378,7 +367,7 @@ lower_ref_in_expr :: proc(slot: ^Expr, imports: []string, module_asts: map[strin
 	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^All_Expr:
 		// Leaves carry no nested expression.
 	case ^Member_Expr:
-		if name, is_name := e.receiver.(^Name_Expr); is_name && string_in(imports, name.name) {
+		if name, is_name := e.receiver.(^Name_Expr); is_name && slice.contains(imports, name.name) {
 			seam_ast := module_asts[name.name]
 			if _, found := find_let(seam_ast, e.member); found {
 				// The lowered node is emit-only (emit_expr writes `node name NAME 0`

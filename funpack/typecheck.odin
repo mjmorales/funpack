@@ -1049,13 +1049,10 @@ probe_field_ctx :: proc(bindings: Bindings, env: Type_Env, index: Module_Index, 
 // function; a nil sink (every non-located caller) makes the shell a no-op.
 expr_check :: proc(ctx: Check_Ctx, expr: Expr) -> (type: Type, err: Type_Error) {
 	type, err = expr_check_inner(ctx, expr)
-	if err != .None && ctx.diag != nil && !ctx.diag.set {
-		line, col := expr_span(expr)
-		if line != 0 {
-			ctx.diag.line = line
-			ctx.diag.col = col
-			ctx.diag.set = true
-		}
+	if err != .None {
+		// stamp_expr owns the first-write-wins guard (nil sink / already-set are
+		// no-ops), so the deepest offending sub-expression locates the diagnostic.
+		stamp_expr(ctx, expr)
 	}
 	return type, err
 }

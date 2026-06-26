@@ -310,7 +310,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		emit_err: Emit_Error
 		artifact, emit_err = emit_tree_artifact(root, project, sources, allocator)
 		if emit_err != .None {
-			return Build_Product{}, compile_failed_verdict(sources, allocator)
+			return Build_Product{}, compile_failed_verdict(sources)
 		}
 		artifact_path = build_product_path(root, ARTIFACT_PRODUCT_NAME, allocator)
 	}
@@ -319,7 +319,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		return Build_Product{}, Build_Verdict{err = .Index_Failed}
 	}
 	if !compiled {
-		return Build_Product{}, compile_failed_verdict(sources, allocator)
+		return Build_Product{}, compile_failed_verdict(sources)
 	}
 	return Build_Product {
 			artifact      = artifact,
@@ -344,7 +344,7 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 // empty diagnostic, so the exit-2 contract holds and the CLI falls back to the
 // bare arm name (build_refusal_message). The Diagnostic's path is the failing
 // module's source path so the CLI re-reads the right file.
-compile_failed_verdict :: proc(sources: []Source, allocator := context.allocator) -> Build_Verdict {
+compile_failed_verdict :: proc(sources: []Source) -> Build_Verdict {
 	report := run_project_pipeline(sources)
 	return Build_Verdict{err = .Compile_Failed, diagnostic = report.diagnostic}
 }

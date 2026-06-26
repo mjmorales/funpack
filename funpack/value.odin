@@ -38,10 +38,10 @@ Value :: union {
 // Path record value (type_name "Path", fields steps/cost) the five nav queries
 // answer over: path() replays the route, los()/reachable() read true, nearest()
 // snaps to identity — exactly the @doc-pinned fixture semantics, all pure. The
-// failed/err fields carry the Nav.fail twin's failure (a path() on a failed Nav
-// yields Result::Err(err)); Nav.of always builds a non-failed handle, so they
-// sit at the zero value here until the §12 Nav.fail builder (a later story)
-// seeds them — the shape is final so the twin lands without a value reshape.
+// failed/err fields carry the §12 Nav.fail twin's failure (a path() on a failed
+// Nav yields Result::Err(err)): Nav.of builds a non-failed handle (failed=false),
+// Nav.fail seeds failed=true with the NavError variant in err, and the five nav
+// queries read both arms.
 Nav_Value :: struct {
 	route:  Record_Value, // the Path route Nav.of was built from (steps/cost)
 	failed: bool,         // the Nav.fail twin: path() yields Result::Err
