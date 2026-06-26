@@ -760,17 +760,25 @@ eval_with :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 	return Record_Value{type_name = type_name, fields = merged}, true
 }
 
-// eval_list builds a `[T]` list literal: `list ELEM_COUNT` with one child per
-// element, evaluated in source order so the list keeps its deterministic order.
-eval_list :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
-	elements := make([]Value, len(node.children), interp.allocator)
+// eval_value_elements evaluates a node's children left-to-right into a fresh slice,
+// fail-closed on any element — the shared body of the list and tuple literal builders
+// (both keep deterministic source order; they differ only in the value wrapper).
+eval_value_elements :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (elements: []Value, ok: bool) {
+	out := make([]Value, len(node.children), interp.allocator)
 	for &child, i in node.children {
 		ev, ev_ok := eval(interp, &child, env)
 		if !ev_ok {
 			return nil, false
 		}
-		elements[i] = ev
+		out[i] = ev
 	}
+	return out, true
+}
+
+// eval_list builds a `[T]` list literal: `list ELEM_COUNT` with one child per
+// element, evaluated in source order so the list keeps its deterministic order.
+eval_list :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	elements := eval_value_elements(interp, node, env) or_return
 	return List_Value{elements = elements}, true
 }
 
@@ -781,14 +789,7 @@ eval_list :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 // it never lowers to a blackboard column, so it exists only between a draw and the
 // match (or the behavior return) that consumes it.
 eval_tuple :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
-	elements := make([]Value, len(node.children), interp.allocator)
-	for &child, i in node.children {
-		ev, ev_ok := eval(interp, &child, env)
-		if !ev_ok {
-			return nil, false
-		}
-		elements[i] = ev
-	}
+	elements := eval_value_elements(interp, node, env) or_return
 	return Tuple_Value{elements = elements}, true
 }
 

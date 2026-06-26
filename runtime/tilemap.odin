@@ -179,7 +179,7 @@ tilemap_cell_of :: proc(layer: ^Tile_Layer, pos: Vec2) -> (col, row: i64) {
 	cell_bits := i64(to_fixed(layer.cell_size)) // > 0, gated at load
 	dx_bits := i64(fixed_sub(pos.x, layer.top_left.x))
 	dy_bits := i64(fixed_sub(layer.top_left.y, pos.y)) // row grows -y (§17)
-	return floor_div_i64(dx_bits, cell_bits), floor_div_i64(dy_bits, cell_bits)
+	return floor_div(dx_bits, cell_bits), floor_div(dy_bits, cell_bits)
 }
 
 // tilemap_center_of is `center_of(cell) -> Vec2`: the world-space center of a
@@ -193,19 +193,6 @@ tilemap_center_of :: proc(layer: ^Tile_Layer, col, row: i64) -> Vec2 {
 	x := fixed_add(layer.top_left.x, fixed_add(to_fixed(int_mul(col, layer.cell_size)), half))
 	y := fixed_sub(layer.top_left.y, fixed_add(to_fixed(int_mul(row, layer.cell_size)), half))
 	return Vec2{x = x, y = y}
-}
-
-// floor_div_i64 is exact floor division (quotient rounded toward negative
-// infinity) — the cell_of rounding rule. Odin's `/` truncates toward zero, so
-// a negative non-exact quotient is corrected by one. The divisor is positive
-// here (cell sizes are gated > 0 at load), but the correction reads both signs
-// so the helper is sound stand-alone.
-floor_div_i64 :: proc(a, b: i64) -> i64 {
-	q := a / b
-	if a % b != 0 && (a < 0) != (b < 0) {
-		q -= 1
-	}
-	return q
 }
 
 // --- The §12 §3 los occupancy kernel (segment supercover vs solids) --------
@@ -263,8 +250,8 @@ tilemap_segment_clear :: proc(layer: ^Tile_Layer, from, to: Vec2) -> bool {
 		den = du
 	}
 	row_den := cell * den
-	c_lo := ceil_div_i128(u0, cell) - 1 // closed box: an exact-boundary u touches both columns
-	c_hi := floor_div_i128(u1, cell)
+	c_lo := ceil_div(u0, cell) - 1 // closed box: an exact-boundary u touches both columns
+	c_hi := floor_div(u1, cell)
 	if c_lo < 0 {
 		c_lo = 0
 	}
@@ -292,8 +279,8 @@ tilemap_segment_clear :: proc(layer: ^Tile_Layer, from, to: Vec2) -> bool {
 			vmin_num = min(va, vb)
 			vmax_num = max(va, vb)
 		}
-		r_lo := ceil_div_i128(vmin_num, row_den) - 1 // closed box, as the column bounds
-		r_hi := floor_div_i128(vmax_num, row_den)
+		r_lo := ceil_div(vmin_num, row_den) - 1 // closed box, as the column bounds
+		r_hi := floor_div(vmax_num, row_den)
 		if r_lo < 0 {
 			r_lo = 0
 		}
@@ -315,12 +302,12 @@ segment_coord_ok :: proc(coord: i128) -> bool {
 	return coord >= -SEGMENT_COORD_LIMIT && coord <= SEGMENT_COORD_LIMIT
 }
 
-// floor_div_i128 / ceil_div_i128 are exact floor/ceiling division over i128 —
-// the closed-box cell-range bounds of tilemap_segment_clear. Odin's `/`
-// truncates toward zero; the corrections read both signs so the helpers are
-// sound stand-alone (divisors here are positive: cell sizes gate > 0 at load
-// and the denominator is normalized > 0).
-floor_div_i128 :: proc(a, b: i128) -> i128 {
+// floor_div / ceil_div are exact floor/ceiling division (quotient rounded toward −∞
+// / +∞) over any integer width $T — the cell_of rounding rule (i64) and the closed-box
+// cell-range bounds of tilemap_segment_clear (i128). Odin's `/` truncates toward zero;
+// the corrections read both signs so the helpers are sound stand-alone (divisors here
+// are positive: cell sizes gate > 0 at load and denominators normalize > 0).
+floor_div :: proc(a, b: $T) -> T {
 	q := a / b
 	if a % b != 0 && (a < 0) != (b < 0) {
 		q -= 1
@@ -328,7 +315,7 @@ floor_div_i128 :: proc(a, b: i128) -> i128 {
 	return q
 }
 
-ceil_div_i128 :: proc(a, b: i128) -> i128 {
+ceil_div :: proc(a, b: $T) -> T {
 	q := a / b
 	if a % b != 0 && (a < 0) == (b < 0) {
 		q += 1

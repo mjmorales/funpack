@@ -305,16 +305,16 @@ test_tilemap_kernel_general_over_anchor :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_floor_div_i64_rounds_toward_negative_infinity :: proc(t: ^testing.T) {
+test_floor_div_rounds_toward_negative_infinity :: proc(t: ^testing.T) {
 	// The cell_of rounding rule pinned at the leaf: exact quotients pass
 	// through, positive non-exact truncate down, negative non-exact round AWAY
 	// from zero (floor), on both divisor signs.
-	testing.expect_value(t, floor_div_i64(6, 3), 2)
-	testing.expect_value(t, floor_div_i64(7, 3), 2)
-	testing.expect_value(t, floor_div_i64(-6, 3), -2)
-	testing.expect_value(t, floor_div_i64(-7, 3), -3)
-	testing.expect_value(t, floor_div_i64(7, -3), -3)
-	testing.expect_value(t, floor_div_i64(-7, -3), 2)
+	testing.expect_value(t, floor_div(i64(6), 3), 2)
+	testing.expect_value(t, floor_div(i64(7), 3), 2)
+	testing.expect_value(t, floor_div(i64(-6), 3), -2)
+	testing.expect_value(t, floor_div(i64(-7), 3), -3)
+	testing.expect_value(t, floor_div(i64(7), -3), -3)
+	testing.expect_value(t, floor_div(i64(-7), -3), 2)
 }
 
 // --- the TilemapHandle method dispatch (interp) ------------------------------

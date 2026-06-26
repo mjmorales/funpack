@@ -2242,13 +2242,11 @@ rng_pick_reduce :: proc(interp: ^Interp, rng: Rng, elements: []Value) -> Value {
 
 // pick_tuple builds pick's `(Option, Rng)` return: the boxed Option in position 0,
 // the advanced Rng in position 1 — the exact positional shape snake's tuple-pattern
-// match `(Option::Some(cell), next)` destructures (§04 §1). The two-element slice
-// is arena-allocated so the tuple outlives this call.
+// match `(Option::Some(cell), next)` destructures (§04 §1). It is the same
+// `(value, next_rng)` pair every draw returns, so it delegates to rng_draw_tuple (the
+// Rng advances to a Value arm) — one tuple-pair builder, not two.
 pick_tuple :: proc(interp: ^Interp, option: Value, advanced: Rng) -> Value {
-	elements := make([]Value, 2, interp.allocator)
-	elements[0] = option
-	elements[1] = advanced
-	return Tuple_Value{elements = elements}
+	return rng_draw_tuple(interp, option, advanced)
 }
 
 // rng_draw_tuple builds the `(value, next_rng)` threaded pair every §26 draw
