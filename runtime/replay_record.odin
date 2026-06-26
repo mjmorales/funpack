@@ -30,7 +30,6 @@ package funpack_runtime
 
 import "core:hash/xxhash"
 import "core:slice"
-import "core:strconv"
 import "core:strings"
 
 // REPLAY_SCHEMA_VERSION stamps the replay-log format. Any change to the header,
@@ -281,31 +280,13 @@ write_key :: proc(b: ^strings.Builder, key: Player_Action) {
 }
 
 // --- Field primitives (artifact-format §2 style) ---------------------------
-
-// write_string_field writes a length-prefixed string `Lbyte_count:raw_bytes`
-// (§2.4): the byte count, a `:`, then the bytes verbatim. A reader consumes exactly
-// that many bytes, so a name containing a space or `:` never confuses the parser.
-@(private = "file")
-write_string_field :: proc(b: ^strings.Builder, s: string) {
-	strings.write_byte(b, 'L')
-	strings.write_int(b, len(s))
-	strings.write_byte(b, ':')
-	strings.write_string(b, s)
-}
+// write_string_field and write_u64 live in record_codec.odin, shared with the replay
+// log and the session log so the on-disk grammar cannot drift between them.
 
 // write_bool writes `true`/`false` as a bare lowercase token (§2.5).
 @(private = "file")
 write_bool :: proc(b: ^strings.Builder, v: bool) {
 	strings.write_string(b, v ? "true" : "false")
-}
-
-// write_u64 writes an unsigned 64-bit value in decimal. ActionId and the content
-// hash are unsigned, so they go through here rather than write_i64 (which would
-// mis-render a high-bit-set value as negative).
-@(private = "file")
-write_u64 :: proc(b: ^strings.Builder, v: u64) {
-	buf: [20]byte
-	strings.write_string(b, strconv.write_uint(buf[:], v, 10))
 }
 
 // --- Sorted key enumeration (the byte-stability load-bearing step) ---------

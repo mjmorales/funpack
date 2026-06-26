@@ -5,7 +5,7 @@
 	"excludes": [
 		"*.gen.odin"
 	],
-	"total_dedup_value": 10133,
+	"total_dedup_value": 9891,
 	"classes": [
 		{
 			"id": "00daf74970f88afd",
@@ -167,13 +167,6 @@
 			"node_count": 42,
 			"instances": 2,
 			"dedup_value": 42
-		},
-		{
-			"id": "204f8e9dfdcb337d",
-			"kind": "proc_lit",
-			"node_count": 47,
-			"instances": 2,
-			"dedup_value": 47
 		},
 		{
 			"id": "20ecacab621f8589",
@@ -419,13 +412,6 @@
 			"node_count": 88,
 			"instances": 2,
 			"dedup_value": 88
-		},
-		{
-			"id": "517ff218e187941d",
-			"kind": "proc_lit",
-			"node_count": 36,
-			"instances": 2,
-			"dedup_value": 36
 		},
 		{
 			"id": "522cba87d5b6e0a2",
@@ -708,13 +694,6 @@
 			"dedup_value": 34
 		},
 		{
-			"id": "947c1df68e3d06e1",
-			"kind": "proc_lit",
-			"node_count": 34,
-			"instances": 2,
-			"dedup_value": 34
-		},
-		{
 			"id": "9a0bc5938666fff7",
 			"kind": "value_decl",
 			"node_count": 69,
@@ -881,13 +860,6 @@
 			"node_count": 92,
 			"instances": 2,
 			"dedup_value": 92
-		},
-		{
-			"id": "ca05ec69b4fd659d",
-			"kind": "proc_lit",
-			"node_count": 125,
-			"instances": 2,
-			"dedup_value": 125
 		},
 		{
 			"id": "cc88da74ebeffad9",

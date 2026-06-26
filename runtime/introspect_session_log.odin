@@ -168,7 +168,7 @@ log_session_entry :: proc(writer: ^Session_Log_Writer, kind: Session_Entry_Kind,
 	b := &writer.entries
 	strings.write_string(b, session_entry_kind_token(kind))
 	strings.write_byte(b, ' ')
-	write_session_string_field(b, envelope)
+	write_string_field(b, envelope)
 	strings.write_byte(b, '\n')
 	writer.entry_count += 1
 }
@@ -210,13 +210,13 @@ write_session_header :: proc(b: ^strings.Builder, identity: Replay_Identity, tic
 	strings.write_string(b, "recording ")
 	strings.write_int(b, identity.artifact_schema_version)
 	strings.write_byte(b, ' ')
-	write_session_string_field(b, identity.project_name)
+	write_string_field(b, identity.project_name)
 	strings.write_byte(b, ' ')
-	write_session_string_field(b, identity.project_version)
+	write_string_field(b, identity.project_version)
 	strings.write_byte(b, ' ')
 	strings.write_int(b, identity.tick_hz)
 	strings.write_byte(b, ' ')
-	write_session_u64(b, identity.content_hash)
+	write_u64(b, identity.content_hash)
 	strings.write_byte(b, ' ')
 	strings.write_string(b, identity.has_seed ? "true" : "false")
 	strings.write_byte(b, ' ')
@@ -228,29 +228,10 @@ write_session_header :: proc(b: ^strings.Builder, identity: Replay_Identity, tic
 	strings.write_string(b, "]\n")
 }
 
-// --- Field primitives (artifact-format §2 style, shared shape with the replay log) -
-
-// write_session_string_field writes a length-prefixed string `Lbyte_count:raw_bytes`
-// (§2.4): the byte count, a `:`, then the bytes verbatim. A reader consumes exactly
-// that many bytes, so an envelope carrying a newline (inside a JSON string), a space,
-// or a `:` never confuses the parser — the load-bearing reason the whole NDJSON
-// envelope can be a single length-prefixed field.
-@(private = "file")
-write_session_string_field :: proc(b: ^strings.Builder, s: string) {
-	strings.write_byte(b, 'L')
-	strings.write_int(b, len(s))
-	strings.write_byte(b, ':')
-	strings.write_string(b, s)
-}
-
-// write_session_u64 writes an unsigned 64-bit value in decimal — the content hash is
-// unsigned, so it goes through here rather than write_i64 (which would mis-render a
-// high-bit-set value as negative).
-@(private = "file")
-write_session_u64 :: proc(b: ^strings.Builder, v: u64) {
-	buf: [20]byte
-	strings.write_string(b, strconv.write_uint(buf[:], v, 10))
-}
+// The §2 field primitives (write_string_field, write_u64, next_line, parse_bool,
+// take_field, take_string_field) live in record_codec.odin, shared with the replay
+// log and record stream — the on-disk encoding the session log "mirrors the replay
+// log" is the SAME codec, not a hand-kept copy.
 
 // --- The on-disk durable layer (one parse path for disk + in-memory) --------
 
@@ -348,7 +329,7 @@ parse_session_header :: proc(
 	tick_count: int,
 	ok: bool,
 ) {
-	magic_line, magic_ok := next_session_line(lines, cursor)
+	magic_line, magic_ok := next_line(lines, cursor)
 	if !magic_ok {
 		return {}, 0, false
 	}
@@ -361,7 +342,7 @@ parse_session_header :: proc(
 		return {}, 0, false
 	}
 
-	identity_line, line_ok := next_session_line(lines, cursor)
+	identity_line, line_ok := next_line(lines, cursor)
 	if !line_ok {
 		return {}, 0, false
 	}
@@ -370,7 +351,7 @@ parse_session_header :: proc(
 		return {}, 0, false
 	}
 
-	extent_line, extent_line_ok := next_session_line(lines, cursor)
+	extent_line, extent_line_ok := next_line(lines, cursor)
 	if !extent_line_ok {
 		return {}, 0, false
 	}
@@ -390,13 +371,13 @@ parse_session_header :: proc(
 @(private = "file")
 parse_recording_record :: proc(line: string) -> (identity: Replay_Identity, ok: bool) {
 	rest := line
-	keyword, after_keyword, kw_ok := take_session_field(rest)
+	keyword, after_keyword, kw_ok := take_field(rest)
 	if !kw_ok || keyword != "recording" {
 		return {}, false
 	}
 	rest = after_keyword
 
-	schema_tok, after_schema, schema_field_ok := take_session_field(rest)
+	schema_tok, after_schema, schema_field_ok := take_field(rest)
 	if !schema_field_ok {
 		return {}, false
 	}
@@ -406,19 +387,19 @@ parse_recording_record :: proc(line: string) -> (identity: Replay_Identity, ok: 
 	}
 	rest = after_schema
 
-	name, after_name, name_ok := take_session_string_field(rest)
+	name, after_name, name_ok := take_string_field(rest)
 	if !name_ok {
 		return {}, false
 	}
 	rest = after_name
 
-	version, after_version, version_ok := take_session_string_field(rest)
+	version, after_version, version_ok := take_string_field(rest)
 	if !version_ok {
 		return {}, false
 	}
 	rest = after_version
 
-	hz_tok, after_hz, hz_field_ok := take_session_field(rest)
+	hz_tok, after_hz, hz_field_ok := take_field(rest)
 	if !hz_field_ok {
 		return {}, false
 	}
@@ -428,7 +409,7 @@ parse_recording_record :: proc(line: string) -> (identity: Replay_Identity, ok: 
 	}
 	rest = after_hz
 
-	hash_tok, after_hash, hash_field_ok := take_session_field(rest)
+	hash_tok, after_hash, hash_field_ok := take_field(rest)
 	if !hash_field_ok {
 		return {}, false
 	}
@@ -438,17 +419,17 @@ parse_recording_record :: proc(line: string) -> (identity: Replay_Identity, ok: 
 	}
 	rest = after_hash
 
-	has_seed_tok, after_has_seed, has_seed_field_ok := take_session_field(rest)
+	has_seed_tok, after_has_seed, has_seed_field_ok := take_field(rest)
 	if !has_seed_field_ok {
 		return {}, false
 	}
-	has_seed, has_seed_ok := parse_session_bool(has_seed_tok)
+	has_seed, has_seed_ok := parse_bool(has_seed_tok)
 	if !has_seed_ok {
 		return {}, false
 	}
 	rest = after_has_seed
 
-	seed_tok, _, seed_field_ok := take_session_field(rest)
+	seed_tok, _, seed_field_ok := take_field(rest)
 	if !seed_field_ok {
 		return {}, false
 	}
@@ -472,7 +453,7 @@ parse_recording_record :: proc(line: string) -> (identity: Replay_Identity, ok: 
 // parse_stream_header reads the `[stream N]` section header and returns N.
 @(private = "file")
 parse_stream_header :: proc(lines: []string, cursor: ^int) -> (count: int, ok: bool) {
-	line, line_ok := next_session_line(lines, cursor)
+	line, line_ok := next_line(lines, cursor)
 	if !line_ok {
 		return 0, false
 	}
@@ -502,11 +483,11 @@ parse_session_entry :: proc(
 	entry: Session_Entry,
 	ok: bool,
 ) {
-	line, line_ok := next_session_line(lines, cursor)
+	line, line_ok := next_line(lines, cursor)
 	if !line_ok {
 		return {}, false
 	}
-	kind_tok, after_kind, kind_field_ok := take_session_field(line)
+	kind_tok, after_kind, kind_field_ok := take_field(line)
 	if !kind_field_ok {
 		return {}, false
 	}
@@ -514,7 +495,7 @@ parse_session_entry :: proc(
 	if !kind_ok {
 		return {}, false
 	}
-	envelope, _, env_ok := take_session_string_field(after_kind)
+	envelope, _, env_ok := take_string_field(after_kind)
 	if !env_ok {
 		return {}, false
 	}
@@ -536,76 +517,3 @@ parse_session_entry_kind :: proc(tok: string) -> (kind: Session_Entry_Kind, ok: 
 	return .Request, false
 }
 
-// --- Read-back primitives (mirroring the replay reader's, file-private here) -
-
-// next_session_line returns the line at the cursor and advances it, or ok=false past
-// the end — the bound check every record parser relies on to fail closed on a
-// truncated log.
-@(private = "file")
-next_session_line :: proc(lines: []string, cursor: ^int) -> (line: string, ok: bool) {
-	if cursor^ >= len(lines) {
-		return "", false
-	}
-	line = lines[cursor^]
-	cursor^ += 1
-	return line, true
-}
-
-// parse_session_bool reads a `true`/`false` bare token (§2.5).
-@(private = "file")
-parse_session_bool :: proc(tok: string) -> (v: bool, ok: bool) {
-	switch tok {
-	case "true":
-		return true, true
-	case "false":
-		return false, true
-	}
-	return false, false
-}
-
-// take_session_field splits the first space-delimited field off a record line,
-// returning the field, the remainder past the space, and ok=false for an empty line.
-@(private = "file")
-take_session_field :: proc(s: string) -> (field: string, rest: string, ok: bool) {
-	if len(s) == 0 {
-		return "", "", false
-	}
-	space := strings.index_byte(s, ' ')
-	if space < 0 {
-		return s, "", true
-	}
-	return s[:space], s[space + 1:], true
-}
-
-// take_session_string_field reads a length-prefixed `Lbyte_count:raw_bytes` field
-// (§2.4) and returns the decoded bytes plus the remainder past the trailing space.
-// Reading the byte count explicitly is what lets an envelope carry a newline or a
-// space without the scan mistaking it for a field delimiter — the load-bearing
-// reason a whole NDJSON line is stored as one length-prefixed field.
-@(private = "file")
-take_session_string_field :: proc(s: string) -> (value: string, rest: string, ok: bool) {
-	if len(s) == 0 || s[0] != 'L' {
-		return "", "", false
-	}
-	colon := strings.index_byte(s, ':')
-	if colon < 0 {
-		return "", "", false
-	}
-	count, count_ok := strconv.parse_int(s[1:colon])
-	if !count_ok || count < 0 {
-		return "", "", false
-	}
-	start := colon + 1
-	if start + count > len(s) {
-		return "", "", false
-	}
-	value = s[start:start + count]
-	rest = s[start + count:]
-	if len(rest) > 0 {
-		if rest[0] != ' ' {
-			return "", "", false
-		}
-		rest = rest[1:]
-	}
-	return value, rest, true
-}
