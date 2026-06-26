@@ -44,9 +44,11 @@ test_discover_orders_deterministically :: proc(t: ^testing.T) {
 	}
 }
 
-// test_discover_honors_exclude_glob pins both exclude shapes: a directory pattern
-// prunes the whole subtree (no descent) and a file-name glob drops the matching
-// file, while unmatched siblings survive.
+// test_discover_honors_exclude_glob pins the exclude shapes: a directory pattern
+// prunes the whole subtree (no descent), a file-name glob drops the matching file,
+// and a trailing-slash directory pattern (`generated/`, the .gitignore form) prunes
+// identically to the bare name — filepath.match cannot match a trailing separator,
+// so glob_excludes strips it. Unmatched siblings survive throughout.
 @(test)
 test_discover_honors_exclude_glob :: proc(t: ^testing.T) {
 	root := fixture_root("exclude")
@@ -75,6 +77,17 @@ test_discover_honors_exclude_glob :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, has_basename(sources, "keep.odin"), "keep.odin must survive")
 	testing.expect(t, has_basename(sources, "also_keep.odin"), "nested also_keep.odin must survive")
+
+	slashed, slashed_ok := discover_odin_sources(root, {"generated/"}, context.temp_allocator)
+	testing.expect(t, slashed_ok, "discovery must succeed with a trailing-slash exclude")
+	for s in slashed {
+		testing.expect(
+			t,
+			!strings.contains(s.path, "generated"),
+			"a trailing-slash directory exclude must prune like the bare name",
+		)
+	}
+	testing.expect(t, has_basename(slashed, "keep.odin"), "keep.odin must survive the slashed exclude")
 }
 
 // test_discover_tags_test_files pins the _test.odin classification: the tag the dup

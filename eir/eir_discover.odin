@@ -106,12 +106,18 @@ path_relative_to :: proc(root, full: string) -> string {
 // (filepath.match returns an error) is treated as a non-match: the exclude list is
 // curated lint configuration, so a bad pattern widens the scanned set rather than
 // aborting the walk.
+//
+// A trailing slash is stripped first: `vendor/` is the conventional .gitignore form
+// for "the directory vendor", but filepath.match has nothing to match the trailing
+// separator against, so an un-stripped `vendor/` would silently match nothing and
+// fail to exclude. Stripping it makes `vendor/` and `vendor` prune identically.
 glob_excludes :: proc(patterns: []string, rel, name: string) -> bool {
 	for pattern in patterns {
-		if matched, err := filepath.match(pattern, rel); err == nil && matched {
+		pat := strings.trim_suffix(pattern, "/")
+		if matched, err := filepath.match(pat, rel); err == nil && matched {
 			return true
 		}
-		if matched, err := filepath.match(pattern, name); err == nil && matched {
+		if matched, err := filepath.match(pat, name); err == nil && matched {
 			return true
 		}
 	}
