@@ -46,7 +46,7 @@ tasks:
       - task: cmd-eir:build
 
   lint:
-    desc: Vet + strict-style every package (incl. the SDL-gated arms)
+    desc: Vet + strict-style every package (incl. the SDL-gated arms) + the eir dup ratchet
     cmds:
       - task: cli:lint
       - task: funpack:lint
@@ -55,6 +55,13 @@ tasks:
       - task: eir:lint
       - task: cmd:lint
       - task: cmd-eir:lint
+      - task: dup-gate
+
+  dup-gate:
+    desc: eir dup ratchet — fail if AST clone debt rose above eir/dup-baseline.json
+    cmds:
+      - task: cmd-eir:binary
+      - ./cmd/eir/eir dup --baseline eir/dup-baseline.json --exclude '*.gen.odin'
 
   test:
     desc: Run every package's tests (all define-free — no SDL linked)

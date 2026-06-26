@@ -1,0 +1,1096 @@
+{
+	"schema_version": 1,
+	"min_nodes": 30,
+	"fold_literals": false,
+	"excludes": [
+		"*.gen.odin"
+	],
+	"total_dedup_value": 10133,
+	"classes": [
+		{
+			"id": "00daf74970f88afd",
+			"kind": "if",
+			"node_count": 32,
+			"instances": 2,
+			"dedup_value": 32
+		},
+		{
+			"id": "01fbb46859293842",
+			"kind": "value_decl",
+			"node_count": 57,
+			"instances": 2,
+			"dedup_value": 57
+		},
+		{
+			"id": "025d28f137070874",
+			"kind": "value_decl",
+			"node_count": 52,
+			"instances": 3,
+			"dedup_value": 104
+		},
+		{
+			"id": "034144fd656c7f9a",
+			"kind": "proc_lit",
+			"node_count": 38,
+			"instances": 2,
+			"dedup_value": 38
+		},
+		{
+			"id": "0589efeda7ca1cb2",
+			"kind": "value_decl",
+			"node_count": 47,
+			"instances": 2,
+			"dedup_value": 47
+		},
+		{
+			"id": "09ec8f31943dbf1d",
+			"kind": "proc_lit",
+			"node_count": 48,
+			"instances": 2,
+			"dedup_value": 48
+		},
+		{
+			"id": "0a5630e17dd75b3e",
+			"kind": "value_decl",
+			"node_count": 35,
+			"instances": 2,
+			"dedup_value": 35
+		},
+		{
+			"id": "0b19e755831e6a26",
+			"kind": "block",
+			"node_count": 30,
+			"instances": 2,
+			"dedup_value": 30
+		},
+		{
+			"id": "0ba799a74a7842f3",
+			"kind": "proc_lit",
+			"node_count": 49,
+			"instances": 2,
+			"dedup_value": 49
+		},
+		{
+			"id": "0bcf6c943cb044f7",
+			"kind": "proc_lit",
+			"node_count": 34,
+			"instances": 4,
+			"dedup_value": 102
+		},
+		{
+			"id": "0dda90d813fbc745",
+			"kind": "proc_lit",
+			"node_count": 41,
+			"instances": 2,
+			"dedup_value": 41
+		},
+		{
+			"id": "1090c896cbe1fc0b",
+			"kind": "proc_lit",
+			"node_count": 31,
+			"instances": 2,
+			"dedup_value": 31
+		},
+		{
+			"id": "10af314714051af2",
+			"kind": "proc_lit",
+			"node_count": 52,
+			"instances": 2,
+			"dedup_value": 52
+		},
+		{
+			"id": "10c347d21c7c135c",
+			"kind": "value_decl",
+			"node_count": 62,
+			"instances": 2,
+			"dedup_value": 62
+		},
+		{
+			"id": "11118aac7f5386e2",
+			"kind": "value_decl",
+			"node_count": 83,
+			"instances": 2,
+			"dedup_value": 83
+		},
+		{
+			"id": "1145bb3ba8370dd6",
+			"kind": "value_decl",
+			"node_count": 36,
+			"instances": 2,
+			"dedup_value": 36
+		},
+		{
+			"id": "12e97c0cfd258a43",
+			"kind": "value_decl",
+			"node_count": 61,
+			"instances": 2,
+			"dedup_value": 61
+		},
+		{
+			"id": "1628f597d057d931",
+			"kind": "value_decl",
+			"node_count": 60,
+			"instances": 2,
+			"dedup_value": 60
+		},
+		{
+			"id": "17d90524b10ddfe5",
+			"kind": "value_decl",
+			"node_count": 46,
+			"instances": 2,
+			"dedup_value": 46
+		},
+		{
+			"id": "1c0208396608911c",
+			"kind": "proc_lit",
+			"node_count": 46,
+			"instances": 3,
+			"dedup_value": 92
+		},
+		{
+			"id": "1c3cc7f44cce7a2a",
+			"kind": "value_decl",
+			"node_count": 83,
+			"instances": 2,
+			"dedup_value": 83
+		},
+		{
+			"id": "1e2b405a70b0dd7c",
+			"kind": "value_decl",
+			"node_count": 140,
+			"instances": 2,
+			"dedup_value": 140
+		},
+		{
+			"id": "1fe8ac6eeeff9cc9",
+			"kind": "value_decl",
+			"node_count": 42,
+			"instances": 2,
+			"dedup_value": 42
+		},
+		{
+			"id": "204f8e9dfdcb337d",
+			"kind": "proc_lit",
+			"node_count": 47,
+			"instances": 2,
+			"dedup_value": 47
+		},
+		{
+			"id": "20ecacab621f8589",
+			"kind": "value_decl",
+			"node_count": 54,
+			"instances": 2,
+			"dedup_value": 54
+		},
+		{
+			"id": "2324ae2b16b7392f",
+			"kind": "proc_lit",
+			"node_count": 39,
+			"instances": 4,
+			"dedup_value": 117
+		},
+		{
+			"id": "252d279f06845d6e",
+			"kind": "proc_lit",
+			"node_count": 51,
+			"instances": 6,
+			"dedup_value": 255
+		},
+		{
+			"id": "256f93f6ce0b7671",
+			"kind": "value_decl",
+			"node_count": 134,
+			"instances": 2,
+			"dedup_value": 134
+		},
+		{
+			"id": "2648a8dddb98da0e",
+			"kind": "value_decl",
+			"node_count": 32,
+			"instances": 3,
+			"dedup_value": 64
+		},
+		{
+			"id": "28da96d442f130e8",
+			"kind": "proc_lit",
+			"node_count": 60,
+			"instances": 2,
+			"dedup_value": 60
+		},
+		{
+			"id": "29a9475b351f4ab2",
+			"kind": "proc_lit",
+			"node_count": 31,
+			"instances": 2,
+			"dedup_value": 31
+		},
+		{
+			"id": "2ab90b8280eeca17",
+			"kind": "block",
+			"node_count": 32,
+			"instances": 2,
+			"dedup_value": 32
+		},
+		{
+			"id": "2c00aaeb953ce972",
+			"kind": "range",
+			"node_count": 32,
+			"instances": 6,
+			"dedup_value": 160
+		},
+		{
+			"id": "2d353ae473551a0b",
+			"kind": "value_decl",
+			"node_count": 50,
+			"instances": 2,
+			"dedup_value": 50
+		},
+		{
+			"id": "30a84a86bbe52a54",
+			"kind": "value_decl",
+			"node_count": 58,
+			"instances": 2,
+			"dedup_value": 58
+		},
+		{
+			"id": "34467ec60be40a52",
+			"kind": "value_decl",
+			"node_count": 51,
+			"instances": 2,
+			"dedup_value": 51
+		},
+		{
+			"id": "34cd4dd4e996dc7c",
+			"kind": "value_decl",
+			"node_count": 30,
+			"instances": 2,
+			"dedup_value": 30
+		},
+		{
+			"id": "356a908fe7830328",
+			"kind": "comp_lit",
+			"node_count": 38,
+			"instances": 2,
+			"dedup_value": 38
+		},
+		{
+			"id": "357774db12293c0e",
+			"kind": "proc_lit",
+			"node_count": 32,
+			"instances": 2,
+			"dedup_value": 32
+		},
+		{
+			"id": "37b61af76943d67e",
+			"kind": "value_decl",
+			"node_count": 35,
+			"instances": 2,
+			"dedup_value": 35
+		},
+		{
+			"id": "38ee0f4561a3edb0",
+			"kind": "value_decl",
+			"node_count": 68,
+			"instances": 2,
+			"dedup_value": 68
+		},
+		{
+			"id": "39287348059ee8fb",
+			"kind": "case",
+			"node_count": 33,
+			"instances": 2,
+			"dedup_value": 33
+		},
+		{
+			"id": "39954b7ed66a291b",
+			"kind": "value_decl",
+			"node_count": 45,
+			"instances": 2,
+			"dedup_value": 45
+		},
+		{
+			"id": "3a50ed42eceacdc4",
+			"kind": "value_decl",
+			"node_count": 66,
+			"instances": 2,
+			"dedup_value": 66
+		},
+		{
+			"id": "3ba6b30306eb5498",
+			"kind": "value_decl",
+			"node_count": 40,
+			"instances": 2,
+			"dedup_value": 40
+		},
+		{
+			"id": "3c32238fec443e23",
+			"kind": "proc_lit",
+			"node_count": 35,
+			"instances": 2,
+			"dedup_value": 35
+		},
+		{
+			"id": "3d6e364496fbe6dd",
+			"kind": "value_decl",
+			"node_count": 47,
+			"instances": 2,
+			"dedup_value": 47
+		},
+		{
+			"id": "42c62e570b35c442",
+			"kind": "value_decl",
+			"node_count": 45,
+			"instances": 2,
+			"dedup_value": 45
+		},
+		{
+			"id": "4510d378663b2996",
+			"kind": "block",
+			"node_count": 38,
+			"instances": 2,
+			"dedup_value": 38
+		},
+		{
+			"id": "45c10376be5863fe",
+			"kind": "binary",
+			"node_count": 67,
+			"instances": 2,
+			"dedup_value": 67
+		},
+		{
+			"id": "46a5aadd9680c3b7",
+			"kind": "proc_lit",
+			"node_count": 101,
+			"instances": 2,
+			"dedup_value": 101
+		},
+		{
+			"id": "4708005c40c8a29c",
+			"kind": "block",
+			"node_count": 40,
+			"instances": 2,
+			"dedup_value": 40
+		},
+		{
+			"id": "475d265529c08d9b",
+			"kind": "block",
+			"node_count": 36,
+			"instances": 2,
+			"dedup_value": 36
+		},
+		{
+			"id": "4804de5739791afe",
+			"kind": "if",
+			"node_count": 30,
+			"instances": 3,
+			"dedup_value": 60
+		},
+		{
+			"id": "48ca064cfa4a903f",
+			"kind": "value_decl",
+			"node_count": 39,
+			"instances": 2,
+			"dedup_value": 39
+		},
+		{
+			"id": "4ab7975d4454ba25",
+			"kind": "value_decl",
+			"node_count": 38,
+			"instances": 2,
+			"dedup_value": 38
+		},
+		{
+			"id": "4b5e2015d6ac9c7c",
+			"kind": "proc_lit",
+			"node_count": 50,
+			"instances": 3,
+			"dedup_value": 100
+		},
+		{
+			"id": "4b80847f75178919",
+			"kind": "value_decl",
+			"node_count": 79,
+			"instances": 2,
+			"dedup_value": 79
+		},
+		{
+			"id": "4b97a8ec2e001867",
+			"kind": "value_decl",
+			"node_count": 88,
+			"instances": 2,
+			"dedup_value": 88
+		},
+		{
+			"id": "517ff218e187941d",
+			"kind": "proc_lit",
+			"node_count": 36,
+			"instances": 2,
+			"dedup_value": 36
+		},
+		{
+			"id": "522cba87d5b6e0a2",
+			"kind": "binary",
+			"node_count": 75,
+			"instances": 2,
+			"dedup_value": 75
+		},
+		{
+			"id": "56d3906d641578f7",
+			"kind": "value_decl",
+			"node_count": 79,
+			"instances": 2,
+			"dedup_value": 79
+		},
+		{
+			"id": "59d4ec841f193668",
+			"kind": "block",
+			"node_count": 32,
+			"instances": 2,
+			"dedup_value": 32
+		},
+		{
+			"id": "59ec61594df32539",
+			"kind": "block",
+			"node_count": 60,
+			"instances": 2,
+			"dedup_value": 60
+		},
+		{
+			"id": "5b50316b6875c203",
+			"kind": "proc_lit",
+			"node_count": 73,
+			"instances": 2,
+			"dedup_value": 73
+		},
+		{
+			"id": "5cc4965274d8242d",
+			"kind": "proc_lit",
+			"node_count": 37,
+			"instances": 2,
+			"dedup_value": 37
+		},
+		{
+			"id": "5cd55e3d66f4a477",
+			"kind": "block",
+			"node_count": 49,
+			"instances": 2,
+			"dedup_value": 49
+		},
+		{
+			"id": "5e8c5acd803bfd81",
+			"kind": "case",
+			"node_count": 30,
+			"instances": 2,
+			"dedup_value": 30
+		},
+		{
+			"id": "6057b126568837e9",
+			"kind": "value_decl",
+			"node_count": 107,
+			"instances": 2,
+			"dedup_value": 107
+		},
+		{
+			"id": "60cfd32c24d489a0",
+			"kind": "value_decl",
+			"node_count": 30,
+			"instances": 2,
+			"dedup_value": 30
+		},
+		{
+			"id": "62002e5ca33f1040",
+			"kind": "range",
+			"node_count": 32,
+			"instances": 3,
+			"dedup_value": 64
+		},
+		{
+			"id": "63845d7b5ec63f91",
+			"kind": "value_decl",
+			"node_count": 81,
+			"instances": 2,
+			"dedup_value": 81
+		},
+		{
+			"id": "646682f5dc8ce6fb",
+			"kind": "range",
+			"node_count": 60,
+			"instances": 2,
+			"dedup_value": 60
+		},
+		{
+			"id": "64b7bccc5b384e14",
+			"kind": "proc_lit",
+			"node_count": 37,
+			"instances": 2,
+			"dedup_value": 37
+		},
+		{
+			"id": "656dc0e8ddc159a8",
+			"kind": "value_decl",
+			"node_count": 51,
+			"instances": 2,
+			"dedup_value": 51
+		},
+		{
+			"id": "65c0bc78141ff64d",
+			"kind": "value_decl",
+			"node_count": 90,
+			"instances": 2,
+			"dedup_value": 90
+		},
+		{
+			"id": "67293e18b89ed8d3",
+			"kind": "proc_lit",
+			"node_count": 30,
+			"instances": 2,
+			"dedup_value": 30
+		},
+		{
+			"id": "69324e7a01a58319",
+			"kind": "proc_lit",
+			"node_count": 49,
+			"instances": 3,
+			"dedup_value": 98
+		},
+		{
+			"id": "6a557f18266e8d53",
+			"kind": "value_decl",
+			"node_count": 42,
+			"instances": 2,
+			"dedup_value": 42
+		},
+		{
+			"id": "6ccb608c3757ba75",
+			"kind": "proc_lit",
+			"node_count": 40,
+			"instances": 4,
+			"dedup_value": 120
+		},
+		{
+			"id": "6dc4bca1317aa0cc",
+			"kind": "proc_lit",
+			"node_count": 55,
+			"instances": 2,
+			"dedup_value": 55
+		},
+		{
+			"id": "6e9afa46b05120a1",
+			"kind": "value_decl",
+			"node_count": 51,
+			"instances": 2,
+			"dedup_value": 51
+		},
+		{
+			"id": "6ed985252c27269a",
+			"kind": "proc_lit",
+			"node_count": 36,
+			"instances": 2,
+			"dedup_value": 36
+		},
+		{
+			"id": "717bc30e419f8346",
+			"kind": "value_decl",
+			"node_count": 77,
+			"instances": 2,
+			"dedup_value": 77
+		},
+		{
+			"id": "7497b4dc7386f2e6",
+			"kind": "for",
+			"node_count": 32,
+			"instances": 2,
+			"dedup_value": 32
+		},
+		{
+			"id": "75a261f4e8344118",
+			"kind": "proc_lit",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "75d2c97485092d2d",
+			"kind": "case",
+			"node_count": 36,
+			"instances": 2,
+			"dedup_value": 36
+		},
+		{
+			"id": "7ce17537a1d152cf",
+			"kind": "range",
+			"node_count": 43,
+			"instances": 2,
+			"dedup_value": 43
+		},
+		{
+			"id": "7dc5da3be8b6df54",
+			"kind": "proc_lit",
+			"node_count": 77,
+			"instances": 2,
+			"dedup_value": 77
+		},
+		{
+			"id": "7efa8665199b0038",
+			"kind": "proc_lit",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "80c9464758fc4699",
+			"kind": "value_decl",
+			"node_count": 48,
+			"instances": 2,
+			"dedup_value": 48
+		},
+		{
+			"id": "8340b8446af2565e",
+			"kind": "proc_lit",
+			"node_count": 87,
+			"instances": 2,
+			"dedup_value": 87
+		},
+		{
+			"id": "83e272988d4fd176",
+			"kind": "block",
+			"node_count": 45,
+			"instances": 2,
+			"dedup_value": 45
+		},
+		{
+			"id": "86f6fdf40fc7b69a",
+			"kind": "binary",
+			"node_count": 47,
+			"instances": 3,
+			"dedup_value": 94
+		},
+		{
+			"id": "880f29e8fc734629",
+			"kind": "proc_lit",
+			"node_count": 30,
+			"instances": 2,
+			"dedup_value": 30
+		},
+		{
+			"id": "8c972a3d2ccb4868",
+			"kind": "value_decl",
+			"node_count": 42,
+			"instances": 2,
+			"dedup_value": 42
+		},
+		{
+			"id": "8f133324d8ec24b2",
+			"kind": "value_decl",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "90c972ea4c2e5f4a",
+			"kind": "value_decl",
+			"node_count": 50,
+			"instances": 2,
+			"dedup_value": 50
+		},
+		{
+			"id": "92ad58b5e9b3c29f",
+			"kind": "proc_lit",
+			"node_count": 42,
+			"instances": 2,
+			"dedup_value": 42
+		},
+		{
+			"id": "93eca64c25eb3576",
+			"kind": "range",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "947c1df68e3d06e1",
+			"kind": "proc_lit",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "9a0bc5938666fff7",
+			"kind": "value_decl",
+			"node_count": 69,
+			"instances": 2,
+			"dedup_value": 69
+		},
+		{
+			"id": "a4bd6e0080f3247c",
+			"kind": "value_decl",
+			"node_count": 31,
+			"instances": 2,
+			"dedup_value": 31
+		},
+		{
+			"id": "a5ab7e7c7aad7297",
+			"kind": "value_decl",
+			"node_count": 47,
+			"instances": 2,
+			"dedup_value": 47
+		},
+		{
+			"id": "a7023f388cee0b94",
+			"kind": "proc_lit",
+			"node_count": 30,
+			"instances": 2,
+			"dedup_value": 30
+		},
+		{
+			"id": "a70490d476ffc10f",
+			"kind": "proc_lit",
+			"node_count": 41,
+			"instances": 2,
+			"dedup_value": 41
+		},
+		{
+			"id": "a74b9c3321573e40",
+			"kind": "proc_lit",
+			"node_count": 41,
+			"instances": 2,
+			"dedup_value": 41
+		},
+		{
+			"id": "a857d472a54bda16",
+			"kind": "field_value",
+			"node_count": 31,
+			"instances": 2,
+			"dedup_value": 31
+		},
+		{
+			"id": "abe37a3f584438f6",
+			"kind": "proc_lit",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "ae1906ee2d2de4ed",
+			"kind": "block",
+			"node_count": 36,
+			"instances": 2,
+			"dedup_value": 36
+		},
+		{
+			"id": "b1b382a2068d6658",
+			"kind": "value_decl",
+			"node_count": 51,
+			"instances": 2,
+			"dedup_value": 51
+		},
+		{
+			"id": "b31267fea90ca515",
+			"kind": "range",
+			"node_count": 30,
+			"instances": 3,
+			"dedup_value": 60
+		},
+		{
+			"id": "b4c63131ab0f2649",
+			"kind": "range",
+			"node_count": 39,
+			"instances": 3,
+			"dedup_value": 78
+		},
+		{
+			"id": "b5cf20adbe1702cf",
+			"kind": "case",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "b67fd515aa66eb4b",
+			"kind": "proc_lit",
+			"node_count": 95,
+			"instances": 5,
+			"dedup_value": 380
+		},
+		{
+			"id": "b6e0ba40dafa220d",
+			"kind": "value_decl",
+			"node_count": 31,
+			"instances": 2,
+			"dedup_value": 31
+		},
+		{
+			"id": "b72f95b5b6f6a767",
+			"kind": "range",
+			"node_count": 37,
+			"instances": 3,
+			"dedup_value": 74
+		},
+		{
+			"id": "b81ce306d1775d61",
+			"kind": "case",
+			"node_count": 38,
+			"instances": 2,
+			"dedup_value": 38
+		},
+		{
+			"id": "bbee40f254d29251",
+			"kind": "proc_lit",
+			"node_count": 93,
+			"instances": 2,
+			"dedup_value": 93
+		},
+		{
+			"id": "bcd309a881bc04aa",
+			"kind": "proc_lit",
+			"node_count": 56,
+			"instances": 3,
+			"dedup_value": 112
+		},
+		{
+			"id": "bdfdc80cc42e6f3e",
+			"kind": "value_decl",
+			"node_count": 40,
+			"instances": 2,
+			"dedup_value": 40
+		},
+		{
+			"id": "c04f47f21fad5e01",
+			"kind": "value_decl",
+			"node_count": 51,
+			"instances": 2,
+			"dedup_value": 51
+		},
+		{
+			"id": "c445cdf624c807b7",
+			"kind": "value_decl",
+			"node_count": 96,
+			"instances": 2,
+			"dedup_value": 96
+		},
+		{
+			"id": "c543db61bf36d780",
+			"kind": "field_value",
+			"node_count": 31,
+			"instances": 2,
+			"dedup_value": 31
+		},
+		{
+			"id": "c5f78621a327b64a",
+			"kind": "value_decl",
+			"node_count": 92,
+			"instances": 2,
+			"dedup_value": 92
+		},
+		{
+			"id": "ca05ec69b4fd659d",
+			"kind": "proc_lit",
+			"node_count": 125,
+			"instances": 2,
+			"dedup_value": 125
+		},
+		{
+			"id": "cc88da74ebeffad9",
+			"kind": "field_value",
+			"node_count": 31,
+			"instances": 2,
+			"dedup_value": 31
+		},
+		{
+			"id": "cf72b3ac00982335",
+			"kind": "proc_lit",
+			"node_count": 48,
+			"instances": 2,
+			"dedup_value": 48
+		},
+		{
+			"id": "d0a5a2a08d362e2f",
+			"kind": "proc_lit",
+			"node_count": 35,
+			"instances": 2,
+			"dedup_value": 35
+		},
+		{
+			"id": "d0a88190cfab836f",
+			"kind": "block",
+			"node_count": 38,
+			"instances": 5,
+			"dedup_value": 152
+		},
+		{
+			"id": "d14ffb189569f4e8",
+			"kind": "proc_lit",
+			"node_count": 65,
+			"instances": 3,
+			"dedup_value": 130
+		},
+		{
+			"id": "d26ee67477e048db",
+			"kind": "proc_lit",
+			"node_count": 45,
+			"instances": 3,
+			"dedup_value": 90
+		},
+		{
+			"id": "d359c3559af09f87",
+			"kind": "proc_lit",
+			"node_count": 35,
+			"instances": 2,
+			"dedup_value": 35
+		},
+		{
+			"id": "d9e1fc467a9e2598",
+			"kind": "value_decl",
+			"node_count": 106,
+			"instances": 2,
+			"dedup_value": 106
+		},
+		{
+			"id": "dc21ca3f207fae35",
+			"kind": "case",
+			"node_count": 36,
+			"instances": 2,
+			"dedup_value": 36
+		},
+		{
+			"id": "dc5a866f75284cc6",
+			"kind": "value_decl",
+			"node_count": 60,
+			"instances": 2,
+			"dedup_value": 60
+		},
+		{
+			"id": "ded11ae2519add51",
+			"kind": "value_decl",
+			"node_count": 46,
+			"instances": 2,
+			"dedup_value": 46
+		},
+		{
+			"id": "dedc571b6224fa8c",
+			"kind": "proc_lit",
+			"node_count": 33,
+			"instances": 7,
+			"dedup_value": 198
+		},
+		{
+			"id": "df7d6cbfcac6882a",
+			"kind": "range",
+			"node_count": 32,
+			"instances": 2,
+			"dedup_value": 32
+		},
+		{
+			"id": "e02065c9260e76f2",
+			"kind": "value_decl",
+			"node_count": 46,
+			"instances": 2,
+			"dedup_value": 46
+		},
+		{
+			"id": "e054e71a8995c4c5",
+			"kind": "proc_lit",
+			"node_count": 77,
+			"instances": 2,
+			"dedup_value": 77
+		},
+		{
+			"id": "e071bc29bdfd9ba9",
+			"kind": "value_decl",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "e19e18a60b86fb17",
+			"kind": "proc_lit",
+			"node_count": 39,
+			"instances": 2,
+			"dedup_value": 39
+		},
+		{
+			"id": "e5501c958f5c14c1",
+			"kind": "binary",
+			"node_count": 67,
+			"instances": 8,
+			"dedup_value": 469
+		},
+		{
+			"id": "e5793f6652f3bed9",
+			"kind": "proc_lit",
+			"node_count": 56,
+			"instances": 2,
+			"dedup_value": 56
+		},
+		{
+			"id": "ed6e7a44f37fd833",
+			"kind": "field_value",
+			"node_count": 31,
+			"instances": 2,
+			"dedup_value": 31
+		},
+		{
+			"id": "f130ff21f3efac6d",
+			"kind": "value_decl",
+			"node_count": 32,
+			"instances": 2,
+			"dedup_value": 32
+		},
+		{
+			"id": "f234e99e84deb4fa",
+			"kind": "proc_lit",
+			"node_count": 42,
+			"instances": 2,
+			"dedup_value": 42
+		},
+		{
+			"id": "f48d3c2483221f97",
+			"kind": "proc_lit",
+			"node_count": 34,
+			"instances": 2,
+			"dedup_value": 34
+		},
+		{
+			"id": "f580e32745830c33",
+			"kind": "value_decl",
+			"node_count": 50,
+			"instances": 2,
+			"dedup_value": 50
+		},
+		{
+			"id": "f63bb531f3a05b77",
+			"kind": "value_decl",
+			"node_count": 51,
+			"instances": 2,
+			"dedup_value": 51
+		},
+		{
+			"id": "f6c8e38ccdff1d93",
+			"kind": "case",
+			"node_count": 42,
+			"instances": 2,
+			"dedup_value": 42
+		},
+		{
+			"id": "fafdc75421fbd365",
+			"kind": "proc_lit",
+			"node_count": 51,
+			"instances": 3,
+			"dedup_value": 102
+		},
+		{
+			"id": "fb519b2bdd8da734",
+			"kind": "proc_lit",
+			"node_count": 45,
+			"instances": 6,
+			"dedup_value": 225
+		},
+		{
+			"id": "fe3aae4197c73602",
+			"kind": "value_decl",
+			"node_count": 78,
+			"instances": 2,
+			"dedup_value": 78
+		}
+	]
+}

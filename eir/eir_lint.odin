@@ -14,6 +14,7 @@ package eir
 import "../cli"
 import vmem "core:mem/virtual"
 import "core:fmt"
+import "core:os"
 import "core:strings"
 
 // Lint is one registry entry: the metadata build_lint_subtree turns into a
@@ -68,6 +69,19 @@ lint_registry := []Lint {
 				kind = .Bool,
 				usage = "Emit the ranked clone classes as byte-stable JSON instead of the human table",
 			},
+				// --baseline turns dup from a report into a ratchet GATE: the scan is
+				// compared against the committed baseline file and the verb exits 1 on a
+				// debt rise. Its presence (a non-empty path) is the mode switch.
+				{
+					name = "baseline",
+					kind = .String,
+					usage = "Path to the committed clone-debt baseline; with it set, dup runs as a ratchet gate (exit 1 on debt above baseline)",
+				},
+				{
+					name = "update-baseline",
+					kind = .Bool,
+					usage = "With --baseline, re-snapshot the current clone debt to the baseline file and exit 0 (the monotone-tighten path)",
+				},
 		},
 		args = cli.cli_range_args(0, 1),
 		run = run_dup_lint,
@@ -101,13 +115,14 @@ build_lint_subtree :: proc(allocator := context.allocator) -> []^cli.Cli_Command
 }
 
 // run_dup_lint handles `eir dup`: scan the optional [root] (default cwd) for Odin
-// sources under the flag-driven options, run the clone engine over the parsed trees,
-// and render the ranked report — the human table by default, the byte-stable JSON
-// under --json. It returns 0 even when clones are found: the dup lint is a REPORT,
-// not a CI gate, so its exit contract here is {0 informational, 2 usage} — a
-// non-resolvable [root] is the only non-zero path (exit 2, a bad path argument), and
-// a clone is never an exit 1 in this surface. Parse failures are surfaced as a stderr
-// note, never an abort: the scan reports clones over what it could read.
+// sources under the flag-driven options and run the clone engine over the parsed trees.
+// Without --baseline it RENDERS the ranked report — the human table by default, the
+// byte-stable JSON under --json — and returns 0 even when clones are found, because a
+// bare report is informational, not a gate (exit contract {0 informational, 2 usage};
+// a non-resolvable [root] is the only non-zero report path). With --baseline it hands
+// the same scan to the ratchet gate, whose contract adds a 1 for a debt regression.
+// Parse failures are surfaced as a stderr note, never an abort: the scan reports over
+// what it could read.
 //
 // The whole scan — the loader's parse cache, every parsed tree and borrowed path
 // string, the clone classes, and the rendered report — lives in one growing arena
@@ -152,11 +167,93 @@ run_dup_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 		)
 	}
 
+	if baseline_path := cli.cli_flag_string(inv, "baseline"); baseline_path != "" {
+		return run_dup_gate(
+			baseline_path,
+			cli.cli_flag_bool(inv, "update-baseline"),
+			classes,
+			options,
+			excludes,
+			scan,
+		)
+	}
+
 	if cli.cli_flag_bool(inv, "json") {
 		fmt.println(render_dup_json(classes, scan))
 	} else {
 		fmt.print(render_dup_human(classes, scan))
 	}
+	return 0
+}
+
+// run_dup_gate is the ratchet half of `eir dup`: --baseline makes the scan a GATE rather
+// than a report. --update-baseline re-snapshots the current debt to the file and exits 0
+// — the one deliberate way the ceiling moves, so the committed baseline diff is the audit
+// trail. Otherwise it compares the scan against the committed baseline and exits 1 when
+// debt rose above it, 0 at or below. A missing or malformed baseline, or a scan whose
+// options differ from the recorded ones, is a usage error (exit 2): the gate never
+// silently passes on a baseline it cannot trust, because a silent pass is worse than a
+// loud refusal for a tool whose whole job is to fail on regression. The gate's notes go
+// to stderr (stdout stays the report's channel), so a CI log reads the verdict plainly.
+@(private = "file")
+run_dup_gate :: proc(
+	path: string,
+	update: bool,
+	classes: []Clone_Class,
+	opts: Dup_Options,
+	excludes: []string,
+	allocator := context.allocator,
+) -> int {
+	if update {
+		baseline := build_baseline(classes, opts, excludes, allocator)
+		body := render_baseline_json(baseline, allocator)
+		if write_err := os.write_entire_file(path, transmute([]byte)body); write_err != nil {
+			fmt.eprintfln("eir dup: cannot write baseline %q", path)
+			return 2
+		}
+		fmt.eprintfln(
+			"eir dup: wrote baseline %q (%d clone classes, total dedup_value %d)",
+			path,
+			len(baseline.classes),
+			baseline.total_dedup_value,
+		)
+		return 0
+	}
+
+	data, read_err := os.read_entire_file(path, allocator)
+	if read_err != nil {
+		fmt.eprintfln(
+			"eir dup: cannot read baseline %q (run with --update-baseline to create it)",
+			path,
+		)
+		return 2
+	}
+	baseline, parse_ok := parse_baseline(string(data), allocator)
+	if !parse_ok {
+		fmt.eprintfln(
+			"eir dup: baseline %q is malformed or a newer schema; re-create it with --update-baseline",
+			path,
+		)
+		return 2
+	}
+	if !baseline_scan_matches(baseline, opts, excludes) {
+		fmt.eprintfln(
+			"eir dup: scan options differ from baseline %q (min-nodes/fold-literals/exclude); re-create it with --update-baseline",
+			path,
+		)
+		return 2
+	}
+
+	verdict := compare_baseline(baseline, classes, opts, excludes, allocator)
+	if verdict.regressed {
+		fmt.eprint(render_gate_failure(verdict, allocator))
+		return 1
+	}
+	fmt.eprintfln(
+		"eir dup: clone debt within baseline (total dedup_value %d <= %d)",
+		verdict.current_total,
+		baseline.total_dedup_value,
+	)
 	return 0
 }
 

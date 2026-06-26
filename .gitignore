@@ -5,6 +5,10 @@
 # by `task binary` / `task cmd:binary`.
 cmd/funpack/funpack
 
+# the repo-local eir lint binary, built into its entry package dir by `task
+# cmd-eir:binary` (also rebuilt by the `dup-gate` lint arm so the ratchet can run).
+cmd/eir/eir
+
 # stray ad-hoc compiled binaries at the repo root (e.g. odin build . -out:funpack.bin)
 /funpack.bin
 
