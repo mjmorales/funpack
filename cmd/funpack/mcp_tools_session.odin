@@ -78,17 +78,25 @@ sess_owns_command :: proc(spec: funpack.Tool_Spec) -> bool {
 }
 
 // sess_start opens a fresh debug session over the `artifact` path and registers it,
-// returning {session_id, negotiated_version} as the clean result. The negotiated version
-// is the §28 protocol version the opened session speaks (INTROSPECT_PROTOCOL_VERSION) —
-// the handle the model uses to confirm the wire contract every later session-scoped tool
-// folds through. The OPTIONAL `replay_log` arg mirrors `funpack attach`'s second
-// positional: when present, the recording is pre-folded so the session opens ON the
-// recorded ticks (time_*/inspect_* navigate real gameplay) instead of a fresh empty
-// timeline (friction-9771c0f4); absent, has_replay is false and the session opens fresh.
-// An absent/non-string artifact is Invalid_Input; a non-string replay_log is ignored
-// (treated as absent — an optional arg, not a contract violation); any non-Ok open is the
-// runtime's discriminated failure mapped to its category, with NO orphaned arena (the
-// registry open destroys the per-attempt arena before returning).
+// returning {session_id, negotiated_version, seeded, seed} as the clean result. The
+// negotiated version is the §28 protocol version the opened session speaks
+// (INTROSPECT_PROTOCOL_VERSION) — the handle the model uses to confirm the wire
+// contract every later session-scoped tool folds through. The OPTIONAL `replay_log`
+// arg mirrors `funpack attach`'s second positional: when present, the recording is
+// pre-folded so the session opens ON the recorded ticks (time_*/inspect_* navigate
+// real gameplay) instead of a fresh empty timeline (friction-9771c0f4); absent,
+// has_replay is false and the session opens fresh. The OPTIONAL `seed` arg overrides
+// the BARE-open root seed (§25 §60) for a uses_rng game so the bare session reproduces
+// the seeded run; it is ignored over a replay log (the log pins its own). The result
+// ECHOES the resolved seeded/seed so the agent learns up front whether the session
+// folds a recorded seed (seeded:true) or is a genuine seedless read (seeded:false) —
+// the friction-7dfc0512 diagnosability gap a seeded bare open closes (without the echo
+// a frozen-at-defaults seedless session is indistinguishable from a real seeded one). An
+// absent/non-string artifact is Invalid_Input; a
+// non-string replay_log / non-integer seed is ignored (treated as absent — optional
+// args, not contract violations); any non-Ok open is the runtime's discriminated
+// failure mapped to its category, with NO orphaned arena (the registry open destroys
+// the per-attempt arena before returning).
 sess_start :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	artifact, has_artifact := sess_string_arg(dispatch.arguments, "artifact")
 	if !has_artifact {
@@ -104,16 +112,32 @@ sess_start :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 	// when the arg is omitted, so the default path is byte-identical to the no-replay open.
 	replay_log, has_replay := sess_string_arg(dispatch.arguments, "replay_log")
 
+	// The optional bare-open seed override (§25 §60): present + integer pins the root
+	// seed for a uses_rng game; absent (nil) lets the helper resolve the entrypoint
+	// config seed / engine default. A non-integer is treated as absent (an optional arg).
+	seed_override: Maybe(i64)
+	if seed, has_seed := sess_int_arg(dispatch.arguments, "seed"); has_seed {
+		seed_override = seed
+	}
+
 	// Open ON a dedicated per-session arena (the F13 lifetime fix lives in the registry):
 	// the session outlives this tool call. The registry struct + entry use the per-call
 	// `allocator`; the session's own state (program, snapshots, COW chain) lives on the
 	// arena the registry mints, reaped whole at session_end.
-	id, open_result := mcp_session_registry_open(dispatch.registry, artifact, replay_log, has_replay, "", allocator)
+	id, open_result := mcp_session_registry_open(dispatch.registry, artifact, replay_log, has_replay, "", allocator, seed_override)
 	if open_result != .Ok {
 		return sess_tool_error(dispatch.id, sess_open_error(open_result, artifact, replay_log), allocator)
 	}
 
-	body := sess_render_start_result(id, funpack_runtime.INTROSPECT_PROTOCOL_VERSION, allocator)
+	// Read the resolved seed off the freshly-opened entry (the runtime resolved the
+	// §25 §60 precedence): seeded=true with the real seed when the session folds one,
+	// false otherwise. The lookup is total here (the id was just minted).
+	seed := funpack_runtime.NO_SEED
+	if entry, found := mcp_session_registry_lookup(dispatch.registry, id); found {
+		seed = entry.session.seed
+	}
+
+	body := sess_render_start_result(id, funpack_runtime.INTROSPECT_PROTOCOL_VERSION, seed, allocator)
 	return sess_text_result(dispatch.id, body, allocator)
 }
 
@@ -174,16 +198,30 @@ sess_end :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> stri
 }
 
 // sess_render_start_result renders the session_start clean result body —
-// {"session_id":…,"negotiated_version":N} — built with the same strings.Builder +
-// write_json_string idiom the §28 envelope renderers use (introspect.odin), so the
-// body is byte-stable. The id is a string handle; negotiated_version is the §28 protocol
-// integer the session speaks (so an integer, never a float — the model reads it raw).
-sess_render_start_result :: proc(id: string, negotiated_version: int, allocator := context.allocator) -> string {
+// {"session_id":…,"negotiated_version":N,"seeded":bool,"seed":N} — built with the same
+// strings.Builder + write_json_string idiom the §28 envelope renderers use
+// (introspect.odin), so the body is byte-stable. The id is a string handle;
+// negotiated_version is the §28 protocol integer the session speaks (so an integer,
+// never a float — the model reads it raw). `seeded` is whether the opened session folds
+// a recorded/resolved RNG seed (the §25 §60 bare-open resolution or a replay log's
+// pinned seed); `seed` is that tick-0 root seed (meaningful only when seeded, 0
+// otherwise) — the self-describing pair an agent reads to know a uses_rng session is
+// surfacing the real seeded run, not frozen-at-defaults state.
+sess_render_start_result :: proc(
+	id: string,
+	negotiated_version: int,
+	seed: funpack_runtime.Run_Seed,
+	allocator := context.allocator,
+) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"session_id\":")
 	funpack_runtime.write_json_string(&b, id)
 	strings.write_string(&b, ",\"negotiated_version\":")
 	strings.write_int(&b, negotiated_version)
+	strings.write_string(&b, ",\"seeded\":")
+	strings.write_string(&b, seed.has_seed ? "true" : "false")
+	strings.write_string(&b, ",\"seed\":")
+	strings.write_i64(&b, seed.seed)
 	strings.write_byte(&b, '}')
 	return strings.to_string(b)
 }
@@ -230,6 +268,26 @@ sess_string_arg :: proc(arguments: json.Object, name: string) -> (value: string,
 		return "", false
 	}
 	return string(text), true
+}
+
+// sess_int_arg reads an OPTIONAL integer argument off the MCP arguments object,
+// accepting json.Integer (the parse_integers path the host's request takes) and a
+// json.Float defensively (the int-as-float wire trap). Absent or non-numeric is
+// has=false — the caller treats that as "not supplied" (the seed override is optional).
+// Mirrors record's rec_int_field so the one optional `seed` arg is read the same way on
+// both tools.
+sess_int_arg :: proc(arguments: json.Object, name: string) -> (value: i64, has: bool) {
+	field, present := arguments[name]
+	if !present {
+		return 0, false
+	}
+	#partial switch v in field {
+	case json.Integer:
+		return i64(v), true
+	case json.Float:
+		return i64(v), true
+	}
+	return 0, false
 }
 
 // sess_text_result renders a clean (not IsError) tool result carrying one Text content

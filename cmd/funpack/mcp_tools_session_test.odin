@@ -72,6 +72,31 @@ SESS_FIXTURE :: "funpack-artifact 19\n" +
 	"[entrypoint 1]\n" +
 	"entrypoint main pipeline:Intro tick_hz:60 logical:160x120 bindings:bindings\n"
 
+// SESS_RNG_FIXTURE is the committed seedfix golden artifact (the runtime's
+// seedless-setup, per-tick-RNG shape — the deepseed case friction-7dfc0512 hit),
+// #load'd cross-tree so the session-lifecycle arm's SEED echo is proven over a real
+// uses_rng game without hand-authoring one. A bare session_start over it resolves the
+// §25 §60 default root seed (seeded=true) — the friction's seeded=false flip — and a
+// `seed` arg overrides it.
+@(private = "file")
+SESS_RNG_FIXTURE := #load("../../runtime/testdata/seedfix.artifact", string)
+
+// sess_stage_contents writes arbitrary `contents` to a uniquely-named temp file and
+// returns its path — the generalization of sess_stage_fixture used to stage the
+// uses_rng artifact alongside the default SESS_FIXTURE.
+@(private = "file")
+sess_stage_contents :: proc(t: ^testing.T, name: string, contents: string) -> (path: string, ok: bool) {
+	base := os.get_env("TMPDIR", context.temp_allocator)
+	if base == "" {
+		base = "/tmp"
+	}
+	path, _ = filepath.join({base, name}, context.temp_allocator)
+	if write_err := os.write_entire_file_from_string(path, contents); write_err != nil {
+		return "", false
+	}
+	return path, true
+}
+
 // sess_stage_fixture writes SESS_FIXTURE to a uniquely-named temp file and returns its
 // path. ok=false (the caller skips, never false-fails) when the temp root cannot be
 // staged. The caller defers os.remove on the returned path.
@@ -183,6 +208,57 @@ test_sess_start_opens_and_registers :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"session_id\"`), "the result carries the minted session id")
 	testing.expect(t, strings.contains(result, `\"negotiated_version\"`), "the result carries the negotiated protocol version")
 	testing.expect(t, strings.contains(result, `\"negotiated_version\":1`), "the negotiated version is the §28 protocol version (1)")
+	// SESS_FIXTURE draws no RNG, so the bare open echoes seeded:false — the self-describing
+	// pair an agent reads to tell a genuine seedless read from a uses_rng one.
+	testing.expect(t, strings.contains(result, `\"seeded\":false`), "a no-RNG bare open echoes seeded:false")
+	testing.expect_value(t, len(registry.entries), 1)
+}
+
+// test_sess_start_uses_rng_echoes_seeded is the friction-7dfc0512 / friction-9fcfe1cd
+// surface flip at the MCP layer: a BARE session_start over a uses_rng game now resolves
+// the §25 §60 default root seed and ECHOES seeded:true with the resolved seed — so an
+// agent learns up front it is surfacing the real seeded run, not the frozen-at-defaults
+// state the friction reported (where this same open came back seeded:false).
+@(test)
+test_sess_start_uses_rng_echoes_seeded :: proc(t: ^testing.T) {
+	path, staged := sess_stage_contents(t, "funpack-mcp-sess-rng.fpk", SESS_RNG_FIXTURE)
+	if !staged {
+		return
+	}
+	defer os.remove(path)
+
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+
+	args := sess_args(t, strings.concatenate({`{"artifact":"`, path, `"}`}, context.temp_allocator))
+	result, handled := sess_dispatch_tool(&registry, "session_start", args, context.temp_allocator)
+	testing.expect(t, handled, "session_start is claimed")
+	testing.expect(t, strings.contains(result, `"isError":false`), "a uses_rng bare open is a clean result")
+	testing.expect(t, strings.contains(result, `\"seeded\":true`), "a bare open of a uses_rng game echoes seeded:true (the friction flip)")
+	testing.expect(t, !strings.contains(result, `\"seed\":0`), "the echoed seed is the resolved root seed, not a 0 default")
+	testing.expect_value(t, len(registry.entries), 1)
+}
+
+// test_sess_start_seed_arg_overrides pins the agent-supplyable seed: a session_start with
+// a `seed` arg over a uses_rng game pins THAT seed in the resolved session and echoes it
+// back, so an agent can reproduce a specific run rather than only the default.
+@(test)
+test_sess_start_seed_arg_overrides :: proc(t: ^testing.T) {
+	path, staged := sess_stage_contents(t, "funpack-mcp-sess-rng-seed.fpk", SESS_RNG_FIXTURE)
+	if !staged {
+		return
+	}
+	defer os.remove(path)
+
+	registry := mcp_session_registry_make(context.temp_allocator)
+	defer mcp_session_registry_destroy(&registry, context.temp_allocator)
+
+	args := sess_args(t, strings.concatenate({`{"artifact":"`, path, `","seed":12345}`}, context.temp_allocator))
+	result, handled := sess_dispatch_tool(&registry, "session_start", args, context.temp_allocator)
+	testing.expect(t, handled, "session_start is claimed")
+	testing.expect(t, strings.contains(result, `"isError":false`), "a seeded bare open is a clean result")
+	testing.expect(t, strings.contains(result, `\"seeded\":true`), "an overridden bare open echoes seeded:true")
+	testing.expect(t, strings.contains(result, `\"seed\":12345`), "the result echoes the agent-supplied seed")
 	testing.expect_value(t, len(registry.entries), 1)
 }
 

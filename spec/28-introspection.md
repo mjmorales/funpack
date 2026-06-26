@@ -61,6 +61,14 @@ optional; the auth mechanism (token, mTLS) is **operator deployment configuratio
 doctrine**. Addressing **reuses index identity** — `Snake`, `Food#1`, `Eaten`, `Snake.eat` — so
 static structure and live state share one namespace.
 
+**A session over a live artifact is seeded by the run-time seed contract** ([`09`](09-runtime.md) §6).
+Opening a session **without a recorded log** folds a fresh window, and for a `uses_rng` game it resolves
+the root seed by the same precedence `funpack run`/`live` use (an explicit session seed argument, then
+the config seed, then the fixed engine default) — so the debug surface reproduces the **real seeded
+run** (state populated, draw-list non-empty), not a seedless empty one. Opening **over a recorded
+replay log** folds that log's **pinned seed** instead. Either way the session reports its seededness, so
+an agent distinguishes a genuinely seedless (no-RNG) game from a seeded one it is now observing.
+
 **Observe addressing — canonical chain by default, `branch` to fork.** An `observe`-class command
 reads the **canonical version chain** by default. It accepts an optional `branch` argument naming a
 forked branch (created by `checkout`); when present, the command reads that branch's lineage, and

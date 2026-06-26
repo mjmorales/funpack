@@ -409,10 +409,40 @@ test_attach_args_replay_and_port :: proc(t: ^testing.T) {
 	testing.expect(t, !eq.has_replay, "a flag is not a positional — no replay log here")
 }
 
+// test_attach_args_seed pins the `--seed` bare-open override (the agentic seed knob,
+// mirroring `funpack live --seed`): both the spaced and `=` forms parse into
+// has_seed/seed, an unset flag leaves has_seed false (the helper resolves the default),
+// `--seed 0` is a real value (not elided), and a negative seed is accepted (any base-10
+// i64). A malformed or dangling `--seed` is a usage error.
+@(test)
+test_attach_args_seed :: proc(t: ^testing.T) {
+	spaced, spaced_ok := parse_attach_args({"funpack", "attach", "game.artifact", "--seed", "1337"})
+	testing.expect(t, spaced_ok, "attach with --seed N must parse")
+	testing.expect(t, spaced.has_seed, "--seed sets has_seed")
+	testing.expect_value(t, spaced.seed, i64(1337))
+
+	eq, eq_ok := parse_attach_args({"funpack", "attach", "game.artifact", "--seed=42"})
+	testing.expect(t, eq_ok, "the --seed=N form must parse")
+	testing.expect_value(t, eq.seed, i64(42))
+
+	zero, zero_ok := parse_attach_args({"funpack", "attach", "game.artifact", "--seed", "0"})
+	testing.expect(t, zero_ok, "--seed 0 is a real value, not a default")
+	testing.expect(t, zero.has_seed, "--seed 0 sets has_seed")
+	testing.expect_value(t, zero.seed, i64(0))
+
+	neg, neg_ok := parse_attach_args({"funpack", "attach", "game.artifact", "--seed=-5"})
+	testing.expect(t, neg_ok, "a negative seed parses (any base-10 i64)")
+	testing.expect_value(t, neg.seed, i64(-5))
+
+	unset, unset_ok := parse_attach_args({"funpack", "attach", "game.artifact"})
+	testing.expect(t, unset_ok, "no --seed must parse")
+	testing.expect(t, !unset.has_seed, "an unset --seed leaves has_seed false (resolve the default)")
+}
+
 // test_attach_args_refusals pins the usage-error fail-closed cases: no artifact, an
-// unknown flag, a malformed/out-of-range port, a --port with no value, and a third
-// positional are each ok=false — the caller prints usage and exits non-zero rather
-// than guessing.
+// unknown flag, a malformed/out-of-range port, a --port with no value, a malformed or
+// dangling --seed, and a third positional are each ok=false — the caller prints usage
+// and exits non-zero rather than guessing.
 @(test)
 test_attach_args_refusals :: proc(t: ^testing.T) {
 	_, no_artifact := parse_attach_args({"funpack", "attach"})
@@ -429,6 +459,12 @@ test_attach_args_refusals :: proc(t: ^testing.T) {
 
 	_, dangling_port := parse_attach_args({"funpack", "attach", "game.artifact", "--port"})
 	testing.expect(t, !dangling_port, "--port with no value is a usage error")
+
+	_, bad_seed := parse_attach_args({"funpack", "attach", "game.artifact", "--seed", "nope"})
+	testing.expect(t, !bad_seed, "a non-numeric seed is a usage error")
+
+	_, dangling_seed := parse_attach_args({"funpack", "attach", "game.artifact", "--seed"})
+	testing.expect(t, !dangling_seed, "--seed with no value is a usage error")
 
 	_, third_positional := parse_attach_args({"funpack", "attach", "a", "b", "c"})
 	testing.expect(t, !third_positional, "a third positional is a usage error")

@@ -389,11 +389,18 @@ Attach_Args :: struct {
 	has_port_file:   bool,
 	token_file:      string,
 	has_token_file:  bool,
+	// The OPTIONAL root-seed override for a BARE open (§25 §60): mirrors `funpack
+	// live --seed`. When set it overrides the entrypoint config seed and the engine
+	// default for the bare-attach seed resolution; it is IGNORED over a replay log
+	// (the log carries its own pinned seed). `has_seed` distinguishes an unset flag
+	// (resolve the default) from a passed `--seed 0`.
+	seed:            i64,
+	has_seed:        bool,
 }
 
 // parse_attach_args parses the `attach` verb tail into Attach_Args. The grammar is
 //
-//   attach <artifact> [recorded.replay] [--port N] [--port-file P] [--token-file T]
+//   attach <artifact> [recorded.replay] [--port N] [--port-file P] [--token-file T] [--seed N]
 //
 // `args` is the WHOLE process argv (args[0] = program, args[1] = "attach"); the
 // parse walks args[2:]. The first non-flag positional is the artifact (required); a
@@ -402,9 +409,12 @@ Attach_Args :: struct {
 // port (the valid range here is [0, 65535], 0 being the wildcard — a NEGATIVE or
 // over-range port is ok=false). `--port-file P` / `--token-file T` (and their `=`
 // forms) carry the out-of-band FILE handshake paths; each requires a NON-EMPTY value.
-// ok=false on no artifact, an unknown flag, or a third positional — the caller then
-// prints usage and exits non-zero rather than guessing. Pure (no IO), so the verb
-// surface is headless-tested even though the server it feeds is FUNPACK_LIVE-gated.
+// `--seed N` (or `--seed=N`) overrides the BARE-open root seed (§25 §60), mirroring
+// `funpack live --seed`; any base-10 i64 is valid (negatives included). ok=false on
+// no artifact, an unknown flag, a malformed `--seed`, or a third positional — the
+// caller then prints usage and exits non-zero rather than guessing. Pure (no IO), so
+// the verb surface is headless-tested even though the server it feeds is
+// FUNPACK_LIVE-gated.
 parse_attach_args :: proc(args: []string) -> (parsed: Attach_Args, ok: bool) {
 	result := Attach_Args{port = ATTACH_DEFAULT_PORT}
 	positionals := 0
@@ -458,6 +468,25 @@ parse_attach_args :: proc(args: []string) -> (parsed: Attach_Args, ok: bool) {
 			}
 			result.token_file = value
 			result.has_token_file = true
+			i += 1
+		case arg == "--seed":
+			if i + 1 >= len(args) {
+				return {}, false
+			}
+			seed, seed_ok := strconv.parse_i64(args[i + 1])
+			if !seed_ok {
+				return {}, false
+			}
+			result.seed = seed
+			result.has_seed = true
+			i += 2
+		case strings.has_prefix(arg, "--seed="):
+			seed, seed_ok := strconv.parse_i64(arg[len("--seed="):])
+			if !seed_ok {
+				return {}, false
+			}
+			result.seed = seed
+			result.has_seed = true
 			i += 1
 		case strings.has_prefix(arg, "--"):
 			return {}, false // an unknown flag is a usage error, never silently ignored
@@ -529,10 +558,16 @@ Open_Session_Result :: enum {
 //     against a different build or seed BEFORE opening — never fold mismatched
 //     inputs. The seed rides through to open_debug_session, so a seeded run (snake)
 //     reproduces its RNG-driven setup.
-//   - WITHOUT one (a fresh open): an ATTACH_FRESH_TICKS window of empty inputs,
-//     seedless (NO_SEED). A seeded artifact opened fresh has no recorded seed, so
-//     its RNG-driven setup is not populated — the recorded-log path is the one that
-//     pins a seed (the limitation of a seedless fresh open).
+//   - WITHOUT one (a fresh open): an ATTACH_FRESH_TICKS window of empty inputs. A
+//     `uses_rng` program resolves a tick-0 ROOT SEED by the SAME §25 §60 precedence
+//     `funpack run`/`live` use (resolve_root_seed: the `seed_override`, then the
+//     entrypoint config seed, then the fixed engine default), so a BARE attach
+//     reproduces the EXACT default-seeded run the SDL window shows — its RNG-driven
+//     setup and per-tick draws populate, the session reports seeded=true, and the
+//     draw-list/state are the real run's, not frozen-at-defaults. A program that
+//     draws no RNG carries no seed (NO_SEED) and is unchanged. The override is the
+//     agent-supplyable seed (the MCP session_start `seed` arg / `funpack attach
+//     --seed`) for pinning a specific run.
 //
 // DETERMINISM WARRANTY UNTOUCHED (§28 §2): open_debug_session folds the recording
 // through the same production seam every driver uses, and the served session is
@@ -551,6 +586,7 @@ open_session_for_artifact :: proc(
 	replay_log: string,
 	has_replay: bool,
 	allocator := context.allocator,
+	seed_override: Maybe(i64) = nil,
 ) -> (
 	session: Debug_Session,
 	program: ^Program,
@@ -602,6 +638,15 @@ open_session_for_artifact :: proc(
 			fresh[i] = empty()
 		}
 		snapshots = fresh
+		// SEED THE BARE OPEN (§25 §60): a `uses_rng` program resolves a tick-0 root
+		// seed by the same precedence `funpack run`/`live` use, so a bare attach
+		// reproduces the EXACT default-seeded run the SDL window shows instead of a
+		// frozen-at-defaults seedless session. resolve_root_seed picks the agent
+		// override first, then the entrypoint config seed, then the fixed engine
+		// default. A no-RNG program stays NO_SEED (the seed is meaningless for it).
+		if program_uses_rng(program) {
+			run_seed = seeded_run(resolve_root_seed(seed_override, program.entrypoint))
+		}
 	}
 
 	session = open_debug_session(program, snapshots, run_seed, allocator)
@@ -736,7 +781,18 @@ when #config(FUNPACK_LIVE, false) {
 		// Open the session over the SHARED pure helper, then map its discriminated
 		// result to attach's own stderr context (the helper never prints — it returns a
 		// transport-agnostic Open_Session_Result the stdio MCP verb reuses unchanged).
-		session, _, result := open_session_for_artifact(parsed.artifact, parsed.replay_log, parsed.has_replay)
+		// A passed `--seed` rides through as the bare-open root-seed override (§25 §60);
+		// an unset flag leaves it nil so the helper resolves the config/default seed.
+		seed_override: Maybe(i64)
+		if parsed.has_seed {
+			seed_override = parsed.seed
+		}
+		session, _, result := open_session_for_artifact(
+			parsed.artifact,
+			parsed.replay_log,
+			parsed.has_replay,
+			seed_override = seed_override,
+		)
 		switch result {
 		case .Ok:
 		// fall through to serve below

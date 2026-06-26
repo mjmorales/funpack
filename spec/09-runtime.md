@@ -158,11 +158,14 @@ seed is a run-time determinism input the artifact does not carry, recorded **sym
 deterministically by folding), so a re-fold re-feeds the exact seed and reproduces every RNG-driven
 spawn/despawn/grow bit-identically ([`28`](28-introspection.md)).
 
-- **Seed-source precedence**, highest first: an explicit `--seed N` flag on `funpack run`/`live`; the
-  `entrypoints.fcfg` `seed = N` config seed ([`14`](14-project-config.md) §3); a **fixed engine
-  default constant**. The default is fixed, never a wall-clock draw, so a bare `funpack run` of a
-  `uses_rng` game is **reproducible out of the box** — a project opts into per-launch variation
-  explicitly by passing `--seed`, and that value is recorded like any other.
+- **Seed-source precedence**, highest first: an explicit `--seed N` flag on `funpack run`/`live`/`attach`
+  (or the equivalent seed argument on a `28`-introspection session); the `entrypoints.fcfg` `seed = N`
+  config seed ([`14`](14-project-config.md) §3); a **fixed engine default constant**. The default is
+  fixed, never a wall-clock draw, so a bare `funpack run` of a `uses_rng` game is **reproducible out of
+  the box** — a project opts into per-launch variation explicitly by passing `--seed`, and that value is
+  recorded like any other. The **same precedence governs an introspection session opened over a live
+  (not recorded) artifact** ([`28`](28-introspection.md)), so the debug surface of a `uses_rng` game
+  folds the real seeded run rather than a seedless empty one.
 - **The gate is `uses_rng`, not "does setup draw"**: a game whose `setup` is seedless (`setup() ->
   [Spawn]`) but whose per-tick behaviors draw is still a seeded run. The engine delivers the root
   `Rng` to behaviors through the existing slot contract ([`06`](06-things-behaviors.md)) — advanced

@@ -68,7 +68,7 @@ build_attach_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command
 		cli.Cli_Command {
 			use = "attach",
 			short = "Open a §28 introspection session over a built artifact",
-			long = "Load a built artifact and serve an introspection session on the auth-gated loopback port (§28.2 remote-attach). The artifact path is required; an optional second positional is a recorded replay log to pre-fold. --port overrides the loopback port (pass 0 for a kernel-assigned ephemeral port). --port-file writes the actual bound port (bare decimal) so a supervisor can dial it without racing the bind. --token-file reads the per-session auth token from a file, taking precedence over FUNPACK_ATTACH_TOKEN so the secret stays off the inherited environment.",
+			long = "Load a built artifact and serve an introspection session on the auth-gated loopback port (§28.2 remote-attach). The artifact path is required; an optional second positional is a recorded replay log to pre-fold. --port overrides the loopback port (pass 0 for a kernel-assigned ephemeral port). --port-file writes the actual bound port (bare decimal) so a supervisor can dial it without racing the bind. --token-file reads the per-session auth token from a file, taking precedence over FUNPACK_ATTACH_TOKEN so the secret stays off the inherited environment. --seed overrides the root RNG seed (§25 §60) for a BARE open of a uses_rng game so the session reproduces the seeded run; it is ignored over a replay log (the log pins its own seed).",
 			flags = slice.clone(
 				[]cli.Cli_Flag {
 					{
@@ -86,6 +86,11 @@ build_attach_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command
 						kind = .String,
 						usage = "Read the auth token from this file (precedence over FUNPACK_ATTACH_TOKEN)",
 					},
+					{
+						name = "seed",
+						kind = .Int,
+						usage = "Root RNG seed for a BARE open of a uses_rng game (§25 §60); overrides the entrypoints.fcfg config seed and the fixed engine default so the bare session reproduces the seeded run. Ignored over a replay log",
+					},
 				},
 				allocator,
 			),
@@ -96,13 +101,14 @@ build_attach_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command
 	)
 }
 
-// cli_run_attach marshals {artifact, [replay]} + --port/--port-file/--token-file into
-// run_attach_session's argv: parse_attach_args expects argv[1]=="attach", then the
+// cli_run_attach marshals {artifact, [replay]} + --port/--port-file/--token-file/--seed
+// into run_attach_session's argv: parse_attach_args expects argv[1]=="attach", then the
 // positionals and the flags from argv[2:]. Each flag the operator did NOT pass is left
 // off, so the runtime applies its own default and ONE code path parses every form; a
 // passed flag is forwarded verbatim for the runtime's own validation (the runtime owns
-// the port range and the auth-required floor). --port 0 is a real value the operator
-// passed (ephemeral request), so it relays as "0" — never elided as a default.
+// the port range, the seed parse, and the auth-required floor). --port 0 is a real value
+// the operator passed (ephemeral request), so it relays as "0" — never elided as a
+// default; --seed relays the same way so a `--seed 0` reaches the runtime.
 cli_run_attach :: proc(inv: ^cli.Cli_Invocation) -> int {
 	attach_args := make([dynamic]string, 0, 8 + len(inv.args), context.temp_allocator)
 	append(&attach_args, "funpack")
@@ -119,6 +125,10 @@ cli_run_attach :: proc(inv: ^cli.Cli_Invocation) -> int {
 	if _, passed := inv.flags["token-file"]; passed {
 		append(&attach_args, "--token-file")
 		append(&attach_args, cli.cli_flag_string(inv, "token-file"))
+	}
+	if _, passed := inv.flags["seed"]; passed {
+		append(&attach_args, "--seed")
+		append(&attach_args, fmt.tprintf("%d", cli.cli_flag_int(inv, "seed")))
 	}
 	return funpack_runtime.run_attach_session(attach_args[:])
 }

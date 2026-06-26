@@ -84,9 +84,12 @@ mcp_session_registry_make :: proc(allocator := context.allocator) -> Mcp_Session
 // It returns the minted id and the runtime's discriminated open result; on any
 // non-`Ok` result the arena is destroyed before returning (no orphaned arena) and id
 // is empty. The `label` is the optional caller-supplied name carried on the entry for
-// session_list. `registry_allocator` is the server allocator the entry struct + map
-// growth use; the SESSION's state (program, snapshots, COW chain) lives on the entry
-// arena, never on registry_allocator.
+// session_list. `seed_override` is the OPTIONAL bare-open root-seed override (§25 §60)
+// the helper resolves a `uses_rng` program's tick-0 seed from (the session_start
+// `seed` arg); nil resolves the config/engine-default seed, and it is ignored over a
+// replay log (the log pins its own). `registry_allocator` is the server allocator the
+// entry struct + map growth use; the SESSION's state (program, snapshots, COW chain)
+// lives on the entry arena, never on registry_allocator.
 mcp_session_registry_open :: proc(
 	reg: ^Mcp_Session_Registry,
 	artifact_path: string,
@@ -94,6 +97,7 @@ mcp_session_registry_open :: proc(
 	has_replay: bool,
 	label: string = "",
 	registry_allocator := context.allocator,
+	seed_override: Maybe(i64) = nil,
 ) -> (
 	id: string,
 	result: funpack_runtime.Open_Session_Result,
@@ -118,6 +122,7 @@ mcp_session_registry_open :: proc(
 		replay_log,
 		has_replay,
 		session_allocator,
+		seed_override,
 	)
 	if open_result != .Ok {
 		// The partial allocation (the new'd program, any read bytes) sits in the arena;

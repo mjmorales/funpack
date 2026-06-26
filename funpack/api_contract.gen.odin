@@ -680,6 +680,7 @@ TOOL_SPECS := []Tool_Spec{
 		args           = []Tool_Arg{
 			{name = "artifact", json_type = "string", required = true, doc = "path to the built funpack game artifact for the attach session to load"},
 			{name = "replay_log", json_type = "string", required = false, doc = "optional path to a recorded replay log (as produced by funpack live/run or the record tool) to pre-fold before the session opens, mirroring funpack attach's second positional — so time_*/inspect_* navigate the recorded ticks instead of a fresh empty timeline"},
+			{name = "seed", json_type = "integer", required = false, doc = "optional tick-0 root RNG seed override (§25 §60) for a BARE open (no replay_log) of a uses_rng game, mirroring funpack attach --seed; resolves a seeded session that reproduces the run instead of frozen-at-defaults state. Omit to use the entrypoint config seed, then the fixed engine default. Ignored over a replay_log (the log pins its own seed) and for a game that draws no RNG. The session_start result echoes the resolved seeded/seed"},
 		},
 	},
 	{

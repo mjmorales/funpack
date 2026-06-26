@@ -98,7 +98,7 @@ re-folds populated instead of black. Feed `path` straight to `session_start`'s `
 
 | Tool | Use when… |
 |---|---|
-| `session_start` | You want to open a supervised `funpack attach` session over a built artifact. Returns an opaque session id (every other session tool takes it) and the negotiated protocol version. |
+| `session_start` | You want to open a supervised `funpack attach` session over a built artifact. Takes a required `artifact`, an optional `replay_log` (pre-fold a recorded run so the timeline navigates real gameplay), and an optional `seed`. Returns `{session_id, negotiated_version, seeded, seed}` — the opaque id every other session tool takes, the negotiated protocol version, and the resolved root seed. **A bare open (no `replay_log`) of a `uses_rng` game is seeded automatically** (§25 §60: the `seed` arg → the entrypoint config seed → the fixed engine default), so the session reproduces the exact run `funpack run` shows — `seeded:true` with real state and a non-empty `inspect_draw_list`, not frozen-at-defaults. `seeded:false` means a genuine no-RNG game. Pass `seed` to pin a specific run; it is ignored over a `replay_log` (the log carries its own seed). |
 | `session_end` | You're done with a session and want to close + deregister it by id. |
 | `session_list` | You want to see every live session (id, version, artifact, created-at). |
 
