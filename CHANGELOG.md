@@ -7,6 +7,15 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.26.1] - 2026-06-26
+
+### Fixes
+- fix(eir): decide dup clone identity by canon bytes, not fnv64a digest (9d1f712)
+- fix(funpack): key duplication gate on canon bytes, not fnv64a digest (a789c6b)
+
+### Other
+- docs(eir): document the repo-local eir lint CLI (26395b4)
+
 ## [0.26.0] - 2026-06-26
 
 ### Features
