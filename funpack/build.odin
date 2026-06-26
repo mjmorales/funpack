@@ -300,6 +300,16 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 			return Build_Product{}, Build_Verdict{err = .Debug_Directive, offender = name}
 		}
 	}
+	// The §01 P5 structural gates over EVERY module — the per-module pass the test
+	// pipeline runs (run_project_pipeline -> gate_verdict per module) that the
+	// emit/index path below otherwise skips: emit gates only the entrypoint's
+	// flattened AST, and a package emits no artifact at all, so a gate an imported
+	// module overshoots (Nesting_Exceeded, Duplicate_Declaration) never surfaces
+	// under check/build. Running it here keeps check, build, and test in agreement
+	// on the structural gates instead of leaving check a false green.
+	if gate := project_gate_verdict(sources); gate.err != .None {
+		return Build_Product{}, gate
+	}
 	// A package has no entrypoints.fcfg, so there is no entrypoint module and no
 	// runtime artifact to emit (§30 §7). The Index Contract is the package's
 	// single product — its index path is set, the artifact path stays empty.
@@ -350,6 +360,34 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 compile_failed_verdict :: proc(sources: []Source) -> Build_Verdict {
 	report := run_project_pipeline(sources)
 	return Build_Verdict{err = .Compile_Failed, diagnostic = report.diagnostic}
+}
+
+// project_gate_verdict runs the §01 P5 structural gates over EVERY module of the
+// source set — the same per-module gate pass the test pipeline applies
+// (run_module_pipeline_diag's gate_verdict, run before typecheck) — and returns
+// the FIRST module's overshoot as a Compile_Failed verdict carrying its
+// path-stamped fix-criteria Diagnostic, or .None when every module clears. It is
+// the gate stage_build was missing: the emit path runs the gates only over the
+// entrypoint's flattened AST (so an imported module's body went unscored), and a
+// package emits no artifact, so neither check nor build saw a per-module gate
+// failure that `funpack test` rejects. A source that fails to PARSE contributes no
+// verdict here — that parse error is surfaced precisely by the emit/index floor
+// below (Compile_Failed), so the gate pass never masks a parse failure. Sources
+// walk in their given order, so the named offender is deterministic and matches
+// the test verb's first-failing module.
+project_gate_verdict :: proc(sources: []Source) -> Build_Verdict {
+	for source in sources {
+		ast, ok := parse_source(source.path)
+		if !ok {
+			continue
+		}
+		if verdict := gate_verdict(ast); verdict.err != .None {
+			diag := gate_diagnostic(verdict.err, verdict.line, verdict.declaration, verdict.nesting_cause)
+			diag.path = source.path
+			return Build_Verdict{err = .Compile_Failed, diagnostic = diag}
+		}
+	}
+	return Build_Verdict{}
 }
 
 // project_first_decl walks every §14 source for the first declaration the

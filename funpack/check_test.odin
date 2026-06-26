@@ -52,6 +52,34 @@ test_check_compile_error_exits_two :: proc(t: ^testing.T) {
 	log.infof("check compile error: the broken tree refuses exit 2 (never a counted failure) and writes nothing")
 }
 
+// test_check_runs_structural_gates_on_a_package pins the check/test gate-agreement
+// floor: a §01 P5 structural gate a module overshoots (here a deep-nesting fn past
+// the ceiling of 3) must refuse check exit 2, not pass it. The case is a PACKAGE
+// (no entrypoints.fcfg, so stage_build emits no artifact and the emit-path gate
+// never runs) — exactly where check was a FALSE GREEN: it returned 0 while
+// `funpack test` rejected the same source on Nesting_Exceeded. With stage_build's
+// per-module gate pass, check now agrees with test. Nothing is written on refusal.
+@(test)
+test_check_runs_structural_gates_on_a_package :: proc(t: ^testing.T) {
+	root := scratch_join({scratch_base(), tprintf_seq("funpack-check-gate-pkg")})
+	remove_scratch_tree(root)
+	defer remove_scratch_tree(root)
+	nested :=
+		"fn corridors_for(a: Int, b: Int, c: Int, d: Int, e: Int) -> Int {\n" +
+		"  return if a > 0 {\n    if b > 0 {\n      if c > 0 {\n        if d > 0 {\n" +
+		"          if e > 0 { 1 } else { 2 }\n        } else { 3 }\n      } else { 4 }\n" +
+		"    } else { 5 }\n  } else { 6 }\n}\n"
+	ok := write_scratch_file(scratch_join({root, "funpack_configs", "project.fcfg"}), "project pkg {\n  version = \"0.1.0\"\n}\n")
+	ok &&= write_scratch_file(scratch_join({root, "src", "pkg.fun"}), nested)
+	if !ok {
+		log.warnf("SKIP check structural-gate package: cannot write under %s", root)
+		return
+	}
+	testing.expect_value(t, run_check_verb(root, .Dev), 2)
+	testing.expect(t, !os.exists(scratch_join({root, FUNPACK_BUILD_DIR})))
+	log.infof("check structural gate: a package module overshooting §01 P5 refuses exit 2 — no longer a false green vs test")
+}
+
 // test_check_malformed_tree_exits_two covers the tree floor: a root with no
 // funpack_configs/ is rejected by read_project (Malformed_Tree), so check
 // refuses with exit 2 — the same no-product refusal tier as a compile error.
