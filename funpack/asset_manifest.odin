@@ -88,10 +88,10 @@ read_asset_manifest :: proc(content: string) -> (manifest: Asset_Manifest, err: 
 	p := Manifest_Parser{tokens = lex_manifest(content)}
 	entries := make([dynamic]Asset_Entry, 0, 4, context.temp_allocator)
 	seen := make(map[string]bool, context.temp_allocator)
-	for !manifest_at_end(&p) {
+	for !cursor_at_end(&p) {
 		// The only legal top-level construct is a `[name]` block opener;
 		// a key=value outside a block, or any other glyph, is malformed.
-		if manifest_peek(&p).kind != .L_Bracket {
+		if cursor_peek(&p).kind != .L_Bracket {
 			return Asset_Manifest{}, .Malformed_Manifest
 		}
 		entry := manifest_parse_block(&p) or_return
@@ -119,7 +119,7 @@ manifest_parse_block :: proc(p: ^Manifest_Parser) -> (entry: Asset_Entry, err: A
 	saw_deps := false
 	saw_hash := false
 	saw_out := false
-	for manifest_peek(p).kind == .Word {
+	for cursor_peek(p).kind == .Word {
 		key := manifest_expect(p, .Word) or_return
 		manifest_expect(p, .Eq) or_return
 		switch key.text {
@@ -184,10 +184,10 @@ parse_asset_kind :: proc(text: string) -> (kind: Asset_Kind, err: Asset_Manifest
 manifest_parse_list :: proc(p: ^Manifest_Parser) -> (items: []string, err: Asset_Manifest_Error) {
 	manifest_expect(p, .L_Bracket) or_return
 	list := make([dynamic]string, 0, 2, context.temp_allocator)
-	for manifest_peek(p).kind == .String {
+	for cursor_peek(p).kind == .String {
 		item := manifest_expect(p, .String) or_return
 		append(&list, item.text)
-		for manifest_peek(p).kind == .Comma {
+		for cursor_peek(p).kind == .Comma {
 			p.pos += 1
 		}
 	}
@@ -215,31 +215,15 @@ Manifest_Token :: struct {
 	text: string,
 }
 
-Manifest_Parser :: struct {
-	tokens: []Manifest_Token,
-	pos:    int,
-}
-
-manifest_at_end :: proc(p: ^Manifest_Parser) -> bool {
-	return p.pos >= len(p.tokens)
-}
-
-// manifest_peek reports an Invalid token at end of input so a kind check
-// fails closed without a separate end test.
-manifest_peek :: proc(p: ^Manifest_Parser) -> Manifest_Token {
-	if manifest_at_end(p) {
-		return Manifest_Token{kind = .Invalid}
-	}
-	return p.tokens[p.pos]
-}
+// Manifest_Parser binds the shared Cursor to the .manifest token/kind pair; the
+// cursor data and the error-free primitives (cursor_at_end / cursor_peek) live in
+// parser_cursor.odin, the importer expect in asset_cursor.odin. The .manifest
+// surface rejects with its own Asset_Manifest_Error, which import_expect carries
+// through its verdict parameter.
+Manifest_Parser :: Cursor(Manifest_Token, Manifest_Token_Kind)
 
 manifest_expect :: proc(p: ^Manifest_Parser, kind: Manifest_Token_Kind) -> (tok: Manifest_Token, err: Asset_Manifest_Error) {
-	tok = manifest_peek(p)
-	if tok.kind != kind {
-		return Manifest_Token{}, .Malformed_Manifest
-	}
-	p.pos += 1
-	return tok, .None
+	return import_expect(p, kind, Asset_Manifest_Error.Malformed_Manifest)
 }
 
 // lex_manifest tokenizes the manifest surface. It is total: an unrecognized

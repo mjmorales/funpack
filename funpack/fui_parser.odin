@@ -200,24 +200,18 @@ Fui_Screen :: struct {
 	body: []Fui_Node,
 }
 
-// Fui_Parse_Error is closed with one arm per way a UI source can violate the
-// grammar. Unexpected_Token is any token out of grammar position; Unexpected_End
-// is input ending mid-production (an unterminated block or string);
-// Wrong_Case is a name whose first-letter case is wrong for its position (a
-// lower-case screen name or Msg variant, an upper-case widget or path segment).
-// The downstream inference checks (unknown style token, an unconsumed Msg) are
-// NOT parse errors — they need the typed seam this stage does not build.
-Fui_Parse_Error :: enum {
-	None,
-	Unexpected_Token,
-	Unexpected_End,
-	Wrong_Case,
-}
+// Fui_Parse_Error is the shared sub-language verdict set (parser_cursor.odin):
+// Unexpected_Token is a token out of grammar position, Unexpected_End is input
+// ending mid-production (an unterminated block or string), and Wrong_Case is a
+// name whose first-letter case is wrong for its position (a lower-case screen
+// name or Msg variant, an upper-case widget or path segment). The downstream
+// inference checks (unknown style token, an unconsumed Msg) are NOT parse errors
+// — they need the typed seam this stage does not build.
+Fui_Parse_Error :: Sub_Parse_Error
 
-Fui_Parser :: struct {
-	tokens: []Fui_Token,
-	pos:    int,
-}
+// Fui_Parser binds the shared Cursor to the .fui token/kind pair; the cursor
+// mechanism (peek/advance/expect) lives in parser_cursor.odin.
+Fui_Parser :: Cursor(Fui_Token, Fui_Token_Kind)
 
 // parse_fui is the entry seam: it parses a single `screen … { … }` block from a
 // UI source's tokens. Leading and trailing whitespace are already dropped by the
@@ -227,7 +221,7 @@ Fui_Parser :: struct {
 parse_fui :: proc(source: string) -> (screen: Fui_Screen, err: Fui_Parse_Error) {
 	p := Fui_Parser{tokens = lex_fui(source)}
 	screen = parse_fui_screen(&p) or_return
-	if !fui_at_end(&p) {
+	if !cursor_at_end(&p) {
 		return Fui_Screen{}, .Unexpected_Token
 	}
 	return screen, .None
@@ -254,7 +248,7 @@ parse_fui_screen :: proc(p: ^Fui_Parser) -> (screen: Fui_Screen, err: Fui_Parse_
 parse_fui_block_body :: proc(p: ^Fui_Parser) -> (nodes: []Fui_Node, err: Fui_Parse_Error) {
 	fui_expect(p, .L_Brace) or_return
 	list := make([dynamic]Fui_Node, 0, 8, context.temp_allocator)
-	for fui_peek_kind(p) != .R_Brace {
+	for cursor_peek_kind(p) != .R_Brace {
 		node := parse_fui_node(p) or_return
 		append(&list, node)
 	}
@@ -267,7 +261,7 @@ parse_fui_block_body :: proc(p: ^Fui_Parser) -> (nodes: []Fui_Node, err: Fui_Par
 // node, and any of the fourteen widget keywords an element. An Invalid token is
 // Unexpected_End (input ran out mid-block); anything else is Unexpected_Token.
 parse_fui_node :: proc(p: ^Fui_Parser) -> (node: Fui_Node, err: Fui_Parse_Error) {
-	#partial switch fui_peek_kind(p) {
+	#partial switch cursor_peek_kind(p) {
 	case .If:
 		return parse_fui_if(p)
 	case .For:
@@ -294,7 +288,7 @@ parse_fui_element :: proc(p: ^Fui_Parser) -> (node: Fui_Node, err: Fui_Parse_Err
 	el := new(Fui_Element, context.temp_allocator)
 	el.widget = widget
 	el.attrs = attrs
-	if fui_peek_kind(p) == .L_Brace {
+	if cursor_peek_kind(p) == .L_Brace {
 		children := parse_fui_block_body(p) or_return
 		el.children = children
 		el.has_block = true
@@ -306,7 +300,7 @@ parse_fui_element :: proc(p: ^Fui_Parser) -> (node: Fui_Node, err: Fui_Parse_Err
 // Widget). Only a widget keyword reaches here — the node dispatcher gates on the
 // closed widget set — so a non-widget token is Unexpected_Token.
 fui_parse_widget :: proc(p: ^Fui_Parser) -> (kind: Fui_Widget_Kind, err: Fui_Parse_Error) {
-	tok := fui_advance(p) or_return
+	tok := cursor_advance(p) or_return
 	#partial switch tok.kind {
 	case .Panel:  return .Panel, .None
 	case .Row:    return .Row, .None
@@ -335,7 +329,7 @@ fui_parse_widget :: proc(p: ^Fui_Parser) -> (kind: Fui_Widget_Kind, err: Fui_Par
 parse_fui_attrs :: proc(p: ^Fui_Parser) -> (attrs: []Fui_Attr, err: Fui_Parse_Error) {
 	list := make([dynamic]Fui_Attr, 0, 4, context.temp_allocator)
 	for {
-		#partial switch fui_peek_kind(p) {
+		#partial switch cursor_peek_kind(p) {
 		case .Ident:
 			attr := parse_fui_plain_attr(p) or_return
 			append(&list, attr)
@@ -410,7 +404,7 @@ parse_fui_event_attr :: proc(p: ^Fui_Parser) -> (attr: Fui_Attr, err: Fui_Parse_
 parse_fui_msg_ref :: proc(p: ^Fui_Parser) -> (value: Fui_Attr_Value, err: Fui_Parse_Error) {
 	variant := fui_expect_upper(p) or_return
 	ref := Fui_Msg_Ref{variant = variant}
-	if fui_peek_kind(p) == .L_Paren {
+	if cursor_peek_kind(p) == .L_Paren {
 		p.pos += 1
 		path := parse_fui_path(p) or_return
 		fui_expect(p, .R_Paren) or_return
@@ -425,15 +419,15 @@ parse_fui_msg_ref :: proc(p: ^Fui_Parser) -> (value: Fui_Attr_Value, err: Fui_Pa
 // literal; a LOWER_IDENT is a bare path (the plain-attr path form). Style tokens
 // ride the String form, numeric bounds the Int form.
 parse_fui_attr_value :: proc(p: ^Fui_Parser) -> (value: Fui_Attr_Value, err: Fui_Parse_Error) {
-	#partial switch fui_peek_kind(p) {
+	#partial switch cursor_peek_kind(p) {
 	case .String_Lit:
-		tok := fui_advance(p) or_return
+		tok := cursor_advance(p) or_return
 		return Fui_Literal{kind = .String, text = tok.text}, .None
 	case .Int_Lit:
-		tok := fui_advance(p) or_return
+		tok := cursor_advance(p) or_return
 		return Fui_Literal{kind = .Int, int_value = tok.int_value}, .None
 	case .Bool_Lit:
-		tok := fui_advance(p) or_return
+		tok := cursor_advance(p) or_return
 		return Fui_Literal{kind = .Bool, bool_value = tok.bool_value}, .None
 	case .Ident:
 		path := parse_fui_path(p) or_return
@@ -449,7 +443,7 @@ parse_fui_attr_value :: proc(p: ^Fui_Parser) -> (value: Fui_Attr_Value, err: Fui
 // out into paths (fui_scan_holes) — the reads the inference lifts. An empty or
 // hole-free string is a legal literal text node (`"Settings"`).
 parse_fui_text :: proc(p: ^Fui_Parser) -> (node: Fui_Node, err: Fui_Parse_Error) {
-	tok := fui_advance(p) or_return
+	tok := cursor_advance(p) or_return
 	holes := fui_scan_holes(tok.text) or_return
 	t := new(Fui_Text, context.temp_allocator)
 	t.text = tok.text
@@ -486,13 +480,13 @@ parse_fui_for :: proc(p: ^Fui_Parser) -> (node: Fui_Node, err: Fui_Parse_Error) 
 	// Optional inline row-type ascription: `: { RowField (',' RowField)* }`. The
 	// `:` here is the row-type opener, never a bind-in head (that opens an Attr
 	// inside an Element, not after a for-path) — grammar position resolves it.
-	if fui_peek_kind(p) == .Colon {
+	if cursor_peek_kind(p) == .Colon {
 		row_type := parse_fui_row_type(p) or_return
 		n.row_type = row_type
 		n.has_row_type = true
 	}
 	// Optional `key = Path` list-identity attribute.
-	if fui_peek_kind(p) == .Key {
+	if cursor_peek_kind(p) == .Key {
 		p.pos += 1
 		fui_expect(p, .Equals) or_return
 		key := parse_fui_path(p) or_return
@@ -517,7 +511,7 @@ parse_fui_row_type :: proc(p: ^Fui_Parser) -> (fields: []Fui_Row_Field, err: Fui
 		fui_expect(p, .Colon) or_return
 		type := parse_fui_type(p) or_return
 		append(&list, Fui_Row_Field{name = name, type = type})
-		if fui_peek_kind(p) != .Comma {
+		if cursor_peek_kind(p) != .Comma {
 			break
 		}
 		p.pos += 1
@@ -531,7 +525,7 @@ parse_fui_row_type :: proc(p: ^Fui_Parser) -> (fields: []Fui_Row_Field, err: Fui
 // bracketed list type `[Type]`. It renders the type to its single source token so
 // the row field carries the exact written type. The argument types recurse.
 parse_fui_type :: proc(p: ^Fui_Parser) -> (rendered: string, err: Fui_Parse_Error) {
-	#partial switch fui_peek_kind(p) {
+	#partial switch cursor_peek_kind(p) {
 	case .L_Bracket:
 		// A list type `[Type]`.
 		p.pos += 1
@@ -540,7 +534,7 @@ parse_fui_type :: proc(p: ^Fui_Parser) -> (rendered: string, err: Fui_Parse_Erro
 		return fui_concat("[", inner, "]"), .None
 	case .Ident:
 		head := fui_expect_upper(p) or_return
-		if fui_peek_kind(p) != .L_Bracket {
+		if cursor_peek_kind(p) != .L_Bracket {
 			return head, .None
 		}
 		// A generic application `Head[Arg, …]`.
@@ -549,7 +543,7 @@ parse_fui_type :: proc(p: ^Fui_Parser) -> (rendered: string, err: Fui_Parse_Erro
 		for {
 			arg := parse_fui_type(p) or_return
 			append(&args, arg)
-			if fui_peek_kind(p) != .Comma {
+			if cursor_peek_kind(p) != .Comma {
 				break
 			}
 			p.pos += 1
@@ -569,7 +563,7 @@ parse_fui_path :: proc(p: ^Fui_Parser) -> (value: Fui_Attr_Value, err: Fui_Parse
 	segments := make([dynamic]string, 0, 3, context.temp_allocator)
 	head := fui_expect_lower(p) or_return
 	append(&segments, head)
-	for fui_peek_kind(p) == .Dot {
+	for cursor_peek_kind(p) == .Dot {
 		p.pos += 1
 		seg := fui_expect_lower(p) or_return
 		append(&segments, seg)
@@ -637,36 +631,15 @@ fui_parse_path_string :: proc(body: string) -> (path: Fui_Path, err: Fui_Parse_E
 	return Fui_Path{segments = segments[:]}, .None
 }
 
-// ── Parser helpers ──────────────────────────────────────────────────────────
-
-fui_at_end :: proc(p: ^Fui_Parser) -> bool {
-	return p.pos >= len(p.tokens)
-}
-
-// fui_peek_kind reports Invalid at end of input so a kind check fails closed
-// without a separate end test (the family-wide peek convention).
-fui_peek_kind :: proc(p: ^Fui_Parser) -> Fui_Token_Kind {
-	if fui_at_end(p) {
-		return .Invalid
-	}
-	return p.tokens[p.pos].kind
-}
-
-fui_advance :: proc(p: ^Fui_Parser) -> (tok: Fui_Token, err: Fui_Parse_Error) {
-	if fui_at_end(p) {
-		return Fui_Token{}, .Unexpected_End
-	}
-	tok = p.tokens[p.pos]
-	p.pos += 1
-	return tok, .None
-}
+// ── Cursor facades ──────────────────────────────────────────────────────────
+// The token cursor lives in parser_cursor.odin (Cursor / cursor_*). These thin
+// facades exist only where a generic call cannot reach: fui_expect's `.Kind`
+// argument is an implicit enum selector Odin cannot type through a polymorphic
+// proc's parameter, and fui_expect_upper/lower encode the .fui case model (one
+// Ident kind plus a case_class field, vs .fpm's two kinds).
 
 fui_expect :: proc(p: ^Fui_Parser, kind: Fui_Token_Kind) -> (tok: Fui_Token, err: Fui_Parse_Error) {
-	tok = fui_advance(p) or_return
-	if tok.kind != kind {
-		return Fui_Token{}, .Unexpected_Token
-	}
-	return tok, .None
+	return cursor_expect(p, kind)
 }
 
 // fui_expect_upper consumes an Ident token, demanding UPPER_IDENT case — a screen

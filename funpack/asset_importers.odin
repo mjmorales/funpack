@@ -145,7 +145,7 @@ fpm_import_model_block :: proc(p: ^Fpm_Parser) -> (asset: Model_Asset, err: Impo
 	if _, e := fpm_expect(p, .Model); e != .None {
 		return Model_Asset{}, .Malformed_Source
 	}
-	name, ne := fpm_advance(p)
+	name, ne := cursor_advance(p)
 	if ne != .None || (name.kind != .Lower_Ident && name.kind != .Upper_Ident) {
 		return Model_Asset{}, .Malformed_Source
 	}
@@ -157,8 +157,8 @@ fpm_import_model_block :: proc(p: ^Fpm_Parser) -> (asset: Model_Asset, err: Impo
 	params := make([dynamic]Model_Param, 0, 4, context.temp_allocator)
 	saw_emit := false
 	fpm_skip_seps(p)
-	for fpm_peek_kind(p) != .R_Brace {
-		#partial switch fpm_peek_kind(p) {
+	for cursor_peek_kind(p) != .R_Brace {
+		#partial switch cursor_peek_kind(p) {
 		case .Param:
 			param := fpm_import_param(p) or_return
 			append(&params, param)
@@ -191,21 +191,21 @@ fpm_import_param :: proc(p: ^Fpm_Parser) -> (param: Model_Param, err: Importer_E
 	if _, e := fpm_expect(p, .Param); e != .None {
 		return Model_Param{}, .Malformed_Source
 	}
-	name, ne := fpm_advance(p)
+	name, ne := cursor_advance(p)
 	if ne != .None || (name.kind != .Lower_Ident && name.kind != .Upper_Ident) {
 		return Model_Param{}, .Malformed_Source
 	}
 	if _, e := fpm_expect(p, .Colon); e != .None {
 		return Model_Param{}, .Malformed_Source
 	}
-	type, te := fpm_advance(p)
+	type, te := cursor_advance(p)
 	if te != .None || (type.kind != .Lower_Ident && type.kind != .Upper_Ident) {
 		return Model_Param{}, .Malformed_Source
 	}
 	if _, e := fpm_expect(p, .Eq); e != .None {
 		return Model_Param{}, .Malformed_Source
 	}
-	value, ve := fpm_advance(p)
+	value, ve := cursor_advance(p)
 	if ve != .None || (value.kind != .Int_Lit && value.kind != .Float_Lit) {
 		return Model_Param{}, .Malformed_Source
 	}
@@ -225,7 +225,7 @@ fpm_import_emit :: proc(p: ^Fpm_Parser) -> (prim: string, args: []string, err: I
 	if _, e := fpm_expect(p, .Emit); e != .None {
 		return "", nil, .Malformed_Source
 	}
-	prim_tok, pe := fpm_advance(p)
+	prim_tok, pe := cursor_advance(p)
 	if pe != .None || (prim_tok.kind != .Lower_Ident && prim_tok.kind != .Upper_Ident) {
 		return "", nil, .Malformed_Source
 	}
@@ -233,10 +233,10 @@ fpm_import_emit :: proc(p: ^Fpm_Parser) -> (prim: string, args: []string, err: I
 		return "", nil, .Malformed_Source
 	}
 	arg_list := make([dynamic]string, 0, 2, context.temp_allocator)
-	for fpm_peek_kind(p) == .Lower_Ident || fpm_peek_kind(p) == .Upper_Ident {
-		arg, _ := fpm_advance(p)
+	for cursor_peek_kind(p) == .Lower_Ident || cursor_peek_kind(p) == .Upper_Ident {
+		arg, _ := cursor_advance(p)
 		append(&arg_list, arg.text)
-		for fpm_peek_kind(p) == .Comma {
+		for cursor_peek_kind(p) == .Comma {
 			p.pos += 1
 		}
 	}
@@ -254,14 +254,14 @@ fpm_import_material :: proc(p: ^Fpm_Parser) -> (name: string, err: Importer_Erro
 	if _, e := fpm_expect(p, .Material); e != .None {
 		return "", .Malformed_Source
 	}
-	name_tok, ne := fpm_advance(p)
+	name_tok, ne := cursor_advance(p)
 	if ne != .None || (name_tok.kind != .Lower_Ident && name_tok.kind != .Upper_Ident) {
 		return "", .Malformed_Source
 	}
 	if _, e := fpm_expect(p, .Eq); e != .None {
 		return "", .Malformed_Source
 	}
-	ctor, ce := fpm_advance(p) // the appearance constructor (`pbr`)
+	ctor, ce := cursor_advance(p) // the appearance constructor (`pbr`)
 	if ce != .None || (ctor.kind != .Lower_Ident && ctor.kind != .Upper_Ident) {
 		return "", .Malformed_Source
 	}
@@ -276,25 +276,7 @@ fpm_import_material :: proc(p: ^Fpm_Parser) -> (name: string, err: Importer_Erro
 // stream a leading Sep (the lexer's coalesced Newline) before the opener is not
 // expected — the appearance follows `=` on the same clause line.
 fpm_import_skip_balanced_parens :: proc(p: ^Fpm_Parser) -> Importer_Error {
-	if _, e := fpm_expect(p, .L_Paren); e != .None {
-		return .Malformed_Source
-	}
-	depth := 1
-	for depth > 0 {
-		if fpm_at_end(p) {
-			return .Malformed_Source
-		}
-		#partial switch fpm_peek_kind(p) {
-		case .L_Paren:
-			depth += 1
-		case .R_Paren:
-			depth -= 1
-		case .Invalid:
-			return .Malformed_Source
-		}
-		p.pos += 1
-	}
-	return .None
+	return import_skip_balanced_parens(p, Fpm_Token_Kind.L_Paren, Fpm_Token_Kind.R_Paren)
 }
 
 // fpm_token_fixed folds a canonical numeric token (Int_Lit or Float_Lit) to a
@@ -397,8 +379,8 @@ atlas_parse :: proc(p: ^Atlas_Parser) -> (asset: Atlas_Asset, err: Importer_Erro
 	declared := make(map[string]bool, context.temp_allocator)
 	saw_image := false
 	saw_grid := false
-	for atlas_peek(p).kind != .R_Brace {
-		switch atlas_peek(p).kind {
+	for cursor_peek(p).kind != .R_Brace {
+		switch cursor_peek(p).kind {
 		case .Image:
 			atlas_expect(p, .Image) or_return
 			img := atlas_expect(p, .String) or_return
@@ -459,13 +441,13 @@ atlas_parse_clip :: proc(p: ^Atlas_Parser, declared: map[string]bool) -> (clip: 
 	atlas_expect(p, .Cells) or_return
 	atlas_expect(p, .L_Bracket) or_return
 	frames := make([dynamic]string, 0, 4, context.temp_allocator)
-	for atlas_peek(p).kind == .String {
+	for cursor_peek(p).kind == .String {
 		frame := atlas_expect(p, .String) or_return
 		if !(frame.text in declared) {
 			return Atlas_Clip{}, .Malformed_Source
 		}
 		append(&frames, frame.text)
-		for atlas_peek(p).kind == .Comma {
+		for cursor_peek(p).kind == .Comma {
 			p.pos += 1
 		}
 	}
@@ -643,31 +625,13 @@ Atlas_Token :: struct {
 	int_value: i64, // Number value (cell coordinate, grid dim, fps)
 }
 
-Atlas_Parser :: struct {
-	tokens: []Atlas_Token,
-	pos:    int,
-}
-
-atlas_at_end :: proc(p: ^Atlas_Parser) -> bool {
-	return p.pos >= len(p.tokens)
-}
-
-// atlas_peek reports an Invalid token at end of input so a kind check fails
-// closed without a separate end test.
-atlas_peek :: proc(p: ^Atlas_Parser) -> Atlas_Token {
-	if atlas_at_end(p) {
-		return Atlas_Token{kind = .Invalid}
-	}
-	return p.tokens[p.pos]
-}
+// Atlas_Parser binds the shared Cursor to the .atlas token/kind pair; the cursor
+// data and the error-free primitives (cursor_at_end / cursor_peek) live in
+// parser_cursor.odin, the importer expect in asset_cursor.odin.
+Atlas_Parser :: Cursor(Atlas_Token, Atlas_Token_Kind)
 
 atlas_expect :: proc(p: ^Atlas_Parser, kind: Atlas_Token_Kind) -> (tok: Atlas_Token, err: Importer_Error) {
-	tok = atlas_peek(p)
-	if tok.kind != kind {
-		return Atlas_Token{}, .Malformed_Source
-	}
-	p.pos += 1
-	return tok, .None
+	return import_expect(p, kind, Importer_Error.Malformed_Source)
 }
 
 // lex_atlas tokenizes the atlas surface. It is total: an unrecognized glyph

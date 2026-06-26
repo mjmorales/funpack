@@ -105,8 +105,8 @@ tiles_parse :: proc(p: ^Tiles_Parser) -> (asset: Tileset_Asset, err: Importer_Er
 	tiles := make([dynamic]Tileset_Tile, 0, 4, context.temp_allocator)
 	declared := make(map[string]bool, context.temp_allocator)
 	saw_atlas := false
-	for tiles_peek(p).kind != .R_Brace {
-		#partial switch tiles_peek(p).kind {
+	for cursor_peek(p).kind != .R_Brace {
+		#partial switch cursor_peek(p).kind {
 		case .Atlas:
 			// Single-slot: a second `atlas` member is a duplicate clause.
 			if saw_atlas {
@@ -136,7 +136,7 @@ tiles_parse :: proc(p: ^Tiles_Parser) -> (asset: Tileset_Asset, err: Importer_Er
 		return Tileset_Asset{}, .Malformed_Source
 	}
 	tiles_skip_seps(p)
-	if !tiles_at_end(p) {
+	if !cursor_at_end(p) {
 		return Tileset_Asset{}, .Malformed_Source
 	}
 	asset.tiles = tiles[:]
@@ -151,8 +151,8 @@ tiles_parse :: proc(p: ^Tiles_Parser) -> (asset: Tileset_Asset, err: Importer_Er
 // moves on. A directive name outside the closed set is malformed — the set is
 // not user-extensible.
 tiles_parse_directives :: proc(p: ^Tiles_Parser) -> Importer_Error {
-	for tiles_peek(p).kind == .Directive {
-		name := tiles_peek(p).text
+	for cursor_peek(p).kind == .Directive {
+		name := cursor_peek(p).text
 		switch name {
 		case "doc", "gtag", "todo", "index", "spatial", "migrate", "expose", "server", "client":
 			// the lexical-core §5 closed metadata set
@@ -160,7 +160,7 @@ tiles_parse_directives :: proc(p: ^Tiles_Parser) -> Importer_Error {
 			return .Malformed_Source
 		}
 		p.pos += 1
-		if tiles_peek(p).kind == .L_Paren {
+		if cursor_peek(p).kind == .L_Paren {
 			tiles_skip_balanced_parens(p) or_return
 		}
 		tiles_skip_seps(p)
@@ -185,8 +185,8 @@ tiles_parse_tile :: proc(p: ^Tiles_Parser) -> (tile: Tileset_Tile, err: Importer
 	saw_cell := false
 	saw_solid := false
 	saw_tags := false
-	for tiles_peek(p).kind != .R_Brace {
-		#partial switch tiles_peek(p).kind {
+	for cursor_peek(p).kind != .R_Brace {
+		#partial switch cursor_peek(p).kind {
 		case .Cell:
 			if saw_cell {
 				return Tileset_Tile{}, .Malformed_Source
@@ -251,10 +251,10 @@ tiles_parse_tags_field :: proc(p: ^Tiles_Parser) -> (tags: []string, err: Import
 	tiles_expect(p, .Colon) or_return
 	tiles_expect(p, .L_Bracket) or_return
 	list := make([dynamic]string, 0, 2, context.temp_allocator)
-	if tiles_peek(p).kind == .String_Lit {
+	if cursor_peek(p).kind == .String_Lit {
 		first := tiles_expect(p, .String_Lit) or_return
 		append(&list, first.text)
-		for tiles_peek(p).kind == .Comma {
+		for cursor_peek(p).kind == .Comma {
 			p.pos += 1
 			item := tiles_expect(p, .String_Lit) or_return
 			append(&list, item.text)
@@ -269,62 +269,28 @@ tiles_parse_tags_field :: proc(p: ^Tiles_Parser) -> (tags: []string, err: Import
 // missing opener, an unbalanced group, or an Invalid token inside is malformed
 // (the fpm_import_skip_balanced_parens mold).
 tiles_skip_balanced_parens :: proc(p: ^Tiles_Parser) -> Importer_Error {
-	if _, e := tiles_expect(p, .L_Paren); e != .None {
-		return .Malformed_Source
-	}
-	depth := 1
-	for depth > 0 {
-		if tiles_at_end(p) {
-			return .Malformed_Source
-		}
-		#partial switch tiles_peek(p).kind {
-		case .L_Paren:
-			depth += 1
-		case .R_Paren:
-			depth -= 1
-		case .Invalid:
-			return .Malformed_Source
-		}
-		p.pos += 1
-	}
-	return .None
+	return import_skip_balanced_parens(p, Tiles_Token_Kind.L_Paren, Tiles_Token_Kind.R_Paren)
 }
 
 // ── Parser plumbing ──────────────────────────────────────────────────────
 
-Tiles_Parser :: struct {
-	tokens: []Tiles_Token,
-	pos:    int,
-}
-
-tiles_at_end :: proc(p: ^Tiles_Parser) -> bool {
-	return p.pos >= len(p.tokens)
-}
-
-// tiles_peek reports an Invalid token at end of input so a kind check fails
-// closed without a separate end test.
-tiles_peek :: proc(p: ^Tiles_Parser) -> Tiles_Token {
-	if tiles_at_end(p) {
-		return Tiles_Token{kind = .Invalid}
-	}
-	return p.tokens[p.pos]
-}
+// Tiles_Parser binds the shared Cursor to the .tiles token/kind pair; the cursor
+// data and the error-free primitives (cursor_at_end / cursor_peek) live in
+// parser_cursor.odin, the importer expect in asset_cursor.odin.
+Tiles_Parser :: Cursor(Tiles_Token, Tiles_Token_Kind)
 
 tiles_expect :: proc(p: ^Tiles_Parser, kind: Tiles_Token_Kind) -> (tok: Tiles_Token, err: Importer_Error) {
-	tok = tiles_peek(p)
-	if tok.kind != kind {
-		return Tiles_Token{}, .Malformed_Source
-	}
-	p.pos += 1
-	return tok, .None
+	return import_expect(p, kind, Importer_Error.Malformed_Source)
 }
 
 // tiles_expect_ident expects an identifier of the given case class — the
 // lexical-core §2 upper/lower split the grammar makes load-bearing (a
 // lower-case tileset name or an upper-case tile name is out of grammar
-// position, so a wrong case is the same grammar reject as a wrong token).
+// position, so a wrong case is the same grammar reject as a wrong token). The
+// case model is the .flvl/.fui shape (one Ident kind plus a case_class field),
+// so this stays a .tiles facade rather than a shared cursor helper.
 tiles_expect_ident :: proc(p: ^Tiles_Parser, case_class: Tiles_Ident_Case) -> (tok: Tiles_Token, err: Importer_Error) {
-	tok = tiles_peek(p)
+	tok = cursor_peek(p)
 	if tok.kind != .Ident || tok.case_class != case_class {
 		return Tiles_Token{}, .Malformed_Source
 	}
@@ -336,9 +302,7 @@ tiles_expect_ident :: proc(p: ^Tiles_Parser, case_class: Tiles_Ident_Case) -> (t
 // the grammar separates members and fields with, leading/trailing separators
 // tolerated around brace bodies (the flvl/fcfg reading).
 tiles_skip_seps :: proc(p: ^Tiles_Parser) {
-	for tiles_peek(p).kind == .Newline || tiles_peek(p).kind == .Comma {
-		p.pos += 1
-	}
+	cursor_skip_kinds(p, Tiles_Token_Kind.Newline, Tiles_Token_Kind.Comma)
 }
 
 // tiles_require_sep_or_close enforces the Sep BETWEEN items: after a member or
@@ -346,7 +310,7 @@ tiles_skip_seps :: proc(p: ^Tiles_Parser) {
 // or the body's closing brace — two items butted together with no separator
 // violate the `(Sep Item)*` production.
 tiles_require_sep_or_close :: proc(p: ^Tiles_Parser) -> Importer_Error {
-	#partial switch tiles_peek(p).kind {
+	#partial switch cursor_peek(p).kind {
 	case .Newline, .Comma:
 		tiles_skip_seps(p)
 		return .None

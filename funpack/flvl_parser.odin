@@ -258,24 +258,18 @@ Flvl_Unary_Expr :: struct {
 	operand: Flvl_Anchor_Expr,
 }
 
-// Flvl_Parse_Error is closed with one arm per way a level source can violate
-// the grammar. Unexpected_Token is any token out of grammar position;
-// Unexpected_End is input ending mid-production (an unterminated block);
-// Wrong_Case is a name whose first-letter case is wrong for its position (a
-// lower-case placed type, an upper-case instance name). The bake-stage gates
-// (unresolved names, type mismatches, out-of-bounds) are NOT parse errors —
-// they need resolution this stage does not do.
-Flvl_Parse_Error :: enum {
-	None,
-	Unexpected_Token,
-	Unexpected_End,
-	Wrong_Case,
-}
+// Flvl_Parse_Error is the shared sub-language verdict set (parser_cursor.odin):
+// Unexpected_Token is a token out of grammar position, Unexpected_End is input
+// ending mid-production (an unterminated block), and Wrong_Case is a name whose
+// first-letter case is wrong for its position (a lower-case placed type, an
+// upper-case instance name). The bake-stage gates (unresolved names, type
+// mismatches, out-of-bounds) are NOT parse errors — they need resolution this
+// stage does not do.
+Flvl_Parse_Error :: Sub_Parse_Error
 
-Flvl_Parser :: struct {
-	tokens: []Flvl_Token,
-	pos:    int,
-}
+// Flvl_Parser binds the shared Cursor to the .flvl token/kind pair; the cursor
+// mechanism (peek/advance/expect/skip) lives in parser_cursor.odin.
+Flvl_Parser :: Cursor(Flvl_Token, Flvl_Token_Kind)
 
 // parse_flvl is the entry seam: it parses a single `level … { … }` block from a
 // level source's tokens. Leading separators are skipped, the one level block is
@@ -287,7 +281,7 @@ parse_flvl :: proc(source: string) -> (level: Flvl_Level, err: Flvl_Parse_Error)
 	flvl_skip_separators(&p)
 	level = parse_flvl_level(&p) or_return
 	flvl_skip_separators(&p)
-	if !flvl_at_end(&p) {
+	if !cursor_at_end(&p) {
 		return Flvl_Level{}, .Unexpected_Token
 	}
 	return level, .None
@@ -310,8 +304,8 @@ parse_flvl_level :: proc(p: ^Flvl_Parser) -> (level: Flvl_Level, err: Flvl_Parse
 	tilemaps := make([dynamic]Flvl_Tilemap, 0, 2, context.temp_allocator)
 	items := make([dynamic]Flvl_Item, 0, 16, context.temp_allocator)
 	flvl_skip_separators(p)
-	for flvl_peek_kind(p) != .R_Brace {
-		#partial switch flvl_peek_kind(p) {
+	for cursor_peek_kind(p) != .R_Brace {
+		#partial switch cursor_peek_kind(p) {
 		case .Bounds:
 			min, max := parse_flvl_bounds(p) or_return
 			level.bounds_min = min
@@ -371,7 +365,7 @@ parse_flvl_tilemap :: proc(p: ^Flvl_Parser) -> (tilemap: Flvl_Tilemap, err: Flvl
 	tilemap.legend = parse_flvl_legend(p) or_return
 	flvl_skip_separators(p)
 	flvl_expect(p, .Grid) or_return
-	grid_tok := flvl_advance(p) or_return
+	grid_tok := cursor_advance(p) or_return
 	if grid_tok.kind == .Invalid {
 		// An unterminated `"""` block lexes Invalid (the input ended inside the
 		// grid) — the parse_flvl_atom mold's Invalid→Unexpected_End reading.
@@ -397,7 +391,7 @@ parse_flvl_legend :: proc(p: ^Flvl_Parser) -> (entries: []Flvl_Legend_Entry, err
 	flvl_expect(p, .L_Brace) or_return
 	list := make([dynamic]Flvl_Legend_Entry, 0, 8, context.temp_allocator)
 	flvl_skip_separators(p)
-	for flvl_peek_kind(p) != .R_Brace {
+	for cursor_peek_kind(p) != .R_Brace {
 		entry := parse_flvl_legend_entry(p) or_return
 		append(&list, entry)
 		flvl_skip_separators(p)
@@ -416,7 +410,7 @@ parse_flvl_legend :: proc(p: ^Flvl_Parser) -> (entries: []Flvl_Legend_Entry, err
 parse_flvl_legend_entry :: proc(p: ^Flvl_Parser) -> (entry: Flvl_Legend_Entry, err: Flvl_Parse_Error) {
 	char_tok := flvl_expect(p, .Char_Lit) or_return
 	entry.char = char_tok.char_value
-	#partial switch flvl_peek_kind(p) {
+	#partial switch cursor_peek_kind(p) {
 	case .Ident:
 		entry.kind = .Tile
 		entry.tile_name = flvl_expect_lower(p) or_return
@@ -427,7 +421,7 @@ parse_flvl_legend_entry :: proc(p: ^Flvl_Parser) -> (entry: Flvl_Legend_Entry, e
 		// The optional marker name: a LOWER_IDENT before the entry separator
 		// names the marker (`'P' spawn Player hero`); its absence is the
 		// anonymous repeat-freely form.
-		if flvl_peek_kind(p) == .Ident {
+		if cursor_peek_kind(p) == .Ident {
 			entry.spawn_name = flvl_expect_lower(p) or_return
 			entry.has_spawn_name = true
 		}
@@ -548,7 +542,7 @@ parse_flvl_coord :: proc(p: ^Flvl_Parser) -> (coord: Flvl_Coord, err: Flvl_Parse
 		// atom so `-48`-style negatives parse uniformly.
 		comp := parse_flvl_unary(p) or_return
 		append(&components, comp)
-		if flvl_peek_kind(p) != .Comma {
+		if cursor_peek_kind(p) != .Comma {
 			break
 		}
 		p.pos += 1
@@ -579,17 +573,17 @@ parse_flvl_place :: proc(p: ^Flvl_Parser) -> (place: Flvl_Place, err: Flvl_Parse
 	place.type_name = type_name
 	// The instance name is optional (anonymous scenery omits it). A LOWER_IDENT
 	// here is the name; a `{` or `at` next means the placement is anonymous.
-	if flvl_peek_kind(p) == .Ident {
+	if cursor_peek_kind(p) == .Ident {
 		name := flvl_expect_lower(p) or_return
 		place.instance_name = name
 		place.has_name = true
 	}
-	if flvl_peek_kind(p) == .L_Brace {
+	if cursor_peek_kind(p) == .L_Brace {
 		place.params = parse_flvl_params(p) or_return
 	}
 	flvl_expect(p, .At) or_return
 	place.position = parse_flvl_anchor_expr(p) or_return
-	if flvl_peek_kind(p) == .Facing {
+	if cursor_peek_kind(p) == .Facing {
 		p.pos += 1
 		place.facing = parse_flvl_anchor_expr(p) or_return
 		place.has_facing = true
@@ -605,7 +599,7 @@ parse_flvl_params :: proc(p: ^Flvl_Parser) -> (params: []Flvl_Param, err: Flvl_P
 	flvl_expect(p, .L_Brace) or_return
 	list := make([dynamic]Flvl_Param, 0, 4, context.temp_allocator)
 	flvl_skip_separators(p)
-	for flvl_peek_kind(p) != .R_Brace {
+	for cursor_peek_kind(p) != .R_Brace {
 		path := parse_flvl_param_key(p) or_return
 		flvl_expect(p, .Colon) or_return
 		value := parse_flvl_anchor_expr(p) or_return
@@ -623,7 +617,7 @@ parse_flvl_param_key :: proc(p: ^Flvl_Parser) -> (path: []string, err: Flvl_Pars
 	segments := make([dynamic]string, 0, 3, context.temp_allocator)
 	head := flvl_expect_lower(p) or_return
 	append(&segments, head)
-	for flvl_peek_kind(p) == .Dot {
+	for cursor_peek_kind(p) == .Dot {
 		p.pos += 1
 		seg := flvl_expect_lower(p) or_return
 		append(&segments, seg)
@@ -681,8 +675,8 @@ parse_flvl_item_body :: proc(p: ^Flvl_Parser) -> (places: []Flvl_Place, fors: []
 	prefab_list := make([dynamic]Flvl_Prefab, 0, 2, context.temp_allocator)
 	item_list := make([dynamic]Flvl_Item, 0, 8, context.temp_allocator)
 	flvl_skip_separators(p)
-	for flvl_peek_kind(p) != .R_Brace {
-		#partial switch flvl_peek_kind(p) {
+	for cursor_peek_kind(p) != .R_Brace {
+		#partial switch cursor_peek_kind(p) {
 		case .Place:
 			pl := parse_flvl_place(p) or_return
 			append(&item_list, Flvl_Item{kind = .Place, index = len(place_list)})
@@ -721,8 +715,8 @@ parse_flvl_anchor_expr :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err:
 // (grammar/flvl.ebnf AddExpr), left-associative.
 parse_flvl_add :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_Parse_Error) {
 	lhs := parse_flvl_mul(p) or_return
-	for flvl_peek_kind(p) == .Plus || flvl_peek_kind(p) == .Minus {
-		op := flvl_peek_kind(p)
+	for cursor_peek_kind(p) == .Plus || cursor_peek_kind(p) == .Minus {
+		op := cursor_peek_kind(p)
 		p.pos += 1
 		rhs := parse_flvl_mul(p) or_return
 		node := new(Flvl_Binary_Expr, context.temp_allocator)
@@ -737,8 +731,8 @@ parse_flvl_add :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_Pa
 // additive.
 parse_flvl_mul :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_Parse_Error) {
 	lhs := parse_flvl_unary(p) or_return
-	for flvl_peek_kind(p) == .Star || flvl_peek_kind(p) == .Slash {
-		op := flvl_peek_kind(p)
+	for cursor_peek_kind(p) == .Star || cursor_peek_kind(p) == .Slash {
+		op := cursor_peek_kind(p)
 		p.pos += 1
 		rhs := parse_flvl_unary(p) or_return
 		node := new(Flvl_Binary_Expr, context.temp_allocator)
@@ -752,7 +746,7 @@ parse_flvl_mul :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_Pa
 // (grammar/flvl.ebnf UnaryExpr) — the leading-minus form of an offset constant
 // (`-48`, `-12`) or var (`-i`).
 parse_flvl_unary :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_Parse_Error) {
-	if flvl_peek_kind(p) == .Minus {
+	if cursor_peek_kind(p) == .Minus {
 		p.pos += 1
 		operand := parse_flvl_unary(p) or_return
 		node := new(Flvl_Unary_Expr, context.temp_allocator)
@@ -770,7 +764,7 @@ parse_flvl_unary :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_
 parse_flvl_postfix :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_Parse_Error) {
 	expr = parse_flvl_atom(p) or_return
 	for {
-		#partial switch flvl_peek_kind(p) {
+		#partial switch cursor_peek_kind(p) {
 		case .Dot:
 			p.pos += 1
 			member := flvl_expect_lower(p) or_return
@@ -797,12 +791,12 @@ parse_flvl_call_args :: proc(p: ^Flvl_Parser) -> (args: []Flvl_Anchor_Expr, name
 	flvl_expect(p, .L_Paren) or_return
 	arg_list := make([dynamic]Flvl_Anchor_Expr, 0, 4, context.temp_allocator)
 	name_list := make([dynamic]string, 0, 4, context.temp_allocator)
-	for flvl_peek_kind(p) != .R_Paren {
+	for cursor_peek_kind(p) != .R_Paren {
 		name := ""
 		// A `LOWER_IDENT ':'` lookahead marks a named arg; a lone LOWER_IDENT is
 		// a positional anchor name (`door`). Two tokens of lookahead is fine —
 		// the level grammar is explicitly not LL(1) (grammar/flvl.ebnf §0).
-		if flvl_peek_kind(p) == .Ident && flvl_peek_kind_at(p, 1) == .Colon {
+		if cursor_peek_kind(p) == .Ident && cursor_peek_kind_at(p, 1) == .Colon {
 			label := flvl_expect_lower(p) or_return
 			flvl_expect(p, .Colon) or_return
 			name = label
@@ -810,7 +804,7 @@ parse_flvl_call_args :: proc(p: ^Flvl_Parser) -> (args: []Flvl_Anchor_Expr, name
 		arg := parse_flvl_anchor_expr(p) or_return
 		append(&arg_list, arg)
 		append(&name_list, name)
-		if flvl_peek_kind(p) == .Comma {
+		if cursor_peek_kind(p) == .Comma {
 			p.pos += 1
 		} else {
 			break
@@ -825,7 +819,7 @@ parse_flvl_call_args :: proc(p: ^Flvl_Parser) -> (args: []Flvl_Anchor_Expr, name
 // number literal, a socket-name string, or a parenthesized sub-expression that
 // unwraps to its inner expr.
 parse_flvl_atom :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_Parse_Error) {
-	tok := flvl_advance(p) or_return
+	tok := cursor_advance(p) or_return
 	#partial switch tok.kind {
 	case .Int_Lit:
 		node := new(Flvl_Int_Expr, context.temp_allocator)
@@ -859,46 +853,16 @@ parse_flvl_atom :: proc(p: ^Flvl_Parser) -> (expr: Flvl_Anchor_Expr, err: Flvl_P
 	return nil, .Unexpected_Token
 }
 
-// ── Parser helpers ──────────────────────────────────────────────────────────
-
-flvl_at_end :: proc(p: ^Flvl_Parser) -> bool {
-	return p.pos >= len(p.tokens)
-}
-
-// flvl_peek_kind reports Invalid at end of input so a kind check fails closed
-// without a separate end test (the family-wide peek convention).
-flvl_peek_kind :: proc(p: ^Flvl_Parser) -> Flvl_Token_Kind {
-	if flvl_at_end(p) {
-		return .Invalid
-	}
-	return p.tokens[p.pos].kind
-}
-
-// flvl_peek_kind_at reports the kind `ahead` tokens past the cursor (Invalid at
-// or past end), the two-token lookahead the not-LL(1) named-arg form needs.
-flvl_peek_kind_at :: proc(p: ^Flvl_Parser, ahead: int) -> Flvl_Token_Kind {
-	idx := p.pos + ahead
-	if idx >= len(p.tokens) {
-		return .Invalid
-	}
-	return p.tokens[idx].kind
-}
-
-flvl_advance :: proc(p: ^Flvl_Parser) -> (tok: Flvl_Token, err: Flvl_Parse_Error) {
-	if flvl_at_end(p) {
-		return Flvl_Token{}, .Unexpected_End
-	}
-	tok = p.tokens[p.pos]
-	p.pos += 1
-	return tok, .None
-}
+// ── Cursor facades ──────────────────────────────────────────────────────────
+// The token cursor lives in parser_cursor.odin (Cursor / cursor_*). These thin
+// facades exist only where a generic call cannot reach: flvl_expect's `.Kind`
+// argument is an implicit enum selector Odin cannot type through a polymorphic
+// proc's parameter, flvl_expect_upper/lower encode the .flvl case model (one
+// Ident kind plus a case_class field, vs .fpm's two kinds), and
+// flvl_skip_separators binds the .flvl separator set (grammar/flvl.ebnf Sep).
 
 flvl_expect :: proc(p: ^Flvl_Parser, kind: Flvl_Token_Kind) -> (tok: Flvl_Token, err: Flvl_Parse_Error) {
-	tok = flvl_advance(p) or_return
-	if tok.kind != kind {
-		return Flvl_Token{}, .Unexpected_Token
-	}
-	return tok, .None
+	return cursor_expect(p, kind)
 }
 
 // flvl_expect_upper consumes an Ident token, demanding UPPER_IDENT case — a
@@ -928,7 +892,5 @@ flvl_expect_lower :: proc(p: ^Flvl_Parser) -> (name: string, err: Flvl_Parse_Err
 // legal (grammar/flvl.ebnf Sep + the comma the placement grammar uses inside
 // param blocks).
 flvl_skip_separators :: proc(p: ^Flvl_Parser) {
-	for flvl_peek_kind(p) == .Newline || flvl_peek_kind(p) == .Comma {
-		p.pos += 1
-	}
+	cursor_skip_kinds(p, Flvl_Token_Kind.Newline, Flvl_Token_Kind.Comma)
 }

@@ -20,19 +20,12 @@
 
 package funpack
 
-// Fpm_Parse_Error is closed with one arm per way a .fpm source can fail to
-// parse, and no catch-all: a malformed source names exactly which grammar
-// expectation it violated. It mirrors the `.fun` Parse_Error discipline
-// (parser.odin) — Unexpected_Token / Unexpected_End — plus Wrong_Case for an
-// identifier whose initial-case is wrong for its grammar position (a LOWER_IDENT
-// where the grammar demands an UPPER_IDENT bone/type, or vice versa,
-// lexical-core.ebnf §2).
-Fpm_Parse_Error :: enum {
-	None,
-	Unexpected_Token,
-	Unexpected_End,
-	Wrong_Case,
-}
+// Fpm_Parse_Error is the shared sub-language verdict set (parser_cursor.odin):
+// a .fpm source names exactly which grammar expectation it violated, with
+// Wrong_Case covering an identifier whose initial-case is wrong for its position
+// (a LOWER_IDENT where the grammar demands an UPPER_IDENT bone/type, or vice
+// versa, lexical-core.ebnf §2).
+Fpm_Parse_Error :: Sub_Parse_Error
 
 // Fpm_Expr is the closed expression set of the .fpm operator ladder (fpm.ebnf
 // Expr). It is a small union — literals, names, member access, calls (with named
@@ -314,10 +307,9 @@ Fpm_Unit :: struct {
 	clearance:     f64,
 }
 
-Fpm_Parser :: struct {
-	tokens: []Fpm_Token,
-	pos:    int,
-}
+// Fpm_Parser binds the shared Cursor to the .fpm token/kind pair; the cursor
+// mechanism (peek/advance/expect/skip) lives in parser_cursor.odin.
+Fpm_Parser :: Cursor(Fpm_Token, Fpm_Token_Kind)
 
 // fpm_parse is the stage entry: it parses one .fpm modeling unit (a single
 // `model` or `rig` block) from the token stream into an Fpm_Unit, or returns the
@@ -328,7 +320,7 @@ Fpm_Parser :: struct {
 fpm_parse :: proc(tokens: []Fpm_Token) -> (unit: Fpm_Unit, err: Fpm_Parse_Error) {
 	p := Fpm_Parser{tokens = tokens}
 	fpm_skip_newlines(&p)
-	#partial switch fpm_peek_kind(&p) {
+	#partial switch cursor_peek_kind(&p) {
 	case .Model:
 		return fpm_parse_block(&p, is_rig = false)
 	case .Rig:
@@ -342,7 +334,7 @@ fpm_parse :: proc(tokens: []Fpm_Token) -> (unit: Fpm_Unit, err: Fpm_Parse_Error)
 // which IS the model/rig name (§16 §2). Members are Sep-separated; the loop reads
 // one member per leading keyword until the closing brace.
 fpm_parse_block :: proc(p: ^Fpm_Parser, is_rig: bool) -> (unit: Fpm_Unit, err: Fpm_Parse_Error) {
-	fpm_advance(p) or_return // `model` or `rig`
+	cursor_advance(p) or_return // `model` or `rig`
 	name := fpm_expect_upper(p) or_return
 	fpm_expect(p, .L_Brace) or_return
 	unit.name = name
@@ -352,8 +344,8 @@ fpm_parse_block :: proc(p: ^Fpm_Parser, is_rig: bool) -> (unit: Fpm_Unit, err: F
 	binds := make([dynamic]Fpm_Bind, 0, 8, context.temp_allocator)
 	mirrors := make([dynamic]Fpm_Mirror, 0, 2, context.temp_allocator)
 	fpm_skip_seps(p)
-	for fpm_peek_kind(p) != .R_Brace && !fpm_at_end(p) {
-		#partial switch fpm_peek_kind(p) {
+	for cursor_peek_kind(p) != .R_Brace && !cursor_at_end(p) {
+		#partial switch cursor_peek_kind(p) {
 		case .Param:
 			node := fpm_parse_param(p) or_return
 			append(&params, node)
@@ -401,8 +393,8 @@ fpm_parse_param :: proc(p: ^Fpm_Parser) -> (node: Fpm_Param, err: Fpm_Parse_Erro
 	fpm_expect(p, .Colon) or_return
 	type := fpm_parse_type(p) or_return
 	node = Fpm_Param{name = name, type = type}
-	if fpm_peek_kind(p) == .Eq {
-		fpm_advance(p) or_return
+	if cursor_peek_kind(p) == .Eq {
+		cursor_advance(p) or_return
 		node.default = fpm_parse_expression(p) or_return
 		node.has_default = true
 	}
@@ -419,13 +411,13 @@ fpm_parse_fn :: proc(p: ^Fpm_Parser) -> (node: Fpm_Fn, err: Fpm_Parse_Error) {
 	name := fpm_expect_lower(p) or_return
 	fpm_expect(p, .L_Paren) or_return
 	params := make([dynamic]Fpm_Param, 0, 4, context.temp_allocator)
-	for fpm_peek_kind(p) != .R_Paren && !fpm_at_end(p) {
+	for cursor_peek_kind(p) != .R_Paren && !cursor_at_end(p) {
 		pname := fpm_expect_lower(p) or_return
 		fpm_expect(p, .Colon) or_return
 		ptype := fpm_parse_type(p) or_return
 		append(&params, Fpm_Param{name = pname, type = ptype})
-		if fpm_peek_kind(p) == .Comma {
-			fpm_advance(p) or_return
+		if cursor_peek_kind(p) == .Comma {
+			cursor_advance(p) or_return
 		}
 	}
 	fpm_expect(p, .R_Paren) or_return
@@ -458,7 +450,7 @@ fpm_parse_block_body :: proc(p: ^Fpm_Parser) -> (body: []Fpm_Stmt, err: Fpm_Pars
 	fpm_expect(p, .L_Brace) or_return
 	stmts := make([dynamic]Fpm_Stmt, 0, 8, context.temp_allocator)
 	fpm_skip_seps(p)
-	for fpm_peek_kind(p) != .R_Brace && !fpm_at_end(p) {
+	for cursor_peek_kind(p) != .R_Brace && !cursor_at_end(p) {
 		stmt := fpm_parse_stmt(p) or_return
 		append(&stmts, stmt)
 		fpm_skip_seps(p)
@@ -472,11 +464,11 @@ fpm_parse_block_body :: proc(p: ^Fpm_Parser) -> (body: []Fpm_Stmt, err: Fpm_Pars
 // is an Assign or a bare Expr, told apart by whether the parsed l-value path is
 // followed by `=` (assignment) or not (expression statement).
 fpm_parse_stmt :: proc(p: ^Fpm_Parser) -> (stmt: Fpm_Stmt, err: Fpm_Parse_Error) {
-	#partial switch fpm_peek_kind(p) {
+	#partial switch cursor_peek_kind(p) {
 	case .Let:
 		return fpm_parse_let(p)
 	case .Return:
-		fpm_advance(p) or_return
+		cursor_advance(p) or_return
 		value := fpm_parse_expression(p) or_return
 		fpm_terminate(p) or_return
 		return Fpm_Return{value = value}, .None
@@ -489,12 +481,12 @@ fpm_parse_stmt :: proc(p: ^Fpm_Parser) -> (stmt: Fpm_Stmt, err: Fpm_Parse_Error)
 	// promote it to an Assign only when it is a plain dotted name-path followed by
 	// `=`.
 	expr := fpm_parse_expression(p) or_return
-	if fpm_peek_kind(p) == .Eq {
+	if cursor_peek_kind(p) == .Eq {
 		path, ok := fpm_lvalue_path(expr)
 		if !ok {
 			return stmt, .Unexpected_Token
 		}
-		fpm_advance(p) or_return // `=`
+		cursor_advance(p) or_return // `=`
 		value := fpm_parse_expression(p) or_return
 		fpm_terminate(p) or_return
 		return Fpm_Assign{path = path, value = value}, .None
@@ -539,8 +531,8 @@ fpm_parse_let :: proc(p: ^Fpm_Parser) -> (stmt: Fpm_Stmt, err: Fpm_Parse_Error) 
 	fpm_expect(p, .Let) or_return
 	name := fpm_expect_lower(p) or_return
 	type := ""
-	if fpm_peek_kind(p) == .Colon {
-		fpm_advance(p) or_return
+	if cursor_peek_kind(p) == .Colon {
+		cursor_advance(p) or_return
 		type = fpm_parse_type(p) or_return
 	}
 	fpm_expect(p, .Eq) or_return
@@ -575,7 +567,7 @@ fpm_parse_emit :: proc(p: ^Fpm_Parser) -> (node: Fpm_Bind, err: Fpm_Parse_Error)
 // the value lifts to a Solid when it is geometry (a collide proxy is `box(...)`),
 // nil for a material/anchor that is not geometry.
 fpm_parse_named_bind :: proc(p: ^Fpm_Parser) -> (node: Fpm_Bind, err: Fpm_Parse_Error) {
-	kw := fpm_advance(p) or_return
+	kw := cursor_advance(p) or_return
 	kind: Fpm_Bind_Kind
 	#partial switch kw.kind {
 	case .Anchor:
@@ -650,19 +642,19 @@ fpm_parse_clearance :: proc(p: ^Fpm_Parser) -> (value: f64, err: Fpm_Parse_Error
 // Type). Only the head name is retained — generic/list arguments are dropped, as
 // no gate reads them. A list type's head is "[]".
 fpm_parse_type :: proc(p: ^Fpm_Parser) -> (name: string, err: Fpm_Parse_Error) {
-	if fpm_peek_kind(p) == .L_Bracket {
-		fpm_advance(p) or_return
+	if cursor_peek_kind(p) == .L_Bracket {
+		cursor_advance(p) or_return
 		fpm_parse_type(p) or_return // element type, dropped
 		fpm_expect(p, .R_Bracket) or_return
 		return "[]", .None
 	}
 	head := fpm_expect_upper(p) or_return
 	// Optional generic args `[T, …]` — consume and drop (no gate reads them).
-	if fpm_peek_kind(p) == .L_Bracket {
-		fpm_advance(p) or_return
+	if cursor_peek_kind(p) == .L_Bracket {
+		cursor_advance(p) or_return
 		fpm_parse_type(p) or_return
-		for fpm_peek_kind(p) == .Comma {
-			fpm_advance(p) or_return
+		for cursor_peek_kind(p) == .Comma {
+			cursor_advance(p) or_return
 			fpm_parse_type(p) or_return
 		}
 		fpm_expect(p, .R_Bracket) or_return
@@ -678,8 +670,8 @@ fpm_parse_type :: proc(p: ^Fpm_Parser) -> (name: string, err: Fpm_Parse_Error) {
 // collides with a member-access `.`.
 fpm_parse_expression :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error) {
 	lhs := fpm_parse_add(p) or_return
-	if fpm_peek_kind(p) == .Dot_Dot {
-		fpm_advance(p) or_return
+	if cursor_peek_kind(p) == .Dot_Dot {
+		cursor_advance(p) or_return
 		hi := fpm_parse_add(p) or_return
 		node := new(Fpm_Range, context.temp_allocator)
 		node^ = Fpm_Range{lo = lhs, hi = hi}
@@ -692,8 +684,8 @@ fpm_parse_expression :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_
 // left-associative.
 fpm_parse_add :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error) {
 	lhs := fpm_parse_mul(p) or_return
-	for fpm_peek_kind(p) == .Plus || fpm_peek_kind(p) == .Minus {
-		op := fpm_advance(p) or_return
+	for cursor_peek_kind(p) == .Plus || cursor_peek_kind(p) == .Minus {
+		op := cursor_advance(p) or_return
 		rhs := fpm_parse_mul(p) or_return
 		node := new(Fpm_Binary, context.temp_allocator)
 		node^ = Fpm_Binary{op = op.kind, lhs = lhs, rhs = rhs}
@@ -706,8 +698,8 @@ fpm_parse_add :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error) 
 // MulExpr), left-associative — higher precedence than add.
 fpm_parse_mul :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error) {
 	lhs := fpm_parse_unary(p) or_return
-	for fpm_peek_kind(p) == .Star || fpm_peek_kind(p) == .Slash || fpm_peek_kind(p) == .Percent {
-		op := fpm_advance(p) or_return
+	for cursor_peek_kind(p) == .Star || cursor_peek_kind(p) == .Slash || cursor_peek_kind(p) == .Percent {
+		op := cursor_advance(p) or_return
 		rhs := fpm_parse_unary(p) or_return
 		node := new(Fpm_Binary, context.temp_allocator)
 		node^ = Fpm_Binary{op = op.kind, lhs = lhs, rhs = rhs}
@@ -720,8 +712,8 @@ fpm_parse_mul :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error) 
 // leading `-` is the unary negation (the sole prefix operator); otherwise a
 // postfix expression.
 fpm_parse_unary :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error) {
-	if fpm_peek_kind(p) == .Minus {
-		fpm_advance(p) or_return
+	if cursor_peek_kind(p) == .Minus {
+		cursor_advance(p) or_return
 		operand := fpm_parse_unary(p) or_return
 		node := new(Fpm_Unary, context.temp_allocator)
 		node^ = Fpm_Unary{op = .Minus, operand = operand}
@@ -738,13 +730,13 @@ fpm_parse_unary :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error
 fpm_parse_postfix :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error) {
 	atom := fpm_parse_atom(p) or_return
 	for {
-		#partial switch fpm_peek_kind(p) {
+		#partial switch cursor_peek_kind(p) {
 		case .Dot:
-			fpm_advance(p) or_return
+			cursor_advance(p) or_return
 			member := fpm_expect_lower(p) or_return
 			mnode := new(Fpm_Member, context.temp_allocator)
 			mnode^ = Fpm_Member{receiver = atom, member = member}
-			if fpm_peek_kind(p) == .L_Paren {
+			if cursor_peek_kind(p) == .L_Paren {
 				args := fpm_parse_call_args(p) or_return
 				cnode := new(Fpm_Call, context.temp_allocator)
 				cnode^ = Fpm_Call{callee = mnode, args = args}
@@ -771,19 +763,19 @@ fpm_parse_postfix :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Err
 fpm_parse_call_args :: proc(p: ^Fpm_Parser) -> (args: []Fpm_Arg, err: Fpm_Parse_Error) {
 	fpm_expect(p, .L_Paren) or_return
 	list := make([dynamic]Fpm_Arg, 0, 4, context.temp_allocator)
-	for fpm_peek_kind(p) != .R_Paren && !fpm_at_end(p) {
+	for cursor_peek_kind(p) != .R_Paren && !cursor_at_end(p) {
 		arg: Fpm_Arg
 		// Two-token peek: a LOWER_IDENT immediately followed by `:` is a label.
-		if fpm_peek_kind(p) == .Lower_Ident && fpm_peek_kind_at(p, 1) == .Colon {
-			label := fpm_advance(p) or_return
-			fpm_advance(p) or_return // `:`
+		if cursor_peek_kind(p) == .Lower_Ident && cursor_peek_kind_at(p, 1) == .Colon {
+			label := cursor_advance(p) or_return
+			cursor_advance(p) or_return // `:`
 			arg.label = label.text
 			arg.labeled = true
 		}
 		arg.value = fpm_parse_expression(p) or_return
 		append(&list, arg)
-		if fpm_peek_kind(p) == .Comma {
-			fpm_advance(p) or_return
+		if cursor_peek_kind(p) == .Comma {
+			cursor_advance(p) or_return
 		}
 	}
 	fpm_expect(p, .R_Paren) or_return
@@ -794,35 +786,35 @@ fpm_parse_call_args :: proc(p: ^Fpm_Parser) -> (args: []Fpm_Arg, err: Fpm_Parse_
 // ')'` (fpm.ebnf Atom). A parenthesized expression groups; a name carries its
 // initial-case class.
 fpm_parse_atom :: proc(p: ^Fpm_Parser) -> (expr: Fpm_Expr, err: Fpm_Parse_Error) {
-	tok := fpm_peek(p)
+	tok := cursor_peek(p)
 	#partial switch tok.kind {
 	case .Int_Lit:
-		fpm_advance(p) or_return
+		cursor_advance(p) or_return
 		node := new(Fpm_Int_Lit, context.temp_allocator)
 		node^ = Fpm_Int_Lit{value = tok.int_value}
 		return node, .None
 	case .Float_Lit:
-		fpm_advance(p) or_return
+		cursor_advance(p) or_return
 		node := new(Fpm_Float_Lit, context.temp_allocator)
 		node^ = Fpm_Float_Lit{value = tok.float_value}
 		return node, .None
 	case .String_Lit:
-		fpm_advance(p) or_return
+		cursor_advance(p) or_return
 		node := new(Fpm_String_Lit, context.temp_allocator)
 		node^ = Fpm_String_Lit{text = tok.text}
 		return node, .None
 	case .Lower_Ident, .Upper_Ident:
-		fpm_advance(p) or_return
+		cursor_advance(p) or_return
 		node := new(Fpm_Name, context.temp_allocator)
 		node^ = Fpm_Name{name = tok.text, ident_case = tok.ident_case}
 		return node, .None
 	case .L_Paren:
-		fpm_advance(p) or_return
+		cursor_advance(p) or_return
 		inner := fpm_parse_expression(p) or_return
 		fpm_expect(p, .R_Paren) or_return
 		return inner, .None
 	}
-	if fpm_at_end(p) {
+	if cursor_at_end(p) {
 		return expr, .Unexpected_End
 	}
 	return expr, .Unexpected_Token
@@ -1029,7 +1021,7 @@ fpm_bool_kind :: proc(name: string) -> (kind: Fpm_Bool_Kind, ok: bool) {
 // fpm_expect_lower consumes a LOWER_IDENT, rejecting an UPPER_IDENT in a
 // lower-only position (a value/param/fn name) with Wrong_Case.
 fpm_expect_lower :: proc(p: ^Fpm_Parser) -> (name: string, err: Fpm_Parse_Error) {
-	tok := fpm_advance(p) or_return
+	tok := cursor_advance(p) or_return
 	if tok.kind != .Lower_Ident {
 		if tok.kind == .Upper_Ident {
 			return "", .Wrong_Case
@@ -1042,7 +1034,7 @@ fpm_expect_lower :: proc(p: ^Fpm_Parser) -> (name: string, err: Fpm_Parse_Error)
 // fpm_expect_upper consumes an UPPER_IDENT, rejecting a LOWER_IDENT in an
 // upper-only position (a type/bone/side label) with Wrong_Case.
 fpm_expect_upper :: proc(p: ^Fpm_Parser) -> (name: string, err: Fpm_Parse_Error) {
-	tok := fpm_advance(p) or_return
+	tok := cursor_advance(p) or_return
 	if tok.kind != .Upper_Ident {
 		if tok.kind == .Lower_Ident {
 			return "", .Wrong_Case
@@ -1052,62 +1044,26 @@ fpm_expect_upper :: proc(p: ^Fpm_Parser) -> (name: string, err: Fpm_Parse_Error)
 	return tok.text, .None
 }
 
-// ── Cursor helpers ───────────────────────────────────────────────────────────
-
-fpm_at_end :: proc(p: ^Fpm_Parser) -> bool {
-	return p.pos >= len(p.tokens)
-}
-
-// fpm_peek reports an Invalid token at end of input so a kind check fails closed
-// without a separate end test.
-fpm_peek :: proc(p: ^Fpm_Parser) -> Fpm_Token {
-	if fpm_at_end(p) {
-		return Fpm_Token{kind = .Invalid}
-	}
-	return p.tokens[p.pos]
-}
-
-fpm_peek_kind :: proc(p: ^Fpm_Parser) -> Fpm_Token_Kind {
-	return fpm_peek(p).kind
-}
-
-// fpm_peek_kind_at reports the kind `offset` tokens ahead — the bounded
-// lookahead the named-argument discrimination needs (an Ident then `:`). Invalid
-// past the end so the check fails closed.
-fpm_peek_kind_at :: proc(p: ^Fpm_Parser, offset: int) -> Fpm_Token_Kind {
-	idx := p.pos + offset
-	if idx >= len(p.tokens) {
-		return .Invalid
-	}
-	return p.tokens[idx].kind
-}
-
-fpm_advance :: proc(p: ^Fpm_Parser) -> (tok: Fpm_Token, err: Fpm_Parse_Error) {
-	if fpm_at_end(p) {
-		return Fpm_Token{}, .Unexpected_End
-	}
-	tok = p.tokens[p.pos]
-	p.pos += 1
-	return tok, .None
-}
+// ── Cursor facades ───────────────────────────────────────────────────────────
+// The token cursor lives in parser_cursor.odin (Cursor / cursor_*). These thin
+// facades exist only where a generic call cannot reach: fpm_expect's `.Kind`
+// argument is an implicit enum selector Odin cannot type through a polymorphic
+// proc's parameter, and the skip/terminate facades bind the .fpm separator set
+// the grammar's Sep rule names (fpm.ebnf Sep — `(NEWLINE | ',')+`).
 
 fpm_expect :: proc(p: ^Fpm_Parser, kind: Fpm_Token_Kind) -> (tok: Fpm_Token, err: Fpm_Parse_Error) {
-	tok = fpm_advance(p) or_return
-	if tok.kind != kind {
-		return Fpm_Token{}, .Unexpected_Token
-	}
-	return tok, .None
+	return cursor_expect(p, kind)
 }
 
 // fpm_terminate consumes a Sep (newline/comma) statement terminator, accepting a
 // closing brace or end of input as the implicit terminator of a scope's last
 // member (fpm.ebnf Sep?).
 fpm_terminate :: proc(p: ^Fpm_Parser) -> Fpm_Parse_Error {
-	if fpm_peek_kind(p) == .Newline || fpm_peek_kind(p) == .Comma {
+	if cursor_peek_kind(p) == .Newline || cursor_peek_kind(p) == .Comma {
 		fpm_skip_seps(p)
 		return .None
 	}
-	if fpm_at_end(p) || fpm_peek_kind(p) == .R_Brace {
+	if cursor_at_end(p) || cursor_peek_kind(p) == .R_Brace {
 		return .None
 	}
 	return .Unexpected_Token
@@ -1116,13 +1072,9 @@ fpm_terminate :: proc(p: ^Fpm_Parser) -> Fpm_Parse_Error {
 // fpm_skip_seps consumes a run of Sep tokens (newline or comma) between members
 // or statements (fpm.ebnf Sep — `(NEWLINE | ',')+`).
 fpm_skip_seps :: proc(p: ^Fpm_Parser) {
-	for fpm_peek_kind(p) == .Newline || fpm_peek_kind(p) == .Comma {
-		p.pos += 1
-	}
+	cursor_skip_kinds(p, Fpm_Token_Kind.Newline, Fpm_Token_Kind.Comma)
 }
 
 fpm_skip_newlines :: proc(p: ^Fpm_Parser) {
-	for fpm_peek_kind(p) == .Newline {
-		p.pos += 1
-	}
+	cursor_skip_kinds(p, Fpm_Token_Kind.Newline)
 }
