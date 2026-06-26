@@ -31,33 +31,38 @@ Cli_Args :: struct {
 	max:  int,
 }
 
+// The arg-spec constructors are `contextless`: each returns a Cli_Args value with
+// no allocation and no context use, so a spec can be built at global scope — e.g. a
+// package-level command/lint registry initialized at file scope, where Odin's
+// implicit context is unavailable. Keep any new constructor here contextless too.
+
 // cli_no_args forbids positionals — the spec the argumentless verbs (version,
 // test) and the strict warden subcommands (holes, probes, debt, tags, pipeline)
 // declare, so a trailing token there is a usage error rather than a silently
 // ignored argument.
-cli_no_args :: proc() -> Cli_Args {
+cli_no_args :: proc "contextless" () -> Cli_Args {
 	return Cli_Args{kind = .None}
 }
 
 // cli_exact_args requires exactly n positionals.
-cli_exact_args :: proc(n: int) -> Cli_Args {
+cli_exact_args :: proc "contextless" (n: int) -> Cli_Args {
 	return Cli_Args{kind = .Exact, min = n, max = n}
 }
 
 // cli_minimum_args requires at least n positionals.
-cli_minimum_args :: proc(n: int) -> Cli_Args {
+cli_minimum_args :: proc "contextless" (n: int) -> Cli_Args {
 	return Cli_Args{kind = .Minimum, min = n}
 }
 
 // cli_maximum_args allows at most n positionals.
-cli_maximum_args :: proc(n: int) -> Cli_Args {
+cli_maximum_args :: proc "contextless" (n: int) -> Cli_Args {
 	return Cli_Args{kind = .Maximum, max = n}
 }
 
 // cli_range_args allows between lo and hi positionals inclusive — the spec
 // `warden find` and `warden graph` declare (an optional single positional:
 // cli_range_args(0, 1)).
-cli_range_args :: proc(lo: int, hi: int) -> Cli_Args {
+cli_range_args :: proc "contextless" (lo: int, hi: int) -> Cli_Args {
 	return Cli_Args{kind = .Range, min = lo, max = hi}
 }
 
