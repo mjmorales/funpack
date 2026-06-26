@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.25.0] - 2026-06-26
+
+### Features
+- feat(eir): Odin-source AST loader (parser walk + exclude globs + cache) (c1accca)
+
 ## [0.24.0] - 2026-06-26
 
 ### Features
