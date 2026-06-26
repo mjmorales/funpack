@@ -25,6 +25,7 @@
 package cli
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 
 // Cli_Flag_Kind is the closed value taxonomy a flag binds to. Bool flags are
@@ -252,16 +253,8 @@ cli_command_path_string :: proc(cmd: ^Cli_Command, allocator := context.allocato
 		append(&tokens, c.use)
 	}
 	// Parents were appended leaf-first; reverse to root-first for display.
-	slice_reverse_strings(tokens[:])
+	slice.reverse(tokens[:])
 	return strings.join(tokens[:], " ", allocator)
-}
-
-// slice_reverse_strings reverses a string slice in place — the small helper
-// cli_command_path_string needs because it collects the path leaf-first.
-slice_reverse_strings :: proc(s: []string) {
-	for i, j := 0, len(s) - 1; i < j; i, j = i + 1, j - 1 {
-		s[i], s[j] = s[j], s[i]
-	}
 }
 
 // cli_finalize wires the tree for use: it sets every node's parent pointer (so

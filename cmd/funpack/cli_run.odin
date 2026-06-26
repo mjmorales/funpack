@@ -56,8 +56,9 @@ build_run_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 // cli_run_attach marshalling pattern) — an unset flag is left off so the runtime
 // resolves the config seed / engine default instead.
 cli_run_run :: proc(inv: ^cli.Cli_Invocation) -> int {
-	forwarded := make([dynamic]string, 0, 2 + len(cli_run_extra_args(inv)), context.temp_allocator)
-	append(&forwarded, ..cli_run_extra_args(inv))
+	extra := cli_run_extra_args(inv)
+	forwarded := make([dynamic]string, 0, 2 + len(extra), context.temp_allocator)
+	append(&forwarded, ..extra)
 	if _, passed := inv.flags["seed"]; passed {
 		append(&forwarded, "--seed")
 		append(&forwarded, fmt.tprintf("%d", cli.cli_flag_int(inv, "seed")))

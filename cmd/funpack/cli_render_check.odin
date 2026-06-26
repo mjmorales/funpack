@@ -60,17 +60,17 @@ build_render_check_command :: proc(allocator := context.allocator) -> ^cli.Cli_C
 				},
 				allocator,
 			),
-			run = cli_render_check_run,
+			run = cli_run_render_check,
 		},
 		allocator,
 	)
 }
 
-// cli_render_check_run adapts the invocation onto run_render_check_verb:
+// cli_run_render_check adapts the invocation onto run_render_check_verb:
 // `--release` maps to the build mode, `--ticks` to the window (the default when
 // unset), and `--seed` to the optional root-seed override (nil when unset, so the
 // fold resolves the config seed / engine default for a uses_rng game).
-cli_render_check_run :: proc(inv: ^cli.Cli_Invocation) -> int {
+cli_run_render_check :: proc(inv: ^cli.Cli_Invocation) -> int {
 	ticks := funpack_runtime.RENDER_CHECK_DEFAULT_TICKS
 	if _, passed := inv.flags["ticks"]; passed {
 		ticks = cli.cli_flag_int(inv, "ticks")
