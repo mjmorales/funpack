@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.12.0] - 2026-06-25
+
+### Features
+- feat(funpack): add headless record MCP tool for agent-driven replay logs (ac69017)
+
 ## [0.11.3] - 2026-06-25
 
 ### Other
