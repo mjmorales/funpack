@@ -7,6 +7,42 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.23.0] - 2026-06-26
+
+### Features
+- feat(runtime): persist + digest + migrate a stored engine.map Map column (10f6ff8)
+- feat(runtime): Map_Value + runtime interpreter (dual-interpreter parity) (248a433)
+- feat(funpack): Map_Value + compiler evaluator (insertion-ordered) (bf2cbb1)
+- feat(funpack): typecheck the engine.map methods with K,V inference (8cd3a3e)
+- feat(funpack): add engine.map Map[K,V] type model + module surface (9e96d2e)
+
+### Fixes
+- fix(funpack): thread real Project_Error through read_index_project + honest netcode seam (2d40b48)
+- fix(funpack): prune the real VENDOR_DIR (packages/) in recursive check (2ac2291)
+- fix(mcp): Open_Session_Result gains a Session_Alloc_Failed variant (a79ef87)
+- fix(mcp): dedicated .Refused category + lenient centralized int-arg reader (2ac5b90)
+- fix(funpack): order-independent fpm_intersect manifold verdict (bd17108)
+- fix(mcp): emit JSON-RPC PARSE_ERROR for unparseable input (637311a)
+- fix(funpack): free deduped atlas pixels through the bake allocator (6e9f2a6)
+- fix(runtime): close replay/artifact ownership leaks and a UAF (7fb14ad)
+
+### Other
+- refactor(mcp): P3 dedup remainder — cli-verbs/mcp-core/mcp-tools (1c66c32)
+- refactor(runtime): P3 dedup remainder — rt-core/render/introspect (07b40d7)
+- refactor(funpack): P3 dedup remainder — frontend/assets/buildmath/sublang/emit (3ee5dca)
+- refactor(funpack): explicit allocator through asset content-hash + import_image (cf9c627)
+- refactor(runtime): extract the funpack-value text encoders into introspect_encoding.odin (b036fe0)
+- refactor(funpack): extract the .fcfg mini-reader into fcfg_read.odin (e8e49ef)
+- refactor(funpack): split emit.odin into per-section serializer files (e827a35)
+- refactor(funpack): reuse shared lexer char-class + string scanner across fpm/flvl/fui (142a0af)
+- refactor(runtime): reconcile funpack/runtime math kernel mirror + provenance (0e58724)
+- refactor(cli): tidy CLI arg-handling helpers (3ab53ba)
+- refactor(runtime): dedup interp tuple builders and tilemap division (1aab496)
+- refactor(funpack): compiler-side dedup, Odin-first, and dead-code cleanup (4736014)
+- docs(mcp): point the generated contract header at the Odin gen-contract verb (faeb4e3)
+- refactor(mcp): collapse per-family tool-result wrappers into shared helpers (367eddc)
+- docs(runtime): correct Map_Value doc-comment — Map commits as a column (f6d3ecb)
+
 ## [0.22.0] - 2026-06-26
 
 ### Features
