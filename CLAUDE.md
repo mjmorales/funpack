@@ -72,6 +72,10 @@ Dispatch and memory protocol:
 
 @~/.claude-prove/latest/references/llm-coding-standards.md
 
+### Code Clarity
+
+@docs/code-clarity.md
+
 ### Prompt Engineering Guide
 
 @~/.claude-prove/latest/references/prompt-engineering-guide.md

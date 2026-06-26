@@ -72,6 +72,10 @@
         "label": "LLM Coding Standards"
       },
       {
+        "path": "docs/code-clarity.md",
+        "label": "Code Clarity"
+      },
+      {
         "path": "~/.claude-prove/latest/references/prompt-engineering-guide.md",
         "label": "Prompt Engineering Guide"
       },
