@@ -7,6 +7,19 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.27.0] - 2026-06-26
+
+### Features
+- feat(eir): add dead verb — unreferenced file-private declaration lint (9643365)
+- feat(eir): add near verb — Type-3 near-miss clone tier (e350bcf)
+- feat(eir): dup baseline-ratchet gate wired into task lint (3d311d6)
+
+### Fixes
+- fix(funpack): run the §01 P5 structural gates in check/build, not just test (d2a6c83)
+- fix(funpack): exempt zero-arg constant-accessor fns from the duplication gate (340e32e)
+- fix(funpack): admit engine.prelude to_int and is_some to the compiler surface (4073c3e)
+- fix(funpack): resolve bare imported module-level let constants cross-module (4de8abe)
+
 ## [0.26.1] - 2026-06-26
 
 ### Fixes
