@@ -56,6 +56,15 @@ Gate_Unit :: struct {
 	name: string,
 	line: int,
 	body: []Statement,
+	// dup_exempt marks a unit the DUPLICATION gate skips: a zero-parameter
+	// constant-accessor fn whose body is a single `return <literal>`. Such a fn is
+	// a named constant in fn clothing — two distinctly-named accessors that coincide
+	// in value (map_h() and hud_h() both `return 24`) are independent knobs, not a
+	// copy-paste duplicate, so they are exempt exactly as the module-level `let`
+	// constants they stand in for (a `let` is never a gate unit at all). Only the
+	// duplication gate honors it; every other structural gate still scores the unit,
+	// which a one-line constant return trivially passes.
+	dup_exempt: bool,
 }
 
 // gate_units collects every declaration body the gates score, in the Ast's
@@ -87,7 +96,7 @@ gate_units :: proc(ast: Ast) -> []Gate_Unit {
 			if fn.is_extern || fn.holed {
 				continue
 			}
-			append(&units, Gate_Unit{name = fn.name, line = fn.line, body = fn.body})
+			append(&units, Gate_Unit{name = fn.name, line = fn.line, body = fn.body, dup_exempt = is_const_accessor(fn)})
 		case .Query:
 			// A query body is a code unit like a fn body — the §01 P5 no-per-site-
 			// waiver rule holds it to the same fixed budgets. The grammar admits no
@@ -106,6 +115,30 @@ gate_units :: proc(ast: Ast) -> []Gate_Unit {
 		}
 	}
 	return units[:]
+}
+
+// is_const_accessor reports whether a fn is a pure constant accessor — zero
+// parameters and a body of exactly one `return <scalar literal>`. Such a fn is the
+// constant-accessor idiom (`fn map_h() -> Int { return 24 }`), semantically a named
+// constant; the duplication gate exempts it (Gate_Unit.dup_exempt) so two
+// distinctly-named accessors that coincide in value do not read as a copy-paste
+// duplicate, matching the module-level `let` constant's existing exemption (a `let`
+// is never a gate unit). An Int/Fixed/String literal is the constant form; anything
+// richer (a call, a name, a record, an operator) is a real body the gate keeps
+// scoring, so the exemption cannot launder away genuine duplication.
+is_const_accessor :: proc(fn: Fn_Node) -> bool {
+	if len(fn.params) != 0 || len(fn.body) != 1 {
+		return false
+	}
+	ret, is_return := fn.body[0].(Return_Node)
+	if !is_return {
+		return false
+	}
+	#partial switch _ in ret.value {
+	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr:
+		return true
+	}
+	return false
 }
 
 // release_holed_decl returns the first §05 typed-hole declaration in one AST —
@@ -1135,6 +1168,12 @@ gate_duplication :: proc(units: []Gate_Unit) -> (err: Gate_Error, name: string, 
 	// is the index field; the gate never trusts it for identity.
 	seen := make(map[string]int, context.temp_allocator)
 	for unit in units {
+		// A constant-accessor fn is a named constant exempt from this gate exactly
+		// as the `let` it stands in for — two distinctly-named accessors coinciding
+		// in value are independent knobs, not a copy-paste duplicate (is_const_accessor).
+		if unit.dup_exempt {
+			continue
+		}
 		key := dup_canon(unit.body)
 		seen[key] += 1
 		if seen[key] > MAX_DUPLICATE_UNITS {

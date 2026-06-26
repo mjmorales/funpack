@@ -594,7 +594,10 @@ test_arm_coverage_gate :: proc(t: ^testing.T) {
 		{strings.to_string(fn_size), "Fn_Size_Exceeded"},
 		{"fn build() -> Int {\n  let f = fn(a, b, c, d, e, g) { return a }\n  return 1\n}\n", "Arity_Exceeded"},
 		{"enum Side { Left, Right }\nfn pick(s: Side) -> Int {\n  return match s {\n    Side::Left => 1,\n  }\n}\n", "Non_Exhaustive_Match"},
-		{"fn a() -> Int {\n  return 1\n}\nfn b() -> Int {\n  return 1\n}\n", "Duplicate_Declaration"},
+		// Two PARAMETERIZED fns with an identical non-trivial body — a real copy-paste
+		// duplicate. (A zero-arg `return <literal>` accessor is the exempt
+		// constant-accessor form, gates.odin is_const_accessor, so it would NOT fire.)
+		{"fn a(x: Int) -> Int {\n  return x + 1\n}\nfn b(x: Int) -> Int {\n  return x + 1\n}\n", "Duplicate_Declaration"},
 		{"query enemies_near(origin: Vec2, r: Fixed) -> [Enemy] {\n  return within(all[Enemy], origin, r)\n}\n", "Query_Missing_Index"},
 		{"@spatial(Enemy.cell)\nquery enemy_count() -> Int {\n  return fold(all[Enemy], 0, fn(acc, e) { return acc + 1 })\n}\n", "Query_Unused_Index"},
 		{"@break(true)\ndata D { x: Int }\n", "Probe_Wrong_Placement"},

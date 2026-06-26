@@ -823,6 +823,39 @@ test_gate_duplication_distinct_blocks_clear :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.failed, 0)
 }
 
+@(test)
+test_gate_duplication_const_accessors_exempt :: proc(t: ^testing.T) {
+	// Two distinctly-named zero-arg constant accessors that return the SAME literal
+	// are independent knobs, not a copy-paste duplicate — exempt from the dup gate
+	// exactly as the module-level `let` constants they stand in for (a `let` is never
+	// a gate unit). The gate clears and the pipeline runs the test: the case where
+	// map_h() and hud_h() both `return 24` should compile, not trip
+	// Duplicate_Declaration.
+	source := with_golden_imports(
+		"fn map_h() -> Int { return 24 }\n" +
+		"fn hud_h() -> Int { return 24 }\n" +
+		"test \"knobs\" {\n" +
+		"  assert map_h() + hud_h() == 48\n" +
+		"}\n")
+	report, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 1)
+	testing.expect_value(t, report.failed, 0)
+}
+
+@(test)
+test_gate_duplication_param_fns_same_body_still_fire :: proc(t: ^testing.T) {
+	// The exemption is NARROW: it covers only a zero-arg single-`return`-of-literal
+	// accessor. Two fns that take parameters and share a non-trivial body are a real
+	// copy-paste duplicate and STILL fire — the exemption cannot launder away
+	// genuine duplication (the boundary opposite the const-accessor fixture).
+	source := with_golden_imports(
+		"fn area_a(w: Int, h: Int) -> Int { return w * h + 1 }\n" +
+		"fn area_b(w: Int, h: Int) -> Int { return w * h + 1 }\n")
+	_, err := run_test_pipeline(source)
+	testing.expect_value(t, err, Pipeline_Error.Gate_Failed)
+}
+
 // test_block_body lexes + parses a single test block and returns its
 // statement body — the dup_class unit — so a gate-walk test can drive
 // canon/dup_class over a body containing a tuple expression directly.
