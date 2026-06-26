@@ -77,14 +77,14 @@ Tileset_Tile :: struct {
 // exactly one resolved dependency hash; a count mismatch means the caller
 // resolved the wrong inputs for this source — a malformed bake graph, not a
 // tolerated state (the import_atlas discipline).
-import_tileset :: proc(src: string, dep_hashes: []string) -> (asset: Tileset_Asset, err: Importer_Error) {
+import_tileset :: proc(src: string, dep_hashes: []string, allocator := context.temp_allocator) -> (asset: Tileset_Asset, err: Importer_Error) {
 	p := Tiles_Parser{tokens = lex_tiles(src)}
 	asset = tiles_parse(&p) or_return
 	if len(dep_hashes) != 1 {
 		return Tileset_Asset{}, .Malformed_Source
 	}
 	asset.atlas_dep = dep_hashes[0]
-	asset.hash = asset_content_hash(transmute([]byte)src, TILES_IMPORTER_VERSION, dep_hashes)
+	asset.hash = asset_content_hash(transmute([]byte)src, TILES_IMPORTER_VERSION, dep_hashes, allocator)
 	return asset, .None
 }
 

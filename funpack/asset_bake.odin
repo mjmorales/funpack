@@ -159,13 +159,13 @@ bake_asset_manifest :: proc(root: string, allocator := context.allocator) -> (ba
 
 		switch entry.kind {
 		case .Model:
-			model, e := import_model(string(source_bytes))
+			model, e := import_model(string(source_bytes), context.temp_allocator)
 			if e != .None {
 				return Baked_Manifest{}, .Malformed_Source, source_path
 			}
 			append(&resolved, baked_node(entry.name, .Model, entry.source, MODEL_IMPORTER_VERSION, nil, model.hash, allocator))
 		case .Audio:
-			audio, e := import_audio(source_bytes)
+			audio, e := import_audio(source_bytes, context.temp_allocator)
 			if e != .None {
 				return Baked_Manifest{}, .Malformed_Source, source_path
 			}
@@ -204,30 +204,21 @@ bake_asset_manifest :: proc(root: string, allocator := context.allocator) -> (ba
 // bake_resolve_image reads a raw image source off the §14 tree and content-hashes
 // it through import_image (§1: a raw file imports to a decoded buffer; the hash is
 // its identity). A missing file is Missing_Image (fail-closed — a referenced PNG
-// must exist on disk), a non-decodable input is Malformed_Image. The decoded
-// buffer is dropped — the bake needs only the §2 hash here; the atlas-slice stage
-// reads pixels — so the import runs in temp memory and only the hash survives.
+// must exist on disk), a non-decodable input is Malformed_Image. The bake needs only
+// the §2 hash at this node (the atlas-slice stage is what reads pixels), so the
+// import runs on the caller's `allocator` (temp for the manifest bake) and only the
+// hash is kept: import_image puts the hash AND pixels on `allocator`, so the hash
+// needs no clone-out, and the pixels are reclaimed with the allocator (nil'd here).
 bake_resolve_image :: proc(root: string, source: string, allocator := context.allocator) -> (asset: Image_Asset, err: Asset_Bake_Error, detail: string) {
 	image_path, _ := filepath.join({root, "assets", source}, context.temp_allocator)
 	image_bytes, read_err := os.read_entire_file_from_path(image_path, context.temp_allocator)
 	if read_err != nil {
 		return Image_Asset{}, .Missing_Image, image_path
 	}
-	// Decode through the HEAP allocator, not temp: import_image runs png.destroy
-	// to free the decoder's owned buffers, and the temp allocator does not
-	// support individual frees (a temp-allocated decode is a "bad free" abort in
-	// the binary). The decoded pixels are reclaimed here — the bake needs only
-	// the §2 hash at this node (the atlas-slice stage is what reads pixels) — so
-	// the heap copy is freed after the hash is cloned out.
-	imported, import_err := import_image(image_bytes, context.allocator)
+	imported, import_err := import_image(image_bytes, allocator)
 	if import_err != .None {
 		return Image_Asset{}, .Malformed_Image, image_path
 	}
-	// Only the hash outlives this scope: clone it into the caller's allocator,
-	// then free the heap decode buffer the bake does not need at this node (the
-	// atlas-slice stage is what reads pixels).
-	imported.hash = strings.clone(imported.hash, allocator)
-	delete(imported.pixels)
 	imported.pixels = nil
 	return imported, .None, ""
 }
@@ -261,15 +252,15 @@ bake_resolve_atlas :: proc(root: string, atlas_name: string, src: string, alloca
 	// `<name>@<hash>` shape the committed manifest's deps use and the tileset's
 	// atlas dep mirrors.
 	image_dep := asset_dep_string(image_source, image_asset.hash, allocator)
-	imported_atlas, atlas_import_err := import_atlas(src, []string{image_dep})
+	imported_atlas, atlas_import_err := import_atlas(src, []string{image_dep}, allocator)
 	if atlas_import_err != .None {
 		return Atlas_Asset{}, Baked_Asset{}, .Malformed_Source, atlas_name
 	}
-	// import_atlas records the dep string and hash in the temp allocator
-	// (import_atlas's callers pass temp); clone the strings the node keeps into
-	// the caller's allocator so the baked node outlives the parse scratch.
-	imported_atlas.image_dep = strings.clone(image_dep, allocator)
-	imported_atlas.hash = strings.clone(imported_atlas.hash, allocator)
+	// import_atlas content-hashes onto `allocator`, so imported_atlas.hash already
+	// rides the caller's allocator (no clone-out). image_dep is the `<name>@<hash>`
+	// string this proc built on `allocator` and handed in, which import_atlas stored
+	// by reference — so it too already rides `allocator`. Both outlive the parse
+	// scratch without a re-clone.
 
 	node := baked_image_node(image_source, image_source, image_asset.hash, allocator)
 	return imported_atlas, node, .None, ""
@@ -300,12 +291,14 @@ bake_resolve_tileset :: proc(resolved: []Baked_Asset, tileset_name: string, src:
 	}
 
 	atlas_dep := asset_dep_string(atlas_name, atlas_node.hash, allocator)
-	imported_tileset, tileset_err := import_tileset(src, []string{atlas_dep})
+	imported_tileset, tileset_err := import_tileset(src, []string{atlas_dep}, allocator)
 	if tileset_err != .None {
 		return Baked_Asset{}, .Malformed_Source, tileset_name
 	}
 
-	return baked_node(tileset_name, .Tileset, "", TILES_IMPORTER_VERSION, []string{strings.clone(atlas_dep, allocator)}, strings.clone(imported_tileset.hash, allocator), allocator), .None, ""
+	// baked_node clones every string (deps + hash) onto `allocator`, so atlas_dep and
+	// the tileset hash are handed in raw — no redundant pre-clone before the node clone.
+	return baked_node(tileset_name, .Tileset, "", TILES_IMPORTER_VERSION, []string{atlas_dep}, imported_tileset.hash, allocator), .None, ""
 }
 
 // bake_find_node resolves a registered name against the already-baked nodes,
@@ -473,7 +466,7 @@ bake_tileset_assets :: proc(root: string, baked: Baked_Manifest, allocator := co
 		// asset.deps already carries the resolved `<atlas>@<real-hash>` string the
 		// bake folded — import the tileset against exactly that, so its content
 		// hash matches the manifest's emitted hash.
-		tileset, import_err := import_tileset(string(source_bytes), asset.deps)
+		tileset, import_err := import_tileset(string(source_bytes), asset.deps, context.temp_allocator)
 		if import_err != .None {
 			return nil, false
 		}

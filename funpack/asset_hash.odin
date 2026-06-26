@@ -31,7 +31,22 @@ HASH_PREFIX :: "sha256:"
 // are unambiguous. Determinism: identical inputs always produce the
 // identical string. Order sensitivity: reordering dep_hashes changes the
 // canonical byte stream and therefore the hash.
-asset_content_hash :: proc(source_bytes: []byte, importer_version: string, dep_hashes: []string) -> string {
+//
+// The result string is allocated on `allocator` — an EXPLICIT, overridable
+// lifetime choice (a hardcoded allocator would force every persistent caller to
+// clone the hash out of scratch). It defaults to
+// context.temp_allocator (the subsystem's scratch-by-default convention: a hash
+// is computed during a temp-scoped bake and cloned into persistent storage by
+// baked_node), so a transient caller passes nothing; a PERSISTENT caller (the
+// emit-side image bake) passes its own allocator and the hash needs no clone-out.
+// Only the returned string rides `allocator`; the intermediate hex digest is
+// scratch on the temp allocator.
+asset_content_hash :: proc(
+	source_bytes: []byte,
+	importer_version: string,
+	dep_hashes: []string,
+	allocator := context.temp_allocator,
+) -> string {
 	ctx: sha2.Context_256
 	sha2.init_256(&ctx)
 
@@ -51,7 +66,7 @@ asset_content_hash :: proc(source_bytes: []byte, importer_version: string, dep_h
 	digest: [32]byte
 	sha2.final(&ctx, digest[:])
 	hex_digest := hex.encode(digest[:], context.temp_allocator)
-	return strings.concatenate({HASH_PREFIX, string(hex_digest)}, context.temp_allocator)
+	return strings.concatenate({HASH_PREFIX, string(hex_digest)}, allocator)
 }
 
 // hash_field folds one variable-length field into the digest, prefixed with

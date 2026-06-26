@@ -829,7 +829,7 @@ read_tree_tilesets :: proc(root: string) -> (tilesets: []Tileset_Asset, ok: bool
 		if source_err != nil {
 			return nil, false
 		}
-		tileset, import_err := import_tileset(string(source_bytes), entry.deps)
+		tileset, import_err := import_tileset(string(source_bytes), entry.deps, context.temp_allocator)
 		if import_err != .None {
 			return nil, false
 		}

@@ -141,33 +141,28 @@ bake_atlas_assets :: proc(root: string, handle_name: string, atlas_source: strin
 
 // bake_resolve_image_pixels reads a raw image off the §14 tree and decodes it to
 // the canonical RGBA8 buffer the [assets] section carries — the pixel-PRESERVING
-// twin of bake_resolve_image (asset_bake.odin), which frees the buffer because the
+// twin of bake_resolve_image (asset_bake.odin), which drops the buffer because the
 // manifest needs only the hash. A missing file is Missing_Image (fail-closed), a
-// non-decodable input Malformed_Image. import_image decodes through the heap
-// allocator (it runs png.destroy, which the temp allocator's individual-free gap
-// cannot serve); the hash, dims, and pixels are cloned into the caller's allocator
-// so the Baked_Image outlives the decode scratch.
+// non-decodable input Malformed_Image. import_image puts the hash AND pixels on the
+// caller's `allocator` (decoding on its own heap scratch, freed internally), so the
+// Baked_Image takes them DIRECTLY — no second RGBA8 copy, no hash clone, no decode
+// buffer to free here.
 bake_resolve_image_pixels :: proc(root: string, source: string, allocator := context.allocator) -> (image: Baked_Image, err: Asset_Bake_Error, detail: string) {
 	image_path, _ := filepath.join({root, "assets", source}, context.temp_allocator)
 	image_bytes, read_err := os.read_entire_file_from_path(image_path, context.temp_allocator)
 	if read_err != nil {
 		return Baked_Image{}, .Missing_Image, image_path
 	}
-	imported, import_err := import_image(image_bytes, context.allocator)
+	imported, import_err := import_image(image_bytes, allocator)
 	if import_err != .None {
 		return Baked_Image{}, .Malformed_Image, image_path
 	}
-	// import_image allocated pixels on the heap; clone the buffer + hash into the
-	// caller's allocator, then free the decode's heap copy so nothing leaks.
-	pixels := make([]byte, len(imported.pixels), allocator)
-	copy(pixels, imported.pixels)
 	result := Baked_Image {
-		hash   = strings.clone(imported.hash, allocator),
+		hash   = imported.hash,
 		width  = imported.width,
 		height = imported.height,
-		pixels = pixels,
+		pixels = imported.pixels,
 	}
-	delete(imported.pixels)
 	return result, .None, ""
 }
 

@@ -126,10 +126,10 @@ Model_Param :: struct {
 // source bytes, the model importer version, and (for a model) an empty
 // dependency list — a model has no input assets (§4), so its hash depends only
 // on its own source and the importer version.
-import_model :: proc(src: string) -> (asset: Model_Asset, err: Importer_Error) {
+import_model :: proc(src: string, allocator := context.temp_allocator) -> (asset: Model_Asset, err: Importer_Error) {
 	p := Fpm_Parser{tokens = fpm_lex(src)}
 	asset = fpm_import_model_block(&p) or_return
-	asset.hash = asset_content_hash(transmute([]byte)src, MODEL_IMPORTER_VERSION, nil)
+	asset.hash = asset_content_hash(transmute([]byte)src, MODEL_IMPORTER_VERSION, nil, allocator)
 	return asset, .None
 }
 
@@ -368,7 +368,7 @@ Atlas_Clip :: struct {
 // content hash. The image filename declared in the source must be the single
 // dependency the caller resolved; an empty dep list with a declared image, or a
 // mismatch in count, is malformed.
-import_atlas :: proc(src: string, dep_hashes: []string) -> (asset: Atlas_Asset, err: Importer_Error) {
+import_atlas :: proc(src: string, dep_hashes: []string, allocator := context.temp_allocator) -> (asset: Atlas_Asset, err: Importer_Error) {
 	p := Atlas_Parser{tokens = lex_atlas(src)}
 	asset = atlas_parse(&p) or_return
 	// An atlas declares exactly one image, so it carries exactly one resolved
@@ -378,7 +378,7 @@ import_atlas :: proc(src: string, dep_hashes: []string) -> (asset: Atlas_Asset, 
 		return Atlas_Asset{}, .Malformed_Source
 	}
 	asset.image_dep = dep_hashes[0]
-	asset.hash = asset_content_hash(transmute([]byte)src, ATLAS_IMPORTER_VERSION, dep_hashes)
+	asset.hash = asset_content_hash(transmute([]byte)src, ATLAS_IMPORTER_VERSION, dep_hashes, allocator)
 	return asset, .None
 }
 
@@ -503,22 +503,28 @@ Imported_Asset :: union {
 // tileset paths parse the bytes as their DSL text. Because Asset_Kind is
 // closed, adding a kind without an arm here fails the build — the dispatch can
 // never silently drop an asset.
-import_asset :: proc(kind: Asset_Kind, src: []byte, dep_hashes: []string) -> (asset: Imported_Asset, err: Importer_Error) {
+//
+// `allocator` governs every arm's output content hash; the .Image arm's payload
+// is ASYMMETRIC — only it carries a decoded pixel buffer, and those pixels are
+// likewise CALLER-OWNED on `allocator` (the other arms' Imported_Asset variants
+// are hash-only). The caller frees/reclaims the .Image pixels through the same
+// allocator it passed.
+import_asset :: proc(kind: Asset_Kind, src: []byte, dep_hashes: []string, allocator := context.temp_allocator) -> (asset: Imported_Asset, err: Importer_Error) {
 	switch kind {
 	case .Model:
-		model := import_model(string(src)) or_return
+		model := import_model(string(src), allocator) or_return
 		return model, .None
 	case .Atlas:
-		atlas := import_atlas(string(src), dep_hashes) or_return
+		atlas := import_atlas(string(src), dep_hashes, allocator) or_return
 		return atlas, .None
 	case .Audio:
-		audio := import_audio(src) or_return
+		audio := import_audio(src, allocator) or_return
 		return audio, .None
 	case .Tileset:
-		tileset := import_tileset(string(src), dep_hashes) or_return
+		tileset := import_tileset(string(src), dep_hashes, allocator) or_return
 		return tileset, .None
 	case .Image:
-		image := import_image(src) or_return
+		image := import_image(src, allocator) or_return
 		return image, .None
 	}
 	return nil, .Malformed_Source
@@ -538,8 +544,8 @@ Audio_Asset :: struct {
 // folds the raw bytes and the audio importer version. Always succeeds (raw
 // bytes have no grammar to violate), so the error arm exists only for the
 // uniform Importer signature.
-import_audio :: proc(bytes: []byte) -> (asset: Audio_Asset, err: Importer_Error) {
-	asset.hash = asset_content_hash(bytes, AUDIO_IMPORTER_VERSION, nil)
+import_audio :: proc(bytes: []byte, allocator := context.temp_allocator) -> (asset: Audio_Asset, err: Importer_Error) {
+	asset.hash = asset_content_hash(bytes, AUDIO_IMPORTER_VERSION, nil, allocator)
 	return asset, .None
 }
 
@@ -576,17 +582,26 @@ Image_Asset :: struct {
 // importer). The decoded pixel bytes are copied out of the image's owned
 // bytes.Buffer into the asset's own slice before the image is destroyed, so
 // the asset outlives the decoder's allocation.
-import_image :: proc(bytes_in: []byte, allocator := context.allocator) -> (asset: Image_Asset, err: Importer_Error) {
-	asset.hash = asset_content_hash(bytes_in, IMAGE_IMPORTER_VERSION, nil)
-	img, decode_err := png.load_from_bytes(bytes_in, png.Options{.alpha_add_if_missing}, allocator)
+//
+// `allocator` governs the OUTPUTS — both the content hash AND the pixel buffer
+// ride it, so the two share one caller-chosen lifetime; it defaults to temp
+// scratch and a PERSISTENT caller (the emit image bake) passes its own. It is
+// decoupled from the DECODE SCRATCH: png.load_from_bytes/png.destroy run on
+// context.allocator (the ambient heap), which supports the individual frees
+// png.destroy needs and an arena/temp output allocator may not. png.destroy is
+// deferred BEFORE the decode-error check so a malformed PNG (which still leaves
+// a partial decoder allocation) is freed too, not just the success path. The one
+// unavoidable copy lifts the decoded bytes out of the decoder-owned buffer into
+// the asset's own slice on `allocator`; .pixels are CALLER-OWNED there.
+import_image :: proc(bytes_in: []byte, allocator := context.temp_allocator) -> (asset: Image_Asset, err: Importer_Error) {
+	asset.hash = asset_content_hash(bytes_in, IMAGE_IMPORTER_VERSION, nil, allocator)
+	img, decode_err := png.load_from_bytes(bytes_in, png.Options{.alpha_add_if_missing}, context.allocator)
+	defer png.destroy(img)
 	if decode_err != nil {
 		return Image_Asset{}, .Malformed_Image
 	}
-	defer png.destroy(img)
 	asset.width = img.width
 	asset.height = img.height
-	// Copy the decoded pixels out of the decoder-owned bytes.Buffer into the
-	// asset's own slice so the asset outlives the png.destroy below.
 	decoded := bytes.buffer_to_bytes(&img.pixels)
 	pixels := make([]byte, len(decoded), allocator)
 	copy(pixels, decoded)
