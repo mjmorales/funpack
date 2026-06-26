@@ -16,6 +16,16 @@
 // exactly (spec §25 / §60), the same way the §10.5 transcendental kernels
 // are bit-reproducible.
 //
+// PROVENANCE — this kernel is a DELIBERATE COPY of funpack/rand.odin (the
+// canonical side), NOT a shared import. runtime/** and funpack/** are separate
+// products (spec §29, §09); the artifact file is the only sanctioned coupling, so
+// runtime/** must never link compiler internals. The two kernels carry a bit-identity
+// OBLIGATION over the shared draw surface — the same draw sequence for every seed —
+// enforced by the golden stream both rand_test suites assert. Any change to a mirrored
+// proc in funpack/rand.odin must be mirrored byte-for-byte here. rand_pick (the generic
+// list draw) is runtime-LOCAL: the compiler evaluates pick through eval_rand_pick, so
+// the generic has no .fun-surface twin and sits outside the mirrored obligation.
+//
 // THREADING (spec §04 §1). Rng is THREADED: every draw returns
 // (value, next_rng) and is never silently advanced — the caller must
 // carry the returned Rng forward. There is no in-place mutation surface;

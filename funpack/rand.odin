@@ -12,20 +12,21 @@
 // never Fixed and never floating-point, so two Rng values from the same
 // seed produce bit-identical draw sequences and a different seed diverges.
 //
-// PROVENANCE — this kernel is a DELIBERATE COPY of runtime/rand.odin, NOT
-// a shared import (the same kernel-copy-not-link obligation funpack/trig.odin
-// carries against runtime/trig.odin). funpack/** (the compiler, which
-// evaluates draws for `funpack test`) and runtime/** (gameplay execution)
-// are separate products (spec §29, §09); the artifact file is the only
-// sanctioned coupling, so neither links the other's internals. The two
-// kernels carry a bit-identity OBLIGATION to each other — the same draw
-// sequence for every seed — the dual-interpreter parity bet (a surface
-// wired into only one evaluator silently drops the step in the other).
-// Any change here must be mirrored byte-for-byte in runtime/rand.odin (and
-// the golden stream re-asserted in both) or the products diverge. The only
-// delta from the runtime original is this package line, this provenance
-// note, and the compiler's own Fixed type (an identical Q32.32 distinct
-// i64, FIXED_FRACTION_BITS == 32, so the masks below are bit-identical).
+// PROVENANCE — this is the CANONICAL kernel; runtime/rand.odin is its
+// DELIBERATE COPY, NOT a shared import (the same kernel-copy-not-link obligation
+// funpack/trig.odin carries against runtime/trig.odin, and in the same canonical
+// direction: funpack is the original, runtime mirrors it). funpack/** (the
+// compiler, which evaluates draws for `funpack test`) and runtime/** (gameplay
+// execution) are separate products (spec §29, §09); the artifact file is the only
+// sanctioned coupling, so neither links the other's internals. The two kernels
+// carry a bit-identity OBLIGATION to each other — the same draw sequence for every
+// seed — the dual-interpreter parity bet (a surface wired into only one evaluator
+// silently drops the step in the other). Any change to a mirrored proc here must be
+// mirrored byte-for-byte in runtime/rand.odin (and the golden stream re-asserted in
+// both) or the products diverge. The runtime copy's only deltas are its package
+// line, its provenance note, the Fixed-type home, and a runtime-LOCAL generic
+// rand_pick (the compiler evaluates pick through eval_rand_pick instead, so the
+// generic is outside the mirrored obligation).
 //
 // THREADING (spec §04 §1). Rng is THREADED: every draw returns
 // (value, next_rng) and is never silently advanced — the caller must

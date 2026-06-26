@@ -6,15 +6,17 @@
 // round toward zero over i128 intermediates. All-integer arithmetic —
 // no float anywhere, so the bits are identical on every machine.
 //
-// PROVENANCE — this kernel is a DELIBERATE COPY of funpack/fixed.odin,
-// NOT a shared import. runtime/** and funpack/** are separate products
-// (spec §29, §09); the artifact file is the only sanctioned coupling, so
+// PROVENANCE — this kernel is a DELIBERATE COPY of funpack/fixed.odin (the
+// canonical side), NOT a shared import. runtime/** and funpack/** are separate
+// products (spec §29, §09); the artifact file is the only sanctioned coupling, so
 // runtime/** must never link compiler internals. The two kernels carry a
-// bit-identity OBLIGATION to each other, enforced by the SHARED GOLDEN
-// (input → exact bits) table both fixed_test.odin suites assert — the
-// audit root the determinism thesis rests on (spec §10.5). Any change
-// here must be mirrored byte-for-byte in funpack/fixed.odin (and the
-// golden vectors re-asserted in both) or the products diverge.
+// bit-identity OBLIGATION over their shared arithmetic surface, enforced by the
+// SHARED GOLDEN (input → exact bits) table both fixed_test.odin suites assert — the
+// audit root the determinism thesis rests on (spec §10.5). Any change to a mirrored
+// proc in funpack/fixed.odin must be mirrored byte-for-byte here (and the golden
+// vectors re-asserted in both) or the products diverge. fixed_ceil and
+// fixed_checked_rem are runtime-LOCAL helpers (no .fun-surface twin), outside the
+// mirrored obligation and absent from funpack/fixed.odin by design.
 package funpack_runtime
 
 Fixed :: distinct i64
@@ -212,6 +214,16 @@ fixed_clamp :: proc(x, lo, hi: Fixed) -> Fixed {
 		return hi
 	}
 	return x
+}
+
+// fixed_abs is the saturating magnitude — negating through fixed_neg so the
+// MIN rail maps to MAX rather than wrapping (spec §10: every operation is
+// total and saturating).
+fixed_abs :: proc(f: Fixed) -> Fixed {
+	if f < 0 {
+		return fixed_neg(f)
+	}
+	return f
 }
 
 // fixed_lerp is ordinary funpack over the saturating kernel:

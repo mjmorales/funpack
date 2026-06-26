@@ -732,13 +732,3 @@ token_case :: proc(token: string) -> string {
 	}
 	return token
 }
-
-// fixed_abs is the absolute value over the saturating kernel: fixed_neg on a
-// negative (which saturates FIXED_MIN to FIXED_MAX), the value itself otherwise.
-// No float — the magnitude an overlap/penetration test reads.
-fixed_abs :: proc(f: Fixed) -> Fixed {
-	if f < 0 {
-		return fixed_neg(f)
-	}
-	return f
-}

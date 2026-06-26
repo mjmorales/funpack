@@ -5,6 +5,16 @@
 // (+x/0 → MAX, −x/0 → MIN, 0/0 → 0, x%0 → 0), and multiply/divide
 // round toward zero over i128 intermediates. All-integer arithmetic —
 // no float anywhere, so the bits are identical on every machine.
+//
+// PROVENANCE — this is the CANONICAL kernel; runtime/fixed.odin is its
+// DELIBERATE COPY (not a shared import: spec §29/§09 keep runtime/** and
+// funpack/** separate products, coupled only through the artifact file).
+// The two kernels carry a bit-identity OBLIGATION over their shared
+// arithmetic surface, enforced by the SHARED GOLDEN (input → exact bits)
+// table both fixed_test.odin suites assert (spec §10.5). Any change to a
+// mirrored proc here must be mirrored byte-for-byte into runtime/fixed.odin.
+// The runtime copy additionally carries fixed_ceil and fixed_checked_rem —
+// runtime-local helpers outside the mirrored surface, not present here.
 package funpack
 
 Fixed :: distinct i64

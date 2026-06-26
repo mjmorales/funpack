@@ -4,6 +4,17 @@
 // operators; rotation composes through quat_mul, which renormalizes
 // its result so a composed orientation stays unit (exact on the
 // identity, where the norm is exactly 1.0 and the scale divides out).
+//
+// PROVENANCE — this is the CANONICAL source of the Vec3/Quat surface;
+// runtime/vector3.odin is its DELIBERATE COPY (not a shared import: spec
+// §29/§09 keep runtime/** and funpack/** separate products). The two carry a
+// bit-identity OBLIGATION over the shared 3D surface (same Q32.32 bits for
+// every pose transform). Any change to a mirrored proc here must be mirrored
+// byte-for-byte into runtime/vector3.odin. SOURCING DELTA: this file also
+// declares Vec2_Value and FIXED_ONE and names the quaternion Quat_Value; the
+// runtime copy is 3D-only — it DROPS Vec2_Value/FIXED_ONE (already pinned in
+// runtime/fixed.odin) and names the quaternion Quat. These are deliberate,
+// documented divergences, not drift.
 package funpack
 
 Vec2_Value :: struct {
