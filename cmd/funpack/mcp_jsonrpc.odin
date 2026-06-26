@@ -22,7 +22,7 @@ import funpack_runtime "../../runtime"
 MCP_JSONRPC_PARSE_ERROR :: -32700      // invalid JSON was received
 MCP_JSONRPC_INVALID_REQUEST :: -32600  // the payload is not a valid request object
 MCP_JSONRPC_METHOD_NOT_FOUND :: -32601 // the method does not exist
-MCP_JSONRPC_INVALID_PARAMS :: -32602   // invalid method parameters
+MCP_JSONRPC_INVALID_PARAMS :: -32602   // invalid method parameters — intentionally unused: a domain-level bad arg rides the IsError tools/call result (mcp_error.odin), never a protocol fault
 MCP_JSONRPC_INTERNAL_ERROR :: -32603   // an internal JSON-RPC error
 
 // JSONRPC_VERSION is the fixed protocol tag every request and response stamps as
@@ -59,19 +59,22 @@ Mcp_Request :: struct {
 	is_notification: bool,
 }
 
-// mcp_parse_request parses one JSON-RPC line into an Mcp_Request, returning ok=false
-// for a line that is not a valid request envelope (malformed JSON, not an object, or
-// a missing/non-string method). The caller renders the parse failure as a JSON-RPC
-// error response — the fold never panics on wire input (the §28 contract). The id is
-// recovered when present even on a method error, so the error response can echo it.
-mcp_parse_request :: proc(line: string, allocator := context.allocator) -> (request: Mcp_Request, ok: bool) {
+// mcp_parse_request parses one JSON-RPC line into an Mcp_Request. `ok` is false for a
+// line that is not a valid request envelope; `json_ok` separates the two JSON-RPC fault
+// classes the spec codes distinctly: json_ok=false is unparseable JSON (→ PARSE_ERROR
+// -32700), json_ok=true with ok=false is well-formed JSON that is not a valid Request —
+// a non-object or a missing/non-string method (→ INVALID_REQUEST -32600). The caller
+// renders the right error response; the fold never panics on wire input (the §28
+// contract). The id is recovered when present even on a method error, so the error
+// response can echo it.
+mcp_parse_request :: proc(line: string, allocator := context.allocator) -> (request: Mcp_Request, ok: bool, json_ok: bool) {
 	parsed, parse_err := json.parse(transmute([]u8)line, json.DEFAULT_SPECIFICATION, true, allocator)
 	if parse_err != .None {
-		return {}, false
+		return {}, false, false
 	}
 	object, is_object := parsed.(json.Object)
 	if !is_object {
-		return {}, false
+		return {}, false, true
 	}
 
 	request.id = mcp_parse_id(object)
@@ -81,7 +84,7 @@ mcp_parse_request :: proc(line: string, allocator := context.allocator) -> (requ
 	method_string, method_is_string := method.(json.String)
 	if !has_method || !method_is_string {
 		// A recoverable id is still returned so the caller can echo it on the error.
-		return request, false
+		return request, false, true
 	}
 	request.method = string(method_string)
 
@@ -90,7 +93,7 @@ mcp_parse_request :: proc(line: string, allocator := context.allocator) -> (requ
 			request.params = params_object
 		}
 	}
-	return request, true
+	return request, true, true
 }
 
 // mcp_parse_id reads the JSON-RPC id off a request object in whichever form it took

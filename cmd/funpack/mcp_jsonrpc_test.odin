@@ -15,7 +15,7 @@ import "core:testing"
 @(test)
 test_mcp_parse_request_fields :: proc(t: ^testing.T) {
 	line := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"build"}}`
-	request, ok := mcp_parse_request(line, context.temp_allocator)
+	request, ok, _ := mcp_parse_request(line, context.temp_allocator)
 
 	testing.expect(t, ok, "a well-formed request must parse")
 	testing.expect_value(t, request.method, "tools/call")
@@ -34,15 +34,15 @@ test_mcp_parse_request_fields :: proc(t: ^testing.T) {
 // echo it back as the SAME type. JSON-RPC 2.0 requires the response id to match.
 @(test)
 test_mcp_parse_id_forms :: proc(t: ^testing.T) {
-	int_req, _ := mcp_parse_request(`{"jsonrpc":"2.0","id":42,"method":"a"}`, context.temp_allocator)
+	int_req, _, _ := mcp_parse_request(`{"jsonrpc":"2.0","id":42,"method":"a"}`, context.temp_allocator)
 	testing.expect_value(t, int_req.id.kind, Mcp_Id_Kind.Integer)
 	testing.expect_value(t, int_req.id.integer, i64(42))
 
-	str_req, _ := mcp_parse_request(`{"jsonrpc":"2.0","id":"abc","method":"a"}`, context.temp_allocator)
+	str_req, _, _ := mcp_parse_request(`{"jsonrpc":"2.0","id":"abc","method":"a"}`, context.temp_allocator)
 	testing.expect_value(t, str_req.id.kind, Mcp_Id_Kind.String)
 	testing.expect_value(t, str_req.id.text, "abc")
 
-	notif, ok := mcp_parse_request(`{"jsonrpc":"2.0","method":"notifications/initialized"}`, context.temp_allocator)
+	notif, ok, _ := mcp_parse_request(`{"jsonrpc":"2.0","method":"notifications/initialized"}`, context.temp_allocator)
 	testing.expect(t, ok, "a notification (no id) is still a valid request envelope")
 	testing.expect_value(t, notif.id.kind, Mcp_Id_Kind.Absent)
 	testing.expect(t, notif.is_notification, "an id-less request is a notification")
@@ -51,18 +51,23 @@ test_mcp_parse_id_forms :: proc(t: ^testing.T) {
 // test_mcp_parse_request_malformed pins the refusal contract: a line that is not
 // valid JSON, a JSON value that is not an object, and a request missing its method
 // all parse ok=false — a JSON-RPC error response, never a panic (the §28 fold
-// discipline). A missing-method request still recovers its id so the error response
-// can echo it.
+// discipline). The `json_ok` flag separates the two JSON-RPC fault classes the spec
+// codes distinctly: unparseable JSON (json_ok=false → PARSE_ERROR -32700) vs
+// well-formed JSON that is not a valid Request (json_ok=true → INVALID_REQUEST
+// -32600). A missing-method request still recovers its id so the error can echo it.
 @(test)
 test_mcp_parse_request_malformed :: proc(t: ^testing.T) {
-	_, bad_json := mcp_parse_request(`{not json`, context.temp_allocator)
+	_, bad_json, json_ok := mcp_parse_request(`{not json`, context.temp_allocator)
 	testing.expect(t, !bad_json, "malformed JSON must not parse")
+	testing.expect(t, !json_ok, "unparseable JSON sets json_ok=false (→ PARSE_ERROR)")
 
-	_, not_object := mcp_parse_request(`["array","not","object"]`, context.temp_allocator)
+	_, not_object, obj_json_ok := mcp_parse_request(`["array","not","object"]`, context.temp_allocator)
 	testing.expect(t, !not_object, "a non-object JSON value is not a request")
+	testing.expect(t, obj_json_ok, "valid JSON that is not an object keeps json_ok=true (→ INVALID_REQUEST)")
 
-	missing, no_method := mcp_parse_request(`{"jsonrpc":"2.0","id":9}`, context.temp_allocator)
+	missing, no_method, miss_json_ok := mcp_parse_request(`{"jsonrpc":"2.0","id":9}`, context.temp_allocator)
 	testing.expect(t, !no_method, "a request missing its method must not parse ok")
+	testing.expect(t, miss_json_ok, "well-formed JSON missing its method keeps json_ok=true (→ INVALID_REQUEST)")
 	testing.expect_value(t, missing.id.kind, Mcp_Id_Kind.Integer)
 	testing.expect_value(t, missing.id.integer, i64(9))
 }

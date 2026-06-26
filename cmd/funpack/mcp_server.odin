@@ -25,9 +25,8 @@ import "core:strings"
 // string (test_mcp_initialize_capabilities).
 MCP_PROTOCOL_VERSION :: "2025-06-18"
 
-// MCP_SERVER_NAME / MCP_SERVER_TITLE identify this server to a client in the
-// initialize result's serverInfo. The name is the stable programmatic id the server
-// reports ("funpack-mcp").
+// MCP_SERVER_NAME identifies this server to a client in the initialize result's
+// serverInfo — the stable programmatic id the server reports ("funpack-mcp").
 MCP_SERVER_NAME :: "funpack-mcp"
 
 // run_mcp_verb is the `funpack mcp` verb core: it builds the JSON-RPC handler and
@@ -80,15 +79,19 @@ mcp_jsonrpc_handler :: proc(registry: ^Mcp_Session_Registry) -> Mcp_Line_Handler
 // fault: a JSON-RPC error response (never a panic). A notification (no id) is
 // accepted and dropped silently per the MCP contract.
 mcp_dispatch_line :: proc(registry: ^Mcp_Session_Registry, line: string, allocator := context.allocator) -> (response: string, keep_open: bool) {
-	request, ok := mcp_parse_request(line, allocator)
+	request, ok, json_ok := mcp_parse_request(line, allocator)
 	if !ok {
 		// A notification that failed to parse a method still gets no reply (the
-		// client expects none); a request envelope that is malformed or missing its
-		// method is a protocol error the caller can read on its id.
+		// client expects none); otherwise the two JSON-RPC fault classes map to their
+		// distinct reserved codes: unparseable JSON is -32700 PARSE_ERROR, well-formed
+		// JSON that is not a valid Request is -32600 INVALID_REQUEST.
 		if request.is_notification {
 			return "", true
 		}
-		return mcp_render_error(request.id, MCP_JSONRPC_INVALID_REQUEST, "invalid JSON-RPC request: malformed envelope or missing method", allocator), true
+		if !json_ok {
+			return mcp_render_error(request.id, MCP_JSONRPC_PARSE_ERROR, "parse error: line is not valid JSON", allocator), true
+		}
+		return mcp_render_error(request.id, MCP_JSONRPC_INVALID_REQUEST, "invalid JSON-RPC request: not a request object or missing method", allocator), true
 	}
 
 	// notifications/* carry no id and expect no response (notifications/initialized,
