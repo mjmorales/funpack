@@ -117,7 +117,7 @@ bake_atlas_assets :: proc(root: string, handle_name: string, atlas_source: strin
 	if image_err != .None {
 		return Baked_Atlas{}, image_err, image_detail
 	}
-	bake_dedup_image(images, image)
+	bake_dedup_image(images, image, allocator)
 
 	regions := make([]Baked_Region, len(parsed.cells), allocator)
 	for cell, i in parsed.cells {
@@ -176,10 +176,17 @@ bake_resolve_image_pixels :: proc(root: string, source: string, allocator := con
 // sharing one image hold the RGBA blob ONCE. The first registration wins (a later
 // one's pixels are byte-identical — the same bytes always decode the same — so the
 // dedup is pixel-stable); a hit frees the redundant decode buffer.
-bake_dedup_image :: proc(images: ^[dynamic]Baked_Image, image: Baked_Image) {
+bake_dedup_image :: proc(
+	images: ^[dynamic]Baked_Image,
+	image: Baked_Image,
+	allocator := context.allocator,
+) {
 	for existing in images {
 		if existing.hash == image.hash {
-			delete(image.pixels)
+			// image.pixels was cloned onto the bake `allocator` (bake_resolve_image_pixels);
+			// free it through that same allocator, not the default heap — a dedup hit on a
+			// temp-allocated bake would otherwise be a wrong-allocator free.
+			delete(image.pixels, allocator)
 			return
 		}
 	}
