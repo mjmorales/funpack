@@ -379,6 +379,12 @@ migrate_column :: proc(
 			return nil, list_refusal
 		}
 		return list, Migrate_Refusal{}
+	case Map_Value:
+		m, map_refusal := migrate_map(set, program, interp, v, allocator)
+		if map_refusal.kind != .None {
+			return nil, map_refusal
+		}
+		return m, Migrate_Refusal{}
 	case Variant_Value:
 		variant, var_refusal := migrate_variant(set, program, interp, v, allocator)
 		if var_refusal.kind != .None {
@@ -410,10 +416,42 @@ migrate_value :: proc(
 	case List_Value:
 		rec, list_refusal := migrate_list(set, program, interp, v, allocator)
 		return rec, list_refusal
+	case Map_Value:
+		m, map_refusal := migrate_map(set, program, interp, v, allocator)
+		return m, map_refusal
 	case Variant_Value:
 		return migrate_variant(set, program, interp, v, allocator)
 	}
 	return value, Migrate_Refusal{}
+}
+
+// migrate_map reshapes one Map_Value through the migration plan — each entry's key
+// AND value migrates through its data type's plan (the List element rule applied to
+// both halves of a pair), preserving insertion order. A record key whose schema
+// changed reshapes; a scalar key/value carries verbatim.
+migrate_map :: proc(
+	set: Migration_Set,
+	program: ^Program,
+	interp: ^Interp,
+	m: Map_Value,
+	allocator := context.allocator,
+) -> (
+	migrated: Map_Value,
+	refusal: Migrate_Refusal,
+) {
+	entries := make([]Map_Entry, len(m.entries), allocator)
+	for entry, i in m.entries {
+		key, key_refusal := migrate_value(set, program, interp, entry.key, allocator)
+		if key_refusal.kind != .None {
+			return {}, key_refusal
+		}
+		value, value_refusal := migrate_value(set, program, interp, entry.value, allocator)
+		if value_refusal.kind != .None {
+			return {}, value_refusal
+		}
+		entries[i] = Map_Entry{key = key, value = value}
+	}
+	return Map_Value{entries = entries}, Migrate_Refusal{}
 }
 
 // migrate_record reshapes one composite record value through its data type's

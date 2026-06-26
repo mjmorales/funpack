@@ -1395,11 +1395,30 @@ render_field_value_text :: proc(b: ^strings.Builder, value: Field_Value) {
 		render_record_text(b, v)
 	case List_Value:
 		render_list_text(b, v)
+	case Map_Value:
+		render_map_text(b, v)
 	case Variant_Value:
 		render_variant_text(b, v)
 	case String_Value:
 		fmt.sbprintf(b, "L%d:%s", len(v.text), v.text)
 	}
+}
+
+// render_map_text renders an engine.map Map column in the §28 debug projection as
+// `Map{k:v,…}` in insertion order — the deterministic order the value carries, shared
+// by the Field_Value and nested-Value renderers so a Map renders identically wherever
+// it appears.
+render_map_text :: proc(b: ^strings.Builder, m: Map_Value) {
+	strings.write_string(b, "Map{")
+	for entry, i in m.entries {
+		if i > 0 {
+			strings.write_byte(b, ',')
+		}
+		render_value_text(b, entry.key)
+		strings.write_byte(b, ':')
+		render_value_text(b, entry.value)
+	}
+	strings.write_byte(b, '}')
 }
 
 // write_vec2_decimal / write_vec3_decimal render a §10 vector with SOURCE-LITERAL
@@ -1464,18 +1483,9 @@ render_value_text :: proc(b: ^strings.Builder, value: Value) {
 		}
 		strings.write_byte(b, ')')
 	case Map_Value:
-		// An engine.map Map renders its key->value pairs in insertion order — the
-		// deterministic order the value carries, readable in a §28 trace projection.
-		strings.write_string(b, "Map{")
-		for entry, i in v.entries {
-			if i > 0 {
-				strings.write_byte(b, ',')
-			}
-			render_value_text(b, entry.key)
-			strings.write_byte(b, ':')
-			render_value_text(b, entry.value)
-		}
-		strings.write_byte(b, '}')
+		// An engine.map Map renders its key->value pairs in insertion order, the same
+		// shape a Map COLUMN renders (render_map_text) — readable in a §28 trace.
+		render_map_text(b, v)
 	case Rng:
 		fmt.sbprintf(b, "Rng(state=%d)", v.state)
 	case Transform_Value:

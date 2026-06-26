@@ -332,7 +332,7 @@ spatial_distance :: proc(origin: Field_Value, key: Field_Value) -> (distance: Fi
 			return 0, false
 		}
 		return vec3_length(vec3_sub(at, from)), true
-	case i64, Fixed, bool, string, Ref, Record_Value, List_Value, Variant_Value, String_Value:
+	case i64, Fixed, bool, string, Ref, Record_Value, List_Value, Map_Value, Variant_Value, String_Value:
 		return 0, false
 	}
 	return 0, false
@@ -394,6 +394,8 @@ append_field_key :: proc(buf: ^[dynamic]u8, value: Field_Value) -> bool {
 	case Record_Value:
 		return append_value_key(buf, v)
 	case List_Value:
+		return append_value_key(buf, v)
+	case Map_Value:
 		return append_value_key(buf, v)
 	case Variant_Value:
 		return append_value_key(buf, v)
@@ -458,6 +460,21 @@ append_value_key :: proc(buf: ^[dynamic]u8, value: Value) -> bool {
 				return false
 			}
 		}
+	case Map_Value:
+		// A Map column encodes order-preservingly in INSERTION order — the entry's
+		// key then value, recursively — giving the total, content-determined order
+		// the index discipline demands even where no semantic key order exists (the
+		// List arm's rule; a Map's canonical order is its insertion order). A
+		// non-keyable nested element (a transient) still fails the whole key closed.
+		append(buf, u8(Field_Tag.Map))
+		for entry in v.entries {
+			if !append_value_key(buf, entry.key) {
+				return false
+			}
+			if !append_value_key(buf, entry.value) {
+				return false
+			}
+		}
 	case Variant_Value:
 		append(buf, u8(Field_Tag.Variant))
 		append(buf, ..transmute([]u8)variant_to_token(v, context.temp_allocator))
@@ -468,7 +485,7 @@ append_value_key :: proc(buf: ^[dynamic]u8, value: Value) -> bool {
 	case String_Value:
 		append(buf, u8(Field_Tag.String))
 		append(buf, ..transmute([]u8)v.text)
-	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// Transient interpreter arms never commit as a column, so they can
 		// never key an index — the unsupported verdict, fail closed.
 		return false

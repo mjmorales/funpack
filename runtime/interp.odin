@@ -1331,6 +1331,10 @@ field_value_to_value :: proc(fv: Field_Value) -> Value {
 		return v
 	case List_Value:
 		return v
+	case Map_Value:
+		// A stored Map column lifts back to the same interp Map_Value shape (its
+		// entries are already interp Values), like List/Record.
+		return v
 	case string:
 		return variant_from_token(v)
 	case Variant_Value:
@@ -1398,7 +1402,12 @@ value_to_field_value :: proc(
 		return clone_record_value(x, allocator), true
 	case List_Value:
 		return clone_list_value(x, allocator), true
-	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
+	case Map_Value:
+		// A Map commits as a real column (a dungeon's `tiles: Map[Cell, Tile]`),
+		// deep-cloned into the tick arena so the committed row owns its entries
+		// independent of the transient eval arena — the List_Value precedent.
+		return clone_map_value(x, allocator), true
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// A Tuple is split by the tick into its halves before commit and never
 		// lands whole on a row; an Rng is THREADED (carried in Tick_State, written
 		// forward), never persisted as a column; a closure has no value identity.
@@ -1438,6 +1447,22 @@ clone_list_value :: proc(list: List_Value, allocator := context.allocator) -> Li
 	return List_Value{elements = elements}
 }
 
+// clone_map_value deep-copies a Map_Value into the supplied allocator so a committed
+// Map column outlives the transient eval arena — the associative analog of
+// clone_list_value. Each entry's key AND value is cloned recursively (a record key, a
+// variant value), preserving insertion order, so the committed `tiles: Map[Cell,
+// Tile]` carries no pointer back into the freed tick-temp arena.
+clone_map_value :: proc(m: Map_Value, allocator := context.allocator) -> Map_Value {
+	entries := make([]Map_Entry, len(m.entries), allocator)
+	for entry, i in m.entries {
+		entries[i] = Map_Entry {
+			key   = clone_column_value(entry.key, allocator),
+			value = clone_column_value(entry.value, allocator),
+		}
+	}
+	return Map_Value{entries = entries}
+}
+
 // clone_column_value deep-copies one column-shaped Value into the supplied
 // allocator. The scalar/Vec2/Ref/Bool arms copy by value; an enum Variant_Value
 // keeps its split form; a nested Record/List recurses. A non-column value
@@ -1450,9 +1475,11 @@ clone_column_value :: proc(v: Value, allocator := context.allocator) -> Value {
 		return clone_record_value(x, allocator)
 	case List_Value:
 		return clone_list_value(x, allocator)
+	case Map_Value:
+		return clone_map_value(x, allocator)
 	case Variant_Value:
 		return clone_variant_value(x, allocator)
-	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
+	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// The scalar/Vec/handle arms copy by value (a Pose's bone slice and a
 		// handle's op log live in the eval arena, the same transient lifetime as a
 		// tuple — the §16 §7 anim values are render-time, never a committed column).

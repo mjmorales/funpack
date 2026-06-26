@@ -385,7 +385,7 @@ test_draw_command_unknown_color_does_not_lower :: proc(t: ^testing.T) {
 //   (d) write_draw_cmd / frame_digest folds the sprite under Cmd_Tag.Sprite (=8): two
 //       folds identical, a one-bit field change moves the digest, and a sprite-bearing
 //       list digests differently from an empty list;
-//   (e) FRAME_DIGEST_SCHEMA_VERSION == 9.
+//   (e) FRAME_DIGEST_SCHEMA_VERSION == 11.
 @(test)
 test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -498,11 +498,12 @@ test_draw_sprite_lowering_and_digest :: proc(t: ^testing.T) {
 	testing.expect(t, len(sprite_bytes) > tag_offset)
 	testing.expect_value(t, sprite_bytes[tag_offset], u8(Cmd_Tag.Sprite))
 
-	// (e) the comparability stamp advanced to v10 (v8 appended the Sprite arm; v9
+	// (e) the comparability stamp advanced to v11 (v8 appended the Sprite arm; v9
 	// appended the resolved Sprite_Texture fields to it; v10 restructured Draw_Color
-	// to the named-or-Rgb form and folds the tint through write_color — the Sprite
-	// tag ordinal is unmoved, a named tint stays its single ordinal byte).
-	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 10)
+	// to the named-or-Rgb form and folds the tint through write_color; v11 appended the
+	// Field_Tag.Map COLUMN tag — the Sprite tag ordinal is unmoved, a named tint stays
+	// its single ordinal byte).
+	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 11)
 }
 
 // sprite_record builds the Draw::Sprite record the dungeon's draw_hero/draw_slime/

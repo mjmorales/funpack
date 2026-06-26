@@ -580,8 +580,9 @@ test_draw3_digest_deterministic :: proc(t: ^testing.T) {
 	// bytes); v10 restructured Draw_Color (named palette OR Color::Rgb) and folds
 	// it through write_color (a named color stays its single ordinal byte, an Rgb
 	// folds under the reserved sentinel) — leaving every 2D/3D/Tilemap ordinal here
-	// unmoved.
-	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 10)
+	// unmoved. v11 appended the Field_Tag.Map COLUMN tag (a stored engine.map field) —
+	// a draw-command ordinal change, so every 2D/3D/Tilemap ordinal here stays unmoved.
+	testing.expect_value(t, FRAME_DIGEST_SCHEMA_VERSION, 11)
 
 	// A 2D-only Rect draw-list still digests through the unchanged Rect=0 tag — a
 	// proxy for the committed 2D goldens staying byte-unmoved (the committed-replay tests assert the

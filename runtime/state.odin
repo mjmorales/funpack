@@ -66,6 +66,7 @@ Field_Value :: union {
 	Ref, // a weak typed handle to another row (§08 §1)
 	Record_Value, // a composite record column, e.g. snake's `head: Cell`
 	List_Value, // a `[T]` list column, e.g. snake's `body: [Cell]`
+	Map_Value, // an engine.map Map[K,V] column, e.g. a dungeon's `tiles: Map[Cell, Tile]`
 	Variant_Value, // a PAYLOAD-CARRYING variant column, e.g. Option::Some("saved")
 	String_Value, // a String column (§03 primitive; yard's status payload text)
 }

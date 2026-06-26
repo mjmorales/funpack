@@ -61,9 +61,10 @@ deep_clone_field_value :: proc(
 	switch v in fv {
 	case i64, Fixed, bool, Vec2, Vec3, Ref:
 		return fv, true
-	case string, String_Value, Record_Value, List_Value, Variant_Value:
+	case string, String_Value, Record_Value, List_Value, Map_Value, Variant_Value:
 		// The string/structural arms: lift to a Value then lower with a fresh clone, so
-		// every owned-by-clone allocation (incl. re-owned enum tags) lands on `allocator`.
+		// every owned-by-clone allocation (incl. re-owned enum tags, a Map's entries)
+		// lands on `allocator`.
 		return value_to_field_value(field_value_to_value(fv), allocator)
 	}
 	return nil, false
@@ -97,6 +98,8 @@ free_field_value :: proc(fv: Field_Value, allocator := context.allocator) {
 		free_record_value(v, allocator)
 	case List_Value:
 		free_list_value(v, allocator)
+	case Map_Value:
+		free_map_value(v, allocator)
 	case Variant_Value:
 		free_variant_value(v, allocator)
 	}
@@ -125,6 +128,18 @@ free_list_value :: proc(list: List_Value, allocator := context.allocator) {
 	delete(list.elements, allocator)
 }
 
+// free_map_value frees a committed Map_Value column's owned slice — the inverse of
+// clone_map_value: each entry's key AND value recursively (via free_column_value),
+// then the entries slice backing. Mirrors the clone exactly so a committed `tiles:
+// Map[Cell, Tile]` leaks nothing and double-frees nothing.
+free_map_value :: proc(m: Map_Value, allocator := context.allocator) {
+	for entry in m.entries {
+		free_column_value(entry.key, allocator)
+		free_column_value(entry.value, allocator)
+	}
+	delete(m.entries, allocator)
+}
+
 // free_variant_value frees a committed Variant_Value column's owned bytes — the
 // inverse of clone_variant_value: the two tag-string clones and, when present, the
 // heap-boxed payload (the `new(Value)` allocation plus the value tree inside it).
@@ -150,9 +165,13 @@ free_column_value :: proc(v: Value, allocator := context.allocator) {
 		free_record_value(x, allocator)
 	case List_Value:
 		free_list_value(x, allocator)
+	case Map_Value:
+		// A Map column owns its entries slice + the cloned keys/values
+		// (clone_map_value), so it frees recursively, the List/Record discipline.
+		free_map_value(x, allocator)
 	case Variant_Value:
 		free_variant_value(x, allocator)
-	case i64, Fixed, bool, Vec2, Vec3, Ref, String_Value, Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
+	case i64, Fixed, bool, Vec2, Vec3, Ref, String_Value, Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 		// Copied by value at clone time (clone_column_value's by-value arm) — owns no
 		// allocation in the commit allocator, so nothing to free.
 		return

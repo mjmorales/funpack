@@ -90,7 +90,16 @@ import "core:strings"
 // single `u64(0)` count and round-trips byte-inert — the common save is unchanged
 // in shape. A v5 slot fails closed under a v6 build (the exact-match stamp), so an
 // older delta-less snapshot is never mis-read as carrying terrain.
-SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(6)
+// v7 serializes the Field_Tag.Map COLUMN arm — a stored engine.map Map[K, V] field
+// (a dungeon's `tiles: Map[Cell, Tile]`) round-trips its insertion-ordered (key,
+// value) pairs through the snapshot (snap_write_map / snap_read_map), both nested via
+// the same Field_Tag stream so a Map column and a Map nested in a list/record
+// serialize identically. The codec serializes the shared Field_Tag enum, so emitting
+// a new arm IS a codec change (the v4 Vec3-arm precedent): the tag is APPENDED
+// (Map=11) so every existing tag keeps its byte, and a v6 slot fails closed under a v7
+// build per the exact-match stamp. A snapshot with no Map column is byte-inert under
+// the bump (only the version stamp advances), so a Map-free save round-trips unchanged.
+SAVE_SNAPSHOT_SCHEMA_VERSION :: u64(7)
 
 // SAVE_SNAPSHOT_MAGIC leads every snapshot so a stray byte stream (a truncated
 // file, an unrelated blob) is rejected before the version check rather than parsed
@@ -799,6 +808,9 @@ snap_write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	case List_Value:
 		append(buf, u8(Field_Tag.List))
 		snap_write_list(buf, v)
+	case Map_Value:
+		append(buf, u8(Field_Tag.Map))
+		snap_write_map(buf, v)
 	case Variant_Value:
 		// A Field_Value variant column is payload-carrying by construction (a unit
 		// variant commits as the bare-token string arm) — but a hand-built row can
@@ -889,17 +901,36 @@ snap_write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	case List_Value:
 		append(buf, u8(Field_Tag.List))
 		snap_write_list(buf, x)
+	case Map_Value:
+		// A Map nested in a record/list/payload serializes its insertion-ordered
+		// pairs, the associative twin of the List arm.
+		append(buf, u8(Field_Tag.Map))
+		snap_write_map(buf, x)
 	case String_Value:
 		// A String nested in a payload/record/list serializes its text — lumping it
 		// into the transients' tag-less no-op would CORRUPT the stream (field
 		// framing with no value bytes).
 		append(buf, u8(Field_Tag.String))
 		snap_put_string(buf, x.text)
-	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 	// A transient never lands in a committed structural column — the §16 §7 anim
 	// VALUES (Transform/Pose/handle) are render-time, composed into a [Draw3] list,
 	// never persisted. A Vec3 is NOT here: a committed Vec3 column (a thing's `pos`,
 	// or a Vec3 nested in a record column) serializes through the Vec3 arm above.
+	}
+}
+
+// snap_write_map writes an engine.map Map[K, V] column (a dungeon's `tiles: Map[Cell,
+// Tile]`): the entry count then each (key, value) pair in INSERTION order — order is
+// the map's canonical sequence (the determinism contract), written verbatim, never
+// sorted (unlike a record's sorted-name fields). Each key/value nests through
+// snap_write_column_value, so a Map column and a Map nested in a list serialize
+// identically.
+snap_write_map :: proc(buf: ^[dynamic]u8, m: Map_Value) {
+	snap_put_u64(buf, u64(len(m.entries)))
+	for entry in m.entries {
+		snap_write_column_value(buf, entry.key)
+		snap_write_column_value(buf, entry.value)
 	}
 }
 
@@ -1081,6 +1112,9 @@ snap_read_field_value :: proc(
 	case .List:
 		list := snap_read_list(cur, allocator) or_return
 		return list, true
+	case .Map:
+		m := snap_read_map(cur, allocator) or_return
+		return m, true
 	case .Variant_Payload:
 		// A payload-carrying variant COLUMN (yard's `status: Option[String]`
 		// holding Some("saved")): the token splits back into its tag pair and the
@@ -1135,6 +1169,27 @@ snap_read_list :: proc(
 		elements[i] = snap_read_column_value(cur, allocator) or_return
 	}
 	return List_Value{elements = elements}, true
+}
+
+// snap_read_map parses an engine.map Map[K, V] column back: the entry count then each
+// (key, value) pair in INSERTION order. The inverse of snap_write_map — keys/values
+// reconstruct through the same nested column reader, so the restored map is the exact
+// committed value (insertion order preserved, the determinism contract).
+snap_read_map :: proc(
+	cur: ^Snap_Cursor,
+	allocator := context.allocator,
+) -> (
+	m: Map_Value,
+	ok: bool,
+) {
+	count := snap_get_u64(cur) or_return
+	entries := make([]Map_Entry, int(count), allocator)
+	for i in 0 ..< int(count) {
+		key := snap_read_column_value(cur, allocator) or_return
+		value := snap_read_column_value(cur, allocator) or_return
+		entries[i] = Map_Entry{key = key, value = value}
+	}
+	return Map_Value{entries = entries}, true
 }
 
 // snap_read_column_value parses one nested column Value back — the inverse of
@@ -1193,6 +1248,9 @@ snap_read_column_value :: proc(
 	case .List:
 		list := snap_read_list(cur, allocator) or_return
 		return list, true
+	case .Map:
+		m := snap_read_map(cur, allocator) or_return
+		return m, true
 	}
 	return nil, false
 }

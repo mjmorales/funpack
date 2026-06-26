@@ -181,7 +181,19 @@ import "core:slice"
 // session seeded from the frozen FRAME_SESSION_SEED, not this version) is
 // byte-unchanged under the v10 bump. Only a draw-list carrying a Color::Rgb produces
 // the new (correct) sentinel-tagged bytes, and no current golden does.
-FRAME_DIGEST_SCHEMA_VERSION :: 10
+// v11 adds the Field_Tag.Map COLUMN arm — a stored engine.map Map[K, V] field (a
+// dungeon's `tiles: Map[Cell, Tile]`) is part of the committed world state the digest
+// folds, so a new column arm is a digest-encoding change and bumps this stamp (the v2
+// Bool/Record/List precedent). The Map is folded as the entry count then each
+// (key, value) pair in INSERTION order (write_map_column) — order is the determinism
+// contract, so two maps with the same entries built in a different order fold to
+// different bytes. The tag is APPENDED (Map=11 after Vec3=10), so every existing tag
+// keeps its byte. COMMITTED-GOLDEN INVARIANCE under v11: no committed golden
+// (pong/snake/hunt/yard/krognid/dungeon) carries a Map field, so the tag never appears
+// in their streams and every committed CONTENT digest (per-tick AND session, the
+// session seeded from the frozen FRAME_SESSION_SEED, not this version) is byte-unchanged
+// under the v11 bump. Only a Map-bearing committed state produces the new (correct) bytes.
+FRAME_DIGEST_SCHEMA_VERSION :: 11
 
 // RGB_COLOR_TAG is the reserved leading byte that disambiguates a §20 §1
 // Color::Rgb fold from a named palette member in the canonical color stream
@@ -226,6 +238,16 @@ Field_Tag :: enum u8 {
 	// other golden carries the tag, so no committed golden moves (the append-ordinal
 	// discipline, §04).
 	Vec3 = 10,
+	// Map is an engine.map Map[K, V] COLUMN — a stored associative field (a dungeon's
+	// `tiles: Map[Cell, Tile]`). Folded as the entry count then each (key, value) pair
+	// in INSERTION order (write_map_column), both nested via the same Field_Tag stream,
+	// so a Map column and a Map nested in a list/record digest identically. APPENDED at
+	// ordinal 11 so every existing tag keeps its byte; no committed golden carries a
+	// Map field, so the tag never appears in their streams and their digests are
+	// byte-unchanged under the digest v11 / snapshot v7 bump (the append-ordinal
+	// discipline, §04). Insertion order is the determinism contract — two maps built in
+	// a different order fold to different bytes.
+	Map = 11,
 }
 
 // Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
@@ -440,6 +462,8 @@ write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 		write_record_column(buf, v)
 	case List_Value:
 		write_list_column(buf, v)
+	case Map_Value:
+		write_map_column(buf, v)
 	case Variant_Value:
 		write_variant_column(buf, v)
 	case String_Value:
@@ -497,6 +521,23 @@ write_list_column :: proc(buf: ^[dynamic]u8, list: List_Value) {
 	}
 }
 
+// write_map_column digests an engine.map Map[K, V] column (a dungeon's `tiles:
+// Map[Cell, Tile]`): the Map tag, the entry count, then each (key, value) pair in
+// INSERTION order — order is the map's canonical sequence (the determinism contract),
+// written verbatim, never sorted (unlike a record's sorted-name fields). Each
+// key/value digests through write_column_value, so a Map column and a Map nested in a
+// list digest identically. Two maps with the same entries built in a different order
+// fold to different bytes — the observable order equality and iteration also honor.
+@(private = "file")
+write_map_column :: proc(buf: ^[dynamic]u8, m: Map_Value) {
+	append(buf, u8(Field_Tag.Map))
+	put_u64_le(buf, u64(len(m.entries)))
+	for entry in m.entries {
+		write_column_value(buf, entry.key)
+		write_column_value(buf, entry.value)
+	}
+}
+
 // write_column_value digests one Value nested inside a structural column (a Cell
 // in `body: [Cell]`, an x/y in a Cell). It tags by the SAME Field_Tag set the
 // top-level columns use, so a Cell column and a Cell nested in a list digest
@@ -537,7 +578,11 @@ write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 		write_record_column(buf, x)
 	case List_Value:
 		write_list_column(buf, x)
-	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
+	case Map_Value:
+		// A Map nested in a record/list digests its insertion-ordered pairs, the
+		// associative twin of the List arm.
+		write_map_column(buf, x)
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
 	// A transient value never lands in a committed structural column — the §16 §7
 	// anim VALUES (Transform/Pose/handle) compose inside a render body into a [Draw3]
 	// draw-list, never a blackboard column the digest folds here. A Vec3 is NOT here:
