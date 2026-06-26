@@ -7,6 +7,15 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.26.0] - 2026-06-26
+
+### Features
+- feat(eir): dup report surface (human table + ranked --json clone-classes) (08f40ec)
+- feat(eir): dup clone engine (Merkle subtree hash + dup_class normalization + maximal-only) (f4c0c0e)
+
+### Fixes
+- fix(eir): strip trailing slash from dup exclude globs so 'dir/' prunes (c5627bf)
+
 ## [0.25.0] - 2026-06-26
 
 ### Features
