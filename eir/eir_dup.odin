@@ -1,20 +1,26 @@
-// The dup clone engine: a bottom-up Merkle subtree hash over core:odin/ast that
-// RETARGETS funpack's §29 dup_class doctrine (funpack/gates.odin: dup_class /
-// canon_expr / canon_name) from the funpack AST onto Odin's. The doctrine, mirrored
-// verbatim: an alpha frame holds bound names in binding order, a reference to a
-// bound name canonicalizes to its positional SLOT INDEX (so two units identical
-// modulo bound-name renaming hash equal — Type-2), a FREE name (anything not bound
-// in the unit — a package-qualified call, a type, a field selector) keeps its
-// spelling, and the canonical form is digested with core:hash.fnv64a. Where funpack
-// canonicalizes one declaration unit to a string then hashes it, eir hashes EVERY
-// subtree bottom-up: a node's hash folds its kind tag, its kept free spellings, and
-// its children's hashes (8 raw bytes each), so equal subtrees collide at every level
-// and the clusterer can report clones wherever they sit.
+// The dup clone engine: a bottom-up canonical-form serialization over core:odin/ast
+// that RETARGETS funpack's §29 dup_class doctrine (funpack/gates.odin: dup_canon /
+// dup_class / canon_expr / canon_name) from the funpack AST onto Odin's. The
+// doctrine, mirrored verbatim: an alpha frame holds bound names in binding order, a
+// reference to a bound name canonicalizes to its positional SLOT INDEX (so two units
+// identical modulo bound-name renaming canonicalize identically — Type-2), a FREE
+// name (anything not bound in the unit — a package-qualified call, a type, a field
+// selector) keeps its spelling, and the canonical BYTES are the clone identity. Like
+// funpack, eir canonicalizes EVERY subtree bottom-up: a node's canonical form folds
+// its kind tag, its kept free spellings, and its children's canonical bytes
+// (length-prefixed), so equal subtrees produce byte-equal forms at every level and
+// the clusterer can report clones wherever they sit.
 //
-// The hashing walk replaces core:odin/ast's own visitor (ast.walk/inspect): that
-// visitor threads no scope state and yields no per-node child-hash ordering, so the
-// alpha frame and the Merkle fold are driven by a manual switch over `derived` that
-// mirrors walk.odin's child-traversal map node-for-node.
+// core:hash.fnv64a digests each node's canonical bytes into a u64 used ONLY as a
+// bucket index for clustering. Identity is decided by exact byte-equality of the
+// canonical form, never by the digest, so a 64-bit hash collision can never merge
+// two structurally-distinct subtrees into one false clone — this is why a parent
+// folds its children's full canonical bytes, not a digest of them.
+//
+// The walk replaces core:odin/ast's own visitor (ast.walk/inspect): that visitor
+// threads no scope state and yields no per-node child ordering, so the alpha frame
+// and the bottom-up fold are driven by a manual switch over `derived` that mirrors
+// walk.odin's child-traversal map node-for-node.
 package eir
 
 import "base:runtime"
@@ -58,10 +64,12 @@ Clone_Instance :: struct {
 
 // Clone_Class is one set of structurally-identical subtrees (modulo bound-name
 // alpha-renaming, and modulo literals when fold_literals is set). hash is the shared
-// Merkle digest, node_count the subtree size (used for the floor and for maximal-only
-// ranking), kind the node-kind tag of the clone root (for a report's label), and
-// instances every occurrence in deterministic order. A class always carries >= 2
-// instances — a single occurrence is not a clone.
+// fnv64a digest of the canonical form — a bucket index, not a unique id, since a
+// 64-bit collision can seat two distinct-canon classes at one hash — node_count the
+// subtree size (used for the floor and for maximal-only ranking), kind the
+// node-kind tag of the clone root (for a report's label), and instances every
+// occurrence in deterministic order. A class always carries >= 2 instances — a
+// single occurrence is not a clone.
 Clone_Class :: struct {
 	hash:       u64,
 	node_count: int,
@@ -69,13 +77,16 @@ Clone_Class :: struct {
 	instances:  []Clone_Instance,
 }
 
-// Subtree_Record is one hashed subtree the walk kept: its Merkle digest, node count,
-// kind tag, and source location. Only subtrees at or above the floor are recorded —
-// the floor is applied at record time so the candidate set never holds the noise it
-// would later drop.
-@(private = "file")
+// Subtree_Record is one canonicalized subtree the walk kept: its canonical bytes
+// (the clone IDENTITY), its fnv64a digest (a bucket index over those bytes), node
+// count, kind tag, and source location. Only subtrees at or above the floor are
+// recorded — the floor is applied at record time so the candidate set never holds
+// the noise it would later drop. Package-private (not file-private) so the
+// collision-trust regression can drive cluster_and_suppress with synthetic records.
+@(private)
 Subtree_Record :: struct {
 	hash:       u64,
+	canon:      string,
 	node_count: int,
 	kind:       string,
 	path:       string,
@@ -86,7 +97,7 @@ Subtree_Record :: struct {
 
 // Dup_Engine is the per-scan state the hashing walk threads: the options, the
 // growing record set, and the current file's path/test tag (set before each file so
-// dup_hash can stamp a record without re-deriving it). records and per-node scratch
+// dup_canon can stamp a record without re-deriving it). records and per-node scratch
 // live in context.temp_allocator; the returned classes live in the find_clones
 // allocator.
 @(private = "file")
@@ -127,39 +138,41 @@ find_clones :: proc(
 		eng.cur_is_test = loaded.is_test
 		for decl in loaded.file.decls {
 			clear(&alpha)
-			dup_hash(&eng, decl, &alpha, false)
+			dup_canon(&eng, decl, &alpha, false)
 		}
 	}
 
 	return cluster_and_suppress(eng.records[:], allocator)
 }
 
-// dup_hash computes the Merkle hash of the subtree rooted at `node`, threading the
-// alpha frame and recording the subtree when it meets the floor. h folds the kind
-// tag, the node's kept free spellings, and the children's hashes; n is the subtree
-// node count. in_local marks whether `node` sits inside a procedure body: a
+// dup_canon computes the canonical bytes of the subtree rooted at `node`, threading
+// the alpha frame and recording the subtree when it meets the floor. canon folds the
+// kind tag, the node's kept free spellings, and the children's canonical bytes
+// (length-prefixed); n is the subtree node count. The bucketing digest is
+// fnv64a(canon), computed where the record is stamped — canon, not the digest, is
+// the clone identity. in_local marks whether `node` sits inside a procedure body: a
 // LOCAL value declaration binds its names into the alpha frame (positional slots,
 // renamed away), while a PACKAGE-level one keeps its names as free spellings (so two
 // differently-named top-level procs do not collide at the declaration node — their
 // proc literals collide instead, with the name excluded).
 //
-// Parentheses are transparent: a parenthesized expression hashes as its inner
+// Parentheses are transparent: a parenthesized expression canonicalizes as its inner
 // expression, so `(x)` and `x` are one clone.
 @(private = "file")
-dup_hash :: proc(
+dup_canon :: proc(
 	eng: ^Dup_Engine,
 	node: ^ast.Node,
 	alpha: ^[dynamic]string,
 	in_local: bool,
 ) -> (
-	h: u64,
+	canon: string,
 	n: int,
 ) {
 	if node == nil {
-		return 0, 0
+		return "", 0
 	}
 	if p, ok := node.derived.(^ast.Paren_Expr); ok && p.expr != nil {
-		return dup_hash(eng, p.expr, alpha, in_local)
+		return dup_canon(eng, p.expr, alpha, in_local)
 	}
 
 	b := strings.builder_make(context.temp_allocator)
@@ -603,12 +616,13 @@ dup_hash :: proc(
 		hb_str(&b, kind)
 	}
 
-	h = hash.fnv64a(b.buf[:])
+	canon = strings.to_string(b)
 	if n >= eng.opts.min_nodes {
 		append(
 			&eng.records,
 			Subtree_Record {
-				hash = h,
+				hash = hash.fnv64a(transmute([]byte)canon),
+				canon = canon,
 				node_count = n,
 				kind = kind,
 				path = eng.cur_path,
@@ -623,9 +637,11 @@ dup_hash :: proc(
 
 // emit_child folds one optional child into the parent buffer: a one-byte presence
 // marker (so a nil and a present child can never canonicalize the same), then the
-// child's 8-byte Merkle hash when present. The child's node count accumulates into
-// `count`. This is the Merkle step — a parent carries only its children's HASHES,
-// never their full canonical bytes.
+// child's length-prefixed canonical bytes when present. The child's node count
+// accumulates into `count`. This is the bottom-up fold — a parent embeds its
+// children's full canonical FORMS, so byte-equal parents are structurally equal all
+// the way down (no digest stands in for a child, so no child collision can forge a
+// parent match).
 @(private = "file")
 emit_child :: proc(
 	eng: ^Dup_Engine,
@@ -640,8 +656,11 @@ emit_child :: proc(
 		return
 	}
 	strings.write_byte(b, 1)
-	ch, cn := dup_hash(eng, child, alpha, in_local)
-	hb_u64(b, ch)
+	cc, cn := dup_canon(eng, child, alpha, in_local)
+	// Length-prefix the child canon so the serialization stays injective: a
+	// variable-length child can never run into the next sibling's bytes.
+	hb_u32(b, u32(len(cc)))
+	strings.write_string(b, cc)
 	count^ += cn
 }
 
@@ -864,23 +883,17 @@ hb_u32 :: proc(b: ^strings.Builder, x: u32) {
 	}
 }
 
-// hb_u64 writes a fixed-width 8-byte little-endian value (a child Merkle hash) into
-// the parent buffer.
-@(private = "file")
-hb_u64 :: proc(b: ^strings.Builder, x: u64) {
-	v := x
-	for _ in 0 ..< 8 {
-		strings.write_byte(b, u8(v))
-		v >>= 8
-	}
-}
-
 // cluster_and_suppress turns the flat record set into the final clone classes:
-// group records by Merkle hash, keep groups with >= 2 members (a clone class), sort
-// deterministically, drop classes wholly contained in a larger same-instance-set
-// class (maximal-only), and materialize the survivors in the result allocator. Map
-// iteration order never reaches the output — the explicit sort fixes the ordering.
-@(private = "file")
+// bucket records by their fnv64a digest, PARTITION each bucket into canon-equivalence
+// classes (exact byte-equality of the canonical form — the digest is only a bucket
+// index, so a 64-bit collision splits back into separate classes instead of merging),
+// keep partitions with >= 2 members, sort deterministically, drop classes wholly
+// contained in a larger same-instance-set class (maximal-only), and materialize the
+// survivors in the result allocator. Map iteration order never reaches the output —
+// the explicit sort fixes the ordering. Package-private (not file-private) so the
+// collision-trust regression can drive it with synthetic same-hash/different-canon
+// records.
+@(private)
 cluster_and_suppress :: proc(
 	records: []Subtree_Record,
 	allocator: runtime.Allocator,
@@ -895,31 +908,59 @@ cluster_and_suppress :: proc(
 	}
 
 	candidates := make([dynamic]Clone_Class, 0, 16, context.temp_allocator)
-	for h, idxs in buckets {
+	for _, idxs in buckets {
 		if len(idxs) < 2 {
 			continue
 		}
-		insts := make([]Clone_Instance, len(idxs), context.temp_allocator)
-		for ri, k in idxs {
-			r := records[ri]
-			insts[k] = Clone_Instance {
-				path       = r.path,
-				is_test    = r.is_test,
-				line_start = r.line_start,
-				line_end   = r.line_end,
+		// One digest bucket may hold more than one true clone class: two
+		// structurally-distinct subtrees can share a 64-bit fnv64a digest.
+		// Partition the bucket by exact canonical-byte equality so each emitted
+		// class is one genuine structural form; a lone member left over by a
+		// collision is no clone and is dropped.
+		grouped := make([]bool, len(idxs), context.temp_allocator)
+		for a in 0 ..< len(idxs) {
+			if grouped[a] {
+				continue
 			}
+			anchor := records[idxs[a]]
+			members := make([dynamic]int, 0, len(idxs), context.temp_allocator)
+			append(&members, idxs[a])
+			grouped[a] = true
+			for c in (a + 1) ..< len(idxs) {
+				if grouped[c] {
+					continue
+				}
+				if records[idxs[c]].canon == anchor.canon {
+					append(&members, idxs[c])
+					grouped[c] = true
+				}
+			}
+			if len(members) < 2 {
+				continue
+			}
+			insts := make([]Clone_Instance, len(members), context.temp_allocator)
+			for ri, k in members {
+				r := records[ri]
+				insts[k] = Clone_Instance {
+					path       = r.path,
+					is_test    = r.is_test,
+					line_start = r.line_start,
+					line_end   = r.line_end,
+				}
+			}
+			slice.sort_by(insts, instance_less)
+			// Every member shares anchor.canon, so node_count and kind are
+			// identical across the partition — anchor's are the class's.
+			append(
+				&candidates,
+				Clone_Class {
+					hash = anchor.hash,
+					node_count = anchor.node_count,
+					kind = anchor.kind,
+					instances = insts,
+				},
+			)
 		}
-		slice.sort_by(insts, instance_less)
-		first := records[idxs[0]]
-		append(
-			&candidates,
-			Clone_Class {
-				hash = h,
-				node_count = first.node_count,
-				kind = first.kind,
-				instances = insts,
-			},
-		)
 	}
 
 	slice.sort_by(candidates[:], class_less)
@@ -1029,8 +1070,10 @@ instance_less :: proc(a, b: Clone_Instance) -> bool {
 }
 
 // class_less is the total order on clone classes: by hash, then by first-instance
-// span. Distinct classes carry distinct hashes (one class per bucket), so the hash
-// key alone is a total order; the span tie-break only documents intent.
+// span. The hash is a bucket index, NOT a unique class id — a 64-bit fnv64a collision
+// can seat two distinct-canon classes at one hash — so the first-instance-span
+// tie-break is load-bearing: it keeps the order a deterministic total order even when
+// two classes share a hash.
 @(private = "file")
 class_less :: proc(a, b: Clone_Class) -> bool {
 	if a.hash != b.hash {

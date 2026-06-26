@@ -16,10 +16,12 @@
 //     class can share a mass while differing sharply in dedup_value.
 //
 // The rank order is (dedup_value desc, hash asc, first-span asc): leverage first, then
-// the engine's own deterministic tie-breaks. Distinct classes carry distinct hashes
-// (one class per Merkle bucket), so (dedup_value, hash) is already a total order —
-// ranking is a pure function of the class set, independent of the input slice's order
-// and of any map iteration. That determinism is what makes the JSON byte-stable.
+// the engine's own deterministic tie-breaks. The hash is a bucket index, not a unique
+// class id (a 64-bit fnv64a collision can seat two distinct-canon classes at one
+// hash), so the first-span tie-break is load-bearing: (dedup_value, hash, first-span)
+// is a total order — ranking is a pure function of the class set, independent of the
+// input slice's order and of any map iteration. That determinism is what makes the
+// JSON byte-stable.
 package eir
 
 import "core:encoding/json"
@@ -42,8 +44,9 @@ Dup_Report :: struct {
 
 // Dup_Class_Record is one ranked clone class in the JSON: rank (1-based, by leverage),
 // the two leverage metrics, the subtree size and site count, the clone-root kind, the
-// Merkle hash as a zero-padded 16-hex-digit string (a string, not a JSON number, so a
-// full u64 survives without the number-precision loss a consumer's parser might apply),
+// fnv64a bucket digest as a zero-padded 16-hex-digit string (a string, not a JSON
+// number, so a full u64 survives without the number-precision loss a consumer's
+// parser might apply),
 // and the per-site locations. The leading rank/dedup_value/mass let an agent pick the
 // highest-leverage dedup target from the head of the array without re-deriving it.
 Dup_Class_Record :: struct {
@@ -81,9 +84,9 @@ class_mass :: proc(c: Clone_Class) -> int {
 
 // rank_clone_classes returns a COPY of the classes sorted by leverage — dedup_value
 // desc, then hash asc, then first-span asc. It copies first so the caller's slice
-// order is untouched, and the comparator is a total order over distinct-hash classes,
-// so the result is a deterministic function of the class SET alone (shuffling the
-// input yields the same ranked output).
+// order is untouched, and the comparator is a total order (the first-span tie-break
+// covers a shared-hash collision), so the result is a deterministic function of the
+// class SET alone (shuffling the input yields the same ranked output).
 rank_clone_classes :: proc(classes: []Clone_Class, allocator := context.allocator) -> []Clone_Class {
 	ranked := make([]Clone_Class, len(classes), allocator)
 	copy(ranked, classes)
@@ -93,7 +96,8 @@ rank_clone_classes :: proc(classes: []Clone_Class, allocator := context.allocato
 
 // ranked_class_less is the leverage order: higher dedup_value first, then the engine's
 // own deterministic tie-breaks (hash asc, then first-instance span asc). The span
-// tie-break only documents intent — distinct classes already differ by hash.
+// tie-break is load-bearing: a 64-bit hash collision can seat two distinct classes at
+// one hash, and the first-instance span breaks that tie deterministically.
 @(private = "file")
 ranked_class_less :: proc(a, b: Clone_Class) -> bool {
 	da := class_dedup_value(a)

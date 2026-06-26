@@ -242,6 +242,33 @@ test_dup_fold_literals :: proc(t: ^testing.T) {
 	}
 }
 
+// test_dup_collision_does_not_merge: the collision-trust guard, driven on synthetic
+// records so a forged 64-bit collision is exercisable without crafting one in source.
+// Three records share ONE fnv64a digest, but two carry canon "shape-A" and one carries
+// "shape-B" — a hash collision between distinct structural forms. Identity is the
+// canon, not the digest, so the clusterer must partition the bucket: shape-A's two
+// records become the lone real clone class, and shape-B (alone) is no clone. A
+// digest-trusting clusterer would instead merge all three into one false 3-instance
+// class. This is the precise regression for the fnv64a-collision-trust fix.
+@(test)
+test_dup_collision_does_not_merge :: proc(t: ^testing.T) {
+	H :: u64(0xDEAD_BEEF_CAFE_F00D)
+	records := []Subtree_Record {
+		{hash = H, canon = "shape-A", node_count = 40, kind = "block", path = "a.odin", line_start = 1, line_end = 10},
+		{hash = H, canon = "shape-B", node_count = 40, kind = "block", path = "b.odin", line_start = 1, line_end = 10},
+		{hash = H, canon = "shape-A", node_count = 40, kind = "block", path = "c.odin", line_start = 1, line_end = 10},
+	}
+	classes := cluster_and_suppress(records, context.temp_allocator)
+
+	testing.expect_value(t, len(classes), 1)
+	if len(classes) == 1 {
+		testing.expect_value(t, len(classes[0].instances), 2)
+		// instance_less sorts by path: only the two shape-A sites, never shape-B.
+		testing.expect_value(t, classes[0].instances[0].path, "a.odin")
+		testing.expect_value(t, classes[0].instances[1].path, "c.odin")
+	}
+}
+
 // test_dup_deterministic: the same input yields byte-identical class ordering and
 // content across two runs — no map iteration order reaches the result. The two-family
 // fixture gives multiple classes so the ordering is meaningful.
