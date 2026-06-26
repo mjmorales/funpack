@@ -1463,6 +1463,19 @@ render_value_text :: proc(b: ^strings.Builder, value: Value) {
 			render_value_text(b, element)
 		}
 		strings.write_byte(b, ')')
+	case Map_Value:
+		// An engine.map Map renders its key->value pairs in insertion order — the
+		// deterministic order the value carries, readable in a §28 trace projection.
+		strings.write_string(b, "Map{")
+		for entry, i in v.entries {
+			if i > 0 {
+				strings.write_byte(b, ',')
+			}
+			render_value_text(b, entry.key)
+			strings.write_byte(b, ':')
+			render_value_text(b, entry.value)
+		}
+		strings.write_byte(b, '}')
 	case Rng:
 		fmt.sbprintf(b, "Rng(state=%d)", v.state)
 	case Transform_Value:

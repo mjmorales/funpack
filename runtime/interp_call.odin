@@ -398,6 +398,15 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 			return eval_view_resolve(interp, list, node, env)
 		}
 	}
+	// The §26 engine.map methods on a Map receiver — the method form of get/has/set/
+	// remove/keys/values/len (m.get(k), the chained Map.empty().set(...).get(...)).
+	// The funpack compiler reaches these by lowering UFCS to the free call; the
+	// runtime dispatches on the Map receiver here, sharing the same value cores so
+	// both interpreters agree. Tried after the other receiver arms so a same-named
+	// member on another receiver still resolves first.
+	if m, is_map := recv.(Map_Value); is_map {
+		return eval_map_method(interp, m, method, node, env)
+	}
 	return nil, false
 }
 
@@ -581,6 +590,13 @@ eval_engine_constructor :: proc(interp: ^Interp, node: ^Node, env: ^Env, type_na
 	case "Settings":
 		if method == "defaults" {
 			return settings_defaults(interp), true
+		}
+	case "Map":
+		// §26 engine.map: the idiomatic `Map.empty()` static constructor, the
+		// Type-name twin of the bare `empty()` free call — both build the empty
+		// insertion-ordered map (dual-parity with the compiler's Map.empty branch).
+		if method == "empty" {
+			return Map_Value{}, true
 		}
 	}
 	return eval_anim_constructor(interp, node, env, type_name, method)
@@ -799,6 +815,20 @@ eval_named_call :: proc(
 		return builtin_is_empty(interp, node, env)
 	case "len":
 		return builtin_len(interp, node, env)
+	case "get":
+		return builtin_get(interp, node, env)
+	case "empty":
+		return builtin_map_empty(interp, node, env)
+	case "has":
+		return builtin_map_has(interp, node, env)
+	case "set":
+		return builtin_map_set(interp, node, env)
+	case "remove":
+		return builtin_map_remove(interp, node, env)
+	case "keys":
+		return builtin_map_keys(interp, node, env)
+	case "values":
+		return builtin_map_values(interp, node, env)
 	case "grid_cells":
 		return builtin_grid_cells(interp, node, env)
 	case "neighbors":
@@ -878,7 +908,7 @@ builtin_abs :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 		return (v < 0 ? fixed_neg(v) : v), true
 	case i64:
 		return (v < 0 ? int_neg(v) : v), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 		return nil, false
 	}
 	return nil, false
@@ -1742,11 +1772,267 @@ builtin_len :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	if !list_ok {
 		return nil, false
 	}
+	// len is polymorphic over a Map (engine.map): the entry count. The list/view
+	// form is the as_elements branch below.
+	if m, is_map := list_val.(Map_Value); is_map {
+		return i64(len(m.entries)), true
+	}
 	elements, elems_ok := as_elements(interp, list_val)
 	if !elems_ok {
 		return nil, false
 	}
 	return i64(len(elements)), true
+}
+
+// --- engine.map: the runtime Map[K, V] methods, the GAMEPLAY-EVAL twin of
+// funpack/evaluate.odin's eval_map_* (the dual-interpreter parity surface). The
+// free-call builtins (eval_named_call) and the method-form arm (eval_map_method,
+// from eval_method_call) share these value-level cores, so `get(m, k)` and
+// `m.get(k)` evaluate bit-identically — the "same function" guarantee. Insertion
+// order is preserved; nothing mutates (every op rebuilds a fresh arena slice). ---
+
+// map_find returns the index of the entry whose key value_equals `key`, or
+// found=false — the linear scan get/has/set/remove share. A key needs only the
+// structural Eq values_equal gives every value.
+map_find :: proc(m: Map_Value, key: Value) -> (index: int, found: bool) {
+	for entry, i in m.entries {
+		if values_equal(entry.key, key) {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// map_get_value is the total keyed lookup get -> Option[V]: Some(value) on a key
+// hit, None on a miss.
+map_get_value :: proc(interp: ^Interp, m: Map_Value, key: Value) -> Value {
+	if i, found := map_find(m, key); found {
+		return some_value(interp, m.entries[i].value)
+	}
+	return none_value()
+}
+
+// map_set_value is set -> Map[K, V]: a fresh map with the key bound to the value,
+// replacing an existing key's value IN PLACE (keeping its position) or appending a
+// new key. The input map is never mutated.
+map_set_value :: proc(interp: ^Interp, m: Map_Value, key, val: Value) -> Map_Value {
+	if i, found := map_find(m, key); found {
+		out := make([]Map_Entry, len(m.entries), interp.allocator)
+		copy(out, m.entries)
+		out[i] = Map_Entry{key = m.entries[i].key, value = val}
+		return Map_Value{entries = out}
+	}
+	out := make([]Map_Entry, len(m.entries) + 1, interp.allocator)
+	copy(out, m.entries)
+	out[len(m.entries)] = Map_Entry{key = key, value = val}
+	return Map_Value{entries = out}
+}
+
+// map_remove_value is remove -> Map[K, V]: a fresh map without the key, the gap
+// closed so insertion order is preserved among the rest. An absent key yields the
+// map unchanged (total).
+map_remove_value :: proc(interp: ^Interp, m: Map_Value, key: Value) -> Map_Value {
+	i, found := map_find(m, key)
+	if !found {
+		return m
+	}
+	out := make([]Map_Entry, len(m.entries) - 1, interp.allocator)
+	copy(out[:i], m.entries[:i])
+	copy(out[i:], m.entries[i + 1:])
+	return Map_Value{entries = out}
+}
+
+// map_keys_value is keys -> [K]: the keys as a list in insertion order.
+map_keys_value :: proc(interp: ^Interp, m: Map_Value) -> List_Value {
+	out := make([]Value, len(m.entries), interp.allocator)
+	for entry, i in m.entries {
+		out[i] = entry.key
+	}
+	return List_Value{elements = out}
+}
+
+// map_values_value is values -> [V]: the values as a list in the same insertion
+// order keys() projects, so keys()[i] and values()[i] pair.
+map_values_value :: proc(interp: ^Interp, m: Map_Value) -> List_Value {
+	out := make([]Value, len(m.entries), interp.allocator)
+	for entry, i in m.entries {
+		out[i] = entry.value
+	}
+	return List_Value{elements = out}
+}
+
+// builtin_map_empty is the free `empty() -> Map[K, V]` constructor (the bare-call
+// form; Map.empty() static lands the same value through eval_engine_constructor).
+builtin_map_empty :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 1 {
+		return nil, false
+	}
+	return Map_Value{}, true
+}
+
+// builtin_get is the free `get(source, key/i)`: a Map keyed lookup OR a list/view
+// index lookup, dispatched on the evaluated source — the dual-parity twin of the
+// compiler's eval_get, which handles both forms the same way.
+builtin_get :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	source, source_ok := eval(interp, &node.children[1], env)
+	arg, arg_ok := eval(interp, &node.children[2], env)
+	if !source_ok || !arg_ok {
+		return nil, false
+	}
+	if m, is_map := source.(Map_Value); is_map {
+		return map_get_value(interp, m, arg), true
+	}
+	elements, elems_ok := as_elements(interp, source)
+	if !elems_ok {
+		return nil, false
+	}
+	i, is_int := arg.(i64)
+	if !is_int {
+		return nil, false
+	}
+	if i < 0 || int(i) >= len(elements) {
+		return none_value(), true
+	}
+	return some_value(interp, elements[i]), true
+}
+
+// builtin_map_has is the free `has(map, key) -> Bool` membership predicate.
+builtin_map_has :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	source, source_ok := eval(interp, &node.children[1], env)
+	key, key_ok := eval(interp, &node.children[2], env)
+	if !source_ok || !key_ok {
+		return nil, false
+	}
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	_, found := map_find(m, key)
+	return found, true
+}
+
+// builtin_map_set is the free `set(map, key, value) -> Map[K, V]`.
+builtin_map_set :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 4 {
+		return nil, false
+	}
+	source, source_ok := eval(interp, &node.children[1], env)
+	key, key_ok := eval(interp, &node.children[2], env)
+	val, val_ok := eval(interp, &node.children[3], env)
+	if !source_ok || !key_ok || !val_ok {
+		return nil, false
+	}
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	return map_set_value(interp, m, key, val), true
+}
+
+// builtin_map_remove is the free `remove(map, key) -> Map[K, V]`.
+builtin_map_remove :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 3 {
+		return nil, false
+	}
+	source, source_ok := eval(interp, &node.children[1], env)
+	key, key_ok := eval(interp, &node.children[2], env)
+	if !source_ok || !key_ok {
+		return nil, false
+	}
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	return map_remove_value(interp, m, key), true
+}
+
+// builtin_map_keys is the free `keys(map) -> [K]`.
+builtin_map_keys :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	source, source_ok := eval(interp, &node.children[1], env)
+	if !source_ok {
+		return nil, false
+	}
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	return map_keys_value(interp, m), true
+}
+
+// builtin_map_values is the free `values(map) -> [V]`.
+builtin_map_values :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	source, source_ok := eval(interp, &node.children[1], env)
+	if !source_ok {
+		return nil, false
+	}
+	m, is_map := source.(Map_Value)
+	if !is_map {
+		return nil, false
+	}
+	return map_values_value(interp, m), true
+}
+
+// eval_map_method is the §02 §4 method form of the engine.map methods on a Map
+// receiver (m.get(k), m.set(k, v), Map.empty().set(...).get(...)) — the receiver
+// is already evaluated as `m`, the method args are node.children[1:]. It shares
+// the value-level cores with the free builtins, so the two forms agree.
+eval_map_method :: proc(interp: ^Interp, m: Map_Value, method: string, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	switch method {
+	case "len":
+		if len(node.children) != 1 {
+			return nil, false
+		}
+		return i64(len(m.entries)), true
+	case "keys":
+		if len(node.children) != 1 {
+			return nil, false
+		}
+		return map_keys_value(interp, m), true
+	case "values":
+		if len(node.children) != 1 {
+			return nil, false
+		}
+		return map_values_value(interp, m), true
+	case "get":
+		if len(node.children) != 2 {
+			return nil, false
+		}
+		key := eval(interp, &node.children[1], env) or_return
+		return map_get_value(interp, m, key), true
+	case "has":
+		if len(node.children) != 2 {
+			return nil, false
+		}
+		key := eval(interp, &node.children[1], env) or_return
+		_, found := map_find(m, key)
+		return found, true
+	case "remove":
+		if len(node.children) != 2 {
+			return nil, false
+		}
+		key := eval(interp, &node.children[1], env) or_return
+		return map_remove_value(interp, m, key), true
+	case "set":
+		if len(node.children) != 3 {
+			return nil, false
+		}
+		key := eval(interp, &node.children[1], env) or_return
+		val := eval(interp, &node.children[2], env) or_return
+		return map_set_value(interp, m, key, val), true
+	}
+	return nil, false
 }
 
 // builtin_grid_cells is the §26 `engine.grid.grid_cells(w, h, fn(x, y) -> Cell)

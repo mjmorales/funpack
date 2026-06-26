@@ -152,7 +152,7 @@ free_column_value :: proc(v: Value, allocator := context.allocator) {
 		free_list_value(x, allocator)
 	case Variant_Value:
 		free_variant_value(x, allocator)
-	case i64, Fixed, bool, Vec2, Vec3, Ref, String_Value, Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+	case i64, Fixed, bool, Vec2, Vec3, Ref, String_Value, Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 		// Copied by value at clone time (clone_column_value's by-value arm) — owns no
 		// allocation in the commit allocator, so nothing to free.
 		return

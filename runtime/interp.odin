@@ -41,6 +41,32 @@ List_Value :: struct {
 	elements: []Value,
 }
 
+// Map_Value is the GAMEPLAY-EVAL runtime engine.map Map[K, V] — the mirror of
+// funpack/value.odin's Map_Value on a DIFFERENT machine (runtime interp vs funpack
+// evaluate), satisfying the ONE engine.map contract by mirrored BEHAVIOR, never
+// linked code (the dual-interpreter parity surface, decision
+// 2026-06-25-engine-map-insertion-ordered). An insertion-ordered slice of
+// key->value pairs with unique keys: set replaces an existing key's value in place
+// (keeping its position) or appends a new key; remove drops a pair and closes the
+// gap; keys()/values() project in this order. Key lookup (get/has) is a linear
+// scan on values_equal, so a key needs only structural Eq. Every op rebuilds a
+// fresh slice in the interp arena; nothing mutates. Equality is POSITIONAL over
+// the pairs (values_equal), the List model — a differently-built map differs.
+//
+// A Map is an in-flight value — built and folded within a behavior body, never
+// read or committed as a blackboard column — so it joins the Lambda/Tuple/Rng/Nav
+// in-flight-only arms in the closed value type-switches (serialization, frame
+// digest, state commit/read), which carry no Map case.
+Map_Value :: struct {
+	entries: []Map_Entry,
+}
+
+// Map_Entry is one insertion-ordered key->value pair of a Map_Value.
+Map_Entry :: struct {
+	key:   Value,
+	value: Value,
+}
+
 // Variant_Value is an evaluated tagged-enum value: its enum type, its case name,
 // and an optional payload value (a tuple/struct payload is carried as one
 // element here — pong's Option::Some(x) and Side::Left cover the unit and
@@ -98,6 +124,7 @@ Value :: union {
 	Ref, // a weak typed handle to a row
 	Record_Value, // a record literal / thing blackboard
 	List_Value, // a [T] list
+	Map_Value, // an engine.map Map[K,V] — an insertion-ordered key->value pair slice
 	Variant_Value, // a tagged enum value
 	Lambda_Value, // a lambda closure
 	String_Value, // an interpolated String literal (render [Draw] text only, §20)
@@ -572,7 +599,7 @@ eval_field :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return nil, false
 		}
 		return field_value_to_value(fv), true
-	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+	case i64, Fixed, bool, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 		// A tuple is positional (read by a tuple pattern, never by name), an Rng has
 		// no field, and the §16 §7 anim values are opaque — a Pose reads by .get not
 		// .field, a Transform/Skeleton/PartSet by no field at all. None is a
@@ -708,7 +735,7 @@ eval_with :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 		type_name = "Vec2"
 		merged["x"] = b.x
 		merged["y"] = b.y
-	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+	case i64, Fixed, bool, Ref, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 		// A `with` is a record/Vec2 functional update; a tuple/Rng/anim value is not
 		// a record (a Vec3/Transform/Pose/handle composes through its builders, never
 		// a field update).
@@ -792,7 +819,7 @@ eval_unary :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 			return Vec2{fixed_neg(v.x), fixed_neg(v.y)}, true
 		case Vec3:
 			return Vec3{fixed_neg(v.x), fixed_neg(v.y), fixed_neg(v.z)}, true
-		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+		case bool, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 			return nil, false
 		}
 	case "not":
@@ -1044,6 +1071,22 @@ values_equal :: proc(a, b: Value) -> bool {
 			}
 		}
 		return true
+	case Map_Value:
+		// Positional over the insertion-ordered pairs, the List model: same length
+		// and each position's key AND value equal. Two maps with the same entries
+		// built in a different order are NOT equal — the same verdict the compiler
+		// evaluator's value_equal Map arm gives (dual-interpreter parity).
+		bv, ok := b.(Map_Value)
+		if !ok || len(av.entries) != len(bv.entries) {
+			return false
+		}
+		for entry, i in av.entries {
+			if !values_equal(entry.key, bv.entries[i].key) ||
+			   !values_equal(entry.value, bv.entries[i].value) {
+				return false
+			}
+		}
+		return true
 	case Tuple_Value:
 		// A tuple compares positionally — same arity, then each position structurally
 		// in order (the same length-then-elementwise rule as a list).
@@ -1187,7 +1230,7 @@ format_value :: proc(interp: ^Interp, v: Value) -> string {
 		return aprint_int(fixed_trunc(x), interp.allocator)
 	case Variant_Value:
 		return strings.clone(x.case_name, interp.allocator)
-	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 		// A tuple/Rng/anim value never reaches a §20 Text hole (render carries no
 		// draw text holes over these); no display form, render empty.
 		return ""
@@ -1219,7 +1262,7 @@ as_fixed :: proc(v: Value) -> (f: Fixed, ok: bool) {
 		return n, true
 	case i64:
 		return to_fixed(n), true
-	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+	case bool, Vec2, Ref, Record_Value, List_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 		return Fixed(0), false
 	}
 	return Fixed(0), false
@@ -1355,7 +1398,7 @@ value_to_field_value :: proc(
 		return clone_record_value(x, allocator), true
 	case List_Value:
 		return clone_list_value(x, allocator), true
-	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 		// A Tuple is split by the tick into its halves before commit and never
 		// lands whole on a row; an Rng is THREADED (carried in Tick_State, written
 		// forward), never persisted as a column; a closure has no value identity.
@@ -1409,7 +1452,7 @@ clone_column_value :: proc(v: Value, allocator := context.allocator) -> Value {
 		return clone_list_value(x, allocator)
 	case Variant_Value:
 		return clone_variant_value(x, allocator)
-	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
+	case i64, Fixed, bool, Vec2, Ref, Lambda_Value, String_Value, Tuple_Value, Rng, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
 		// The scalar/Vec/handle arms copy by value (a Pose's bone slice and a
 		// handle's op log live in the eval arena, the same transient lifetime as a
 		// tuple — the §16 §7 anim values are render-time, never a committed column).
