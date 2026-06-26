@@ -2,6 +2,11 @@
 
 All notable changes to the funpack Claude Code plugin.
 
+## [0.13.0] - 2026-06-26
+
+### Features
+- feat(funpack): add render-check to catch green-but-black-screen builds (b86efcf)
+
 ## [0.12.1] - 2026-06-26
 
 ### Fixes

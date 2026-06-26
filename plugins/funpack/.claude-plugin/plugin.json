@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "funpack",
   "displayName": "funpack",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "Write deterministic, agent-first games in funpack. Skills for the language, the engine.* stdlib, the things/behaviors/pipelines model, project layout, the bake pipelines, and the fixed-point determinism contract; the /funpack:new scaffolding command; the funpack MCP server (the `funpack mcp` verb) whose tools build, check, test, run, inspect, and query a game (plus docs search); and funpack-author / funpack-reviewer agents.",
   "author": {
     "name": "Manuel Morales"
