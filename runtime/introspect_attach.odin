@@ -528,9 +528,11 @@ attach_port_file_contents :: proc(port: int, allocator := context.allocator) -> 
 // context), the MCP verb maps each variant to a JSON-RPC error object on a transport
 // where stdout belongs to the protocol. Returning a discriminated result instead of
 // printing inside the helper keeps it transport-agnostic and stdout-clean (mandatory
-// for the MCP caller), and the six variants map 1:1 to the §28.2 attach stderr
-// messages. Closed enum (§04 closed-taxonomy discipline): every open-failure mode
-// is one named variant, never a bare bool.
+// for the MCP caller), and the six open-resolution variants map 1:1 to the §28.2 attach
+// stderr messages. Session_Alloc_Failed is the seventh — an internal alloc fault the MCP
+// session registry raises when its per-session arena cannot be minted (the attach arm
+// holds no per-session arena, so it never produces it). Closed enum (§04 closed-taxonomy
+// discipline): every open-failure mode is one named variant, never a bare bool.
 Open_Session_Result :: enum {
 	Ok, // the session opened — `session` is live, `program` is the heap artifact it borrows
 	Artifact_Read_Failed, // the artifact path could not be read off disk
@@ -538,6 +540,7 @@ Open_Session_Result :: enum {
 	Replay_Read_Failed, // a replay log was requested but could not be read off disk
 	Replay_Malformed, // the replay log read but did not parse (read_replay refused)
 	Replay_Identity_Mismatch, // the §09 §5 identity gate refused: log built/seeded for another artifact
+	Session_Alloc_Failed, // the MCP per-session arena could not be allocated — an internal alloc fault, not an on-disk read failure
 }
 
 // open_session_for_artifact is the SHARED, stdout-clean session opener — the pure
@@ -819,6 +822,11 @@ when #config(FUNPACK_LIVE, false) {
 				parsed.replay_log,
 				parsed.artifact,
 			)
+			return 1
+		case .Session_Alloc_Failed:
+			// open_session_for_artifact never mints a per-session arena, so it never
+			// returns this; the arm exists only to keep the closed switch exhaustive.
+			fmt.eprintfln("error: could not allocate the session for artifact %s", parsed.artifact)
 			return 1
 		}
 

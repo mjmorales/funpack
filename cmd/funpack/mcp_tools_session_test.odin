@@ -384,6 +384,27 @@ test_sess_end_missing_session_id_is_invalid_input :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"category\":\"invalid_input\"`), "the category is invalid_input")
 }
 
+// test_sess_open_error_category_mapping pins the Open_Session_Result → MCP-category map:
+// an on-disk read failure is Resolver, a malformed/identity-mismatched input is
+// Invalid_Input, and a per-session arena alloc fault is Internal — NOT Resolver. The
+// alloc fault is a host-resource failure the caller's arguments cannot fix, so it must
+// not read as "the file could not be resolved"; it gets its own closed-enum variant
+// (Session_Alloc_Failed) and the .Internal category.
+@(test)
+test_sess_open_error_category_mapping :: proc(t: ^testing.T) {
+	read := sess_open_error(.Artifact_Read_Failed, "game.fpk", "")
+	testing.expect_value(t, read.category, Mcp_Error_Category.Resolver)
+
+	malformed := sess_open_error(.Artifact_Malformed, "game.fpk", "")
+	testing.expect_value(t, malformed.category, Mcp_Error_Category.Invalid_Input)
+
+	mismatch := sess_open_error(.Replay_Identity_Mismatch, "game.fpk", "run.replay")
+	testing.expect_value(t, mismatch.category, Mcp_Error_Category.Invalid_Input)
+
+	alloc := sess_open_error(.Session_Alloc_Failed, "game.fpk", "")
+	testing.expect_value(t, alloc.category, Mcp_Error_Category.Internal)
+}
+
 // test_sess_reachable_through_tools_call is THE reachability proof — the regression the
 // upstream contract fix (register-mcp-server-native) was the prerequisite for. It drives
 // session_start through mcp_handle_tools_call (the PRODUCTION tools/call entry, not a

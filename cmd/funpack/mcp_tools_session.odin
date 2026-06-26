@@ -227,21 +227,23 @@ sess_render_start_result :: proc(
 }
 
 // sess_open_error maps a runtime Open_Session_Result failure to the MCP error vocabulary
-// (mcp_error.odin). A read/IO/arena-cap failure is Resolver (the file could not be
-// resolved off disk, or the per-session arena could not be minted — the at-cap path); a
-// malformed/identity-mismatched input is Invalid_Input (the bytes the caller pointed at are
-// out of contract). The detail names the OFFENDING file: the artifact for an artifact
-// failure, the replay log for a replay failure (so a `replay_log` typo or a mismatched
-// recording self-corrects to the right path, not the artifact). The switch is exhaustive
-// (no default) so a new Open_Session_Result without a mapping is a compile error — the
-// closed-enum discipline.
+// (mcp_error.odin). A read/IO failure is Resolver (the file could not be resolved off
+// disk); a malformed/identity-mismatched input is Invalid_Input (the bytes the caller
+// pointed at are out of contract); a per-session arena alloc fault is Internal (a host
+// resource failure, not anything the caller's arguments can fix). The detail names the
+// OFFENDING file: the artifact for an artifact failure, the replay log for a replay
+// failure (so a `replay_log` typo or a mismatched recording self-corrects to the right
+// path, not the artifact). The switch is exhaustive (no default) so a new
+// Open_Session_Result without a mapping is a compile error — the closed-enum discipline.
 sess_open_error :: proc(result: funpack_runtime.Open_Session_Result, artifact: string, replay_log: string) -> Mcp_Error {
 	switch result {
 	case .Ok:
 		// Unreachable: sess_start only calls this on a non-Ok result. Mapped defensively.
 		return Mcp_Error{category = .Internal, message = "open reported Ok on the failure path", detail = artifact}
 	case .Artifact_Read_Failed:
-		return Mcp_Error{category = .Resolver, message = "the artifact could not be read (or the session arena could not be allocated)", detail = artifact}
+		return Mcp_Error{category = .Resolver, message = "the artifact could not be read", detail = artifact}
+	case .Session_Alloc_Failed:
+		return Mcp_Error{category = .Internal, message = "the per-session arena could not be allocated", detail = artifact}
 	case .Artifact_Malformed:
 		return Mcp_Error{category = .Invalid_Input, message = "the artifact bytes did not parse as a funpack build", detail = artifact}
 	case .Replay_Read_Failed:

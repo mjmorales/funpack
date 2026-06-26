@@ -109,7 +109,7 @@ mcp_session_registry_open :: proc(
 	// life and are freed whole at session_end — never per request.
 	if arena_err := virtual.arena_init_growing(&entry.arena); arena_err != .None {
 		free(entry, registry_allocator)
-		return "", .Artifact_Read_Failed
+		return "", .Session_Alloc_Failed
 	}
 	session_allocator := virtual.arena_allocator(&entry.arena)
 
