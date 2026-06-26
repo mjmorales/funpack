@@ -885,6 +885,26 @@ test_gate_canon_collides_alpha_equivalent_tuples :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_gate_dup_canon_is_identity_not_digest :: proc(t: ^testing.T) {
+	// §29 identity is the canonical BYTES, not their fnv64a digest. The
+	// duplication gate keys on dup_canon, so a 64-bit hash collision between two
+	// structurally-distinct units can never read as a duplicate — which at this
+	// gate would falsely reject a valid program. Pin both directions of the
+	// oracle the gate trusts: alpha-equivalent units share their canon bytes;
+	// structurally-distinct units do not, independent of any digest coincidence.
+	a, a_err := test_block_body("let x = 0\nassert pair((x, x)) == 0\n")
+	b, b_err := test_block_body("let y = 0\nassert pair((y, y)) == 0\n")
+	c, c_err := test_block_body("assert pair((a, b, c)) == 0\n")
+	testing.expect_value(t, a_err, Parse_Error.None)
+	testing.expect_value(t, b_err, Parse_Error.None)
+	testing.expect_value(t, c_err, Parse_Error.None)
+	testing.expect(t, dup_canon(a) == dup_canon(b))
+	testing.expect(t, dup_canon(a) != dup_canon(c))
+	// The digest is derived from exactly these bytes — equal canon ⇒ equal key.
+	testing.expect_value(t, dup_class(a), dup_class(b))
+}
+
+@(test)
 test_gate_duplication_golden_source_clears :: proc(t: ^testing.T) {
 	// The §29-faithful unit choice verified against the REAL golden file:
 	// its repeated `assert a.slerp(b, …) == …` shapes live inside ONE

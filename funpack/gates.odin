@@ -1128,9 +1128,14 @@ arg_nesting_depth :: proc(arg: Expr) -> int {
 // the ceiling on it), the one an author removes or differentiates. name/line are
 // "" / 0 on the clean (.None) verdict.
 gate_duplication :: proc(units: []Gate_Unit) -> (err: Gate_Error, name: string, line: int) {
-	seen := make(map[u64]int, context.temp_allocator)
+	// Identity is the canonical BYTES, never their fnv64a digest. Keying the
+	// count by the dup_canon string makes it impossible for a 64-bit hash
+	// collision between two structurally-distinct units to read as a duplicate —
+	// which at this gate would FALSELY reject a valid program. The dup_class u64
+	// is the index field; the gate never trusts it for identity.
+	seen := make(map[string]int, context.temp_allocator)
 	for unit in units {
-		key := dup_class(unit.body)
+		key := dup_canon(unit.body)
 		seen[key] += 1
 		if seen[key] > MAX_DUPLICATE_UNITS {
 			return .Duplicate_Declaration, unit.name, unit.line
@@ -1139,11 +1144,11 @@ gate_duplication :: proc(units: []Gate_Unit) -> (err: Gate_Error, name: string, 
 	return .None, "", 0
 }
 
-// dup_class hashes a declaration unit's normalized-AST string into the
-// §29 dup_class key. The fnv64a digest over the canonical bytes is the
-// hash; structurally identical units (modulo alpha-renaming) canonicalize
-// to the same bytes and so collide on the same key.
-dup_class :: proc(body: []Statement) -> u64 {
+// dup_canon emits a declaration unit's normalized-AST canonical bytes — the
+// rename-invariant serialization §29 compares. Two units belong to the same
+// dup_class IFF these bytes are byte-identical: the canon, not its digest, is
+// the identity oracle.
+dup_canon :: proc(body: []Statement) -> string {
 	b := strings.builder_make(context.temp_allocator)
 	// alpha holds the in-order bound-name frame: let bindings and lambda
 	// params push their names here, so a Name_Expr referencing a bound
@@ -1152,7 +1157,16 @@ dup_class :: proc(body: []Statement) -> u64 {
 	// the gate.
 	alpha := make([dynamic]string, 0, 8, context.temp_allocator)
 	canon_body(&b, body, &alpha)
-	return hash.fnv64a(transmute([]byte)strings.to_string(b))
+	return strings.to_string(b)
+}
+
+// dup_class digests a declaration unit's canonical bytes into the §29 dup_class
+// key the index record carries (index_decl.odin). It is a content DIGEST for
+// indexing and cross-decl grouping, not an identity oracle: equal digests are
+// necessary but not sufficient for structural identity, so the duplication gate
+// decides identity on dup_canon's bytes, never on this u64.
+dup_class :: proc(body: []Statement) -> u64 {
+	return hash.fnv64a(transmute([]byte)dup_canon(body))
 }
 
 // canon_body emits the canonical form of a test-block body: each
