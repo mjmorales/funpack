@@ -100,10 +100,7 @@ mcp_screenshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.all
 shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	session_id, has_session := funpack_runtime.json_string_field(dispatch.arguments, "session_id")
 	if !has_session {
-		return mcp_tool_error(dispatch.id, Mcp_Error{
-			category = .Invalid_Input,
-			message  = "inspect_screenshot missing required string field: session_id",
-		}, allocator)
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("session_id", dispatch.name, allocator), allocator)
 	}
 	tick, has_tick := funpack_runtime.json_int_field(dispatch.arguments, "tick")
 	if !has_tick {
@@ -127,11 +124,7 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	if !found {
 		// A stale/unknown session is a Session-category refusal — the session is never
 		// fabricated (the registry returns found=false), so the model knows to re-open.
-		return mcp_tool_error(dispatch.id, Mcp_Error{
-			category = .Session,
-			message  = "unknown or ended session — open one with session_start",
-			detail   = session_id,
-		}, allocator)
+		return mcp_tool_error(dispatch.id, mcp_unknown_session_error(session_id), allocator)
 	}
 
 	parsed, ok_field, error_text, result_obj := shot_parse_response(response, allocator)

@@ -243,6 +243,30 @@ cli_flag_int :: proc(inv: ^Cli_Invocation, name: string) -> int {
 	return 0
 }
 
+// cli_marshal_int_flag forwards a PASSED int flag onto a forwarded-argv builder as the
+// `--<name> <value>` pair a downstream argv parser re-reads. A flag the operator did NOT
+// pass is left off (no append), so the downstream applies its own default and ONE code
+// path parses every form — the marshalling the runtime verbs (run/live/attach) relay
+// flags through. The `--<name>` token is derived from name, never a literal, so a new
+// forwarded flag needs no second copy of this block. Tokens allocate on the ambient temp
+// allocator (the forwarded-argv arena), consumed synchronously by the runtime call.
+cli_marshal_int_flag :: proc(args: ^[dynamic]string, inv: ^Cli_Invocation, name: string) {
+	if _, passed := inv.flags[name]; passed {
+		append(args, fmt.tprintf("--%s", name))
+		append(args, fmt.tprintf("%d", cli_flag_int(inv, name)))
+	}
+}
+
+// cli_marshal_string_flag forwards a PASSED string flag onto a forwarded-argv builder as
+// the `--<name> <value>` pair — the string counterpart to cli_marshal_int_flag. An
+// unpassed flag is left off so the downstream applies its own default.
+cli_marshal_string_flag :: proc(args: ^[dynamic]string, inv: ^Cli_Invocation, name: string) {
+	if _, passed := inv.flags[name]; passed {
+		append(args, fmt.tprintf("--%s", name))
+		append(args, cli_flag_string(inv, name))
+	}
+}
+
 // cli_command_path_string renders the space-joined command path from the root
 // down to cmd (e.g. "funpack warden find"), walking parent pointers wired by
 // cli_finalize. Used by the usage and error renderers; deterministic, a pure

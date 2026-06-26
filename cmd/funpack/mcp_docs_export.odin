@@ -85,28 +85,40 @@ mcp_materialize_docs_projection :: proc(allocator := context.allocator) -> (root
 
 // docs_export_default materializes the embedded corpus to its version-keyed managed-home
 // root and returns that root for path rendering. It is the startup/standalone entry: it
-// resolves HOME, loads the corpus + manifest, and writes the projection idempotently.
-// ok=false means no on-disk tree is available (HOME unresolved, corpus parse failure, or
-// a write fault) — the caller proceeds without a `path` field, never aborting. The
-// returned root is valid whenever ok is true. Allocated in `allocator`.
+// resolves HOME for the managed-home root, then delegates the load+write to
+// docs_export_into. ok=false means no on-disk tree is available (HOME unresolved, corpus
+// parse failure, or a write fault) — the caller proceeds without a `path` field, never
+// aborting. The returned root is valid whenever ok is true. Allocated in `allocator`.
 docs_export_default :: proc(allocator := context.allocator) -> (root: string, ok: bool) {
 	manifest, _ := load_manifest(allocator) // a zero manifest yields the "unknown" version segment
 	resolved, have_root := docs_export_root(manifest, allocator)
 	if !have_root {
 		return "", false
 	}
-	sections, parsed := load_corpus(allocator)
-	if !parsed {
+	if _, write_ok := docs_export_into(resolved, allocator); !write_ok {
 		return "", false
 	}
+	return resolved, true
+}
+
+// docs_export_into is the materialize sequence both export entries share: load the
+// manifest (for the version stamp), load the corpus, and write the idempotent projection
+// INTO `root`. It is the load+write half with the root resolution factored OUT — the
+// startup/default path (docs_export_default) resolves the managed-home root then calls
+// here; the operator `--dir` path passes its own root. wrote=true when it actually
+// rewrote the tree (false on the idempotent sentinel skip); ok=false on a corpus parse
+// failure or any write fault. Allocated in `allocator`.
+docs_export_into :: proc(root: string, allocator := context.allocator) -> (wrote: bool, ok: bool) {
+	manifest, _ := load_manifest(allocator)
 	version := docs_normalize_version(manifest.funpack_version)
 	if version == "" {
 		version = "unknown"
 	}
-	if _, wrote_ok := docs_export_write(resolved, version, sections, allocator); !wrote_ok {
-		return "", false
+	sections, parsed := load_corpus(allocator)
+	if !parsed {
+		return false, false
 	}
-	return resolved, true
+	return docs_export_write(root, version, sections, allocator)
 }
 
 // docs_export_write materializes `sections` to `root`: one Markdown file per section

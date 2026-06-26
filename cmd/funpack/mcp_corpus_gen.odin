@@ -178,22 +178,10 @@ extract_markdown_tree :: proc(
 	kind: string,
 	allocator := context.allocator,
 ) -> (sections: []Corpus_Section, ok: bool) {
-	if !os.is_dir(walk_root) {
+	paths, walked := collect_sorted_files(walk_root, ".md", allocator)
+	if !walked {
 		return nil, false
 	}
-	paths := make([dynamic]string, 0, 64, allocator)
-	walker := os.walker_create(walk_root)
-	defer os.walker_destroy(&walker)
-	for info in os.walker_walk(&walker) {
-		if info.type != .Regular || !strings.has_suffix(info.name, ".md") {
-			continue
-		}
-		append(&paths, strings.clone(info.fullpath, allocator))
-	}
-	if _, err := os.walker_error(&walker); err != nil {
-		return nil, false
-	}
-	slice.sort(paths[:])
 
 	out := make([dynamic]Corpus_Section, 0, 256, allocator)
 	for path in paths {
@@ -226,6 +214,47 @@ corpus_rel :: proc(base, path: string, allocator := context.allocator) -> string
 corpus_join :: proc(elems: []string, allocator := context.allocator) -> string {
 	joined, _ := filepath.join(elems, allocator)
 	return joined
+}
+
+// corpus_repo_root resolves the monorepo root from the running binary's working
+// directory. Both gen verbs (gen-corpus and gen-contract) run at the repo root (the
+// Taskfile invokes them there), so cwd IS the repo root. It lives here in the shared
+// support module — beside corpus_join — rather than in either verb file, so neither gen
+// verb depends on the other's source for it. Falling back to "." when the working
+// directory cannot be read keeps the resolve total. Allocated in `allocator`.
+corpus_repo_root :: proc(allocator := context.allocator) -> string {
+	cwd, err := os.get_working_directory(allocator)
+	if err != nil || cwd == "" {
+		return strings.clone(".", allocator)
+	}
+	return cwd
+}
+
+// collect_sorted_files walks `dir` and returns the sorted full paths of every regular
+// file whose name ends in `suffix` — the shared directory scan both corpus extractors run
+// before their per-file split. Sorted path order is what makes the generated corpus
+// deterministic (and the committed shards byte-stable), so the sort is load-bearing, not
+// cosmetic. ok=false when `dir` is not a directory or the walk hits an error, so a
+// misconfigured root fails loudly rather than emitting an empty corpus. Allocated in
+// `allocator`.
+collect_sorted_files :: proc(dir, suffix: string, allocator := context.allocator) -> (paths: []string, ok: bool) {
+	if !os.is_dir(dir) {
+		return nil, false
+	}
+	collected := make([dynamic]string, 0, 64, allocator)
+	walker := os.walker_create(dir)
+	defer os.walker_destroy(&walker)
+	for info in os.walker_walk(&walker) {
+		if info.type != .Regular || !strings.has_suffix(info.name, suffix) {
+			continue
+		}
+		append(&collected, strings.clone(info.fullpath, allocator))
+	}
+	if _, err := os.walker_error(&walker); err != nil {
+		return nil, false
+	}
+	slice.sort(collected[:])
+	return collected[:], true
 }
 
 // split_headings turns one markdown document into heading-delimited sections,
@@ -327,22 +356,10 @@ parse_heading :: proc(line: string) -> (title: string, ok: bool) {
 // section per declaration, each paired with its immediately-preceding @doc PROSE
 // line. ok=false when the directory is unreadable. Allocated in `allocator`.
 extract_engine :: proc(dir: string, allocator := context.allocator) -> (sections: []Corpus_Section, ok: bool) {
-	if !os.is_dir(dir) {
+	paths, walked := collect_sorted_files(dir, ".fun", allocator)
+	if !walked {
 		return nil, false
 	}
-	paths := make([dynamic]string, 0, 32, allocator)
-	walker := os.walker_create(dir)
-	defer os.walker_destroy(&walker)
-	for info in os.walker_walk(&walker) {
-		if info.type != .Regular || !strings.has_suffix(info.name, ".fun") {
-			continue
-		}
-		append(&paths, strings.clone(info.fullpath, allocator))
-	}
-	if _, err := os.walker_error(&walker); err != nil {
-		return nil, false
-	}
-	slice.sort(paths[:])
 
 	out := make([dynamic]Corpus_Section, 0, 320, allocator)
 	for path in paths {

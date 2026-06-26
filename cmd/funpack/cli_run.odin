@@ -52,17 +52,14 @@ build_run_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 // maps to the build mode (the same funpack.cli_build_mode build/check share), the
 // first positional is the optional [name] entrypoint pick, and every later
 // positional is forwarded verbatim to the runtime. A passed `--seed N` is appended
-// to the forwarded args as the `--seed N` pair run_live_session parses (the
-// cli_run_attach marshalling pattern) — an unset flag is left off so the runtime
+// to the forwarded args as the `--seed N` pair run_live_session parses (via the shared
+// cli.cli_marshal_int_flag helper) — an unset flag is left off so the runtime
 // resolves the config seed / engine default instead.
 cli_run_run :: proc(inv: ^cli.Cli_Invocation) -> int {
 	extra := cli_run_extra_args(inv)
 	forwarded := make([dynamic]string, 0, 2 + len(extra), context.temp_allocator)
 	append(&forwarded, ..extra)
-	if _, passed := inv.flags["seed"]; passed {
-		append(&forwarded, "--seed")
-		append(&forwarded, fmt.tprintf("%d", cli.cli_flag_int(inv, "seed")))
-	}
+	cli.cli_marshal_int_flag(&forwarded, inv, "seed")
 	return run_run_verb(cli_run_name(inv), forwarded[:], funpack.cli_build_mode(inv))
 }
 

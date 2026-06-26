@@ -52,20 +52,12 @@ mcp_observe_time_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.a
 
 	// Resolve the named session up front: an unknown/ended id is the Session-category
 	// refusal (never a fabricated session), exactly the registry's found=false contract.
-	session_id, has_session := obs_session_id(dispatch.arguments)
+	session_id, has_session := funpack_runtime.json_string_field(dispatch.arguments, "session_id")
 	if !has_session {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: session_id"},
-			allocator,
-		), true
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("session_id", dispatch.name, allocator), allocator), true
 	}
 	if _, found := mcp_session_registry_lookup(dispatch.registry, session_id); !found {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Session, message = "unknown session id", detail = session_id},
-			allocator,
-		), true
+		return mcp_tool_error(dispatch.id, mcp_unknown_session_error(session_id), allocator), true
 	}
 
 	// Build the §28 request line from the MCP arguments (session_id dropped — it keys
@@ -77,11 +69,7 @@ mcp_observe_time_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.a
 	if !found {
 		// The session vanished between the lookup and the fold (it cannot, single-
 		// threaded per session, but the contract is honored, not assumed).
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Session, message = "unknown session id", detail = session_id},
-			allocator,
-		), true
+		return mcp_tool_error(dispatch.id, mcp_unknown_session_error(session_id), allocator), true
 	}
 
 	// The inspect DATA-PROBE commands (state/signals/trace/diff/draw_list/replay_behavior/
@@ -141,21 +129,6 @@ obs_enriches_status :: proc(spec: funpack.Tool_Spec) -> bool {
 // by OTHER families; this arm declines them so the chain reaches their file.
 obs_owns_command :: proc(spec: funpack.Tool_Spec) -> bool {
 	return spec.group == "inspect" || spec.group == "time"
-}
-
-// obs_session_id reads the required session_id off the MCP arguments object. Absent or
-// non-string is has=false — the arm renders the Invalid_Input refusal (the session
-// handle is the one universally-required arg, SESSION_ID_ARG in every spec).
-obs_session_id :: proc(arguments: json.Object) -> (id: string, has: bool) {
-	field, present := arguments["session_id"]
-	if !present {
-		return "", false
-	}
-	text, is_string := field.(json.String)
-	if !is_string {
-		return "", false
-	}
-	return string(text), true
 }
 
 // obs_build_request_line renders one §28 request line for a command, projecting the MCP
@@ -227,78 +200,91 @@ obs_write_json_value :: proc(b: ^strings.Builder, value: json.Value) {
 	}
 }
 
-// obs_lift_response lifts a §28 response line into an MCP tool result. The §28 envelope
-// is the dual of the MCP one: ok:true carries a `result` object (lifted VERBATIM into a
-// Text content block — the structured payload the model reads), ok:false carries an
-// `error` string (mapped to a Session-category IsError envelope — the runtime's refusal
-// the model self-corrects from, e.g. "tick out of range", "no timeline loaded"). A
-// response the server cannot parse, or an ok:true with no result, is an Internal fault
-// (the runtime broke its own §28 contract) — surfaced, never masked. This is the Go
-// path's mapResponseError + decodeResult collapsed into one lift, MINUS the per-tool
-// typed structs (the ADR lifts the result object verbatim, no re-typing).
-obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocator := context.allocator) -> string {
+// Obs_Envelope_Kind classifies a parsed §28 response for the three observe/time lifts:
+// a clean ok:true result, an ok:false refusal, or a fault (the runtime broke its own §28
+// contract). The three lifts share obs_parse_envelope's classification and diverge ONLY
+// in how they render the Ok tail.
+Obs_Envelope_Kind :: enum {
+	Ok,      // a clean ok:true carrying a result object — result_obj/result_json hold it
+	Refusal, // a §28 ok:false — refusal_msg is the runtime's reason (mapped to .Refused)
+	Fault,   // a malformed / contract-breaking line — refusal_msg is the Internal diagnostic
+}
+
+// obs_parse_envelope is the shared §28→MCP envelope prologue the three observe/time lifts
+// (obs_lift_response, obs_lift_inspect_response, obs_lift_status_response) run before their
+// distinct tails — the ~35-line parse/classify block they used to each repeat. It parses
+// one §28 response and classifies it:
+//   - Fault: not valid JSON, not an object, missing ok, or an ok:true with no result
+//     OBJECT — refusal_msg is the Internal diagnostic the caller surfaces (the runtime
+//     broke its own §28 contract; never masked). The §28 contract always wraps result as
+//     an object, so a non-object result is a Fault — the strict check the inspect/status
+//     lifts already made (the plain lift's old has_result-only check accepted a non-object
+//     result, but no §28 command emits one, so the classification is unchanged in practice).
+//   - Refusal: a §28 ok:false — refusal_msg is the runtime's `error` text, or
+//     "<command>: runtime refused the command" when absent; the caller maps it to .Refused
+//     (the §28 resolved-but-refused category) so the model fixes the command, not the session.
+//   - Ok: a clean ok:true — result_obj is the result object (for the inspect/status
+//     enrichment tails) and result_json is its marshaled form (the verbatim lift).
+// All allocations (parse tree, marshaled result, default refusal message) ride `allocator`
+// — the per-request arena — so error_text/result_obj stay valid for the request's lifetime.
+obs_parse_envelope :: proc(
+	response: string,
+	command: string,
+	allocator := context.allocator,
+) -> (kind: Obs_Envelope_Kind, result_obj: json.Object, refusal_msg: string, result_json: string) {
 	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
 	if parse_err != .None {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response was not valid JSON", detail = command},
-			allocator,
-		)
+		return .Fault, nil, "session response was not valid JSON", ""
 	}
 	envelope, is_object := parsed.(json.Object)
 	if !is_object {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response was not a JSON object", detail = command},
-			allocator,
-		)
+		return .Fault, nil, "session response was not a JSON object", ""
 	}
-
 	ok_field, has_ok := envelope["ok"]
 	ok_bool, ok_is_bool := ok_field.(json.Boolean)
 	if !has_ok || !ok_is_bool {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response missing ok field", detail = command},
-			allocator,
-		)
+		return .Fault, nil, "session response missing ok field", ""
 	}
-
 	if !bool(ok_bool) {
-		// A §28 refusal: the runtime declined the command (bad tick, unknown behavior,
-		// unsupported branch refold, no timeline loaded). Surface its text as a Refused-
-		// category refusal so the model reads the reason and retries with corrected args
-		// (the session is healthy — fix the command, not the session).
 		message := strings.concatenate({command, ": runtime refused the command"}, allocator)
 		if error_field, has_error := envelope["error"]; has_error {
 			if error_text, error_is_string := error_field.(json.String); error_is_string {
 				message = string(error_text)
 			}
 		}
-		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = message}, allocator)
+		return .Refusal, nil, message, ""
 	}
-
-	// ok:true — lift the `result` object verbatim into a Text content block. A missing
-	// result on an ok response is the runtime breaking its own contract (Internal).
 	result_field, has_result := envelope["result"]
-	if !has_result {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session ok response carried no result", detail = command},
-			allocator,
-		)
+	result_object, result_is_object := result_field.(json.Object)
+	if !has_result || !result_is_object {
+		return .Fault, nil, "session ok response carried no result object", ""
 	}
-	result_json, marshal_err := json.marshal(result_field, {}, allocator)
+	result_bytes, marshal_err := json.marshal(result_field, {}, allocator)
 	if marshal_err != nil {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "rendering the session result failed", detail = command},
-			allocator,
-		)
+		return .Fault, nil, "rendering the session result failed", ""
 	}
+	return .Ok, result_object, "", string(result_bytes)
+}
 
+// obs_lift_response lifts a §28 response into an MCP tool result via obs_parse_envelope:
+// an ok:true result lifts VERBATIM into a Text content block (the structured payload the
+// model reads), an ok:false refusal becomes a .Refused IsError carrying the runtime's
+// reason (the §28 resolved-but-refused mapping — e.g. "tick out of range", "no timeline
+// loaded" — fix the command, not the session), and a fault (unparseable line, missing ok,
+// result-less ok) is an Internal IsError (the runtime broke its own §28 contract). This is
+// the plain lift the time position acks (load/run/pause/step/rewind/reset) take; the
+// inspect/status enrichers share obs_parse_envelope and diverge only in the Ok tail.
+obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocator := context.allocator) -> string {
+	kind, _, refusal_msg, result_json := obs_parse_envelope(response, command, allocator)
+	if kind == .Fault {
+		return mcp_tool_error(id, Mcp_Error{category = .Internal, message = refusal_msg, detail = command}, allocator)
+	}
+	if kind == .Refusal {
+		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = refusal_msg}, allocator)
+	}
+	// kind == .Ok: lift the result object verbatim into one Text content block.
 	content := make([]Mcp_Content, 1, allocator)
-	content[0] = mcp_text_content(string(result_json))
+	content[0] = mcp_text_content(result_json)
 	return mcp_render_tool_result(id, Mcp_Tool_Result{content = content, is_error = false}, allocator)
 }
 // --- friction-0007: self-describing empty inspect results -------------------
@@ -473,62 +459,19 @@ obs_lift_inspect_response :: proc(
 	precondition: Obs_Precondition,
 	allocator := context.allocator,
 ) -> string {
-	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
-	if parse_err != .None {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response was not valid JSON", detail = command},
-			allocator,
-		)
+	kind, result_object, refusal_msg, result_json := obs_parse_envelope(response, command, allocator)
+	if kind == .Fault {
+		return mcp_tool_error(id, Mcp_Error{category = .Internal, message = refusal_msg, detail = command}, allocator)
 	}
-	envelope, is_object := parsed.(json.Object)
-	if !is_object {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response was not a JSON object", detail = command},
-			allocator,
-		)
-	}
-	ok_field, has_ok := envelope["ok"]
-	ok_bool, ok_is_bool := ok_field.(json.Boolean)
-	if !has_ok || !ok_is_bool {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response missing ok field", detail = command},
-			allocator,
-		)
-	}
-	if !bool(ok_bool) {
-		// A §28 refusal (bad tick, unknown thing, unsupported branch) — the runtime
-		// already names the cause, so it stays the verbatim Refused refusal obs_lift_
-		// response renders; the precondition enrichment is for the EMPTY-but-ok case.
-		message := strings.concatenate({command, ": runtime refused the command"}, allocator)
-		if error_field, has_error := envelope["error"]; has_error {
-			if error_text, error_is_string := error_field.(json.String); error_is_string {
-				message = string(error_text)
-			}
-		}
-		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = message}, allocator)
-	}
-	result_field, has_result := envelope["result"]
-	result_object, result_is_object := result_field.(json.Object)
-	if !has_result || !result_is_object {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session ok response carried no result object", detail = command},
-			allocator,
-		)
+	if kind == .Refusal {
+		// A §28 refusal (bad tick, unknown thing, unsupported branch) — the runtime already
+		// names the cause, so it stays the verbatim .Refused refusal; the precondition
+		// enrichment is for the EMPTY-but-ok case below.
+		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = refusal_msg}, allocator)
 	}
 
-	result_json, marshal_err := json.marshal(result_field, {}, allocator)
-	if marshal_err != nil {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "rendering the session result failed", detail = command},
-			allocator,
-		)
-	}
-
+	// kind == .Ok: wrap the verbatim §28 result with the always-present precondition block
+	// and, when the result set is empty AND a precondition is unmet, a diagnostic.
 	empty := obs_result_collection_empty(command, result_object)
 	diagnostic, next_action, has_diagnostic := obs_precondition_diagnostic(precondition)
 	// A diagnostic fires only for an EMPTY result with an unmet precondition — a populated
@@ -538,7 +481,7 @@ obs_lift_inspect_response :: proc(
 
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"result\":")
-	strings.write_string(&b, string(result_json))
+	strings.write_string(&b, result_json)
 	if precondition.known {
 		strings.write_string(&b, ",\"precondition\":{\"seeded\":")
 		strings.write_string(&b, precondition.seeded ? "true" : "false")
@@ -572,77 +515,32 @@ obs_lift_inspect_response :: proc(
 // detail), so the enriched status payload stays byte-stable for the unloaded case.
 OBS_STATUS_LOAD_NEXT_ACTION :: "time_load — arm the timeline before time_step / inspect_*"
 
-// obs_lift_status_response is the SELF-DESCRIBING lift for time_status. It
-// runs the same §28→MCP mapping obs_lift_response does (an ok:false stays a Session refusal,
-// an unparseable / result-less ok stays an Internal fault), then on a CLEAN result wraps the
-// lifted §28 result in an envelope that, WHEN loaded:false, additively carries a `next_action`
-// naming time_load as the required step. The wrap is structural, not textual: the §28 status
-// `result` rides under a `result` key VERBATIM (loaded/tick/ticks_recorded/ring/branch stay
-// byte-stable), so an existing reader still reaches every field — next_action is a pure
-// additive superset. A loaded:true status carries NO next_action: the timeline is already
-// armed, so the orientation hint would be false-alarm noise (the distinguishability the
-// acceptance bar requires). The `loaded` flag is read off the lifted result object; a
-// missing / non-boolean loaded is treated as loaded (no hint) — the enrichment never turns a
-// clean status into a fault.
+// obs_lift_status_response is the SELF-DESCRIBING lift for time_status. It runs the same
+// §28→MCP mapping (obs_parse_envelope) the other two lifts do (an ok:false stays a .Refused
+// refusal, an unparseable / result-less ok stays an Internal fault), then on a CLEAN result
+// wraps the lifted §28 result in an envelope that, WHEN loaded:false, additively carries a
+// `next_action` naming time_load as the required step. The wrap is structural, not textual:
+// the §28 status `result` rides under a `result` key VERBATIM (loaded/tick/ticks_recorded/
+// ring/branch stay byte-stable), so an existing reader still reaches every field —
+// next_action is a pure additive superset. A loaded:true status carries NO next_action: the
+// timeline is already armed, so the orientation hint would be false-alarm noise (the
+// distinguishability the acceptance bar requires). The `loaded` flag is read off the lifted
+// result object; a missing / non-boolean loaded is treated as loaded (no hint) — the
+// enrichment never turns a clean status into a fault.
 obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, allocator := context.allocator) -> string {
-	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
-	if parse_err != .None {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response was not valid JSON", detail = command},
-			allocator,
-		)
+	kind, result_object, refusal_msg, result_json := obs_parse_envelope(response, command, allocator)
+	if kind == .Fault {
+		return mcp_tool_error(id, Mcp_Error{category = .Internal, message = refusal_msg, detail = command}, allocator)
 	}
-	envelope, is_object := parsed.(json.Object)
-	if !is_object {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response was not a JSON object", detail = command},
-			allocator,
-		)
-	}
-	ok_field, has_ok := envelope["ok"]
-	ok_bool, ok_is_bool := ok_field.(json.Boolean)
-	if !has_ok || !ok_is_bool {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session response missing ok field", detail = command},
-			allocator,
-		)
-	}
-	if !bool(ok_bool) {
+	if kind == .Refusal {
 		// A §28 refusal — the runtime already named the cause, so it stays the verbatim
-		// Refused refusal; the next_action enrichment is for the loaded:false ok case.
-		message := strings.concatenate({command, ": runtime refused the command"}, allocator)
-		if error_field, has_error := envelope["error"]; has_error {
-			if error_text, error_is_string := error_field.(json.String); error_is_string {
-				message = string(error_text)
-			}
-		}
-		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = message}, allocator)
-	}
-	result_field, has_result := envelope["result"]
-	result_object, result_is_object := result_field.(json.Object)
-	if !has_result || !result_is_object {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "session ok response carried no result object", detail = command},
-			allocator,
-		)
+		// .Refused refusal; the next_action enrichment is for the loaded:false ok case.
+		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = refusal_msg}, allocator)
 	}
 
-	result_json, marshal_err := json.marshal(result_field, {}, allocator)
-	if marshal_err != nil {
-		return mcp_tool_error(
-			id,
-			Mcp_Error{category = .Internal, message = "rendering the session result failed", detail = command},
-			allocator,
-		)
-	}
-
-	// loaded:false is the unloaded orientation read — the only case that carries the hint.
-	// A missing / non-boolean loaded is treated as loaded (no hint), so the enrichment can
-	// never fabricate a fault out of an unexpected status shape.
+	// kind == .Ok. loaded:false is the unloaded orientation read — the only case that carries
+	// the hint. A missing / non-boolean loaded is treated as loaded (no hint), so the
+	// enrichment can never fabricate a fault out of an unexpected status shape.
 	loaded := true
 	if loaded_field, ok := result_object["loaded"].(json.Boolean); ok {
 		loaded = bool(loaded_field)
@@ -650,7 +548,7 @@ obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, 
 
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"result\":")
-	strings.write_string(&b, string(result_json))
+	strings.write_string(&b, result_json)
 	if !loaded {
 		strings.write_string(&b, ",\"next_action\":")
 		funpack_runtime.write_json_string(&b, OBS_STATUS_LOAD_NEXT_ACTION)

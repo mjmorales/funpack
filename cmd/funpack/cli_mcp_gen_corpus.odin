@@ -64,8 +64,8 @@ cli_run_mcp_gen_corpus :: proc(inv: ^cli.Cli_Invocation) -> int {
 
 	result, gen_ok := generate_corpus(roots)
 	if !gen_ok {
-		fmt.eprintf(
-			"mcp gen-corpus: failed to generate corpus — verify the source roots exist: %s, %s, %s\n",
+		fmt.eprintfln(
+			"mcp gen-corpus: failed to generate corpus — verify the source roots exist: %s, %s, %s",
 			roots.spec_md,
 			roots.engine_fun,
 			roots.plugin_dir,
@@ -75,7 +75,7 @@ cli_run_mcp_gen_corpus :: proc(inv: ^cli.Cli_Invocation) -> int {
 
 	corpus_dir := corpus_join({repo_root, "cmd", "funpack", "mcp", "corpus"})
 	if err := os.make_directory_all(corpus_dir); err != nil && !os.is_dir(corpus_dir) {
-		fmt.eprintf("mcp gen-corpus: mkdir %s: %v\n", corpus_dir, err)
+		fmt.eprintfln("mcp gen-corpus: mkdir %s: %v", corpus_dir, err)
 		return 1
 	}
 
@@ -92,8 +92,8 @@ cli_run_mcp_gen_corpus :: proc(inv: ^cli.Cli_Invocation) -> int {
 		return 1
 	}
 
-	fmt.eprintf(
-		"mcp gen-corpus: spec=%d engine=%d plugin=%d (spec ref %s, %s)\n",
+	fmt.eprintfln(
+		"mcp gen-corpus: spec=%d engine=%d plugin=%d (spec ref %s, %s)",
 		len(result.spec),
 		len(result.engine),
 		len(result.plugin),
@@ -101,18 +101,6 @@ cli_run_mcp_gen_corpus :: proc(inv: ^cli.Cli_Invocation) -> int {
 		result.manifest.funpack_version,
 	)
 	return 0
-}
-
-// corpus_repo_root resolves the monorepo root from the running binary's working
-// directory. The gen-corpus tool runs at the repo root (the Taskfile invokes it
-// there), so cwd IS the repo root. Falling back to "." when the working directory
-// cannot be read keeps the resolve total. Allocated in `allocator`.
-corpus_repo_root :: proc(allocator := context.allocator) -> string {
-	cwd, err := os.get_working_directory(allocator)
-	if err != nil || cwd == "" {
-		return strings.clone(".", allocator)
-	}
-	return cwd
 }
 
 // corpus_write_shard marshals one per-kind section slice to corpus_dir/name as
@@ -130,11 +118,11 @@ corpus_write_shard :: proc(corpus_dir, name: string, sections: []Corpus_Section)
 corpus_write_value :: proc(path: string, v: any) -> bool {
 	data, marshal_ok := marshal_corpus_json(v)
 	if !marshal_ok {
-		fmt.eprintf("mcp gen-corpus: marshal %s failed\n", path)
+		fmt.eprintfln("mcp gen-corpus: marshal %s failed", path)
 		return false
 	}
 	if err := os.write_entire_file(path, transmute([]u8)data); err != nil {
-		fmt.eprintf("mcp gen-corpus: write %s: %v\n", path, err)
+		fmt.eprintfln("mcp gen-corpus: write %s: %v", path, err)
 		return false
 	}
 	return true

@@ -87,14 +87,11 @@ mcp_control_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 // refusal (the stale-session path mcp_session_registry_request signals with
 // found=false). Both ride the IsError envelope, never a JSON-RPC error object.
 ctrl_fold_session_command :: proc(dispatch: Mcp_Dispatch, command: string, allocator := context.allocator) -> string {
-	session_id, has_session := ctrl_arg_string(dispatch.arguments, "session_id")
+	session_id, has_session := funpack_runtime.json_string_field(dispatch.arguments, "session_id")
 	if !has_session {
 		return mcp_render_tool_result(
 			dispatch.id,
-			mcp_tool_error_result(
-				Mcp_Error{category = .Invalid_Input, message = "missing required string field: session_id", detail = dispatch.name},
-				allocator,
-			),
+			mcp_tool_error_result(mcp_missing_string_field("session_id", dispatch.name, allocator), allocator),
 			allocator,
 		)
 	}
@@ -104,10 +101,7 @@ ctrl_fold_session_command :: proc(dispatch: Mcp_Dispatch, command: string, alloc
 	if !found {
 		return mcp_render_tool_result(
 			dispatch.id,
-			mcp_tool_error_result(
-				Mcp_Error{category = .Session, message = "no live session with that id (start one with session_start, or it was ended)", detail = session_id},
-				allocator,
-			),
+			mcp_tool_error_result(mcp_unknown_session_error(session_id), allocator),
 			allocator,
 		)
 	}
@@ -202,79 +196,49 @@ ctrl_write_json_value :: proc(b: ^strings.Builder, value: json.Value) {
 // sees the session is healthy and the command was declined — fix the command, not the
 // session — and self-corrects rather than reading a raw §28 line.
 ctrl_lift_response :: proc(response: string, command: string, allocator := context.allocator) -> Mcp_Tool_Result {
-	if ctrl_response_ok(response) {
+	parsed, ok_field, error_text := ctrl_parse_response(response, allocator)
+	if parsed && ok_field {
 		content := make([]Mcp_Content, 1, allocator)
 		content[0] = mcp_text_content(response)
 		return Mcp_Tool_Result{content = content, is_error = false}
 	}
-	message := ctrl_response_error(response, allocator)
+	// A refusal (ok:false) or an unparseable line: surface the engine's own `error` text
+	// when present, else a generic refusal. An unparseable line falls here too (the prior
+	// two-parse pair also treated it as a refusal), so a malformed engine line never crashes.
+	message := error_text
 	if message == "" {
 		message = "control command refused"
 	}
 	return mcp_tool_error_result(Mcp_Error{category = .Refused, message = message, detail = command}, allocator)
 }
 
-// ctrl_response_ok reports whether a §28 response is the success envelope. The §28
-// envelope's field order is fixed (`{"v":N,"id":N,"ok":true|false,…}`), so a
-// structural parse reads `ok` directly — the boolean the success/refusal split keys
-// on.
-ctrl_response_ok :: proc(response: string) -> bool {
-	parsed, err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true)
-	defer json.destroy_value(parsed)
-	if err != .None {
-		return false
+// ctrl_parse_response parses one §28 control response line ONCE into its (ok, error)
+// parts — the single parse the lift's success/refusal split AND the refusal message both
+// read, replacing the former two-parse pair (ctrl_response_ok then ctrl_response_error
+// over the SAME line, which parsed every refusal twice with disagreeing allocator
+// discipline). parsed=false for a line that is not a JSON object; on ok:true the caller
+// lifts the line verbatim; on ok:false `error_text` is the runtime's refusal string (or
+// "" when absent/non-string — the caller substitutes a default). error_text points into
+// the parsed tree on `allocator` (the per-request arena), valid for the request's
+// lifetime — no clone, no destroy. Mirrors shot_parse_response (mcp_tools_screenshot.odin).
+ctrl_parse_response :: proc(response: string, allocator := context.allocator) -> (parsed: bool, ok_field: bool, error_text: string) {
+	value, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
+	if parse_err != .None {
+		return false, false, ""
 	}
-	object, is_object := parsed.(json.Object)
+	object, is_object := value.(json.Object)
 	if !is_object {
-		return false
+		return false, false, ""
 	}
-	ok_value, has_ok := object["ok"]
-	if !has_ok {
-		return false
+	if flag, has_ok := object["ok"]; has_ok {
+		if boolean, is_bool := flag.(json.Boolean); is_bool {
+			ok_field = bool(boolean)
+		}
 	}
-	flag, is_bool := ok_value.(json.Boolean)
-	return is_bool && bool(flag)
-}
-
-// ctrl_response_error pulls the `error` string off a §28 refusal envelope so the
-// IsError result carries the engine's own message (tick out of range, unknown thing,
-// reload refusal) rather than a generic one.
-// Returns "" when the field is absent or non-string (the caller substitutes a
-// default), so a malformed engine line never crashes the lift.
-ctrl_response_error :: proc(response: string, allocator := context.allocator) -> string {
-	parsed, err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
-	if err != .None {
-		return ""
+	if !ok_field {
+		error_text, _ = funpack_runtime.json_string_field(object, "error")
 	}
-	object, is_object := parsed.(json.Object)
-	if !is_object {
-		return ""
-	}
-	error_value, has_error := object["error"]
-	if !has_error {
-		return ""
-	}
-	message, is_string := error_value.(json.String)
-	if !is_string {
-		return ""
-	}
-	return strings.clone(string(message), allocator)
-}
-
-// ctrl_arg_string reads one required string arg off the MCP arguments object — the
-// session_id selector and any string-typed §28 arg the dispatch needs before it
-// builds the line. An absent or non-string field is has=false (the schema-violation
-// path the arm maps to Invalid_Input).
-ctrl_arg_string :: proc(arguments: json.Object, key: string) -> (value: string, has: bool) {
-	field, present := arguments[key]
-	if !present {
-		return "", false
-	}
-	text, is_string := field.(json.String)
-	if !is_string {
-		return "", false
-	}
-	return string(text), true
+	return true, ok_field, error_text
 }
 
 // ctrl_tool_command maps an MCP tool name in this family to its §28 command, mirroring

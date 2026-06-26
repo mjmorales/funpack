@@ -12,7 +12,6 @@ package main
 
 import "../../cli"
 import funpack_runtime "../../runtime"
-import "core:fmt"
 import "core:slice"
 
 // build_live_command declares `funpack live <artifact> [replay-out]` — play a
@@ -44,16 +43,13 @@ build_live_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 // cli_run_live marshals {artifact, [replay-out]} + --seed into run_live_session's
 // argv: argv[0] is ignored, argv[1] is the artifact, argv[2] the optional
 // replay-out. A passed `--seed N` is appended as the `--seed N` pair the runtime
-// parses (the cli_run_attach marshalling pattern); an unset flag is left off so the
-// runtime resolves the config seed / engine default.
+// parses (cli.cli_marshal_int_flag, the shared flag-forwarding helper); an unset flag is
+// left off so the runtime resolves the config seed / engine default.
 cli_run_live :: proc(inv: ^cli.Cli_Invocation) -> int {
 	live_args := make([dynamic]string, 0, 3 + len(inv.args), context.temp_allocator)
 	append(&live_args, "funpack live")
 	append(&live_args, ..inv.args)
-	if _, passed := inv.flags["seed"]; passed {
-		append(&live_args, "--seed")
-		append(&live_args, fmt.tprintf("%d", cli.cli_flag_int(inv, "seed")))
-	}
+	cli.cli_marshal_int_flag(&live_args, inv, "seed")
 	return funpack_runtime.run_live_session(live_args[:])
 }
 
@@ -102,33 +98,22 @@ build_attach_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command
 }
 
 // cli_run_attach marshals {artifact, [replay]} + --port/--port-file/--token-file/--seed
-// into run_attach_session's argv: parse_attach_args expects argv[1]=="attach", then the
-// positionals and the flags from argv[2:]. Each flag the operator did NOT pass is left
-// off, so the runtime applies its own default and ONE code path parses every form; a
-// passed flag is forwarded verbatim for the runtime's own validation (the runtime owns
-// the port range, the seed parse, and the auth-required floor). --port 0 is a real value
-// the operator passed (ephemeral request), so it relays as "0" — never elided as a
-// default; --seed relays the same way so a `--seed 0` reaches the runtime.
+// into run_attach_session's argv via the shared cli.cli_marshal_{int,string}_flag helpers:
+// parse_attach_args expects argv[1]=="attach", then the positionals and the flags from
+// argv[2:]. Each flag the operator did NOT pass is left off, so the runtime applies its own
+// default and ONE code path parses every form; a passed flag is forwarded verbatim for the
+// runtime's own validation (the runtime owns the port range, the seed parse, and the
+// auth-required floor). --port 0 is a real value the operator passed (ephemeral request),
+// so it relays as "0" — never elided as a default; --seed relays the same way so a
+// `--seed 0` reaches the runtime.
 cli_run_attach :: proc(inv: ^cli.Cli_Invocation) -> int {
 	attach_args := make([dynamic]string, 0, 8 + len(inv.args), context.temp_allocator)
 	append(&attach_args, "funpack")
 	append(&attach_args, "attach")
 	append(&attach_args, ..inv.args)
-	if _, passed := inv.flags["port"]; passed {
-		append(&attach_args, "--port")
-		append(&attach_args, fmt.tprintf("%d", cli.cli_flag_int(inv, "port")))
-	}
-	if _, passed := inv.flags["port-file"]; passed {
-		append(&attach_args, "--port-file")
-		append(&attach_args, cli.cli_flag_string(inv, "port-file"))
-	}
-	if _, passed := inv.flags["token-file"]; passed {
-		append(&attach_args, "--token-file")
-		append(&attach_args, cli.cli_flag_string(inv, "token-file"))
-	}
-	if _, passed := inv.flags["seed"]; passed {
-		append(&attach_args, "--seed")
-		append(&attach_args, fmt.tprintf("%d", cli.cli_flag_int(inv, "seed")))
-	}
+	cli.cli_marshal_int_flag(&attach_args, inv, "port")
+	cli.cli_marshal_string_flag(&attach_args, inv, "port-file")
+	cli.cli_marshal_string_flag(&attach_args, inv, "token-file")
+	cli.cli_marshal_int_flag(&attach_args, inv, "seed")
 	return funpack_runtime.run_attach_session(attach_args[:])
 }

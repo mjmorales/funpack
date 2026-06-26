@@ -84,14 +84,11 @@ mcp_docs_tool_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.allo
 // anchor" (the corpus is the closed set, so an unknown anchor is a caller error, not an
 // engine fault) — both ride the IsError envelope, never a JSON-RPC error object.
 docs_dispatch_get :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
-	anchor, has_anchor := docs_arg_string(dispatch.arguments, "anchor")
+	anchor, has_anchor := funpack_runtime.json_string_field(dispatch.arguments, "anchor")
 	if !has_anchor {
 		return mcp_render_tool_result(
 			dispatch.id,
-			mcp_tool_error_result(
-				Mcp_Error{category = .Invalid_Input, message = "missing required string field: anchor", detail = dispatch.name},
-				allocator,
-			),
+			mcp_tool_error_result(mcp_missing_string_field("anchor", dispatch.name, allocator), allocator),
 			allocator,
 		)
 	}
@@ -178,7 +175,7 @@ docs_write_path :: proc(b: ^strings.Builder, docs_root, source: string, allocato
 // clamped to [1, DOCS_SEARCH_MAX_LIMIT], defaulting to DOCS_SEARCH_DEFAULT_LIMIT when
 // omitted or <= 0.
 docs_dispatch_search :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
-	query, has_query := docs_arg_string(dispatch.arguments, "query")
+	query, has_query := funpack_runtime.json_string_field(dispatch.arguments, "query")
 	if !has_query || strings.trim_space(query) == "" {
 		return mcp_render_tool_result(
 			dispatch.id,
@@ -392,21 +389,6 @@ docs_normalize_version :: proc(s: string) -> string {
 	trimmed := strings.trim_space(s)
 	trimmed = strings.trim_prefix(trimmed, "funpack ")
 	return strings.trim_space(trimmed)
-}
-
-// docs_arg_string reads one required string arg off the MCP arguments object (the
-// `anchor`/`query` selectors). An absent or non-string field is has=false (the
-// schema-violation path the arm maps to Invalid_Input).
-docs_arg_string :: proc(arguments: json.Object, key: string) -> (value: string, has: bool) {
-	field, present := arguments[key]
-	if !present {
-		return "", false
-	}
-	text, is_string := field.(json.String)
-	if !is_string {
-		return "", false
-	}
-	return string(text), true
 }
 
 // docs_arg_int reads an optional integer arg off the MCP arguments object (the `limit`

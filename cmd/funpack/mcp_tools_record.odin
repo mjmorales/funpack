@@ -79,13 +79,9 @@ rec_owns_command :: proc(spec: funpack.Tool_Spec) -> bool {
 // artifact, bad script, unresolvable action) is the in-band IsError result the model reads
 // and self-corrects from — never a JSON-RPC error object.
 rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
-	artifact, has_artifact := rec_string_arg(dispatch.arguments, "artifact")
+	artifact, has_artifact := funpack_runtime.json_string_field(dispatch.arguments, "artifact")
 	if !has_artifact {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: artifact"},
-			allocator,
-		)
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("artifact", dispatch.name, allocator), allocator)
 	}
 
 	// Read the raw bytes ourselves so the replay identity's content hash is over the exact
@@ -120,7 +116,7 @@ rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 		seed_override = seed
 	}
 
-	out_override, _ := rec_string_arg(dispatch.arguments, "out")
+	out_override, _ := funpack_runtime.json_string_field(dispatch.arguments, "out")
 	out_path := funpack_runtime.replay_out_path(artifact, out_override, allocator)
 
 	log_bytes, summary := funpack_runtime.record_scripted(&program, string(artifact_bytes), seed_override, segments, allocator)
@@ -211,22 +207,6 @@ rec_render_result :: proc(path: string, summary: funpack_runtime.Scripted_Record
 	strings.write_i64(&b, summary.seed)
 	strings.write_byte(&b, '}')
 	return strings.to_string(b)
-}
-
-// rec_string_arg reads an optional string argument off the MCP arguments object — absent
-// or non-string is has=false (the caller decides whether that is an error: required for
-// `artifact`, optional for `out`). Mirrors sess_string_arg, kept in this file for the
-// family's namespace independence.
-rec_string_arg :: proc(arguments: json.Object, name: string) -> (value: string, has: bool) {
-	field, present := arguments[name]
-	if !present {
-		return "", false
-	}
-	text, is_string := field.(json.String)
-	if !is_string {
-		return "", false
-	}
-	return string(text), true
 }
 
 // rec_int_arg reads an optional integer argument off the MCP arguments object,

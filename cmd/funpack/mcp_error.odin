@@ -64,6 +64,34 @@ Mcp_Error :: struct {
 	detail:   string,
 }
 
+// mcp_missing_string_field builds the Invalid_Input refusal for an absent or non-string
+// REQUIRED tool argument — the ONE phrasing every family emits when json_string_field
+// reports has=false for a required field, so the wire `message` a model self-corrects
+// from is uniform across the whole tool boundary (no per-family "field" vs "argument"
+// drift). `field` names the missing arg; `tool` rides as `detail` so the model sees which
+// call failed. Allocated in `allocator` (the message concatenation).
+mcp_missing_string_field :: proc(field, tool: string, allocator := context.allocator) -> Mcp_Error {
+	return Mcp_Error {
+		category = .Invalid_Input,
+		message  = strings.concatenate({"missing required string field: ", field}, allocator),
+		detail   = tool,
+	}
+}
+
+// mcp_unknown_session_error builds the Session-category refusal for a session_id the
+// registry holds no live entry for — never opened, or already ended. It is the ONE copy
+// every session-bearing family emits for the registry's found=false signal, so a model
+// reads the same self-correct across control/observe/screenshot/session. `session_id`
+// rides as `detail`. The session is NEVER fabricated (the registry returns found=false),
+// so this is always an in-band IsError, never a JSON-RPC error object.
+mcp_unknown_session_error :: proc(session_id: string) -> Mcp_Error {
+	return Mcp_Error {
+		category = .Session,
+		message  = "no live session with that id — start one with session_start, or it was already ended",
+		detail   = session_id,
+	}
+}
+
 // Mcp_Content_Kind tags a result content block. MCP carries several content types;
 // the protocol layer models the two funpack tools return — text (every structured
 // result and every error envelope) and image (the screenshot arm). The enum is the

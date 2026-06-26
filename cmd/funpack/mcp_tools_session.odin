@@ -98,19 +98,15 @@ sess_owns_command :: proc(spec: funpack.Tool_Spec) -> bool {
 // failure mapped to its category, with NO orphaned arena (the registry open destroys
 // the per-attempt arena before returning).
 sess_start :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
-	artifact, has_artifact := sess_string_arg(dispatch.arguments, "artifact")
+	artifact, has_artifact := funpack_runtime.json_string_field(dispatch.arguments, "artifact")
 	if !has_artifact {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: artifact"},
-			allocator,
-		)
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("artifact", dispatch.name, allocator), allocator)
 	}
 
 	// The optional replay-log selector: present + a string pre-folds the recording; absent
 	// opens a fresh window. has_replay is the runtime's "fold this recording" flag — false
 	// when the arg is omitted, so the default path is byte-identical to the no-replay open.
-	replay_log, has_replay := sess_string_arg(dispatch.arguments, "replay_log")
+	replay_log, has_replay := funpack_runtime.json_string_field(dispatch.arguments, "replay_log")
 
 	// The optional bare-open seed override (§25 §60): present + integer pins the root
 	// seed for a uses_rng game; absent (nil) lets the helper resolve the entrypoint
@@ -173,21 +169,13 @@ sess_list :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> str
 // idempotent found=false contract maps to a clean in-band error the model reads and
 // moves past (the session is already gone, which is what the caller wanted).
 sess_end :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
-	session_id, has_session := sess_string_arg(dispatch.arguments, "session_id")
+	session_id, has_session := funpack_runtime.json_string_field(dispatch.arguments, "session_id")
 	if !has_session {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: session_id"},
-			allocator,
-		)
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("session_id", dispatch.name, allocator), allocator)
 	}
 
 	if !mcp_session_registry_end(dispatch.registry, session_id, allocator) {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Session, message = "unknown session id", detail = session_id},
-			allocator,
-		)
+		return mcp_tool_error(dispatch.id, mcp_unknown_session_error(session_id), allocator)
 	}
 
 	b := strings.builder_make(allocator)
@@ -254,22 +242,6 @@ sess_open_error :: proc(result: funpack_runtime.Open_Session_Result, artifact: s
 		return Mcp_Error{category = .Invalid_Input, message = "the replay log was recorded against a different build or seed", detail = replay_log}
 	}
 	return Mcp_Error{category = .Internal, message = "unmapped open failure", detail = artifact}
-}
-
-// sess_string_arg reads a required string argument off the MCP arguments object. Absent
-// or non-string is has=false — the arm renders the Invalid_Input refusal naming the
-// argument. The mirror of obs_session_id, generalized to any string arg (artifact for
-// start, session_id for end).
-sess_string_arg :: proc(arguments: json.Object, name: string) -> (value: string, has: bool) {
-	field, present := arguments[name]
-	if !present {
-		return "", false
-	}
-	text, is_string := field.(json.String)
-	if !is_string {
-		return "", false
-	}
-	return string(text), true
 }
 
 // sess_int_arg reads an OPTIONAL integer argument off the MCP arguments object,

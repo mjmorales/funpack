@@ -236,7 +236,7 @@ Mcp_Dispatch :: struct {
 // not here).
 mcp_handle_tools_call :: proc(registry: ^Mcp_Session_Registry, request: Mcp_Request, allocator := context.allocator) -> string {
 	name, has_name := request.params["name"]
-	name_string, name_is_string := name.(string)
+	name_string, name_is_string := name.(json.String)
 	if !has_name || !name_is_string {
 		result := mcp_tool_error_result(
 			Mcp_Error{category = .Invalid_Input, message = "tools/call missing required string field: name"},

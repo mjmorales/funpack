@@ -46,12 +46,14 @@ build_mcp_docs_export_command :: proc(allocator := context.allocator) -> ^cli.Cl
 	)
 }
 
-// cli_run_mcp_docs_export is the docs-export handler: materialize → report. With --dir it
-// writes the tree directly into that root (the version-key resolution and managed-home
-// lookup are bypassed — the operator owns the path); without it, docs_export_default
-// resolves the version-keyed managed-home root. Diagnostics and the success summary go to
-// stderr (stdout is reserved for the parent verb's MCP JSON-RPC writer). Returns 0 on
-// success, 1 on any failure.
+// cli_run_mcp_docs_export is the docs-export handler: materialize → report. Both arms run
+// the SAME load+write core (docs_export_into); they differ only in the destination root.
+// With --dir the operator owns the path, so the managed-home root resolution is bypassed
+// and docs_export_into writes straight into that root (the version is still stamped in the
+// sentinel). Without it, docs_export_default resolves the version-keyed managed-home root
+// then delegates to the same core. Diagnostics and the success summary go to stderr
+// (stdout is reserved for the parent verb's MCP JSON-RPC writer). Returns 0 on success, 1
+// on any failure.
 cli_run_mcp_docs_export :: proc(inv: ^cli.Cli_Invocation) -> int {
 	// The whole run allocates on the HEAP (context.allocator): the corpus is ~520K of
 	// section strings and the reconstructed files render another ~520K over the same
@@ -59,25 +61,15 @@ cli_run_mcp_docs_export :: proc(inv: ^cli.Cli_Invocation) -> int {
 	// the write, so the per-run leak is bounded and harmless for a one-shot tool.
 	if _, passed := inv.flags["dir"]; passed {
 		dir := cli.cli_flag_string(inv, "dir")
-		manifest, _ := load_manifest(context.allocator)
-		version := docs_normalize_version(manifest.funpack_version)
-		if version == "" {
-			version = "unknown"
-		}
-		sections, parsed := load_corpus(context.allocator)
-		if !parsed {
-			fmt.eprintln("mcp docs-export: embedded docs corpus failed to parse — this is a build defect")
-			return 1
-		}
-		wrote, ok := docs_export_write(dir, version, sections, context.allocator)
+		wrote, ok := docs_export_into(dir, context.allocator)
 		if !ok {
-			fmt.eprintf("mcp docs-export: failed to write the docs tree under %s\n", dir)
+			fmt.eprintfln("mcp docs-export: could not materialize the docs tree under %s (corpus parse or write failure)", dir)
 			return 1
 		}
 		if wrote {
-			fmt.eprintf("mcp docs-export: %d sections written to %s (version %s)\n", len(sections), dir, version)
+			fmt.eprintfln("mcp docs-export: docs tree materialized at %s", dir)
 		} else {
-			fmt.eprintf("mcp docs-export: %s already current at version %s (no-op)\n", dir, version)
+			fmt.eprintfln("mcp docs-export: %s already current (no-op)", dir)
 		}
 		return 0
 	}
@@ -87,6 +79,6 @@ cli_run_mcp_docs_export :: proc(inv: ^cli.Cli_Invocation) -> int {
 		fmt.eprintln("mcp docs-export: could not materialize the docs tree (no writable ~/.funpack home) — set HOME or pass --dir <path>")
 		return 1
 	}
-	fmt.eprintf("mcp docs-export: docs tree materialized at %s\n", root)
+	fmt.eprintfln("mcp docs-export: docs tree materialized at %s", root)
 	return 0
 }

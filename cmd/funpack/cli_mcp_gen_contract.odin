@@ -63,21 +63,21 @@ cli_run_mcp_gen_contract :: proc(inv: ^cli.Cli_Invocation) -> int {
 
 	contract_bytes, read_err := os.read_entire_file_from_path(contract_path, context.allocator)
 	if read_err != nil {
-		fmt.eprintf("mcp gen-contract: read %s: %v\n", contract_path, read_err)
+		fmt.eprintfln("mcp gen-contract: read %s: %v", contract_path, read_err)
 		return 1
 	}
 
 	source, gen_ok := generate_contract_odin(string(contract_bytes))
 	if !gen_ok {
-		fmt.eprintf("mcp gen-contract: failed to generate from %s — verify it is a valid contract\n", contract_path)
+		fmt.eprintfln("mcp gen-contract: failed to generate from %s — verify it is a valid contract", contract_path)
 		return 1
 	}
 
 	if err := os.write_entire_file(out_path, transmute([]u8)source); err != nil {
-		fmt.eprintf("mcp gen-contract: write %s: %v\n", out_path, err)
+		fmt.eprintfln("mcp gen-contract: write %s: %v", out_path, err)
 		return 1
 	}
 
-	fmt.eprintf("mcp gen-contract: wrote %s (%d bytes)\n", out_path, len(source))
+	fmt.eprintfln("mcp gen-contract: wrote %s (%d bytes)", out_path, len(source))
 	return 0
 }

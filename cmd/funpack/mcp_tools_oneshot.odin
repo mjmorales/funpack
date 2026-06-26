@@ -116,13 +116,9 @@ oneshot_check_mode :: proc(arguments: json.Object) -> funpack.Build_Mode {
 // eprints), NOT an IsError. A missing required `dir` is the only IsError here
 // (Invalid_Input — a schema violation the agent must correct before any build runs).
 oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocator := context.allocator) -> string {
-	dir, has_dir := oneshot_arg_string(dispatch.arguments, "dir")
+	dir, has_dir := funpack_runtime.json_string_field(dispatch.arguments, "dir")
 	if !has_dir {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: dir", detail = dispatch.name},
-			allocator,
-		)
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("dir", dispatch.name, allocator), allocator)
 	}
 
 	product, verdict := funpack.stage_build(dir, mode, allocator)
@@ -174,13 +170,9 @@ oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocato
 // count is exit-code-as-data, the agent reads the count and fixes the test, never an
 // internal fault.
 oneshot_test :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
-	dir, has_dir := oneshot_arg_string(dispatch.arguments, "dir")
+	dir, has_dir := funpack_runtime.json_string_field(dispatch.arguments, "dir")
 	if !has_dir {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: dir", detail = "test"},
-			allocator,
-		)
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("dir", dispatch.name, allocator), allocator)
 	}
 
 	project, project_err, project_detail := funpack.read_project(dir)
@@ -244,13 +236,9 @@ oneshot_test_refusal :: proc(id: Mcp_Id, dir: string, error_name: string, messag
 // so the agent sees exactly what to reformat, never an IsError. Only a missing `dir` is
 // an IsError (Invalid_Input).
 oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
-	dir, has_dir := oneshot_arg_string(dispatch.arguments, "dir")
+	dir, has_dir := funpack_runtime.json_string_field(dispatch.arguments, "dir")
 	if !has_dir {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: dir", detail = "fmt"},
-			allocator,
-		)
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("dir", dispatch.name, allocator), allocator)
 	}
 
 	drifted, verdict := funpack.fmt_drift(dir, allocator)
@@ -300,13 +288,9 @@ oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 // `query` arg for warden_find, "" for every other command; graph reads its optional
 // `node` arg as the incident-edge filter.
 oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allocator := context.allocator) -> string {
-	dir, has_dir := oneshot_arg_string(dispatch.arguments, "dir")
+	dir, has_dir := funpack_runtime.json_string_field(dispatch.arguments, "dir")
 	if !has_dir {
-		return mcp_tool_error(
-			dispatch.id,
-			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: dir", detail = dispatch.name},
-			allocator,
-		)
+		return mcp_tool_error(dispatch.id, mcp_missing_string_field("dir", dispatch.name, allocator), allocator)
 	}
 
 	index, refusal := funpack.read_warden_index(dir, allocator)
@@ -331,11 +315,11 @@ oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allo
 	find := funpack.Warden_Find_Query{}
 	arg := ""
 	if cmd == .Find {
-		if query, has_query := oneshot_arg_string(dispatch.arguments, "query"); has_query {
+		if query, has_query := funpack_runtime.json_string_field(dispatch.arguments, "query"); has_query {
 			find.name = query
 		}
 	} else if cmd == .Graph {
-		if node, has_node := oneshot_arg_string(dispatch.arguments, "node"); has_node {
+		if node, has_node := funpack_runtime.json_string_field(dispatch.arguments, "node"); has_node {
 			arg = node
 		}
 	}
@@ -402,9 +386,13 @@ oneshot_write_diagnostics :: proc(b: ^strings.Builder, diag: funpack.Diagnostic,
 }
 
 // oneshot_diag_stage_wire maps a Diag_Stage to its lower-case wire name for the
-// diagnostics array's `stage` field. Exhaustive over the closed stage enum (no default)
-// so a new pipeline stage without a wire name is a compile error here, never a silently
-// stringified `%v` — the closed-enum discipline the rest of this file's wire mappings hold.
+// diagnostics array's `stage` field. The switch carries no `case:` default, so a new
+// pipeline stage arm IS a compile error (Odin's unhandled-case check fires even with the
+// trailing return present), never a silently stringified `%v` — the closed-enum
+// discipline the rest of this file's wire mappings hold. The trailing `return "unknown"`
+// is an unreachable, compiler-mandated fallback: Odin's missing-return analysis does not
+// treat a complete enum switch as terminating, so a terminator is required though every
+// arm already returns.
 oneshot_diag_stage_wire :: proc(stage: funpack.Diag_Stage) -> string {
 	switch stage {
 	case .Parse:
@@ -422,8 +410,9 @@ oneshot_diag_stage_wire :: proc(stage: funpack.Diag_Stage) -> string {
 }
 
 // oneshot_mode_wire is the Build_Mode → wire string for the build/check/export result
-// envelope. Exhaustive (no default) so a new Build_Mode without a wire string is a
-// compile error — the closed-enum discipline.
+// envelope. No `case:` default, so a new Build_Mode arm is a compile error (Odin's
+// unhandled-case check) — the closed-enum discipline. The trailing `return "dev"` is the
+// unreachable fallback Odin's missing-return analysis demands of a complete enum switch.
 oneshot_mode_wire :: proc(mode: funpack.Build_Mode) -> string {
 	switch mode {
 	case .Dev:
@@ -435,9 +424,11 @@ oneshot_mode_wire :: proc(mode: funpack.Build_Mode) -> string {
 }
 
 // fmt_build_error_name maps a Build_Error arm to its wire name for the ok:false build
-// result. Exhaustive over the closed enum so a new arm is a compile error here, never a
-// silently-stringified `%v`. (Named `fmt_*` not `oneshot_*` would collide nothing, but
-// the family prefix keeps it merge-clean.)
+// result. No `case:` default, so a new arm is a compile error (Odin's unhandled-case
+// check), never a silently-stringified `%v`. The trailing `return "unknown"` is the
+// unreachable fallback Odin demands of a complete enum switch (missing-return analysis).
+// (Named `fmt_*` not `oneshot_*` would collide nothing, but the family prefix keeps it
+// merge-clean.)
 fmt_build_error_name :: proc(err: funpack.Build_Error) -> string {
 	switch err {
 	case .None:
@@ -458,8 +449,9 @@ fmt_build_error_name :: proc(err: funpack.Build_Error) -> string {
 	return "unknown"
 }
 
-// fmt_error_name maps a Fmt_Error arm to its wire name for the ok:false fmt result.
-// Exhaustive over the closed enum.
+// fmt_error_name maps a Fmt_Error arm to its wire name for the ok:false fmt result. No
+// `case:` default, so a new arm is a compile error; the trailing `return "unknown"` is the
+// unreachable fallback Odin demands of a complete enum switch (missing-return analysis).
 fmt_error_name :: proc(err: funpack.Fmt_Error) -> string {
 	switch err {
 	case .None:
@@ -475,7 +467,9 @@ fmt_error_name :: proc(err: funpack.Fmt_Error) -> string {
 }
 
 // warden_error_name maps a Warden_Read_Error arm to its wire name for the ok:false
-// warden result. Exhaustive over the closed refusal surface.
+// warden result. No `case:` default, so a new arm is a compile error; the trailing
+// `return "unknown"` is the unreachable fallback Odin demands of a complete enum switch
+// (missing-return analysis).
 warden_error_name :: proc(err: funpack.Warden_Read_Error) -> string {
 	switch err {
 	case .None:
@@ -496,21 +490,6 @@ warden_error_name :: proc(err: funpack.Warden_Read_Error) -> string {
 	return "unknown"
 }
 
-// oneshot_arg_string reads one string argument off the MCP arguments object — the
-// required `dir` selector and the optional warden `query`/`node` filters. An absent or
-// non-string field is has=false (the schema-violation path the arm maps to Invalid_Input
-// for a required arg, or treats as absent for an optional one).
-oneshot_arg_string :: proc(arguments: json.Object, key: string) -> (value: string, has: bool) {
-	field, present := arguments[key]
-	if !present {
-		return "", false
-	}
-	text, is_string := field.(json.String)
-	if !is_string {
-		return "", false
-	}
-	return string(text), true
-}
 // oneshot_family_tools is this family's tool roster — the twelve tools
 // mcp_oneshot_dispatch claims. Kept as a package-level table the family's tests walk
 // (assert each is in TOOL_SPECS under the oneshot group, assert no other family's tool
