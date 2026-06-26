@@ -122,6 +122,25 @@ lint_registry := []Lint {
 		args = cli.cli_range_args(0, 1),
 		run = run_near_lint,
 	},
+	{
+		name = "dead",
+		short = "Report dead (unreferenced) file-private package-level declarations",
+		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report every `@(private=\"file\")` package-level declaration that nothing in its file references — definitively dead code, since a file-private declaration is reachable only from its own file. Odin's -vet does not flag an unused file-private proc/type/const, so this closes that gap. Prints a human table by default, or --json for a byte-stable record array. The analysis is conservative (any ambiguous reference counts as a use), so it under-reports rather than condemn live code.",
+		flags = []cli.Cli_Flag {
+			{
+				name = "exclude",
+				kind = .String,
+				usage = "Comma-separated glob list of paths to skip (e.g. 'cmd/funpack/mcp/corpus/,*.gen.odin')",
+			},
+			{
+				name = "json",
+				kind = .Bool,
+				usage = "Emit the dead declarations as byte-stable JSON instead of the human table",
+			},
+		},
+		args = cli.cli_range_args(0, 1),
+		run = run_dead_lint,
+	},
 }
 
 // build_lint_subtree materializes the registry into cli.Cli_Command leaf nodes —
@@ -165,11 +184,6 @@ build_lint_subtree :: proc(allocator := context.allocator) -> []^cli.Cli_Command
 // freed on return, so the load disposes in a single stroke (the loader's own
 // destroy frees its cache index within that arena).
 run_dup_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
-	root := "."
-	if len(inv.args) > 0 {
-		root = inv.args[0]
-	}
-
 	arena: vmem.Arena
 	if arena_err := vmem.arena_init_growing(&arena); arena_err != .None {
 		fmt.eprintln("eir dup: cannot initialize the scan arena")
@@ -178,30 +192,22 @@ run_dup_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	defer vmem.arena_destroy(&arena)
 	scan := vmem.arena_allocator(&arena)
 
-	excludes := parse_exclude_flag(cli.cli_flag_string(inv, "exclude"), scan)
 	options := Dup_Options {
 		min_nodes     = cli.cli_flag_int(inv, "min-nodes"),
 		fold_literals = cli.cli_flag_bool(inv, "fold-literals"),
 	}
 
-	l: Loader
-	loader_init(&l, scan)
-	defer loader_destroy(&l)
-
-	result, ok := load_dir(&l, root, excludes)
+	result, excludes, ok := load_lint_sources(
+		"dup",
+		lint_root(inv),
+		cli.cli_flag_string(inv, "exclude"),
+		scan,
+	)
 	if !ok {
-		fmt.eprintfln("eir dup: cannot scan %q", root)
 		return 2
 	}
 
 	classes := find_clones(result, options, scan)
-
-	if result.parse_failures > 0 {
-		fmt.eprintfln(
-			"eir dup: %d file(s) failed to parse and were skipped",
-			result.parse_failures,
-		)
-	}
 
 	if baseline_path := cli.cli_flag_string(inv, "baseline"); baseline_path != "" {
 		return run_dup_gate(
@@ -301,11 +307,6 @@ run_dup_gate :: proc(
 // surface stays precision-pure. The whole scan — loader cache, parsed trees, fingerprints,
 // and the rendered report — lives in one growing arena freed on return.
 run_near_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
-	root := "."
-	if len(inv.args) > 0 {
-		root = inv.args[0]
-	}
-
 	arena: vmem.Arena
 	if arena_err := vmem.arena_init_growing(&arena); arena_err != .None {
 		fmt.eprintln("eir near: cannot initialize the scan arena")
@@ -314,31 +315,18 @@ run_near_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	defer vmem.arena_destroy(&arena)
 	scan := vmem.arena_allocator(&arena)
 
-	excludes := parse_exclude_flag(cli.cli_flag_string(inv, "exclude"), scan)
 	opts := Near_Options {
 		min_nodes      = cli.cli_flag_int(inv, "min-nodes"),
 		similarity_pct = cli.cli_flag_int(inv, "similarity"),
 		fold_literals  = cli.cli_flag_bool(inv, "fold-literals"),
 	}
 
-	l: Loader
-	loader_init(&l, scan)
-	defer loader_destroy(&l)
-
-	result, ok := load_dir(&l, root, excludes)
+	result, _, ok := load_lint_sources("near", lint_root(inv), cli.cli_flag_string(inv, "exclude"), scan)
 	if !ok {
-		fmt.eprintfln("eir near: cannot scan %q", root)
 		return 2
 	}
 
 	pairs := find_near_clones(result, opts, scan)
-
-	if result.parse_failures > 0 {
-		fmt.eprintfln(
-			"eir near: %d file(s) failed to parse and were skipped",
-			result.parse_failures,
-		)
-	}
 
 	if cli.cli_flag_bool(inv, "json") {
 		fmt.println(render_near_json(pairs, opts.similarity_pct, scan))
@@ -346,6 +334,79 @@ run_near_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 		fmt.print(render_near_human(pairs, scan))
 	}
 	return 0
+}
+
+// run_dead_lint handles `eir dead`: scan the optional [root] (default cwd) and report the
+// file-private package-level declarations nothing in their file references — definitively
+// dead code. Like dup and near it is a REPORT (exit {0 informational, 2 usage}); a missing
+// `[root]` is the only non-zero path. The whole scan lives in one growing arena freed on
+// return.
+run_dead_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
+	arena: vmem.Arena
+	if arena_err := vmem.arena_init_growing(&arena); arena_err != .None {
+		fmt.eprintln("eir dead: cannot initialize the scan arena")
+		return 2
+	}
+	defer vmem.arena_destroy(&arena)
+	scan := vmem.arena_allocator(&arena)
+
+	result, _, ok := load_lint_sources("dead", lint_root(inv), cli.cli_flag_string(inv, "exclude"), scan)
+	if !ok {
+		return 2
+	}
+
+	dead := find_dead_decls(result, scan)
+
+	if cli.cli_flag_bool(inv, "json") {
+		fmt.println(render_dead_json(dead, scan))
+	} else {
+		fmt.print(render_dead_human(dead, scan))
+	}
+	return 0
+}
+
+// lint_root resolves the optional [root] positional a lint scans, defaulting to the
+// current directory when none is given.
+@(private = "file")
+lint_root :: proc(inv: ^cli.Cli_Invocation) -> string {
+	if len(inv.args) > 0 {
+		return inv.args[0]
+	}
+	return "."
+}
+
+// load_lint_sources is the shared front half of every report lint: parse the --exclude
+// glob list, load the [root] tree through a fresh loader, and surface a parse-failure
+// count. `name` scopes the diagnostics to the calling lint. ok is false on an unresolvable
+// root (the caller returns exit 2). The parsed trees live in `allocator` (the caller's scan
+// arena) and outlive the loader, whose own destroy frees only its cache index — so the
+// returned Load_Result is valid until that arena is freed. The parsed exclude list is
+// returned too, because the dup gate records it in the baseline.
+@(private = "file")
+load_lint_sources :: proc(
+	name, root, exclude_flag: string,
+	allocator := context.allocator,
+) -> (
+	result: Load_Result,
+	excludes: []string,
+	ok: bool,
+) {
+	excludes = parse_exclude_flag(exclude_flag, allocator)
+
+	l: Loader
+	loader_init(&l, allocator)
+	defer loader_destroy(&l)
+
+	result, ok = load_dir(&l, root, excludes)
+	if !ok {
+		fmt.eprintfln("eir %s: cannot scan %q", name, root)
+		return {}, nil, false
+	}
+
+	if result.parse_failures > 0 {
+		fmt.eprintfln("eir %s: %d file(s) failed to parse and were skipped", name, result.parse_failures)
+	}
+	return result, excludes, true
 }
 
 // parse_exclude_flag splits the comma-separated --exclude value into the glob list
