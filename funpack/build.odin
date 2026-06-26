@@ -352,67 +352,44 @@ compile_failed_verdict :: proc(sources: []Source) -> Build_Verdict {
 	return Build_Verdict{err = .Compile_Failed, diagnostic = report.diagnostic}
 }
 
-// project_holed_decl walks every §14 source for the first §05 typed-hole
-// declaration — the project-wide form of the pure-AST release_holed_decl
-// (gates.odin) the --release hole-ban consults. Sources walk in the order the
-// caller supplies — stage_build passes the Index Contract's module order
-// (order_release_sources: entrypoint first, then sorted-by-path remainder) —
-// and each AST in its source-ordered declaration sequence, so a multi-hole
-// project always names the same first offender deterministically, and that
-// offender is the first in index order. The returned declaration is §15 module-qualified
+// project_first_decl walks every §14 source for the first declaration the
+// pure-AST `predicate` flags (gates.odin's release_holed_decl / release_debug_decl,
+// the two --release ban probes), returning it §15 module-qualified. Sources walk
+// in the order the caller supplies — stage_build passes the Index Contract's
+// module order (order_release_sources: entrypoint first, then sorted-by-path
+// remainder) — and each AST in its source-ordered declaration sequence, so a
+// multi-offender project always names the same first offender deterministically,
+// and that offender is the first in index order. The name is §15 module-qualified
 // (qualify_offender — bare on a single-module project, lore #11), matching the
-// Index Contract's qualified_name so the refusal line and the index name the
-// decl identically.
-// A source that fails to read or parse contributes no verdict here — the
+// Index Contract's qualified_name so the refusal line and the index name the decl
+// identically. A source that fails to read or parse contributes no verdict — the
 // checked pipeline downstream surfaces that compile error precisely
-// (Compile_Failed), so the ban never masks a parse failure with a hole verdict.
-project_holed_decl :: proc(sources: []Source) -> (declaration: string, holed: bool) {
+// (Compile_Failed), so the ban never masks a parse failure with a hole/probe
+// verdict.
+project_first_decl :: proc(sources: []Source, predicate: proc(ast: Ast) -> (string, bool)) -> (declaration: string, found: bool) {
 	for source in sources {
-		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
-		if read_err != nil {
+		ast, ok := parse_source(source.path)
+		if !ok {
 			continue
 		}
-		ast, parse_err := stage_parse(stage_lex(string(bytes)))
-		if parse_err != .None {
-			continue
-		}
-		if name, found := release_holed_decl(ast); found {
+		if name, hit := predicate(ast); hit {
 			return qualify_offender(sources, source, name), true
 		}
 	}
 	return "", false
 }
 
-// project_debug_decl walks every §14 source for the first declaration carrying
-// a §05 §5 debug probe — the project-wide form of the pure-AST
-// release_debug_decl (gates.odin) the --release debug-directive ban consults,
-// mirroring project_holed_decl exactly. Sources walk in the order the caller
-// supplies — stage_build passes the Index Contract's module order
-// (order_release_sources: entrypoint first, then sorted-by-path remainder) —
-// and each AST in its source-ordered declaration sequence, so a multi-probe
-// project always names the same first offender deterministically, and that
-// offender is the first in index order. The returned declaration is §15 module-qualified
-// (qualify_offender — bare on a single-module project, lore #11), matching the
-// Index Contract's qualified_name so the refusal line and the index name the
-// decl identically. A source that fails to read or parse contributes
-// no verdict here — the checked pipeline downstream surfaces that compile
-// error precisely (Compile_Failed), so the ban never masks a parse failure
-// with a probe verdict.
+// project_holed_decl is the --release typed-hole ban's project walk: the first §05
+// hole-bearing declaration across the sources (release_holed_decl per AST).
+project_holed_decl :: proc(sources: []Source) -> (declaration: string, holed: bool) {
+	return project_first_decl(sources, release_holed_decl)
+}
+
+// project_debug_decl is the --release debug-directive ban's project walk: the
+// first §05 §5 probe-bearing declaration across the sources (release_debug_decl
+// per AST).
 project_debug_decl :: proc(sources: []Source) -> (declaration: string, probed: bool) {
-	for source in sources {
-		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
-		if read_err != nil {
-			continue
-		}
-		ast, parse_err := stage_parse(stage_lex(string(bytes)))
-		if parse_err != .None {
-			continue
-		}
-		if name, found := release_debug_decl(ast); found {
-			return qualify_offender(sources, source, name), true
-		}
-	}
-	return "", false
+	return project_first_decl(sources, release_debug_decl)
 }
 
 // qualify_offender builds a release refusal's §15 module-qualified offender
@@ -553,7 +530,7 @@ emit_tree_artifact :: proc(root: string, project: Project, sources: []Source, al
 // sorted-filename order (the §14.4 deterministic subsystem walk) and each
 // level's layers/spawns ride in declaration order, so both slices are a pure
 // function of the tree. Each level bakes against its own `things <module>`
-// schema source and the ONE project-global tile table (project_tile_table over
+// schema source and the ONE project-global tile table (flvl_project_tile_table over
 // every manifest-registered tileset — the tilemap-legend ADR's flat namespace).
 // ok = false on ANY floor — an unreadable/unparsable level, a missing schema
 // source, a manifest or tileset that cannot build the table, or a §17.4/§18 §5
@@ -569,7 +546,7 @@ bake_tree_levels :: proc(root: string, sources: []Source, index: Module_Index, a
 	if !tilesets_ok {
 		return nil, nil, false
 	}
-	table, table_err := project_tile_table(tilesets, context.temp_allocator)
+	table, table_err := flvl_project_tile_table(tilesets, context.temp_allocator)
 	if table_err != .None {
 		return nil, nil, false
 	}
@@ -720,7 +697,7 @@ bake_layer_nav_graph :: proc(layer: Baked_Tile_Layer, allocator := context.alloc
 			if node < 0 {
 				continue
 			}
-			// The center from the layer alone (cell_center math, flvl_bake.odin):
+			// The center from the layer alone (flvl_cell_center math, flvl_bake.odin):
 			// the grid's top-left corner is (anchor_x, anchor_y), col grows +x and
 			// row grows -y, so the cell center is half a cell in from its corner.
 			off := fixed_add(to_fixed(int_mul(i64(c), layer.cell_size)), half)
@@ -801,7 +778,7 @@ collect_level_paths :: proc(root: string) -> []string {
 }
 
 // read_tree_tilesets imports every manifest-registered tileset under assets/ —
-// the inputs project_tile_table aggregates into the §18 §3 project-global tile
+// the inputs flvl_project_tile_table aggregates into the §18 §3 project-global tile
 // namespace. The committed assets.manifest is the source of truth (§19 §3): a
 // tileset entry's source file imports with the entry's declared dependency
 // hashes (a tileset deps-on its atlas, §19 §5). A tree with no manifest has no
@@ -853,12 +830,8 @@ build_sibling_module_asts :: proc(sources: []Source, entry_module: string) -> ma
 		if s.module == entry_module {
 			continue
 		}
-		bytes, read_err := os.read_entire_file_from_path(s.path, context.temp_allocator)
-		if read_err != nil {
-			continue
-		}
-		ast, parse_err := stage_parse(stage_lex(string(bytes)))
-		if parse_err != .None {
+		ast, ok := parse_source(s.path)
+		if !ok {
 			continue
 		}
 		asts[s.module] = ast
@@ -904,12 +877,8 @@ build_project_module_index :: proc(sources: []Source) -> Module_Index {
 		// through the §30 §6 expose edge and its own imports resolve from
 		// its own vantage.
 		package_roots[i] = source.package_root
-		bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
-		if read_err != nil {
-			continue
-		}
-		ast, parse_err := stage_parse(stage_lex(string(bytes)))
-		if parse_err != .None {
+		ast, ok := parse_source(source.path)
+		if !ok {
 			continue
 		}
 		asts[i] = ast

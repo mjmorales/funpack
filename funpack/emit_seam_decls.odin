@@ -81,7 +81,7 @@ collect_imported_decls :: proc(entry_ast: Ast, module_asts: map[string]Ast) -> I
 				append(&signals, decl)
 				continue
 			}
-			if decl, found := schema_thing(seam_ast, member); found {
+			if decl, found := flvl_schema_thing(seam_ast, member); found {
 				decl.fields = fold_field_decls(decl.fields, seam_ast)
 				append(&things, decl)
 			}

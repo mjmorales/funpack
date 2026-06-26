@@ -188,7 +188,10 @@ FUNPACK_RECURSIVE_PRUNE_DIRS :: []string{".git", FUNPACK_BUILD_DIR, VENDOR_DIR}
 // skipped wholesale. The root itself is tested separately because the walker
 // yields a start directory's children, never the start directory.
 discover_project_roots :: proc(root: string, allocator := context.allocator) -> []string {
-	roots := make([dynamic]string, 0, 8, context.temp_allocator)
+	// The spine shares the elements' lifetime: each clone lands in `allocator`, so
+	// backing the dynamic array in the same allocator keeps the returned slice and
+	// its strings on one lifetime rather than splitting across temp + caller.
+	roots := make([dynamic]string, 0, 8, allocator)
 	// The walker yields `root`'s children but not `root` itself, so adjudicate the
 	// root as a project up front. A root that is itself a project is the whole
 	// answer — projects do not nest, so its subtree is not swept for more.

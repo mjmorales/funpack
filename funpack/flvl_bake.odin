@@ -184,14 +184,14 @@ Project_Tile :: struct {
 	tags:    []string,
 }
 
-// project_tile_table aggregates the project's imported tilesets into the one
+// flvl_project_tile_table aggregates the project's imported tilesets into the one
 // flat §18 §3 tile namespace, in tileset slice order then tile source order —
 // never a map, so the table is deterministic. Two tilesets declaring the same
 // tile name is the Tile_Name_Collision bake gate (one name, one tile — the
 // duplicate-named-marker discipline applied to tiles, per the ADR); the
 // WITHIN-tileset duplicate is the importer's own Duplicate_Tile_Name reject,
 // upstream of this table.
-project_tile_table :: proc(tilesets: []Tileset_Asset, allocator := context.allocator) -> (table: []Project_Tile, err: Bake_Error) {
+flvl_project_tile_table :: proc(tilesets: []Tileset_Asset, allocator := context.allocator) -> (table: []Project_Tile, err: Bake_Error) {
 	entries := make([dynamic]Project_Tile, 0, 8, allocator)
 	for tileset in tilesets {
 		for tile in tileset.tiles {
@@ -250,7 +250,7 @@ Baked_Tile :: struct {
 //
 // anchor_x/anchor_y are the world point of the grid's TOP-LEFT corner —
 // (bounds_min.x, bounds_max.y), the same corner the marker/cell() lowering
-// anchors on (cell_center) — carried as authoritative v12 format data on the
+// anchors on (flvl_cell_center) — carried as authoritative v12 format data on the
 // [tilemaps] lead line (the tilemap-anchor ADR), so the runtime reproduces the
 // bake's mapping from the record alone for ANY level bounds.
 Baked_Tile_Layer :: struct {
@@ -283,11 +283,11 @@ TILE_LAYER_EMPTY_CELL :: -1
 // `at` needs a `pos` of the level's arity; a Ref[T] field's target type T is the
 // reference's required thing type).
 
-// schema_thing finds a thing declaration by name in the schema module's Ast,
+// flvl_schema_thing finds a thing declaration by name in the schema module's Ast,
 // walked by index (never a map — the determinism tripwire). found = false when
 // the name is not a schema thing (it may still be a prefab type, checked by the
 // caller).
-schema_thing :: proc(schema: Ast, name: string) -> (thing: Thing_Node, found: bool) {
+flvl_schema_thing :: proc(schema: Ast, name: string) -> (thing: Thing_Node, found: bool) {
 	for candidate in schema.things {
 		if candidate.name == name {
 			return candidate, true
@@ -296,10 +296,10 @@ schema_thing :: proc(schema: Ast, name: string) -> (thing: Thing_Node, found: bo
 	return Thing_Node{}, false
 }
 
-// schema_field finds a field by name on a thing, walked by index. The §17.4
+// flvl_schema_field finds a field by name on a thing, walked by index. The §17.4
 // param-not-on-schema and at-without-pos gates both ask this question — a param
 // key must name a field, and `at` needs a `pos` field.
-schema_field :: proc(thing: Thing_Node, name: string) -> (field: Field_Decl, found: bool) {
+flvl_schema_field :: proc(thing: Thing_Node, name: string) -> (field: Field_Decl, found: bool) {
 	for candidate in thing.fields {
 		if candidate.name == name {
 			return candidate, true
@@ -405,7 +405,7 @@ Bake_Context :: struct {
 // model, or rejects with the §17.4 gate the level trips. The schema is the
 // `things <module>` module's parsed Ast; index is the project name index used to
 // resolve that the `things` module exists; tiles is the project-global §18 §3
-// tile table (project_tile_table over every imported .tiles tileset) the
+// tile table (flvl_project_tile_table over every imported .tiles tileset) the
 // tilemap legends resolve through — nil is the layer-less default, where any
 // legend tile name is Unknown_Tile_Name. This is the bake story's single seam;
 // the seam-emit byte contract is the leaf story's, downstream of this.
@@ -563,14 +563,14 @@ expand_for :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, loop: Flvl_For, bound
 // emits one spawn. An unknown type — neither prefab nor schema thing — is the
 // unknown-thing-type reject.
 expand_place :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Place, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
-	if prefab, is_prefab := find_prefab(scope.prefabs, place.type_name); is_prefab {
+	if prefab, is_prefab := flvl_find_prefab(scope.prefabs, place.type_name); is_prefab {
 		return stamp_prefab(ctx, scope, place, prefab, bounds_min, bounds_max)
 	}
 	// A placed type that is not a prefab must be a schema thing the things module
 	// exports. The things-module existence was proven up front (bake_flvl); here
 	// the schema Ast supplies the thing's full fields. A type that is neither a
 	// prefab nor a schema thing is Unknown_Thing_Type.
-	if _, is_thing := schema_thing(ctx.schema, place.type_name); is_thing {
+	if _, is_thing := flvl_schema_thing(ctx.schema, place.type_name); is_thing {
 		return emit_thing_spawn(ctx, scope, place, bounds_min, bounds_max)
 	}
 	return .Unknown_Thing_Type
@@ -732,10 +732,10 @@ resolve_cell_anchor :: proc(scope: ^Bake_Scope, call: ^Flvl_Call_Expr, bounds_mi
 	if col < 0 || col >= i64(grid.cols) || row < 0 || row >= i64(grid.rows) {
 		return Baked_Coord{}, .Cell_Outside_Grid
 	}
-	return cell_center(col, row, grid.cell_size, bounds_min, bounds_max, dim), .None
+	return flvl_cell_center(col, row, grid.cell_size, bounds_min, bounds_max, dim), .None
 }
 
-// cell_center is the grid→world mapping (spec §18 §3 — a marker spawns "at its
+// flvl_cell_center is the grid→world mapping (spec §18 §3 — a marker spawns "at its
 // cell center", and cell() is the same point): the grid's top-left corner
 // anchors at (bounds_min.x, bounds_max.y) — row 0 is the TOP row, the
 // picture's reading, with the world's y-up pinned by the top_edge/bottom_edge
@@ -743,7 +743,7 @@ resolve_cell_anchor :: proc(scope: ^Bake_Scope, call: ^Flvl_Call_Expr, bounds_mi
 // kernel (a half-cell is exact in Fixed even for an odd cell size), so the
 // center is bit-identical everywhere. A 3d level's grid layer sits at the
 // bounds' z floor (stacked layers giving the third axis ride a later story).
-cell_center :: proc(col, row: i64, cell_size: i64, bounds_min, bounds_max: Baked_Coord, dim: Flvl_Dim) -> Baked_Coord {
+flvl_cell_center :: proc(col, row: i64, cell_size: i64, bounds_min, bounds_max: Baked_Coord, dim: Flvl_Dim) -> Baked_Coord {
 	half := fixed_div(to_fixed(cell_size), to_fixed(2))
 	x := fixed_add(bounds_min.x, fixed_add(to_fixed(int_mul(col, cell_size)), half))
 	y := fixed_sub(bounds_max.y, fixed_add(to_fixed(int_mul(row, cell_size)), half))
@@ -835,10 +835,10 @@ fold_int :: proc(scope: ^Bake_Scope, expr: Flvl_Anchor_Expr) -> (value: i64, err
 
 // ── Bounds gate ─────────────────────────────────────────────────────────────
 
-// within_bounds reports whether a coordinate lies inside the level's bounds box
+// flvl_within_bounds reports whether a coordinate lies inside the level's bounds box
 // (inclusive of the corners). A placement outside the bounds is the §17.4
 // out-of-bounds compile error.
-within_bounds :: proc(coord, bounds_min, bounds_max: Baked_Coord) -> bool {
+flvl_within_bounds :: proc(coord, bounds_min, bounds_max: Baked_Coord) -> bool {
 	if coord.x < bounds_min.x || coord.x > bounds_max.x {
 		return false
 	}
@@ -862,18 +862,18 @@ within_bounds :: proc(coord, bounds_min, bounds_max: Baked_Coord) -> bool {
 // records the resolved spawn. The instance's coordinate is recorded as a sibling
 // so a later instance-relative base resolves against it.
 emit_thing_spawn :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Place, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
-	thing, _ := schema_thing(ctx.schema, place.type_name)
+	thing, _ := flvl_schema_thing(ctx.schema, place.type_name)
 
 	// `at` writes `pos`: the thing must declare a `pos` of the level's arity
 	// (spec §17.1 — the dimensionality check). No `pos`, or a wrong-arity `pos`,
 	// is at-without-pos.
-	pos_field, has_pos := schema_field(thing, "pos")
+	pos_field, has_pos := flvl_schema_field(thing, "pos")
 	if !has_pos || !pos_arity_matches(pos_field, ctx.level.dim) {
 		return .At_Without_Pos
 	}
 
 	pos := resolve_position(scope, place.position, bounds_min, bounds_max, ctx.level.dim) or_return
-	if !within_bounds(pos, bounds_min, bounds_max) {
+	if !flvl_within_bounds(pos, bounds_min, bounds_max) {
 		return .Outside_Bounds
 	}
 
@@ -882,12 +882,12 @@ emit_thing_spawn :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Pla
 	// gate) and gets a Ref table entry.
 	id: u64
 	if place.has_name {
-		qualified := qualify(scope.name_prefix, place.instance_name)
+		qualified := flvl_qualify(scope.name_prefix, place.instance_name)
 		if ctx.names[qualified] {
 			return .Duplicate_Name
 		}
 		ctx.names[qualified] = true
-		id = stable_id(qualified)
+		id = flvl_stable_id(qualified)
 		ref_index := len(ctx.refs)
 		append(&ctx.refs, Baked_Ref{
 			name       = qualified,
@@ -948,7 +948,7 @@ emit_thing_spawn :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Pla
 // records no tile, and a marker cell emits its spawn at the cell center — the
 // §18 §3 row-major derivation that makes marker ids deterministic.
 expand_tilemap :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, tilemap: Flvl_Tilemap, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
-	qualified := qualify(scope.name_prefix, tilemap.name)
+	qualified := flvl_qualify(scope.name_prefix, tilemap.name)
 	if ctx.names[qualified] {
 		return .Duplicate_Name
 	}
@@ -1028,7 +1028,7 @@ expand_tilemap :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, tilemap: Flvl_Til
 		cols      = cols,
 		rows      = rows,
 		// The grid→world anchor: the grid's top-left corner sits at
-		// (bounds_min.x, bounds_max.y) — the same corner cell_center anchors
+		// (bounds_min.x, bounds_max.y) — the same corner flvl_cell_center anchors
 		// the marker/cell() lowering on, carried so the artifact's mapping is
 		// self-describing (v12, the tilemap-anchor ADR).
 		anchor_x  = bounds_min.x,
@@ -1076,28 +1076,28 @@ palette_index :: proc(palette: []Baked_Tile, name: string) -> int {
 // and no facing — every field beyond `pos` defaults (the dungeon schema's
 // reading).
 emit_marker_spawn :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, entry: Flvl_Legend_Entry, col, row: i64, cell_size: i64, bounds_min, bounds_max: Baked_Coord) -> Bake_Error {
-	thing, is_thing := schema_thing(ctx.schema, entry.spawn_type)
+	thing, is_thing := flvl_schema_thing(ctx.schema, entry.spawn_type)
 	if !is_thing {
 		return .Unknown_Thing_Type
 	}
-	pos_field, has_pos := schema_field(thing, "pos")
+	pos_field, has_pos := flvl_schema_field(thing, "pos")
 	if !has_pos || !pos_arity_matches(pos_field, ctx.level.dim) {
 		return .At_Without_Pos
 	}
 
-	pos := cell_center(col, row, cell_size, bounds_min, bounds_max, ctx.level.dim)
-	if !within_bounds(pos, bounds_min, bounds_max) {
+	pos := flvl_cell_center(col, row, cell_size, bounds_min, bounds_max, ctx.level.dim)
+	if !flvl_within_bounds(pos, bounds_min, bounds_max) {
 		return .Outside_Bounds
 	}
 
 	id: u64
 	if entry.has_spawn_name {
-		qualified := qualify(scope.name_prefix, entry.spawn_name)
+		qualified := flvl_qualify(scope.name_prefix, entry.spawn_name)
 		if ctx.names[qualified] {
 			return .Duplicate_Name
 		}
 		ctx.names[qualified] = true
-		id = stable_id(qualified)
+		id = flvl_stable_id(qualified)
 		ref_index := len(ctx.refs)
 		append(&ctx.refs, Baked_Ref{
 			name       = qualified,
@@ -1144,7 +1144,7 @@ resolve_params :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, thing: Thing_Node
 			return nil, .Param_Not_On_Schema
 		}
 		field_name := param.path[0]
-		field, has_field := schema_field(thing, field_name)
+		field, has_field := flvl_schema_field(thing, field_name)
 		if !has_field {
 			return nil, .Param_Not_On_Schema
 		}
@@ -1172,7 +1172,7 @@ resolve_param_value :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, field: Field
 		if !is_ref_field {
 			return Baked_Param{}, .Type_Mismatched_Ref
 		}
-		ref, found := find_ref(ctx.refs[:], name_expr.name)
+		ref, found := flvl_find_ref(ctx.refs[:], name_expr.name)
 		if !found {
 			return Baked_Param{}, .Unresolved_Name
 		}
@@ -1210,7 +1210,7 @@ stamp_prefab :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Place, 
 	// The prefab's local origin is the placement's resolved `at` point; member
 	// `origin`/instance-relative anchors resolve against it.
 	origin := resolve_position(scope, place.position, bounds_min, bounds_max, ctx.level.dim) or_return
-	if !within_bounds(origin, bounds_min, bounds_max) {
+	if !flvl_within_bounds(origin, bounds_min, bounds_max) {
 		return .Outside_Bounds
 	}
 
@@ -1220,13 +1220,13 @@ stamp_prefab :: proc(ctx: ^Bake_Context, scope: ^Bake_Scope, place: Flvl_Place, 
 	prefix := scope.name_prefix
 	inst_name := place.instance_name
 	if place.has_name {
-		prefix = qualify(scope.name_prefix, place.instance_name)
+		prefix = flvl_qualify(scope.name_prefix, place.instance_name)
 		if ctx.names[prefix] {
 			return .Duplicate_Name
 		}
 		ctx.names[prefix] = true
 	} else {
-		prefix = qualify(scope.name_prefix, strings.to_lower(place.type_name, context.temp_allocator))
+		prefix = flvl_qualify(scope.name_prefix, strings.to_lower(place.type_name, context.temp_allocator))
 		inst_name = strings.to_lower(place.type_name, context.temp_allocator)
 	}
 
@@ -1373,10 +1373,10 @@ find_place_index :: proc(places: []Flvl_Place, name: string) -> int {
 
 // ── Lookups & ids ───────────────────────────────────────────────────────────
 
-// find_prefab finds a prefab declaration by type name in the level's top-level
+// flvl_find_prefab finds a prefab declaration by type name in the level's top-level
 // prefab list, walked by index. A `place <Type>` whose type matches stamps the
 // prefab rather than emitting a thing spawn.
-find_prefab :: proc(prefabs: []Flvl_Prefab, name: string) -> (prefab: Flvl_Prefab, found: bool) {
+flvl_find_prefab :: proc(prefabs: []Flvl_Prefab, name: string) -> (prefab: Flvl_Prefab, found: bool) {
 	for candidate in prefabs {
 		if candidate.name == name {
 			return candidate, true
@@ -1385,12 +1385,12 @@ find_prefab :: proc(prefabs: []Flvl_Prefab, name: string) -> (prefab: Flvl_Prefa
 	return Flvl_Prefab{}, false
 }
 
-// find_ref finds a baked Ref table entry by its BARE local name (the name a
+// flvl_find_ref finds a baked Ref table entry by its BARE local name (the name a
 // reference-by-name writes — `gate: plate` names `plate`), walked by index. A
 // reference is resolved against the entries claimed before it, so a forward
 // reference (a name placed later) is Unresolved_Name at the point it is read —
 // declaration order is the resolution order.
-find_ref :: proc(refs: []Baked_Ref, local_name: string) -> (ref: Baked_Ref, found: bool) {
+flvl_find_ref :: proc(refs: []Baked_Ref, local_name: string) -> (ref: Baked_Ref, found: bool) {
 	for candidate in refs {
 		if candidate.local_name == local_name {
 			return candidate, true
@@ -1399,11 +1399,11 @@ find_ref :: proc(refs: []Baked_Ref, local_name: string) -> (ref: Baked_Ref, foun
 	return Baked_Ref{}, false
 }
 
-// qualify joins a name prefix and a bare instance name into a level-qualified
+// flvl_qualify joins a name prefix and a bare instance name into a level-qualified
 // dotted name (`Arena` + `exit` → `Arena.exit`; `Arena.right_gun` + `cannon` →
 // `Arena.right_gun.cannon`). The qualified name is the stable-Id seed and the
 // duplicate-name key.
-qualify :: proc(prefix, name: string) -> string {
+flvl_qualify :: proc(prefix, name: string) -> string {
 	return strings.concatenate({prefix, ".", name}, context.temp_allocator)
 }
 
@@ -1446,13 +1446,13 @@ check_flvl_seam_layering :: proc(seam: Ast, module_asts: map[string]Ast) -> Bake
 	return .None
 }
 
-// stable_id derives a named instance's Id from its level-qualified name
+// flvl_stable_id derives a named instance's Id from its level-qualified name
 // (spec §17.2 — "stable ids by name", so a Ref is constant across loads, saves,
 // and replays). It is the FNV-1a 64-bit hash of the qualified-name bytes: a pure
 // function of the name, deterministic on every machine, and renaming the instance
 // changes the Id (the propagation property — a renamed name disappears from the
 // seam, so every reader stops compiling at the spot to fix).
-stable_id :: proc(qualified_name: string) -> u64 {
+flvl_stable_id :: proc(qualified_name: string) -> u64 {
 	hash: u64 = 0xcbf29ce484222325 // FNV-1a 64-bit offset basis
 	for b in transmute([]u8)qualified_name {
 		hash ~= u64(b)

@@ -193,7 +193,7 @@ append_prefab_record :: proc(records: [dynamic]Seam_Decl, level_name: string, pr
 	for member, i in prefab.members {
 		fields[i] = Seam_Field {
 			name = strings.clone(member.local_name, allocator),
-			type = ref_type_token(member.thing_type, allocator),
+			type = flvl_ref_type_token(member.thing_type, allocator),
 		}
 	}
 	append(&records, Seam_Decl {
@@ -220,7 +220,7 @@ level_symbol_fields :: proc(baked: Baked_Level, allocator := context.allocator) 
 			ref := baked.refs[symbol.index]
 			fields[i] = Seam_Field {
 				name = strings.clone(symbol.local_name, allocator),
-				type = ref_type_token(ref.thing_type, allocator),
+				type = flvl_ref_type_token(ref.thing_type, allocator),
 			}
 		case .Prefab:
 			prefab := baked.prefabs[symbol.index]
@@ -240,9 +240,9 @@ tilemap_handle_value :: proc(layer_name: string, allocator := context.allocator)
 	return strings.concatenate({"TilemapHandle{name: \"", layer_name, "\"}"}, allocator)
 }
 
-// ref_type_token renders a `Ref[<thing_type>]` field type token — the typed
+// flvl_ref_type_token renders a `Ref[<thing_type>]` field type token — the typed
 // reference a simple symbol and a prefab member both carry (spec §08/§17.2).
-ref_type_token :: proc(thing_type: string, allocator := context.allocator) -> string {
+flvl_ref_type_token :: proc(thing_type: string, allocator := context.allocator) -> string {
 	return strings.concatenate({"Ref[", thing_type, "]"}, allocator)
 }
 

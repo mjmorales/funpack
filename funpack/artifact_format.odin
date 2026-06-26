@@ -630,14 +630,18 @@ node_child_count :: proc(line: string) -> (count: int, ok: bool) {
 		// A `tuple` arm carries children (the trailing count); every other arm
 		// pattern is fixed at 0 (its trailing field is the binder list).
 		if arm_pattern_kind(line) == ARM_TUPLE_PATTERN {
-			space := strings.last_index_byte(line, ' ')
-			if space < 0 {
-				return 0, false
-			}
-			return strconv.parse_int(line[space + 1:])
+			return parse_trailing_int(line)
 		}
 		return 0, true
 	}
+	return parse_trailing_int(line)
+}
+
+// parse_trailing_int reads a body-node line's trailing decimal token — the child
+// count after the last space (§2.7). ok is false when the line has no space or
+// the trailing token is not an integer, so a malformed line never yields a bogus
+// count.
+parse_trailing_int :: proc(line: string) -> (int, bool) {
 	space := strings.last_index_byte(line, ' ')
 	if space < 0 {
 		return 0, false

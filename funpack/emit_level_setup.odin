@@ -149,12 +149,12 @@ encode_level_param :: proc(thing_type: string, param: Baked_Param, own_things: [
 level_param_field :: proc(thing_type: string, field_name: string, own_things: []Thing_Node, imported_things: []Thing_Node) -> (field: Field_Decl, found: bool) {
 	for thing in own_things {
 		if thing.name == thing_type {
-			return schema_field(thing, field_name)
+			return flvl_schema_field(thing, field_name)
 		}
 	}
 	for thing in imported_things {
 		if thing.name == thing_type {
-			return schema_field(thing, field_name)
+			return flvl_schema_field(thing, field_name)
 		}
 	}
 	return Field_Decl{}, false

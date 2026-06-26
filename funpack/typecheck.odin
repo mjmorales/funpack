@@ -2021,6 +2021,23 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	return nil, false, .None
 }
 
+// is_combinator_name reports membership in the closed call-site-inferred
+// combinator set — the names combinator_call_check dispatches and the names
+// surface_signatures returns found = false for (their params depend on the call
+// site, not the fixed table). It is the single membership authority so the §02
+// §4 UFCS reach test (is_stdlib_free_fn) never re-lists the set and drifts from
+// the dispatch.
+is_combinator_name :: proc(name: string) -> bool {
+	switch name {
+	case "fold", "first", "find", "last", "neighbors", "in_bounds", "within",
+	     "nearest_first", "or_else", "map", "filter", "concat", "contains",
+	     "prepend", "append", "reverse", "init", "is_empty", "len", "get",
+	     "empty", "has", "set", "remove", "keys", "values", "pick", "grid_cells":
+		return true
+	}
+	return false
+}
+
 // map_check types map(source, fn) (spec §08): the source is a List[T] or a
 // View[T], the function is (T) -> R inferred from the element type, and the
 // result is a list of the function's result type — `map(foods, fn(f){ … })`
@@ -2905,35 +2922,7 @@ method_check :: proc(ctx: Check_Ctx, callee: ^Member_Expr, e: ^Call_Expr) -> (ty
 // name outside this set is not lowered, so a genuine non-UFCS method keeps its
 // accurate value-method diagnostic rather than a misleading free-call error.
 is_stdlib_free_fn :: proc(name: string) -> bool {
-	switch name {
-	case "fold",
-	     "first",
-	     "find",
-	     "last",
-	     "neighbors",
-	     "in_bounds",
-	     "within",
-	     "nearest_first",
-	     "or_else",
-	     "map",
-	     "filter",
-	     "concat",
-	     "contains",
-	     "prepend",
-	     "append",
-	     "reverse",
-	     "init",
-	     "is_empty",
-	     "len",
-	     "get",
-	     "empty",
-	     "has",
-	     "set",
-	     "remove",
-	     "keys",
-	     "values",
-	     "pick",
-	     "grid_cells":
+	if is_combinator_name(name) {
 		return true
 	}
 	if _, found := surface_signatures(name); found {

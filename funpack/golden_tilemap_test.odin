@@ -72,7 +72,7 @@ bake_example_level :: proc(t: ^testing.T, dir: string, level_file, schema_file, 
 	testing.expect_value(t, import_err, Importer_Error.None)
 	tilesets := make([]Tileset_Asset, 1, context.temp_allocator)
 	tilesets[0] = tileset
-	table, table_err := project_tile_table(tilesets, context.temp_allocator)
+	table, table_err := flvl_project_tile_table(tilesets, context.temp_allocator)
 	testing.expect_value(t, table_err, Bake_Error.None)
 
 	index := build_module_index_from_asts({schema_module}, {parsed_schema})

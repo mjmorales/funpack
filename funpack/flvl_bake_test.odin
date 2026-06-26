@@ -139,13 +139,13 @@ test_flvl_bake_stable_name_ids :: proc(t: ^testing.T) {
 	hero, _ := find_baked_ref(baked.refs, "Arena.hero")
 	plate, _ := find_baked_ref(baked.refs, "Arena.plate")
 	// The Id is the deterministic hash of the qualified name — recomputable.
-	testing.expect_value(t, hero.id, stable_id("Arena.hero"))
-	testing.expect_value(t, plate.id, stable_id("Arena.plate"))
+	testing.expect_value(t, hero.id, flvl_stable_id("Arena.hero"))
+	testing.expect_value(t, plate.id, flvl_stable_id("Arena.plate"))
 	// Distinct names → distinct Ids (no collision among the fixture's names).
 	testing.expect(t, hero.id != plate.id)
 	// A prefab member's Id keys off its deep qualified name.
 	cannon, _ := find_baked_ref(baked.refs, "Arena.right_gun.cannon")
-	testing.expect_value(t, cannon.id, stable_id("Arena.right_gun.cannon"))
+	testing.expect_value(t, cannon.id, flvl_stable_id("Arena.right_gun.cannon"))
 }
 
 @(test)
@@ -349,7 +349,7 @@ tile_table_fixture :: proc(t: ^testing.T) -> []Project_Tile {
 	tiles[1] = Tileset_Tile{name = "floor", cell_x = 0, cell_y = 0, solid = false}
 	sets := make([]Tileset_Asset, 1, context.temp_allocator)
 	sets[0] = Tileset_Asset{name = "Fixture", atlas = "fix", tiles = tiles}
-	table, err := project_tile_table(sets, context.temp_allocator)
+	table, err := flvl_project_tile_table(sets, context.temp_allocator)
 	testing.expect_value(t, err, Bake_Error.None)
 	return table
 }
@@ -450,7 +450,7 @@ test_flvl_bake_tilemap_clean_fixture :: proc(t: ^testing.T) {
 	hero, has_hero := find_baked_ref(baked.refs, "Arena.hero")
 	testing.expect(t, has_hero)
 	testing.expect_value(t, hero.thing_type, "Player")
-	testing.expect_value(t, hero.id, stable_id("Arena.hero"))
+	testing.expect_value(t, hero.id, flvl_stable_id("Arena.hero"))
 	testing.expect_value(t, baked.spawns[1].id, 0)
 	testing.expect_value(t, len(baked.symbols), 2)
 	testing.expect_value(t, baked.symbols[0].local_name, "hero")
@@ -545,7 +545,7 @@ test_flvl_gate_tile_name_collision :: proc(t: ^testing.T) {
 	sets := make([]Tileset_Asset, 2, context.temp_allocator)
 	sets[0] = Tileset_Asset{name = "A", atlas = "a", tiles = first}
 	sets[1] = Tileset_Asset{name = "B", atlas = "b", tiles = second}
-	_, err := project_tile_table(sets, context.temp_allocator)
+	_, err := flvl_project_tile_table(sets, context.temp_allocator)
 	testing.expect_value(t, err, Bake_Error.Tile_Name_Collision)
 }
 
@@ -669,7 +669,7 @@ level Arena 2d {
 // ── Test-local lookup helpers ───────────────────────────────────────────────
 
 // find_baked_ref finds a Ref table entry by its level-qualified name, walked by
-// index. Test-local: the bake's own find_ref keys on the BARE local name (the
+// index. Test-local: the bake's own flvl_find_ref keys on the BARE local name (the
 // reference-by-name resolution key), while the assertions want the qualified
 // name.
 find_baked_ref :: proc(refs: []Baked_Ref, qualified: string) -> (ref: Baked_Ref, found: bool) {

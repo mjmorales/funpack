@@ -657,7 +657,10 @@ probe_directive_name :: proc(kind: Debug_Probe_Kind) -> string {
 // empty_strings is the canonical mandatory-present empty list (spec §29 §2: an
 // absent value is the empty list, never an omitted key). It is the value the
 // always-empty directive fields and the behavior-scoped fields of a non-emitting
-// decl carry.
+// decl carry. It returns nil — core:encoding/json marshals a nil slice as the
+// mandatory `[]` (the writer brackets a zero-length iteration, never `null`), so
+// the present-empty contract holds with no per-call allocation, and the result is
+// only ever read (assigned to a record field or reassigned), never mutated.
 empty_strings :: proc() -> []string {
-	return make([]string, 0, context.temp_allocator)
+	return nil
 }

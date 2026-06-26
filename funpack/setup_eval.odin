@@ -469,16 +469,7 @@ encode_setup_token :: proc(expr: Expr) -> string {
 encode_record_token :: proc(e: ^Record_Expr) -> string {
 	b := strings.builder_make(context.temp_allocator)
 	strings.write_string(&b, e.type_name)
-	strings.write_byte(&b, '(')
-	for field, i in e.fields {
-		if i > 0 {
-			strings.write_byte(&b, ',')
-		}
-		strings.write_string(&b, field.name)
-		strings.write_byte(&b, '=')
-		strings.write_string(&b, encode_setup_token(field.value))
-	}
-	strings.write_byte(&b, ')')
+	encode_paren_field_args(&b, e.fields)
 	return strings.to_string(b)
 }
 
@@ -490,17 +481,26 @@ encode_struct_variant_token :: proc(e: ^Variant_Expr) -> string {
 	strings.write_string(&b, e.type_name)
 	strings.write_string(&b, "::")
 	strings.write_string(&b, e.variant)
-	strings.write_byte(&b, '(')
-	for field, i in e.fields {
-		if i > 0 {
-			strings.write_byte(&b, ',')
-		}
-		strings.write_string(&b, field.name)
-		strings.write_byte(&b, '=')
-		strings.write_string(&b, encode_setup_token(field.value))
-	}
-	strings.write_byte(&b, ')')
+	encode_paren_field_args(&b, e.fields)
 	return strings.to_string(b)
+}
+
+// encode_paren_field_args writes the shared `(field=enc,…)` body — a
+// parenthesized comma-joined `name=ENCODED` list with no interior spaces, each
+// value a recursive space-free setup token so the form nests. It is the tail both
+// the record token (`Type(…)`) and the struct-variant token (`Type::Case(…)`)
+// carry; only the head written before it distinguishes the two.
+encode_paren_field_args :: proc(b: ^strings.Builder, fields: []Record_Field) {
+	strings.write_byte(b, '(')
+	for field, i in fields {
+		if i > 0 {
+			strings.write_byte(b, ',')
+		}
+		strings.write_string(b, field.name)
+		strings.write_byte(b, '=')
+		strings.write_string(b, encode_setup_token(field.value))
+	}
+	strings.write_byte(b, ')')
 }
 
 // encode_list_token renders a list as `[enc,…]` — a bracketed comma-joined run of

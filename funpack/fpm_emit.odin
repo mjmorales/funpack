@@ -253,7 +253,7 @@ rig_seam_of_unit :: proc(
 		if bind.kind != .Part {
 			continue
 		}
-		slot := fpm_bone_slot(bind.bone)
+		slot := fpm_bone_slot(bind.bone, allocator)
 		append(&binds, Rig_Slot_Bind{slot = slot, mesh = strings.concatenate({module, "_", bind.name}, allocator)})
 	}
 
@@ -284,18 +284,20 @@ rig_seam_of_unit :: proc(
 // `LUpperArm`). A bone outside the modeled humanoid set falls back to a mechanical
 // UPPER_SNAKE → PascalCase fold (e.g. `JOINT0` => `Joint0`), so a generic-joint
 // part still projects a slot rather than dropping out of the chain.
-fpm_bone_slot :: proc(attach: string) -> string {
+fpm_bone_slot :: proc(attach: string, allocator := context.allocator) -> string {
 	if bone, known := fpm_lookup_bone(attach); known {
 		return bone.slot
 	}
-	return fpm_pascal_of_snake(attach)
+	return fpm_pascal_of_snake(attach, allocator)
 }
 
 // fpm_pascal_of_snake folds an UPPER_SNAKE bone name to PascalCase: split on '_',
 // lowercase each segment, capitalize its first byte, and join. `L_UPPER_ARM` =>
 // `LUpperArm`. It is the mechanical fallback for a bone not in the named skeleton's
-// fixed slot table.
-fpm_pascal_of_snake :: proc(snake: string) -> string {
+// fixed slot table. The result clones into `allocator` (the one rig_seam_of_unit
+// threads down) so a derived slot shares the seam's lifetime, not the global
+// context's.
+fpm_pascal_of_snake :: proc(snake: string, allocator := context.allocator) -> string {
 	segments := strings.split(snake, "_", context.temp_allocator)
 	b := strings.builder_make(context.temp_allocator)
 	for seg in segments {
@@ -306,5 +308,5 @@ fpm_pascal_of_snake :: proc(snake: string) -> string {
 		strings.write_string(&b, strings.to_upper(lowered[:1], context.temp_allocator))
 		strings.write_string(&b, lowered[1:])
 	}
-	return strings.clone(strings.to_string(b), context.allocator)
+	return strings.clone(strings.to_string(b), allocator)
 }

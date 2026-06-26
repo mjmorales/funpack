@@ -566,13 +566,13 @@ binary_op_name :: proc(op: Token) -> string {
 // separator is a BARE comma, not `, `: the §04 §1 return pair `(Rng,[Spawn])` is
 // the artifact token, distinct from the source spelling `(Rng, [Spawn])`.
 type_ref_string :: proc(ref: Type_Ref) -> string {
-	if ref.name == "[]" {
+	if ref.name == TYPE_REF_LIST_HEAD {
 		if len(ref.args) == 1 {
 			return strings.concatenate({"[", type_ref_string(ref.args[0]), "]"}, context.temp_allocator)
 		}
-		return "[]"
+		return TYPE_REF_LIST_HEAD
 	}
-	if ref.name == "fn" && len(ref.args) > 0 {
+	if ref.name == TYPE_REF_FN_HEAD && len(ref.args) > 0 {
 		// A function type's parameters comma-join with NO interior space and the
 		// result follows a TIGHT `->` (`fn(Int,Int)->Cell`), so the whole §02 §3
 		// FnType stays one whitespace-free artifact token like the tuple below.
@@ -591,7 +591,7 @@ type_ref_string :: proc(ref: Type_Ref) -> string {
 		strings.write_string(&b, type_ref_string(ref.args[len(ref.args)-1]))
 		return strings.to_string(b)
 	}
-	if ref.name == "()" {
+	if ref.name == TYPE_REF_TUPLE_HEAD {
 		// A tuple type is the §04 §1 return pair `(T,U,…)` — its positional element
 		// types comma-joined with NO interior space, so the whole type stays one
 		// artifact token the §9 positional reader reads at one field.

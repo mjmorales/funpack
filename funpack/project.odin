@@ -1549,6 +1549,26 @@ merge_sources :: proc(src_sources: []Source, seam_sources: []Source) -> ([]Sourc
 	return combined, .None, ""
 }
 
+// parse_source reads a §14 source file and runs it through lex + parse — the
+// read→lex→parse idiom every project-wide walk shares (the release-ban scans, the
+// sibling-module carry, the cross-module index, the seam-layering gate). ok is
+// false when the file fails to read OR fails to parse: the two failures fold to
+// one "no usable AST" signal because every caller skips a source it cannot
+// compile, leaving the entrypoint's own typecheck to surface the real error
+// precisely rather than masking it with a partial verdict here. The AST is
+// temp-allocated, matching the lifetime each caller's walk already assumes.
+parse_source :: proc(path: string) -> (ast: Ast, ok: bool) {
+	bytes, read_err := os.read_entire_file_from_path(path, context.temp_allocator)
+	if read_err != nil {
+		return
+	}
+	parsed, parse_err := stage_parse(stage_lex(string(bytes)))
+	if parse_err != .None {
+		return
+	}
+	return parsed, true
+}
+
 // check_seam_layering enforces the §17 schema/seam/behavior acyclic-import
 // invariant: each generated seam imports schema modules + engine.* only — a seam
 // importing a BEHAVIOR module is a compile error (Seam_Imports_Behavior). It
@@ -1564,12 +1584,10 @@ merge_sources :: proc(src_sources: []Source, seam_sources: []Source) -> ([]Sourc
 // rejects only a seam importing a module the tree proves is a behavior module.
 check_seam_layering :: proc(seam_sources: []Source, all_sources: []Source) -> Project_Error {
 	for seam in seam_sources {
-		seam_bytes, read_err := os.read_entire_file_from_path(seam.path, context.temp_allocator)
-		if read_err != nil {
-			return .Malformed_Seam
-		}
-		seam_ast, parse_err := stage_parse(stage_lex(string(seam_bytes)))
-		if parse_err != .None {
+		// A seam the parser rejects is Malformed_Seam — a committed seam is
+		// canonical funpack, so a non-parsing one is a stale baked output.
+		seam_ast, ok := parse_source(seam.path)
+		if !ok {
 			return .Malformed_Seam
 		}
 		for imp in seam_ast.imports {
@@ -1600,12 +1618,8 @@ source_is_behavior_module :: proc(all_sources: []Source, module: string) -> bool
 		if source.module != module {
 			continue
 		}
-		source_bytes, read_err := os.read_entire_file_from_path(source.path, context.temp_allocator)
-		if read_err != nil {
-			return false
-		}
-		ast, parse_err := stage_parse(stage_lex(string(source_bytes)))
-		if parse_err != .None {
+		ast, ok := parse_source(source.path)
+		if !ok {
 			return false
 		}
 		return len(ast.behaviors) > 0 || len(ast.pipelines) > 0

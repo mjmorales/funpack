@@ -261,7 +261,9 @@ fpm_mirrored_prefixes :: proc(mirrors: []Fpm_Mirror) -> []string {
 // R, so only the side-prefixed limb bones trip it.
 fpm_is_mirrored_bone :: proc(attach: string, mirrored: []string) -> bool {
 	for side in mirrored {
-		if strings.has_prefix(attach, strings.concatenate({side, "_"}, context.temp_allocator)) {
+		// Test `side` then an explicit '_' boundary rather than joining `side_`
+		// per iteration — the membership scan stays allocation-free.
+		if strings.has_prefix(attach, side) && len(attach) > len(side) && attach[len(side)] == '_' {
 			return true
 		}
 	}

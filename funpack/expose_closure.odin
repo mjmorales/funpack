@@ -262,7 +262,7 @@ type_ref_unexposed :: proc(
 	type_name: string,
 	open: bool,
 ) {
-	if ref.name != "" && ref.name != "[]" && ref.name != "()" && ref.name != "fn" {
+	if ref.name != "" && ref.name != TYPE_REF_LIST_HEAD && ref.name != TYPE_REF_TUPLE_HEAD && ref.name != TYPE_REF_FN_HEAD {
 		if name_unexposed_user_type(ref.name, local, bindings, index) {
 			return ref.name, true
 		}

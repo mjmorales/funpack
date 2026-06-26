@@ -98,6 +98,14 @@ Type_Ref :: struct {
 	args: []Type_Ref, // generic / list / tuple / fn arguments; empty for a bare name
 }
 
+// The structural-head sentinels a parameterized Type_Ref carries in `name` — the
+// single source of truth for the list/tuple/fn heads the parser writes and the
+// emitters / expose-closure read, so the producer and consumers can never drift on
+// the spelling. They can never collide with a declared type name (UPPER_IDENT).
+TYPE_REF_LIST_HEAD :: "[]"
+TYPE_REF_TUPLE_HEAD :: "()"
+TYPE_REF_FN_HEAD :: "fn"
+
 // Field_Decl is one `name: Type` (or `name: Type = default`) entry in a
 // data/thing/singleton/signal body. has_default distinguishes a defaulted
 // field (spec §03 §1) from a required one; default is meaningless when
@@ -2237,7 +2245,7 @@ parse_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 		expect(p, .R_Bracket) or_return
 		args := make([]Type_Ref, 1, context.temp_allocator)
 		args[0] = elem
-		return Type_Ref{name = "[]", args = args}, .None
+		return Type_Ref{name = TYPE_REF_LIST_HEAD, args = args}, .None
 	}
 	if peek_kind(p) == .L_Paren {
 		return parse_tuple_type_ref(p)
@@ -2290,7 +2298,7 @@ parse_tuple_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 		}
 	}
 	expect(p, .R_Paren) or_return
-	return Type_Ref{name = "()", args = args[:]}, .None
+	return Type_Ref{name = TYPE_REF_TUPLE_HEAD, args = args[:]}, .None
 }
 
 // parse_fn_type_ref parses a function type `fn(T, …) -> R` after the `fn` is
@@ -2346,7 +2354,7 @@ parse_fn_type_ref :: proc(p: ^Parser) -> (type: Type_Ref, err: Parse_Error) {
 	p.pos += 1
 	result := parse_type_ref(p) or_return
 	append(&args, result)
-	return Type_Ref{name = "fn", args = args[:]}, .None
+	return Type_Ref{name = TYPE_REF_FN_HEAD, args = args[:]}, .None
 }
 
 // type_ref_ahead reports whether the next token can open a syntactic type —
