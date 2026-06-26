@@ -7,6 +7,11 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.22.0] - 2026-06-26
+
+### Features
+- feat(funpack): add render-check to catch green-but-black-screen builds (b86efcf)
+
 ## [0.21.1] - 2026-06-26
 
 ### Fixes
