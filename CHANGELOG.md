@@ -7,6 +7,15 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.24.0] - 2026-06-26
+
+### Features
+- feat(eir): scaffold cmd/eir + eir/ lint-host over cli/ framework (8c4db9a)
+
+### Other
+- refactor(funpack): share one parser cursor across the sub-languages and asset importers (2db476d)
+- refactor(cli): make arg-spec constructors contextless (09946a8)
+
 ## [0.23.1] - 2026-06-26
 
 ### Fixes
