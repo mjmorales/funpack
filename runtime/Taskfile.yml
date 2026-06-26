@@ -17,7 +17,9 @@ tasks:
   lint-live:
     desc: Vet the FUNPACK_LIVE-gated runtime with strict style
     cmds:
-      - odin check . -vet -strict-style -define:FUNPACK_LIVE=true -no-entry-point
+      # ODIN_THREADS (the core:os Queue(string) single-thread pin) is inherited from
+      # the flatten-included taskfiles/odin.yml; see its rationale block.
+      - odin check . -vet -strict-style -define:FUNPACK_LIVE=true -no-entry-point {{.ODIN_THREADS}}
 
   # test-live RUNS the FUNPACK_LIVE-gated suite, including the headless offscreen
   # screenshot capture proof (when #config(FUNPACK_LIVE) tests in session_live_test.odin).
@@ -29,4 +31,4 @@ tasks:
   test-live:
     desc: Run the FUNPACK_LIVE-gated runtime suite (headless offscreen capture proof)
     cmds:
-      - odin test . -define:FUNPACK_LIVE=true
+      - odin test . -define:FUNPACK_LIVE=true {{.ODIN_THREADS}}

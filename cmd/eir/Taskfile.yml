@@ -7,23 +7,30 @@ version: '3'
 # assume a library; this overrides build/lint/test with their entry-point forms
 # (the package has a `main`) and adds the binary build.
 
+# ODIN_THREADS mirrors taskfiles/odin.yml — cmd/eir overrides the shared verbs with
+# their entry-point forms, so it carries its own copy of the single-thread pin that
+# dodges the pinned Odin's core:os Queue(string) type-checker assertion (eir's walker
+# imports core:os). See the rationale block in taskfiles/odin.yml.
+vars:
+  ODIN_THREADS: '-thread-count:1'
+
 tasks:
   build:
     desc: Type-check the eir entry package
     cmds:
-      - odin check .
+      - odin check . {{.ODIN_THREADS}}
 
   lint:
     desc: Vet + strict-style the eir entry package
     cmds:
-      - odin check . -vet -strict-style
+      - odin check . -vet -strict-style {{.ODIN_THREADS}}
 
   test:
     desc: Run the eir entry package's composition/wiring tests (no SDL)
     cmds:
-      - odin test .
+      - odin test . {{.ODIN_THREADS}}
 
   binary:
     desc: Compile the eir dev binary (no SDL — never FUNPACK_LIVE)
     cmds:
-      - odin build . -out:eir
+      - odin build . -out:eir {{.ODIN_THREADS}}

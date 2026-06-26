@@ -13,28 +13,35 @@ version: '3'
 # the SDL arm does NOT link the native lib, so it needs no SDL2 installed —
 # mirroring runtime:lint-live.
 
+# ODIN_THREADS mirrors taskfiles/odin.yml — this entry package does not inherit the
+# shared verbs (it overrides them for the dual define modes), so it carries its own
+# copy of the single-thread pin that dodges the pinned Odin's core:os Queue(string)
+# type-checker assertion. See the rationale block in taskfiles/odin.yml.
+vars:
+  ODIN_THREADS: '-thread-count:1'
+
 tasks:
   build:
     desc: Type-check the entry package in both stub and FUNPACK_LIVE modes
     cmds:
-      - odin check .
-      - odin check . -define:FUNPACK_LIVE=true
+      - odin check . {{.ODIN_THREADS}}
+      - odin check . -define:FUNPACK_LIVE=true {{.ODIN_THREADS}}
 
   lint:
     desc: Vet + strict-style the entry package in both modes
     cmds:
-      - odin check . -vet -strict-style
-      - odin check . -vet -strict-style -define:FUNPACK_LIVE=true
+      - odin check . -vet -strict-style {{.ODIN_THREADS}}
+      - odin check . -vet -strict-style -define:FUNPACK_LIVE=true {{.ODIN_THREADS}}
 
   test:
     desc: Run the entry package's composition/wiring tests (define-free, no SDL)
     cmds:
-      - odin test .
+      - odin test . {{.ODIN_THREADS}}
 
   binary:
     desc: Compile the single funpack binary (links vendor:sdl2 via FUNPACK_LIVE)
     cmds:
-      - odin build . -define:FUNPACK_LIVE=true -out:funpack
+      - odin build . -define:FUNPACK_LIVE=true -out:funpack {{.ODIN_THREADS}}
 
   docs-regen:
     desc: Regenerate the committed docs-corpus shards (the Odin re-home of the deleted mcp docs-regen)
@@ -44,10 +51,10 @@ tasks:
     # manifest.json. Recommit the regenerated shards. dir: ../.. runs at the repo root.
     dir: ../..
     cmds:
-      - odin build ./cmd/funpack -define:FUNPACK_LIVE=true -out:/tmp/funpack-docs-regen
+      - odin build ./cmd/funpack -define:FUNPACK_LIVE=true -out:/tmp/funpack-docs-regen {{.ODIN_THREADS}}
       - /tmp/funpack-docs-regen mcp gen-corpus
 
   docs-check:
     desc: Run the corpus-pin drift gate (regenerate in-memory, byte/hash-compare against the committed shards)
     cmds:
-      - odin test . -define:ODIN_TEST_NAMES=main.test_corpus_pin_shards_byte_match,main.test_corpus_pin_per_source_hashes,main.test_corpus_pin_manifest_section_counts,main.test_corpus_pin_mutated_hash_detected_as_drift,main.test_corpus_pin_version_matches_compiler
+      - odin test . -define:ODIN_TEST_NAMES=main.test_corpus_pin_shards_byte_match,main.test_corpus_pin_per_source_hashes,main.test_corpus_pin_manifest_section_counts,main.test_corpus_pin_mutated_hash_detected_as_drift,main.test_corpus_pin_version_matches_compiler {{.ODIN_THREADS}}

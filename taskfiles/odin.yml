@@ -20,22 +20,33 @@ version: '3'
 # own define-aware verbs. So the shared check passes -no-entry-point; `odin test`
 # synthesizes its own runner entry and needs no such flag.
 
+# ODIN_THREADS pins the compiler to a single type-checking thread. The pinned Odin
+# (2026-05) has a non-deterministic internal assertion — `check_type.cpp:598
+# tuple != nullptr` while instantiating `queue.Queue($T=string)` — that fires when
+# its parallel type-checker races on the `core:os` directory walker's
+# `todo: queue.Queue(string)` field (core/os/dir_walker.odin). Any package importing
+# `core:os` is exposed; the failing worker thread aborts holding a lock, so the
+# compiler hangs rather than exiting. Single-threaded checking serializes the
+# instantiation and removes the race. Remove this once the upstream Odin fix lands.
+# The var threads through every check/build/test verb here and is mirrored by the
+# cmd/* override Taskfiles.
 vars:
   ODIN: '{{.ODIN | default "odin"}}'
   ODIN_PKG: '{{.ODIN_PKG | default "."}}'
+  ODIN_THREADS: '-thread-count:1'
 
 tasks:
   build:
     desc: Type-check the package without codegen
     cmds:
-      - '{{.ODIN}} check {{.ODIN_PKG}} -no-entry-point'
+      - '{{.ODIN}} check {{.ODIN_PKG}} -no-entry-point {{.ODIN_THREADS}}'
 
   lint:
     desc: Type-check with vet and strict style
     cmds:
-      - '{{.ODIN}} check {{.ODIN_PKG}} -vet -strict-style -no-entry-point'
+      - '{{.ODIN}} check {{.ODIN_PKG}} -vet -strict-style -no-entry-point {{.ODIN_THREADS}}'
 
   test:
     desc: Run the package test runner
     cmds:
-      - '{{.ODIN}} test {{.ODIN_PKG}}'
+      - '{{.ODIN}} test {{.ODIN_PKG}} {{.ODIN_THREADS}}'
