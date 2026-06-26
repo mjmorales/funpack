@@ -498,13 +498,14 @@ test_shot_stale_session_refusal :: proc(t: ^testing.T) {
 
 // test_shot_input_refusal_forwarded pins the caller-input branch of shot_map_refusal: a
 // runtime refusal that is the caller's argument mistake (tick out of range, unknown
-// branch) is forwarded as the runtime stated it — the caller fixes the argument, the MCP
-// does NOT reframe it toward the present boundary.
+// branch) is a resolved-but-refused command, forwarded as the runtime stated it under the
+// .Refused category — the caller fixes the argument, the MCP does NOT reframe it toward
+// the present boundary or tell the model to reopen a healthy session.
 @(test)
 test_shot_input_refusal_forwarded :: proc(t: ^testing.T) {
 	for marker in ([?]string{"tick out of range", "missing args.tick", "unknown branch — checkout an existing lineage"}) {
 		err := shot_map_refusal(marker)
-		testing.expect_value(t, err.category, Mcp_Error_Category.Session)
+		testing.expect_value(t, err.category, Mcp_Error_Category.Refused)
 		testing.expect_value(t, err.message, marker)
 		testing.expect(t, !strings.contains(err.message, "FUNPACK_LIVE"), "a caller-input refusal is forwarded unreframed")
 	}

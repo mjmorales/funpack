@@ -266,15 +266,16 @@ obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocat
 
 	if !bool(ok_bool) {
 		// A §28 refusal: the runtime declined the command (bad tick, unknown behavior,
-		// unsupported branch refold, no timeline loaded). Surface its text as a Session-
-		// category refusal so the model reads the reason and retries with corrected args.
+		// unsupported branch refold, no timeline loaded). Surface its text as a Refused-
+		// category refusal so the model reads the reason and retries with corrected args
+		// (the session is healthy — fix the command, not the session).
 		message := strings.concatenate({command, ": runtime refused the command"}, allocator)
 		if error_field, has_error := envelope["error"]; has_error {
 			if error_text, error_is_string := error_field.(json.String); error_is_string {
 				message = string(error_text)
 			}
 		}
-		return mcp_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
+		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = message}, allocator)
 	}
 
 	// ok:true — lift the `result` object verbatim into a Text content block. A missing
@@ -499,7 +500,7 @@ obs_lift_inspect_response :: proc(
 	}
 	if !bool(ok_bool) {
 		// A §28 refusal (bad tick, unknown thing, unsupported branch) — the runtime
-		// already names the cause, so it stays the verbatim Session refusal obs_lift_
+		// already names the cause, so it stays the verbatim Refused refusal obs_lift_
 		// response renders; the precondition enrichment is for the EMPTY-but-ok case.
 		message := strings.concatenate({command, ": runtime refused the command"}, allocator)
 		if error_field, has_error := envelope["error"]; has_error {
@@ -507,7 +508,7 @@ obs_lift_inspect_response :: proc(
 				message = string(error_text)
 			}
 		}
-		return mcp_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
+		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = message}, allocator)
 	}
 	result_field, has_result := envelope["result"]
 	result_object, result_is_object := result_field.(json.Object)
@@ -611,14 +612,14 @@ obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, 
 	}
 	if !bool(ok_bool) {
 		// A §28 refusal — the runtime already named the cause, so it stays the verbatim
-		// Session refusal; the next_action enrichment is for the loaded:false ok case.
+		// Refused refusal; the next_action enrichment is for the loaded:false ok case.
 		message := strings.concatenate({command, ": runtime refused the command"}, allocator)
 		if error_field, has_error := envelope["error"]; has_error {
 			if error_text, error_is_string := error_field.(json.String); error_is_string {
 				message = string(error_text)
 			}
 		}
-		return mcp_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
+		return mcp_tool_error(id, Mcp_Error{category = .Refused, message = message}, allocator)
 	}
 	result_field, has_result := envelope["result"]
 	result_object, result_is_object := result_field.(json.Object)

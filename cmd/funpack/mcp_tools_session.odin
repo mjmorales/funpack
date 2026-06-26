@@ -271,21 +271,10 @@ sess_string_arg :: proc(arguments: json.Object, name: string) -> (value: string,
 }
 
 // sess_int_arg reads an OPTIONAL integer argument off the MCP arguments object,
-// accepting json.Integer (the parse_integers path the host's request takes) and a
-// json.Float defensively (the int-as-float wire trap). Absent or non-numeric is
+// through the one shared int reader (funpack_runtime.json_int_field): json.Integer or
+// an integral json.Float, fractional float rejected. Absent or non-numeric is
 // has=false — the caller treats that as "not supplied" (the seed override is optional).
-// Mirrors record's rec_int_field so the one optional `seed` arg is read the same way on
-// both tools.
+// One int policy across every MCP int arg.
 sess_int_arg :: proc(arguments: json.Object, name: string) -> (value: i64, has: bool) {
-	field, present := arguments[name]
-	if !present {
-		return 0, false
-	}
-	#partial switch v in field {
-	case json.Integer:
-		return i64(v), true
-	case json.Float:
-		return i64(v), true
-	}
-	return 0, false
+	return funpack_runtime.json_int_field(arguments, name)
 }

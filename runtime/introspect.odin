@@ -1243,19 +1243,26 @@ write_json_string :: proc(b: ^strings.Builder, s: string) {
 	strings.write_byte(b, '"')
 }
 
-// json_int_field reads one integer field off a parsed request object. Requests
-// are parsed with parse_integers=true, so a JSON integer arrives as i64 — no
-// float ever enters the envelope (§10).
+// json_int_field reads one integer field off a parsed request object — the single
+// int-arg reader the §28 request path and every MCP int argument route through.
+// Requests are parsed with parse_integers=true, so a whole number arrives as a
+// json.Integer; a number written with a decimal point (42.0) arrives as a json.Float
+// even so. An integral float is accepted as the integer it names; a fractional float
+// (42.5) is out of contract and rejected — never silently truncated.
 json_int_field :: proc(object: json.Object, key: string) -> (value: i64, ok: bool) {
 	field, has := object[key]
 	if !has {
 		return 0, false
 	}
-	integer, is_integer := field.(json.Integer)
-	if !is_integer {
-		return 0, false
+	#partial switch v in field {
+	case json.Integer:
+		return i64(v), true
+	case json.Float:
+		if v == f64(i64(v)) {
+			return i64(v), true
+		}
 	}
-	return integer, true
+	return 0, false
 }
 
 // json_string_field reads one string field off a parsed request object.

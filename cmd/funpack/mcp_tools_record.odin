@@ -229,28 +229,17 @@ rec_string_arg :: proc(arguments: json.Object, name: string) -> (value: string, 
 	return string(text), true
 }
 
-// rec_int_arg reads an optional integer argument off the MCP arguments object. The
-// JSON-RPC parser runs with parse_integers=true (mcp_jsonrpc.odin), so a whole number
-// arrives as json.Integer; a json.Float with an integral value is also accepted (an agent
-// that sent 42.0). Absent or non-numeric is has=false.
+// rec_int_arg reads an optional integer argument off the MCP arguments object,
+// through the one shared int reader (funpack_runtime.json_int_field): a whole number
+// (json.Integer) or an integral json.Float (42.0); a fractional float is rejected.
+// Absent or non-numeric is has=false. Both the top-level args (seed) and a script
+// segment (ticks) read integers the same way as every other MCP int argument.
 rec_int_arg :: proc(arguments: json.Object, name: string) -> (value: i64, has: bool) {
 	return rec_int_field(arguments, name)
 }
 
-// rec_int_field reads an integer off a json.Object by key, accepting json.Integer (the
-// parse_integers path) and an integral json.Float defensively. Absent or non-numeric is
-// has=false — the one integer reader both the top-level args (seed) and a script segment
-// (ticks) go through, so the int-as-float trap is handled in one place.
+// rec_int_field reads an integer off a json.Object by key — a thin alias over the
+// shared reader so the top-level args and a script segment share one int policy.
 rec_int_field :: proc(object: json.Object, name: string) -> (value: i64, has: bool) {
-	field, present := object[name]
-	if !present {
-		return 0, false
-	}
-	#partial switch v in field {
-	case json.Integer:
-		return i64(v), true
-	case json.Float:
-		return i64(v), true
-	}
-	return 0, false
+	return funpack_runtime.json_int_field(object, name)
 }

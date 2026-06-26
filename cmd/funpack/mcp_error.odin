@@ -23,6 +23,7 @@ Mcp_Error_Category :: enum {
 	Invalid_Input, // a malformed or out-of-contract tool argument
 	Resolver,      // a failure resolving a funpack path/document/index entry
 	Exec,          // a failure executing an underlying funpack command
+	Refused,       // the runtime resolved the command but declined it (§28 ok:false: bad tick, unknown thing)
 	Protocol,      // an MCP-protocol-level fault (transport/request-contract)
 	Session,       // a session-lifecycle failure (attach/detach/stale session)
 	Internal,      // an unexpected internal fault — the catch-all for bugs
@@ -40,6 +41,8 @@ mcp_error_category_wire :: proc(category: Mcp_Error_Category) -> string {
 		return "resolver"
 	case .Exec:
 		return "exec"
+	case .Refused:
+		return "refused"
 	case .Protocol:
 		return "protocol"
 	case .Session:

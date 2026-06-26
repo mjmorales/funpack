@@ -197,9 +197,10 @@ ctrl_write_json_value :: proc(b: ^strings.Builder, value: json.Value) {
 // generated test source, for audit the divergence-first-tick — so a clean `ok:true`
 // response rides VERBATIM as one text content block (the agent reads the §28 result
 // object directly). An `ok:false` refusal is re-cast as the IsError envelope keyed
-// .Exec (a control command that resolved but refused: tick out of range, unknown
+// .Refused (a control command that resolved but refused: tick out of range, unknown
 // thing, a reload migration refusal) carrying the §28 `error` message, so the model
-// sees a domain category and self-corrects rather than a raw §28 line.
+// sees the session is healthy and the command was declined — fix the command, not the
+// session — and self-corrects rather than reading a raw §28 line.
 ctrl_lift_response :: proc(response: string, command: string, allocator := context.allocator) -> Mcp_Tool_Result {
 	if ctrl_response_ok(response) {
 		content := make([]Mcp_Content, 1, allocator)
@@ -210,7 +211,7 @@ ctrl_lift_response :: proc(response: string, command: string, allocator := conte
 	if message == "" {
 		message = "control command refused"
 	}
-	return mcp_tool_error_result(Mcp_Error{category = .Exec, message = message, detail = command}, allocator)
+	return mcp_tool_error_result(Mcp_Error{category = .Refused, message = message, detail = command}, allocator)
 }
 
 // ctrl_response_ok reports whether a §28 response is the success envelope. The §28

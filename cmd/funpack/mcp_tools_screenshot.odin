@@ -277,14 +277,15 @@ shot_parse_response :: proc(
 }
 
 // shot_map_refusal owns the inspect_screenshot present-boundary diagnostic: a
-// CALLER-input refusal (bad tick, unknown branch) is forwarded as the runtime stated
-// it (the caller fixes the argument), while the present-boundary crossing —
-// everything else — is reframed as a Session-category envelope naming
-// inspect_draw_list, the sim-pure headless substitute. The runtime text rides along
-// as detail for fidelity.
+// CALLER-input refusal (bad tick, unknown branch) is a resolved-but-refused command,
+// so it is forwarded as the runtime stated it under the .Refused category (the caller
+// fixes the argument), while the present-boundary crossing — everything else — is a
+// genuine capability the headless binary cannot serve, reframed as a Session-category
+// envelope naming inspect_draw_list, the sim-pure headless substitute. The runtime
+// text rides along as detail for fidelity.
 shot_map_refusal :: proc(runtime_text: string) -> Mcp_Error {
 	if shot_is_input_refusal(runtime_text) {
-		return Mcp_Error{category = .Session, message = runtime_text}
+		return Mcp_Error{category = .Refused, message = runtime_text}
 	}
 	err := Mcp_Error {
 		category = .Session,

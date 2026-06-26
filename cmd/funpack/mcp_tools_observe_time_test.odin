@@ -6,8 +6,8 @@
 // a representative tool from each shape (no-arg pipeline, position-only time_load /
 // time_status, required-arg inspect_trace / inspect_diff, the always-headless
 // inspect_draw_list, the optional-`until` time_run), and (3) the §28→MCP lift (ok:true
-// lifts the result object verbatim, ok:false maps the runtime refusal to a
-// Session-category IsError, an unknown session id is the Session refusal).
+// lifts the result object verbatim, ok:false maps the resolved-but-refused command to a
+// Refused-category IsError, an unknown session id is the Session refusal).
 //
 // DEFINE-FREE FLOOR: these run in the default `odin test .` build (no FUNPACK_LIVE, no
 // SDL). Everything the arm folds — open_session_for_artifact, session_request, the
@@ -340,13 +340,14 @@ test_obs_run_threads_optional_until :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(run_result, `\"tick\":5`), "run folds forward to the requested until tick")
 }
 
-// test_obs_runtime_refusal_is_session_error pins the §28 ok:false lift: an out-of-range
-// tick is a runtime refusal, surfaced as a Session-category IsError carrying the
-// runtime's own text (so the model reads "tick out of range" and self-corrects) — NOT an
+// test_obs_runtime_refusal_is_refused_error pins the §28 ok:false lift: an out-of-range
+// tick is a runtime refusal, surfaced as a Refused-category IsError carrying the
+// runtime's own text (so the model reads "tick out of range" and self-corrects — the
+// session is healthy, fix the command not the session) — NOT a Session fault, NOT an
 // Internal fault, NOT a JSON-RPC error object. inspect_trace at an impossible tick is the
 // representative refusal.
 @(test)
-test_obs_runtime_refusal_is_session_error :: proc(t: ^testing.T) {
+test_obs_runtime_refusal_is_refused_error :: proc(t: ^testing.T) {
 	path, staged := obs_stage_fixture(t, "funpack-mcp-obs-refusal.fpk")
 	if !staged {
 		return
@@ -362,7 +363,7 @@ test_obs_runtime_refusal_is_session_error :: proc(t: ^testing.T) {
 	result, handled := obs_dispatch_tool(&registry, "inspect_trace", args, context.temp_allocator)
 	testing.expect(t, handled, "inspect_trace is claimed")
 	testing.expect(t, strings.contains(result, `"isError":true`), "a runtime refusal is a tool error")
-	testing.expect(t, strings.contains(result, `\"category\":\"session\"`), "a §28 ok:false maps to the session category")
+	testing.expect(t, strings.contains(result, `\"category\":\"refused\"`), "a §28 ok:false maps to the refused category, not session")
 	testing.expect(t, strings.contains(result, "tick"), "the runtime's own refusal text rides through")
 }
 
@@ -506,7 +507,7 @@ test_obs_inspect_no_rng_diagnostic :: proc(t: ^testing.T) {
 
 // test_obs_inspect_refusal_stays_verbatim pins that the enriched lift does NOT touch a §28
 // refusal: an ok:false (a runtime-named cause like an out-of-range tick) stays the
-// verbatim Session IsError obs_lift_response renders, with no precondition wrap — the
+// verbatim Refused IsError obs_lift_response renders, with no precondition wrap — the
 // precondition enrichment is for the EMPTY-but-ok case, never the already-named refusal.
 @(test)
 test_obs_inspect_refusal_stays_verbatim :: proc(t: ^testing.T) {
@@ -520,7 +521,7 @@ test_obs_inspect_refusal_stays_verbatim :: proc(t: ^testing.T) {
 	lifted := obs_lift_inspect_response(id, "state", response, pre, context.temp_allocator)
 
 	testing.expect(t, strings.contains(lifted, `"isError":true`), "a §28 refusal stays a tool error")
-	testing.expect(t, strings.contains(lifted, `\"category\":\"session\"`), "the refusal maps to the session category")
+	testing.expect(t, strings.contains(lifted, `\"category\":\"refused\"`), "the refusal maps to the refused category, not session")
 	testing.expect(t, strings.contains(lifted, `unknown thing`), "the runtime's own refusal text rides through")
 	testing.expect(t, !strings.contains(lifted, `\"precondition\":`), "a refusal carries no precondition wrap — the runtime already named the cause")
 }

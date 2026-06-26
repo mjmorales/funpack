@@ -51,6 +51,7 @@ test_mcp_error_category_wire :: proc(t: ^testing.T) {
 	testing.expect_value(t, mcp_error_category_wire(.Invalid_Input), "invalid_input")
 	testing.expect_value(t, mcp_error_category_wire(.Resolver), "resolver")
 	testing.expect_value(t, mcp_error_category_wire(.Exec), "exec")
+	testing.expect_value(t, mcp_error_category_wire(.Refused), "refused")
 	testing.expect_value(t, mcp_error_category_wire(.Protocol), "protocol")
 	testing.expect_value(t, mcp_error_category_wire(.Session), "session")
 	testing.expect_value(t, mcp_error_category_wire(.Internal), "internal")

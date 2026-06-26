@@ -286,7 +286,7 @@ test_ctrl_checkout_without_branch_refuses :: proc(t: ^testing.T) {
 
 	result, _ := ctrl_dispatch_tool(&registry, "control_checkout", ctrl_session_args(id, ``))
 	testing.expect(t, strings.contains(result, `"isError":true`), "checkout with no branch refuses")
-	testing.expect(t, strings.contains(result, `\"category\":\"exec\"`), "a resolved-but-refused control command is an exec failure")
+	testing.expect(t, strings.contains(result, `\"category\":\"refused\"`), "a resolved-but-refused control command is keyed refused, not session")
 }
 
 // test_ctrl_audit_folds_clean pins the self-heal observe pair: `audit` (the

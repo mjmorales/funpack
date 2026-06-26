@@ -410,17 +410,13 @@ docs_arg_string :: proc(arguments: json.Object, key: string) -> (value: string, 
 }
 
 // docs_arg_int reads an optional integer arg off the MCP arguments object (the `limit`
-// cap), returning `fallback` when the field is absent or not an integer. The arguments
-// are parsed with parse_integers=true (mcp_jsonrpc.odin), so an integer arg arrives as a
-// json.Integer; a float or string `limit` is out of contract and falls back rather than
-// being coerced.
+// cap), returning `fallback` when the field is absent or not an integer. Reads through
+// the one shared int reader (funpack_runtime.json_int_field), so `limit:42` and the
+// integral `limit:42.0` are both honored — one int policy across every MCP int arg; a
+// fractional or non-numeric `limit` is out of contract and falls back.
 docs_arg_int :: proc(arguments: json.Object, key: string, fallback: int) -> int {
-	field, present := arguments[key]
-	if !present {
-		return fallback
-	}
-	value, is_int := field.(json.Integer)
-	if !is_int {
+	value, has := funpack_runtime.json_int_field(arguments, key)
+	if !has {
 		return fallback
 	}
 	return int(value)
