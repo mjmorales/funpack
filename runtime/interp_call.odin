@@ -795,6 +795,11 @@ eval_named_call :: proc(
 		return builtin_checked_div(interp, node, env)
 	case "to_fixed":
 		return builtin_to_fixed(interp, node, env)
+	case "to_int":
+		// to_int(Fixed) -> Int (the to_fixed inverse) truncates toward zero — the
+		// SAME kernel `trunc` lowers to, so it shares builtin_trunc rather than a
+		// byte-identical twin.
+		return builtin_trunc(interp, node, env)
 	case "dot":
 		return builtin_dot(interp, node, env)
 	case "cross":
@@ -849,6 +854,8 @@ eval_named_call :: proc(
 		return builtin_in_bounds(interp, node, env)
 	case "or_else":
 		return builtin_or_else(interp, node, env)
+	case "is_some":
+		return builtin_is_some(interp, node, env)
 	case "sound":
 		return builtin_sound(interp, node, env)
 	case "pick":
@@ -2180,18 +2187,45 @@ builtin_or_else :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	if len(node.children) != 3 {
 		return nil, false
 	}
-	option_val, option_ok := eval(interp, &node.children[1], env)
+	option, option_ok := runtime_option_arg(interp, &node.children[1], env)
 	if !option_ok {
-		return nil, false
-	}
-	option, is_variant := option_val.(Variant_Value)
-	if !is_variant || option.enum_type != "Option" {
 		return nil, false
 	}
 	if option.case_name == "Some" && option.payload != nil {
 		return option.payload^, true
 	}
 	return eval(interp, &node.children[2], env)
+}
+
+// builtin_is_some is the §26 Option predicate `is_some(Option[T]) -> Bool`: the
+// presence bit read off the runtime Option (a Variant_Value tagged "Option" with
+// case "Some"/"None"). Mirrors funpack/evaluate.odin's eval_is_some; a non-Option
+// argument is ok=false.
+builtin_is_some :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
+	if len(node.children) != 2 {
+		return nil, false
+	}
+	option, option_ok := runtime_option_arg(interp, &node.children[1], env)
+	if !option_ok {
+		return nil, false
+	}
+	return option.case_name == "Some", true
+}
+
+// runtime_option_arg evaluates one argument node and returns it as a runtime
+// Option (a Variant_Value tagged "Option"). ok=false for an unevaluable or
+// non-Option value — the one Option-unwrap the Option builtins (or_else, is_some)
+// share, taking the arg node so each caller keeps its own arity guard.
+runtime_option_arg :: proc(interp: ^Interp, arg: ^Node, env: ^Env) -> (option: Variant_Value, ok: bool) {
+	value, value_ok := eval(interp, arg, env)
+	if !value_ok {
+		return {}, false
+	}
+	variant, is_variant := value.(Variant_Value)
+	if !is_variant || variant.enum_type != "Option" {
+		return {}, false
+	}
+	return variant, true
 }
 
 // builtin_pick is the §26 seeded draw `pick(self: Rng, items: [T]) -> (Option[T],

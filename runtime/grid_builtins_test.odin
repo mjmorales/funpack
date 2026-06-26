@@ -166,3 +166,33 @@ test_grid_or_else_unwraps_lazily :: proc(t: ^testing.T) {
 	_, bad_ok := eval(&interp, &bad_node, &bad_scope)
 	testing.expect_value(t, bad_ok, false)
 }
+
+@(test)
+test_grid_is_some_reports_presence :: proc(t: ^testing.T) {
+	// is_some(Some(v)) is true; is_some(None) is false; a non-Option arg fails
+	// closed — the §26 Option predicate (runtime builtin_is_some, parity with the
+	// funpack eval_is_some it mirrors so a gameplay `is_some` never silently drops).
+	context.allocator = context.temp_allocator
+	interp := gb_interp()
+
+	payload := new(Value, context.temp_allocator)
+	payload^ = Fixed(7 << 32)
+	some := Variant_Value{enum_type = "Option", case_name = "Some", payload = payload}
+	some_scope := gb_scope("opt", some)
+	some_node := gb_call_node("is_some", gb_name_node("opt"))
+	got, ok := eval(&interp, &some_node, &some_scope)
+	testing.expect(t, ok)
+	testing.expect_value(t, got.(bool), true)
+
+	none := Variant_Value{enum_type = "Option", case_name = "None"}
+	none_scope := gb_scope("opt", none)
+	none_node := gb_call_node("is_some", gb_name_node("opt"))
+	absent, none_ok := eval(&interp, &none_node, &none_scope)
+	testing.expect(t, none_ok)
+	testing.expect_value(t, absent.(bool), false)
+
+	bad_scope := gb_scope("opt", Fixed(0))
+	bad_node := gb_call_node("is_some", gb_name_node("opt"))
+	_, bad_ok := eval(&interp, &bad_node, &bad_scope)
+	testing.expect_value(t, bad_ok, false)
+}

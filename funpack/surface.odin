@@ -61,6 +61,12 @@ STDLIB_SURFACE := []Module_Surface{
 				// numerics/snake `import engine.math.{... to_fixed}` route still resolves
 				// to this owner. One name, one owner, two routes -- the Fixed precedent.
 				{"to_fixed", .Func},
+			// to_int is the spec-03 prelude conversion to_fixed's inverse
+			// (to_int(Fixed) -> Int): the integer part of a fixed-point value,
+			// truncated toward zero (the Fixed->Int direction to_fixed lifts the
+			// other way). A fixed-signature free fn — surface_signatures owns its
+			// typing, not combinator inference.
+			{"to_int", .Func},
 			// or_else is the §26 Option fallback combinator (`or_else(Option[T],
 			// T) -> T`): the arena hunter's nearest_player folds players into an
 			// Option[Vec2] and `or_else(best, from)` falls back to its own position
@@ -68,6 +74,12 @@ STDLIB_SURFACE := []Module_Surface{
 			// is a combinator row — its typing rule is combinator inference's, not a
 			// fixed signature (surface_signatures returns found = false for it).
 			{"or_else", .Func},
+			// is_some is the §26 Option predicate (`is_some(Option[T]) -> Bool`):
+			// it reports whether an Option carries a value, the predicate half of
+			// the Option surface or_else unwraps. T is unconstrained (any Option
+			// answers), so it is a call-site-inferred combinator like or_else, not a
+			// fixed signature.
+			{"is_some", .Func},
 			// compare is the spec-03 prelude total three-way comparison
 			// (`compare(a: T, b: T) -> Ordering`, prelude.fun:50): it produces the
 			// Ordering result a match destructures Less/Equal/Greater. T is the
@@ -1107,6 +1119,8 @@ surface_signatures :: proc(name: string) -> (overloads: []Type, found: bool) {
 		return clone_types({func_of({Ground_Type.Fixed, Ground_Type.Fixed, Ground_Type.Fixed}, Ground_Type.Fixed)}), true
 	case "to_fixed":
 		return clone_types({func_of({Ground_Type.Int}, Ground_Type.Fixed)}), true
+	case "to_int":
+		return clone_types({func_of({Ground_Type.Fixed}, Ground_Type.Int)}), true
 	case "trunc", "floor", "round":
 		return clone_types({func_of({Ground_Type.Fixed}, Ground_Type.Int)}), true
 	case "checked_div":

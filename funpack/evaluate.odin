@@ -1408,7 +1408,10 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 			return nil, false
 		}
 		return to_fixed(n), true
-	case "trunc":
+	case "to_int", "trunc":
+		// Both lower a Fixed to its integer part truncated toward zero: `trunc` is the
+		// §10 op, `to_int` the spec-03 prelude conversion (to_fixed's inverse). One
+		// kernel (fixed_trunc), so one arm.
 		f := eval_fixed_arg(ctx, env, e, 0, 1) or_return
 		return fixed_trunc(f), true
 	case "floor":
@@ -1504,6 +1507,8 @@ eval_call :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok:
 		return eval_find(ctx, env, e)
 	case "or_else":
 		return eval_or_else(ctx, env, e)
+	case "is_some":
+		return eval_is_some(ctx, env, e)
 	case "last":
 		return eval_last(ctx, env, e)
 	case "neighbors":
@@ -1932,6 +1937,21 @@ eval_or_else :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, 
 		return boxed.payload^, true
 	}
 	return eval_expr(ctx, env, e.args[1])
+}
+
+// eval_is_some lowers is_some(Option[T]) -> Bool (spec §26): the Option's presence
+// bit read straight off the boxed value, the predicate or_else complements. A
+// non-Option argument is ok = false (a typecheck-rejected shape reaching eval).
+eval_is_some :: proc(ctx: Eval_Ctx, env: ^Env, e: ^Call_Expr) -> (value: Value, ok: bool) {
+	if len(e.args) != 1 {
+		return nil, false
+	}
+	option := eval_expr(ctx, env, e.args[0]) or_return
+	boxed, is_option := option.(Option_Value)
+	if !is_option {
+		return nil, false
+	}
+	return boxed.is_some, true
 }
 
 // eval_last lowers last(list) -> Option[T] (the stdlib engine.list signature):

@@ -1960,6 +1960,9 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "or_else":
 		t, oe := or_else_check(ctx, e)
 		return t, true, oe
+	case "is_some":
+		t, ie := is_some_check(ctx, e)
+		return t, true, ie
 	case "map":
 		t, me := map_check(ctx, e)
 		return t, true, me
@@ -2030,7 +2033,7 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 is_combinator_name :: proc(name: string) -> bool {
 	switch name {
 	case "fold", "first", "find", "last", "neighbors", "in_bounds", "within",
-	     "nearest_first", "or_else", "map", "filter", "concat", "contains",
+	     "nearest_first", "or_else", "is_some", "map", "filter", "concat", "contains",
 	     "prepend", "append", "reverse", "init", "is_empty", "len", "get",
 	     "empty", "has", "set", "remove", "keys", "values", "pick", "grid_cells":
 		return true
@@ -2648,6 +2651,22 @@ or_else_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_E
 		return nil, .Type_Mismatch
 	}
 	return fallback, .None
+}
+
+// is_some is (Option[T]) -> Bool (spec §26): the Option predicate, the half of the
+// Option surface or_else complements. The element type is irrelevant to the
+// answer (any Option reports its presence), so the rule requires a single Option
+// argument and yields Bool, with no constraint on T. A non-Option argument is a
+// Type_Mismatch.
+is_some_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	opt_type := expr_check(ctx, e.args[0]) or_return
+	if _, is_option := opt_type.(^Option_Type); !is_option {
+		return nil, .Type_Mismatch
+	}
+	return Ground_Type.Bool, .None
 }
 
 // spatial_combinator_check types the §08 §3 spatial combinators over the

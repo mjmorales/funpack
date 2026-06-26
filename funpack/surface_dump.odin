@@ -483,9 +483,10 @@ SURFACE_DUMP_COMBINATOR_SIGS := []Surface_Dump_Combinator_Sig {
 	{"grid_cells", "fn(Cell) -> [Cell]"},
 	{"neighbors", "fn(Cell) -> [Cell]"},
 	{"in_bounds", "fn(Cell, Cell) -> Bool"},
-	// engine.prelude: the Option fallback (or_else_check) — the only non-list/rand
-	// call-site-inferred free combinator (its T is the Option's element).
+	// engine.prelude: the Option fallback (or_else_check) and the Option predicate
+	// (is_some_check) — call-site-inferred over the Option's element T.
 	{"or_else", "fn(Option[T], T) -> T"},
+	{"is_some", "fn(Option[T]) -> Bool"},
 }
 
 // build_surface_dump assembles the whole dump from the live surface tables. Every

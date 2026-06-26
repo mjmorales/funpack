@@ -76,6 +76,10 @@ math_builtin_cases :: proc(a := context.allocator) -> []Math_Builtin_Case {
 	append(&cases, Math_Builtin_Case{"checked_div", em_call_node(a, "checked_div", fx(to_fixed(6), a), fx(to_fixed(2), a))})
 	// to_fixed: (Int) -> Fixed (re-exported by engine.math, owned by prelude).
 	append(&cases, Math_Builtin_Case{"to_fixed", em_call_node(a, "to_fixed", em_int_node(3, a))})
+	// to_int: (Fixed) -> Int (prelude-owned, the to_fixed inverse). In the same
+	// silent-step-drop class as to_fixed above — a prelude conversion the runtime
+	// must wire or a gameplay `to_int` drops its blackboard write.
+	append(&cases, Math_Builtin_Case{"to_int", em_call_node(a, "to_int", em_half(a))})
 	// compare: (Fixed, Fixed) -> Ordering | (Int, Int) -> Ordering (spec-03 prelude
 	// total three-way comparison). The runtime must wire it or the
 	// gameplay eval silently drops a body that compares — the dual-interpreter trap.
