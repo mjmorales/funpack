@@ -1,16 +1,18 @@
 version: '3'
 
-# Monorepo build orchestration. Each embedded package (cli, funpack, runtime,
-# cmd/funpack) owns its Taskfile; the library packages flatten-include
-# taskfiles/odin.yml for the shared Odin verbs (cmd/funpack overrides them with
-# its own define-aware verbs). This root file composes them by namespace and each
-# root verb aggregates the per-package ones. Validators in .claude/.prove.json pin
-# to the root verbs, so layout changes edit this file only — never the validator
-# config.
+# Monorepo build orchestration. Each embedded package (cli, funpack, runtime, eir,
+# cmd/funpack, cmd/eir) owns its Taskfile; the library packages flatten-include
+# taskfiles/odin.yml for the shared Odin verbs (the cmd/* binaries override them
+# with their own entry-point forms). This root file composes them by namespace and
+# each root verb aggregates the per-package ones. Validators in .claude/.prove.json
+# pin to the root verbs, so layout changes edit this file only — never the
+# validator config.
 #
-# Topology: cli (domain-free framework) ← funpack (pure compiler) and runtime
-# (funpack_runtime, SDL-gated) are independent libraries; cmd/funpack is the SINGLE
-# binary that composes them and is the only build that links SDL.
+# Topology: cli (domain-free framework) ← funpack (pure compiler), runtime
+# (funpack_runtime, SDL-gated), and eir (repo-local lint host) are independent
+# libraries; cmd/funpack is the SINGLE shippable binary that composes the compiler
+# + runtime and is the only build that links SDL, while cmd/eir is a repo-local dev
+# binary OFF the release path that never links SDL.
 
 includes:
   cli:
@@ -22,9 +24,15 @@ includes:
   runtime:
     taskfile: ./runtime
     dir: ./runtime
+  eir:
+    taskfile: ./eir
+    dir: ./eir
   cmd:
     taskfile: ./cmd/funpack
     dir: ./cmd/funpack
+  cmd-eir:
+    taskfile: ./cmd/eir
+    dir: ./cmd/eir
 
 tasks:
   build:
@@ -33,7 +41,9 @@ tasks:
       - task: cli:build
       - task: funpack:build
       - task: runtime:build
+      - task: eir:build
       - task: cmd:build
+      - task: cmd-eir:build
 
   lint:
     desc: Vet + strict-style every package (incl. the SDL-gated arms)
@@ -42,7 +52,9 @@ tasks:
       - task: funpack:lint
       - task: runtime:lint
       - task: runtime:lint-live
+      - task: eir:lint
       - task: cmd:lint
+      - task: cmd-eir:lint
 
   test:
     desc: Run every package's tests (all define-free — no SDL linked)
@@ -50,7 +62,9 @@ tasks:
       - task: cli:test
       - task: funpack:test
       - task: runtime:test
+      - task: eir:test
       - task: cmd:test
+      - task: cmd-eir:test
 
   binary:
     desc: Compile the single funpack binary (links vendor:sdl2 via FUNPACK_LIVE)

@@ -1,0 +1,29 @@
+version: '3'
+
+# cmd/eir is the eir binary: it composes the eir lint subtree (the eir package)
+# under one cli tree. SINGLE mode only — eir is a repo-local dev tool OFF the
+# funpack release path, so it never defines FUNPACK_LIVE and never links SDL (no
+# vendor:sdl2 anywhere in its dependency closure). The shared odin.yml verbs
+# assume a library; this overrides build/lint/test with their entry-point forms
+# (the package has a `main`) and adds the binary build.
+
+tasks:
+  build:
+    desc: Type-check the eir entry package
+    cmds:
+      - odin check .
+
+  lint:
+    desc: Vet + strict-style the eir entry package
+    cmds:
+      - odin check . -vet -strict-style
+
+  test:
+    desc: Run the eir entry package's composition/wiring tests (no SDL)
+    cmds:
+      - odin test .
+
+  binary:
+    desc: Compile the eir dev binary (no SDL — never FUNPACK_LIVE)
+    cmds:
+      - odin build . -out:eir

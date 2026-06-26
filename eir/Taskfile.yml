@@ -1,0 +1,12 @@
+version: '3'
+
+# The eir package is the repo-local lint HOST — a domain-thin registry of source
+# lints (dup is the first) composed over the shared cli framework. It is a LIBRARY
+# (no main, no binary), imported only by cmd/eir, where the single eir binary
+# lives. The shared odin.yml verbs (check -no-entry-point / vet / test) are the
+# whole surface, exactly as cli/funpack/runtime inherit them — the inherited
+# -no-entry-point is correct because this package has no `main`.
+includes:
+  base:
+    taskfile: ../taskfiles/odin.yml
+    flatten: true
