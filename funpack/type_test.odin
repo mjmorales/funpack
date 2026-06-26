@@ -552,6 +552,8 @@ surface_combinator_probe_receiver :: proc(kind: Surface_Combinator_Receiver) -> 
 		return engine_type_of(.Rng)
 	case .Option:
 		return option_of(Ground_Type.Int)
+	case .Map:
+		return map_of(Ground_Type.Int, Ground_Type.Bool)
 	}
 	return nil
 }

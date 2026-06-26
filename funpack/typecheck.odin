@@ -1996,6 +1996,24 @@ combinator_call_check :: proc(ctx: Check_Ctx, name: string, e: ^Call_Expr) -> (t
 	case "get":
 		t, ge := get_check(ctx, e)
 		return t, true, ge
+	case "empty":
+		t, ee := map_empty_check(ctx, e)
+		return t, true, ee
+	case "has":
+		t, he := map_has_check(ctx, e)
+		return t, true, he
+	case "set":
+		t, se := map_set_check(ctx, e)
+		return t, true, se
+	case "remove":
+		t, re := map_remove_check(ctx, e)
+		return t, true, re
+	case "keys":
+		t, ke := map_keys_check(ctx, e)
+		return t, true, ke
+	case "values":
+		t, ve := map_values_check(ctx, e)
+		return t, true, ve
 	case "pick":
 		t, pe := pick_check(ctx, e)
 		return t, true, pe
@@ -2195,6 +2213,12 @@ len_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error
 		return nil, .Type_Mismatch
 	}
 	source := expr_check(ctx, e.args[0]) or_return
+	// len is polymorphic over the read sources AND a Map (engine.map
+	// `len(self: Map[K, V]) -> Int`): the entry count, the element/key type
+	// irrelevant to the Int result, exactly like the list/view form.
+	if _, is_map := source.(^Map_Type); is_map {
+		return Ground_Type.Int, .None
+	}
 	if _, ok := source_element(source); !ok {
 		return nil, .Type_Mismatch
 	}
@@ -2210,6 +2234,17 @@ get_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error
 		return nil, .Type_Mismatch
 	}
 	source := expr_check(ctx, e.args[0]) or_return
+	// Map form (engine.map `get(self: Map[K, V], key: K) -> Option[V]`): a keyed,
+	// total lookup — the second argument is a KEY (compatible with K), not an Int
+	// index, and the result is Option[V]. get is polymorphic over the list/view
+	// index form and this map key form, dispatched on the receiver here.
+	if m, is_map := source.(^Map_Type); is_map {
+		key := expr_check(ctx, e.args[1]) or_return
+		if !types_compatible(m.key, key) {
+			return nil, .Type_Mismatch
+		}
+		return option_of(m.value), .None
+	}
 	index := expr_check(ctx, e.args[1]) or_return
 	elem, ok := source_element(source)
 	if !ok {
@@ -2219,6 +2254,125 @@ get_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error
 		return nil, .Type_Mismatch
 	}
 	return option_of(elem), .None
+}
+
+// map_unify_param unifies a Map parameter (K or V) with an argument's type for
+// the engine.map methods: the parameter wins when it is known, else the argument
+// type does — the empty map's Map[_, _] takes its K/V from the first set, exactly
+// as the empty list's nil element takes its type from append/prepend. It fails
+// when the two disagree (a key/value of the wrong type for an already-typed map).
+map_unify_param :: proc(param, arg: Type) -> (unified: Type, ok: bool) {
+	if !types_compatible(param, arg) {
+		return nil, false
+	}
+	if param != nil {
+		return param, true
+	}
+	return arg, true
+}
+
+// map_empty_check types empty() (engine.map `empty() -> Map[K, V]`): the
+// zero-argument constructor for the immutable Map, yielding Map[_, _] — both
+// parameters undetermined until the first set or the assignment/return context
+// unifies them, mirroring the empty list `[]`. The idiomatic `Map.empty()` static
+// form routes through surface_static_method; this is the bare-call/UFCS lowering.
+map_empty_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 0 {
+		return nil, .Type_Mismatch
+	}
+	return map_of(nil, nil), .None
+}
+
+// map_has_check types has(self: Map[K, V], key: K) -> Bool (engine.map): the key
+// presence test — the key argument must unify with K, the value type irrelevant.
+map_has_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	m, is_map := source.(^Map_Type)
+	if !is_map {
+		return nil, .Type_Mismatch
+	}
+	key := expr_check(ctx, e.args[1]) or_return
+	if !types_compatible(m.key, key) {
+		return nil, .Type_Mismatch
+	}
+	return Ground_Type.Bool, .None
+}
+
+// map_set_check types set(self: Map[K, V], key: K, value: V) -> Map[K, V]
+// (engine.map): a new map with the key bound to the value. K and V are inferred
+// from the arguments when the receiver is the empty Map[_, _], so
+// `empty().set(cell, tile)` yields Map[Cell, Tile]; on an already-typed map the
+// key and value must unify with K and V.
+map_set_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 3 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	m, is_map := source.(^Map_Type)
+	if !is_map {
+		return nil, .Type_Mismatch
+	}
+	key := expr_check(ctx, e.args[1]) or_return
+	value := expr_check(ctx, e.args[2]) or_return
+	new_key, key_ok := map_unify_param(m.key, key)
+	if !key_ok {
+		return nil, .Type_Mismatch
+	}
+	new_value, value_ok := map_unify_param(m.value, value)
+	if !value_ok {
+		return nil, .Type_Mismatch
+	}
+	return map_of(new_key, new_value), .None
+}
+
+// map_remove_check types remove(self: Map[K, V], key: K) -> Map[K, V]
+// (engine.map): a new map without the key — the key argument unifies with K and
+// the map type is unchanged (remove never widens K/V).
+map_remove_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 2 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	m, is_map := source.(^Map_Type)
+	if !is_map {
+		return nil, .Type_Mismatch
+	}
+	key := expr_check(ctx, e.args[1]) or_return
+	if !types_compatible(m.key, key) {
+		return nil, .Type_Mismatch
+	}
+	return map_of(m.key, m.value), .None
+}
+
+// map_keys_check types keys(self: Map[K, V]) -> [K] (engine.map): the keys in
+// insertion order as a list of K — values irrelevant to the result.
+map_keys_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	m, is_map := source.(^Map_Type)
+	if !is_map {
+		return nil, .Type_Mismatch
+	}
+	return list_of(m.key), .None
+}
+
+// map_values_check types values(self: Map[K, V]) -> [V] (engine.map): the values
+// in insertion order as a list of V — keys irrelevant to the result.
+map_values_check :: proc(ctx: Check_Ctx, e: ^Call_Expr) -> (type: Type, err: Type_Error) {
+	if len(e.args) != 1 {
+		return nil, .Type_Mismatch
+	}
+	source := expr_check(ctx, e.args[0]) or_return
+	m, is_map := source.(^Map_Type)
+	if !is_map {
+		return nil, .Type_Mismatch
+	}
+	return list_of(m.value), .None
 }
 
 // pick_check types pick(self: Rng, items: [T]) (spec §04 §1, engine.rand): the
@@ -2775,6 +2929,12 @@ is_stdlib_free_fn :: proc(name: string) -> bool {
 	     "is_empty",
 	     "len",
 	     "get",
+	     "empty",
+	     "has",
+	     "set",
+	     "remove",
+	     "keys",
+	     "values",
 	     "pick",
 	     "grid_cells":
 		return true

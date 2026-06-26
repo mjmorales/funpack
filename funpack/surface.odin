@@ -313,6 +313,18 @@ STDLIB_SURFACE := []Module_Surface{
 		path = "engine.map",
 		decls = {
 			{"Map", .Type_Name},
+			// The map methods empty/has/set/remove/keys/values are owned here;
+			// get and len are the polymorphic engine.list combinators re-exported
+			// below (STDLIB_REEXPORTS), so `import engine.map.{Map, get, len}`
+			// resolves. All are call-site-inferred combinators (their K/V are read
+			// off the receiver), so surface_signatures returns found = false for
+			// them — combinator_call_check owns their typing.
+			{"empty", .Func},
+			{"has", .Func},
+			{"set", .Func},
+			{"remove", .Func},
+			{"keys", .Func},
+			{"values", .Func},
 		},
 	},
 	{
@@ -559,6 +571,13 @@ STDLIB_REEXPORTS := []Reexport{
 	// method at the call site by the View receiver — one owning table row, one
 	// name, dispatched by `self`.
 	{"engine.ui", "map", "engine.list"},
+	// §26 engine.map re-exports the polymorphic list combinators get and len
+	// (owned by engine.list) so the idiomatic `import engine.map.{Map, get, len,
+	// …}` resolves every method name from one module. get/len dispatch on the
+	// receiver at the call site (a Map vs a List/View) in their _check procs —
+	// one owning row, one name, dispatched by `self`, exactly like ui.map.
+	{"engine.map", "get", "engine.list"},
+	{"engine.map", "len", "engine.list"},
 }
 
 // Binding records the declaration an imported name resolved to.
@@ -951,6 +970,7 @@ Surface_Combinator_Receiver :: enum {
 	List_Only, // a List[T] only (^List_Type); a View is rejected (concat/contains/init)
 	Rng,       // the engine.rand Rng handle (pick)
 	Option,    // an Option[T] (or_else)
+	Map,       // a Map[K, V] (engine.map: len/get/has/set/remove/keys/values; empty is a no-receiver constructor, not here)
 }
 
 // Surface_Combinator_Probe pairs a call-site-inferred combinator NAME (a
@@ -994,6 +1014,16 @@ SURFACE_COMBINATOR_PROBES := []Surface_Combinator_Probe{
 	{"init", .List_Only},
 	{"or_else", .Option},
 	{"pick", .Rng},
+	// engine.map's self-first methods — reachable as `m.METHOD(…)` on a Map[K, V].
+	// empty is omitted: it is a no-receiver constructor (Map.empty() / bare
+	// empty()), not a self-first method, so it is not UFCS-reachable on a value.
+	{"len", .Map},
+	{"get", .Map},
+	{"has", .Map},
+	{"set", .Map},
+	{"remove", .Map},
+	{"keys", .Map},
+	{"values", .Map},
 }
 
 // surface_receiver_matches_combinator reports whether `receiver` is the self position
@@ -1015,6 +1045,9 @@ surface_receiver_matches_combinator :: proc(receiver: Type, kind: Surface_Combin
 		return is_engine(receiver, .Rng)
 	case .Option:
 		_, ok := receiver.(^Option_Type)
+		return ok
+	case .Map:
+		_, ok := receiver.(^Map_Type)
 		return ok
 	}
 	return false
@@ -1444,6 +1477,16 @@ surface_static_method :: proc(type_name: string, member: string) -> (signature: 
 			// chained `Rng.seed(1).bogus()` to the Unknown_Method diagnostic (the
 			// untyped receiver short-circuits method_check before the member resolves).
 			return func_of({Ground_Type.Int}, engine_type_of(.Rng)), true
+		}
+	case "Map":
+		switch member {
+		case "empty":
+			// §26 engine.map: the idiomatic Map constructor `Map.empty()`, the
+			// Type-name twin of the bare `empty()` free call (both yield the empty
+			// Map[_, _], K/V undetermined until set/the assignment context unifies
+			// them) — the View.of / Rng.seed "every container has a deterministic
+			// constructor" class.
+			return func_of({}, map_of(nil, nil)), true
 		}
 	case "Bindings":
 		switch member {
