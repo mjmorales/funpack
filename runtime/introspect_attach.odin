@@ -558,7 +558,8 @@ Open_Session_Result :: enum {
 //     against a different build or seed BEFORE opening — never fold mismatched
 //     inputs. The seed rides through to open_debug_session, so a seeded run (snake)
 //     reproduces its RNG-driven setup.
-//   - WITHOUT one (a fresh open): an ATTACH_FRESH_TICKS window of empty inputs. A
+//   - WITHOUT one (a fresh open): a `fresh_ticks`-wide window of empty inputs
+//     (default ATTACH_FRESH_TICKS; the render-check passes its own N). A
 //     `uses_rng` program resolves a tick-0 ROOT SEED by the SAME §25 §60 precedence
 //     `funpack run`/`live` use (resolve_root_seed: the `seed_override`, then the
 //     entrypoint config seed, then the fixed engine default), so a BARE attach
@@ -587,6 +588,7 @@ open_session_for_artifact :: proc(
 	has_replay: bool,
 	allocator := context.allocator,
 	seed_override: Maybe(i64) = nil,
+	fresh_ticks: int = ATTACH_FRESH_TICKS,
 ) -> (
 	session: Debug_Session,
 	program: ^Program,
@@ -633,8 +635,8 @@ open_session_for_artifact :: proc(
 		}
 		snapshots = log.snapshots
 	} else {
-		fresh := make([]Input, ATTACH_FRESH_TICKS, allocator)
-		for i in 0 ..< ATTACH_FRESH_TICKS {
+		fresh := make([]Input, fresh_ticks, allocator)
+		for i in 0 ..< fresh_ticks {
 			fresh[i] = empty()
 		}
 		snapshots = fresh

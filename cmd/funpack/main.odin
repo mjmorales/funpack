@@ -1,6 +1,7 @@
 // funpack — the single binary. ONE command tree dispatches the pure compiler
 // verbs (version, test, build, check, fmt, warden — owned by the funpack package)
-// and the runtime verbs (run, live, attach — which drive funpack_runtime). This
+// and the runtime verbs (run, render-check, live, attach — which drive
+// funpack_runtime). This
 // is the only `main` in the repo and the only package that imports both the
 // compiler and the runtime, so it is the only build that links SDL (under
 // -define:FUNPACK_LIVE=true). The compiler and runtime packages stay independent
@@ -46,9 +47,9 @@ verb_args :: proc(args: []string) -> []string {
 }
 
 // build_root_cli composes the root from the compiler subtree (the funpack
-// package's pure verbs) plus the runtime verbs (run, live, attach, mcp — declared
-// in this package because they call into funpack_runtime; mcp serves the MCP dev
-// server over stdio). It returns the root
+// package's pure verbs) plus the runtime verbs (run, render-check, live, attach,
+// mcp — declared in this package because they call into funpack_runtime; mcp
+// serves the MCP dev server over stdio). It returns the root
 // UNFINALIZED: main and the contract test finalize it, so the test asserts
 // cli_finalize's verdict (proving no verb-name collision across the compiler and
 // runtime nodes) instead of an internal assert masking it.
@@ -56,6 +57,7 @@ build_root_cli :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 	subs := make([dynamic]^cli.Cli_Command, 0, 16, allocator)
 	append(&subs, ..funpack.build_funpack_compiler_subtree(allocator))
 	append(&subs, build_run_command(allocator))
+	append(&subs, build_render_check_command(allocator))
 	append(&subs, build_live_command(allocator))
 	append(&subs, build_attach_command(allocator))
 	append(&subs, build_mcp_command(allocator))

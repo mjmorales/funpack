@@ -123,6 +123,33 @@ emission**: the verdict is a pure function of `(AST, mode)`, consistent with §1
 absent index changes nothing about a `check` verdict, and the one-way arrow
 source → index → projection gains no back-edge.
 
+### `funpack render-check` — green ≠ works
+
+A check-clean, test-green build can still ship a **black screen**: `funpack test` folds **pure
+behavior functions in isolation** ([`04`](04-effects.md)) and never runs the live
+thing → pipeline → render wiring, so a game whose render stage produces an empty draw-list passes
+every gate and renders nothing. **`funpack render-check`** closes that gap with the one thing a unit
+test cannot do — it **builds the project, then folds the whole pipeline headlessly from a cold seeded
+startup for N ticks** and asserts the projected [`20`](20-render.md) draw-list is **non-empty** on at
+least one frame.
+
+The fold is **faithful**: render is a deterministic post-commit projection of the committed world
+([`20`](20-render.md) §5), so the headless projection is the **same** one the live present path
+shows — a `render-check` failure is exactly the black screen the window would. The check is
+**seed-correct**: a `uses_rng` game ([`09`](09-runtime.md) §6) folds under the same resolved
+root seed the live window uses, so its first frame populates rather than freezing at declared
+defaults. It needs **no display** — it links no present boundary and runs inside the deterministic,
+SDL-free test floor.
+
+The exit contract adds the **third tier** `check` deliberately omits: **0** — the game drew, **or**
+it declares no `render:` stage (a ui-only or non-visual project draws an empty draw-list by design,
+so there is nothing to assert); **1** — the game **has** a `render:` stage but drew nothing across
+the window (the counted black-screen failure); **2** — a build/gate refusal or no entrypoint. The
+window is a fixed compiler default; a game whose first frame is genuinely delayed widens it
+(`--ticks`). The verdict is scoped to the `render:` stage because that is the slot whose emptiness is
+a fault — the singleton-vs-`thing` modeling choice it grew out of is *not* a structural property
+(see [`06`](06-things-behaviors.md) §2).
+
 ## 4. Governance — the engine's swarm backstops are compile-time
 
 "Keep agents on track" is an enumerated set of failure modes. The ones the **engine** can answer are

@@ -256,6 +256,16 @@ test "draw_ball emits one white rect at the ball position" {       // renderers 
 }
 ```
 
+**Green ≠ works.** A per-behavior test proves each renderer correct *in isolation* — but it
+folds the function alone, never the live thing → pipeline → render wiring. A game can pass every
+test and `funpack check` clean yet ship a **black screen**: the render behavior is right, but
+nothing it would draw is ever spawned (or, for a `uses_rng` game, the run is unseeded so the
+RNG-driven spawn never fires). Catch that with **`funpack render-check`**: it builds the project,
+folds the whole pipeline headlessly from a cold seeded startup, and fails when the live draw-list
+is empty across the window. It is faithful — the live window projects through the same fold — so a
+pass means the game actually draws. Run it in CI alongside `funpack test` for any game with a
+`render:` stage.
+
 ## Designing a game — the standard `.fun` skeleton
 
 `enum`s for state/actions → `data`/`thing`/`signal` declarations → pure `fn` helpers → `behavior`s →

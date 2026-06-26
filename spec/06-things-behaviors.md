@@ -30,8 +30,15 @@ accessed **directly by type** (yielding `Scoreboard`, never `Option`/`[Scoreboar
 behaviors running once per tick. It is the database's row-count-1 constraint as a first-class
 declaration; a contextual leading keyword like `thing`.
 
-> **Canonical.** Exactly-one state is a `singleton`, never an ordinary `thing` spawned once in
-> `setup`.
+> **Canonical.** A `singleton` is for state that is exactly-one **by nature** — a global or
+> resource: the scoreboard, the camera, the menu, accessed directly by type. A single-instance
+> **entity** stays a `thing`: a game that spawns one player, one ball, or one snake models it as a
+> `thing` spawned once in `setup` (another mode may spawn two). The choice is a modeling
+> judgment — exactly-one *kind* versus exactly-one *this run* — that the author makes by picking
+> the keyword; it is **not** a structural property a gate can read off the source, so the compiler
+> does not flag a once-spawned `thing` as a should-be `singleton`. What the toolchain *does* enforce
+> is that whatever you declare actually renders: `funpack render-check` folds the live pipeline and
+> fails a build whose render stage draws nothing ([`29`](29-architecture-governance.md)).
 
 ---
 
