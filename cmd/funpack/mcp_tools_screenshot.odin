@@ -100,14 +100,14 @@ mcp_screenshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.all
 shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	session_id, has_session := funpack_runtime.json_string_field(dispatch.arguments, "session_id")
 	if !has_session {
-		return shot_error_line(dispatch.id, Mcp_Error{
+		return mcp_tool_error(dispatch.id, Mcp_Error{
 			category = .Invalid_Input,
 			message  = "inspect_screenshot missing required string field: session_id",
 		}, allocator)
 	}
 	tick, has_tick := funpack_runtime.json_int_field(dispatch.arguments, "tick")
 	if !has_tick {
-		return shot_error_line(dispatch.id, Mcp_Error{
+		return mcp_tool_error(dispatch.id, Mcp_Error{
 			category = .Invalid_Input,
 			message  = "inspect_screenshot missing required integer field: tick",
 		}, allocator)
@@ -127,7 +127,7 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	if !found {
 		// A stale/unknown session is a Session-category refusal — the session is never
 		// fabricated (the registry returns found=false), so the model knows to re-open.
-		return shot_error_line(dispatch.id, Mcp_Error{
+		return mcp_tool_error(dispatch.id, Mcp_Error{
 			category = .Session,
 			message  = "unknown or ended session — open one with session_start",
 			detail   = session_id,
@@ -136,7 +136,7 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 
 	parsed, ok_field, error_text, result_obj := shot_parse_response(response, allocator)
 	if !parsed {
-		return shot_error_line(dispatch.id, Mcp_Error{
+		return mcp_tool_error(dispatch.id, Mcp_Error{
 			category = .Internal,
 			message  = "the §28 screenshot response was not a valid envelope",
 			detail   = response,
@@ -145,12 +145,12 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	if !ok_field {
 		// A §28 refusal — reframe a present-boundary crossing, forward a caller-input
 		// mistake unchanged (shot_map_refusal).
-		return shot_error_line(dispatch.id, shot_map_refusal(error_text), allocator)
+		return mcp_tool_error(dispatch.id, shot_map_refusal(error_text), allocator)
 	}
 
 	pixels_b64, has_pixels := funpack_runtime.json_string_field(result_obj, "pixels")
 	if !has_pixels {
-		return shot_error_line(dispatch.id, Mcp_Error{
+		return mcp_tool_error(dispatch.id, Mcp_Error{
 			category = .Internal,
 			message  = "the §28 screenshot result carried no pixels field",
 		}, allocator)
@@ -158,7 +158,7 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 
 	png_bytes, transcoded := shot_qoi_to_png_bytes(pixels_b64, allocator)
 	if !transcoded {
-		return shot_error_line(dispatch.id, Mcp_Error{
+		return mcp_tool_error(dispatch.id, Mcp_Error{
 			category = .Internal,
 			message  = "decoding the §28 QOI frame to PNG failed",
 		}, allocator)
@@ -173,7 +173,7 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	dir := shot_output_dir(allocator)
 	path, written := shot_write_png_file(dir, png_bytes, tick, shot_timestamp(allocator), allocator)
 	if !written {
-		return shot_error_line(dispatch.id, Mcp_Error{
+		return mcp_tool_error(dispatch.id, Mcp_Error{
 			category = .Internal,
 			message  = "writing the screenshot PNG to disk failed",
 			detail   = dir,
@@ -208,13 +208,6 @@ shot_build_content :: proc(meta: string, png: []u8, include_pixels: bool, alloca
 	content[1] = mcp_image_content(base64.encode(png, base64.ENC_TABLE, allocator), "image/png")
 	return content
 }
-
-// shot_error_line renders a domain failure as a SUCCESSFUL tools/call carrying the
-// IsError envelope (mcp_error.odin) on the dispatch id — never a JSON-RPC error object.
-shot_error_line :: proc(id: Mcp_Id, err: Mcp_Error, allocator := context.allocator) -> string {
-	return mcp_render_tool_result(id, mcp_tool_error_result(err, allocator), allocator)
-}
-
 // shot_build_request_line marshals the §28 screenshot request line: the fixed envelope
 // (v, id, cmd) plus the args object. `id` is a fixed 1 — the session fold is synchronous
 // (one request, one response) so the inner id only needs to round-trip, not correlate.

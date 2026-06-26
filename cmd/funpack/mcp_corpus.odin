@@ -5,8 +5,9 @@
 // `#load` — the same compile-time byte read funpack/version.odin uses for VERSION
 // (no runtime filesystem read, no clock; absolute stdout discipline preserved
 // because the server is FUNPACK_LIVE-only in this entry package, never the pure
-// compiler subtree). Each shard is parsed ONCE at server init (load_corpus) with
-// core:encoding/json into the Section/Manifest structs below. This file delivers
+// compiler subtree). Each shard is parsed on each load_corpus call (no memoization —
+// every docs tool reparses per request) with core:encoding/json into the
+// Section/Manifest structs below. This file delivers
 // only the embed + parse + the typed accessors (load_corpus / load_manifest /
 // corpus_by_kind / manifest_count_by_kind) that the docs MCP tools
 // (docs_get/docs_search) and their ranker build on.
@@ -114,9 +115,9 @@ CORPUS_MANIFEST_JSON :: #load("mcp/corpus/manifest.json", string)
 // load_corpus parses and merges the three embedded shards into one section slice,
 // in the deterministic spec→engine→plugin shard order; the SECTION order within the
 // merged corpus is not relied on by anchor-keyed consumers (anchors are unique).
-// Parsed once at server init. Returns ok=false on
-// a malformed shard (a programmer/build error, since the shards are committed and
-// the pin test guards them) rather than panicking. Allocated in `allocator`.
+// Reparses on every call (no memoization — each docs request reparses). Returns
+// ok=false on a malformed shard (a programmer/build error, since the shards are
+// committed and the pin test guards them) rather than panicking. Allocated in `allocator`.
 load_corpus :: proc(allocator := context.allocator) -> (sections: []Corpus_Section, ok: bool) {
 	shards := [3]string{CORPUS_SPEC_JSON, CORPUS_ENGINE_JSON, CORPUS_PLUGIN_JSON}
 	out := make([dynamic]Corpus_Section, 0, 700, allocator)

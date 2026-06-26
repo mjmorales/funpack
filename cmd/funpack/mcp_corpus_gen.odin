@@ -41,6 +41,7 @@ import "core:encoding/json"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 
 // Corpus_Roots holds the resolved absolute source directories for one generation
@@ -453,8 +454,9 @@ parse_decl_head :: proc(trimmed: string) -> (name: string, ok: bool) {
 	return rest[:end], true
 }
 
-// strip_decl_keyword tries each stdlib decl keyword in declHeadRe-alternation order
-// (multi-word forms first) and returns the post-keyword remainder on the first
+// strip_decl_keyword tries each stdlib decl keyword with multi-word forms first (so
+// a multi-word keyword is matched before its single-word prefix) and returns the
+// post-keyword remainder on the first
 // match. A flat loop over the keyword list rather than an else-if chain keeps each
 // match's locals out of the others' scope (no -strict-style shadow).
 strip_decl_keyword :: proc(s: string) -> (rest: string, ok: bool) {
@@ -621,18 +623,6 @@ corpus_is_ident_char :: proc(b: u8) -> bool {
 // int_to_string renders a small non-negative int as its decimal string — used for
 // the slug/name dedup suffix ("-2", "-3"). Allocated in `allocator`.
 int_to_string :: proc(n: int, allocator := context.allocator) -> string {
-	if n == 0 {
-		return strings.clone("0", allocator)
-	}
-	digits := make([dynamic]u8, 0, 8, context.temp_allocator)
-	v := n
-	for v > 0 {
-		append(&digits, u8('0' + v % 10))
-		v /= 10
-	}
-	b := strings.builder_make(allocator)
-	for i := len(digits) - 1; i >= 0; i -= 1 {
-		strings.write_byte(&b, digits[i])
-	}
-	return strings.to_string(b)
+	buf: [20]u8
+	return strings.clone(strconv.write_int(buf[:], i64(n), 10), allocator)
 }

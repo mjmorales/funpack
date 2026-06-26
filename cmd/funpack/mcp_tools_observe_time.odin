@@ -54,14 +54,14 @@ mcp_observe_time_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.a
 	// refusal (never a fabricated session), exactly the registry's found=false contract.
 	session_id, has_session := obs_session_id(dispatch.arguments)
 	if !has_session {
-		return obs_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: session_id"},
 			allocator,
 		), true
 	}
 	if _, found := mcp_session_registry_lookup(dispatch.registry, session_id); !found {
-		return obs_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Session, message = "unknown session id", detail = session_id},
 			allocator,
@@ -77,7 +77,7 @@ mcp_observe_time_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.a
 	if !found {
 		// The session vanished between the lookup and the fold (it cannot, single-
 		// threaded per session, but the contract is honored, not assumed).
-		return obs_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Session, message = "unknown session id", detail = session_id},
 			allocator,
@@ -239,7 +239,7 @@ obs_write_json_value :: proc(b: ^strings.Builder, value: json.Value) {
 obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocator := context.allocator) -> string {
 	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
 	if parse_err != .None {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response was not valid JSON", detail = command},
 			allocator,
@@ -247,7 +247,7 @@ obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocat
 	}
 	envelope, is_object := parsed.(json.Object)
 	if !is_object {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response was not a JSON object", detail = command},
 			allocator,
@@ -257,7 +257,7 @@ obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocat
 	ok_field, has_ok := envelope["ok"]
 	ok_bool, ok_is_bool := ok_field.(json.Boolean)
 	if !has_ok || !ok_is_bool {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response missing ok field", detail = command},
 			allocator,
@@ -274,14 +274,14 @@ obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocat
 				message = string(error_text)
 			}
 		}
-		return obs_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
+		return mcp_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
 	}
 
 	// ok:true — lift the `result` object verbatim into a Text content block. A missing
 	// result on an ok response is the runtime breaking its own contract (Internal).
 	result_field, has_result := envelope["result"]
 	if !has_result {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session ok response carried no result", detail = command},
 			allocator,
@@ -289,7 +289,7 @@ obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocat
 	}
 	result_json, marshal_err := json.marshal(result_field, {}, allocator)
 	if marshal_err != nil {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "rendering the session result failed", detail = command},
 			allocator,
@@ -300,14 +300,6 @@ obs_lift_response :: proc(id: Mcp_Id, command: string, response: string, allocat
 	content[0] = mcp_text_content(string(result_json))
 	return mcp_render_tool_result(id, Mcp_Tool_Result{content = content, is_error = false}, allocator)
 }
-
-// obs_tool_error renders a domain failure as the in-band IsError tool result (the
-// mcp_error.odin convention — a SUCCESSFUL tools/call carrying isError=true, never a
-// JSON-RPC error object). The thin wrapper keeps the dispatch arm reading by intent.
-obs_tool_error :: proc(id: Mcp_Id, err: Mcp_Error, allocator := context.allocator) -> string {
-	return mcp_render_tool_result(id, mcp_tool_error_result(err, allocator), allocator)
-}
-
 // --- friction-0007: self-describing empty inspect results -------------------
 
 // Obs_Precondition is the session-shape an inspect result is read AGAINST — the
@@ -482,7 +474,7 @@ obs_lift_inspect_response :: proc(
 ) -> string {
 	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
 	if parse_err != .None {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response was not valid JSON", detail = command},
 			allocator,
@@ -490,7 +482,7 @@ obs_lift_inspect_response :: proc(
 	}
 	envelope, is_object := parsed.(json.Object)
 	if !is_object {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response was not a JSON object", detail = command},
 			allocator,
@@ -499,7 +491,7 @@ obs_lift_inspect_response :: proc(
 	ok_field, has_ok := envelope["ok"]
 	ok_bool, ok_is_bool := ok_field.(json.Boolean)
 	if !has_ok || !ok_is_bool {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response missing ok field", detail = command},
 			allocator,
@@ -515,12 +507,12 @@ obs_lift_inspect_response :: proc(
 				message = string(error_text)
 			}
 		}
-		return obs_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
+		return mcp_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
 	}
 	result_field, has_result := envelope["result"]
 	result_object, result_is_object := result_field.(json.Object)
 	if !has_result || !result_is_object {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session ok response carried no result object", detail = command},
 			allocator,
@@ -529,7 +521,7 @@ obs_lift_inspect_response :: proc(
 
 	result_json, marshal_err := json.marshal(result_field, {}, allocator)
 	if marshal_err != nil {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "rendering the session result failed", detail = command},
 			allocator,
@@ -594,7 +586,7 @@ OBS_STATUS_LOAD_NEXT_ACTION :: "time_load — arm the timeline before time_step 
 obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, allocator := context.allocator) -> string {
 	parsed, parse_err := json.parse(transmute([]u8)response, json.DEFAULT_SPECIFICATION, true, allocator)
 	if parse_err != .None {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response was not valid JSON", detail = command},
 			allocator,
@@ -602,7 +594,7 @@ obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, 
 	}
 	envelope, is_object := parsed.(json.Object)
 	if !is_object {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response was not a JSON object", detail = command},
 			allocator,
@@ -611,7 +603,7 @@ obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, 
 	ok_field, has_ok := envelope["ok"]
 	ok_bool, ok_is_bool := ok_field.(json.Boolean)
 	if !has_ok || !ok_is_bool {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session response missing ok field", detail = command},
 			allocator,
@@ -626,12 +618,12 @@ obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, 
 				message = string(error_text)
 			}
 		}
-		return obs_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
+		return mcp_tool_error(id, Mcp_Error{category = .Session, message = message}, allocator)
 	}
 	result_field, has_result := envelope["result"]
 	result_object, result_is_object := result_field.(json.Object)
 	if !has_result || !result_is_object {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "session ok response carried no result object", detail = command},
 			allocator,
@@ -640,7 +632,7 @@ obs_lift_status_response :: proc(id: Mcp_Id, command: string, response: string, 
 
 	result_json, marshal_err := json.marshal(result_field, {}, allocator)
 	if marshal_err != nil {
-		return obs_tool_error(
+		return mcp_tool_error(
 			id,
 			Mcp_Error{category = .Internal, message = "rendering the session result failed", detail = command},
 			allocator,

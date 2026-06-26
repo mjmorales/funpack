@@ -353,7 +353,7 @@ test_oneshot_reachable_through_tools_call :: proc(t: ^testing.T) {
 		{`{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"build","arguments":{"dir":`, oneshot_json_string(root), `}}}`},
 		context.temp_allocator,
 	)
-	request, parsed := mcp_parse_request(line, context.temp_allocator)
+	request, parsed, _ := mcp_parse_request(line, context.temp_allocator)
 	testing.expect(t, parsed, "the tools/call line parses as a request")
 
 	registry := mcp_session_registry_make(context.temp_allocator)

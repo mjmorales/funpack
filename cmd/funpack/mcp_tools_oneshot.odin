@@ -87,7 +87,7 @@ mcp_oneshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 	// declining — declining would let the chain fall through to the not-implemented
 	// stub, masking the gap; an Internal IsError names the offending tool so the gap
 	// is loud, the closed-enum discipline the generated projection depends on.
-	return oneshot_tool_error(
+	return mcp_tool_error(
 		dispatch.id,
 		Mcp_Error{category = .Internal, message = "one-shot family claimed a tool it does not render", detail = dispatch.name},
 		allocator,
@@ -118,7 +118,7 @@ oneshot_check_mode :: proc(arguments: json.Object) -> funpack.Build_Mode {
 oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocator := context.allocator) -> string {
 	dir, has_dir := oneshot_arg_string(dispatch.arguments, "dir")
 	if !has_dir {
-		return oneshot_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: dir", detail = dispatch.name},
 			allocator,
@@ -151,7 +151,7 @@ oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocato
 		// floor has a per-stage diagnostic, so the array is conditional on a captured rule.
 		oneshot_write_diagnostics(&b, verdict.diagnostic, allocator)
 		strings.write_byte(&b, '}')
-		return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
+		return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 	}
 	// A clean verdict: report the products' derived paths (artifact_path is "" for a
 	// §30 package — no entrypoint, no runtime artifact). The bytes themselves are not
@@ -162,7 +162,7 @@ oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocato
 	strings.write_string(&b, ",\"index_path\":")
 	funpack_runtime.write_json_string(&b, product.index_path)
 	strings.write_byte(&b, '}')
-	return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
+	return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 }
 
 // oneshot_test renders a `funpack test` verdict from read_project + run_project_pipeline
@@ -176,7 +176,7 @@ oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocato
 oneshot_test :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	dir, has_dir := oneshot_arg_string(dispatch.arguments, "dir")
 	if !has_dir {
-		return oneshot_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: dir", detail = "test"},
 			allocator,
@@ -214,7 +214,7 @@ oneshot_test :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> 
 	strings.write_string(&b, ",\"failed\":")
 	strings.write_int(&b, report.failed)
 	strings.write_byte(&b, '}')
-	return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
+	return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 }
 
 // oneshot_test_refusal renders the test verb's exit-2 refusal (malformed tree / index
@@ -233,7 +233,7 @@ oneshot_test_refusal :: proc(id: Mcp_Id, dir: string, error_name: string, messag
 	funpack_runtime.write_json_string(&b, message)
 	oneshot_write_diagnostics(&b, diag, allocator)
 	strings.write_byte(&b, '}')
-	return oneshot_text_result(id, strings.to_string(b), allocator)
+	return mcp_text_result(id, strings.to_string(b), allocator)
 }
 
 // oneshot_fmt renders a `funpack fmt --check` verdict from the pure fmt_drift seam (NO
@@ -246,7 +246,7 @@ oneshot_test_refusal :: proc(id: Mcp_Id, dir: string, error_name: string, messag
 oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	dir, has_dir := oneshot_arg_string(dispatch.arguments, "dir")
 	if !has_dir {
-		return oneshot_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: dir", detail = "fmt"},
 			allocator,
@@ -263,7 +263,7 @@ oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		strings.write_string(&b, ",\"message\":")
 		funpack_runtime.write_json_string(&b, verdict.offender)
 		strings.write_byte(&b, '}')
-		return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
+		return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 	}
 
 	b := strings.builder_make(allocator)
@@ -285,7 +285,7 @@ oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		strings.write_byte(&b, '}')
 	}
 	strings.write_string(&b, "]}")
-	return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
+	return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 }
 
 // oneshot_warden renders a `funpack warden <cmd>` query from the pure read_warden_index
@@ -302,7 +302,7 @@ oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allocator := context.allocator) -> string {
 	dir, has_dir := oneshot_arg_string(dispatch.arguments, "dir")
 	if !has_dir {
-		return oneshot_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: dir", detail = dispatch.name},
 			allocator,
@@ -323,7 +323,7 @@ oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allo
 		strings.write_string(&b, ",\"message\":")
 		funpack_runtime.write_json_string(&b, funpack.warden_refusal_message(refusal, allocator))
 		strings.write_byte(&b, '}')
-		return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
+		return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 	}
 
 	// The find filter: warden_find reads its `query` substring; graph reads its `node`
@@ -349,7 +349,7 @@ oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allo
 	strings.write_string(&b, ",\"ok\":true,\"output\":")
 	funpack_runtime.write_json_string(&b, output)
 	strings.write_byte(&b, '}')
-	return oneshot_text_result(dispatch.id, strings.to_string(b), allocator)
+	return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 }
 
 // oneshot_write_diagnostics appends the failed result's `diagnostics` array — the
@@ -511,28 +511,6 @@ oneshot_arg_string :: proc(arguments: json.Object, key: string) -> (value: strin
 	}
 	return string(text), true
 }
-
-// oneshot_text_result wraps an already-rendered structured JSON string into a clean
-// (isError=false) MCP tool result with one text content block — the common shape every
-// oneshot tool's success AND exit-code-as-data outcome takes. The structured JSON IS the
-// result the agent reads; ok:false rides inside it (exit-code-as-data), never as an
-// IsError. The IsError path is oneshot_tool_error (a genuine boundary fault only).
-oneshot_text_result :: proc(id: Mcp_Id, structured_json: string, allocator := context.allocator) -> string {
-	content := make([]Mcp_Content, 1, allocator)
-	content[0] = mcp_text_content(structured_json)
-	return mcp_render_tool_result(id, Mcp_Tool_Result{content = content, is_error = false}, allocator)
-}
-
-// oneshot_tool_error renders a GENUINE boundary fault as the in-band IsError tool result
-// (the mcp_error.odin convention — a SUCCESSFUL tools/call carrying isError=true, never a
-// JSON-RPC error object). This is the NARROW path: a missing required `dir` arg
-// (Invalid_Input) or a generator-vs-dispatch gap (Internal). Exit-code-as-data outcomes
-// (a refused build, a failed test, a warden index-refusal) do NOT come here — they ride
-// oneshot_text_result as ok:false data.
-oneshot_tool_error :: proc(id: Mcp_Id, err: Mcp_Error, allocator := context.allocator) -> string {
-	return mcp_render_tool_result(id, mcp_tool_error_result(err, allocator), allocator)
-}
-
 // oneshot_family_tools is this family's tool roster — the twelve tools
 // mcp_oneshot_dispatch claims. Kept as a package-level table the family's tests walk
 // (assert each is in TOOL_SPECS under the oneshot group, assert no other family's tool

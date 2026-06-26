@@ -465,7 +465,7 @@ shot_args_object :: proc(session_id: string, tick: int, allocator := context.all
 	strings.write_string(&b, `,"tick":`)
 	strings.write_int(&b, tick)
 	strings.write_string(&b, `}}}`)
-	request, _ := mcp_parse_request(strings.to_string(b), allocator)
+	request, _, _ := mcp_parse_request(strings.to_string(b), allocator)
 	args := request.params["arguments"]
 	object, _ := args.(json.Object)
 	return object

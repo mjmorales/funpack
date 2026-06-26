@@ -52,7 +52,7 @@ mcp_record_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.allocat
 		return rec_record(dispatch, allocator), true
 	}
 
-	return rec_tool_error(
+	return mcp_tool_error(
 		dispatch.id,
 		Mcp_Error{category = .Internal, message = "record-family tool has no dispatch arm", detail = dispatch.name},
 		allocator,
@@ -81,7 +81,7 @@ rec_owns_command :: proc(spec: funpack.Tool_Spec) -> bool {
 rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	artifact, has_artifact := rec_string_arg(dispatch.arguments, "artifact")
 	if !has_artifact {
-		return rec_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Invalid_Input, message = "missing required string argument: artifact"},
 			allocator,
@@ -93,7 +93,7 @@ rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 	// does — the log then pins the build it was recorded against.
 	artifact_bytes, read_err := os.read_entire_file_from_path(artifact, allocator)
 	if read_err != nil {
-		return rec_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Resolver, message = "the artifact could not be read", detail = artifact},
 			allocator,
@@ -101,7 +101,7 @@ rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 	}
 	program, load_err := funpack_runtime.load_program(string(artifact_bytes), allocator)
 	if load_err != .None {
-		return rec_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Invalid_Input, message = "the artifact bytes did not parse as a funpack build", detail = artifact},
 			allocator,
@@ -110,7 +110,7 @@ rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 
 	segments, script_err := rec_parse_script(&program, dispatch.arguments, allocator)
 	if script_err.message != "" {
-		return rec_tool_error(dispatch.id, script_err, allocator)
+		return mcp_tool_error(dispatch.id, script_err, allocator)
 	}
 
 	// The optional `--seed`-style override: present + integer pins the root seed; absent
@@ -125,7 +125,7 @@ rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 
 	log_bytes, summary := funpack_runtime.record_scripted(&program, string(artifact_bytes), seed_override, segments, allocator)
 	if !funpack_runtime.write_replay_file(out_path, log_bytes) {
-		return rec_tool_error(
+		return mcp_tool_error(
 			dispatch.id,
 			Mcp_Error{category = .Resolver, message = "the replay log could not be written", detail = out_path},
 			allocator,
@@ -133,7 +133,7 @@ rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 	}
 
 	body := rec_render_result(out_path, summary, allocator)
-	return rec_text_result(dispatch.id, body, allocator)
+	return mcp_text_result(dispatch.id, body, allocator)
 }
 
 // rec_parse_script reads the required `script` array into snapshot+ticks segments. Each
@@ -253,19 +253,4 @@ rec_int_field :: proc(object: json.Object, name: string) -> (value: i64, has: bo
 		return i64(v), true
 	}
 	return 0, false
-}
-
-// rec_text_result renders a clean (not IsError) tool result carrying one Text content
-// block — the record result body. Mirrors sess_text_result.
-rec_text_result :: proc(id: Mcp_Id, text: string, allocator := context.allocator) -> string {
-	content := make([]Mcp_Content, 1, allocator)
-	content[0] = mcp_text_content(text)
-	return mcp_render_tool_result(id, Mcp_Tool_Result{content = content, is_error = false}, allocator)
-}
-
-// rec_tool_error renders a domain failure as the in-band IsError tool result (the
-// mcp_error.odin convention — a SUCCESSFUL tools/call carrying isError=true). Mirrors
-// sess_tool_error.
-rec_tool_error :: proc(id: Mcp_Id, err: Mcp_Error, allocator := context.allocator) -> string {
-	return mcp_render_tool_result(id, mcp_tool_error_result(err, allocator), allocator)
 }

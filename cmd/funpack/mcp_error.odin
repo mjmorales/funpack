@@ -117,6 +117,24 @@ mcp_tool_error_result :: proc(err: Mcp_Error, allocator := context.allocator) ->
 	return Mcp_Tool_Result{content = content, is_error = true}
 }
 
+// mcp_tool_error renders a domain failure straight to the JSON-RPC tools/call
+// response line — the IsError envelope (mcp_tool_error_result) wrapped in the result
+// frame. The single helper every tool family routes a refusal through, so the
+// {render-result over error-result} shape lives in one place, not once per family.
+mcp_tool_error :: proc(id: Mcp_Id, err: Mcp_Error, allocator := context.allocator) -> string {
+	return mcp_render_tool_result(id, mcp_tool_error_result(err, allocator), allocator)
+}
+
+// mcp_text_result renders a single-TextContent clean result to the JSON-RPC
+// tools/call response line — the success counterpart to mcp_tool_error, shared by
+// every tool family that returns one text block (a structured-JSON payload or a
+// plain message).
+mcp_text_result :: proc(id: Mcp_Id, text: string, allocator := context.allocator) -> string {
+	content := make([]Mcp_Content, 1, allocator)
+	content[0] = mcp_text_content(text)
+	return mcp_render_tool_result(id, Mcp_Tool_Result{content = content, is_error = false}, allocator)
+}
+
 // mcp_render_error_envelope renders the {category,message,detail} envelope as a
 // JSON object string. `detail` is omitted when empty (the omitempty convention).
 // Built with the same strings.Builder + write_json_string idiom the §28 envelope
