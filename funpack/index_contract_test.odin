@@ -405,7 +405,7 @@ test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 		log.warnf("SKIP index contract snake decl records: %s not found — set FUNPACK_SNAKE_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
-	stream, err, compiled := read_index_project(dir, context.temp_allocator)
+	stream, err, _, compiled := read_index_project(dir, context.temp_allocator)
 	testing.expect_value(t, err, Index_Contract_Error.None)
 	testing.expect(t, compiled)
 	if err != .None || !compiled {
@@ -429,6 +429,36 @@ test_index_contract_snake_decl_records :: proc(t: ^testing.T) {
 	// The first snake data decl (Cell) at its keyword line, pinned in the stream.
 	testing.expect(t, stream_has_decl(lines, "\"qualified_name\":\"Cell\"", "\"kind\":\"Data\""))
 	log.infof("index contract snake whole-stream decl records verified (%d decl lines)", len(lines) - 1)
+}
+
+// test_read_index_project_threads_real_project_error pins the error-threading fix: a
+// present funpack_configs/ holding a malformed project.fcfg fails read_project for a
+// SPECIFIC cause (not a missing configs dir). read_index_project must surface that real
+// Project_Error under the Project_Read_Failed arm — never collapse it to
+// Missing_Configs_Dir (the bug: 13 distinct causes mislabelled as one).
+@(test)
+test_read_index_project_threads_real_project_error :: proc(t: ^testing.T) {
+	root := scratch_join({scratch_base(), tprintf_seq("funpack-index-malformed")})
+	remove_scratch_tree(root)
+	configs := scratch_join({root, "funpack_configs"})
+	if !ensure_dir(configs) {
+		log.warnf("SKIP index threads project error: cannot materialize tree")
+		return
+	}
+	defer remove_scratch_tree(root)
+	if os.write_entire_file(scratch_join({configs, "project.fcfg"}), "not a project fcfg {{{") != nil {
+		log.warnf("SKIP index threads project error: cannot write malformed project.fcfg")
+		return
+	}
+
+	stream, err, project_err, compiled := read_index_project(root, context.temp_allocator)
+	testing.expect_value(t, stream, "")
+	testing.expect_value(t, compiled, false)
+	testing.expect_value(t, err, Index_Contract_Error.Project_Read_Failed)
+	// The configs dir IS present, so the real cause is a malformed-project read failure,
+	// NOT Missing_Configs_Dir — proving the cause is threaded, not collapsed.
+	testing.expect(t, project_err != .None, "the real Project_Error cause is threaded")
+	testing.expect(t, project_err != .Missing_Configs_Dir, "a present-but-malformed tree is not reported as a missing configs dir")
 }
 
 // stream_has_decl reports whether some decl line of the stream contains BOTH
@@ -615,7 +645,7 @@ pong_index_line :: proc() -> (line: string, ok: bool) {
 		log.warnf("SKIP index contract pong: %s not found — set FUNPACK_PONG_DIR or ensure the in-repo fixture exists", dir)
 		return "", false
 	}
-	ndjson, err, compiled := read_index_project(dir, context.temp_allocator)
+	ndjson, err, _, compiled := read_index_project(dir, context.temp_allocator)
 	if err != .None || !compiled {
 		return "", false
 	}

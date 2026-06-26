@@ -297,11 +297,16 @@ Project_Record :: struct {
 // authored config can fail to read. The derived fields cannot fail here —
 // they project from an already-compiled Typed_Ast and an already-flattened
 // pipeline — so every arm names a config-read failure, never a compile error.
+// Project_Read_Failed is the delegating arm: read_index_project's up-front
+// read_project can reject for any of ~13 Project_Error causes, so it returns
+// Project_Read_Failed and threads the SPECIFIC Project_Error out alongside —
+// the real cause is carried, never collapsed into one wrong arm.
 Index_Contract_Error :: enum {
 	None,
 	Missing_Configs_Dir,     // funpack_configs/ is absent — a malformed §14 tree
 	Malformed_Entrypoints,   // entrypoints.fcfg is present but does not parse
 	Malformed_Builds,        // builds.fcfg is present but does not parse
+	Project_Read_Failed,     // read_project rejected the tree — see the threaded Project_Error for the cause
 }
 
 // build_project_record assembles the exact `project` record from the project
@@ -500,15 +505,15 @@ dir_is_non_empty :: proc(root: string, sub: string) -> bool {
 	return false
 }
 
-// any_entrypoint_has_net reports whether any entrypoint declares a `net:`
-// wiring (§14 §4 / §25: a `net:` switches on netcode). The entrypoint reader
-// records the tick/bindings wiring but no net field on the gameplay surface;
-// when a future entrypoint carries one, the reader fills it and this predicate
-// fires. The gameplay surface declares none, so netcode is off for pong.
-any_entrypoint_has_net :: proc(entrypoints: []Entrypoint_Record) -> bool {
-	// The entrypoint record carries no net wiring yet (the gameplay surface
-	// declares none); a net field on Entrypoint_Record is the seam that turns
-	// this on, so it reads false until that field is authored and read.
+// any_entrypoint_has_net reports whether any entrypoint declares a `net:` wiring
+// (§14 §4 / §25: a `net:` switches on netcode). It is false by construction, NOT a
+// guessed default: while the `net:` surface is UNIMPLEMENTED — neither entrypoints.fcfg
+// parsing nor Entrypoint_Record carries a net field — no entrypoint can declare one, so
+// Capability.Netcode is unreachable. The param is `_`: there is nothing on the record to
+// read. This is an explicit unimplemented seam; once a net field is authored onto
+// Entrypoint_Record and read by the entrypoint reader, this predicate reads that field
+// instead of the constant.
+any_entrypoint_has_net :: proc(_: []Entrypoint_Record) -> bool {
 	return false
 }
 
@@ -840,13 +845,24 @@ Index_Module :: struct {
 // (the green-four byte-identity floor). A MULTI-module project qualifies each
 // decl by its §15 module name (`arena_game.chase`), the §29 §2 module-qualified
 // name, so a cross-module index disambiguates a name two modules both declare.
-read_index_project :: proc(root: string, allocator := context.allocator) -> (ndjson: string, err: Index_Contract_Error, compiled: bool) {
-	identity, project_err, _ := read_project(root)
-	if project_err != .None {
-		return "", .Missing_Configs_Dir, false
+read_index_project :: proc(
+	root: string,
+	allocator := context.allocator,
+) -> (
+	ndjson: string,
+	err: Index_Contract_Error,
+	project_err: Project_Error,
+	compiled: bool,
+) {
+	identity, read_err, _ := read_project(root)
+	if read_err != .None {
+		// Thread the REAL read_project cause out (Project_Read_Failed says "the
+		// project tree did not read"); never collapse 13 distinct causes to a
+		// single mislabelled arm.
+		return "", .Project_Read_Failed, read_err, false
 	}
 	if len(identity.sources) == 0 {
-		return "", .None, false
+		return "", .None, .None, false
 	}
 	// §30 §7: the index walk consumes the COMBINED source set (own +
 	// package_sources), so a dep's decls project into the Index Contract
@@ -854,7 +870,7 @@ read_index_project :: proc(root: string, allocator := context.allocator) -> (ndj
 	// rule any multi-module project's decls follow.
 	index_modules, ok := compile_index_modules(project_pipeline_sources(identity))
 	if !ok {
-		return "", .None, false
+		return "", .None, .None, false
 	}
 	// A single-module project's one decl block stays bare (lore #11): blank the
 	// module so each decl qualifies to its bare name, keeping the single-module
@@ -874,9 +890,9 @@ read_index_project :: proc(root: string, allocator := context.allocator) -> (ndj
 	record_src := ordered[0]
 	record, record_err := build_project_record(root, record_src.typed, record_src.flat)
 	if record_err != .None {
-		return "", record_err, false
+		return "", record_err, .None, false
 	}
-	return emit_index_stream(record, ordered, allocator), .None, true
+	return emit_index_stream(record, ordered, allocator), .None, .None, true
 }
 
 // compile_index_modules builds one project-wide module index over EVERY §14

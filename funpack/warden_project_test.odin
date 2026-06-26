@@ -208,7 +208,7 @@ test_warden_holes_drift_live :: proc(t: ^testing.T) {
 		log.warnf("SKIP warden holes drift: %s not found — set FUNPACK_DRIFT_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
-	stream, err, compiled := read_index_project(dir, context.temp_allocator)
+	stream, err, _, compiled := read_index_project(dir, context.temp_allocator)
 	testing.expect_value(t, err, Index_Contract_Error.None)
 	testing.expect(t, compiled)
 	if !compiled {

@@ -314,7 +314,10 @@ stage_build :: proc(root: string, mode: Build_Mode, allocator := context.allocat
 		}
 		artifact_path = build_product_path(root, ARTIFACT_PRODUCT_NAME, allocator)
 	}
-	index, index_err, compiled := read_index_project(root, allocator)
+	// project_err carries the real read_project cause when index_err is
+	// Project_Read_Failed; the build verdict is coarse (Index_Failed) and does not
+	// need the detail, but the seam no longer collapses it (a fix-it consumer can read it).
+	index, index_err, _, compiled := read_index_project(root, allocator)
 	if index_err != .None {
 		return Build_Product{}, Build_Verdict{err = .Index_Failed}
 	}

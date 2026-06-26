@@ -330,7 +330,7 @@ test_index_stream_multi_module_order :: proc(t: ^testing.T) {
 		log.warnf("SKIP build multi-module order: %s not found — set FUNPACK_ARENA_DIR or ensure the in-repo fixture exists", dir)
 		return
 	}
-	stream, err, compiled := read_index_project(dir, context.temp_allocator)
+	stream, err, _, compiled := read_index_project(dir, context.temp_allocator)
 	testing.expect_value(t, err, Index_Contract_Error.None)
 	testing.expect(t, compiled)
 	if err != .None || !compiled {
