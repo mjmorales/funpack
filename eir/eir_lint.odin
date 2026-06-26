@@ -67,12 +67,35 @@ build_lint_subtree :: proc(allocator := context.allocator) -> []^cli.Cli_Command
 	return nodes[:]
 }
 
-// run_dup_lint handles `eir dup`. With no clone engine wired, it emits a status
-// line and exits 0 — deliberately NOT a verdict: an exit 1 would read as "clones
-// found" and an exit 2 as a usage error, either of which a CI gate could act on.
-// The signature and registry entry are the durable contract; the engine fills
-// this body.
-run_dup_lint :: proc(_: ^cli.Cli_Invocation) -> int {
-	fmt.println("eir dup: the duplication lint is not yet implemented")
+// run_dup_lint handles `eir dup`: scan the optional [root] (default cwd) for Odin
+// sources, run the clone engine over the parsed trees with the default options, and
+// print a one-line summary. It returns 0 even when clones are found — the {0 clean,
+// 1 clones, 2 usage} verdict contract and the rich human/JSON report are the report
+// surface's concern, kept OUT of the engine wiring; here a non-resolvable root is the
+// only non-zero path (exit 2, a bad path argument). A parse failure is surfaced in
+// the summary, never an abort: the scan reports clones over what it could read.
+run_dup_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
+	root := "."
+	if len(inv.args) > 0 {
+		root = inv.args[0]
+	}
+
+	l: Loader
+	loader_init(&l)
+	defer loader_destroy(&l)
+
+	result, ok := load_dir(&l, root, nil)
+	if !ok {
+		fmt.eprintfln("eir dup: cannot scan %q", root)
+		return 2
+	}
+
+	classes := find_clones(result, dup_default_options())
+	fmt.printfln(
+		"eir dup: %d clone class(es) across %d file(s) (%d parse failure(s))",
+		len(classes),
+		len(result.files),
+		result.parse_failures,
+	)
 	return 0
 }
