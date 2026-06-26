@@ -148,16 +148,11 @@ lex_fui :: proc(content: string) -> []Fui_Token {
 // String_Lit text retains the raw `{…}` so the parser scans the paths out, which
 // keeps the interpolation grammar in one place. An unterminated string (end of
 // input or a newline before the closing quote) is Invalid, the parser's reject
-// signal.
+// signal — the single-line scan is shared with the other sub-language lexers, so
+// only the token kind is stamped here.
 fui_scan_string :: proc(content: string, start: int) -> (tok: Fui_Token, next: int) {
-	i := start + 1
-	for i < len(content) && content[i] != '"' && content[i] != '\n' {
-		i += 1
-	}
-	if i >= len(content) || content[i] != '"' {
-		return Fui_Token{kind = .Invalid, text = content[start:i]}, i
-	}
-	return Fui_Token{kind = .String_Lit, text = content[start+1 : i]}, i + 1
+	inner, terminated, next2 := scan_quoted_inner(content, start)
+	return Fui_Token{kind = .String_Lit if terminated else .Invalid, text = inner}, next2
 }
 
 // fui_scan_number scans a numeric attribute value (`min=0`, `max=100`). The UI

@@ -4,9 +4,10 @@
 // lexer admits the bake-time-only spellings the `.fun` lexer forbids — `//`
 // line comments (§16 §1, the LineComment_Slash production), a FLOAT literal
 // (`1.5f`, render/visual-only, lexical-core.ebnf §3), and the `..` range
-// operator of an accumulating `for x in a..b` loop (§16 §1). It shares only the
-// character-class priors (digit/ident) and the UPPER/lower identifier split
-// (lexical-core.ebnf §2) with the core lexer; it does NOT carry the `.fun`
+// operator of an accumulating `for x in a..b` loop (§16 §1). It reuses the core
+// lexer's character-class predicates (digit/ident) and single-line quoted-string
+// scanner directly, and carries only its own UPPER/lower identifier split
+// (lexical-core.ebnf §2); it does NOT carry the `.fun`
 // casing lint bands, the Fixed-point literal interpretation, or the
 // bracket-aware newline suppression — `.fpm` numbers live in the float domain
 // and the parser reads explicit Sep runs, not layout-suppressed newlines.
@@ -136,12 +137,12 @@ fpm_lex :: proc(source: string) -> []Fpm_Token {
 			tok.line = line
 			append(&tokens, tok)
 			i = next
-		case fpm_is_digit(ch):
+		case is_digit(ch):
 			tok, next := fpm_scan_number(source, i)
 			tok.line = line
 			append(&tokens, tok)
 			i = next
-		case fpm_is_ident_start(ch):
+		case is_ident_start(ch):
 			tok, next := fpm_scan_ident(source, i)
 			tok.line = line
 			append(&tokens, tok)
@@ -176,16 +177,11 @@ fpm_is_layout :: proc(ch: u8) -> bool {
 
 // fpm_scan_string returns the contents between the quotes. An unterminated
 // string (end of input or a newline before the closing quote) is Invalid — a
-// `.fpm` string is single-line, matching the core lexer's discipline.
+// `.fpm` string is single-line, matching the core lexer's discipline, which is
+// why the scan defers to the shared scan_quoted_inner and only stamps the kind.
 fpm_scan_string :: proc(source: string, start: int) -> (tok: Fpm_Token, next: int) {
-	i := start + 1
-	for i < len(source) && source[i] != '"' && source[i] != '\n' {
-		i += 1
-	}
-	if i >= len(source) || source[i] != '"' {
-		return Fpm_Token{kind = .Invalid, text = source[start:i]}, i
-	}
-	return Fpm_Token{kind = .String_Lit, text = source[start+1 : i]}, i + 1
+	inner, terminated, next2 := scan_quoted_inner(source, start)
+	return Fpm_Token{kind = .String_Lit if terminated else .Invalid, text = inner}, next2
 }
 
 // fpm_scan_number scans a numeric literal in the float domain (§16 §1,
@@ -198,18 +194,18 @@ fpm_scan_string :: proc(source: string, start: int) -> (tok: Fpm_Token, next: in
 // mis-lexed as a float.
 fpm_scan_number :: proc(source: string, start: int) -> (tok: Fpm_Token, next: int) {
 	i := start
-	for i < len(source) && fpm_is_digit(source[i]) {
+	for i < len(source) && is_digit(source[i]) {
 		i += 1
 	}
 	int_part := source[start:i]
 	// A single `.` followed by a digit opens a fractional part. A `..` (range)
 	// or a `.` followed by a non-digit is NOT a decimal point — leave it for the
 	// punct/postfix scanner so `0..3` and `5.up(0)` lex correctly.
-	is_decimal := i+1 < len(source) && source[i] == '.' && source[i+1] != '.' && fpm_is_digit(source[i+1])
+	is_decimal := i+1 < len(source) && source[i] == '.' && source[i+1] != '.' && is_digit(source[i+1])
 	if is_decimal {
 		frac_start := i + 1
 		j := frac_start
-		for j < len(source) && fpm_is_digit(source[j]) {
+		for j < len(source) && is_digit(source[j]) {
 			j += 1
 		}
 		end := j
@@ -221,7 +217,7 @@ fpm_scan_number :: proc(source: string, start: int) -> (tok: Fpm_Token, next: in
 		value := fpm_parse_float(source[start:j])
 		return Fpm_Token{kind = .Float_Lit, text = source[start:end], float_value = value}, end
 	}
-	value := fpm_parse_int(int_part)
+	value := parse_digits(int_part)
 	return Fpm_Token{kind = .Int_Lit, text = int_part, int_value = value, float_value = f64(value)}, i
 }
 
@@ -231,7 +227,7 @@ fpm_scan_number :: proc(source: string, start: int) -> (tok: Fpm_Token, next: in
 // (lexical-core.ebnf §2), the only casing signal the .fpm grammar reads.
 fpm_scan_ident :: proc(source: string, start: int) -> (tok: Fpm_Token, next: int) {
 	i := start
-	for i < len(source) && fpm_is_ident_char(source[i]) {
+	for i < len(source) && is_ident_char(source[i]) {
 		i += 1
 	}
 	text := source[start:i]
@@ -339,17 +335,6 @@ fpm_initial_lower :: proc(first: u8) -> bool {
 	return first == '_' || (first >= 'a' && first <= 'z')
 }
 
-// fpm_parse_int parses an unsigned decimal digit run into an i64. A leading `-`
-// is the unary operator (lexical-core.ebnf §3), handled by the parser, never
-// part of the literal.
-fpm_parse_int :: proc(text: string) -> i64 {
-	value: i64 = 0
-	for ch in text {
-		value = value*10 + i64(ch - '0')
-	}
-	return value
-}
-
 // fpm_parse_float parses a `digits '.' digits` decimal into an f64 by hand —
 // the float domain is bake-time only (§16 §1), so a small accumulate-then-divide
 // is exact enough for the geometry digest and avoids a strconv dependency for a
@@ -374,16 +359,4 @@ fpm_parse_float :: proc(text: string) -> f64 {
 		}
 	}
 	return whole + frac/scale
-}
-
-fpm_is_digit :: proc(ch: u8) -> bool {
-	return ch >= '0' && ch <= '9'
-}
-
-fpm_is_ident_start :: proc(ch: u8) -> bool {
-	return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
-}
-
-fpm_is_ident_char :: proc(ch: u8) -> bool {
-	return fpm_is_ident_start(ch) || fpm_is_digit(ch)
 }

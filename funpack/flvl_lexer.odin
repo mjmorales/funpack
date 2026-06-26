@@ -169,16 +169,11 @@ lex_flvl :: proc(content: string) -> []Flvl_Token {
 // flvl_scan_string returns the contents between the quotes (the socket-name
 // argument of `table.socket("cup")`, grammar/flvl.ebnf §AnchorAtom). An
 // unterminated string (end of input or a newline before the closing quote) is
-// Invalid, the parser's reject signal.
+// Invalid, the parser's reject signal — the single-line scan is shared with the
+// other sub-language lexers, so only the token kind is stamped here.
 flvl_scan_string :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
-	i := start + 1
-	for i < len(content) && content[i] != '"' && content[i] != '\n' {
-		i += 1
-	}
-	if i >= len(content) || content[i] != '"' {
-		return Flvl_Token{kind = .Invalid, text = content[start:i]}, i
-	}
-	return Flvl_Token{kind = .String_Lit, text = content[start+1 : i]}, i + 1
+	inner, terminated, next2 := scan_quoted_inner(content, start)
+	return Flvl_Token{kind = .String_Lit if terminated else .Invalid, text = inner}, next2
 }
 
 // flvl_scan_triple_string scans a `"""…"""` grid block (grammar/flvl.ebnf Grid,

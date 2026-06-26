@@ -582,3 +582,24 @@ is_lower_ident :: proc(s: string) -> bool {
 	}
 	return true
 }
+
+// scan_quoted_inner scans a single-line double-quoted literal beginning at the
+// opening quote (content[start] == '"'). The .fpm, .flvl, and .fui sub-language
+// lexers share one quoting discipline — scan to the closing quote, but a newline
+// or end of input before it is unterminated — and differ only in the token kind
+// they emit, so the scan lives here and each caller owns the kind. `inner` is the
+// wrap-ready text: the between-quotes content on a terminated literal, and the
+// whole malformed span (opening quote included) when unterminated, so a caller
+// wraps it directly as its String_Lit-vs-Invalid kind without re-deriving the
+// slice. `terminated` selects the kind; `next` is the index past the consumed
+// span — past the closing quote when terminated, at the stopping byte when not.
+scan_quoted_inner :: proc(content: string, start: int) -> (inner: string, terminated: bool, next: int) {
+	i := start + 1
+	for i < len(content) && content[i] != '"' && content[i] != '\n' {
+		i += 1
+	}
+	if i >= len(content) || content[i] != '"' {
+		return content[start:i], false, i
+	}
+	return content[start+1 : i], true, i + 1
+}
