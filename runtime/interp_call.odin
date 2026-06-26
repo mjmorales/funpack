@@ -642,13 +642,13 @@ settings_defaults :: proc(interp: ^Interp) -> Value {
 // resolve_input_action resolves the (player, action) arg pair shared by the §23 §2
 // input reads input.value/axis/pressed/released/held(player, action). It applies the
 // arity guard, evaluates both args, asserts each is a Variant, maps the player name to a
-// PlayerId and the action variant to its stable ActionId through the program's action
-// registry (minted once per program in new_interp, so the lookup is an index read, not a
-// per-instance rebuild). ok is false on a bad arity, an eval failure, or a non-Variant
-// arg — the caller returns ok=false. resolved is false when the player or the action is
-// unknown — the caller returns its own snapshot default with ok=true so a behavior never
-// faults on input. When resolved is true the caller reads the snapshot through its own
-// accessor (pressed/released/held/value/axis).
+// PlayerId and the action variant to its stable ActionId through the program's memoized
+// action registry — keyed STRAIGHT off the action Variant's (enum_type, case_name) via
+// registry_find, with NO per-read "Enum::Case" concatenation. ok is false on
+// a bad arity, an eval failure, or a non-Variant arg — the caller returns ok=false.
+// resolved is false when the player or the action is unknown — the caller returns its own
+// snapshot default with ok=true so a behavior never faults on input. When resolved is true
+// the caller reads the snapshot through its own accessor (pressed/released/held/value/axis).
 resolve_input_action :: proc(
 	interp: ^Interp,
 	node: ^Node,
@@ -676,8 +676,7 @@ resolve_input_action :: proc(
 	if !player_resolved {
 		return {}, {}, false, true
 	}
-	action_name := variant_to_token(action_variant, interp.allocator)
-	def, action_found := interp.registry.by_name[action_name]
+	def, action_found := registry_find(interp.registry, action_variant.enum_type, action_variant.case_name)
 	if !action_found {
 		return {}, {}, false, true
 	}

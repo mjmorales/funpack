@@ -361,7 +361,7 @@ injected_entry :: proc(
 	if !has_action {
 		return resolved_player, ActionId(0), 0, 0, "input record missing action"
 	}
-	def, has_def := registry.by_name[action_name]
+	def, has_def := registry_find_token(registry, action_name)
 	if !has_def {
 		return resolved_player, ActionId(0), 0, 0, "unknown action"
 	}

@@ -168,7 +168,7 @@ test_eval_input_axis_reads_snapshot :: proc(t: ^testing.T) {
 	interp := new_interp(&program, &version, nil, snap, time, context.temp_allocator)
 
 	// Registry actually minted Drive::Move as an Axis action.
-	_, has_move := interp.registry.by_name["Drive::Move"]
+	_, has_move := registry_find_token(interp.registry, "Drive::Move")
 	testing.expect(t, has_move)
 
 	got, ok := eval_axis_call(&interp, "P1", "Drive", "Move")

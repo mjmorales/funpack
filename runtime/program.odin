@@ -320,6 +320,15 @@ Program :: struct {
 	// decodes to the empty slice (the constant [probes 0] tail). Runtime CONSUMES
 	// the format; funpack DEFINES it (Lore #9).
 	probes:         []Probe_Decl,
+	// registry is the §23 action registry MEMOIZED off `enums` — a pure function of
+	// the program, minted ONCE by build_program at load (NOT a loaded §3 section).
+	// new_interp and build_bindings_table read this one copy instead of rebuilding
+	// the string-concat + map per tick / per session. A hand-built
+	// program that skips build_program leaves it zero (by_key nil); its readers then
+	// build a transient registry on the spot (interp.odin new_interp,
+	// bindings_resolve build_bindings_table). Reclaimed with the program — including
+	// across a hot-reload, where the new program mints its own from the new enums.
+	registry:       Action_Registry,
 }
 
 // program_query finds a §16 query declaration by name, or nil. The query call

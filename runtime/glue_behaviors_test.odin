@@ -126,7 +126,8 @@ test_glue_drive_axis_to_impulse :: proc(t: ^testing.T) {
 	program := glue_program()
 	interp := glue_interp_over(&program)
 
-	move_id := interp.registry.by_name["Drive::Move"].id
+	move_def, _ := registry_find_token(interp.registry, "Drive::Move")
+	move_id := move_def.id
 	snap := with_axis(empty(), .P1, move_id, Vec2{to_fixed(1), to_fixed(0)})
 	defer delete_input(snap)
 	interp.input = snap
@@ -311,8 +312,10 @@ test_glue_save_restore_key_emit :: proc(t: ^testing.T) {
 	program := glue_program()
 	interp := glue_interp_over(&program)
 
-	save_id := interp.registry.by_name["Cmd::Save"].id
-	restore_id := interp.registry.by_name["Cmd::Restore"].id
+	save_def, _ := registry_find_token(interp.registry, "Cmd::Save")
+	save_id := save_def.id
+	restore_def, _ := registry_find_token(interp.registry, "Cmd::Restore")
+	restore_id := restore_def.id
 
 	save_key := program_behavior(&program, "save_key")
 	restore_key := program_behavior(&program, "restore_key")
@@ -357,7 +360,8 @@ test_glue_toggle_motion_nested_update :: proc(t: ^testing.T) {
 	program := glue_program()
 	interp := glue_interp_over(&program)
 
-	toggle_id := interp.registry.by_name["Cmd::ToggleMotion"].id
+	toggle_def, _ := registry_find_token(interp.registry, "Cmd::ToggleMotion")
+	toggle_id := toggle_def.id
 	toggle := program_behavior(&program, "toggle_motion")
 	testing.expect(t, toggle != nil)
 
@@ -404,7 +408,8 @@ test_glue_apply_settings_dirty_gated :: proc(t: ^testing.T) {
 	program := glue_program()
 	interp := glue_interp_over(&program)
 
-	apply_id := interp.registry.by_name["Cmd::Apply"].id
+	apply_def, _ := registry_find_token(interp.registry, "Cmd::Apply")
+	apply_id := apply_def.id
 	apply := program_behavior(&program, "apply_settings")
 	testing.expect(t, apply != nil)
 

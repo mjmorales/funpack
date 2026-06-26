@@ -39,15 +39,26 @@ Action_Def :: struct {
 	kind: Action_Kind,
 }
 
+// Action_Key is the in-memory key the registry indexes an action by — the action
+// variant's (enum_type, case_name) split, NOT its concatenated "Enum::Case" token.
+// Keying on the struct lets a §23 input read resolve an action straight off its
+// Variant_Value with no per-read string concatenation (the read runs every
+// behavior-instance per tick); the serialized token form is split back into a key
+// only on the cold binding-resolve / introspect paths (registry_find_token).
+Action_Key :: struct {
+	enum_type: string,
+	case_name: string,
+}
+
 // Action_Registry maps the artifact's Axis/Button enum variants onto stable
 // ActionIds. The id is the variant's position in a deterministic walk of the
 // program's enums (declaration order, variant order) restricted to Axis/Button
 // enums — so the same artifact always mints the same ids on every machine, which
-// the determinism contract requires (§23 §4). `by_name` indexes the same defs by
-// their "Enum::Variant" token for binding resolution.
+// the determinism contract requires (§23 §4). `by_key` indexes the same defs by
+// their (enum_type, case_name) for the per-read input lookup and binding resolution.
 Action_Registry :: struct {
-	defs:    []Action_Def,
-	by_name: map[string]Action_Def,
+	defs:   []Action_Def,
+	by_key: map[Action_Key]Action_Def,
 }
 
 // build_action_registry walks the program's enums in declaration order and mints
@@ -60,7 +71,7 @@ build_action_registry :: proc(
 	allocator := context.allocator,
 ) -> Action_Registry {
 	defs := make([dynamic]Action_Def, 0, 0, allocator)
-	by_name := make(map[string]Action_Def, allocator)
+	by_key := make(map[Action_Key]Action_Def, allocator)
 	next: u32 = 0
 	for enum_decl in program.enums {
 		kind, is_action := action_kind_from_enum(enum_decl.kind)
@@ -68,6 +79,9 @@ build_action_registry :: proc(
 			continue
 		}
 		for variant in enum_decl.variants {
+			// The "Enum::Case" token is the def's serialized name (Action_Def.name,
+			// read back by the introspect capture path); the (enum_type, case_name)
+			// pair is the in-memory key the per-read input lookup hits with no concat.
 			name := strings.concatenate({enum_decl.name, "::", variant.name}, allocator)
 			def := Action_Def {
 				id   = ActionId(next),
@@ -75,11 +89,32 @@ build_action_registry :: proc(
 				kind = kind,
 			}
 			append(&defs, def)
-			by_name[name] = def
+			by_key[Action_Key{enum_type = enum_decl.name, case_name = variant.name}] = def
 			next += 1
 		}
 	}
-	return Action_Registry{defs = defs[:], by_name = by_name}
+	return Action_Registry{defs = defs[:], by_key = by_key}
+}
+
+// registry_find resolves an action variant's (enum_type, case_name) to its def —
+// the allocation-free hot-path lookup a §23 input read (input.value/axis/pressed)
+// runs every behavior-instance per tick, keying straight off the action
+// Variant_Value with no "Enum::Case" concatenation. `found` is false for an
+// unregistered variant (the caller reads its own snapshot default).
+registry_find :: proc(registry: Action_Registry, enum_type, case_name: string) -> (def: Action_Def, found: bool) {
+	def, found = registry.by_key[Action_Key{enum_type = enum_type, case_name = case_name}]
+	return
+}
+
+// registry_find_token resolves a stored "Enum::Case" token to its def — the cold
+// path where the binding-table resolver (build_bindings_table) and the
+// control-inject surface hold the action in its serialized string form. It splits
+// the token into the (enum_type, case_name) key (variant_from_token, no
+// allocation) and looks up, so the registry carries ONE struct-keyed index, never
+// a parallel string index.
+registry_find_token :: proc(registry: Action_Registry, token: string) -> (def: Action_Def, found: bool) {
+	variant := variant_from_token(token)
+	return registry_find(registry, variant.enum_type, variant.case_name)
 }
 
 // action_kind_from_enum maps an artifact Enum_Kind onto the Action_Kind a
@@ -103,7 +138,7 @@ action_kind_from_enum :: proc(kind: Enum_Kind) -> (action_kind: Action_Kind, is_
 delete_action_registry :: proc(registry: Action_Registry) {
 	delete(registry.defs)
 	reg := registry
-	delete(reg.by_name)
+	delete(reg.by_key)
 }
 
 // --- Resolved bindings: the parsed device-source table (§23 §3) -----------
@@ -177,8 +212,14 @@ Resolved_Binding :: struct {
 // since v3 the schema stamp gates the source vocabulary, so a dropped source
 // inside a matching version is malformed data, not a version skew.
 Bindings_Table :: struct {
-	registry: Action_Registry,
-	resolved: []Resolved_Binding,
+	registry:      Action_Registry,
+	resolved:      []Resolved_Binding,
+	// owns_registry is true when build_bindings_table MINTED the registry (a
+	// hand-built program with no finalized program.registry — the test path), false
+	// when it ALIASES the program's memoized registry (the live/load path, where the
+	// Program owns the one registry). delete_bindings_table frees the registry only
+	// when the table owns it, so an aliased program.registry is never double-freed.
+	owns_registry: bool,
 }
 
 // Rebinding_Overlay is the typed seam §23 §3 reserves for a settings-layer key
@@ -211,16 +252,24 @@ apply_overlay :: proc(
 }
 
 // build_bindings_table resolves the artifact's binding table into the parsed,
-// per-tick-ready form: mint the action registry, apply the (identity) rebinding
-// overlay over the defaults, then parse each binding's player, action, and device
-// source. A binding whose player or action is unknown, or whose source does not
-// parse, is dropped — the resolved table carries only fold-ready entries.
+// per-tick-ready form: REUSE the program's memoized action registry (build_program
+// mints it once per load), apply the (identity) rebinding overlay over the
+// defaults, then parse each binding's player, action, and device source. A binding
+// whose player or action is unknown, or whose source does not parse, is dropped —
+// the resolved table carries only fold-ready entries. A hand-built program with no
+// finalized registry (by_key nil — the test path) mints a transient one here and
+// the table OWNS it (delete_bindings_table frees only an owned registry).
 build_bindings_table :: proc(
 	program: Program,
 	overlay := IDENTITY_OVERLAY,
 	allocator := context.allocator,
 ) -> Bindings_Table {
-	registry := build_action_registry(program, allocator)
+	registry := program.registry
+	owns_registry := false
+	if registry.by_key == nil {
+		registry = build_action_registry(program, allocator)
+		owns_registry = true
+	}
 	defaults := apply_overlay(program.bindings, overlay)
 
 	resolved := make([dynamic]Resolved_Binding, 0, 0, allocator)
@@ -229,7 +278,7 @@ build_bindings_table :: proc(
 		if !player_ok {
 			continue
 		}
-		action, action_ok := registry.by_name[binding.action]
+		action, action_ok := registry_find_token(registry, binding.action)
 		if !action_ok {
 			continue
 		}
@@ -239,15 +288,19 @@ build_bindings_table :: proc(
 		}
 		append(&resolved, Resolved_Binding{player = player, action = action, source = source})
 	}
-	return Bindings_Table{registry = registry, resolved = resolved[:]}
+	return Bindings_Table{registry = registry, resolved = resolved[:], owns_registry = owns_registry}
 }
 
-// delete_bindings_table releases the resolved slice and the embedded registry —
-// the device codes are sub-strings of the program allocation, so this frees only
-// the table's own two allocations.
+// delete_bindings_table releases the resolved slice, and the registry ONLY when
+// the table minted it (owns_registry) — the device codes are sub-strings of the
+// program allocation, so this frees only the table's own allocations. An aliased
+// program.registry (the live/load path) is owned by the Program and freed with it,
+// never here.
 delete_bindings_table :: proc(table: Bindings_Table) {
 	delete(table.resolved)
-	delete_action_registry(table.registry)
+	if table.owns_registry {
+		delete_action_registry(table.registry)
+	}
 }
 
 // player_from_string maps the artifact's "P1".."P4" token onto a PlayerId.

@@ -214,11 +214,14 @@ Interp :: struct {
 }
 
 // new_interp builds the read-only context a tick fold (or a render pass) threads,
-// minting the §23 action registry ONCE here so `input.value` never rebuilds it
-// per behavior-instance per tick — the registry is a pure function of the program,
-// so one program-scoped copy serves every input query the run evaluates. The
-// caller supplies the committed version a read falls back to, the in-flight tick
-// state (nil off a fold), and the Input/Time resources the behaviors observe.
+// reading the program's MEMOIZED §23 action registry (build_program mints it once
+// at load) so `input.value` never rebuilds it per behavior-instance per
+// tick. A hand-built program that skipped build_program leaves the registry zero
+// (by_key nil); for that path a transient registry is built on the eval
+// `allocator` — NOT cached onto the program, since the eval arena is per-tick
+// (reclaimed by the live loop's free_all) and caching it there would dangle the
+// registry after the tick. The caller supplies the committed version a read falls
+// back to, the in-flight tick state (nil off a fold), and the Input/Time resources.
 new_interp :: proc(
 	program: ^Program,
 	version: ^World_Version,
@@ -227,13 +230,17 @@ new_interp :: proc(
 	time: Record_Value,
 	allocator := context.allocator,
 ) -> Interp {
+	registry := program.registry
+	if registry.by_key == nil {
+		registry = build_action_registry(program^, allocator)
+	}
 	return Interp {
 		program = program,
 		version = version,
 		tick = tick,
 		input = input,
 		time = time,
-		registry = build_action_registry(program^, allocator),
+		registry = registry,
 		allocator = allocator,
 	}
 }
@@ -291,74 +298,115 @@ bind_let_tuple_value :: proc(env: ^Env, names: []string, v: Value) -> (ok: bool)
 	return true
 }
 
-// eval_body folds a forest of statements top-to-bottom: a `let` binds a name and
-// continues, a `let_tuple` evaluates its value to a tuple and binds each element
-// positionally, an `if_return` returns when its guard holds, a `return` ends the
-// body with its value. The fold threads one environment so a later statement
-// sees every earlier `let`. The first statement that returns wins; reaching the
-// end with no return is a malformed body (ok=false).
+// Step_Outcome is the verdict step_statement returns for one folded statement —
+// the seam that lets eval_body and eval_guard_block share the
+// Let/Let_Tuple/If_Return/Return switch while keeping their divergent stub and
+// end-of-fold policies as caller code. `.Continued` — the statement bound a name
+// (or its guard did not fire), so the caller folds on. `.Returned` — the statement
+// IS the body's return (an `if_return` that fired, a bare `return`, or a guard
+// block that returned); `value` carries it. `.Foreign` — the node is not one of
+// the four universal statements (a `stub`, or a non-statement node): eval_body
+// accepts a SOLE `stub` as a holed body, every other position rejects it as
+// malformed — the caller decides.
+Step_Outcome :: enum {
+	Continued,
+	Returned,
+	Foreign,
+}
+
+// step_statement folds ONE statement shared by eval_body and eval_guard_block
+// (§02 statement semantics): a `let`/`let_tuple` binds into `scope` and continues,
+// an `if_return` returns its outcome when the guard holds (a `block` outcome folds
+// through eval_guard_block and returns only if the block itself returned), a bare
+// `return` ends the fold. `scope` is the env each binding lands in — the body's
+// own env for eval_body, a fresh child scope for eval_guard_block (§02 block
+// scoping) — supplied by the caller. `ok=false` is a hard failure (a child eval
+// failed, or a tuple bind skewed) — fail closed. A node outside the four universal
+// statements yields `.Foreign`, leaving the holed-body-vs-malformed verdict to the
+// caller. fields[0] of a `let_tuple` is the wire BINDER_COUNT; fields[1:] are the
+// binders in source order (the SAME positional contract as evaluate.odin
+// bind_let_tuple_value).
+step_statement :: proc(interp: ^Interp, stmt: ^Node, scope: ^Env) -> (value: Value, outcome: Step_Outcome, ok: bool) {
+	#partial switch stmt.kind {
+	case .Let:
+		// `let NAME = expr`: bind NAME into scope for the rest of the fold.
+		bound, bound_ok := eval(interp, &stmt.children[0], scope)
+		if !bound_ok {
+			return nil, .Continued, false
+		}
+		scope.names[stmt.fields[0]] = bound
+		return nil, .Continued, true
+	case .Let_Tuple:
+		// `let (a, b, …) = expr` (v19): evaluate the one value child to a tuple and
+		// bind its elements positionally to the binder names.
+		bound, bound_ok := eval(interp, &stmt.children[0], scope)
+		if !bound_ok {
+			return nil, .Continued, false
+		}
+		if !bind_let_tuple_value(scope, stmt.fields[1:], bound) {
+			return nil, .Continued, false
+		}
+		return nil, .Continued, true
+	case .If_Return:
+		// `if cond { … }`: child[0] is the guard, child[1] the outcome — the returned
+		// value expression (the single-bare-return shape), or a `block` of statements
+		// (schema v14) whose own `return` ends the fold and whose completion without
+		// one falls through to the next statement (the §02 early-return semantics).
+		cond, cond_ok := eval(interp, &stmt.children[0], scope)
+		if !cond_ok {
+			return nil, .Continued, false
+		}
+		if as_bool(cond) {
+			if stmt.children[1].kind == .Block {
+				block_value, returned, block_ok := eval_guard_block(interp, stmt.children[1].children, scope)
+				if !block_ok {
+					return nil, .Continued, false
+				}
+				if returned {
+					return block_value, .Returned, true
+				}
+				return nil, .Continued, true
+			}
+			result, result_ok := eval(interp, &stmt.children[1], scope)
+			return result, .Returned, result_ok
+		}
+		return nil, .Continued, true
+	case .Return:
+		result, result_ok := eval(interp, &stmt.children[0], scope)
+		return result, .Returned, result_ok
+	}
+	// A `stub` or any non-statement node — the caller applies its own policy.
+	return nil, .Foreign, true
+}
+
+// eval_body folds a forest of statements top-to-bottom through step_statement,
+// threading ONE environment so a later statement sees every earlier `let`. The
+// first statement that returns wins. A `.Foreign` node is legal only as a SOLE
+// §05 §2 typed hole standing as the whole body (schema v7); reaching the end with
+// no return is a malformed body (ok=false).
 eval_body :: proc(interp: ^Interp, body: []Node, env: ^Env) -> (value: Value, ok: bool) {
 	for &stmt in body {
-		switch stmt.kind {
-		case .Let:
-			// `let NAME = expr`: bind NAME for the rest of the body.
-			bound, bound_ok := eval(interp, &stmt.children[0], env)
-			if !bound_ok {
-				return nil, false
-			}
-			env.names[stmt.fields[0]] = bound
-		case .Let_Tuple:
-			// `let (a, b, …) = expr` (v19): evaluate the one value child to a
-			// tuple, bind its elements positionally to the binder names. fields[0]
-			// is the wire BINDER_COUNT; fields[1:] are the binders in source order
-			// (the SAME positional contract as evaluate.odin bind_let_tuple_value).
-			bound, bound_ok := eval(interp, &stmt.children[0], env)
-			if !bound_ok {
-				return nil, false
-			}
-			if !bind_let_tuple_value(env, stmt.fields[1:], bound) {
-				return nil, false
-			}
-		case .If_Return:
-			// `if cond { … }`: child[0] is the guard, child[1] the outcome — the
-			// returned value expression (the single-bare-return shape), or a
-			// `block` of statements (schema v14) whose own `return` ends the
-			// body and whose completion without one falls through to the next
-			// statement (the §02 early-return guard semantics).
-			cond, cond_ok := eval(interp, &stmt.children[0], env)
-			if !cond_ok {
-				return nil, false
-			}
-			if as_bool(cond) {
-				if stmt.children[1].kind == .Block {
-					block_value, returned, block_ok := eval_guard_block(interp, stmt.children[1].children, env)
-					if !block_ok {
-						return nil, false
-					}
-					if returned {
-						return block_value, true
-					}
-					continue
-				}
-				return eval(interp, &stmt.children[1], env)
-			}
-		case .Return:
-			return eval(interp, &stmt.children[0], env)
-		case .Stub:
-			// The §05 §2 typed hole standing as the body's sole statement
-			// (schema v7), mirroring the compiler interpreter's eval_stub_hole:
-			// a `stub fallback` evaluates its approximation expression in the
-			// record's param-bound scope — the P8 surface, the game stays
-			// playable under the hole — and a `stub bare` is the DEFINED
-			// fail-closed no-value outcome (ok=false: the behavior instance
-			// folds nothing, a calling expression fails closed, never a trap).
-			if len(stmt.fields) == 1 && stmt.fields[0] == "fallback" && len(stmt.children) == 1 {
+		result, outcome, step_ok := step_statement(interp, &stmt, env)
+		if !step_ok {
+			return nil, false
+		}
+		switch outcome {
+		case .Returned:
+			return result, true
+		case .Continued:
+			continue
+		case .Foreign:
+			// The only legal non-universal statement in a body is a SOLE §05 §2 typed
+			// hole standing as the whole body, mirroring the compiler interpreter's
+			// eval_stub_hole: a `stub fallback` evaluates its approximation in the
+			// record's param-bound scope (the P8 surface — the game stays playable
+			// under the hole), and a `stub bare` is the DEFINED fail-closed no-value
+			// outcome (ok=false). Any other node at statement position is a malformed
+			// body the loader would not emit (a `block` stands only in if_return's
+			// outcome position, §2.7).
+			if stmt.kind == .Stub && len(stmt.fields) == 1 && stmt.fields[0] == "fallback" && len(stmt.children) == 1 {
 				return eval(interp, &stmt.children[0], env)
 			}
-			return nil, false
-		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .If_Expr, .Arm, .Block, .All:
-			// A non-statement node at statement position is a malformed body
-			// (a `block` stands only in if_return's outcome position, §2.7).
 			return nil, false
 		}
 	}
@@ -378,52 +426,19 @@ eval_guard_block :: proc(interp: ^Interp, stmts: []Node, env: ^Env) -> (value: V
 		parent = env,
 	}
 	for &stmt in stmts {
-		switch stmt.kind {
-		case .Let:
-			bound, bound_ok := eval(interp, &stmt.children[0], &scope)
-			if !bound_ok {
-				return nil, false, false
-			}
-			scope.names[stmt.fields[0]] = bound
-		case .Let_Tuple:
-			// `let (a, b, …) = expr` block-scoped (v19): bind into the child
-			// scope so a guard-block-local tuple binding never leaks into the
-			// enclosing body (§02 block scoping), the SAME positional contract
-			// the body fold uses. WITHOUT this arm a tuple-let inside a guard
-			// block silently would not bind.
-			bound, bound_ok := eval(interp, &stmt.children[0], &scope)
-			if !bound_ok {
-				return nil, false, false
-			}
-			if !bind_let_tuple_value(&scope, stmt.fields[1:], bound) {
-				return nil, false, false
-			}
-		case .If_Return:
-			cond, cond_ok := eval(interp, &stmt.children[0], &scope)
-			if !cond_ok {
-				return nil, false, false
-			}
-			if as_bool(cond) {
-				if stmt.children[1].kind == .Block {
-					inner, inner_returned, inner_ok := eval_guard_block(interp, stmt.children[1].children, &scope)
-					if !inner_ok {
-						return nil, false, false
-					}
-					if inner_returned {
-						return inner, true, true
-					}
-					continue
-				}
-				result, result_ok := eval(interp, &stmt.children[1], &scope)
-				return result, true, result_ok
-			}
-		case .Return:
-			result, result_ok := eval(interp, &stmt.children[0], &scope)
-			return result, true, result_ok
-		case .Int, .Fixed, .Name, .String, .Field, .Call, .Variant, .Record, .Recfield, .With, .List, .Tuple, .Lambda, .Unary, .Binary, .Match, .If_Expr, .Arm, .Stub, .Block, .All:
-			// A non-statement node inside a guard block is a malformed body (a
-			// `stub` stands only as a holed body's SOLE statement, never inside
-			// a guard).
+		result, outcome, step_ok := step_statement(interp, &stmt, &scope)
+		if !step_ok {
+			return nil, false, false
+		}
+		switch outcome {
+		case .Returned:
+			return result, true, true
+		case .Continued:
+			continue
+		case .Foreign:
+			// A `stub` (or any non-statement) inside a guard block is a malformed
+			// body: a `stub` stands only as a holed body's SOLE statement, never
+			// inside a guard.
 			return nil, false, false
 		}
 	}

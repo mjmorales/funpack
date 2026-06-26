@@ -22,7 +22,7 @@ import "core:testing"
 // minting maps the artifact's enum variants onto the snapshot's keys.
 @(private = "file")
 steer_move_id :: proc(t: ^testing.T, registry: Action_Registry) -> (id: ActionId, ok: bool) {
-	def, found := registry.by_name["Steer::Move"]
+	def, found := registry_find_token(registry, "Steer::Move")
 	if !testing.expect(t, found) {
 		return {}, false
 	}
@@ -195,7 +195,7 @@ test_button_tap_within_window_registers_pressed :: proc(t: ^testing.T) {
 	program := button_program(context.temp_allocator)
 	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
 
-	fire, found := table.registry.by_name["Trigger::Fire"]
+	fire, found := registry_find_token(table.registry, "Trigger::Fire")
 	if !testing.expect(t, found) {
 		return
 	}
@@ -222,7 +222,7 @@ test_button_release_edge_after_hold :: proc(t: ^testing.T) {
 	program := button_program(context.temp_allocator)
 	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
 
-	fire, found := table.registry.by_name["Trigger::Fire"]
+	fire, found := registry_find_token(table.registry, "Trigger::Fire")
 	if !testing.expect(t, found) {
 		return
 	}
@@ -260,7 +260,7 @@ test_held_key_persists_across_eventless_window :: proc(t: ^testing.T) {
 	program := button_program(context.temp_allocator)
 	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
 
-	fire, found := table.registry.by_name["Trigger::Fire"]
+	fire, found := registry_find_token(table.registry, "Trigger::Fire")
 	if !testing.expect(t, found) {
 		return
 	}
@@ -421,7 +421,7 @@ test_keys_quad_resolves_components :: proc(t: ^testing.T) {
 	program := axis2d_program(context.temp_allocator)
 	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
 
-	drive, found := table.registry.by_name["Drive::Move"]
+	drive, found := registry_find_token(table.registry, "Drive::Move")
 	if !testing.expect(t, found) {
 		return
 	}
@@ -461,7 +461,7 @@ test_pad_quad_resolves_components :: proc(t: ^testing.T) {
 	program := pad_quad_program(context.temp_allocator)
 	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
 
-	drive, found := table.registry.by_name["Drive::Move"]
+	drive, found := registry_find_token(table.registry, "Drive::Move")
 	if !testing.expect(t, found) {
 		return
 	}
@@ -500,7 +500,7 @@ test_stick_2d_resolves_both_components :: proc(t: ^testing.T) {
 	program := axis2d_program(context.temp_allocator)
 	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
 
-	drive, found := table.registry.by_name["Drive::Move"]
+	drive, found := registry_find_token(table.registry, "Drive::Move")
 	if !testing.expect(t, found) {
 		return
 	}
@@ -536,7 +536,7 @@ test_stacked_quad_and_stick_sum_per_component :: proc(t: ^testing.T) {
 	program := axis2d_program(context.temp_allocator)
 	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
 
-	drive, found := table.registry.by_name["Drive::Move"]
+	drive, found := registry_find_token(table.registry, "Drive::Move")
 	if !testing.expect(t, found) {
 		return
 	}
@@ -647,7 +647,7 @@ test_mouse_button_resolves_pressed_held_released :: proc(t: ^testing.T) {
 	program := mouse_button_program(context.temp_allocator)
 	table := build_bindings_table(program, IDENTITY_OVERLAY, context.temp_allocator)
 
-	fire, found := table.registry.by_name["Trigger::Fire"]
+	fire, found := registry_find_token(table.registry, "Trigger::Fire")
 	if !testing.expect(t, found) {
 		return
 	}
@@ -684,10 +684,10 @@ test_action_registry_skips_non_input_enums :: proc(t: ^testing.T) {
 	}
 	registry := build_action_registry(program, context.temp_allocator)
 	// Steer::Move is registered (Axis)...
-	_, has_steer := registry.by_name["Steer::Move"]
+	_, has_steer := registry_find_token(registry, "Steer::Move")
 	testing.expect(t, has_steer)
 	// ...Side::Left is NOT (a plain enum is not bindable).
-	_, has_side := registry.by_name["Side::Left"]
+	_, has_side := registry_find_token(registry, "Side::Left")
 	testing.expect(t, !has_side)
 	// Exactly one action minted from pong's enums.
 	testing.expect_value(t, len(registry.defs), 1)

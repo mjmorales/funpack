@@ -127,6 +127,12 @@ build_program :: proc(
 			return {}, .Malformed_Header // an unknown section is a schema mismatch
 		}
 	}
+	// Memoize the §23 action registry off the loaded enums — a pure function of the
+	// program, minted ONCE here so new_interp/build_bindings_table never rebuild the
+	// string-concat + map per tick / per session. Built on `allocator`
+	// (the program's lifetime), so it is reclaimed with the program — including
+	// across a hot-reload, where the new program mints its own from the new enums.
+	program.registry = build_action_registry(program, allocator)
 	return program, .None
 }
 
