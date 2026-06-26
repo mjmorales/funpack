@@ -2,6 +2,9 @@
 
 import engine.prelude.{Int, Bool, Option}
 
+@doc("The immutable associative container. Built-in parametric type, like View[T].")
+extern type Map[K, V]
+
 @doc("An empty map to build onto.")
 extern fn empty() -> Map[K, V]
 @doc("The number of entries.")

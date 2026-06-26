@@ -303,6 +303,19 @@ STDLIB_SURFACE := []Module_Surface{
 		},
 	},
 	{
+		// engine.map: the §26 associative-container surface — the immutable
+		// dictionary Map[K, V] (stdlib/engine/map.fun; decision
+		// 2026-06-25-engine-map-insertion-ordered). Map is a built-in PARAMETRIC
+		// type like Option/List/View — resolved by the Map[K, V] arm in
+		// resolve_type_ref, NOT an Engine_Kind (which carries only one elem). Its
+		// methods (empty/len/get/has/set/remove/keys/values) are call-site-inferred
+		// combinators, like the engine.list `[T]` combinators.
+		path = "engine.map",
+		decls = {
+			{"Map", .Type_Name},
+		},
+	},
+	{
 		// §11 physics surface: the Tier-2 dynamics names a behavior writes intent
 		// against. Body is the §11 §2 record; BodyKind and Shape2 are its kind
 		// and shape enums (Shape2 carries struct-payload Box/Circle variants);

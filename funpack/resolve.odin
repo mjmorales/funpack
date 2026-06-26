@@ -432,6 +432,17 @@ resolve_type_ref :: proc(env: Type_Env, bindings: Bindings, ref: Type_Ref, index
 	if ref.name == "Option" && len(ref.args) == 1 {
 		return option_of(resolve_type_ref(env, bindings, ref.args[0], index))
 	}
+	// Map[K, V] is the §26 associative container — the first two-type-parameter
+	// generic (decision 2026-06-25-engine-map-insertion-ordered). Like Option/List
+	// it is a built-in parametric type, NOT an Engine_Kind (which carries only one
+	// elem): both parameters resolve like any other ref, and either stays nil — the
+	// unknown that unifies — for an unresolvable type variable (the stdlib K/V).
+	if ref.name == "Map" && len(ref.args) == 2 {
+		return map_of(
+			resolve_type_ref(env, bindings, ref.args[0], index),
+			resolve_type_ref(env, bindings, ref.args[1], index),
+		)
+	}
 	// View[T] is the §08 read table over an element type; the element
 	// resolves like any other ref (a user thing for View[Paddle]).
 	if ref.name == "View" && len(ref.args) == 1 {

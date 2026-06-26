@@ -840,6 +840,13 @@
     "source": "engine/list.fun"
   },
   {
+    "anchor": "engine/map#map",
+    "kind": "engine",
+    "title": "map.Map",
+    "text": "The immutable associative container. Built-in parametric type, like View[T].\n\nextern type Map[K, V]",
+    "source": "engine/map.fun"
+  },
+  {
     "anchor": "engine/map#empty",
     "kind": "engine",
     "title": "map.empty",

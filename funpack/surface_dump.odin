@@ -717,6 +717,11 @@ surface_type_string :: proc(type: Type) -> string {
 		)
 	case ^List_Type:
 		return strings.concatenate({"[", surface_type_string(t.elem), "]"}, context.temp_allocator)
+	case ^Map_Type:
+		return strings.concatenate(
+			{"Map[", surface_type_string(t.key), ", ", surface_type_string(t.value), "]"},
+			context.temp_allocator,
+		)
 	case ^Tuple_Type:
 		return surface_tuple_string(t.elements)
 	case ^Func_Type:

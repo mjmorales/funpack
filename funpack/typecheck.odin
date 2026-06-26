@@ -755,6 +755,10 @@ type_outside_value_domain :: proc(t: Type) -> bool {
 		return type_outside_value_domain(v.elem)
 	case ^List_Type:
 		return type_outside_value_domain(v.elem)
+	case ^Map_Type:
+		// A map is walked over both parameters, like the other containers, so a
+		// wrapped handle cannot hide in a key or value.
+		return type_outside_value_domain(v.key) || type_outside_value_domain(v.value)
 	case ^Tuple_Type:
 		for elem in v.elements {
 			if type_outside_value_domain(elem) {
@@ -1496,9 +1500,10 @@ field_member :: proc(ctx: Check_Ctx, receiver: Type, member: string) -> (type: T
 			return field, .None
 		}
 		return nil, .Type_Mismatch
-	case ^Option_Type, ^List_Type, ^Tuple_Type, ^Func_Type:
+	case ^Option_Type, ^List_Type, ^Map_Type, ^Tuple_Type, ^Func_Type:
 		// None of these expose a named member — a tuple is destructured by a
-		// match pattern (spec §02 §5), never read by `.field`.
+		// match pattern (spec §02 §5), never read by `.field`; a map is read
+		// through its methods (get/has/…), never by `.field`.
 		return nil, .Type_Mismatch
 	}
 	return nil, .Unsupported_Expr

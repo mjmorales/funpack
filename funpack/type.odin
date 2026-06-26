@@ -15,6 +15,7 @@ Type :: union {
 	Ground_Type,
 	^Option_Type,
 	^List_Type,
+	^Map_Type,
 	^Tuple_Type,
 	^Func_Type,
 	^User_Type,
@@ -196,6 +197,21 @@ List_Type :: struct {
 	elem: Type, // nil for the empty list until unified
 }
 
+// Map_Type is the parameterized associative-container type Map[K, V]
+// (engine.map, spec §26; decision 2026-06-25-engine-map-insertion-ordered). It
+// is the language's first two-type-parameter generic in the checker model
+// (Result is grounded as a parameterless Engine_Kind with wildcard payloads,
+// not a parametric node): it carries both its key and value types so
+// Map[Cell, Tile] and Map[Int, Bool] are distinct. Either side is nil — the one
+// unknown — until unified: empty()'s Map[_, _] carries nil key and nil value.
+// Compatibility is structural over BOTH parameters, mirroring Option/List's
+// single-elem rule. Iteration is insertion-ordered (the determinism contract),
+// but order is a value-level property; the type carries only K and V.
+Map_Type :: struct {
+	key:   Type, // nil for the empty map's key until unified
+	value: Type, // nil for the empty map's value until unified
+}
+
 // Tuple_Type is a fixed-arity positional aggregate type (spec §04 §1: every
 // draw returns the pair `(value, next_rng)`). It carries its positional element
 // types in order; compatibility is structural over the positions, like List and
@@ -222,6 +238,15 @@ option_of :: proc(elem: Type) -> Type {
 list_of :: proc(elem: Type) -> Type {
 	node := new(List_Type, context.temp_allocator)
 	node.elem = elem
+	return node
+}
+
+// map_of builds a Map[K, V] type over its key and value element types; either
+// side stays nil — the unknown that unifies — for the empty map's Map[_, _].
+map_of :: proc(key, value: Type) -> Type {
+	node := new(Map_Type, context.temp_allocator)
+	node.key = key
+	node.value = value
 	return node
 }
 
@@ -311,6 +336,14 @@ types_compatible :: proc(a, b: Type) -> bool {
 	case ^List_Type:
 		bv, ok := b.(^List_Type)
 		return ok && types_compatible(av.elem, bv.elem)
+	case ^Map_Type:
+		// A map is structural over BOTH parameters: the key types unify AND the
+		// value types unify, with a nil side (the empty map's Map[_, _]) unifying
+		// against anything — mirroring Option/List's single-elem rule. So
+		// Map[Cell, Tile] never crosses Map[Cell, Int], and empty() flows into
+		// either.
+		bv, ok := b.(^Map_Type)
+		return ok && types_compatible(av.key, bv.key) && types_compatible(av.value, bv.value)
 	case ^Tuple_Type:
 		// A tuple is structural over its positions: same arity, and each
 		// position unifies — a nil position unifies with anything, mirroring
