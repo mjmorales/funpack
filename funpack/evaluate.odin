@@ -247,6 +247,15 @@ eval_expr :: proc(ctx: Eval_Ctx, env: ^Env, expr: Expr) -> (value: Value, ok: bo
 		if constant, declared := eval_module_const(ctx, e.name); declared {
 			return constant, true
 		}
+		// A bare IMPORTED module-level const (`import world.{MAP_W}` then a bare
+		// `MAP_W`): it is not in THIS module's lets, so resolve it cross-module
+		// against its owning module's eval surface — the bare-name analogue of the
+		// dotted `handle.member` path (eval_module_qualified_const). Without this an
+		// imported const reads bottom (no binding found) while a module-local const
+		// resolves — a silent cross-module fault no compile stage catches.
+		if constant, is_const := eval_imported_const(ctx, e.name); is_const {
+			return constant, true
+		}
 		// The sanctioned lowercase constants are the builtin fallback (spec §02:
 		// pi/tau are the only snake_case constant exceptions; §10: the nearest-Fixed
 		// angle constants). advance_gait wraps its phase into [0, tau) with `% tau`.
@@ -1297,6 +1306,39 @@ eval_module_qualified_const :: proc(ctx: Eval_Ctx, handle: string, member: strin
 		visiting = ctx.visiting,
 	}
 	return eval_module_const(owner_ctx, member)
+}
+
+// eval_imported_const evaluates a BARE imported module-level const name
+// (`import world.{MAP_W}` then a bare `MAP_W`): the name must bind to a sibling
+// user module's exported const (a .Value binding whose module is not this ctx's
+// own), that module's eval surface must be in scope, and the member must be a
+// module-level let in it. The let's initializer evaluates against a FRESH
+// Eval_Ctx over the OWNING module's (ast, env, bindings) — exactly the
+// eval_module_qualified_const path the dotted `handle.member` form takes — so a
+// bare imported const reads the same value its owning module computes, not the
+// bottom a current-module-only lookup leaves. The shared visited set threads
+// through so a cross-module const cycle trips the same guard. is_const = false
+// when the name is not a cross-module .Value binding or its owner/member does not
+// resolve (a stdlib prelude const like `pi`/`tau` owns no eval surface and falls
+// through to its builtin arm), so the caller's other name arms still run.
+eval_imported_const :: proc(ctx: Eval_Ctx, name: string) -> (value: Value, is_const: bool) {
+	binding, bound := ctx.bindings.names[name]
+	if !bound || binding.kind != .Value || binding.module == ctx.module {
+		return nil, false
+	}
+	owner, found := module_eval_lookup(ctx.modules, binding.module)
+	if !found {
+		return nil, false
+	}
+	owner_ctx := Eval_Ctx {
+		ast      = owner.ast,
+		env      = owner.env,
+		bindings = owner.bindings,
+		modules  = owner.modules,
+		module   = binding.module,
+		visiting = ctx.visiting,
+	}
+	return eval_module_const(owner_ctx, name)
 }
 
 // module_eval_lookup finds a module's eval surface by name, walked by index like

@@ -134,6 +134,37 @@ test "owner default fills an omitted cross-module field" {
 	testing.expect_value(t, report.failed, 0)
 }
 
+@(test)
+test_crossmod_imported_let_const_evaluates :: proc(t: ^testing.T) {
+	// A consumer reads a sibling module's module-level `let` constant by BARE name
+	// (`import world.{MAP_W, MAP_H}` then a bare `MAP_W`) — the eval_imported_const
+	// arm: the imported const is not in the consumer's own lets, so its value
+	// resolves cross-module through the owning module's eval surface, exactly as a
+	// module-local let does. The hazard this guards: a bare imported const that
+	// reads bottom (the consumer-only lookup misses it) while a module-local const
+	// resolves and imported functions work, silently poisoning every downstream
+	// computation with no compile-stage diagnostic. The third assert pins the
+	// module-local const so the boundary (local and imported both resolve) is one
+	// fixture. Run through the whole project pipeline so the eval surface is the real one.
+	world := `let MAP_W: Int = 32
+let MAP_H: Int = 24`
+	app := `import world.{MAP_W, MAP_H}
+let ROOM_ATTEMPTS: Int = 40
+test "imported and local consts both hold their values" {
+  assert MAP_W == 32
+  assert MAP_H == 24
+  assert ROOM_ATTEMPTS == 40
+}`
+	world_ast, _ := stage_parse(stage_lex(world))
+	app_ast, _ := stage_parse(stage_lex(app))
+	index := build_module_index_typed({"world", "app"}, {world_ast, app_ast})
+	eval_modules := build_module_eval_surface({"world", "app"}, {world_ast, app_ast}, index)
+	report, err := run_module_pipeline_named(app, index, eval_modules, "app")
+	testing.expect_value(t, err, Pipeline_Error.None)
+	testing.expect_value(t, report.passed, 3)
+	testing.expect_value(t, report.failed, 0)
+}
+
 // ── (surface) to_fixed resolves through both prelude and math routes ───────────
 
 @(test)
