@@ -1,27 +1,3 @@
-// The contract generator core — decodes contract/funpack-api.json (the SINGLE
-// source of truth for the funpack <-> MCP API boundary) and renders
-// funpack/api_contract.gen.odin: the API_CONTRACT_VERSION, the `funpack version
-// --json` field-name + schema-name consts, the §28 envelope / command / event name
-// consts, and the unified TOOL_SPECS table (every §28 command AND every
-// server-native tool projected into one MCP tools/list table).
-//
-// PURE: this core takes the raw contract bytes and returns the generated source
-// bytes — NO filesystem WRITES (persisting api_contract.gen.odin is the caller's
-// job, cli_mcp_gen_contract.odin) and NO shell. That split mirrors the corpus
-// generator (mcp_corpus_gen.odin / cli_mcp_gen_corpus.odin) so the pin test
-// (mcp_contract_gen_test.odin) regenerates through THIS SAME core and byte-compares
-// against the committed file — one render path, no second divergent renderer.
-//
-// BYTE-STABLE: the render layout is fixed so a regen reproduces the committed file
-// verbatim. Maps (command_groups, families, version fields, args) iterate in
-// sorted-key order; ordered lists (schema_names, group commands, family tools,
-// events, envelope fields) iterate in on-disk declaration order. The contract's
-// "$comment" string keys interleaved among typed map entries are dropped on access.
-//
-// ODIN-FIRST NOTE: JSON is core:encoding/json (json.parse over the raw bytes, then a
-// json.Value walk — the §28 idiom at mcp_jsonrpc.odin / introspect.odin); sorting is
-// core:slice.sort; the render is a strings.Builder (the §28 envelope-render idiom).
-// No hand-rolled parser, no regex, no external dependency.
 package main
 
 import "core:encoding/json"
@@ -29,12 +5,6 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
-// generate_contract_odin parses the contract JSON bytes and renders the
-// funpack/api_contract.gen.odin source. ok=false (no panic) when the bytes are not a
-// JSON object or a required block is missing/mistyped — a malformed contract fails
-// loudly rather than emitting a half-rendered file. The returned source is allocated
-// in `allocator`; the parse tree uses the temp allocator (freed by the caller's
-// arena reset). The byte target is the committed funpack/api_contract.gen.odin.
 generate_contract_odin :: proc(contract_json: string, allocator := context.allocator) -> (source: string, ok: bool) {
 	parsed, parse_err := json.parse(
 		transmute([]u8)contract_json,
@@ -73,7 +43,6 @@ generate_contract_odin :: proc(contract_json: string, allocator := context.alloc
 		return "", false
 	}
 
-	// Version-surface field names (sorted keys, "$comment" dropped).
 	strings.write_string(&b, "// --- `funpack version --json` field names -----------------------------------\n\n")
 	fields, _ := contract_object(version_surface, "fields")
 	for f in sorted_typed_keys(fields) {
@@ -81,15 +50,12 @@ generate_contract_odin :: proc(contract_json: string, allocator := context.alloc
 	}
 	strings.write_string(&b, "\n")
 
-	// Schema names (on-disk array order).
 	strings.write_string(&b, "// --- schema names -----------------------------------------------------------\n\n")
 	for name in contract_string_array(version_surface, "schema_names") {
 		fmt.sbprintf(&b, "SCHEMA_NAME_%s :: %q\n", odin_const(name), name)
 	}
 	strings.write_string(&b, "\n")
 
-	// §28 envelope field names: the three closed kinds in fixed order, fields in
-	// on-disk array order.
 	strings.write_string(&b, "// --- §28 envelope field names -----------------------------------------------\n\n")
 	envelopes, _ := contract_object(introspect, "envelopes")
 	for kind in ([]string{"request", "response", "event"}) {
@@ -103,7 +69,6 @@ generate_contract_odin :: proc(contract_json: string, allocator := context.alloc
 	}
 	strings.write_string(&b, "\n")
 
-	// §28 command names, groups sorted, commands in on-disk declaration order.
 	strings.write_string(&b, "// --- §28 command names ------------------------------------------------------\n\n")
 	command_groups, _ := contract_object(introspect, "command_groups")
 	for g in sorted_typed_keys(command_groups) {
@@ -116,25 +81,17 @@ generate_contract_odin :: proc(contract_json: string, allocator := context.alloc
 		strings.write_string(&b, "\n")
 	}
 
-	// §28 event names (on-disk array order).
 	strings.write_string(&b, "// --- §28 event names --------------------------------------------------------\n\n")
 	for e in contract_string_array(introspect, "events") {
 		fmt.sbprintf(&b, "EVENT_%s :: %q\n", odin_const(e), e)
 	}
 
-	// The unified TOOL_SPECS projection.
 	strings.write_string(&b, "\n")
 	render_tool_specs(&b, introspect, root)
 
 	return strings.to_string(b), true
 }
 
-// render_tool_specs emits the Tool_Arg / Tool_Spec struct decls, the SESSION_ID_ARG /
-// BRANCH_ARG shared consts, and the TOOL_SPECS literal: every §28 command first
-// (groups sorted, commands as declared), then every server-native tool (families
-// sorted, tools as declared). One source — the contract walk — so the advertised
-// tools/list input_schema cannot drift from the tools/call dispatch arm. The exact
-// layout (tab indentation, comment text) is fixed so a regen is byte-stable.
 render_tool_specs :: proc(b: ^strings.Builder, introspect: json.Object, root: json.Object) {
 	strings.write_string(b, "// --- MCP tools/list projection (Tool_Spec table) ----------------------------\n")
 	strings.write_string(b, "//\n")
@@ -223,9 +180,6 @@ render_tool_specs :: proc(b: ^strings.Builder, introspect: json.Object, root: js
 			strings.write_string(b, "\t\t\tSESSION_ID_ARG,\n")
 			args, _ := contract_object(command, "args")
 			render_arg_entries(b, args)
-			// MCP-render-only args: projected into the tool input_schema after the wire
-			// args, but never marshalled onto the §28 wire (the dispatch arm consumes them
-			// as presentation toggles, e.g. screenshot's include_pixels).
 			if mcp_args, has_mcp := contract_object(command, "mcp_args"); has_mcp {
 				render_arg_entries(b, mcp_args)
 			}
@@ -241,13 +195,6 @@ render_tool_specs :: proc(b: ^strings.Builder, introspect: json.Object, root: js
 	strings.write_string(b, "}\n")
 }
 
-// render_server_tool_specs appends the server-native tools to the SAME TOOL_SPECS
-// literal. Each server-native tool projects into one Tool_Spec whose group is its
-// FAMILY, class is the family's determinism class, session_scoped is the family's
-// flag (false for every server-native tool), command IS the tool name (no §28 wire
-// command), and args are the tool's full input_schema verbatim — NO injected
-// SESSION_ID_ARG or BRANCH_ARG. Families sorted, tools in on-disk declaration order,
-// args sorted — byte-stable.
 render_server_tool_specs :: proc(b: ^strings.Builder, root: json.Object) {
 	server_tools, has_st := contract_object(root, "server_tools")
 	if !has_st {
@@ -283,10 +230,6 @@ render_server_tool_specs :: proc(b: ^strings.Builder, root: json.Object) {
 	}
 }
 
-// render_arg_entries writes the inline `{name = …, json_type = …, required = …, doc =
-// …}` Tool_Arg literals for one tool's args object, in sorted-key order (sorted keys
-// give byte-stable output), each indented three tabs. The doc is escaped through
-// odin_string; the type/required come straight off the arg's {type, required, doc}.
 render_arg_entries :: proc(b: ^strings.Builder, args: json.Object) {
 	for arg_name in sorted_typed_keys(args) {
 		arg, arg_ok := args[arg_name].(json.Object)
@@ -305,20 +248,11 @@ render_arg_entries :: proc(b: ^strings.Builder, args: json.Object) {
 	}
 }
 
-// odin_const maps a contract name (snake_case) to its Odin SCREAMING_SNAKE const
-// suffix (an upper-case fold).
 odin_const :: proc(name: string, allocator := context.allocator) -> string {
 	return strings.to_upper(name, allocator)
 }
 
-// odin_string renders s as a double-quoted Odin string literal, escaping the few
-// characters a literal cannot carry raw: backslash, quote, newline, tab. Contract
-// docs are plain ASCII prose, so only these need escaping; the newline/tab escapes
-// are defensive for byte-stable single-line literals. Allocated in `allocator`.
 odin_string :: proc(s: string, allocator := context.allocator) -> string {
-	// Order matters: backslash first so a later-introduced escape sequence is not
-	// double-escaped. A single left-to-right fold over the input (never re-scanning
-	// replaced text) keeps each source byte escaped exactly once.
 	b := strings.builder_make(allocator)
 	strings.write_byte(&b, '"')
 	for i in 0 ..< len(s) {
@@ -339,9 +273,6 @@ odin_string :: proc(s: string, allocator := context.allocator) -> string {
 	return strings.to_string(b)
 }
 
-// contract_tool_name projects a command's MCP tool name from its group's tool_prefix:
-// a non-empty prefix yields "<prefix>_<command>", an empty prefix yields the bare
-// command. Allocated in `allocator`.
 contract_tool_name :: proc(tool_prefix, command: string, allocator := context.allocator) -> string {
 	if tool_prefix == "" {
 		return strings.clone(command, allocator)
@@ -349,10 +280,6 @@ contract_tool_name :: proc(tool_prefix, command: string, allocator := context.al
 	return strings.concatenate({tool_prefix, "_", command}, allocator)
 }
 
-// sorted_typed_keys returns the keys of a "$comment"-interleaved contract map in
-// ascending order, dropping the "$comment" key: typed entries only, in
-// deterministic order so the generated output is byte-stable. Allocated in
-// `allocator`.
 sorted_typed_keys :: proc(object: json.Object, allocator := context.allocator) -> []string {
 	keys := make([dynamic]string, 0, len(object), allocator)
 	for k in object {
@@ -365,8 +292,6 @@ sorted_typed_keys :: proc(object: json.Object, allocator := context.allocator) -
 	return keys[:]
 }
 
-// contract_command_names returns a group's command names in on-disk declaration order
-// — the ordered projection the CMD_* consts consume. Allocated in `allocator`.
 contract_command_names :: proc(grp: json.Object, allocator := context.allocator) -> []string {
 	commands, _ := contract_array(grp, "commands")
 	names := make([dynamic]string, 0, len(commands), allocator)
@@ -382,10 +307,6 @@ contract_command_names :: proc(grp: json.Object, allocator := context.allocator)
 	return names[:]
 }
 
-// --- typed json.Value accessors (the contract decode half) -------------------------
-
-// contract_object reads object[key] as a json.Object; has=false when absent or not an
-// object.
 contract_object :: proc(object: json.Object, key: string) -> (value: json.Object, has: bool) {
 	field, present := object[key]
 	if !present {
@@ -394,8 +315,6 @@ contract_object :: proc(object: json.Object, key: string) -> (value: json.Object
 	return field.(json.Object)
 }
 
-// contract_array reads object[key] as a json.Array; has=false when absent or not an
-// array.
 contract_array :: proc(object: json.Object, key: string) -> (value: json.Array, has: bool) {
 	field, present := object[key]
 	if !present {
@@ -404,9 +323,6 @@ contract_array :: proc(object: json.Object, key: string) -> (value: json.Array, 
 	return field.(json.Array)
 }
 
-// contract_string reads object[key] as a string; has=false when absent or not a
-// string. The returned string aliases the parse-tree storage (caller owns its
-// lifetime via the parse allocator).
 contract_string :: proc(object: json.Object, key: string) -> (value: string, has: bool) {
 	field, present := object[key]
 	if !present {
@@ -419,9 +335,6 @@ contract_string :: proc(object: json.Object, key: string) -> (value: string, has
 	return string(str), true
 }
 
-// contract_bool reads object[key] as a boolean; has=false when absent or not a
-// boolean (a missing `required`/`session_scoped` defaults to false, the JSON-Schema
-// omitted-is-false convention).
 contract_bool :: proc(object: json.Object, key: string) -> (value: bool, has: bool) {
 	field, present := object[key]
 	if !present {
@@ -434,8 +347,6 @@ contract_bool :: proc(object: json.Object, key: string) -> (value: bool, has: bo
 	return bool(b), true
 }
 
-// contract_int reads object[key] as an integer; has=false when absent or not an
-// integer.
 contract_int :: proc(object: json.Object, key: string) -> (value: i64, has: bool) {
 	field, present := object[key]
 	if !present {
@@ -450,9 +361,6 @@ contract_int :: proc(object: json.Object, key: string) -> (value: i64, has: bool
 	return 0, false
 }
 
-// contract_string_array reads object[key] as an array of strings, preserving on-disk
-// order — the ordered-list decode the schema_names / envelope fields / events
-// renderers consume. Non-string elements are skipped. Allocated in `allocator`.
 contract_string_array :: proc(object: json.Object, key: string, allocator := context.allocator) -> []string {
 	arr, has := contract_array(object, key)
 	if !has {

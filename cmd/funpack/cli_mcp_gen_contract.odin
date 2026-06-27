@@ -1,34 +1,9 @@
-// The `funpack mcp gen-contract` dev-time subcommand — the Odin half of the
-// dual-codegen for the funpack↔MCP API contract. It is a thin filesystem wrapper
-// around generate_contract_odin (mcp_contract_gen.odin): it reads the in-repo
-// contract/funpack-api.json, runs the pure generator core, and writes
-// funpack/api_contract.gen.odin. It mirrors the gen-corpus subcommand
-// (cli_mcp_gen_corpus.odin) arm-for-arm.
-//
-// WHY THIS EXISTS: the committed funpack/api_contract.gen.odin is generated, not
-// hand-edited; this subcommand is the regeneration path a maintainer runs after a
-// contract/funpack-api.json edit. Without it the generated source would drift from
-// its contract source with no way to re-derive it.
-//
-// DEV-ONLY: this regenerates committed source under the working tree; it is invoked
-// by a maintainer after a contract/funpack-api.json edit, then the regenerated file
-// is committed. It is NOT a runtime path. PURE-CORE / IO-IN-WRAPPER: this subcommand
-// owns the two filesystem touches (read the contract, write the generated file); the
-// core never touches the filesystem and never shells out (no git — the contract
-// carries no provenance ref, unlike the corpus). Exit 0 on success, 1 on a read /
-// generate / write failure (stderr-reported; stdout stays clean for the MCP
-// discipline the parent verb holds).
 package main
 
 import "../../cli"
 import "core:fmt"
 import "core:os"
 
-// build_mcp_gen_contract_command declares `funpack mcp gen-contract` — the dev-time
-// contract regenerator hung under the `mcp` parent verb (build_mcp_command). No
-// positionals and no flags: the contract path and the output path are resolved from
-// the in-repo layout relative to the running binary's working directory (the repo
-// root). Mirrors the build_mcp_gen_corpus_command declaration shape.
 build_mcp_gen_contract_command :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 	return cli.cli_new_command(
 		cli.Cli_Command {
@@ -42,20 +17,10 @@ build_mcp_gen_contract_command :: proc(allocator := context.allocator) -> ^cli.C
 	)
 }
 
-// MCP_CONTRACT_SOURCE_REL is contract/funpack-api.json relative to the repo root (the
-// generator's working directory).
 MCP_CONTRACT_SOURCE_REL :: "contract/funpack-api.json"
 
-// MCP_CONTRACT_ODIN_OUT_REL is funpack/api_contract.gen.odin relative to the repo root
-// — the generated file this subcommand overwrites.
 MCP_CONTRACT_ODIN_OUT_REL :: "funpack/api_contract.gen.odin"
 
-// cli_run_mcp_gen_contract is the gen-contract handler: read the contract → generate →
-// write the Odin file. Diagnostics and the success summary go to stderr (stdout is
-// reserved for the MCP JSON-RPC writer the parent verb owns). Returns 0 on success,
-// 1 on any failure. Allocates on the HEAP via the temp arena for the parse tree and
-// the rendered source; the process exits after the write, so the per-run leak is
-// bounded and harmless for a dev tool.
 cli_run_mcp_gen_contract :: proc(inv: ^cli.Cli_Invocation) -> int {
 	repo_root := corpus_repo_root()
 	contract_path := corpus_join({repo_root, MCP_CONTRACT_SOURCE_REL})

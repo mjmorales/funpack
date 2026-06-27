@@ -1,34 +1,3 @@
-// The ONE-SHOT compute-tool dispatch family — the arm of the tools/call chain
-// (mcp_server.odin MCP_DISPATCH_CHAIN) that owns the STATELESS tools that call a pure
-// funpack compute-half directly with NO session and NO subprocess: build / check /
-// export → stage_build (funpack/build.odin), test → read_project + run_project_pipeline
-// (funpack/pipeline.odin), fmt → fmt_drift (funpack/fmt.odin), and the warden_* readers
-// → read_warden_index + warden_command_output (funpack/warden_output.odin). Each is a
-// pure projection of the project tree at the caller's `dir`, lifted into the MCP result.
-// This file is ONE dispatch seam — it owns ONLY this file's dispatch proc, never
-// mcp_handle_tools_call — so the six dispatch families stay independent (each owns its
-// own file and its own `oneshot_`-style prefix).
-//
-// EXIT-CODE-AS-DATA (the family's crux): a non-zero build/check/export VERDICT, a
-// non-zero test failed count, and a warden index-refusal (the CLI's exit 2) are all a
-// NORMAL ok:false TOOL RESULT — the structured outcome the agent reads and acts on,
-// NOT an IsError. The IsError envelope (mcp_error.odin) is reserved for a GENUINE
-// internal/boundary fault: a missing required `dir` arg (Invalid_Input) or a compute
-// half breaking its own contract (Internal). So a refused build is `{"ok":false,…}`
-// carried in a clean tools/call, exactly as the §28 ok:false envelope rides verbatim
-// in the observe/control families.
-//
-// NAMESPACE DISCIPLINE: every package-level proc/type/constant this file adds (tests
-// included) is prefixed `oneshot_` so package main has NO duplicate symbols across the
-// six dispatch families. The one EXCEPTION is the dispatch entry point
-// mcp_oneshot_dispatch — its name is fixed by the chain in mcp_server.odin
-// (MCP_DISPATCH_CHAIN) and must not change.
-//
-// THE COMPUTE-HALVES ARE PURE: stage_build / run_project_pipeline / fmt_drift /
-// read_warden_index are pure functions of the tree bytes (they read, never print —
-// the print + write side lives in the CLI verb wrappers, main.odin). build / check /
-// export here run the pure VERDICT seam ONLY and write NO product, so an MCP build is
-// deterministic and side-effect-free — the agent gets the verdict, not a littered tree.
 package main
 
 import "../../funpack"
@@ -37,14 +6,6 @@ import "core:encoding/json"
 import "core:os"
 import "core:strings"
 
-// mcp_oneshot_dispatch is the one-shot family's arm. It CLAIMS its tools — build,
-// check, export, test, fmt, and warden_find/graph/holes/probes/debt/tags/pipeline — by
-// the generated Tool_Spec.group ("oneshot"), folding each through its pure compute-half
-// and rendering the outcome into the MCP result. Any tool outside the family is declined
-// (handled=false) so the call flows on down the chain (the stub contract every family
-// keeps). Claiming on .group, not the name, is the generated-projection invariant: a
-// renamed oneshot tool still routes here, and the family cannot drift from the advertised
-// set. The per-tool render is dispatched by name within the claimed group.
 mcp_oneshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> (result: string, handled: bool) {
 	if dispatch.spec.group != "oneshot" {
 		return "", false
@@ -54,12 +15,8 @@ mcp_oneshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 	case "build":
 		return oneshot_build(dispatch, .Dev, allocator), true
 	case "export":
-		// export is build --release: the shippable artifact's verdict (§29 §4 — a hole
-		// or debug probe anywhere refuses, the release-ban arms).
 		return oneshot_build(dispatch, .Release, allocator), true
 	case "check":
-		// check is build's verdict with the write deleted; --release picks the release
-		// configuration's ban set (the optional `release` arg).
 		return oneshot_build(dispatch, oneshot_check_mode(dispatch.arguments), allocator), true
 	case "test":
 		return oneshot_test(dispatch, allocator), true
@@ -81,12 +38,6 @@ mcp_oneshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 		return oneshot_warden(dispatch, .Pipeline, allocator), true
 	}
 
-	// A tool the contract groups under "oneshot" but this arm does not render: a
-	// genuine generator-vs-dispatch gap (a new oneshot tool added to the contract
-	// without an arm here). Surface it as an Internal fault rather than silently
-	// declining — declining would let the chain fall through to the not-implemented
-	// stub, masking the gap; an Internal IsError names the offending tool so the gap
-	// is loud, the closed-enum discipline the generated projection depends on.
 	return mcp_tool_error(
 		dispatch.id,
 		Mcp_Error{category = .Internal, message = "one-shot family claimed a tool it does not render", detail = dispatch.name},
@@ -94,11 +45,6 @@ mcp_oneshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.alloca
 	), true
 }
 
-// oneshot_check_mode reads the optional `release` flag off a check call: true selects
-// the Release build configuration (its §29 §4 hole/debug bans), absent or false the
-// Dev configuration. A non-boolean `release` is treated as absent (Dev) — the schema
-// types it boolean, so a malformed value falls back to the safe default rather than
-// refusing, mirroring the §28 optional-arg read.
 oneshot_check_mode :: proc(arguments: json.Object) -> funpack.Build_Mode {
 	if field, present := arguments["release"]; present {
 		if flag, is_bool := field.(json.Boolean); is_bool && bool(flag) {
@@ -108,13 +54,6 @@ oneshot_check_mode :: proc(arguments: json.Object) -> funpack.Build_Mode {
 	return .Dev
 }
 
-// oneshot_build renders a build/check/export verdict from the PURE stage_build seam
-// (NO product write — the MCP tool is verdict-only and side-effect-free). The clean
-// verdict (.None) is `{"ok":true,...}` carrying the products' derived paths; a refusal
-// is the EXIT-CODE-AS-DATA case — a NORMAL `{"ok":false,...}` result carrying the closed
-// Build_Error arm and its operator-facing refusal message (the same line the CLI
-// eprints), NOT an IsError. A missing required `dir` is the only IsError here
-// (Invalid_Input — a schema violation the agent must correct before any build runs).
 oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocator := context.allocator) -> string {
 	dir, has_dir := funpack_runtime.json_string_field(dispatch.arguments, "dir")
 	if !has_dir {
@@ -131,28 +70,14 @@ oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocato
 	strings.write_string(&b, ",\"mode\":")
 	funpack_runtime.write_json_string(&b, oneshot_mode_wire(mode))
 	if verdict.err != .None {
-		// A build refusal: exit-code-as-data. The closed arm is the machine field; the
-		// refusal message is the same operator-facing line the CLI eprints, so the agent
-		// reads WHY and what to repair. A clean tools/call carrying ok:false — not an
-		// IsError (the refused build resolved; it did not internally fault).
 		strings.write_string(&b, ",\"ok\":false,\"error\":")
 		funpack_runtime.write_json_string(&b, fmt_build_error_name(verdict.err))
 		strings.write_string(&b, ",\"message\":")
 		funpack_runtime.write_json_string(&b, funpack.build_refusal_message(verdict, allocator))
-		// The Compile_Failed arm carries the inner fix-criteria Diagnostic (the §15 stage
-		// rejection's file:line:col + code + message + caret excerpt). Surface it as a
-		// `diagnostics` array mirroring the CLI's eprint_build_refusal render, so an agent's
-		// in-loop check sees WHICH member, WHICH line, and WHY without shelling out to the
-		// CLI. Other arms name their offender on the message line above; only the compile
-		// floor has a per-stage diagnostic, so the array is conditional on a captured rule.
 		oneshot_write_diagnostics(&b, verdict.diagnostic, allocator)
 		strings.write_byte(&b, '}')
 		return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 	}
-	// A clean verdict: report the products' derived paths (artifact_path is "" for a
-	// §30 package — no entrypoint, no runtime artifact). The bytes themselves are not
-	// written (verdict-only) and not echoed (they are large emit/index streams); the
-	// paths tell the agent where a `funpack build` WOULD land them.
 	strings.write_string(&b, ",\"ok\":true,\"artifact_path\":")
 	funpack_runtime.write_json_string(&b, product.artifact_path)
 	strings.write_string(&b, ",\"index_path\":")
@@ -161,14 +86,6 @@ oneshot_build :: proc(dispatch: Mcp_Dispatch, mode: funpack.Build_Mode, allocato
 	return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 }
 
-// oneshot_test renders a `funpack test` verdict from read_project + run_project_pipeline
-// (the test verb's pure substrate, main.odin:run_test_verb). The three outcomes map to
-// data, never an IsError unless `dir` is missing: a malformed tree (read_project refusal)
-// or a module compile error is `{"ok":false,"error":...}` (the CLI's exit 2 — a compile
-// error is never a counted failure, §29 §3); a clean run is `{"ok":<failed==0>,"passed":
-// N,"failed":M}` (the CLI's exit 1 when failed>0, exit 0 when all pass) — a FAILED assert
-// count is exit-code-as-data, the agent reads the count and fixes the test, never an
-// internal fault.
 oneshot_test :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	dir, has_dir := funpack_runtime.json_string_field(dispatch.arguments, "dir")
 	if !has_dir {
@@ -184,21 +101,12 @@ oneshot_test :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> 
 		return oneshot_test_refusal(dispatch.id, dir, "index_failed", report.failed_path, funpack.Diagnostic{}, allocator)
 	}
 	if report.module_err != .None {
-		// A module compile error (exit 2) — the failing module's path names where to
-		// look, and report.diagnostic carries the same inner fix-criteria Diagnostic the
-		// CLI's eprint_module_diagnostic renders (file:line:col + code + message + caret
-		// excerpt, path already = failed_path). Thread it through as a `diagnostics` array
-		// so the in-loop test surface tells an agent WHY the module failed to compile,
-		// not just the bare path. The message stays the failing module's path (the
-		// offender line); the structured diagnostics carry the detail.
 		return oneshot_test_refusal(dispatch.id, dir, "compile_failed", report.failed_path, report.diagnostic, allocator)
 	}
 
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"tool\":\"test\",\"dir\":")
 	funpack_runtime.write_json_string(&b, dir)
-	// ok mirrors the CLI exit code: all-pass (failed==0) is ok:true; a counted failure
-	// is ok:false but NOT a refusal — passed/failed carry the verdict the agent acts on.
 	strings.write_string(&b, ",\"ok\":")
 	strings.write_string(&b, report.failed == 0 ? "true" : "false")
 	strings.write_string(&b, ",\"passed\":")
@@ -209,12 +117,6 @@ oneshot_test :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> 
 	return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 }
 
-// oneshot_test_refusal renders the test verb's exit-2 refusal (malformed tree / index
-// failure / module compile error) as a NORMAL ok:false data result — exit-code-as-data,
-// not an IsError. error is the machine arm; message is the offender line the agent reads.
-// diag is the inner fix-criteria Diagnostic the module-compile arm carries (zero, rule="",
-// for malformed_tree / index_failed — those have no per-stage diagnostic); when populated
-// it rides as a `diagnostics` array mirroring the CLI's eprint_module_diagnostic render.
 oneshot_test_refusal :: proc(id: Mcp_Id, dir: string, error_name: string, message: string, diag: funpack.Diagnostic, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"tool\":\"test\",\"dir\":")
@@ -228,13 +130,6 @@ oneshot_test_refusal :: proc(id: Mcp_Id, dir: string, error_name: string, messag
 	return mcp_text_result(id, strings.to_string(b), allocator)
 }
 
-// oneshot_fmt renders a `funpack fmt --check` verdict from the pure fmt_drift seam (NO
-// write — the MCP fmt tool is verdict-only, the --check face). A read_project / read /
-// parse refusal is the exit-2 ok:false data case (the closed Fmt_Error arm + its offender
-// line); a clean compute is `{"ok":<no drift>,"drifted":[{path,unified_diff},…]}` — a
-// drifting tree is ok:false (the CLI's exit 1) carrying each drift's path + unified diff
-// so the agent sees exactly what to reformat, never an IsError. Only a missing `dir` is
-// an IsError (Invalid_Input).
 oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	dir, has_dir := funpack_runtime.json_string_field(dispatch.arguments, "dir")
 	if !has_dir {
@@ -257,8 +152,6 @@ oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"tool\":\"fmt\",\"dir\":")
 	funpack_runtime.write_json_string(&b, dir)
-	// ok mirrors `funpack fmt --check`: a canonical tree (no drift) is exit 0/ok:true;
-	// any drift is exit 1/ok:false, the drifted list carrying the fix.
 	strings.write_string(&b, ",\"ok\":")
 	strings.write_string(&b, len(drifted) == 0 ? "true" : "false")
 	strings.write_string(&b, ",\"drifted\":[")
@@ -276,17 +169,6 @@ oneshot_fmt :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 }
 
-// oneshot_warden renders a `funpack warden <cmd>` query from the pure read_warden_index
-// acquisition + warden_command_output projection (the warden verb's substrate,
-// main.odin:warden_verb_exit). An index refusal (the CLI's exit 2 — a missing/
-// schema-mismatched/malformed `.funpack/index.ndjson`) is the EXIT-CODE-AS-DATA case: a
-// NORMAL `{"ok":false,"error":...,"message":...}` carrying the refusal's fix-it (run
-// `funpack build` to emit the index), NOT an IsError — the agent reads the refusal and
-// rebuilds. A decoded index is `{"ok":true,"output":"<ndjson>"}` carrying the command's
-// pure NDJSON projection verbatim (an empty projection is a clean empty string). Only a
-// missing `dir` is an IsError (Invalid_Input). The find query is read off the optional
-// `query` arg for warden_find, "" for every other command; graph reads its optional
-// `node` arg as the incident-edge filter.
 oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allocator := context.allocator) -> string {
 	dir, has_dir := funpack_runtime.json_string_field(dispatch.arguments, "dir")
 	if !has_dir {
@@ -295,8 +177,6 @@ oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allo
 
 	index, refusal := funpack.read_warden_index(dir, allocator)
 	if refusal.err != .None {
-		// Index-refusal as data: the CLI's exit 2. The arm names the machine cause; the
-		// refusal message is the same fix-it the CLI eprints (`funpack build` to emit it).
 		b := strings.builder_make(allocator)
 		strings.write_string(&b, "{\"tool\":")
 		funpack_runtime.write_json_string(&b, dispatch.name)
@@ -310,8 +190,6 @@ oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allo
 		return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 	}
 
-	// The find filter: warden_find reads its `query` substring; graph reads its `node`
-	// incident-edge positional. Every other command carries the zero query / empty arg.
 	find := funpack.Warden_Find_Query{}
 	arg := ""
 	if cmd == .Find {
@@ -336,26 +214,6 @@ oneshot_warden :: proc(dispatch: Mcp_Dispatch, cmd: funpack.Warden_Command, allo
 	return mcp_text_result(dispatch.id, strings.to_string(b), allocator)
 }
 
-// oneshot_write_diagnostics appends the failed result's `diagnostics` array — the
-// MCP-layer passthrough of the inner fix-criteria Diagnostic the compile floor produces
-// (the §15 stage rejection's code/span/message + caret excerpt). It is the structured
-// mirror of the CLI's eprint_build_refusal / eprint_module_diagnostic render: the same
-// Diagnostic the compiler already threaded (verdict.diagnostic / report.diagnostic),
-// lifted into the tool result so an agent's in-loop check/test sees WHICH construct,
-// WHICH line, and WHY — never collapsed to the bare enum label / source path.
-//
-// A zero diagnostic (rule == "" — every non-compile arm, and a Compile_Failed with no
-// captured per-stage cause) appends NOTHING, so the result shape is unchanged for those
-// arms (the message line still names their offender). When populated, exactly one entry
-// rides the array (the first failing module's first stage rejection, the same one the CLI
-// renders) carrying both the machine fields (code/stage/file/line/col/declaration/message/
-// hint) and `rendered` — the full render_diagnostic block (file:line:col: code: message +
-// caret excerpt) so the agent gets the verbatim CLI text without re-rendering it.
-// `rendered` re-reads the source off diag.path exactly as the CLI does (the one host read,
-// owned here at the MCP boundary, mirroring main.odin); a source it cannot re-read yields
-// the header-only render (fail-open, never a crash). line/col of 0 are the unknown halves
-// (a declaration-anchored offender / synthetic node), emitted as 0 so the consumer reads
-// "unknown position" uniformly.
 oneshot_write_diagnostics :: proc(b: ^strings.Builder, diag: funpack.Diagnostic, allocator := context.allocator) {
 	if diag.rule == "" {
 		return
@@ -385,14 +243,6 @@ oneshot_write_diagnostics :: proc(b: ^strings.Builder, diag: funpack.Diagnostic,
 	strings.write_string(b, "}]")
 }
 
-// oneshot_diag_stage_wire maps a Diag_Stage to its lower-case wire name for the
-// diagnostics array's `stage` field. The switch carries no `case:` default, so a new
-// pipeline stage arm IS a compile error (Odin's unhandled-case check fires even with the
-// trailing return present), never a silently stringified `%v` — the closed-enum
-// discipline the rest of this file's wire mappings hold. The trailing `return "unknown"`
-// is an unreachable, compiler-mandated fallback: Odin's missing-return analysis does not
-// treat a complete enum switch as terminating, so a terminator is required though every
-// arm already returns.
 oneshot_diag_stage_wire :: proc(stage: funpack.Diag_Stage) -> string {
 	switch stage {
 	case .Parse:
@@ -409,10 +259,6 @@ oneshot_diag_stage_wire :: proc(stage: funpack.Diag_Stage) -> string {
 	return "unknown"
 }
 
-// oneshot_mode_wire is the Build_Mode → wire string for the build/check/export result
-// envelope. No `case:` default, so a new Build_Mode arm is a compile error (Odin's
-// unhandled-case check) — the closed-enum discipline. The trailing `return "dev"` is the
-// unreachable fallback Odin's missing-return analysis demands of a complete enum switch.
 oneshot_mode_wire :: proc(mode: funpack.Build_Mode) -> string {
 	switch mode {
 	case .Dev:
@@ -423,12 +269,6 @@ oneshot_mode_wire :: proc(mode: funpack.Build_Mode) -> string {
 	return "dev"
 }
 
-// fmt_build_error_name maps a Build_Error arm to its wire name for the ok:false build
-// result. No `case:` default, so a new arm is a compile error (Odin's unhandled-case
-// check), never a silently-stringified `%v`. The trailing `return "unknown"` is the
-// unreachable fallback Odin demands of a complete enum switch (missing-return analysis).
-// (Named `fmt_*` not `oneshot_*` would collide nothing, but the family prefix keeps it
-// merge-clean.)
 fmt_build_error_name :: proc(err: funpack.Build_Error) -> string {
 	switch err {
 	case .None:
@@ -449,9 +289,6 @@ fmt_build_error_name :: proc(err: funpack.Build_Error) -> string {
 	return "unknown"
 }
 
-// fmt_error_name maps a Fmt_Error arm to its wire name for the ok:false fmt result. No
-// `case:` default, so a new arm is a compile error; the trailing `return "unknown"` is the
-// unreachable fallback Odin demands of a complete enum switch (missing-return analysis).
 fmt_error_name :: proc(err: funpack.Fmt_Error) -> string {
 	switch err {
 	case .None:
@@ -466,10 +303,6 @@ fmt_error_name :: proc(err: funpack.Fmt_Error) -> string {
 	return "unknown"
 }
 
-// warden_error_name maps a Warden_Read_Error arm to its wire name for the ok:false
-// warden result. No `case:` default, so a new arm is a compile error; the trailing
-// `return "unknown"` is the unreachable fallback Odin demands of a complete enum switch
-// (missing-return analysis).
 warden_error_name :: proc(err: funpack.Warden_Read_Error) -> string {
 	switch err {
 	case .None:
@@ -490,10 +323,6 @@ warden_error_name :: proc(err: funpack.Warden_Read_Error) -> string {
 	return "unknown"
 }
 
-// oneshot_family_tools is this family's tool roster — the twelve tools
-// mcp_oneshot_dispatch claims. Kept as a package-level table the family's tests walk
-// (assert each is in TOOL_SPECS under the oneshot group, assert no other family's tool
-// is claimed), so the roster has one source the dispatch and the tests share.
 oneshot_family_tools := [?]string {
 	"build",
 	"check",

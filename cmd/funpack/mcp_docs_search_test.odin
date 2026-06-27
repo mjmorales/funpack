@@ -1,20 +1,8 @@
-// The unified-search blend junction. Every proc builds an engine over the REAL
-// embedded corpus (load_corpus) and asserts the query-shape contract by
-// source/anchor IDENTITY and rank ORDER: a symbol-shaped query leads with a symbol
-// hit, a conceptual query leads with a passage, min-max normalization and the
-// deterministic tie-break (symbol-before-passage, then anchor) hold. The classifier
-// and min-max kernel are pinned directly. No exact-score golden — "which prose
-// leads" is deferred to the BM25 call, asserting only the order invariants that
-// survive f64 arithmetic.
-//
-// Define-free, so these run on the default `odin test .` floor.
 package main
 
 import "core:strings"
 import "core:testing"
 
-// search_test_engine builds an engine over the real committed corpus, failing if
-// the corpus is empty — the production-data discipline.
 @(private = "file")
 search_test_engine :: proc(t: ^testing.T) -> Search_Engine {
 	sections, ok := load_corpus(context.temp_allocator)
@@ -23,10 +11,6 @@ search_test_engine :: proc(t: ^testing.T) -> Search_Engine {
 	return search_engine_build(sections, context.temp_allocator)
 }
 
-// test_search_symbol_shaped_query_ranks_symbol_first asserts the core query-shape
-// contract: a fully-qualified engine identifier puts its SYMBOL hit at rank 1, ahead
-// of any passage that incidentally mentions the same words. world.resolve is the
-// named exemplar — a dotted identifier the classifier must read as symbol-shaped.
 @(test)
 test_search_symbol_shaped_query_ranks_symbol_first :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -42,10 +26,6 @@ test_search_symbol_shaped_query_ranks_symbol_first :: proc(t: ^testing.T) {
 	search_assert_descending(t, results)
 }
 
-// test_search_bare_type_name_ranks_symbol_first asserts a leading-capital
-// type-style token ("Vec") classifies symbol-shaped and surfaces the engine type
-// symbol at rank 1. math.Vec2/math.Vec3 are the corpus types a prefix/substring
-// symbol match lands.
 @(test)
 test_search_bare_type_name_ranks_symbol_first :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -59,11 +39,6 @@ test_search_bare_type_name_ranks_symbol_first :: proc(t: ^testing.T) {
 	search_assert_descending(t, results)
 }
 
-// test_search_conceptual_query_ranks_passage_first asserts the mirror contract: a
-// multi-word natural-language query puts PROSE at rank 1 (never a bare symbol), and
-// the spec's defining determinism passage surfaces. Which prose section leads is the
-// BM25 call; the engine's contract is that the conceptual shape suppresses the
-// symbol bias (a passage leads) and the defining axiom is still present.
 @(test)
 test_search_conceptual_query_ranks_passage_first :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -88,10 +63,6 @@ test_search_conceptual_query_ranks_passage_first :: proc(t: ^testing.T) {
 	search_assert_descending(t, results)
 }
 
-// test_search_spec_determinism_passage_leads_on_topical_query pins the strict
-// spec-anchored contract on a query whose terms BM25 resolves cleanly to the spec
-// axiom: a single-topic conceptual query ("determinism") puts the spec's defining
-// determinism passage (01-axioms.md) at rank 1 as a passage.
 @(test)
 test_search_spec_determinism_passage_leads_on_topical_query :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -107,9 +78,6 @@ test_search_spec_determinism_passage_leads_on_topical_query :: proc(t: ^testing.
 	search_assert_descending(t, results)
 }
 
-// test_search_directive_query_resolves_symbol asserts an "@"-prefixed directive
-// query classifies symbol-shaped and resolves to the directive symbol at rank 1,
-// with a spec anchor — docs_search links agents straight to the directive's docs.
 @(test)
 test_search_directive_query_resolves_symbol :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -125,10 +93,6 @@ test_search_directive_query_resolves_symbol :: proc(t: ^testing.T) {
 	search_assert_descending(t, results)
 }
 
-// test_search_keyword_query_classifies_symbol asserts a bare declaration keyword —
-// an all-lowercase word that is nonetheless a closed grammar vocabulary item —
-// classifies symbol-shaped via the known-keyword set, not conceptual. "import" must
-// surface its keyword symbol at rank 1.
 @(test)
 test_search_keyword_query_classifies_symbol :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -141,8 +105,6 @@ test_search_keyword_query_classifies_symbol :: proc(t: ^testing.T) {
 	testing.expectf(t, results[0].title == "import", "top title = %q, want import", results[0].title)
 }
 
-// test_search_respects_limit asserts the limit caps the merged result count across
-// both rankers.
 @(test)
 test_search_respects_limit :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -153,9 +115,6 @@ test_search_respects_limit :: proc(t: ^testing.T) {
 	}
 }
 
-// test_search_deterministic_ordering asserts repeated identical searches return the
-// identical ordering — the merge sort is total (score, then source, then anchor), so
-// the map-backed normalization never leaks nondeterminism.
 @(test)
 test_search_deterministic_ordering :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -173,11 +132,6 @@ test_search_deterministic_ordering :: proc(t: ^testing.T) {
 	}
 }
 
-// test_search_surfaces_both_sources asserts the merge does not collapse to a single
-// ranker: a conceptual query about a named engine concept returns hits from both
-// sources, so an agent gets the explaining prose AND the symbol to look up. The
-// symbol presence is best-effort (logged, not failed) — it depends on a symbol name
-// matching the query terms — while the passage presence is the firm guarantee.
 @(test)
 test_search_surfaces_both_sources :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -192,9 +146,6 @@ test_search_surfaces_both_sources :: proc(t: ^testing.T) {
 	testing.expect(t, saw_passage, "conceptual query surfaced no passage hits")
 }
 
-// test_search_results_carry_downstream_contract asserts every result carries the
-// fields the docs_search tool surfaces to a client: a non-empty anchor, a title, a
-// positive score, a valid kind, and a recognized source.
 @(test)
 test_search_results_carry_downstream_contract :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -211,10 +162,6 @@ test_search_results_carry_downstream_contract :: proc(t: ^testing.T) {
 	}
 }
 
-// test_search_degenerate_queries asserts the engine tolerates inputs with no
-// scorable content and a non-positive limit without panicking, returning nil; and
-// that a nil-corpus engine never yields a passage hit (no prose to index) while
-// still serving the language-intrinsic closed vocabularies.
 @(test)
 test_search_degenerate_queries :: proc(t: ^testing.T) {
 	e := search_test_engine(t)
@@ -237,19 +184,12 @@ test_search_degenerate_queries :: proc(t: ^testing.T) {
 	nil_got := search_engine_search(nil, "anything", 5, context.temp_allocator)
 	testing.expectf(t, nil_got == nil, "nil Engine returned %d results, want nil", len(nil_got))
 
-	// A nil/empty corpus must not panic. It still yields the language-intrinsic
-	// closed vocabularies (directives, keywords) the symbol seed carries independent
-	// of any corpus, so results are symbol-only and anchorless — never a passage,
-	// since there is no prose to index.
 	empty := search_engine_build(nil, context.temp_allocator)
 	for r in search_engine_search(&empty, "thing", 5, context.temp_allocator) {
 		testing.expectf(t, r.source != .Passage, "nil-corpus engine returned a passage hit %q with no corpus", r.anchor)
 	}
 }
 
-// test_search_classify pins the query-shape classifier — the documented heuristic
-// the whole blend hangs on. Each case names why it lands where it does. The known
-// directive/keyword sets are seeded the way search_engine_build seeds them.
 @(test)
 test_search_classify :: proc(t: ^testing.T) {
 	directives := make(map[string]bool, 0, context.temp_allocator)
@@ -286,9 +226,6 @@ test_search_classify :: proc(t: ^testing.T) {
 	}
 }
 
-// test_search_min_max_normalization pins the score-merge kernel: min-max into [0,1]
-// with a degenerate (single / all-equal) set mapping to 1.0 so a lone fallback hit
-// is not zeroed out of the blend.
 @(test)
 test_search_min_max_normalization :: proc(t: ^testing.T) {
 	Case :: struct {
@@ -315,8 +252,6 @@ test_search_min_max_normalization :: proc(t: ^testing.T) {
 	}
 }
 
-// search_assert_descending verifies the merged results are ordered by non-increasing
-// blended score — the ranking contract every caller relies on.
 @(private = "file")
 search_assert_descending :: proc(t: ^testing.T, results: []Search_Result) {
 	for i in 1 ..< len(results) {

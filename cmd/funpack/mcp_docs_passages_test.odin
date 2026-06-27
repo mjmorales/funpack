@@ -1,19 +1,8 @@
-// The BM25 passage-ranker junction. Every proc builds an index over the REAL
-// embedded corpus (load_corpus) and asserts a rank-ORDER / anchor-IDENTITY
-// invariant, never an exact float score: BM25 IDF/saturation is f64 arithmetic and
-// exact-score equality is brittle and meaningless, so the living spec pins what the
-// ranker GUARANTEES (which section leads, ties break on anchor, snippets are
-// present).
-//
-// Define-free (the ranker is), so these run on the default `odin test .` floor.
 package main
 
 import "core:strings"
 import "core:testing"
 
-// passage_test_index loads the real committed corpus and indexes it on the temp
-// allocator, failing if the corpus is empty (a generation regression) rather than
-// silently testing an empty index — the production-data discipline.
 @(private = "file")
 passage_test_index :: proc(t: ^testing.T) -> Passage_Index {
 	sections, ok := load_corpus(context.temp_allocator)
@@ -22,11 +11,6 @@ passage_test_index :: proc(t: ^testing.T) -> Passage_Index {
 	return passage_index_build(sections, context.temp_allocator)
 }
 
-// test_passages_query_determinism_ranks_axioms asserts a single-word conceptual
-// query surfaces the spec section defining the concept as its top hit. The corpus
-// anchors determinism's defining passage under spec/01-axioms.md, so the top result
-// must be a spec section from that file — the index would be useless if a passing
-// body mention outranked the defining heading.
 @(test)
 test_passages_query_determinism_ranks_axioms :: proc(t: ^testing.T) {
 	ix := passage_test_index(t)
@@ -42,9 +26,6 @@ test_passages_query_determinism_ranks_axioms :: proc(t: ^testing.T) {
 	passage_assert_descending(t, hits)
 }
 
-// test_passages_query_pipeline_schedule_ranks_pipelines asserts a multi-word
-// conceptual query concentrates results on the relevant spec chapter:
-// "pipeline schedule" must surface 07-pipelines.md sections high in the ranking.
 @(test)
 test_passages_query_pipeline_schedule_ranks_pipelines :: proc(t: ^testing.T) {
 	ix := passage_test_index(t)
@@ -63,9 +44,6 @@ test_passages_query_pipeline_schedule_ranks_pipelines :: proc(t: ^testing.T) {
 	passage_assert_descending(t, hits)
 }
 
-// test_passages_query_returns_anchored_hits_with_snippets asserts every returned
-// hit carries the contract the consuming docs tools depend on: a non-empty stable
-// anchor, a title, a positive score, and a non-empty snippet.
 @(test)
 test_passages_query_returns_anchored_hits_with_snippets :: proc(t: ^testing.T) {
 	ix := passage_test_index(t)
@@ -79,7 +57,6 @@ test_passages_query_returns_anchored_hits_with_snippets :: proc(t: ^testing.T) {
 	}
 }
 
-// test_passages_query_respects_limit asserts the limit caps the result count.
 @(test)
 test_passages_query_respects_limit :: proc(t: ^testing.T) {
 	ix := passage_test_index(t)
@@ -88,9 +65,6 @@ test_passages_query_respects_limit :: proc(t: ^testing.T) {
 	testing.expect(t, len(hits) > 0, "query 'state' returned zero hits despite a common term")
 }
 
-// test_passages_empty_and_degenerate_queries asserts the index handles inputs that
-// carry no scorable terms without panicking and returns nil: an empty string,
-// whitespace only, punctuation only, stop-words only, and a non-positive limit.
 @(test)
 test_passages_empty_and_degenerate_queries :: proc(t: ^testing.T) {
 	ix := passage_test_index(t)
@@ -113,8 +87,6 @@ test_passages_empty_and_degenerate_queries :: proc(t: ^testing.T) {
 	}
 }
 
-// test_passages_unknown_term_yields_no_hits asserts a query whose terms appear
-// nowhere in the corpus returns no hits rather than scoring random documents.
 @(test)
 test_passages_unknown_term_yields_no_hits :: proc(t: ^testing.T) {
 	ix := passage_test_index(t)
@@ -122,8 +94,6 @@ test_passages_unknown_term_yields_no_hits :: proc(t: ^testing.T) {
 	testing.expectf(t, got == nil, "unknown-term query returned %d hits, want nil", len(got))
 }
 
-// test_passages_nil_and_empty_index asserts the constructor and query tolerate
-// empty input: an empty section slice and a nil index both return nil hits.
 @(test)
 test_passages_nil_and_empty_index :: proc(t: ^testing.T) {
 	empty := passage_index_build(nil, context.temp_allocator)
@@ -134,10 +104,6 @@ test_passages_nil_and_empty_index :: proc(t: ^testing.T) {
 	testing.expectf(t, nil_got == nil, "nil index returned %d hits, want nil", len(nil_got))
 }
 
-// test_passages_engine_sections_participate asserts the kind-weight policy keeps
-// engine sections in the index: an engine-only index still returns engine hits, so
-// a query that genuinely matches a signature's @doc line can surface it (at lower
-// weight) rather than being dropped entirely.
 @(test)
 test_passages_engine_sections_participate :: proc(t: ^testing.T) {
 	sections, ok := load_corpus(context.temp_allocator)
@@ -153,8 +119,6 @@ test_passages_engine_sections_participate :: proc(t: ^testing.T) {
 	}
 }
 
-// passage_assert_descending verifies hits are ordered by non-increasing score, the
-// ranking contract callers rely on.
 @(private = "file")
 passage_assert_descending :: proc(t: ^testing.T, hits: []Passage_Hit) {
 	for i in 1 ..< len(hits) {

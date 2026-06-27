@@ -1,28 +1,9 @@
-// funpack — the single binary. ONE command tree dispatches the pure compiler
-// verbs (version, test, build, check, fmt, warden — owned by the funpack package)
-// and the runtime verbs (run, render-check, live, attach — which drive
-// funpack_runtime). This
-// is the only `main` in the repo and the only package that imports both the
-// compiler and the runtime, so it is the only build that links SDL (under
-// -define:FUNPACK_LIVE=true). The compiler and runtime packages stay independent
-// libraries — the deterministic SDL-free test/CI floor is enforced at the package
-// level (odin test/check per package), which this binary never touches.
-//
-// The CLI framework lives in its own domain-free package (cli); neither the
-// compiler nor the runtime depends on it. This entry package composes their two
-// command subtrees under one root and drives cli.cli_dispatch.
 package main
 
 import "../../cli"
 import "../../funpack"
 import "core:os"
 
-// main composes the unified command tree, finalizes it (asserting the authored
-// tree is well-formed — a programmer error caught by test_root_tree_finalizes,
-// never a user path), and hands the argument vector to the framework's dispatch:
-// a usage error prints to stderr and exits 2, `--help` prints to stdout and exits
-// 0, and a resolved verb runs and exits with ITS code. The dispatch never decides
-// an exit number — each verb core owns its {0, 1, 2} contract (§29 §3).
 main :: proc() {
 	root := build_root_cli()
 	ok, message := cli.cli_finalize(root)
@@ -30,29 +11,10 @@ main :: proc() {
 	os.exit(cli.cli_dispatch(root, verb_args(os.args)))
 }
 
-// verb_args drops argv0 to yield the verb's argument vector, GUARDING the empty-argv
-// launch context. os.args[1:] is an out-of-range slice when the process is started
-// with NO argv0 (argc==0) — a context POSIX permits and that a hostile/adjusted
-// launcher (BSD `find -execdir`, a bare posix_spawn with argv={NULL}) can produce.
-// An unguarded os.args[1:] over a zero-length os.args reads `[1:0]` out of `0..<0`
-// and faults (SIGSEGV / a bounds-check SIGTRAP) BEFORE dispatch emits anything —
-// the worst failure mode: a non-zero exit with an empty stream, indistinguishable
-// to CI or an agent from a hang-kill or a missing binary. Clamping a zero/one-element
-// argv to an empty slice routes it to the no-verb path, which cli_dispatch renders as
-// the usage block (a non-empty stderr diagnostic) and exits 2 — never a crash. Pure:
-// a function of args alone, so the launch-context floor is unit-pinned without a
-// process spawn.
 verb_args :: proc(args: []string) -> []string {
 	return args[1:] if len(args) > 1 else {}
 }
 
-// build_root_cli composes the root from the compiler subtree (the funpack
-// package's pure verbs) plus the runtime verbs (run, render-check, live, attach,
-// mcp — declared in this package because they call into funpack_runtime; mcp
-// serves the MCP dev server over stdio). It returns the root
-// UNFINALIZED: main and the contract test finalize it, so the test asserts
-// cli_finalize's verdict (proving no verb-name collision across the compiler and
-// runtime nodes) instead of an internal assert masking it.
 build_root_cli :: proc(allocator := context.allocator) -> ^cli.Cli_Command {
 	subs := make([dynamic]^cli.Cli_Command, 0, 16, allocator)
 	append(&subs, ..funpack.build_funpack_compiler_subtree(allocator))

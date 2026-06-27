@@ -1,38 +1,18 @@
-// The MCP tool-boundary error convention and content-block result model. Every
-// tool arm (the session-registry, one-shot, docs/health) that grafts onto the
-// tools/call dispatch renders a domain failure through THIS file, so the server
-// speaks one fixed error vocabulary.
-//
-// THE CONVENTION: a DOMAIN failure — bad input, a failed resolve/exec, a stale
-// session — is NOT a JSON-RPC error object.
-// It is a successful tools/call whose CallToolResult carries IsError=true and a
-// first TextContent holding the {category,message,detail} envelope as JSON. The
-// model reads the category in the tool result and self-corrects; a JSON-RPC error
-// object (which the model cannot see inside the result) is reserved for a true
-// PROTOCOL fault (malformed request, unknown method) the caller cannot act on.
 package main
 
 import "core:strings"
 import funpack_runtime "../../runtime"
 
-// Mcp_Error_Category is the closed domain-error vocabulary. The set is
-// intentionally tight: adding a value is a deliberate change, not an ad-hoc
-// addition, so the model and the server share one fixed error taxonomy. The string
-// values ARE the wire `category` strings the envelope carries.
 Mcp_Error_Category :: enum {
-	Invalid_Input, // a malformed or out-of-contract tool argument
-	Resolver,      // a failure resolving a funpack path/document/index entry
-	Exec,          // a failure executing an underlying funpack command
-	Refused,       // the runtime resolved the command but declined it (§28 ok:false: bad tick, unknown thing)
-	Protocol,      // an MCP-protocol-level fault (transport/request-contract)
-	Session,       // a session-lifecycle failure (attach/detach/stale session)
-	Internal,      // an unexpected internal fault — the catch-all for bugs
+	Invalid_Input,
+	Resolver,
+	Exec,
+	Refused,
+	Protocol,
+	Session,
+	Internal,
 }
 
-// mcp_error_category_wire maps a category to its wire string — the value the
-// {category,...} envelope carries and a client matches on. Kept exhaustive (no
-// default) so adding an enum value without a wire string is a compile error, the
-// closed-enum discipline §28's error vocabulary depends on.
 mcp_error_category_wire :: proc(category: Mcp_Error_Category) -> string {
 	switch category {
 	case .Invalid_Input:
@@ -53,23 +33,12 @@ mcp_error_category_wire :: proc(category: Mcp_Error_Category) -> string {
 	return "internal"
 }
 
-// Mcp_Error is the canonical funpack MCP domain error: a category plus a message,
-// with no error-chain wrapping — a domain failure here is always constructed at the
-// boundary that names its category. message is the human-and-model summary; detail
-// is optional extra context (an offending value, an underlying message). It maps to
-// an IsError result via mcp_tool_error_result.
 Mcp_Error :: struct {
 	category: Mcp_Error_Category,
 	message:  string,
 	detail:   string,
 }
 
-// mcp_missing_string_field builds the Invalid_Input refusal for an absent or non-string
-// REQUIRED tool argument — the ONE phrasing every family emits when json_string_field
-// reports has=false for a required field, so the wire `message` a model self-corrects
-// from is uniform across the whole tool boundary (no per-family "field" vs "argument"
-// drift). `field` names the missing arg; `tool` rides as `detail` so the model sees which
-// call failed. Allocated in `allocator` (the message concatenation).
 mcp_missing_string_field :: proc(field, tool: string, allocator := context.allocator) -> Mcp_Error {
 	return Mcp_Error {
 		category = .Invalid_Input,
@@ -78,12 +47,6 @@ mcp_missing_string_field :: proc(field, tool: string, allocator := context.alloc
 	}
 }
 
-// mcp_unknown_session_error builds the Session-category refusal for a session_id the
-// registry holds no live entry for — never opened, or already ended. It is the ONE copy
-// every session-bearing family emits for the registry's found=false signal, so a model
-// reads the same self-correct across control/observe/screenshot/session. `session_id`
-// rides as `detail`. The session is NEVER fabricated (the registry returns found=false),
-// so this is always an in-band IsError, never a JSON-RPC error object.
 mcp_unknown_session_error :: proc(session_id: string) -> Mcp_Error {
 	return Mcp_Error {
 		category = .Session,
@@ -92,21 +55,11 @@ mcp_unknown_session_error :: proc(session_id: string) -> Mcp_Error {
 	}
 }
 
-// Mcp_Content_Kind tags a result content block. MCP carries several content types;
-// the protocol layer models the two funpack tools return — text (every structured
-// result and every error envelope) and image (the screenshot arm). The enum is the
-// closed set this server emits; audio/resource blocks are not produced.
 Mcp_Content_Kind :: enum {
 	Text,
 	Image,
 }
 
-// Mcp_Content is one result content block. For .Text, `text` is the payload and
-// mime_type is unused. For .Image, `data` is the base64-encoded image bytes and
-// mime_type is the image media type (e.g. "image/qoi" or "image/png") — modeled as
-// an arbitrary string so the screenshot arm picks the encoding without a
-// protocol-layer change (the format choice is owned in that arm, not here). The
-// wire shapes match the MCP TextContent/ImageContent blocks.
 Mcp_Content :: struct {
 	kind:      Mcp_Content_Kind,
 	text:      string,
@@ -114,33 +67,19 @@ Mcp_Content :: struct {
 	mime_type: string,
 }
 
-// mcp_text_content builds a .Text block — the common case for a structured result
-// and for every error envelope.
 mcp_text_content :: proc(text: string) -> Mcp_Content {
 	return Mcp_Content{kind = .Text, text = text}
 }
 
-// mcp_image_content builds an .Image block carrying base64 data under an arbitrary
-// mime type, so the screenshot arm chooses image/qoi vs image/png.
 mcp_image_content :: proc(data: string, mime_type: string) -> Mcp_Content {
 	return Mcp_Content{kind = .Image, data = data, mime_type = mime_type}
 }
 
-// Mcp_Tool_Result is the value a tools/call arm returns: a content-block list and
-// the IsError flag. A clean result sets is_error=false and carries the structured
-// content; a domain failure sets is_error=true with the envelope text block. This
-// is the shape mcp_render_tool_result renders into the JSON-RPC result.
 Mcp_Tool_Result :: struct {
 	content:  []Mcp_Content,
 	is_error: bool,
 }
 
-// mcp_tool_error_result is the single tool-boundary mapping every tool arm reports
-// a domain failure through: it renders the {category,message,detail} envelope as a
-// JSON string into one TextContent and sets IsError=true. `detail` is omitted from
-// the JSON when empty (the JSON-Schema omitempty convention). The result is a
-// SUCCESSFUL tools/call carrying the failure in-band — never a JSON-RPC error
-// object — so the model sees the category and self-corrects.
 mcp_tool_error_result :: proc(err: Mcp_Error, allocator := context.allocator) -> Mcp_Tool_Result {
 	envelope := mcp_render_error_envelope(err, allocator)
 	content := make([]Mcp_Content, 1, allocator)
@@ -148,28 +87,16 @@ mcp_tool_error_result :: proc(err: Mcp_Error, allocator := context.allocator) ->
 	return Mcp_Tool_Result{content = content, is_error = true}
 }
 
-// mcp_tool_error renders a domain failure straight to the JSON-RPC tools/call
-// response line — the IsError envelope (mcp_tool_error_result) wrapped in the result
-// frame. The single helper every tool family routes a refusal through, so the
-// {render-result over error-result} shape lives in one place, not once per family.
 mcp_tool_error :: proc(id: Mcp_Id, err: Mcp_Error, allocator := context.allocator) -> string {
 	return mcp_render_tool_result(id, mcp_tool_error_result(err, allocator), allocator)
 }
 
-// mcp_text_result renders a single-TextContent clean result to the JSON-RPC
-// tools/call response line — the success counterpart to mcp_tool_error, shared by
-// every tool family that returns one text block (a structured-JSON payload or a
-// plain message).
 mcp_text_result :: proc(id: Mcp_Id, text: string, allocator := context.allocator) -> string {
 	content := make([]Mcp_Content, 1, allocator)
 	content[0] = mcp_text_content(text)
 	return mcp_render_tool_result(id, Mcp_Tool_Result{content = content, is_error = false}, allocator)
 }
 
-// mcp_render_error_envelope renders the {category,message,detail} envelope as a
-// JSON object string. `detail` is omitted when empty (the omitempty convention).
-// Built with the same strings.Builder + write_json_string idiom the §28 envelope
-// renderers use (runtime/introspect.odin), so the envelope is byte-stable.
 mcp_render_error_envelope :: proc(err: Mcp_Error, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"category\":")

@@ -1,34 +1,3 @@
-// The HEADLESS-RECORD dispatch family — the arm of the tools/call chain
-// (mcp_server.odin MCP_DISPATCH_CHAIN) that owns the single server-native `record`
-// tool. It is the agent-loop producer for the replay/time-travel surface: it loads a
-// built artifact, folds an agent-supplied input-script into a byte-stable replay log
-// (funpack_runtime.record_scripted), and writes that log beside the artifact (or at an
-// explicit `out`). The recorded log is exactly what `session_start replay_log=…` then
-// re-folds — so this closes the loop the attach/`time_*`/`capture_test` surface needs,
-// which an interactive SDL `funpack live` a human plays is otherwise the only producer of.
-//
-// THE INPUT-SCRIPT IS THE inject_input VOCABULARY, segmented. The agent already
-// describes a §23 snapshot to `control_inject_input` as {pressed, held, values, axes}
-// arrays of {player, action} records; a record `script` is an ORDERED list of those
-// same snapshots, each carrying a `ticks` count — so "idle 600, hold Steer 100, press
-// Fire once" is three segments. Each segment's snapshot is built through the SAME
-// runtime builder inject_input uses (build_input_snapshot), so a recorded tick and an
-// injected tick resolve actions/players/analogs identically.
-//
-// THE SEED RIDES THE LOG (§25 §60). A `uses_rng` game's tick-0 root seed is resolved by
-// the §25 §60 precedence (the optional `seed` arg, then the entrypoint config seed, then
-// the engine default) and pinned in the log header — record_scripted owns that. The
-// result echoes {path, ticks, has_seed, seed} so the agent learns the length and the
-// exact seed baked in, and `session_start` re-feeds that seed automatically (it reads it
-// from the log header, introspect_attach.odin), so the recorded run re-folds seeded and
-// the timeline populates instead of rendering black.
-//
-// CLAIM BY GROUP (the generated-projection invariant): this arm owns exactly the tools
-// whose generated Tool_Spec.group is "record" (the contract's server_tools.families.record
-// family), never by name — a renamed record tool still routes here. Every other group is
-// another family's; this arm declines them so the chain reaches their file. NAMESPACE:
-// every package-level symbol here is prefixed `rec_` except the dispatch entry point
-// mcp_record_dispatch, whose name is fixed by MCP_DISPATCH_CHAIN.
 package main
 
 import "../../funpack"
@@ -37,11 +6,6 @@ import "core:encoding/json"
 import "core:os"
 import "core:strings"
 
-// mcp_record_dispatch is the record family's arm. It claims the "record" group's tools
-// by the generated Tool_Spec.group (not the name), folds `record` through rec_record, and
-// declines every other group (handled=false) so the call flows on down the chain. A tool
-// in the claimed group with no arm is the family's own gap, surfaced as Internal rather
-// than silently declined (mirroring the session family's gap handling).
 mcp_record_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> (result: string, handled: bool) {
 	if !rec_owns_command(dispatch.spec) {
 		return "", false
@@ -59,34 +23,16 @@ mcp_record_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.allocat
 	), true
 }
 
-// rec_owns_command is the family's claim test: it owns exactly the "record" group (the
-// contract's server_tools.families.record). The check is on the generated Tool_Spec.group,
-// not the tool name, so a renamed record tool still routes here. Every other group is
-// another family's; this arm declines them so the chain reaches their file. Mirrors
-// sess_owns_command.
 rec_owns_command :: proc(spec: funpack.Tool_Spec) -> bool {
 	return spec.group == "record"
 }
 
-// rec_record records an agent-supplied input-script over a built artifact into a replay
-// log and returns its path, recorded tick count, and the resolved root seed. It loads the
-// artifact (read + load_program — the same seam the live session and the attach registry
-// use), retaining the raw bytes so the log's content-hash pins the exact build; parses the
-// `script` array into snapshot+ticks segments through the shared inject_input builder;
-// resolves the out path (explicit `out`, else `<artifact-stem>.replay` beside it); folds
-// the segments into a byte-stable log (record_scripted, which owns the §25 §60 seed
-// resolution and the identity header); and writes it. Any input fault (missing/bad
-// artifact, bad script, unresolvable action) is the in-band IsError result the model reads
-// and self-corrects from — never a JSON-RPC error object.
 rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	artifact, has_artifact := funpack_runtime.json_string_field(dispatch.arguments, "artifact")
 	if !has_artifact {
 		return mcp_tool_error(dispatch.id, mcp_missing_string_field("artifact", dispatch.name, allocator), allocator)
 	}
 
-	// Read the raw bytes ourselves so the replay identity's content hash is over the exact
-	// bytes loaded (load_program parses from the same string), exactly as the live session
-	// does — the log then pins the build it was recorded against.
 	artifact_bytes, read_err := os.read_entire_file_from_path(artifact, allocator)
 	if read_err != nil {
 		return mcp_tool_error(
@@ -109,8 +55,6 @@ rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 		return mcp_tool_error(dispatch.id, script_err, allocator)
 	}
 
-	// The optional `--seed`-style override: present + integer pins the root seed; absent
-	// lets record_scripted fall through to the entrypoint config seed / engine default.
 	seed_override: Maybe(i64)
 	if seed, has_seed := rec_int_arg(dispatch.arguments, "seed"); has_seed {
 		seed_override = seed
@@ -132,13 +76,6 @@ rec_record :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> st
 	return mcp_text_result(dispatch.id, body, allocator)
 }
 
-// rec_parse_script reads the required `script` array into snapshot+ticks segments. Each
-// element is an object carrying the inject_input snapshot keys (pressed/held/values/axes)
-// plus an optional `ticks` count (default 1, must be >= 1) — the snapshot is built through
-// the shared runtime builder (build_input_snapshot), so an unresolvable action/player is
-// the builder's own error message lifted to Invalid_Input. An absent/empty/non-array
-// `script`, a non-object element, or a `ticks` < 1 is Invalid_Input (err.message set); on
-// success err.message is "" and segments is the ordered list.
 rec_parse_script :: proc(
 	program: ^funpack_runtime.Program,
 	arguments: json.Object,
@@ -181,8 +118,6 @@ rec_parse_script :: proc(
 	return built[:], Mcp_Error{}
 }
 
-// rec_segment_label names a script element by index for an error detail — "segment N" —
-// so an agent that fat-fingered one of many segments is told which one.
 rec_segment_label :: proc(index: int, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "segment ")
@@ -190,11 +125,6 @@ rec_segment_label :: proc(index: int, allocator := context.allocator) -> string 
 	return strings.to_string(b)
 }
 
-// rec_render_result renders the record clean result body — {path, ticks, has_seed, seed}
-// — with the same strings.Builder + write_json_string idiom the session family renders
-// with, so the body is byte-stable. `ticks` is the recorded tick count (an integer, never
-// a float — the model reads it raw); `seed` is the resolved tick-0 root seed pinned in the
-// header (meaningful only when has_seed, 0 otherwise).
 rec_render_result :: proc(path: string, summary: funpack_runtime.Scripted_Record_Summary, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, "{\"path\":")
@@ -209,17 +139,10 @@ rec_render_result :: proc(path: string, summary: funpack_runtime.Scripted_Record
 	return strings.to_string(b)
 }
 
-// rec_int_arg reads an optional integer argument off the MCP arguments object,
-// through the one shared int reader (funpack_runtime.json_int_field): a whole number
-// (json.Integer) or an integral json.Float (42.0); a fractional float is rejected.
-// Absent or non-numeric is has=false. Both the top-level args (seed) and a script
-// segment (ticks) read integers the same way as every other MCP int argument.
 rec_int_arg :: proc(arguments: json.Object, name: string) -> (value: i64, has: bool) {
 	return rec_int_field(arguments, name)
 }
 
-// rec_int_field reads an integer off a json.Object by key — a thin alias over the
-// shared reader so the top-level args and a script segment share one int policy.
 rec_int_field :: proc(object: json.Object, name: string) -> (value: i64, has: bool) {
 	return funpack_runtime.json_int_field(object, name)
 }

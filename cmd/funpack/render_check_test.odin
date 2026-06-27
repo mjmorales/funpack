@@ -1,13 +1,3 @@
-// The render-check integration floor: build a §14 tree with funpack.stage_build
-// and fold it through funpack_runtime.render_check_artifact — the exact
-// compiler → runtime path the `funpack render-check` verb drives — asserting the
-// three render-reachability verdicts. This is the "green ≠ works" seam wired into
-// the define-free test floor (decision
-// 2026-06-25-single-spawn-things-are-legit-things): a regression that stops a
-// render-stage game from drawing fails `task test` here, the way a unit test over
-// pure behavior fns never could. cmd/funpack is the only package that imports both
-// the compiler and the runtime, so this end-to-end build-and-fold lives here; the
-// fold is render-pure (no SDL), so it runs under the plain `odin test`.
 package main
 
 import "../../funpack"
@@ -17,10 +7,6 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// RC_DRAWS_SOURCE is a minimal game with a render: stage that DRAWS: a single Dot
-// spawned at startup, drawn as one Rect every tick. Its render-check verdict is
-// drew=true — the positive case the green build pins against a rendering
-// regression.
 RC_DRAWS_SOURCE :: `import engine.input.{Bindings}
 import engine.world.{Spawn}
 import engine.render.{Draw, Color}
@@ -46,10 +32,6 @@ pipeline Loop {
 }
 `
 
-// RC_BLACK_SOURCE is the BLACK-SCREEN case: a render: stage whose behavior
-// returns an empty [Draw] list. It is check-clean and would pass a pure-fn test
-// suite, yet folds to an empty draw-list — the exact green-but-dark failure the
-// render-check exists to catch. Its verdict is has_render_stage=true, drew=false.
 RC_BLACK_SOURCE :: `import engine.input.{Bindings}
 import engine.world.{Spawn}
 import engine.render.{Draw}
@@ -75,10 +57,6 @@ pipeline Loop {
 }
 `
 
-// RC_NO_RENDER_SOURCE has NO render: stage — only an update behavior. It draws an
-// empty §20 draw-list BY DESIGN, so the render-check reports it
-// has_render_stage=false (not applicable), never a black screen. This pins the
-// scoping that keeps the check from false-failing a ui-only or non-visual project.
 RC_NO_RENDER_SOURCE :: `import engine.input.{Bindings}
 import engine.world.{Spawn}
 import engine.math.{Vec2}
@@ -101,12 +79,6 @@ pipeline Loop {
 }
 `
 
-// rc_build_and_check materializes the source as a §14 tree at a fresh temp root,
-// builds it with funpack.stage_build, writes the products, and folds the built
-// artifact through render_check_artifact — the verb's exact path. ok=false (the
-// caller SKIPs, never false-fails) on a host IO refusal or a build/open fault, so
-// a sandboxed FS or an unexpected refusal never red-fails the floor. ticks is the
-// cold-start window; 8 is plenty for a one-Dot game whose first frame draws.
 @(private = "file")
 rc_build_and_check :: proc(
 	t: ^testing.T,
@@ -145,9 +117,6 @@ rc_build_and_check :: proc(
 	return check, true
 }
 
-// rc_write_tree materializes a minimal valid §14 game tree at a fresh temp root
-// carrying `source` as src/mini.fun (the entrypoints.fcfg binds pipeline Loop +
-// bindings). ok=false on an IO refusal — the SKIP-on-IO-refusal floor standard.
 @(private = "file")
 rc_write_tree :: proc(name: string, source: string) -> (root: string, ok: bool) {
 	base := os.get_env("TMPDIR", context.temp_allocator)
@@ -183,8 +152,6 @@ rc_write :: proc(dir: string, name: string, body: string) -> bool {
 	return os.write_entire_file(path, transmute([]u8)body) == nil
 }
 
-// A render: stage that draws is OK: the game has a render stage and drew a
-// command on the opening frame.
 @(test)
 test_render_check_drawing_game_reports_drew :: proc(t: ^testing.T) {
 	report, ok := rc_build_and_check(t, "funpack-rc-draws", RC_DRAWS_SOURCE)
@@ -194,11 +161,9 @@ test_render_check_drawing_game_reports_drew :: proc(t: ^testing.T) {
 	testing.expect(t, report.has_render_stage, "a game with render: has a render stage")
 	testing.expect(t, report.drew, "a render behavior emitting a Rect must draw")
 	testing.expect(t, report.total_cmds > 0, "the draw-list carries commands")
-	testing.expect_value(t, report.first_drawn_frame, -1) // drew on the opening frame
+	testing.expect_value(t, report.first_drawn_frame, -1)
 }
 
-// A render: stage that returns an empty draw-list is a BLACK SCREEN: the green
-// build catches it even though the source is check-clean and test-green.
 @(test)
 test_render_check_empty_render_stage_is_black_screen :: proc(t: ^testing.T) {
 	report, ok := rc_build_and_check(t, "funpack-rc-black", RC_BLACK_SOURCE)
@@ -210,8 +175,6 @@ test_render_check_empty_render_stage_is_black_screen :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.first_drawn_frame, funpack_runtime.NO_DRAWN_FRAME)
 }
 
-// A game with NO render: stage is NOT applicable: an empty draw-list there is by
-// design (a ui-only or non-visual project), never flagged as a black screen.
 @(test)
 test_render_check_no_render_stage_is_not_applicable :: proc(t: ^testing.T) {
 	report, ok := rc_build_and_check(t, "funpack-rc-norender", RC_NO_RENDER_SOURCE)
@@ -222,28 +185,10 @@ test_render_check_no_render_stage_is_not_applicable :: proc(t: ^testing.T) {
 	testing.expect(t, !report.drew, "a stageless render projects an empty draw-list")
 }
 
-// RC_DRAWING_EXAMPLES are the shipped example games that MUST draw something on a
-// cold seeded start: the corpus regression gate. If a future change breaks the
-// live thing → pipeline → render wiring of any of them, this fails the green build
-// — the regression protection a per-behavior test cannot give. Most draw through a
-// render: stage; warren draws its baked tilemap terrain (a Draw_Tilemap, no render
-// behavior), so the gate asserts only that each DREW, not how. examples/assets is
-// excluded: it has a render: stage whose Draw::Sprite folds to an empty draw-list
-// (a runtime sprite-render gap), so it would fail this gate — add it to this list
-// when it draws.
 RC_DRAWING_EXAMPLES :: []string{"snake", "pong", "yard", "krognid", "dungeon", "hunt", "warren"}
 
-// RC_NO_RENDER_EXAMPLES are shipped examples with no render: stage — a ui-only
-// (hud), empty-pipeline (drift), or AI-only (arena) project. They pin the scoping
-// over real games: an empty draw-list there is not-applicable, never a black
-// screen.
 RC_NO_RENDER_EXAMPLES :: []string{"hud", "drift", "arena"}
 
-// rc_check_example builds a shipped example READ-ONLY (stage_build writes nothing;
-// the product's artifact bytes go to a temp file, so the example tree's .funpack/
-// is never touched) and folds it through render_check_artifact. ok=false (the
-// caller SKIPs, never false-fails) when the example checkout is absent — the
-// golden-skip standard — or on a host IO/build refusal.
 @(private = "file")
 rc_check_example :: proc(
 	t: ^testing.T,
@@ -254,7 +199,7 @@ rc_check_example :: proc(
 ) {
 	dir, _ := filepath.join({"..", "..", "examples", name}, context.temp_allocator)
 	if !os.exists(dir) {
-		return {}, false // absent checkout — skip, never fail
+		return {}, false
 	}
 	product, verdict := funpack.stage_build(dir, funpack.Build_Mode.Dev, context.temp_allocator)
 	if !testing.expectf(t, verdict.err == .None, "example %s must build clean, got %v", name, verdict.err) {
@@ -279,15 +224,11 @@ rc_check_example :: proc(
 	return check, true
 }
 
-// fmt_rc_temp_name names the per-example temp artifact, distinct per example so a
-// parallel test run never collides on the file.
 @(private = "file")
 fmt_rc_temp_name :: proc(name: string) -> string {
 	return strings.concatenate({"funpack-rc-example-", name, ".artifact"}, context.temp_allocator)
 }
 
-// Every shipped game with a render: stage draws on a cold seeded start — the green
-// build's regression gate against a black-screen regression in a real example.
 @(test)
 test_render_check_drawing_examples_draw :: proc(t: ^testing.T) {
 	for name in RC_DRAWING_EXAMPLES {
@@ -299,8 +240,6 @@ test_render_check_drawing_examples_draw :: proc(t: ^testing.T) {
 	}
 }
 
-// Every shipped game without a render: stage is not-applicable — the scoping holds
-// over real ui-only / non-visual games, never flagged as a black screen.
 @(test)
 test_render_check_no_render_examples_are_not_applicable :: proc(t: ^testing.T) {
 	for name in RC_NO_RENDER_EXAMPLES {

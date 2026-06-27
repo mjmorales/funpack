@@ -1,38 +1,3 @@
-// The SCREENSHOT tool dispatch family — the arm of the tools/call chain
-// (mcp_server.odin MCP_DISPATCH_CHAIN) that owns inspect_screenshot over a NAMED
-// session. Per the resolved ADR this arm hand-rolls a minimal stored-block PNG encoder
-// (core has no PNG encoder — core:image/png is decode-only) so the captured frame is a
-// renderable image/png. To stay context-cheap the arm WRITES that PNG to disk and
-// returns a FILE PATH as the primary result — the model-cheap image link Claude Code's
-// Read opens with its own image optimization. Raw base64 pixels are NEVER returned
-// unless the caller opts in with include_pixels:true, which inlines the PNG as an MCP
-// image content block ALONGSIDE the path (a frame is hundreds of KB of base64 that
-// floods context, so it is off by default). This file is ONE dispatch seam — it owns
-// ONLY this file's dispatch proc, never mcp_handle_tools_call.
-//
-// THE PIPELINE (QOI → PNG file over Odin core):
-//   §28 screenshot fold → base64-QOI pixels → base64.decode → qoi.load_from_bytes
-//   (RGBA8/RGB8, tight row-major) → shot_encode_png (hand-rolled, below) → PNG bytes →
-//   os.write_entire_file to a timestamped path under the configurable output directory
-//   → a metadata text block carrying {tick,width,height,path,commands?}.
-//
-// THE OUTPUT DIRECTORY is configurable via the FUNPACK_SCREENSHOT_DIR env var (an MCP
-// host sets it in the server's env block); unset, it defaults to /tmp/funpack-mcp (a
-// predictable, writable location that does not pollute the driven project's tree). The
-// directory is created on demand; the filename is
-// `funpack-screenshot-<YYYYMMDD-HHMMSS-ns>-tick<N>.png`, a wall-clock timestamp that
-// makes captures sortable and collision-free. Wall-clock here is sound: screenshot is
-// the one command that crosses the present boundary, so it is already non-deterministic.
-//
-// EVERY package-level proc/type here is prefixed `shot_` so package main carries no
-// duplicate symbols when all six family files merge (the merge-clean invariant).
-//
-// PRESENT-BOUNDARY REFUSAL:
-// screenshot is the one observe command that crosses the render/present boundary — a
-// funpack binary built WITHOUT FUNPACK_LIVE answers with a §28 ok:false refusal. The
-// arm reframes that as a Session-category envelope naming inspect_draw_list (the
-// sim-pure, always-serving twin) as the headless substitute. A CALLER-input refusal
-// (bad tick, unknown branch) is forwarded unreframed — the caller fixes the argument.
 package main
 
 import funpack_runtime "../../runtime"
@@ -47,44 +12,18 @@ import "core:strconv"
 import "core:strings"
 import "core:time"
 
-// SHOT_TOOL_NAME is the MCP tool this family claims — the generated Tool_Spec name
-// (api_contract.gen.odin: inspect_screenshot → §28 command "screenshot"). The arm
-// matches on this and declines (handled=false) every other tool so they flow down
-// the chain.
 SHOT_TOOL_NAME :: "inspect_screenshot"
 
-// SHOT_PNG_SIGNATURE is the fixed 8-byte PNG file signature (PNG spec §5.2): the
-// high bit catches 7-bit transports, the CR-LF/LF pair catches newline mangling. A
-// valid PNG begins with exactly these bytes — the structural-validity test asserts it.
 SHOT_PNG_SIGNATURE := [8]u8{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 
-// SHOT_DEFLATE_MAX_STORED is the maximum payload one DEFLATE stored block carries: a
-// stored block's LEN field is a u16, so 65535 bytes per block (PNG spec / RFC 1951
-// §3.2.4). A scanline stream larger than this splits across several stored blocks.
 SHOT_DEFLATE_MAX_STORED :: 65535
 
-// SHOT_DIR_ENV is the env var an MCP host sets to choose where screenshot PNGs land
-// (set in the server's env block). Unset, the arm falls back to SHOT_DEFAULT_DIR (the
-// /tmp-rooted /tmp/funpack-mcp) — see shot_output_dir.
 SHOT_DIR_ENV :: "FUNPACK_SCREENSHOT_DIR"
 
-// SHOT_DEFAULT_DIR is the directory screenshots default to when FUNPACK_SCREENSHOT_DIR
-// is unset: a /tmp-rooted folder, so a host that sets no dir still gets captures in a
-// predictable, writable location rather than polluting the driven project's tree. A
-// host that wants captures beside the project sets FUNPACK_SCREENSHOT_DIR.
 SHOT_DEFAULT_DIR :: "/tmp/funpack-mcp"
 
-// SHOT_FILE_PREFIX prefixes every written screenshot filename
-// (funpack-screenshot-<timestamp>-tick<N>.png) so a directory of captures is
-// self-describing and greppable.
 SHOT_FILE_PREFIX :: "funpack-screenshot-"
 
-// mcp_screenshot_dispatch is the screenshot family's arm. It claims inspect_screenshot,
-// folds the §28 screenshot capture through the named session, transcodes the QOI frame
-// to a hand-rolled PNG, writes it to disk, and returns the file path in a metadata text
-// block — all as a SUCCESSFUL tools/call (a domain failure rides the IsError envelope,
-// never a JSON-RPC error). Every other tool flows past (handled=false). ZERO edits to
-// the chain caller.
 mcp_screenshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> (result: string, handled: bool) {
 	if dispatch.name != SHOT_TOOL_NAME {
 		return "", false
@@ -92,11 +31,6 @@ mcp_screenshot_dispatch :: proc(dispatch: Mcp_Dispatch, allocator := context.all
 	return shot_handle(dispatch, allocator), true
 }
 
-// shot_handle runs the inspect_screenshot pipeline end to end and renders the JSON-RPC
-// result line. Each domain failure (missing/typed arg, stale session, present-boundary
-// refusal, transcode fault) maps to the in-band IsError envelope through mcp_error.odin
-// — the model reads the category and self-corrects. The happy path writes the PNG to
-// disk and returns a single metadata text block carrying the on-disk path.
 shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> string {
 	session_id, has_session := funpack_runtime.json_string_field(dispatch.arguments, "session_id")
 	if !has_session {
@@ -110,11 +44,6 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		}, allocator)
 	}
 
-	// Marshal the §28 args (tick, optional include_drawlist, optional overlay, optional
-	// branch) into a request line. An unset optional is elided so the runtime defaults
-	// (visual-only, no overlay, canonical timeline) — exactly as observe_screenshot reads
-	// its args. include_pixels is NOT marshalled here: it is an MCP-render-only toggle
-	// (the §28 result always carries the pixels), consumed below when assembling content.
 	include, has_include := funpack_runtime.json_bool_field(dispatch.arguments, "include_drawlist")
 	overlay, has_overlay := funpack_runtime.json_bool_field(dispatch.arguments, "overlay")
 	branch, has_branch := funpack_runtime.json_string_field(dispatch.arguments, "branch")
@@ -122,8 +51,6 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 
 	response, found := mcp_session_registry_request(dispatch.registry, session_id, line)
 	if !found {
-		// A stale/unknown session is a Session-category refusal — the session is never
-		// fabricated (the registry returns found=false), so the model knows to re-open.
 		return mcp_tool_error(dispatch.id, mcp_unknown_session_error(session_id), allocator)
 	}
 
@@ -136,8 +63,6 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		}, allocator)
 	}
 	if !ok_field {
-		// A §28 refusal — reframe a present-boundary crossing, forward a caller-input
-		// mistake unchanged (shot_map_refusal).
 		return mcp_tool_error(dispatch.id, shot_map_refusal(error_text), allocator)
 	}
 
@@ -157,12 +82,6 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		}, allocator)
 	}
 
-	// Write the PNG to disk and return its PATH: a frame is hundreds of KB of base64 that
-	// would flood the model's context, so the path is ALWAYS the primary result — the
-	// model-cheap image link Claude Code's Read opens with its own image optimization.
-	// The directory is configurable (FUNPACK_SCREENSHOT_DIR, else /tmp/funpack-mcp) and
-	// created on demand; the filename carries a wall-clock timestamp so captures are
-	// sortable and never collide.
 	dir := shot_output_dir(allocator)
 	path, written := shot_write_png_file(dir, png_bytes, tick, shot_timestamp(allocator), allocator)
 	if !written {
@@ -173,9 +92,6 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 		}, allocator)
 	}
 
-	// The metadata text block ({tick,width,height,path,commands?}) carrying the on-disk
-	// link is ALWAYS present; include_pixels:true additionally inlines the PNG as an MCP
-	// image content block (opt-in, since raw pixels are never returned by default).
 	include_pixels, _ := funpack_runtime.json_bool_field(dispatch.arguments, "include_pixels")
 	meta := shot_render_metadata(result_obj, include && has_include, path, allocator)
 	content := shot_build_content(meta, png_bytes, include_pixels, allocator)
@@ -183,13 +99,6 @@ shot_handle :: proc(dispatch: Mcp_Dispatch, allocator := context.allocator) -> s
 	return mcp_render_tool_result(dispatch.id, tool_result, allocator)
 }
 
-// shot_build_content assembles the screenshot result content blocks. The path-bearing
-// metadata text block is ALWAYS first — it is the model-cheap image link Claude Code's
-// Read tool opens with its own image optimization, so the frame is viewable without
-// flooding context. When the caller opts in with include_pixels:true, an MCP image
-// content block carrying the base64 PNG rides ALONGSIDE the link, for hosts that render
-// inline image parts directly. Default (false): link only — raw pixels are never
-// returned. SDL-free and pure given its inputs, so a deterministic test pins both arms.
 shot_build_content :: proc(meta: string, png: []u8, include_pixels: bool, allocator := context.allocator) -> []Mcp_Content {
 	if !include_pixels {
 		content := make([]Mcp_Content, 1, allocator)
@@ -201,10 +110,6 @@ shot_build_content :: proc(meta: string, png: []u8, include_pixels: bool, alloca
 	content[1] = mcp_image_content(base64.encode(png, base64.ENC_TABLE, allocator), "image/png")
 	return content
 }
-// shot_build_request_line marshals the §28 screenshot request line: the fixed envelope
-// (v, id, cmd) plus the args object. `id` is a fixed 1 — the session fold is synchronous
-// (one request, one response) so the inner id only needs to round-trip, not correlate.
-// Optional args are elided when unset so the runtime applies its defaults.
 shot_build_request_line :: proc(
 	tick: i64,
 	include: bool,
@@ -236,10 +141,6 @@ shot_build_request_line :: proc(
 	return strings.to_string(b)
 }
 
-// shot_parse_response parses one §28 response line into its (ok, error, result) parts.
-// parsed=false for a line that is not a JSON object. On ok:true `result_obj` is the
-// result object; on ok:false `error_text` is the runtime's refusal string. The shapes
-// mirror ok_response_open / error_response (introspect.odin).
 shot_parse_response :: proc(
 	line: string,
 	allocator := context.allocator,
@@ -269,13 +170,6 @@ shot_parse_response :: proc(
 	return true, ok_field, error_text, result_obj
 }
 
-// shot_map_refusal owns the inspect_screenshot present-boundary diagnostic: a
-// CALLER-input refusal (bad tick, unknown branch) is a resolved-but-refused command,
-// so it is forwarded as the runtime stated it under the .Refused category (the caller
-// fixes the argument), while the present-boundary crossing — everything else — is a
-// genuine capability the headless binary cannot serve, reframed as a Session-category
-// envelope naming inspect_draw_list, the sim-pure headless substitute. The runtime
-// text rides along as detail for fidelity.
 shot_map_refusal :: proc(runtime_text: string) -> Mcp_Error {
 	if shot_is_input_refusal(runtime_text) {
 		return Mcp_Error{category = .Refused, message = runtime_text}
@@ -290,11 +184,6 @@ shot_map_refusal :: proc(runtime_text: string) -> Mcp_Error {
 	return err
 }
 
-// shot_is_input_refusal reports whether a §28 screenshot refusal is a caller-side
-// argument mistake (a bad/missing tick, an unknown branch) rather than the present-
-// boundary crossing. The markers are the runtime's stable refusal substrings (from
-// observe_screenshot in introspect.odin); the present-boundary refusal is everything
-// else.
 shot_is_input_refusal :: proc(runtime_text: string) -> bool {
 	markers := [?]string{"tick out of range", "missing args.tick", "unknown branch"}
 	for marker in markers {
@@ -305,12 +194,6 @@ shot_is_input_refusal :: proc(runtime_text: string) -> bool {
 	return false
 }
 
-// shot_render_metadata renders the screenshot metadata text block from the §28
-// result: {tick,width,height,path} always, commands[] when include_drawlist rode along
-// (the result carries them as text commands from observe_screenshot in
-// introspect.odin). `path` is the on-disk PNG the caller reads to SEE the frame — the
-// model-cheap stand-in for inline pixels. Built with the same write_json_string idiom
-// as the §28 renderers, so it is byte-stable.
 shot_render_metadata :: proc(result_obj: json.Object, include_drawlist: bool, path: string, allocator := context.allocator) -> string {
 	tick, _ := funpack_runtime.json_int_field(result_obj, "tick")
 	width, _ := funpack_runtime.json_int_field(result_obj, "width")
@@ -344,19 +227,8 @@ shot_render_metadata :: proc(result_obj: json.Object, include_drawlist: bool, pa
 	return strings.to_string(b)
 }
 
-// shot_qoi_to_png_bytes is the §28-pixels → on-disk-image transcode: base64-decode the
-// QOI payload, decode QOI → RGBA8/RGB8 (core:image/qoi, the runtime's encode inverted),
-// then encode a PNG by hand (shot_encode_png). It returns the raw PNG bytes the arm
-// writes to disk — no base64 wrapper, since the bytes never ride the wire (only the
-// path does). ok=false on any decode/encode failure (the caller maps it to an internal
-// IsError). The decoded buffer is already tight row-major, the shape the PNG encoder
-// filters per scanline.
 shot_qoi_to_png_bytes :: proc(base64_qoi: string, allocator := context.allocator) -> (png: []u8, ok: bool) {
-	// Run the whole transcode under `allocator`: qoi.load_from_bytes allocates on the
-	// AMBIENT context.allocator (not its `allocator` param for the inner buffers it
-	// resizes via context) and qoi.destroy frees on context.allocator too, so the load
-	// and the destroy MUST see the same allocator or destroy cross-frees (a bad free).
-	// Pinning context.allocator here keeps load → destroy consistent.
+	// qoi.destroy frees via context.allocator, so pin it to `allocator` to match the load.
 	context.allocator = allocator
 
 	qoi_bytes, decode_err := base64.decode(base64_qoi, base64.DEC_TABLE, allocator)
@@ -377,10 +249,6 @@ shot_qoi_to_png_bytes :: proc(base64_qoi: string, allocator := context.allocator
 	return png_bytes, true
 }
 
-// shot_output_dir resolves where screenshot PNGs land: the FUNPACK_SCREENSHOT_DIR env
-// var when an MCP host set it (a non-empty value), else SHOT_DEFAULT_DIR (the cwd-
-// relative project folder). The directory itself is created on demand by
-// shot_write_png_file — this proc only computes the path.
 shot_output_dir :: proc(allocator := context.allocator) -> string {
 	if configured, has := os.lookup_env(SHOT_DIR_ENV, allocator); has && configured != "" {
 		return configured
@@ -388,11 +256,6 @@ shot_output_dir :: proc(allocator := context.allocator) -> string {
 	return SHOT_DEFAULT_DIR
 }
 
-// shot_timestamp builds the wall-clock filename stamp `YYYYMMDD-HHMMSS-<ns>` — sortable
-// (lexicographic order is chronological) and collision-free within a process (the
-// nanosecond-of-second tail). Wall-clock is sound here: screenshot is the present-
-// boundary command, already non-deterministic, so a real-time filename does not touch
-// any determinism contract.
 shot_timestamp :: proc(allocator := context.allocator) -> string {
 	now := time.now()
 	year, month, day := time.date(now)
@@ -411,9 +274,6 @@ shot_timestamp :: proc(allocator := context.allocator) -> string {
 	return strings.to_string(b)
 }
 
-// shot_write_pad writes `value` as a zero-padded decimal at least `width` digits wide —
-// the fixed-width fields the timestamp filename needs so captures sort lexically. Values
-// here are always non-negative (calendar/clock components), so no sign handling.
 shot_write_pad :: proc(b: ^strings.Builder, value: int, width: int) {
 	buf: [32]u8
 	text := strconv.write_int(buf[:], i64(value), 10)
@@ -423,9 +283,6 @@ shot_write_pad :: proc(b: ^strings.Builder, value: int, width: int) {
 	strings.write_string(b, text)
 }
 
-// shot_screenshot_path builds the absolute PNG path for one capture:
-// <dir>/funpack-screenshot-<timestamp>-tick<N>.png. PURE given its inputs (no clock, no
-// IO), so a test pins the filename shape deterministically without writing a file.
 shot_screenshot_path :: proc(dir: string, tick: i64, timestamp: string, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, SHOT_FILE_PREFIX)
@@ -437,12 +294,6 @@ shot_screenshot_path :: proc(dir: string, tick: i64, timestamp: string, allocato
 	return joined
 }
 
-// shot_write_png_file creates `dir` (idempotent — an already-present directory is not a
-// failure) and writes the PNG bytes to the timestamped path under it, returning that
-// path. ok=false on a directory-create or write failure (permissions, disk full) — the
-// caller maps it to an Internal IsError. SDL-free, so the deliberate test exercises this
-// disk-write junction in the default `odin test .` floor (the live capture only runs
-// under FUNPACK_LIVE).
 shot_write_png_file :: proc(
 	dir: string,
 	png: []u8,
@@ -460,17 +311,6 @@ shot_write_png_file :: proc(
 	return path, true
 }
 
-// shot_encode_png hand-rolls a minimal PNG over the tight row-major RGBA8/RGB8 buffer —
-// the encoder Odin core lacks (core:image/png is decode-only; the ADR-sanctioned net-new
-// subsystem). It emits: the 8-byte signature, an IHDR chunk (8-bit truecolor, no
-// interlace), an IDAT chunk carrying a zlib stream of STORED (uncompressed) DEFLATE
-// blocks over the filter-0 scanlines with an adler32 trailer, and IEND. Every chunk's
-// CRC32 and the stream's adler32 come from core:hash (Odin-first). ok=false on a
-// degenerate frame (no pixels, an unsupported channel count, a buffer too short).
-//
-// STORED, not compressed: a stored-block zlib stream is the simplest spec-valid DEFLATE
-// — no Huffman, no LZ77 — so the encoder is small and obviously correct. The cost is
-// size (the PNG is ~raw), acceptable for a debug screenshot the model views once.
 shot_encode_png :: proc(
 	pixels: []u8,
 	width: int,
@@ -481,9 +321,6 @@ shot_encode_png :: proc(
 	if width <= 0 || height <= 0 {
 		return nil, false
 	}
-	// Truecolor PNG: 3 channels → color type 2 (RGB), 4 → color type 6 (RGBA). The
-	// runtime always encodes 4, but the decode honors the QOI header, so support both
-	// rather than assume.
 	color_type: u8
 	switch channels {
 	case 3:
@@ -502,8 +339,6 @@ shot_encode_png :: proc(
 		strings.write_byte(&b, sig_byte)
 	}
 
-	// IHDR: width, height (big-endian u32 each), bit depth 8, color type, compression
-	// 0, filter 0, interlace 0 (PNG spec §11.2.2).
 	ihdr: [13]u8
 	shot_put_u32_be(ihdr[0:4], u32(width))
 	shot_put_u32_be(ihdr[4:8], u32(height))
@@ -514,14 +349,11 @@ shot_encode_png :: proc(
 	ihdr[12] = 0
 	shot_write_chunk(&b, "IHDR", ihdr[:])
 
-	// The filtered scanline stream: each row is prefixed with filter-type byte 0 (None)
-	// then its raw bytes (PNG spec §9 — filter 0 stores the row verbatim). This is the
-	// payload the zlib stored-block stream wraps.
 	stride := width * channels
 	raw := make([]u8, height * (stride + 1), allocator)
 	for y in 0 ..< height {
 		dst := y * (stride + 1)
-		raw[dst] = 0 // filter type: None
+		raw[dst] = 0
 		src := y * stride
 		copy(raw[dst + 1:dst + 1 + stride], pixels[src:src + stride])
 	}
@@ -533,16 +365,10 @@ shot_encode_png :: proc(
 	return transmute([]u8)strings.to_string(b), true
 }
 
-// shot_zlib_stored wraps `data` in a zlib stream of STORED DEFLATE blocks (RFC 1950 +
-// RFC 1951 §3.2.4): the 2-byte zlib header (CMF=0x78 deflate/32K window, FLG=0x01 so
-// CMF*256+FLG ≡ 0 mod 31), then one or more stored blocks (BFINAL on the last, BTYPE=00,
-// LEN/~LEN as little-endian u16 each, then the literal bytes), then the big-endian
-// adler32 of the UNCOMPRESSED data. A stored block carries at most 65535 bytes, so a
-// larger payload splits across blocks.
 shot_zlib_stored :: proc(data: []u8, allocator := context.allocator) -> []u8 {
 	b := strings.builder_make(allocator)
-	strings.write_byte(&b, 0x78) // CMF: deflate, 32K window
-	strings.write_byte(&b, 0x01) // FLG: check bits so (0x78<<8 | 0x01) % 31 == 0
+	strings.write_byte(&b, 0x78)
+	strings.write_byte(&b, 0x01)
 
 	remaining := data
 	for {
@@ -551,8 +377,7 @@ shot_zlib_stored :: proc(data: []u8, allocator := context.allocator) -> []u8 {
 		if !final {
 			chunk_len = SHOT_DEFLATE_MAX_STORED
 		}
-		strings.write_byte(&b, final ? 0x01 : 0x00) // BFINAL on the last block, BTYPE=00
-		// LEN then one's-complement ~LEN, little-endian u16 each.
+		strings.write_byte(&b, final ? 0x01 : 0x00)
 		len_u16 := u16(chunk_len)
 		strings.write_byte(&b, u8(len_u16 & 0xff))
 		strings.write_byte(&b, u8((len_u16 >> 8) & 0xff))
@@ -568,7 +393,6 @@ shot_zlib_stored :: proc(data: []u8, allocator := context.allocator) -> []u8 {
 		remaining = remaining[chunk_len:]
 	}
 
-	// adler32 of the UNCOMPRESSED data, big-endian, closes the zlib stream.
 	adler := hash.adler32(data)
 	trailer: [4]u8
 	shot_put_u32_be(trailer[:], adler)
@@ -578,10 +402,6 @@ shot_zlib_stored :: proc(data: []u8, allocator := context.allocator) -> []u8 {
 	return transmute([]u8)strings.to_string(b)
 }
 
-// shot_write_chunk appends one PNG chunk (PNG spec §5.3): a big-endian u32 length of
-// the data, the 4-byte type code, the data, then a big-endian u32 CRC32 over the TYPE
-// + DATA (not the length). The CRC is core:hash.crc32 (seed 0 = PNG's init/final-xor),
-// Odin-first.
 shot_write_chunk :: proc(b: ^strings.Builder, type_code: string, data: []u8) {
 	length: [4]u8
 	shot_put_u32_be(length[:], u32(len(data)))
@@ -593,8 +413,6 @@ shot_write_chunk :: proc(b: ^strings.Builder, type_code: string, data: []u8) {
 		strings.write_byte(b, data_byte)
 	}
 
-	// CRC over type code + data. Concatenate into one contiguous buffer so the single
-	// crc32 call sees the exact chunk-CRC input the PNG spec defines.
 	crc_input := make([]u8, len(type_code) + len(data), context.temp_allocator)
 	copy(crc_input[:len(type_code)], transmute([]u8)type_code)
 	copy(crc_input[len(type_code):], data)
@@ -606,9 +424,6 @@ shot_write_chunk :: proc(b: ^strings.Builder, type_code: string, data: []u8) {
 	}
 }
 
-// shot_put_u32_be writes a u32 big-endian into a 4-byte slice — the byte order PNG
-// chunk lengths, CRCs, IHDR fields, and the zlib adler32 trailer all use (PNG/zlib are
-// network-order). The caller passes a slice exactly 4 bytes long.
 shot_put_u32_be :: proc(dst: []u8, value: u32) {
 	dst[0] = u8((value >> 24) & 0xff)
 	dst[1] = u8((value >> 16) & 0xff)

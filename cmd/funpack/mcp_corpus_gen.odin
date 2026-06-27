@@ -1,37 +1,3 @@
-// The docs-corpus generator core. It runs the three file-driven extractors against
-// the in-repo source trees and assembles the corpus IN MEMORY (the per-kind section
-// slices plus the content-derived manifest); it performs NO filesystem WRITES —
-// persisting the shards is the caller's job (the gen-corpus subcommand,
-// cli_mcp_gen_corpus.odin). That split lets the pin test (mcp_corpus_pin_test.odin)
-// regenerate through THIS SAME core and byte-compare against the committed shards,
-// so generation and drift-detection share ONE extraction path with no second,
-// divergent extractor to keep in sync.
-//
-// THE THREE EXTRACTORS:
-//   - extract_spec    : heading-split spec/NN-*.md prose (fence-aware splitter)
-//   - extract_engine  : decl-split stdlib/engine/*.fun, pairing each decl with its
-//                       immediately-preceding @doc PROSE line. CRITICAL: the engine
-//                       corpus's searchable payload is that @doc PROSE — the
-//                       compiler's surface_dump_json carries ZERO doc text, so it
-//                       CANNOT source engine.json; the .fun files are the only prose
-//                       source (DOCS-GEN decision). surface_dump_json stays the
-//                       surface-PARITY ground truth (funpack/surface_parity.odin),
-//                       a separate concern from this corpus.
-//   - extract_plugin  : heading-split plugins/funpack/skills/**/*.md
-//
-// THE PROVENANCE (DOCS-GEN decision): funpack_version comes from the in-process
-// compile-time constant funpack.funpack_version() — the generator IS funpack, so
-// there is no `funpack version` subprocess. spec_ref is the single residual shell
-// (git describe), and it lives ONLY in the subcommand (cli_mcp_gen_corpus.odin),
-// passed IN to generate_corpus — this pure core never shells out, so the pin test
-// and the SDL-free floor never invoke git.
-//
-// ODIN-FIRST NOTE: core:text/regex covers the four anchored head-match patterns,
-// but each is a trivial line-anchored prefix/suffix match; a hand-rolled index scan
-// is used instead (the idiom the funpack lexer/parser and
-// surface_parity.odin already follow) — it avoids a per-call regex-VM allocation
-// and keeps the generator a deterministic pure walk. SHA-256 is core:crypto/sha2;
-// hex is core:encoding/hex; JSON is core:encoding/json — no hand-roll.
 package main
 
 import "../../funpack"
@@ -44,20 +10,13 @@ import "core:slice"
 import "core:strconv"
 import "core:strings"
 
-// Corpus_Roots holds the resolved absolute source directories for one generation
-// run. spec_md / engine_fun / plugin_dir are the three extractor inputs; spec_ref is
-// the git-describe value the SUBCOMMAND computed and passes in (the pure core never
-// shells out — see the package doc).
 Corpus_Roots :: struct {
-	spec_md:     string, // <repo>/spec (NN-*.md prose)
-	engine_fun:  string, // <repo>/stdlib/engine (*.fun signatures)
-	plugin_dir:  string, // <repo>/plugins/funpack (authoring skills root)
-	spec_ref:    string, // git describe value, computed by the caller (gated to the subcommand)
+	spec_md:     string,
+	engine_fun:  string,
+	plugin_dir:  string,
+	spec_ref:    string,
 }
 
-// Corpus_Result is one generation run's output, held in memory. The same
-// Corpus_Roots content yields a byte-identical result (deterministic walk, sorted
-// file order, no clock).
 Corpus_Result :: struct {
 	spec:     []Corpus_Section,
 	engine:   []Corpus_Section,
@@ -65,10 +24,6 @@ Corpus_Result :: struct {
 	manifest: Corpus_Manifest,
 }
 
-// generate_corpus runs the three extractors against r and assembles the in-memory
-// result including the content-derived manifest. ok=false when a source root is
-// unreadable (so a misconfigured root fails loudly rather than emitting an empty
-// corpus). No filesystem writes. Allocated in `allocator`.
 generate_corpus :: proc(r: Corpus_Roots, allocator := context.allocator) -> (result: Corpus_Result, ok: bool) {
 	spec_secs, spec_ok := extract_markdown_tree(r.spec_md, r.spec_md, CORPUS_KIND_SPEC, allocator)
 	if !spec_ok {
@@ -85,11 +40,7 @@ generate_corpus :: proc(r: Corpus_Roots, allocator := context.allocator) -> (res
 	}
 
 	fun_version := funpack.funpack_version()
-	// The per-source records live in an explicitly-allocated slice (NOT a slice
-	// literal): a slice-literal initializer is backed by transient storage that is
-	// freed when this proc returns, leaving manifest.sources dangling — a later
-	// marshal would read freed memory. make() on `allocator` gives the slice the
-	// result's lifetime.
+	// make() on `allocator`, not a slice literal: a literal's transient backing frees on return, dangling manifest.sources.
 	sources := make([]Corpus_Source_Record, 3, allocator)
 	sources[0] = Corpus_Source_Record {
 		root         = "spec",
@@ -127,11 +78,6 @@ generate_corpus :: proc(r: Corpus_Roots, allocator := context.allocator) -> (res
 		true
 }
 
-// hash_corpus_sections is the content hash over the sections' anchors and text:
-// SHA-256 over each section's anchor + NUL + text + NUL, hex-encoded. A content
-// change between regens shows up
-// in the manifest's per-source content_hash, so the pin test names WHICH root
-// drifted. core:crypto/sha2 + core:encoding/hex (Odin-first; no hand-roll).
 hash_corpus_sections :: proc(sections: []Corpus_Section, allocator := context.allocator) -> string {
 	ctx: sha2.Context_256
 	sha2.init_256(&ctx)
@@ -148,12 +94,6 @@ hash_corpus_sections :: proc(sections: []Corpus_Section, allocator := context.al
 	return string(encoded)
 }
 
-// marshal_corpus_json renders a value exactly as the committed corpus files are
-// written: 2-space-indented pretty JSON with a trailing newline. Byte-comparing
-// this against a committed file IS the corpus drift test, and this marshaler is the
-// sole canonical producer of those bytes — the pin test regenerates through it and
-// compares against what it last wrote, so the only byte-exactness requirement is
-// this producer against itself. Allocated in `allocator`.
 marshal_corpus_json :: proc(v: any, allocator := context.allocator) -> (out: string, ok: bool) {
 	bytes, err := json.marshal(v, {pretty = true, use_spaces = true, spaces = 2}, allocator)
 	if err != nil {
@@ -165,14 +105,6 @@ marshal_corpus_json :: proc(v: any, allocator := context.allocator) -> (out: str
 	return strings.to_string(b), true
 }
 
-// --- spec / plugin extraction ------------------------------------------------
-
-// extract_markdown_tree is the shared heading-splitter for the prose corpora
-// (spec/, plugin skills/). walk_root is the directory walked; anchor_base is the
-// directory anchors/sources
-// are made relative to (so plugin anchors keep the skills/… prefix). Files are
-// walked in sorted path order for determinism. ok=false when the tree is
-// unreadable. Allocated in `allocator`.
 extract_markdown_tree :: proc(
 	walk_root, anchor_base: string,
 	kind: string,
@@ -195,10 +127,6 @@ extract_markdown_tree :: proc(
 	return out[:], true
 }
 
-// corpus_rel returns path relative to base. filepath.rel already yields
-// '/'-separated segments on the POSIX targets funpack builds for (no slash
-// normalization needed). Both inputs are absolute, so the rel is the source's
-// corpus-relative anchor path.
 corpus_rel :: proc(base, path: string, allocator := context.allocator) -> string {
 	rel, err := filepath.rel(base, path, allocator)
 	if err != nil {
@@ -207,21 +135,11 @@ corpus_rel :: proc(base, path: string, allocator := context.allocator) -> string
 	return rel
 }
 
-// corpus_join joins path elements, discarding filepath.join's allocator-error
-// return so a struct-field initializer or single-value context can use the path
-// directly (filepath.join is not #optional_allocator_error). Allocated in
-// `allocator`.
 corpus_join :: proc(elems: []string, allocator := context.allocator) -> string {
 	joined, _ := filepath.join(elems, allocator)
 	return joined
 }
 
-// corpus_repo_root resolves the monorepo root from the running binary's working
-// directory. Both gen verbs (gen-corpus and gen-contract) run at the repo root (the
-// Taskfile invokes them there), so cwd IS the repo root. It lives here in the shared
-// support module — beside corpus_join — rather than in either verb file, so neither gen
-// verb depends on the other's source for it. Falling back to "." when the working
-// directory cannot be read keeps the resolve total. Allocated in `allocator`.
 corpus_repo_root :: proc(allocator := context.allocator) -> string {
 	cwd, err := os.get_working_directory(allocator)
 	if err != nil || cwd == "" {
@@ -230,13 +148,6 @@ corpus_repo_root :: proc(allocator := context.allocator) -> string {
 	return cwd
 }
 
-// collect_sorted_files walks `dir` and returns the sorted full paths of every regular
-// file whose name ends in `suffix` — the shared directory scan both corpus extractors run
-// before their per-file split. Sorted path order is what makes the generated corpus
-// deterministic (and the committed shards byte-stable), so the sort is load-bearing, not
-// cosmetic. ok=false when `dir` is not a directory or the walk hits an error, so a
-// misconfigured root fails loudly rather than emitting an empty corpus. Allocated in
-// `allocator`.
 collect_sorted_files :: proc(dir, suffix: string, allocator := context.allocator) -> (paths: []string, ok: bool) {
 	if !os.is_dir(dir) {
 		return nil, false
@@ -257,13 +168,6 @@ collect_sorted_files :: proc(dir, suffix: string, allocator := context.allocator
 	return collected[:], true
 }
 
-// split_headings turns one markdown document into heading-delimited sections,
-// appending them to out. Anchors are "<source>#<slug>"; a duplicate slug WITHIN a
-// file is suffixed "-2", "-3", … so
-// anchors stay unique and stable per content. A heading inside a ```-fenced code
-// block is NOT a split point. An organizational parent heading whose only content
-// is its subheadings (empty body) is skipped — each child heading is its own
-// section.
 split_headings :: proc(
 	content, source, kind: string,
 	out: ^[dynamic]Corpus_Section,
@@ -293,12 +197,6 @@ split_headings :: proc(
 	flush_heading_section(cur_title, &cur_body, source, kind, &slug_counts, out, allocator)
 }
 
-// flush_heading_section emits the accumulated heading + body as one section into
-// out, then clears the body — the split_headings `flush` step as a top-level proc
-// (Odin nested procs do not capture, so the state is threaded explicitly). A section
-// with an empty title (preamble before the first heading) or
-// an empty body (an organizational parent heading) is skipped. The slug is
-// deduped within the file via slug_counts ("-2", "-3", …).
 flush_heading_section :: proc(
 	cur_title: string,
 	cur_body: ^[dynamic]string,
@@ -329,9 +227,6 @@ flush_heading_section :: proc(
 	})
 }
 
-// parse_heading reports whether line is an ATX H1/H2/H3 heading ("# ", "## ",
-// "### ") and returns its trimmed title — the `^(#{1,3})\s+(.+?)\s*$` match.
-// Leading whitespace is NOT allowed before the hashes (line-anchored at column 0).
 parse_heading :: proc(line: string) -> (title: string, ok: bool) {
 	hashes := 0
 	for hashes < len(line) && hashes < 4 && line[hashes] == '#' {
@@ -350,11 +245,6 @@ parse_heading :: proc(line: string) -> (title: string, ok: bool) {
 	return rest, true
 }
 
-// --- engine extraction -------------------------------------------------------
-
-// extract_engine reads stdlib/engine/*.fun in sorted filename order and emits one
-// section per declaration, each paired with its immediately-preceding @doc PROSE
-// line. ok=false when the directory is unreadable. Allocated in `allocator`.
 extract_engine :: proc(dir: string, allocator := context.allocator) -> (sections: []Corpus_Section, ok: bool) {
 	paths, walked := collect_sorted_files(dir, ".fun", allocator)
 	if !walked {
@@ -375,12 +265,6 @@ extract_engine :: proc(dir: string, allocator := context.allocator) -> (sections
 	return out[:], true
 }
 
-// split_engine_file turns one .fun signature file into per-declaration sections. The
-// anchor is "engine/<module>#<decl-name>"; a name repeated within a module (UFCS
-// overloads
-// on different self types) is suffixed. Each decl pairs with its immediately-
-// preceding @doc line; any non-doc, non-decl line clears a dangling @doc so it
-// never attaches to the wrong declaration.
 split_engine_file :: proc(
 	content, module, source: string,
 	out: ^[dynamic]Corpus_Section,
@@ -431,10 +315,6 @@ split_engine_file :: proc(
 	}
 }
 
-// parse_doc_line reports whether trimmed is a single-line `@doc("...")` annotation
-// and returns the inner string — the `^@doc\("(.*)"\)\s*$` match. The whole line
-// must be exactly the annotation (the trailing `)` after the closing quote, then
-// only whitespace).
 parse_doc_line :: proc(trimmed: string) -> (doc: string, ok: bool) {
 	if !strings.has_prefix(trimmed, "@doc(\"") {
 		return "", false
@@ -446,16 +326,7 @@ parse_doc_line :: proc(trimmed: string) -> (doc: string, ok: bool) {
 	return inner, true
 }
 
-// parse_decl_head reports whether trimmed begins with a stdlib decl keyword
-// (extern fn, fn, extern type, data, enum, let) followed by a name, and returns the
-// declared name — the
-// `^(extern\s+fn|fn|extern\s+type|data|enum|let)\s+([A-Za-z_][A-Za-z0-9_]*)` match.
-// The `extern fn`/`extern type` forms must precede the bare `fn` check so `extern
-// fn` is not mis-read as a name after `extern`.
 parse_decl_head :: proc(trimmed: string) -> (name: string, ok: bool) {
-	// The multi-word `extern fn`/`extern type` forms are tried FIRST so `extern fn`
-	// is not mis-read as `extern` + the name `fn`. The keyword list is the closed
-	// decl-keyword alternation; strip_decl_keyword returns the post-keyword remainder.
 	rest, matched := strip_decl_keyword(trimmed)
 	if !matched {
 		return "", false
@@ -471,11 +342,6 @@ parse_decl_head :: proc(trimmed: string) -> (name: string, ok: bool) {
 	return rest[:end], true
 }
 
-// strip_decl_keyword tries each stdlib decl keyword with multi-word forms first (so
-// a multi-word keyword is matched before its single-word prefix) and returns the
-// post-keyword remainder on the first
-// match. A flat loop over the keyword list rather than an else-if chain keeps each
-// match's locals out of the others' scope (no -strict-style shadow).
 strip_decl_keyword :: proc(s: string) -> (rest: string, ok: bool) {
 	keywords := []string{"extern fn", "extern type", "fn", "data", "enum", "let"}
 	for kw in keywords {
@@ -486,11 +352,6 @@ strip_decl_keyword :: proc(s: string) -> (rest: string, ok: bool) {
 	return s, false
 }
 
-// strip_kw matches `kw` at the start of s with a following whitespace separator and
-// returns the remainder. A multi-word kw ("extern fn") matches `extern` + any
-// run of whitespace + the second word, mirroring the regex's `\s+` between the two
-// tokens. The keyword must be followed by whitespace (the decl name is separate),
-// so `function` does not match `fn`.
 strip_kw :: proc(s, kw: string) -> (rest: string, ok: bool) {
 	if sp := strings.index_byte(kw, ' '); sp >= 0 {
 		first := kw[:sp]
@@ -500,7 +361,7 @@ strip_kw :: proc(s, kw: string) -> (rest: string, ok: bool) {
 		}
 		after := corpus_skip_ws(s[len(first):])
 		if len(after) == len(s) - len(first) {
-			return s, false // no whitespace separated the two words
+			return s, false
 		}
 		if !corpus_word_prefix(after, second) {
 			return s, false
@@ -521,9 +382,6 @@ strip_kw :: proc(s, kw: string) -> (rest: string, ok: bool) {
 	return tail, true
 }
 
-// corpus_word_prefix reports whether s begins with word and the following byte is a
-// non-identifier (so `enum` does not match `enumerate`). End-of-string after word
-// counts as a boundary.
 corpus_word_prefix :: proc(s, word: string) -> bool {
 	if !strings.has_prefix(s, word) {
 		return false
@@ -534,12 +392,6 @@ corpus_word_prefix :: proc(s, word: string) -> bool {
 	return !corpus_is_ident_char(s[len(word)])
 }
 
-// engine_signature returns the declaration signature beginning at lines[start] and
-// the count of EXTRA lines consumed past start. For a function (fn / extern fn) the
-// body is dropped (the head up to the first `{`). For a type declaration (data /
-// enum / extern type / let)
-// the brace-delimited field/variant list IS the signature, kept verbatim across
-// however many lines the braces span.
 engine_signature :: proc(lines: []string, start: int, allocator := context.allocator) -> (sig: string, consumed: int) {
 	head := strings.trim_space(lines[start])
 	is_fn := strings.has_prefix(head, "fn ") || strings.has_prefix(head, "extern fn ")
@@ -569,23 +421,12 @@ engine_signature :: proc(lines: []string, start: int, allocator := context.alloc
 	return strings.join(collected[:], "\n", allocator), len(lines) - 1 - start
 }
 
-// corpus_unescape_doc reverses the minimal escaping the .fun @doc strings use
-// (\" → ", \\ → \). Order matters: \" is replaced BEFORE \\, so an escaped backslash
-// preceding a quote does not re-trigger the quote unescape. Allocated in `allocator`.
 corpus_unescape_doc :: proc(s: string, allocator := context.allocator) -> string {
 	a, _ := strings.replace_all(s, "\\\"", "\"", allocator)
 	b, _ := strings.replace_all(a, "\\\\", "\\", allocator)
 	return b
 }
 
-// --- shared helpers ----------------------------------------------------------
-
-// corpus_slugify produces a stable lowercase kebab anchor fragment from a heading
-// or name: lowercase, strip backticks, collapse whitespace runs to a single space,
-// replace every non-[a-z0-9] run with a
-// single dash, trim leading/trailing dashes, and fall back to "section" when empty.
-// Stable across regen because it depends only on the text content. Allocated in
-// `allocator`.
 corpus_slugify :: proc(s: string, allocator := context.allocator) -> string {
 	lowered := strings.to_lower(s, context.temp_allocator)
 	b := strings.builder_make(allocator)
@@ -599,7 +440,6 @@ corpus_slugify :: proc(s: string, allocator := context.allocator) -> string {
 			strings.write_byte(&b, c)
 			prev_dash = false
 		} else {
-			// Any non-slug byte (whitespace, punctuation) collapses to a single dash.
 			if !prev_dash {
 				strings.write_byte(&b, '-')
 				prev_dash = true
@@ -613,7 +453,6 @@ corpus_slugify :: proc(s: string, allocator := context.allocator) -> string {
 	return strings.clone(slug, allocator)
 }
 
-// corpus_skip_ws returns s with leading ASCII whitespace removed.
 corpus_skip_ws :: proc(s: string) -> string {
 	i := 0
 	for i < len(s) && corpus_is_ws(s[i]) {
@@ -622,23 +461,18 @@ corpus_skip_ws :: proc(s: string) -> string {
 	return s[i:]
 }
 
-// corpus_is_ws reports whether b is an ASCII whitespace byte.
 corpus_is_ws :: proc(b: u8) -> bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
-// corpus_is_ident_start reports whether b can begin an identifier ([A-Za-z_]).
 corpus_is_ident_start :: proc(b: u8) -> bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '_'
 }
 
-// corpus_is_ident_char reports whether b can continue an identifier ([A-Za-z0-9_]).
 corpus_is_ident_char :: proc(b: u8) -> bool {
 	return corpus_is_ident_start(b) || (b >= '0' && b <= '9')
 }
 
-// int_to_string renders a small non-negative int as its decimal string — used for
-// the slug/name dedup suffix ("-2", "-3"). Allocated in `allocator`.
 int_to_string :: proc(n: int, allocator := context.allocator) -> string {
 	buf: [20]u8
 	return strings.clone(strconv.write_int(buf[:], i64(n), 10), allocator)

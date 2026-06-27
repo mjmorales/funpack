@@ -1,34 +1,3 @@
-// Deliberate spec for the docs + health tool dispatch family (mcp_tools_docs.odin) —
-// the living junction test for the in-process documentation arm of the tools/call
-// chain. It exercises the WHOLE seam, both at the family-arm level (an Mcp_Dispatch
-// built exactly as mcp_handle_tools_call builds one) and END TO END through the real
-// protocol entry (mcp_dispatch_line over a tools/call JSON-RPC line) — the latter is
-// the proof the family is now REACHABLE: register-mcp-server-native put docs_get /
-// docs_search / health into TOOL_SPECS, so a tools/call no longer falls through to the
-// unknown-tool / not-implemented stub but lands in this arm.
-//
-// The tests pin the contract this family must keep:
-//
-//   - reachability: a tools/call for each of the three tools, driven through
-//     mcp_dispatch_line, returns a JSON-RPC result (not the not-implemented stub, not a
-//     method-not-found error) — the headline proof of the re-run;
-//   - name→spec projection: every claimed tool is a real generated Tool_Spec, and no
-//     tool outside the family is claimed (the merge-clean invariant);
-//   - docs_get: a known anchor returns the full {anchor,title,kind,text}; an unknown
-//     anchor and a missing anchor ride the IsError envelope keyed invalid_input;
-//   - docs_search: a symbol-shaped query ranks a real corpus hit and the result carries
-//     the corpus_version + corpus_drift provenance; an empty query is invalid_input; the
-//     limit is clamped;
-//   - health: the no-arg probe reports status ok, the §28 version surface, and the
-//     corpus-vs-binary drift; on a current build (corpus regenerated against this
-//     binary) drift is false;
-//   - the drift detector itself: a manifest stamped at a different funpack version than
-//     the binary reports drift=true with a warning; a matching/empty stamp reports false.
-//
-// DEFINE-FREE FLOOR: like the corpus and ranker tests, these run in the default
-// `odin test .` build — the corpus is #load-embedded and every compute is SDL-free, so
-// the family's dispatch contract is pinned in the same deterministic floor as the rest
-// of the compiler tests.
 package main
 
 import "../../funpack"
@@ -36,11 +5,6 @@ import "core:encoding/json"
 import "core:strings"
 import "core:testing"
 
-// docs_dispatch_tool resolves the Tool_Spec for `tool_name`, parses `args_json` into the
-// MCP arguments object, and folds the assembled Mcp_Dispatch through
-// mcp_docs_tool_dispatch — the exact path mcp_handle_tools_call drives, so a test
-// exercises the real seam (name lookup + arg parse + family arm) rather than a stubbed
-// shortcut. Returns the rendered JSON-RPC result line and whether the family claimed it.
 @(private = "file")
 docs_dispatch_tool :: proc(tool_name: string, args_json: string) -> (result: string, handled: bool) {
 	spec, found := mcp_lookup_tool(tool_name)
@@ -63,11 +27,6 @@ docs_dispatch_tool :: proc(tool_name: string, args_json: string) -> (result: str
 	return mcp_docs_tool_dispatch(dispatch, context.temp_allocator)
 }
 
-// docs_first_anchor scans the embedded corpus for the first section's anchor — a real,
-// guaranteed-resolvable anchor for the docs_get hit test, so the test keys on whatever
-// the committed corpus actually carries rather than a hardcoded anchor that a regen
-// could rename. ok=false on an empty/malformed corpus (the test then skips, never
-// false-fails — the corpus pin test owns that failure).
 @(private = "file")
 docs_first_anchor :: proc() -> (anchor: string, ok: bool) {
 	sections, loaded := load_corpus(context.temp_allocator)
@@ -77,9 +36,6 @@ docs_first_anchor :: proc() -> (anchor: string, ok: bool) {
 	return sections[0].anchor, true
 }
 
-// test_docs_family_claims_exactly_its_tools pins the merge-clean invariant: the family
-// claims each of its three tools (handled=true) and DECLINES every tool another family
-// owns (handled=false), so the dispatch chain has exactly one owner per tool name.
 @(test)
 test_docs_family_claims_exactly_its_tools :: proc(t: ^testing.T) {
 	testing.expect(t, docs_assert_specs_present(), "every docs family tool is a generated Tool_Spec")
@@ -89,12 +45,11 @@ test_docs_family_claims_exactly_its_tools :: proc(t: ^testing.T) {
 		testing.expect(t, handled, "the docs family claims its own tool")
 	}
 
-	// A representative tool from EACH other family is declined — the chain flows past.
 	other_family := [?]string{"build", "session_start", "control_branch", "time_status", "inspect_screenshot"}
 	for other in other_family {
 		spec, found := mcp_lookup_tool(other)
 		if !found {
-			continue // a family not yet in the contract — nothing to decline
+			continue
 		}
 		dispatch := Mcp_Dispatch{spec = spec, name = other, id = Mcp_Id{kind = .Integer, integer = 1}}
 		_, handled := mcp_docs_tool_dispatch(dispatch, context.temp_allocator)
@@ -102,12 +57,6 @@ test_docs_family_claims_exactly_its_tools :: proc(t: ^testing.T) {
 	}
 }
 
-// test_docs_tools_reachable_through_protocol is the headline re-run proof: each of the
-// three tools, driven END TO END through mcp_dispatch_line (the real tools/call entry),
-// returns a JSON-RPC result — NOT the "tool not yet implemented" (.Internal) stub and
-// NOT a method-not-found error. Before register-mcp-server-native these tools were not
-// in TOOL_SPECS, so the same call fell through to the unknown-tool / not-implemented
-// path. A successful, non-stub result is the proof the arm is now wired and advertised.
 @(test)
 test_docs_tools_reachable_through_protocol :: proc(t: ^testing.T) {
 	registry := mcp_session_registry_make(context.temp_allocator)
@@ -130,9 +79,6 @@ test_docs_tools_reachable_through_protocol :: proc(t: ^testing.T) {
 	}
 }
 
-// test_docs_get_resolves_known_anchor pins docs_get's hit path: a real corpus anchor
-// returns a clean result whose section echoes the requested anchor and carries the
-// body text — enough to render the passage without a second lookup.
 @(test)
 test_docs_get_resolves_known_anchor :: proc(t: ^testing.T) {
 	anchor, ok := docs_first_anchor()
@@ -148,10 +94,6 @@ test_docs_get_resolves_known_anchor :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"text\":`), "the full section body is returned")
 }
 
-// test_docs_get_unknown_anchor_is_invalid_input pins docs_get's miss path: an anchor no
-// section carries is an IsError result keyed invalid_input (the corpus is a closed set,
-// so an unknown anchor is a caller error) — a SUCCESSFUL JSON-RPC result carrying the
-// failure in-band, never a JSON-RPC error object.
 @(test)
 test_docs_get_unknown_anchor_is_invalid_input :: proc(t: ^testing.T) {
 	result, handled := docs_dispatch_tool("docs_get", `{"anchor":"no/such#anchor-xyzzy"}`)
@@ -162,8 +104,6 @@ test_docs_get_unknown_anchor_is_invalid_input :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"category\":\"invalid_input\"`), "keyed invalid_input")
 }
 
-// test_docs_get_missing_anchor_is_invalid_input pins docs_get's schema-violation path: a
-// call with no anchor (the required string arg) is an IsError result keyed invalid_input.
 @(test)
 test_docs_get_missing_anchor_is_invalid_input :: proc(t: ^testing.T) {
 	result, handled := docs_dispatch_tool("docs_get", `{}`)
@@ -172,10 +112,6 @@ test_docs_get_missing_anchor_is_invalid_input :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"category\":\"invalid_input\"`), "keyed invalid_input")
 }
 
-// test_docs_search_ranks_and_stamps pins docs_search's success path: a symbol-shaped
-// query returns a clean result whose hit list carries at least one anchor (the corpus
-// has engine declarations to match), and whose envelope carries the corpus_version + the
-// corpus_drift provenance — the stale-corpus signal that rides every search.
 @(test)
 test_docs_search_ranks_and_stamps :: proc(t: ^testing.T) {
 	result, handled := docs_dispatch_tool("docs_search", `{"query":"world","limit":5}`)
@@ -186,9 +122,6 @@ test_docs_search_ranks_and_stamps :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"corpus_drift\":`), "the corpus drift rides every search")
 }
 
-// test_docs_search_empty_query_is_invalid_input pins docs_search's schema-violation path:
-// an empty (or whitespace-only) query is an IsError result keyed invalid_input — the
-// ranker has nothing to rank, so it is a caller error caught before the engine builds.
 @(test)
 test_docs_search_empty_query_is_invalid_input :: proc(t: ^testing.T) {
 	result, handled := docs_dispatch_tool("docs_search", `{"query":"   "}`)
@@ -197,10 +130,6 @@ test_docs_search_empty_query_is_invalid_input :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"category\":\"invalid_input\"`), "keyed invalid_input")
 }
 
-// test_docs_search_limit_clamps pins the limit clamp: an over-cap limit is clamped to
-// DOCS_SEARCH_MAX_LIMIT, so a single call cannot drain the whole candidate pool. The hit
-// count cannot exceed the cap; we assert the call succeeds and stays bounded by counting
-// the source-tag occurrences (one per hit) against the cap.
 @(test)
 test_docs_search_limit_clamps :: proc(t: ^testing.T) {
 	result, handled := docs_dispatch_tool("docs_search", `{"query":"world","limit":9999}`)
@@ -210,10 +139,6 @@ test_docs_search_limit_clamps :: proc(t: ^testing.T) {
 	testing.expect(t, hit_count <= DOCS_SEARCH_MAX_LIMIT, "the hit count never exceeds the max limit")
 }
 
-// test_docs_health_reports_status_and_version pins health's probe: the no-arg call
-// reports status ok, the server name, the §28 version surface (the schemas block proves
-// version_report_json is embedded), and the corpus_drift block — the liveness + drift
-// surface an agent reads on first contact.
 @(test)
 test_docs_health_reports_status_and_version :: proc(t: ^testing.T) {
 	result, handled := docs_dispatch_tool("health", `{}`)
@@ -225,11 +150,6 @@ test_docs_health_reports_status_and_version :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(result, `\"corpus_drift\":`), "health reports corpus drift")
 }
 
-// test_docs_health_current_build_has_no_drift pins the one-binary drift invariant on a
-// CURRENT build: the committed corpus is regenerated against this binary's version, so
-// the manifest's funpack_version equals funpack_version() and drift is false. If a regen
-// is ever skipped before a version bump, this is the test that goes red — exactly the
-// loud lag the drift check exists to surface.
 @(test)
 test_docs_health_current_build_has_no_drift :: proc(t: ^testing.T) {
 	manifest, ok := load_manifest(context.temp_allocator)
@@ -244,11 +164,6 @@ test_docs_health_current_build_has_no_drift :: proc(t: ^testing.T) {
 	}
 }
 
-// test_docs_detect_drift_flags_version_skew pins the drift detector directly: a manifest
-// stamped at a funpack version DIFFERENT from this binary reports drift=true with both
-// versions and a warning; a matching stamp reports false; an empty stamp reports false
-// (nothing to compare). This is the unit-level spec of the corpus-vs-binary skew check,
-// independent of whatever the committed corpus happens to be stamped at.
 @(test)
 test_docs_detect_drift_flags_version_skew :: proc(t: ^testing.T) {
 	binary_version := docs_normalize_version(funpack.funpack_version())
@@ -265,10 +180,6 @@ test_docs_detect_drift_flags_version_skew :: proc(t: ^testing.T) {
 	testing.expect(t, !empty.drift, "an empty corpus version is no drift (nothing to compare)")
 }
 
-// docs_quote wraps a string in JSON quotes with the minimal escaping the test anchors
-// need (the embedded anchors are slug/path tokens — no embedded quotes or control
-// chars — so a bare quote wrap is faithful; backslashes in an anchor would need more,
-// but no corpus anchor carries one). Kept self-contained per the test standard.
 @(private = "file")
 docs_quote :: proc(s: string) -> string {
 	return strings.concatenate({`"`, s, `"`}, context.temp_allocator)

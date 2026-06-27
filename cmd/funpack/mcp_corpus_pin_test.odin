@@ -1,25 +1,3 @@
-// The corpus-pin drift gate — the single shared-extractor-path guarantee: it
-// regenerates the corpus IN MEMORY through the SAME generate_corpus extractors the
-// committed shards were built with, and byte/hash-compares against the
-// #load-embedded committed bytes. A drift — a spec edit, an engine signature
-// change, a plugin skill rewrite, or a stale checkout — fails here, forcing
-// `task docs-regen` + recommit. There is no second, divergent extractor to keep in
-// sync (the one-extraction-path-shared-by-gen-and-pin design).
-//
-// HERMETIC SKIP: when the in-repo source trees are unavailable (a checkout without
-// spec/stdlib/plugins, or an env without the fixture), the regen-driven tests SKIP
-// loudly rather than asserting against an empty (falsely-clean) corpus — drift can
-// only be asserted where the sources exist (the surface_parity_test.odin / golden
-// SKIP protocol). The mutated-hash negative control runs ALWAYS (it needs only the
-// embedded manifest), so the drift-detection LOGIC is guarded even in a hermetic
-// environment.
-//
-// PROVENANCE ISOLATION: spec_ref (git describe) is environment-dependent, so the
-// pin compares CONTENT (the per-source content_hash and the shard bytes), and
-// regenerates the manifest with the committed manifest's spec_ref injected — so the
-// manifest comparison isolates a content/version drift from the ambient git tag.
-// These tests are define-free (the loader + generator are; see mcp_corpus.odin), so
-// they run on the default `odin test .` floor.
 package main
 
 import "core:log"
@@ -28,17 +6,8 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// CORPUS_PIN_REPO_ROOT_REL is the repo root relative to this package dir. cmd/funpack
-// sits two levels below the monorepo root, so #directory/../.. is the root the source
-// trees (spec/, stdlib/engine/, plugins/funpack/) live under.
 CORPUS_PIN_REPO_ROOT_REL :: ".."
 
-// resolve_corpus_roots resolves the generator's source roots from this checkout,
-// mirroring the surface_parity / golden resolver: FUNPACK_CORPUS_ROOT overrides the
-// repo root, else #directory/../.. (the worktree-local root). spec_ref is read from
-// the committed manifest so a regen reproduces the committed provenance string
-// regardless of the ambient git tag (see the package PROVENANCE ISOLATION note).
-// ok=false (no warn here; the caller warns+skips) when the trees are absent.
 resolve_corpus_roots :: proc(spec_ref: string, allocator := context.allocator) -> (roots: Corpus_Roots, ok: bool) {
 	root: string
 	if env, has := os.lookup_env("FUNPACK_CORPUS_ROOT", allocator); has && env != "" {
@@ -59,9 +28,6 @@ resolve_corpus_roots :: proc(spec_ref: string, allocator := context.allocator) -
 	return r, true
 }
 
-// regen_or_skip resolves the roots and regenerates the corpus in memory, skipping
-// (loudly logged) when the source trees are unavailable. The committed manifest's
-// spec_ref is threaded into the regen so the manifest comparison is content-only.
 regen_or_skip :: proc(t: ^testing.T) -> (result: Corpus_Result, ok: bool) {
 	committed, manifest_ok := load_manifest(context.temp_allocator)
 	if !manifest_ok {
@@ -83,11 +49,6 @@ regen_or_skip :: proc(t: ^testing.T) -> (result: Corpus_Result, ok: bool) {
 	return res, true
 }
 
-// test_corpus_pin_shards_byte_match is the corpus-pin gate proper: it regenerates
-// each per-kind shard through generate_corpus and asserts the marshaled bytes equal
-// the #load-embedded committed shard bytes. Drift fails here, naming WHICH shard.
-// The embedded constants ARE the committed bytes (#load is a compile-time read), so
-// this compares the live extractor output against the snapshot in the binary.
 @(test)
 test_corpus_pin_shards_byte_match :: proc(t: ^testing.T) {
 	res, ok := regen_or_skip(t)
@@ -99,8 +60,6 @@ test_corpus_pin_shards_byte_match :: proc(t: ^testing.T) {
 	expect_shard_matches(t, "plugin.json", res.plugin, CORPUS_PLUGIN_JSON)
 }
 
-// expect_shard_matches marshals the regenerated sections through the canonical
-// corpus marshaler and asserts byte-equality with the committed shard bytes.
 expect_shard_matches :: proc(t: ^testing.T, name: string, sections: []Corpus_Section, committed: string) {
 	got, marshal_ok := marshal_corpus_json(sections, context.temp_allocator)
 	testing.expectf(t, marshal_ok, "marshal regenerated %s failed", name)
@@ -117,12 +76,6 @@ expect_shard_matches :: proc(t: ^testing.T, name: string, sections: []Corpus_Sec
 	)
 }
 
-// test_corpus_pin_per_source_hashes asserts the regenerated per-source content
-// hashes match the committed manifest's, source-by-source — the granular signal
-// naming WHICH root drifted (spec/engine/plugin), which the whole-shard byte compare
-// alone does not localize. Recomputes each hash from the regenerated sections via
-// the live hash_corpus_sections so the assertion exercises the hash function, not a
-// value copied out of the manifest.
 @(test)
 test_corpus_pin_per_source_hashes :: proc(t: ^testing.T) {
 	res, ok := regen_or_skip(t)
@@ -157,11 +110,6 @@ test_corpus_pin_per_source_hashes :: proc(t: ^testing.T) {
 	}
 }
 
-// test_corpus_pin_manifest_section_counts asserts the regenerated section counts
-// and total match the committed manifest's, per source root. This catches a
-// section-count drift (a heading added/removed) the per-source HASH would also flag,
-// and additionally a manifest hand-edit of a count the shards alone cannot — without
-// depending on the environment-specific spec_ref string.
 @(test)
 test_corpus_pin_manifest_section_counts :: proc(t: ^testing.T) {
 	res, ok := regen_or_skip(t)
@@ -201,13 +149,6 @@ test_corpus_pin_manifest_section_counts :: proc(t: ^testing.T) {
 	)
 }
 
-// test_corpus_pin_mutated_hash_detected_as_drift is the negative-control unit test:
-// it proves the per-source-hash comparison actually FIRES on a mutated hash, so the
-// detector is not trivially always-pass. It flips one hex digit of a committed
-// source hash in an in-memory copy and asserts the same map-equality the pin check
-// runs reports exactly that one mismatch — and that identical maps report none. It
-// needs only the embedded manifest, so it runs ALWAYS (even in a hermetic
-// environment without the source trees).
 @(test)
 test_corpus_pin_mutated_hash_detected_as_drift :: proc(t: ^testing.T) {
 	committed, manifest_ok := load_manifest(context.temp_allocator)
@@ -238,24 +179,10 @@ test_corpus_pin_mutated_hash_detected_as_drift :: proc(t: ^testing.T) {
 		testing.expect_value(t, drifted[0], target)
 	}
 
-	// Sanity: identical maps report no drift, so the detector is not trivially
-	// always-positive.
 	none := diff_hash_maps(good, good, context.temp_allocator)
 	testing.expectf(t, len(none) == 0, "identical hash maps reported %d drift(s)", len(none))
 }
 
-// test_corpus_pin_version_matches_compiler is the release-parity gate (dogfood
-// FRICTION F15): the embedded corpus must carry a funpack_version AND it must equal the
-// in-process funpack_version() the binary compiles as. The byte/hash pins above isolate
-// CONTENT from the version (they inject the committed spec_ref so a regen is
-// content-only), so a binary can pass them while embedding a corpus stamped at an OLDER
-// version — the silent skew where a binary ships a corpus generated against an earlier
-// release (the F15 incident). This asserts the same equality the runtime `health` drift
-// detector (docs_detect_drift) computes, turning the silent ship-time lag into a
-// `task test` failure so a binary cannot ship
-// embedding a corpus from an older version. It needs only the embedded manifest + the
-// in-process version, so it runs ALWAYS (no source trees — hermetic-safe, like the
-// mutated-hash control), which is what makes it a genuine release gate.
 @(test)
 test_corpus_pin_version_matches_compiler :: proc(t: ^testing.T) {
 	committed, manifest_ok := load_manifest(context.temp_allocator)
@@ -264,8 +191,6 @@ test_corpus_pin_version_matches_compiler :: proc(t: ^testing.T) {
 		return
 	}
 
-	// A corpus with an empty funpack_version makes docs_detect_drift report a vacuous
-	// no-drift; require the stamp explicitly so a stampless corpus cannot slip the gate.
 	testing.expect(
 		t,
 		strings.trim_space(committed.funpack_version) != "",
@@ -282,9 +207,6 @@ test_corpus_pin_version_matches_compiler :: proc(t: ^testing.T) {
 	)
 }
 
-// diff_hash_maps returns the roots whose hashes differ between two source-hash maps
-// — the comparison the per-source pin performs. A root present in want but missing
-// from got is reported too (a dropped source root is drift). Allocated in `allocator`.
 diff_hash_maps :: proc(want, got: map[string]string, allocator := context.allocator) -> []string {
 	drifted := make([dynamic]string, 0, len(want), allocator)
 	for root, w in want {
@@ -295,9 +217,6 @@ diff_hash_maps :: proc(want, got: map[string]string, allocator := context.alloca
 	return drifted[:]
 }
 
-// flip_first_hex_digit returns s with its first hex digit changed, so a content hash
-// becomes a different-but-still-hex value. Empty input is returned as-is. Allocated
-// in `allocator`.
 flip_first_hex_digit :: proc(s: string, allocator := context.allocator) -> string {
 	if s == "" {
 		return s

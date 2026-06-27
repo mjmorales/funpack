@@ -1,12 +1,3 @@
-// Deliberate spec for the MCP protocol dispatch loop (mcp_server.odin) — the
-// initialize / tools/list / tools/call / notifications junction the real handler
-// drives over the merged transport. These pin the lifecycle contract as a living
-// spec: the handshake advertises tools-only with the PINNED protocolVersion, tools/list
-// is the contract projection (not hand-authored), an unknown tools/call is the
-// in-band IsError envelope (never a JSON-RPC error), notifications are dropped, and
-// — the load-bearing invariant — a full exchange emits ONLY JSON-RPC lines on the
-// framed stream (stdout discipline). Driven headlessly over the in-memory transport
-// seam (mcp_transport_test.odin's Mcp_Mem_Conn), no real stdio, no SDL.
 package main
 
 import "../../funpack"
@@ -15,10 +6,6 @@ import "core:encoding/json"
 import "core:strings"
 import "core:testing"
 
-// drive_handler folds one request line through the REAL JSON-RPC handler over an
-// in-memory transport and returns the single framed response line (newline trimmed).
-// It exercises the same serve_mcp_connection loop the verb runs, so the test pins
-// the handler exactly as it ships, not a re-implementation.
 drive_handler :: proc(t: ^testing.T, request_line: string, loc := #caller_location) -> string {
 	registry := mcp_session_registry_make(context.temp_allocator)
 	conn := server_mem_conn({request_line}, context.temp_allocator)
@@ -26,14 +13,6 @@ drive_handler :: proc(t: ^testing.T, request_line: string, loc := #caller_locati
 	return strings.trim_right(strings.to_string(conn.outgoing), "\n")
 }
 
-// test_mcp_initialize_capabilities pins the handshake: an initialize request returns
-// a well-formed JSON-RPC result advertising capabilities={tools} ONLY (no resources,
-// no prompts), the PINNED MCP protocolVersion, serverInfo, AND the invariant-core
-// `instructions` (non-empty, leading with the five-things marker). The protocolVersion
-// assertion is the regression guard for the negotiated revision (the bundled plugin
-// client negotiates this exact string); the instructions assertion is the regression
-// guard for the always-present cacheable core (mcp_core_prefix.odin) — a build that
-// silently drops it (an orphaned curated anchor) would fail here.
 @(test)
 test_mcp_initialize_capabilities :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
@@ -58,9 +37,6 @@ test_mcp_initialize_capabilities :: proc(t: ^testing.T) {
 	name, _ := server_info["name"].(json.String)
 	testing.expect_value(t, string(name), MCP_SERVER_NAME)
 
-	// The invariant-core prefix must ride in `instructions` — the always-present,
-	// cacheable channel. Non-empty, and leading with the five-things core (the curated
-	// prefix leads with that section), so a silently-dropped or truncated prefix fails.
 	instructions, has_instructions := result["instructions"].(json.String)
 	testing.expect(t, has_instructions, "initialize must advertise the invariant-core instructions")
 	testing.expect(t, len(string(instructions)) > 0, "instructions must be non-empty")
@@ -71,11 +47,6 @@ test_mcp_initialize_capabilities :: proc(t: ^testing.T) {
 	)
 }
 
-// test_mcp_tools_list_projection pins that tools/list is the GENERATED projection
-// from TOOL_SPECS, not a hand-authored or empty stub — so the advertised input_schema
-// cannot drift from dispatch (the prerequisite mcp-contract-arg-shapes landed the
-// table). The list length equals the contract table, every tool carries a name and
-// an object inputSchema, and a representative §28 tool (break) is present.
 @(test)
 test_mcp_tools_list_projection :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
@@ -100,11 +71,6 @@ test_mcp_tools_list_projection :: proc(t: ^testing.T) {
 	testing.expect(t, seen_break, "the §28 break command projects to a tool")
 }
 
-// test_mcp_tool_schema_required pins the schema projection's required-set: a tool
-// whose §28 args include a required field lists it under inputSchema.required, and
-// an optional field is absent from required. `watch` carries required `target`+`body`
-// and the optional `branch` selector — the junction proving the projection reads the
-// generated `required` flags, not a flat property dump.
 @(test)
 test_mcp_tool_schema_required :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`)
@@ -132,10 +98,6 @@ test_mcp_tool_schema_required :: proc(t: ^testing.T) {
 	testing.expect(t, false, "the watch tool must be present in the projection")
 }
 
-// test_mcp_unknown_tool pins the unknown-tool path: a tools/call for a name not in
-// the table returns a SUCCESSFUL JSON-RPC result (not an error object) carrying
-// isError=true and an invalid_input envelope naming the unknown tool — the in-band
-// convention the model self-corrects from.
 @(test)
 test_mcp_unknown_tool :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"no_such_tool"}}`)
@@ -154,10 +116,6 @@ test_mcp_unknown_tool :: proc(t: ^testing.T) {
 	testing.expect_value(t, detail, "no_such_tool")
 }
 
-// test_mcp_known_tool_not_implemented pins the fallthrough contract for a tool that
-// IS in the table but no family arm claims (`break`): the call returns the in-band
-// not-implemented IsError envelope keyed off the Tool_Spec, never a JSON-RPC error —
-// the same in-band convention every domain failure rides.
 @(test)
 test_mcp_known_tool_not_implemented :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"break"}}`)
@@ -173,9 +131,6 @@ test_mcp_known_tool_not_implemented :: proc(t: ^testing.T) {
 	testing.expect_value(t, detail, "break")
 }
 
-// test_mcp_notification_dropped pins the MCP handshake contract: a notifications/*
-// message (no id, no reply expected) is accepted and produces NO response line, so
-// the handshake completes. notifications/initialized is the canonical case.
 @(test)
 test_mcp_notification_dropped :: proc(t: ^testing.T) {
 	registry := mcp_session_registry_make(context.temp_allocator)
@@ -184,9 +139,6 @@ test_mcp_notification_dropped :: proc(t: ^testing.T) {
 	testing.expect_value(t, strings.to_string(conn.outgoing), "")
 }
 
-// test_mcp_method_not_found pins the PROTOCOL-fault path: an unknown method (not a
-// notification) returns a JSON-RPC error object with code -32601 — the protocol
-// fault the caller cannot act on, distinct from a domain failure's in-band envelope.
 @(test)
 test_mcp_method_not_found :: proc(t: ^testing.T) {
 	line := drive_handler(t, `{"jsonrpc":"2.0","id":6,"method":"resources/list","params":{}}`)
@@ -197,11 +149,6 @@ test_mcp_method_not_found :: proc(t: ^testing.T) {
 	testing.expect_value(t, i64(code), i64(MCP_JSONRPC_METHOD_NOT_FOUND))
 }
 
-// test_mcp_stdout_discipline is the load-bearing invariant: across a full
-// initialize → tools/list → tools/call exchange the server emits ONLY JSON-RPC lines
-// on the framed stream — every line parses as a JSON object carrying "jsonrpc":"2.0"
-// and EITHER "result" or "error". A diagnostic leaking to stdout would surface here
-// as a non-JSON-RPC line and fail. Every diagnostic must route to stderr.
 @(test)
 test_mcp_stdout_discipline :: proc(t: ^testing.T) {
 	exchange := []string {
@@ -215,7 +162,6 @@ test_mcp_stdout_discipline :: proc(t: ^testing.T) {
 	serve_mcp_connection(mcp_jsonrpc_handler(&registry), server_mem_transport(&conn), context.temp_allocator)
 
 	out := strings.to_string(conn.outgoing)
-	// The notification produced no line, so the framed stream is exactly 3 responses.
 	lines := strings.split_lines(strings.trim_right(out, "\n"), context.temp_allocator)
 	testing.expect_value(t, len(lines), 3)
 	for response, i in lines {
@@ -231,31 +177,14 @@ test_mcp_stdout_discipline :: proc(t: ^testing.T) {
 	}
 }
 
-// test_mcp_verb_exit_codes pins the {0,1,2} exit contract's clean-shutdown arm: a
-// served connection that reaches EOF (the host closed stdin) ends the loop and the
-// verb core returns 0 — a clean serve-then-EOF is success. The usage tier (exit 2)
-// is the framework's, pinned by cli_root_test; the exit-1 fault tier has no path
-// through the dispatch loop (it never panics on wire input — every malformed request
-// is a JSON-RPC error response). This test drives the loop to a natural EOF close to
-// prove the 0-exit shutdown.
 @(test)
 test_mcp_verb_exit_codes :: proc(t: ^testing.T) {
-	// A connection whose stream drains (EOF) returns from the serve loop cleanly —
-	// the same path run_mcp_verb returns 0 after.
 	registry := mcp_session_registry_make(context.temp_allocator)
 	conn := server_mem_conn({`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`}, context.temp_allocator)
 	serve_mcp_connection(mcp_jsonrpc_handler(&registry), server_mem_transport(&conn), context.temp_allocator)
-	// The loop returned (did not hang) and framed exactly the one response — the
-	// clean EOF shutdown run_mcp_verb maps to exit 0.
 	testing.expect(t, strings.contains(strings.to_string(conn.outgoing), `"id":1`), "the request was answered before the clean EOF close")
 }
 
-// --- in-memory transport backing (server-test-local twin of the transport-test seam) ---
-
-// Server_Mem_Conn is the in-memory Line_Transport backing for the protocol-loop
-// tests — the same shape as mcp_transport_test.odin's file-private Mcp_Mem_Conn,
-// re-declared here because that one is @(private="file"). `incoming` is the peer
-// byte stream recv drains; `outgoing` accumulates the framed responses send writes.
 @(private = "file")
 Server_Mem_Conn :: struct {
 	incoming: []byte,
@@ -294,8 +223,6 @@ server_mem_conn :: proc(lines: []string, allocator := context.allocator) -> Serv
 	return Server_Mem_Conn{incoming = transmute([]byte)strings.to_string(b), outgoing = strings.builder_make(allocator)}
 }
 
-// expect_jsonrpc_object parses a framed response line, asserts it is a JSON-RPC 2.0
-// envelope echoing the expected id, and returns the parsed object.
 @(private = "file")
 expect_jsonrpc_object :: proc(t: ^testing.T, line: string, want_id: i64, loc := #caller_location) -> json.Object {
 	parsed, err := json.parse(transmute([]u8)line, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
@@ -309,8 +236,6 @@ expect_jsonrpc_object :: proc(t: ^testing.T, line: string, want_id: i64, loc := 
 	return object
 }
 
-// expect_jsonrpc_result asserts a success response (a "result" object present) and
-// returns the result — the common path for initialize / tools/* assertions.
 @(private = "file")
 expect_jsonrpc_result :: proc(t: ^testing.T, line: string, want_id: i64, loc := #caller_location) -> json.Object {
 	object := expect_jsonrpc_object(t, line, want_id, loc)

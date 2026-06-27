@@ -7,7 +7,7 @@
   "scopes": {
     "funpack": "funpack/",
     "runtime": "runtime/",
-    "mcp": "mcp/",
+    "mcp": "cmd/funpack/",
     "cli": "cli/",
     "eir": "cmd/eir/",
     "teams": "teams/",

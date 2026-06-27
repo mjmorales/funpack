@@ -1,21 +1,3 @@
-// Deliberate spec for the inspect_screenshot family (mcp_tools_screenshot.odin) — the
-// living junction test for the QOI→PNG transcode and the present-boundary dispatch arm.
-// The headline test (test_shot_png_is_structurally_valid) is the ADR's named obligation:
-// the hand-rolled PNG encoder emits a STRUCTURALLY VALID PNG — signature + IHDR + IDAT +
-// IEND in order, every chunk's CRC32 correct — verified by re-parsing the bytes through
-// core:image/png (the decode-only twin of the encoder core lacks). The rest pin the
-// transcode round-trip (QOI→PNG preserves pixels), the dispatch claim (only
-// inspect_screenshot is owned), the stale-session refusal, and the present-boundary
-// refusal that names inspect_draw_list — the arm's whole contract surface.
-//
-// DEFINE-FREE FLOOR: these run in the default `odin test .` build (no FUNPACK_LIVE, no
-// SDL). The PNG encoder + QOI codec are SDL-free, so the encoder is pinned in the same
-// deterministic floor. A headless session's screenshot fold returns the §28 FUNPACK_LIVE
-// refusal — which is PRECISELY the present-boundary path the refusal test exercises, so
-// the headless floor is the natural home for that assertion, not a limitation.
-//
-// EVERY symbol here is prefixed `shot_` (tests included) so package main carries no
-// duplicate symbol when all six family files merge.
 package main
 
 import funpack_runtime "../../runtime"
@@ -31,10 +13,6 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// SHOT_FIXTURE is a minimal one-behavior artifact (mirrors mcp_session_test.odin's
-// SESSION_FIXTURE) so the dispatch-arm tests can open a real headless session and fold a
-// §28 screenshot through it — exercising the present-boundary refusal. Inlined per the
-// self-contained-test standard (the runtime fixture is file-private).
 SHOT_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project introspect\n" +
@@ -70,9 +48,6 @@ SHOT_FIXTURE :: "funpack-artifact 19\n" +
 	"[entrypoint 1]\n" +
 	"entrypoint main pipeline:Intro tick_hz:60 logical:160x120 bindings:bindings\n"
 
-// shot_stage_fixture writes SHOT_FIXTURE to a uniquely-named temp file and returns its
-// path. ok=false (skip, never false-fail) when the temp root cannot be staged. The
-// caller defers os.remove.
 @(private = "file")
 shot_stage_fixture :: proc(t: ^testing.T, name: string) -> (path: string, ok: bool) {
 	base := os.get_env("TMPDIR", context.temp_allocator)
@@ -86,10 +61,6 @@ shot_stage_fixture :: proc(t: ^testing.T, name: string) -> (path: string, ok: bo
 	return path, true
 }
 
-// shot_make_qoi_rgba encodes a small RGBA8 test frame to base64-QOI (the SAME shape
-// session_capture_frame emits) so the transcode tests feed the arm/encoder a real QOI
-// payload without a live present pass. The pattern is a deterministic per-pixel gradient
-// so a round-trip can assert exact pixel preservation.
 @(private = "file")
 shot_make_qoi_rgba :: proc(width, height: int, allocator := context.allocator) -> (base64_qoi: string, raw_rgba: []u8) {
 	raw_rgba = make([]u8, width * height * 4, allocator)
@@ -117,12 +88,6 @@ shot_make_qoi_rgba :: proc(width, height: int, allocator := context.allocator) -
 	return base64.encode(bytes.buffer_to_bytes(&buf), base64.ENC_TABLE, allocator), raw_rgba
 }
 
-// test_shot_png_is_structurally_valid is THE named ADR obligation: the hand-rolled PNG
-// encoder emits a structurally valid PNG. It asserts the 8-byte signature, the IHDR /
-// IDAT / IEND chunk order, and EVERY chunk's CRC32 — by walking the chunk stream by hand
-// and recomputing each CRC — then re-decodes the whole thing through core:image/png to
-// prove a real PNG reader accepts it. A malformed length, a wrong CRC, or a missing
-// chunk fails here.
 @(test)
 test_shot_png_is_structurally_valid :: proc(t: ^testing.T) {
 	width, height := 5, 3
@@ -135,13 +100,10 @@ test_shot_png_is_structurally_valid :: proc(t: ^testing.T) {
 	testing.expect(t, ok, "the encoder accepts a well-formed RGBA frame")
 	testing.expect(t, len(encoded) > 8, "the PNG is non-empty")
 
-	// 1) The 8-byte signature.
 	for sig_byte, i in SHOT_PNG_SIGNATURE {
 		testing.expect_value(t, encoded[i], sig_byte)
 	}
 
-	// 2) Walk the chunk stream, recompute each CRC, and collect the type order. A chunk
-	// is [len:u32be][type:4][data:len][crc:u32be]; the CRC covers type+data.
 	types, crcs_ok := shot_walk_chunks(encoded[8:])
 	testing.expect(t, crcs_ok, "every chunk CRC32 recomputes correctly")
 	testing.expect(t, len(types) >= 3, "the PNG carries at least IHDR, IDAT, IEND")
@@ -155,11 +117,6 @@ test_shot_png_is_structurally_valid :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, saw_idat, "the PNG carries an IDAT chunk")
 
-	// 3) A real PNG decoder accepts the bytes and reads back the geometry — the
-	// strongest structural assertion (the encoder's stored-block zlib + filter-0
-	// scanlines + adler32 all check out under an independent reader). Load + destroy on
-	// the default (heap) allocator so png.destroy (which frees on context.allocator)
-	// matches the load allocation — a mismatch is a cross-allocator bad free.
 	decoded, decode_err := png.load_from_bytes(encoded, image.Options{})
 	testing.expect(t, decode_err == nil, "core:image/png decodes the hand-rolled PNG")
 	if decoded != nil {
@@ -169,10 +126,6 @@ test_shot_png_is_structurally_valid :: proc(t: ^testing.T) {
 	}
 }
 
-// shot_walk_chunks walks a PNG chunk stream (post-signature), recomputing each chunk's
-// CRC32 and collecting the type codes in order. ok=false on a truncated stream or a CRC
-// mismatch. This is the structural validator the headline test asserts against — it does
-// NOT trust the encoder, it re-derives every CRC the way a conformant reader would.
 @(private = "file")
 shot_walk_chunks :: proc(stream: []u8) -> (types: [dynamic]string, ok: bool) {
 	types = make([dynamic]string, context.temp_allocator)
@@ -188,7 +141,7 @@ shot_walk_chunks :: proc(stream: []u8) -> (types: [dynamic]string, ok: bool) {
 		type_code := string(stream[type_start:type_start + 4])
 		append(&types, type_code)
 
-		crc_input := stream[type_start:crc_start] // type + data, the PNG CRC input
+		crc_input := stream[type_start:crc_start]
 		want := shot_read_u32_be(stream[crc_start:crc_start + 4])
 		if hash.crc32(crc_input) != want {
 			return types, false
@@ -201,17 +154,11 @@ shot_walk_chunks :: proc(stream: []u8) -> (types: [dynamic]string, ok: bool) {
 	return types, false
 }
 
-// shot_read_u32_be reads a big-endian u32 from a 4-byte slice — the inverse of
-// shot_put_u32_be, used by the chunk walker to read lengths and CRCs.
 @(private = "file")
 shot_read_u32_be :: proc(src: []u8) -> u32 {
 	return u32(src[0]) << 24 | u32(src[1]) << 16 | u32(src[2]) << 8 | u32(src[3])
 }
 
-// test_shot_qoi_to_png_round_trip pins the full transcode: a known RGBA frame → QOI →
-// shot_qoi_to_png_bytes → core:image/png decode reproduces the ORIGINAL pixels exactly.
-// This is the §28-pixels → on-disk-image path the arm runs, and it proves the encoder is
-// lossless (stored blocks + filter-0 carry the bytes verbatim).
 @(test)
 test_shot_qoi_to_png_round_trip :: proc(t: ^testing.T) {
 	width, height := 8, 6
@@ -221,7 +168,6 @@ test_shot_qoi_to_png_round_trip :: proc(t: ^testing.T) {
 	png_bytes, ok := shot_qoi_to_png_bytes(base64_qoi, context.temp_allocator)
 	testing.expect(t, ok, "the QOI→PNG transcode succeeds")
 
-	// Load + destroy on the default (heap) allocator so png.destroy matches the load.
 	decoded, load_err := png.load_from_bytes(png_bytes, image.Options{})
 	testing.expect(t, load_err == nil, "the transcoded PNG decodes")
 	if decoded == nil {
@@ -231,14 +177,9 @@ test_shot_qoi_to_png_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, decoded.width, width)
 	testing.expect_value(t, decoded.height, height)
 	testing.expect_value(t, decoded.channels, 4)
-	// Exact pixel preservation — the round-trip is lossless.
 	testing.expect(t, bytes.equal(decoded.pixels.buf[:], raw_rgba), "every pixel survives QOI→PNG")
 }
 
-// test_shot_screenshot_path_shape pins the PURE path builder: <dir>/funpack-screenshot-
-// <timestamp>-tick<N>.png. No clock, no IO — the filename shape is deterministic given
-// its inputs, so this fixes the on-disk naming contract the model reads back without
-// touching the filesystem.
 @(test)
 test_shot_screenshot_path_shape :: proc(t: ^testing.T) {
 	p := shot_screenshot_path("/some/dir", 7, "20260619-193245-000000001", context.temp_allocator)
@@ -250,10 +191,6 @@ test_shot_screenshot_path_shape :: proc(t: ^testing.T) {
 	)
 }
 
-// test_shot_timestamp_shape pins the wall-clock stamp's fixed-width shape (YYYYMMDD-
-// HHMMSS-<ns>): 8+1+6+1+9 = 25 chars with dashes at the two field boundaries. It asserts
-// the SHAPE, not a value (the clock moves), so the lexically-sortable, collision-free
-// filename contract holds without pinning real time.
 @(test)
 test_shot_timestamp_shape :: proc(t: ^testing.T) {
 	stamp := shot_timestamp(context.temp_allocator)
@@ -262,10 +199,6 @@ test_shot_timestamp_shape :: proc(t: ^testing.T) {
 	testing.expect_value(t, stamp[15], '-')
 }
 
-// test_shot_output_dir_default_and_env pins the directory resolver's two arms: unset,
-// FUNPACK_SCREENSHOT_DIR falls back to SHOT_DEFAULT_DIR (the /tmp-rooted default); set
-// to a non-empty value, that value wins verbatim. It mutates the process env and
-// restores it, so it neither leaks nor depends on ambient state.
 @(test)
 test_shot_output_dir_default_and_env :: proc(t: ^testing.T) {
 	saved, had := os.lookup_env(SHOT_DIR_ENV, context.temp_allocator)
@@ -277,30 +210,22 @@ test_shot_output_dir_default_and_env :: proc(t: ^testing.T) {
 
 	_ = os.unset_env(SHOT_DIR_ENV)
 	testing.expect_value(t, shot_output_dir(context.temp_allocator), SHOT_DEFAULT_DIR)
-	// The default is an absolute /tmp-rooted path, not a cwd-relative folder.
 	testing.expect(t, strings.has_prefix(SHOT_DEFAULT_DIR, "/tmp/"), "the default lands under /tmp")
 
 	_ = os.set_env(SHOT_DIR_ENV, "/custom/shots")
 	testing.expect_value(t, shot_output_dir(context.temp_allocator), "/custom/shots")
 }
 
-// test_shot_build_content_pixels_opt_in pins the content-assembly contract: by default
-// (include_pixels=false) the result is the link ONLY — a single text block carrying the
-// path metadata, NEVER inline pixels. Opting in (include_pixels=true) ADDS an MCP image
-// block carrying the base64 PNG ALONGSIDE the link (text first, image second). This is
-// the SDL-free junction proving "raw pixels never returned unless opted into".
 @(test)
 test_shot_build_content_pixels_opt_in :: proc(t: ^testing.T) {
 	meta := `{"tick":0,"width":4,"height":2,"path":"/tmp/funpack-mcp/x.png"}`
 	png := []u8{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02}
 
-	// Default: link only — one text block, no image block.
 	off := shot_build_content(meta, png, false, context.temp_allocator)
 	testing.expect_value(t, len(off), 1)
 	testing.expect_value(t, off[0].kind, Mcp_Content_Kind.Text)
 	testing.expect_value(t, off[0].text, meta)
 
-	// Opt-in: link PLUS the inline image, in that order.
 	on := shot_build_content(meta, png, true, context.temp_allocator)
 	testing.expect_value(t, len(on), 2)
 	testing.expect_value(t, on[0].kind, Mcp_Content_Kind.Text)
@@ -310,14 +235,8 @@ test_shot_build_content_pixels_opt_in :: proc(t: ^testing.T) {
 	testing.expect_value(t, on[1].data, base64.encode(png, base64.ENC_TABLE, context.temp_allocator))
 }
 
-// test_shot_build_request_line_marshals_optionals pins the §28 request marshalling: tick
-// is always present; include_drawlist, overlay, and branch are each EMITTED when set and
-// ELIDED when unset (so the runtime applies its own defaults). overlay coverage pins the
-// invariant that a contract-declared arg the MCP tool advertises actually rides the §28
-// wire — the advertised tool schema and the wire marshalling must agree.
 @(test)
 test_shot_build_request_line_marshals_optionals :: proc(t: ^testing.T) {
-	// Bare tick: no optional keys at all.
 	bare := shot_build_request_line(0, false, false, false, false, "", false, context.temp_allocator)
 	testing.expect(t, strings.contains(bare, `"cmd":"screenshot"`), "the command is screenshot")
 	testing.expect(t, strings.contains(bare, `"tick":0`), "tick is always marshalled")
@@ -325,7 +244,6 @@ test_shot_build_request_line_marshals_optionals :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(bare, "overlay"), "an unset overlay is elided")
 	testing.expect(t, !strings.contains(bare, "branch"), "an unset branch is elided")
 
-	// All optionals set: each rides the wire with its value.
 	full := shot_build_request_line(3, true, true, true, true, "fork-1", true, context.temp_allocator)
 	testing.expect(t, strings.contains(full, `"tick":3`), "tick carries its value")
 	testing.expect(t, strings.contains(full, `"include_drawlist":true`), "include_drawlist rides when set")
@@ -333,11 +251,6 @@ test_shot_build_request_line_marshals_optionals :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(full, `"branch":"fork-1"`), "branch rides when set")
 }
 
-// test_shot_write_png_file_round_trip pins the disk-write junction in the DEFAULT floor
-// (no FUNPACK_LIVE): shot_write_png_file creates the directory on demand, writes a real
-// hand-rolled PNG, returns the timestamped path, and a real PNG reader loads the file
-// back with the original geometry. The live capture only runs under FUNPACK_LIVE, so
-// this is where the write path is proven — SDL-free, deterministic.
 @(test)
 test_shot_write_png_file_round_trip :: proc(t: ^testing.T) {
 	width, height := 4, 2
@@ -365,9 +278,6 @@ test_shot_write_png_file_round_trip :: proc(t: ^testing.T) {
 		"the written path carries the timestamped filename",
 	)
 
-	// A real PNG reader loads the file back — the bytes on disk ARE a valid PNG of the
-	// captured geometry. Load + destroy on the default (heap) allocator so png.destroy
-	// matches the load.
 	decoded, load_err := png.load_from_file(path)
 	testing.expect(t, load_err == nil, "core:image/png loads the written file")
 	if decoded != nil {
@@ -377,17 +287,12 @@ test_shot_write_png_file_round_trip :: proc(t: ^testing.T) {
 	}
 }
 
-// test_shot_dispatch_declines_other_tools pins the chain contract: the arm claims ONLY
-// inspect_screenshot and returns handled=false for any other tool, so unrelated tools
-// flow down MCP_DISPATCH_CHAIN untouched. A nil registry is safe here — the decline
-// returns before any registry access.
 @(test)
 test_shot_dispatch_declines_other_tools :: proc(t: ^testing.T) {
 	for name in ([?]string{"inspect_draw_list", "inspect_pipeline", "session_start", "build"}) {
 		_, handled := mcp_screenshot_dispatch(Mcp_Dispatch{name = name}, context.temp_allocator)
 		testing.expect(t, !handled, "the arm declines tools it does not own")
 	}
-	// And it CLAIMS its own tool.
 	_, handled := mcp_screenshot_dispatch(
 		Mcp_Dispatch{name = SHOT_TOOL_NAME, id = Mcp_Id{kind = .Integer, integer = 1}},
 		context.temp_allocator,
@@ -395,20 +300,6 @@ test_shot_dispatch_declines_other_tools :: proc(t: ^testing.T) {
 	testing.expect(t, handled, "the arm claims inspect_screenshot")
 }
 
-// test_shot_present_boundary_end_to_end folds a §28 screenshot through a real session
-// and asserts the arm's whole BUILD-CONDITIONED contract — the one piece of behavior
-// that legitimately diverges by build, because session_capture_frame is itself a build
-// split (session_live.odin, gated when #config(FUNPACK_LIVE)):
-//
-//   - DEFINE-FREE floor (no FUNPACK_LIVE): the capture is the no-op stub, the §28 fold
-//     refuses, and the arm reframes that as a Session-category IsError naming
-//     inspect_draw_list — NEVER a JSON-RPC error, NEVER a transcode over an absent frame.
-//   - FUNPACK_LIVE build (the binary that ships the verb): the dummy SDL driver captures
-//     headlessly, so the arm writes a PNG to disk and returns a metadata text block
-//     (isError false) carrying the on-disk path the operator reads — no inline pixels.
-//
-// Pinning BOTH arms here keeps the test a living spec of the arm in the build it runs in,
-// not a single-build snapshot that silently passes in the wrong one.
 @(test)
 test_shot_present_boundary_end_to_end :: proc(t: ^testing.T) {
 	path, staged := shot_stage_fixture(t, "funpack-mcp-shot-present.fpk")
@@ -430,35 +321,24 @@ test_shot_present_boundary_end_to_end :: proc(t: ^testing.T) {
 	}
 	line, handled := mcp_screenshot_dispatch(dispatch, context.temp_allocator)
 	testing.expect(t, handled, "the arm claims inspect_screenshot")
-	// Either arm is a SUCCESSFUL tools/call — never a JSON-RPC error object.
 	testing.expect(t, strings.contains(line, `"result":`), "the response is an in-band tools/call result")
 	testing.expect(t, !strings.contains(line, `"error":{"code"`), "the response is NOT a JSON-RPC error object")
 
 	when #config(FUNPACK_LIVE, false) {
-		// The shipping build captures pixels, writes them to disk, and returns the PATH in
-		// a metadata text block — never inline base64, never an image content block.
 		testing.expect(t, strings.contains(line, `"isError":false`), "a live capture is not an error")
 		testing.expect(t, strings.contains(line, `"type":"text"`), "the live capture returns a metadata text block")
 		testing.expect(t, !strings.contains(line, `"type":"image"`), "the live capture carries NO inline image block")
-		// The metadata envelope rides as an ESCAPED JSON string in the text block, so its
-		// quotes are backslash-escaped on the wire (\"path\":\"…/funpack-screenshot-…\").
 		testing.expect(t, strings.contains(line, `\"path\":`), "the metadata carries the on-disk path")
 		testing.expect(t, strings.contains(line, "funpack-screenshot-"), "the path names a funpack screenshot file")
 	} else {
-		// The deterministic floor refuses and points at the sim-pure twin. The envelope
-		// rides as an ESCAPED JSON string in the text block, so its quotes are escaped.
 		testing.expect(t, strings.contains(line, `"isError":true`), "the headless refusal sets isError")
 		testing.expect(t, strings.contains(line, `\"category\":\"session\"`), "the present-boundary refusal is Session-category")
 		testing.expect(t, strings.contains(line, "inspect_draw_list"), "the refusal names the headless substitute")
 	}
 }
 
-// shot_args_object builds a tools/call `arguments` json.Object {session_id, tick} the
-// way the protocol loop hands the arm — by parsing a JSON literal, so the test exercises
-// the SAME json.Object read path production uses (no hand-built map).
 @(private = "file")
 shot_args_object :: proc(session_id: string, tick: int, allocator := context.allocator) -> (obj: json.Object) {
-	// Built via mcp_parse_request to mirror the real wire path exactly.
 	b := strings.builder_make(allocator)
 	strings.write_string(&b, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"inspect_screenshot","arguments":{"session_id":`)
 	funpack_runtime.write_json_string(&b, session_id)
@@ -471,9 +351,6 @@ shot_args_object :: proc(session_id: string, tick: int, allocator := context.all
 	return object
 }
 
-// test_shot_stale_session_refusal pins the unknown-session path: a screenshot against an
-// id the registry never minted is a Session-category IsError (the session is never
-// fabricated), so the model knows to re-open rather than retry blindly.
 @(test)
 test_shot_stale_session_refusal :: proc(t: ^testing.T) {
 	registry := mcp_session_registry_make(context.temp_allocator)
@@ -491,16 +368,9 @@ test_shot_stale_session_refusal :: proc(t: ^testing.T) {
 	line, handled := mcp_screenshot_dispatch(dispatch, context.temp_allocator)
 	testing.expect(t, handled, "the arm claims inspect_screenshot")
 	testing.expect(t, strings.contains(line, `"isError":true`), "the stale-session refusal sets isError")
-	// The {category,...} envelope rides inside the text content as an ESCAPED JSON
-	// string, so its quotes are backslash-escaped on the wire (\"category\":\"session\").
 	testing.expect(t, strings.contains(line, `\"category\":\"session\"`), "the stale-session refusal is Session-category")
 }
 
-// test_shot_input_refusal_forwarded pins the caller-input branch of shot_map_refusal: a
-// runtime refusal that is the caller's argument mistake (tick out of range, unknown
-// branch) is a resolved-but-refused command, forwarded as the runtime stated it under the
-// .Refused category — the caller fixes the argument, the MCP does NOT reframe it toward
-// the present boundary or tell the model to reopen a healthy session.
 @(test)
 test_shot_input_refusal_forwarded :: proc(t: ^testing.T) {
 	for marker in ([?]string{"tick out of range", "missing args.tick", "unknown branch — checkout an existing lineage"}) {
@@ -509,7 +379,6 @@ test_shot_input_refusal_forwarded :: proc(t: ^testing.T) {
 		testing.expect_value(t, err.message, marker)
 		testing.expect(t, !strings.contains(err.message, "FUNPACK_LIVE"), "a caller-input refusal is forwarded unreframed")
 	}
-	// The present-boundary crossing (anything else) IS reframed toward inspect_draw_list.
 	boundary := shot_map_refusal("screenshot crosses the render/present boundary — requires a FUNPACK_LIVE build with a display")
 	testing.expect(t, strings.contains(boundary.message, "inspect_draw_list"), "the present-boundary refusal names the substitute")
 	testing.expect(t, strings.contains(boundary.message, "FUNPACK_LIVE"), "the present-boundary refusal names the missing build flag")
