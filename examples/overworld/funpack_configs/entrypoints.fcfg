@@ -1,0 +1,8 @@
+use overworld.{Overworld, bindings}
+
+entrypoint main {
+  pipeline = Overworld
+  tick     = 60hz
+  logical  = 256x240
+  bindings = bindings
+}

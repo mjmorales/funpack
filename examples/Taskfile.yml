@@ -1,0 +1,27 @@
+version: '3'
+
+# examples/ holds standalone funpack game projects (each a §14 tree: funpack_configs/
+# + src/). `run` builds the single funpack binary from the repo root, then plays a
+# named game with CWD on its folder — `funpack run` resolves the §14 project from CWD.
+
+includes:
+  repo:
+    taskfile: ..
+    dir: ..
+
+vars:
+  REPO_ROOT:
+    sh: git rev-parse --show-toplevel
+  FUNPACK_BIN: '{{.REPO_ROOT}}/cmd/funpack/funpack'
+
+tasks:
+  run:
+    desc: 'Build the latest binary and play a game with CWD on its folder — task run -- <game-dir>'
+    preconditions:
+      - sh: '[ -n "{{.CLI_ARGS}}" ]'
+        msg: 'usage: task run -- <game-dir>  (e.g. task run -- overworld)'
+      - sh: 'test -d "{{.REPO_ROOT}}/examples/{{.CLI_ARGS}}/funpack_configs"'
+        msg: 'no funpack project at examples/{{.CLI_ARGS}} (expected a funpack_configs/ dir)'
+    cmds:
+      - task: repo:binary
+      - 'cd "{{.REPO_ROOT}}/examples/{{.CLI_ARGS}}" && exec "{{.FUNPACK_BIN}}" run'

@@ -15,3 +15,9 @@ tasks:
     desc: Compile the funpack CLI executable
     cmds:
       - odin build . -out:funpack
+
+  run:
+    desc: Build and run the funpack CLI executable
+    cmds:
+      - task: binary
+      - ./funpack
