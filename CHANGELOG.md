@@ -7,6 +7,15 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.29.1] - 2026-06-27
+
+### Other
+- refactor(funpack): sweep the compiler to near-zero comments (34b04a0)
+- refactor(runtime): sweep the runtime library to near-zero comments (35a305d)
+- refactor(mcp): sweep the cmd/funpack entry package to near-zero comments (14f906a)
+- refactor(cli): sweep the CLI framework to near-zero comments (8bad56f)
+- refactor(eir): sweep eir/ + cmd/eir/ to near-zero comments, wire the budget gate (6183a86)
+
 ## [0.29.0] - 2026-06-27
 
 ### Features
