@@ -14,6 +14,20 @@ import "core:path/filepath"
 
 NO_POS :: tokenizer.Pos{}
 
+// warm_tokenizer_keyword_lut builds core:odin/tokenizer's process-global keyword
+// LUT once, serially, at program init — before the parallel test runner (or any
+// future concurrent parse) spawns a worker thread. The upstream lazy init guards
+// the LUT with a double-checked lock that never re-checks inside the lock, so two
+// threads racing the first parse both run keyword_lut_init and the second asserts
+// on an already-filled slot. Pre-warming on the single init thread closes that race
+// window for every parser-using lint.
+@(init)
+warm_tokenizer_keyword_lut :: proc "contextless" () {
+	context = runtime.default_context()
+	t: tokenizer.Tokenizer
+	tokenizer.init(&t, "package p", "")
+}
+
 // Loaded is one successfully parsed source: the absolute path, the test/non-test
 // tag carried from discovery, and the parsed tree. file points into the loader's
 // allocator and is valid for that allocator's lifetime.
