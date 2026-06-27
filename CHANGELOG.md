@@ -7,6 +7,14 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.30.0] - 2026-06-27
+
+### Features
+- feat(examples): add the overworld example game with run tasks (8f3a638)
+
+### Fixes
+- fix(mcp): stop the observe/time family from owning inspect_screenshot (e57cbac)
+
 ## [0.29.1] - 2026-06-27
 
 ### Other
