@@ -1,61 +1,9 @@
-// The §02 canonical formatter's rendering core: a pure AST → text projection.
-// Spec §02 fixes the doctrine — "A canonical formatter ships in funpack, is
-// mandatory and idempotent; the AST is the source of truth and text is its
-// projection" — and this file IS that projection: one canonical text form for
-// any well-formed parsed AST, byte-deterministic (no maps walked, no clock, no
-// IO — every list renders in slice order) and re-parseable to an equivalent
-// AST (equivalence is modulo the `line` span-provenance fields, which are
-// projection metadata, not AST content).
-//
-// Canonical-form rules the renderer fixes where §02 under-specifies (each
-// chosen to round-trip and to match the dominant in-repo example corpus
-// spelling):
-//   - Declarations render in SOURCE ORDER (module @doc, imports, then the
-//     Ast's source-ordered declaration sequence): the author's cross-kind
-//     interleaving — a thing beside its behaviors and signals — IS canonical
-//     form, never reordered (ADR
-//     2026-06-10-formatter-canon-source-ordered-declarations, superseding the
-//     interim kind-grouped rendering).
-//   - One blank line between adjacent top-level declarations; the module @doc
-//     and the import block are contiguous.
-//   - Directive block order: @doc, the bare @expose marker, @gtag (ONE
-//     directive carrying every label), @todo notes, then debug probes,
-//     families in slice order. Declaration-targeting directives render
-//     adjacent to their keyword, after that block: @index/@spatial before
-//     `query`, the decl-level @migrate before `data`; a field-level @migrate
-//     renders inline before its field name.
-//   - data/enum/signal bodies are single-line (`data Board { w: Fixed, h:
-//     Fixed }`); thing/singleton bodies are multiline with the type column
-//     aligned to the longest field name; pipeline stages are multiline with
-//     the value column aligned to the longest stage name. The one enum
-//     exception: an enum any of whose variants carries a §05 §1 @doc renders
-//     multiline (the thing/singleton mold), each doc line above its variant —
-//     a doc line cannot sit inside a single-line body, and a doc-less enum
-//     keeps the single-line corpus rendering unchanged.
-//   - Record literals are tight (`Vec2{x: v.x}`); `with` updates are spaced
-//     (`self with { y: v }`); declaration braces are spaced (`{ w: Fixed }`).
-//   - Expressions render on one line — separators normalize to `, `, member
-//     chains do not break — except `match`, which always renders multiline
-//     with one arm per line.
-//   - An `if` STATEMENT with a single-statement body renders on one line
-//     (`if cond { return x }`); otherwise multiline.
-//   - Minimal parentheses are re-inserted from precedence alone (the parser
-//     unwraps groupings), and a match scrutinee / `if` condition whose spine
-//     would expose a record brace in the parser's no-struct-literal context is
-//     wrapped in one pair of parentheses.
-//   - A Fixed literal renders as the SHORTEST decimal spelling whose
-//     fixed_from_decimal bits equal the stored bits (`160.0`, `0.5`).
 package funpack
 
 import "core:strings"
 
-// FMT_INDENT is the one indentation unit of the canonical form (spec §02 §1:
-// the formatter re-indents, so whitespace is never counted).
 FMT_INDENT :: "  "
 
-// render_canonical projects a parsed AST to its single canonical text form.
-// Pure: two calls on the same AST yield byte-identical strings. The returned
-// string is allocated in `allocator`.
 render_canonical :: proc(ast: Ast, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	wrote_header := false
@@ -68,10 +16,6 @@ render_canonical :: proc(ast: Ast, allocator := context.allocator) -> string {
 		wrote_header = true
 	}
 	wrote_decl := wrote_header
-	// Declarations render through the Ast's source-ordered sequence — the
-	// author's cross-kind interleaving is the canonical order, so the
-	// projection preserves it (the switch is total over Ast_Decl_Kind: a new
-	// declaration kind is a visible compile gap here).
 	for ref in ast.decls {
 		fmt_decl_separator(&b, &wrote_decl)
 		switch ref.kind {
@@ -102,8 +46,6 @@ render_canonical :: proc(ast: Ast, allocator := context.allocator) -> string {
 	return strings.to_string(b)
 }
 
-// fmt_decl_separator writes the single blank line between adjacent top-level
-// declarations (and between the header block and the first declaration).
 fmt_decl_separator :: proc(b: ^strings.Builder, wrote_prior: ^bool) {
 	if wrote_prior^ {
 		strings.write_string(b, "\n")
@@ -111,19 +53,12 @@ fmt_decl_separator :: proc(b: ^strings.Builder, wrote_prior: ^bool) {
 	wrote_prior^ = true
 }
 
-// ── header ───────────────────────────────────────────────────────────────
-
-// fmt_doc_line writes one `@doc("…")` line; the content is the lexer-verbatim
-// inner text — a quote can only appear ESCAPED (`\"`, lexical-core §4) and the
-// lexer carries the raw spelling, backslash included, so it re-lexes whole.
 fmt_doc_line :: proc(b: ^strings.Builder, doc: string) {
 	strings.write_string(b, "@doc(\"")
 	strings.write_string(b, doc)
 	strings.write_string(b, "\")\n")
 }
 
-// fmt_import writes one import in its parsed form (spec §02 §4): the dotted
-// path, plus the `.{m, …}` member group when one was written.
 fmt_import :: proc(b: ^strings.Builder, imp: Import_Node) {
 	strings.write_string(b, "import ")
 	for segment, i in imp.segments {
@@ -145,14 +80,6 @@ fmt_import :: proc(b: ^strings.Builder, imp: Import_Node) {
 	strings.write_string(b, "\n")
 }
 
-// ── directives ───────────────────────────────────────────────────────────
-
-// fmt_directives writes a declaration's leading directive block in canonical
-// order: @doc, the bare @expose marker (the spec §30 §6 exemplar order — the
-// doc line leads, the contract marker follows), ONE @gtag carrying every
-// label, the @todo notes, then the debug probes — families in slice order.
-// The parser accumulates each family independently, so this fixed order
-// re-parses to the same Directives.
 fmt_directives :: proc(b: ^strings.Builder, doc: string, exposed: bool, gtags: []string, todos: []Todo_Node, probes: []Debug_Probe) {
 	if doc != "" {
 		fmt_doc_line(b, doc)
@@ -184,9 +111,6 @@ fmt_directives :: proc(b: ^strings.Builder, doc: string, exposed: bool, gtags: [
 	}
 }
 
-// fmt_todo_window writes one §05 §2 expiry window in its form's one obvious
-// spelling: `30d`, `2026-09-01` (4/2/2 zero-padded), `5builds`, `T-0042`
-// (digits verbatim — zero padding kept).
 fmt_todo_window :: proc(b: ^strings.Builder, window: Todo_Window) {
 	switch window.form {
 	case .Duration:
@@ -207,8 +131,6 @@ fmt_todo_window :: proc(b: ^strings.Builder, window: Todo_Window) {
 	}
 }
 
-// fmt_probe writes one §05 §5 debug directive: `@break(pred)` / `@log(expr)`
-// / `@watch(expr)` with their mandatory argument, `@trace` bare.
 fmt_probe :: proc(b: ^strings.Builder, probe: Debug_Probe) {
 	switch probe.kind {
 	case .Break:
@@ -225,10 +147,6 @@ fmt_probe :: proc(b: ^strings.Builder, probe: Debug_Probe) {
 	strings.write_string(b, ")\n")
 }
 
-// fmt_migrate writes one §05 §6 @migrate directive in its closed form set:
-// `@migrate(from: "old")`, `@migrate(with: convert)`, or the combined
-// `@migrate(from: "old", with: convert)` — `from` before `with`, the only
-// order the parser admits, so the rendering re-parses to the same node.
 fmt_migrate :: proc(b: ^strings.Builder, node: Migrate_Node) {
 	strings.write_string(b, "@migrate(")
 	if node.has_from {
@@ -246,8 +164,6 @@ fmt_migrate :: proc(b: ^strings.Builder, node: Migrate_Node) {
 	strings.write_string(b, ")")
 }
 
-// fmt_zero_padded writes a non-negative value left-padded with zeros to the
-// given width — the ISO date components' 4/2/2 spellings.
 fmt_zero_padded :: proc(b: ^strings.Builder, value: i64, width: int) {
 	digits: [20]byte
 	n := 0
@@ -268,9 +184,6 @@ fmt_zero_padded :: proc(b: ^strings.Builder, value: i64, width: int) {
 	}
 }
 
-// ── declarations ─────────────────────────────────────────────────────────
-
-// fmt_let_decl writes a module-level constant: `let NAME: T = expr`.
 fmt_let_decl :: proc(b: ^strings.Builder, decl: Let_Decl_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "let ")
@@ -282,15 +195,9 @@ fmt_let_decl :: proc(b: ^strings.Builder, decl: Let_Decl_Node) {
 	strings.write_string(b, "\n")
 }
 
-// fmt_data writes `data Name { f: T, g: U }` single-line (the dominant corpus
-// spelling for data), with the optional §03 §3 generic header and the
-// optional `: Kind` ascription, in the fun.ebnf §4 declaration order.
 fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	if decl.has_migrate {
-		// The decl-level @migrate (a renamed type, spec §05 §6) renders
-		// adjacent to the `data` keyword it targets — the @index/@spatial
-		// adjacency mold — after the ordinary directive block.
 		fmt_migrate(b, decl.migrate)
 		strings.write_string(b, "\n")
 	}
@@ -305,14 +212,6 @@ fmt_data :: proc(b: ^strings.Builder, decl: Data_Node) {
 	strings.write_string(b, "\n")
 }
 
-// fmt_enum writes `enum Name { A, B(T), C{f: T} }` single-line, with the
-// optional §03 §3 generic header and the optional enum-as-role `: Kind`
-// ascription, in the fun.ebnf §4 declaration order. An enum any of whose
-// variants carries a §05 §1 @doc renders multiline instead (the
-// thing/singleton mold): one variant per line, comma-terminated except the
-// last, each doc-carrying variant's `@doc("…")` line above it at the same
-// indent — a doc line cannot sit inside the single-line body, and the
-// doc-less rendering stays untouched so the existing corpus does not reshape.
 fmt_enum :: proc(b: ^strings.Builder, decl: Enum_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "enum ")
@@ -360,9 +259,6 @@ fmt_enum :: proc(b: ^strings.Builder, decl: Enum_Node) {
 	strings.write_string(b, " }\n")
 }
 
-// fmt_variant_decl writes one enum variant: plain `Left`, tuple-payload
-// `MoveTo(Vec2)`, or struct-payload `Rgb{r: Fixed}` (tight braces, the §02 §7
-// table spelling).
 fmt_variant_decl :: proc(b: ^strings.Builder, variant: Variant_Decl) {
 	strings.write_string(b, variant.name)
 	switch variant.payload {
@@ -390,9 +286,6 @@ fmt_variant_decl :: proc(b: ^strings.Builder, variant: Variant_Decl) {
 	}
 }
 
-// fmt_thing writes `thing`/`singleton Name { … }` multiline with the type
-// column aligned to the longest field name — the dominant corpus spelling for
-// entity declarations (pong's Paddle, snake's Snake).
 fmt_thing :: proc(b: ^strings.Builder, decl: Thing_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "singleton " if decl.is_singleton else "thing ")
@@ -402,8 +295,6 @@ fmt_thing :: proc(b: ^strings.Builder, decl: Thing_Node) {
 	strings.write_string(b, "}\n")
 }
 
-// fmt_signal writes `signal Name { f: T }` single-line, `signal Name {}` for
-// the field-less form (snake's Died).
 fmt_signal :: proc(b: ^strings.Builder, decl: Signal_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "signal ")
@@ -412,9 +303,6 @@ fmt_signal :: proc(b: ^strings.Builder, decl: Signal_Node) {
 	strings.write_string(b, "\n")
 }
 
-// fmt_field_list_inline writes a declaration field list on one line —
-// ` { f: T, g: U = d }`, or ` {}` when empty — with the spaced declaration
-// braces the corpus uses (distinct from tight record-literal braces).
 fmt_field_list_inline :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 	if len(fields) == 0 {
 		strings.write_string(b, " {}")
@@ -426,9 +314,6 @@ fmt_field_list_inline :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 			strings.write_string(b, ", ")
 		}
 		if field.has_migrate {
-			// A field-level @migrate (spec §05 §6 — only a `data` field
-			// carries one) renders inline before its field, the parser's
-			// single-line spelling.
 			fmt_migrate(b, field.migrate)
 			strings.write_string(b, " ")
 		}
@@ -443,9 +328,6 @@ fmt_field_list_inline :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 	strings.write_string(b, " }")
 }
 
-// fmt_fields_aligned writes one field per line, two-space indented, with the
-// type column aligned to the longest field name (the gen_emit multiline
-// alignment rule: pad after the colon is longest - len(name) + 1).
 fmt_fields_aligned :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 	longest := 0
 	for field in fields {
@@ -469,9 +351,6 @@ fmt_fields_aligned :: proc(b: ^strings.Builder, fields: []Field_Decl) {
 	}
 }
 
-// fmt_fn_decl writes a top-level fn in its three body forms: an `extern fn`
-// signature line, a holed `fn name(…) -> R @stub(…)` line, or the
-// brace-delimited statement body.
 fmt_fn_decl :: proc(b: ^strings.Builder, decl: Fn_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	if decl.is_extern {
@@ -495,10 +374,6 @@ fmt_fn_decl :: proc(b: ^strings.Builder, decl: Fn_Node) {
 	strings.write_string(b, "}\n")
 }
 
-// fmt_extern_type writes `extern type Name` after the shared directive block,
-// with the optional §03 §3 generic header (`extern type View[T]`) — the whole
-// declaration is the one header line (§26 §2: an opaque type carries no
-// funpack-visible fields and no body, so there is nothing else to project).
 fmt_extern_type :: proc(b: ^strings.Builder, decl: Extern_Type_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "extern type ")
@@ -507,10 +382,6 @@ fmt_extern_type :: proc(b: ^strings.Builder, decl: Extern_Type_Node) {
 	strings.write_string(b, "\n")
 }
 
-// fmt_type_params writes the §03 §3 generic declaration header `[T]` /
-// `[T, E]` tight against the declared name, comma-space separated — the
-// spelling fmt_type_ref gives a generic application, so a header and a use
-// project identically. Writes nothing when the declaration has none.
 fmt_type_params :: proc(b: ^strings.Builder, params: []string) {
 	if len(params) == 0 {
 		return
@@ -525,8 +396,6 @@ fmt_type_params :: proc(b: ^strings.Builder, params: []string) {
 	strings.write_string(b, "]")
 }
 
-// fmt_signature writes `(p: T, …) -> R` — the parameter list and return
-// ascription shared by fns, extern fns, queries, and the behavior step.
 fmt_signature :: proc(b: ^strings.Builder, params: []Param_Decl, return_type: Type_Ref) {
 	strings.write_string(b, "(")
 	for param, i in params {
@@ -541,12 +410,6 @@ fmt_signature :: proc(b: ^strings.Builder, params: []Param_Decl, return_type: Ty
 	fmt_type_ref(b, return_type)
 }
 
-// fmt_query writes a §08 §3 query declaration: its directive block, then the
-// declared §05 §3 index requirements (one `@index(Thing.field)` /
-// `@spatial(Thing.field)` line each, in slice order, adjacent to the `query`
-// keyword — the spec §08 §3 spelling), then `query name(…) -> R { … }`. The
-// grammar admits no body-position hole on a query (fun.ebnf §7), so the body
-// is always the brace-delimited statement block.
 fmt_query :: proc(b: ^strings.Builder, decl: Query_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	for index in decl.indexes {
@@ -569,8 +432,6 @@ fmt_query :: proc(b: ^strings.Builder, decl: Query_Node) {
 	strings.write_string(b, "}\n")
 }
 
-// fmt_behavior writes `behavior name on Thing { fn step(…) -> R { … } }`
-// multiline; a holed step renders its `@stub(…)` body on the signature line.
 fmt_behavior :: proc(b: ^strings.Builder, decl: Behavior_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "behavior ")
@@ -594,9 +455,6 @@ fmt_behavior :: proc(b: ^strings.Builder, decl: Behavior_Node) {
 	strings.write_string(b, "}\n")
 }
 
-// fmt_pipeline writes `pipeline Name { … }` multiline with the stage value
-// column aligned to the longest stage name (the corpus spelling); an empty
-// pipeline keeps its `{\n}` body (drift's Drift).
 fmt_pipeline :: proc(b: ^strings.Builder, decl: Pipeline_Node) {
 	fmt_directives(b, decl.doc, decl.exposed, decl.gtags, decl.todos, decl.probes)
 	strings.write_string(b, "pipeline ")
@@ -632,7 +490,6 @@ fmt_pipeline :: proc(b: ^strings.Builder, decl: Pipeline_Node) {
 	strings.write_string(b, "}\n")
 }
 
-// fmt_test writes `test "name" { … }` with its optional leading @doc.
 fmt_test :: proc(b: ^strings.Builder, decl: Test_Node) {
 	if decl.doc != "" {
 		fmt_doc_line(b, decl.doc)
@@ -644,26 +501,18 @@ fmt_test :: proc(b: ^strings.Builder, decl: Test_Node) {
 	strings.write_string(b, "}\n")
 }
 
-// ── statements ───────────────────────────────────────────────────────────
-
-// fmt_statements writes a statement sequence, one statement per line at the
-// given indent depth.
 fmt_statements :: proc(b: ^strings.Builder, stmts: []Statement, indent: int) {
 	for stmt in stmts {
 		fmt_statement(b, stmt, indent)
 	}
 }
 
-// fmt_statement writes one body statement (let / assert / return / if guard)
-// with its indentation and trailing newline.
 fmt_statement :: proc(b: ^strings.Builder, stmt: Statement, indent: int) {
 	switch node in stmt {
 	case Let_Node:
 		fmt_write_indent(b, indent)
 		strings.write_string(b, "let ")
 		if node.is_tuple {
-			// A `let (a, b, …) = expr` tuple destructure (spec §02 §5/§8):
-			// the binder list round-trips as `(name, name, …)`.
 			strings.write_string(b, "(")
 			for name, i in node.names {
 				if i > 0 {
@@ -693,15 +542,11 @@ fmt_statement :: proc(b: ^strings.Builder, stmt: Statement, indent: int) {
 	}
 }
 
-// fmt_if_stmt writes the early-return guard. A single-statement body whose
-// rendering holds one line renders as the corpus one-liner `if cond { return
-// x }`; anything else renders multiline.
 fmt_if_stmt :: proc(b: ^strings.Builder, node: If_Node, indent: int) {
 	if len(node.body) == 1 {
 		inner := strings.builder_make(context.temp_allocator)
 		fmt_statement(&inner, node.body[0], 0)
 		rendered := strings.to_string(inner)
-		// The probe rendered with a trailing newline; one line means exactly one.
 		if strings.count(rendered, "\n") == 1 {
 			fmt_write_indent(b, indent)
 			strings.write_string(b, "if ")
@@ -727,11 +572,6 @@ fmt_write_indent :: proc(b: ^strings.Builder, indent: int) {
 	}
 }
 
-// ── types ────────────────────────────────────────────────────────────────
-
-// fmt_type_ref writes a syntactic type: bare `Fixed`, generic `View[Paddle]`,
-// list `[Goal]` (the "[]" head), tuple `(Rng, [Spawn])` (the "()" head), or
-// function type `fn(T) -> Bool` (the "fn" head, whose last arg is the result).
 fmt_type_ref :: proc(b: ^strings.Builder, type: Type_Ref) {
 	switch type.name {
 	case "[]":
@@ -739,9 +579,6 @@ fmt_type_ref :: proc(b: ^strings.Builder, type: Type_Ref) {
 		fmt_type_ref(b, type.args[0])
 		strings.write_string(b, "]")
 	case "fn":
-		// The §02 §3 FnType: comma-space separated parameters, then the
-		// spaced `-> R` — the same spelling fmt_signature gives a declared
-		// signature, so a declared and a parameter-position fn project alike.
 		strings.write_string(b, "fn(")
 		for arg, i in type.args[:len(type.args)-1] {
 			if i > 0 {
@@ -775,12 +612,6 @@ fmt_type_ref :: proc(b: ^strings.Builder, type: Type_Ref) {
 	}
 }
 
-// ── expressions ──────────────────────────────────────────────────────────
-
-// fmt_expr writes one expression. indent is the enclosing statement's depth,
-// consumed only by the multiline `match` form; everything else renders on the
-// current line. Parentheses are re-inserted minimally: the parser unwraps
-// groupings, so the renderer restores exactly the pairs precedence requires.
 fmt_expr :: proc(b: ^strings.Builder, expr: Expr, indent: int) {
 	switch e in expr {
 	case ^Int_Lit_Expr:
@@ -859,7 +690,6 @@ fmt_expr :: proc(b: ^strings.Builder, expr: Expr, indent: int) {
 	case ^Unary_Expr:
 		strings.write_string(b, e.op.text)
 		if e.op.kind == .Ident {
-			// The word operator `not` needs the separating space; `-` is tight.
 			strings.write_string(b, " ")
 		}
 		fmt_unary_operand(b, e.operand, indent)
@@ -888,15 +718,12 @@ fmt_expr :: proc(b: ^strings.Builder, expr: Expr, indent: int) {
 	case ^Stub_Expr:
 		fmt_stub(b, e.hole_type, e.fallback, e.has_fallback, indent)
 	case ^All_Expr:
-		// The §08 §3 world read renders as its one canonical spelling.
 		strings.write_string(b, "all[")
 		strings.write_string(b, e.thing)
 		strings.write_string(b, "]")
 	}
 }
 
-// fmt_record_fields_tight writes a record literal's `{f: v, …}` body with
-// tight braces (`Vec2{x: v.x}`, `Snake{}`) — the dominant corpus spelling.
 fmt_record_fields_tight :: proc(b: ^strings.Builder, fields: []Record_Field, indent: int) {
 	strings.write_string(b, "{")
 	for field, i in fields {
@@ -910,8 +737,6 @@ fmt_record_fields_tight :: proc(b: ^strings.Builder, fields: []Record_Field, ind
 	strings.write_string(b, "}")
 }
 
-// fmt_stub writes a §05 §2 typed hole: `@stub(T)` or `@stub(T, fallback)` —
-// the one production both the body and expression positions share.
 fmt_stub :: proc(b: ^strings.Builder, hole_type: Type_Ref, fallback: Expr, has_fallback: bool, indent: int) {
 	strings.write_string(b, "@stub(")
 	fmt_type_ref(b, hole_type)
@@ -922,9 +747,6 @@ fmt_stub :: proc(b: ^strings.Builder, hole_type: Type_Ref, fallback: Expr, has_f
 	strings.write_string(b, ")")
 }
 
-// fmt_match writes the always-multiline match form: scrutinee on the opening
-// line (guarded against record-brace exposure), one arm per line at one
-// deeper indent, the closing brace back at the statement indent.
 fmt_match :: proc(b: ^strings.Builder, e: ^Match_Expr, indent: int) {
 	strings.write_string(b, "match ")
 	fmt_guarded_expr(b, e.scrutinee, indent)
@@ -940,8 +762,6 @@ fmt_match :: proc(b: ^strings.Builder, e: ^Match_Expr, indent: int) {
 	strings.write_string(b, "}")
 }
 
-// fmt_if_expr writes the value conditional on one line: `if c { a } else
-// { b }`, with an If_Expr alternate flattening into the `else if` chain.
 fmt_if_expr :: proc(b: ^strings.Builder, e: ^If_Expr, indent: int) {
 	strings.write_string(b, "if ")
 	fmt_guarded_expr(b, e.cond, indent)
@@ -957,11 +777,6 @@ fmt_if_expr :: proc(b: ^strings.Builder, e: ^If_Expr, indent: int) {
 	strings.write_string(b, " }")
 }
 
-// fmt_guarded_expr writes a match scrutinee or `if` condition. Those parse in
-// the no-struct-literal context (spec §02 §5): a record brace exposed on the
-// expression's spine would be mis-claimed as the construct's block, so such
-// an expression is wrapped in one pair of parentheses (which lift the
-// context); everything else renders bare.
 fmt_guarded_expr :: proc(b: ^strings.Builder, expr: Expr, indent: int) {
 	if fmt_spine_exposes_brace(expr) {
 		strings.write_string(b, "(")
@@ -972,12 +787,6 @@ fmt_guarded_expr :: proc(b: ^strings.Builder, expr: Expr, indent: int) {
 	fmt_expr(b, expr, indent)
 }
 
-// fmt_spine_exposes_brace reports whether rendering this expression in the
-// parser's no-struct-literal context would expose a record-style brace on the
-// statement spine — outside the contexts that lift the restriction (call
-// arguments, list/tuple brackets, `with` field braces, `@stub` parentheses).
-// Match is conservatively true: its own scrutinee/arm parsing rewrites the
-// context flag, so a guarded position never carries a bare match.
 fmt_spine_exposes_brace :: proc(expr: Expr) -> bool {
 	switch e in expr {
 	case ^Record_Expr:
@@ -987,14 +796,10 @@ fmt_spine_exposes_brace :: proc(expr: Expr) -> bool {
 	case ^Match_Expr:
 		return true
 	case ^If_Expr:
-		// The condition re-enters its own guarded context; the branch bodies
-		// inherit the enclosing one.
 		return fmt_spine_exposes_brace(e.then_branch) || fmt_spine_exposes_brace(e.else_branch)
 	case ^Lambda_Expr:
-		// The lambda body inherits the enclosing context.
 		return fmt_spine_exposes_brace(e.body)
 	case ^With_Expr:
-		// The field braces lift the context; only the base stays on the spine.
 		return fmt_spine_exposes_brace(e.base)
 	case ^Unary_Expr:
 		return fmt_spine_exposes_brace(e.operand)
@@ -1003,7 +808,6 @@ fmt_spine_exposes_brace :: proc(expr: Expr) -> bool {
 	case ^Member_Expr:
 		return fmt_spine_exposes_brace(e.receiver)
 	case ^Call_Expr:
-		// Arguments parse inside parentheses (lifted); the callee stays exposed.
 		return fmt_spine_exposes_brace(e.callee)
 	case ^Int_Lit_Expr, ^Fixed_Lit_Expr, ^String_Lit_Expr, ^Name_Expr, ^List_Expr, ^Tuple_Expr, ^Stub_Expr, ^All_Expr:
 		return false
@@ -1011,10 +815,6 @@ fmt_spine_exposes_brace :: proc(expr: Expr) -> bool {
 	return false
 }
 
-// fmt_binary_operand writes one side of a binary operator, parenthesized when
-// a looser-or-equal-bound binary child would otherwise re-associate: the
-// ladder is left-associative, so the left child needs parens only below the
-// parent's power and the right child at-or-below it.
 fmt_binary_operand :: proc(b: ^strings.Builder, operand: Expr, parent_power: Binding_Power, is_right: bool, indent: int) {
 	if child, is_binary := operand.(^Binary_Expr); is_binary {
 		child_power := infix_power(child.op)
@@ -1028,9 +828,6 @@ fmt_binary_operand :: proc(b: ^strings.Builder, operand: Expr, parent_power: Bin
 	fmt_expr(b, operand, indent)
 }
 
-// fmt_unary_operand writes a unary operator's operand, parenthesized when it
-// is a binary expression (unary binds above every binary tier, so `not (a and
-// b)` needs its parens back).
 fmt_unary_operand :: proc(b: ^strings.Builder, operand: Expr, indent: int) {
 	if _, is_binary := operand.(^Binary_Expr); is_binary {
 		strings.write_string(b, "(")
@@ -1041,9 +838,6 @@ fmt_unary_operand :: proc(b: ^strings.Builder, operand: Expr, indent: int) {
 	fmt_expr(b, operand, indent)
 }
 
-// fmt_with_base writes a `with` update's base, parenthesized when the base is
-// a unary or binary expression — `with` binds above unary (spec §02 §3), so a
-// looser base only reaches it through restored parentheses.
 fmt_with_base :: proc(b: ^strings.Builder, base: Expr, indent: int) {
 	needs_parens := false
 	#partial switch _ in base {
@@ -1059,9 +853,6 @@ fmt_with_base :: proc(b: ^strings.Builder, base: Expr, indent: int) {
 	fmt_expr(b, base, indent)
 }
 
-// fmt_postfix_operand writes a call's callee or a member access's receiver,
-// parenthesized when the operand binds looser than the postfix tier (binary,
-// unary, or `with` — `(a with { f: 1 }).x` only parses with its parens).
 fmt_postfix_operand :: proc(b: ^strings.Builder, operand: Expr, indent: int) {
 	needs_parens := false
 	#partial switch _ in operand {
@@ -1077,11 +868,6 @@ fmt_postfix_operand :: proc(b: ^strings.Builder, operand: Expr, indent: int) {
 	fmt_expr(b, operand, indent)
 }
 
-// ── patterns ─────────────────────────────────────────────────────────────
-
-// fmt_pattern writes one match-arm pattern (spec §02 §5): wildcard `_`, bare
-// variant `T::V`, payload binders `T::V(p, q)`, struct field-pun `T::V{a,
-// b}`, tuple `(p, q)`, or a bare binder name.
 fmt_pattern :: proc(b: ^strings.Builder, pattern: Pattern) {
 	switch pattern.kind {
 	case .Wildcard:
@@ -1128,15 +914,6 @@ fmt_pattern :: proc(b: ^strings.Builder, pattern: Pattern) {
 	}
 }
 
-// ── literals ─────────────────────────────────────────────────────────────
-
-// fmt_fixed_literal writes Q32.32 bits as the SHORTEST decimal spelling whose
-// fixed_from_decimal round-trip reproduces the bits exactly: the integer
-// part, a dot, then the minimal fractional digit run (a whole value renders
-// `N.0`, the corpus spelling). All-integer arithmetic — the same u128 path
-// the lexer's fixed_from_decimal uses — so the spelling is machine-identical.
-// A parsed literal is non-negative (unary minus is its own token); a negative
-// hand-built value renders totally via a leading sign.
 fmt_fixed_literal :: proc(b: ^strings.Builder, bits: Fixed) {
 	value := bits
 	if value < 0 {
@@ -1155,9 +932,6 @@ fmt_fixed_literal :: proc(b: ^strings.Builder, bits: Fixed) {
 	for width in 1 ..= 10 {
 		pow *= 10
 		digits := (frac * pow + (1 << (FIXED_FRACTION_BITS - 1))) >> FIXED_FRACTION_BITS
-		// Round-trip gate: this digit run re-parses (fixed_from_decimal's own
-		// rounding) to exactly the stored fraction bits. At width 10 the decimal
-		// grid is finer than 2^-32, so the loop always terminates.
 		if (digits << FIXED_FRACTION_BITS + pow / 2) / pow == frac {
 			fmt_zero_padded(b, i64(digits), width)
 			return

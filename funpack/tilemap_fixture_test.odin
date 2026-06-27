@@ -1,22 +1,9 @@
-// The §18 §4 TilemapHandle.of fixture + layer-query surface: the View.of/
-// Nav.of-mold static builder an inline test seeds a tile layer with, and the
-// four queries (tile_at/solid_at/cell_of/center_of) answering over it in the
-// dungeon's method-style spelling (map.tile_at(cell)). Pins are exact and
-// self-contained (no sibling checkout): the surface rows, the bare-import
-// resolution, typecheck accept/reject fixtures, and end-to-end evaluation
-// with exact fixed-point answers — out-of-grid tile_at is Option::None and
-// solid_at false (total, never a fault), cell_of floor-divides (a negative
-// position lands in the correct negative cell), center_of is origin + half
-// cell in the fixture's own origin-anchored grid-local space.
 package funpack
 
 import "core:testing"
 
 @(test)
 test_tilemap_fixture_surface_rows :: proc(t: ^testing.T) {
-	// AC: TilemapHandle.of resolves as a static builder yielding the handle,
-	// and the four §18 §4 queries resolve as engine methods off the handle
-	// receiver with their exact result shapes.
 	of, has_of := surface_static_method("TilemapHandle", "of")
 	testing.expect(t, has_of)
 	testing.expect(t, returns_engine(of, .TilemapHandle))
@@ -44,9 +31,6 @@ test_tilemap_fixture_surface_rows :: proc(t: ^testing.T) {
 	testing.expect(t, has_cell_of)
 	if has_cell_of {
 		signature := cell_of.(^Func_Type)
-		// The result is the user's own Cell record — no checker ground (the
-		// grid_cells discipline), so it is the nil unknown; the position
-		// parameter is the exact Vec2 ground.
 		testing.expect(t, signature.result == nil)
 		testing.expect_value(t, len(signature.params), 1)
 		testing.expect(t, is_ground(signature.params[0], .Vec2))
@@ -61,9 +45,6 @@ test_tilemap_fixture_surface_rows :: proc(t: ^testing.T) {
 
 @(test)
 test_tilemap_queries_resolve_as_imports :: proc(t: ^testing.T) {
-	// AC: the dungeon's bare import line resolves — the four queries bind to
-	// engine.tilemap as Func rows (their typing rule is the engine-method
-	// call site, the AtlasHandle cell/frame mold).
 	source := "import engine.tilemap.{tile_at, solid_at, cell_of, center_of}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -80,10 +61,6 @@ test_tilemap_queries_resolve_as_imports :: proc(t: ^testing.T) {
 	})
 }
 
-// TILEMAP_FIXTURE_PREAMBLE is the shared import/schema head of the inline
-// fixtures: the handle type, the Option/Vec2 grounds, and the user's own Cell
-// record (engine.grid's Cell is the user's record by the grid_cells
-// discipline, so the fixture declares it locally).
 TILEMAP_FIXTURE_PREAMBLE :: "import engine.prelude.Option\n" +
 	"import engine.math.Vec2\n" +
 	"import engine.tilemap.{TilemapHandle}\n" +
@@ -91,8 +68,6 @@ TILEMAP_FIXTURE_PREAMBLE :: "import engine.prelude.Option\n" +
 
 @(test)
 test_tilemap_fixture_typechecks :: proc(t: ^testing.T) {
-	// AC (typecheck accept): the fixture seeds a layer and all four queries
-	// compose into assert positions — the §23 §5 / §12 §3 inline-test mold.
 	source := TILEMAP_FIXTURE_PREAMBLE +
 		"test \"queries type over a seeded layer\" {\n" +
 		"  let map = TilemapHandle.of(16, [(Cell{x: 0, y: 0}, \"wall\", true)])\n" +
@@ -109,10 +84,6 @@ test_tilemap_fixture_typechecks :: proc(t: ^testing.T) {
 
 @(test)
 test_tilemap_queries_type_on_seam_handle :: proc(t: ^testing.T) {
-	// AC (typecheck accept): the queries ride the HANDLE TYPE, not the fixture
-	// builder — a seam-shaped record-literal handle (`TilemapHandle{name: …}`)
-	// admits the same method calls, so the dungeon's behaviors typecheck
-	// against the level seam's layer constant.
 	source := TILEMAP_FIXTURE_PREAMBLE +
 		"fn probe(map: TilemapHandle, target: Cell) -> Bool {\n" +
 		"  return map.solid_at(target)\n" +
@@ -128,9 +99,6 @@ test_tilemap_queries_type_on_seam_handle :: proc(t: ^testing.T) {
 
 @(test)
 test_tilemap_fixture_rejects_malformed_shapes :: proc(t: ^testing.T) {
-	// AC (typecheck reject, one fixture per arm): a Fixed cell size, a
-	// non-Bool solid tuple position, a query arity miss, and an unknown
-	// method each surface their named verdict — never a silent admit.
 	fixed_size, fs_parse := stage_parse(stage_lex(TILEMAP_FIXTURE_PREAMBLE +
 		"test \"fixed cell size refused\" {\n" +
 		"  let map = TilemapHandle.of(16.0, [(Cell{x: 0, y: 0}, \"wall\", true)])\n" +
@@ -165,21 +133,11 @@ test_tilemap_fixture_rejects_malformed_shapes :: proc(t: ^testing.T) {
 		"}\n"))
 	testing.expect_value(t, un_parse, Parse_Error.None)
 	_, unknown_err := stage_typecheck(unknown)
-	// An unknown method on a KNOWN type (TilemapHandle has no `warp`) is the
-	// dedicated Unknown_Method arm, NOT the Unsupported_Expr catch-all — the
-	// receiver typed clean, so "this method does not exist" is the precise verdict
-	// (the member-name caret + available-methods hint render through the pipeline,
-	// pinned in diagnostics_test.odin).
 	testing.expect_value(t, unknown_err, Type_Error.Unknown_Method)
 }
 
 @(test)
 test_tilemap_fixture_evaluates_queries :: proc(t: ^testing.T) {
-	// AC (evaluation, exact pins): a seeded layer answers all four queries —
-	// tile_at reads the seeded name (and None off-grid, total), solid_at the
-	// seeded verdict (and false off-grid), cell_of floor-divides into the
-	// containing cell including the exact-boundary and negative-position
-	// arms, center_of reads origin + half cell, negative cells included.
 	report, err := run_test_pipeline(TILEMAP_FIXTURE_PREAMBLE +
 		"test \"tile_at reads seeded and unseeded cells\" {\n" +
 		"  let map = TilemapHandle.of(16, [(Cell{x: 0, y: 0}, \"wall\", true), (Cell{x: 1, y: 0}, \"floor\", false), (Cell{x: 2, y: 1}, \"rubble\", true)])\n" +
@@ -213,7 +171,6 @@ test_tilemap_fixture_evaluates_queries :: proc(t: ^testing.T) {
 		"  assert map.cell_of(Vec2{x: 4.5, y: 5.0}) == Cell{x: 0, y: 1}\n" +
 		"}\n")
 	testing.expect_value(t, err, Pipeline_Error.None)
-	// report.passed counts ASSERTS (the §18 §4 pins: 4+3+4+3+2), not blocks.
 	testing.expect_value(t, report.passed, 16)
 	testing.expect_value(t, report.failed, 0)
 	testing.expect_value(t, report.exit_code, 0)
@@ -221,9 +178,6 @@ test_tilemap_fixture_evaluates_queries :: proc(t: ^testing.T) {
 
 @(test)
 test_tilemap_empty_fixture_is_total :: proc(t: ^testing.T) {
-	// AC (totality): an EMPTY fixture answers every membership query with the
-	// defined zero — None / not-solid — never a fault; the dungeon's
-	// `enterable` decision composes over it exactly as over a seeded layer.
 	report, err := run_test_pipeline(TILEMAP_FIXTURE_PREAMBLE +
 		"test \"the empty layer reads None and not-solid\" {\n" +
 		"  let map = TilemapHandle.of(16, [])\n" +
@@ -232,16 +186,12 @@ test_tilemap_empty_fixture_is_total :: proc(t: ^testing.T) {
 		"  assert map.center_of(Cell{x: 1, y: 1}) == Vec2{x: 24.0, y: 24.0}\n" +
 		"}\n")
 	testing.expect_value(t, err, Pipeline_Error.None)
-	testing.expect_value(t, report.passed, 3) // three asserts, one block
+	testing.expect_value(t, report.passed, 3)
 	testing.expect_value(t, report.failed, 0)
 }
 
 @(test)
 test_tilemap_fixture_gates_handle_decision :: proc(t: ^testing.T) {
-	// AC (the consumer's seat): the dungeon's handle-touching movement gate —
-	// enter a passable cell, refuse a wall, refuse the void — is testable as
-	// ONE decision over the fixture instead of decomposing into pure fns;
-	// the exact shape the task's "every decision had to decompose" pain names.
 	report, err := run_test_pipeline(TILEMAP_FIXTURE_PREAMBLE +
 		"fn enter(map: TilemapHandle, target: Cell, stay: Vec2) -> Vec2 {\n" +
 		"  let blocked = match map.tile_at(target) {\n" +
@@ -259,6 +209,6 @@ test_tilemap_fixture_gates_handle_decision :: proc(t: ^testing.T) {
 		"  assert enter(map, Cell{x: 5, y: 5}, stay) == stay\n" +
 		"}\n")
 	testing.expect_value(t, err, Pipeline_Error.None)
-	testing.expect_value(t, report.passed, 3) // three asserts, one block
+	testing.expect_value(t, report.passed, 3)
 	testing.expect_value(t, report.failed, 0)
 }

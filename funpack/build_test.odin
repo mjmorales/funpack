@@ -1,14 +1,3 @@
-// The build-verb integration golden: the `funpack build` seam (build.odin) read
-// against a real §14 project tree must write BOTH the runtime artifact and the
-// Index Contract NDJSON on success, write NEITHER on a compile/gate failure, and
-// be byte-identical on a re-build (spec §09/§29 end-to-end determinism). These
-// tests exercise the integration path on disk — they copy the live pong tree
-// into a temp root, build it, and assert the products land — so the CLI exit
-// contract (§29 §3) is proven against a real tree, not a hand-shaped stub. The
-// compile-error and malformed-tree cases use a deliberately-broken temp tree so
-// the exit-2-writes-no-product path is covered. Like the emit/index goldens they
-// resolve the sibling pong checkout (or FUNPACK_PONG_DIR) and SKIP loudly when
-// it is absent, so a missing checkout never silently passes.
 package funpack
 
 import "core:fmt"
@@ -18,11 +7,6 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// test_build_pong_tree_exits_zero_and_writes_both_products is the load-bearing
-// acceptance: building the live pong tree (copied to a temp root) succeeds and
-// writes both products under `.funpack/`. It drives the exact stage_build →
-// write_build_products path the CLI verb runs, then asserts both files exist on
-// disk — the §29 §3 success outcome (exit 0, both products).
 @(test)
 test_build_pong_tree_exits_zero_and_writes_both_products :: proc(t: ^testing.T) {
 	root, ok := copy_pong_tree_to_temp()
@@ -41,18 +25,11 @@ test_build_pong_tree_exits_zero_and_writes_both_products :: proc(t: ^testing.T) 
 
 	testing.expect(t, os.exists(product.artifact_path))
 	testing.expect(t, os.exists(product.index_path))
-	// Both products are non-empty: the artifact carries the v1 magic line and
-	// the NDJSON carries the schema_version object.
 	testing.expect(t, strings.has_prefix(product.artifact, ARTIFACT_MAGIC))
 	testing.expect(t, strings.has_prefix(product.index, "{\"schema_version\":"))
 	log.infof("build verb: pong tree build exits 0 and writes both products (artifact + index NDJSON)")
 }
 
-// test_build_pong_double_build_identical proves the build is deterministic end
-// to end (spec §09/§29): building the same pong tree twice writes byte-identical
-// artifact AND byte-identical Index Contract NDJSON. The output paths are derived
-// from the project root with no machine-specific component, so the bytes carry no
-// datum that varies between builds.
 @(test)
 test_build_pong_double_build_identical :: proc(t: ^testing.T) {
 	root, ok := copy_pong_tree_to_temp()
@@ -71,8 +48,6 @@ test_build_pong_double_build_identical :: proc(t: ^testing.T) {
 	testing.expect(t, first.artifact == second.artifact)
 	testing.expect(t, first.index == second.index)
 	if first.artifact == second.artifact && first.index == second.index {
-		// A passing-run confirmation the acceptance gate reads: the double build
-		// is byte-identical for both products (end-to-end determinism).
 		log.infof(
 			"build identical: double build of pong is byte-identical artifact (%d bytes) and index NDJSON (%d bytes)",
 			len(first.artifact),
@@ -81,13 +56,6 @@ test_build_pong_double_build_identical :: proc(t: ^testing.T) {
 	}
 }
 
-// test_build_double_build_identical_no_checkout proves the build is
-// deterministic without the sibling pong checkout: it materializes a minimal
-// valid §14 tree in temp, builds it twice, and asserts byte-identical artifact
-// AND byte-identical Index Contract NDJSON. The output paths derive from the
-// project root with no machine-specific component, so the bytes carry no datum
-// that varies between builds — the end-to-end bit-identity obligation (spec
-// §09/§29), provable on every host regardless of the checkout.
 @(test)
 test_build_double_build_identical_no_checkout :: proc(t: ^testing.T) {
 	root, ok := write_minimal_valid_tree(t)
@@ -106,9 +74,6 @@ test_build_double_build_identical_no_checkout :: proc(t: ^testing.T) {
 	testing.expect(t, first.artifact == second.artifact)
 	testing.expect(t, first.index == second.index)
 	if first.artifact == second.artifact && first.index == second.index {
-		// A passing-run confirmation the acceptance gate reads: a double build of
-		// the same tree is byte-identical for both products (end-to-end
-		// determinism), without depending on the sibling checkout.
 		log.infof(
 			"double build identical: building the same tree twice is byte-identical artifact (%d bytes) and index NDJSON (%d bytes)",
 			len(first.artifact),
@@ -117,11 +82,6 @@ test_build_double_build_identical_no_checkout :: proc(t: ^testing.T) {
 	}
 }
 
-// test_build_compile_error_exits_two_writes_no_artifact covers the §29 §3
-// failure outcome: a deliberately-broken source on an otherwise-valid §14 tree
-// fails the checked pipeline, so stage_build returns Compile_Failed and writes no
-// product. A compile error is NEVER a counted failure (the build verb has no
-// assertion tier) — it is the exit-2 path, and no artifact lands on disk.
 @(test)
 test_build_compile_error_exits_two_writes_no_artifact :: proc(t: ^testing.T) {
 	root, ok := write_broken_pong_tree(t)
@@ -131,12 +91,8 @@ test_build_compile_error_exits_two_writes_no_artifact :: proc(t: ^testing.T) {
 	defer remove_scratch_tree(root)
 
 	_, verdict := stage_build(root, .Dev, context.temp_allocator)
-	// The broken source parses to a malformed program the checked pipeline
-	// rejects, so the build refuses with Compile_Failed and emits nothing.
 	testing.expect_value(t, verdict.err, Build_Error.Compile_Failed)
 
-	// No artifact and no index were written: stage_build returns before the
-	// write side, so the derived `.funpack/` products are absent.
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
 	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
 	testing.expect(t, !os.exists(artifact_path))
@@ -144,11 +100,6 @@ test_build_compile_error_exits_two_writes_no_artifact :: proc(t: ^testing.T) {
 	log.infof("build exit 2: compile error on the project tree writes no artifact (the build is exit 2, never a counted failure)")
 }
 
-// test_build_malformed_tree_exits_two covers the malformed-§14-tree failure: a
-// tree missing funpack_configs/ is rejected by read_project, so stage_build
-// returns Malformed_Tree (the exit-2 path) and writes no product. A malformed
-// tree and a compile error share the exit-2 outcome — the build emits both
-// products or none.
 @(test)
 test_build_malformed_tree_exits_two :: proc(t: ^testing.T) {
 	root := scratch_join({scratch_base(), tprintf_seq("funpack-build-malformed")})
@@ -158,19 +109,10 @@ test_build_malformed_tree_exits_two :: proc(t: ^testing.T) {
 		return
 	}
 	defer remove_scratch_tree(root)
-	// The root has no funpack_configs/ — read_project rejects it, so the build
-	// is a malformed-tree exit-2.
 	_, verdict := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, verdict.err, Build_Error.Malformed_Tree)
 }
 
-// test_build_writes_index_ndjson is the whole-stream acceptance: building the
-// live pong tree writes a .funpack/index.ndjson carrying BOTH §29 §2 record
-// kinds — the `project` record on line 1 and one `decl` record line per
-// declaration after it. It drives the same stage_build → write_build_products
-// path the CLI verb runs, reads the written product back from disk, and asserts
-// the multi-record stream landed (not just the single project record). SKIPs
-// loudly when the sibling pong checkout is absent.
 @(test)
 test_build_writes_index_ndjson :: proc(t: ^testing.T) {
 	root, ok := copy_pong_tree_to_temp()
@@ -187,33 +129,20 @@ test_build_writes_index_ndjson :: proc(t: ^testing.T) {
 	write_err := write_build_products(product, root)
 	testing.expect_value(t, write_err, Build_Write_Error.None)
 
-	// Read the written NDJSON back from disk: it must be the whole stream.
 	written, read_err := os.read_entire_file_from_path(product.index_path, context.temp_allocator)
 	testing.expect(t, read_err == nil)
 	if read_err != nil {
 		return
 	}
 	stream := string(written)
-	// The `project` record leads (its v3 schema_version stamp prefixes line 1),
-	// and the stream carries a `decl` record kind after it (a project-only field
-	// vs a decl-only field both appear) — the multi-record stream, not a lone
-	// project record.
 	testing.expect(t, strings.has_prefix(stream, "{\"schema_version\":6,"))
-	testing.expect(t, strings.contains(stream, "\"pipeline_flattened\":")) // project record
-	testing.expect(t, strings.contains(stream, "\"qualified_name\":")) // a decl record
-	testing.expect(t, strings.contains(stream, "\"dup_class\":")) // a decl-only field
-	// More than one record: a multi-line stream (the project line + decl lines).
+	testing.expect(t, strings.contains(stream, "\"pipeline_flattened\":"))
+	testing.expect(t, strings.contains(stream, "\"qualified_name\":"))
+	testing.expect(t, strings.contains(stream, "\"dup_class\":"))
 	testing.expect(t, strings.count(stream, "\n") > 1)
 	log.infof("build verb: pong index.ndjson carries the whole project+decl multi-record stream")
 }
 
-// test_build_index_byte_identical_twice proves the LARGER (multi-record) index
-// stream is still byte-identical across two builds (spec §09/§29): building the
-// same pong tree twice yields byte-identical index.ndjson, end to end through the
-// build seam. The stream concatenates the project record then the decl records in
-// fixed order with no map/clock/float, so the bytes carry no datum that varies
-// between builds. The no-checkout twin (test_build_double_build_identical_no_checkout)
-// covers host-independent determinism on the minimal tree.
 @(test)
 test_build_index_byte_identical_twice :: proc(t: ^testing.T) {
 	root, ok := copy_pong_tree_to_temp()
@@ -229,10 +158,7 @@ test_build_index_byte_identical_twice :: proc(t: ^testing.T) {
 	if first_verdict.err != .None || second_verdict.err != .None {
 		return
 	}
-	// The whole multi-record stream is byte-identical between the two builds.
 	testing.expect(t, first.index == second.index)
-	// It is genuinely the larger stream, not a lone project record (a decl record
-	// kind is present), so the determinism obligation covers the decl lines too.
 	testing.expect(t, strings.contains(first.index, "\"qualified_name\":"))
 	testing.expect(t, strings.count(first.index, "\n") > 1)
 	if first.index == second.index {
@@ -244,11 +170,6 @@ test_build_index_byte_identical_twice :: proc(t: ^testing.T) {
 	}
 }
 
-// test_build_no_partial_product covers the §29 §3 no-partial-product floor with
-// the larger stream in play: a compile error on an otherwise-valid §14 tree fails
-// the checked pipeline, so stage_build returns before the write side and NEITHER
-// product lands — no artifact, no (multi-record) index.ndjson. The build emits
-// both products or none; a failure leaves no partial product set behind.
 @(test)
 test_build_no_partial_product :: proc(t: ^testing.T) {
 	root, ok := write_broken_pong_tree(t)
@@ -258,11 +179,8 @@ test_build_no_partial_product :: proc(t: ^testing.T) {
 	defer remove_scratch_tree(root)
 
 	_, verdict := stage_build(root, .Dev, context.temp_allocator)
-	// The broken source is rejected by the checked pipeline, so the build refuses
-	// with Compile_Failed and emits nothing — the exit-2 path.
 	testing.expect_value(t, verdict.err, Build_Error.Compile_Failed)
 
-	// No partial product: neither the artifact nor the index.ndjson is on disk.
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
 	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
 	testing.expect(t, !os.exists(artifact_path))
@@ -270,18 +188,6 @@ test_build_no_partial_product :: proc(t: ^testing.T) {
 	log.infof("build no partial product: a compile error writes neither product (the whole-stream build is all-or-nothing)")
 }
 
-// ── multi-module + package build (Gap A + Gap C) ─────────────────────────
-
-// test_build_multi_module_arena is the multi-module-build acceptance: the live
-// arena tree (arena_world schema + the arena seam + arena_game behaviors, copied
-// to a temp root) builds exit 0 (Build_Error.None) and writes BOTH products. The
-// index stream carries decl records from EVERY module — the entrypoint module
-// (arena_game), the schema (arena_world), and the generated seam (arena) — and a
-// multi-module stream module-qualifies each decl by its §15 name (`arena_game.gate_logic`,
-// `arena_world.Player`, `arena.Arena`), so a name two modules both declare
-// disambiguates. It proves the §14-tree multi-module compile entry (one project-
-// wide module index feeding both products) end to end against a real tree. SKIPs
-// loudly when the sibling checkout is absent.
 @(test)
 test_build_multi_module_arena :: proc(t: ^testing.T) {
 	root, ok := copy_spec_tree_to_temp(resolve_arena_dir(), "arena", "FUNPACK_ARENA_DIR")
@@ -298,16 +204,10 @@ test_build_multi_module_arena :: proc(t: ^testing.T) {
 	write_err := write_build_products(product, root)
 	testing.expect_value(t, write_err, Build_Write_Error.None)
 
-	// A game writes BOTH products — the runtime artifact (the entrypoint module's,
-	// arena_game) and the multi-module Index Contract NDJSON.
 	testing.expect(t, os.exists(product.artifact_path))
 	testing.expect(t, os.exists(product.index_path))
 	testing.expect(t, strings.has_prefix(product.artifact, ARTIFACT_MAGIC))
 
-	// The index stream carries decl records from every module, EACH §15
-	// module-qualified (the multi-module qualification — a single-module game keeps
-	// bare names; a cross-module stream qualifies). The three modules' decls all
-	// appear, so the index is the whole-project stream, not the entrypoint's alone.
 	stream := product.index
 	testing.expect(t, strings.contains(stream, "\"qualified_name\":\"arena_game."))
 	testing.expect(t, strings.contains(stream, "\"qualified_name\":\"arena_world."))
@@ -315,14 +215,6 @@ test_build_multi_module_arena :: proc(t: ^testing.T) {
 	log.infof("build multi-module arena: exit 0, both products written, index carries decl records from all 3 modules (arena_game + arena_world + arena seam)")
 }
 
-// test_index_stream_multi_module_order pins the multi-module DECL-BLOCK order: the
-// ENTRYPOINT module's block (arena_game, the entrypoints.fcfg `use <module>`
-// clause) leads, then the remaining modules in Project.sources order (sorted-by-
-// path via merge_sources — gen/arena.gen.fun ⇒ `arena` before src/arena_world.fun
-// ⇒ `arena_world`). So the first decl-block prefix is arena_game., the next module
-// prefix encountered is arena., then arena_world. — a deterministic permutation
-// off ONE module-index build, pinned EXACTLY so a re-order fails loudly. SKIPs
-// loudly when the sibling is absent.
 @(test)
 test_index_stream_multi_module_order :: proc(t: ^testing.T) {
 	dir := resolve_arena_dir()
@@ -337,9 +229,6 @@ test_index_stream_multi_module_order :: proc(t: ^testing.T) {
 		return
 	}
 
-	// The module-block order: the FIRST decl is the entrypoint module's
-	// (arena_game), and the modules appear in the pinned order entrypoint → arena →
-	// arena_world (sources order, sorted-by-path, with the entrypoint hoisted).
 	order := module_prefix_order(stream)
 	testing.expect_value(t, len(order), 3)
 	if len(order) != 3 {
@@ -351,13 +240,6 @@ test_index_stream_multi_module_order :: proc(t: ^testing.T) {
 	log.infof("index multi-module order: decl blocks emit entrypoint-first then sorted-by-path remainder (%v)", order)
 }
 
-// test_build_numerics_package_index_only is the §30 §7 package-build acceptance:
-// the live numerics tree (a package — no entrypoints.fcfg, copied to a temp root)
-// builds exit 0 (Build_Error.None) and writes the Index Contract NDJSON ONLY. With
-// no entrypoint there is no runtime artifact to select, so artifact_path stays
-// empty, no artifact lands on disk, and the index is the build's single product —
-// the all-or-nothing write contract is per-project-kind (a package writes its
-// index or nothing). SKIPs loudly when the sibling is absent.
 @(test)
 test_build_numerics_package_index_only :: proc(t: ^testing.T) {
 	root, ok := copy_spec_tree_to_temp(resolve_golden_dir(), "numerics", "FUNPACK_NUMERICS_DIR")
@@ -372,35 +254,22 @@ test_build_numerics_package_index_only :: proc(t: ^testing.T) {
 		return
 	}
 
-	// A package emits NO runtime artifact: artifact_path is empty (no entrypoint to
-	// select), and the index is the single product.
 	testing.expect_value(t, product.artifact_path, "")
 	testing.expect_value(t, product.artifact, "")
 	testing.expect(t, product.index_path != "")
 	testing.expect(t, strings.has_prefix(product.index, "{\"schema_version\":6,"))
-	// The package's `project` record carries an empty entrypoints list and no
-	// pipeline (no entrypoint ⇒ empty pipeline_flattened) — governance data, §30 §7.
 	testing.expect(t, strings.contains(product.index, "\"entrypoints\":[]"))
 	testing.expect(t, strings.contains(product.index, "\"pipeline_flattened\":[]"))
 
 	write_err := write_build_products(product, root)
 	testing.expect_value(t, write_err, Build_Write_Error.None)
 
-	// On disk: the index landed, NO artifact (the package writes one product).
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
 	testing.expect(t, os.exists(product.index_path))
 	testing.expect(t, !os.exists(artifact_path))
 	log.infof("build package numerics: §30 §7 index-only build (exit 0, index.ndjson written, NO runtime artifact)")
 }
 
-// ── --release hole-ban (§29 §4: you cannot ship a hole) ──────────────────
-
-// test_build_release_holed_tree_exits_two is the release hole-ban acceptance: a
-// §14 tree carrying a §05 typed hole built in Release mode refuses with a
-// Holed_Declaration verdict NAMING the holed declaration (approx_speed; bare —
-// the fixture is single-module, lore #11) — the exit-2 compile-error outcome
-// (NEVER a counted failure; the build verb has no assertion tier) — and writes
-// NEITHER product.
 @(test)
 test_build_release_holed_tree_exits_two :: proc(t: ^testing.T) {
 	root, ok := write_holed_tree(t)
@@ -413,7 +282,6 @@ test_build_release_holed_tree_exits_two :: proc(t: ^testing.T) {
 	testing.expect_value(t, verdict.err, Build_Error.Holed_Declaration)
 	testing.expect_value(t, verdict.offender, "approx_speed")
 
-	// The ban refuses before either emission surface runs, so no product lands.
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
 	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
 	testing.expect(t, !os.exists(artifact_path))
@@ -421,10 +289,6 @@ test_build_release_holed_tree_exits_two :: proc(t: ^testing.T) {
 	log.infof("release hole-ban: a holed decl under --release is Holed_Declaration (exit 2, compile error, no product) — a hole cannot ship")
 }
 
-// test_build_dev_holed_tree_exits_zero is the dev half of the §29 §4 contract:
-// the SAME holed tree built in Dev mode (the no-flag default) compiles exit 0
-// and writes both products — a hole is a first-class dev citizen; only release
-// refuses it.
 @(test)
 test_build_dev_holed_tree_exits_zero :: proc(t: ^testing.T) {
 	root, ok := write_holed_tree(t)
@@ -445,10 +309,6 @@ test_build_dev_holed_tree_exits_zero :: proc(t: ^testing.T) {
 	log.infof("dev holes compile: the same holed tree builds exit 0 in dev mode and writes both products")
 }
 
-// test_build_release_hole_free_tree_matches_dev pins the mode flag's purity: on
-// a hole-free tree, Release succeeds exactly like Dev AND emits byte-identical
-// products — the mode is a pure (AST, mode) gate input, never a datum reaching
-// the emitted bytes, so release-vs-dev differs only in whether a hole refuses.
 @(test)
 test_build_release_hole_free_tree_matches_dev :: proc(t: ^testing.T) {
 	root, ok := write_minimal_valid_tree(t)
@@ -469,10 +329,6 @@ test_build_release_hole_free_tree_matches_dev :: proc(t: ^testing.T) {
 	log.infof("release purity: a hole-free tree builds byte-identical products in dev and release (the mode flag gates, never perturbs)")
 }
 
-// test_release_holed_decl_walk unit-tests the pure-AST finder (gates.odin) the
-// build-seam ban consults: a holed fn is found by its own name, a holed
-// behavior STEP anchors on the behavior's name (never the reserved `step`),
-// and a hole-free AST reports none.
 @(test)
 test_release_holed_decl_walk :: proc(t: ^testing.T) {
 	holed_fn_ast, fn_err := stage_parse(stage_lex("fn speed() -> Fixed @stub(Fixed)\n"))
@@ -494,13 +350,6 @@ test_release_holed_decl_walk :: proc(t: ^testing.T) {
 	log.infof("release_holed_decl: finds a holed fn and a holed behavior step (anchored on the behavior name), none on a hole-free AST")
 }
 
-// test_release_holed_decl_expression_positions extends the pure-AST finder's
-// proof to §15 StubExpr EXPRESSION-position holes (spec §05 §2: a hole stands
-// in body or expression position; both are release-banned alike): a hole
-// buried inside an INTACT fn body, a top-level `let` initializer, a thing
-// field default, and a test-block assert each name their containing
-// declaration — the finder descends expression trees, never just the FnBody
-// flag.
 @(test)
 test_release_holed_decl_expression_positions :: proc(t: ^testing.T) {
 	expr_fn_ast, fn_err := stage_parse(stage_lex("fn boost(base: Fixed) -> Fixed {\n  return base + @stub(Fixed, 0.5)\n}\n"))
@@ -529,12 +378,6 @@ test_release_holed_decl_expression_positions :: proc(t: ^testing.T) {
 	log.infof("release_holed_decl expression positions: an expression hole in a fn body, a let initializer, a field default, and a test body each name their declaration")
 }
 
-// test_release_walkers_source_order pins BOTH release walkers' first-offender
-// ORDER to the Ast's source-ordered declaration sequence (ADR
-// 2026-06-10-formatter-canon-source-ordered-declarations — the order the index
-// emits): a holed/probed LET preceding a holed/probed DATA in source names the
-// let, even though the retired per-kind walk (data before let) would have
-// named the data.
 @(test)
 test_release_walkers_source_order :: proc(t: ^testing.T) {
 	holed_ast, holed_err := stage_parse(stage_lex("let FIRST: Fixed = @stub(Fixed, 1.5)\ndata Later { bias: Fixed = @stub(Fixed, 0.0) }\n"))
@@ -551,11 +394,6 @@ test_release_walkers_source_order :: proc(t: ^testing.T) {
 	log.infof("release walkers source order: a let preceding a data in source is the first offender for both bans (never the per-kind regrouping)")
 }
 
-// test_gates_skip_holed_units proves dev mode compiles MULTIPLE holes: a holed
-// fn is body-less (the hole stands in body position), so like an extern fn it
-// is not a unit the structural gates score — two holes must NOT collide on the
-// duplication gate (two empty bodies hash identically), or a second hole would
-// break the dev build the §05 contract promises compiles.
 @(test)
 test_gates_skip_holed_units :: proc(t: ^testing.T) {
 	ast, parse_err := stage_parse(stage_lex("fn first_hole() -> Fixed @stub(Fixed)\nfn second_hole() -> Fixed @stub(Fixed)\n"))
@@ -564,14 +402,6 @@ test_gates_skip_holed_units :: proc(t: ^testing.T) {
 	log.infof("gates skip holed units: two holes in one module pass the duplication gate (a hole is body-less, not a scored code unit)")
 }
 
-// ── --release debug-directive ban (§05 §5 / §28 §4: debug residue cannot ship) ──
-
-// test_build_release_probed_tree_exits_two is the release debug-directive-ban
-// acceptance, the hole-ban's sibling: a §14 tree carrying a §05 §5 debug probe
-// built in Release mode refuses with a Debug_Directive verdict NAMING the
-// probed declaration (drift, the @log-probed behavior; bare — the fixture is
-// single-module, lore #11) — the exit-2 compile-error outcome (NEVER a counted
-// failure; the build verb has no assertion tier) — and writes NEITHER product.
 @(test)
 test_build_release_probed_tree_exits_two :: proc(t: ^testing.T) {
 	root, ok := write_probed_tree(t)
@@ -584,7 +414,6 @@ test_build_release_probed_tree_exits_two :: proc(t: ^testing.T) {
 	testing.expect_value(t, verdict.err, Build_Error.Debug_Directive)
 	testing.expect_value(t, verdict.offender, "drift")
 
-	// The ban refuses before either emission surface runs, so no product lands.
 	artifact_path := build_product_path(root, ARTIFACT_PRODUCT_NAME, context.temp_allocator)
 	index_path := build_product_path(root, INDEX_PRODUCT_NAME, context.temp_allocator)
 	testing.expect(t, !os.exists(artifact_path))
@@ -592,12 +421,6 @@ test_build_release_probed_tree_exits_two :: proc(t: ^testing.T) {
 	log.infof("release debug ban: a probed decl under --release is Debug_Directive (exit 2, compile error, no product) — debug residue cannot ship")
 }
 
-// test_build_dev_probed_tree_exits_zero_and_indexes_probe is the dev half of
-// the §05 §5 contract: the SAME probed tree built in Dev mode (the no-flag
-// default) compiles exit 0, writes both products, AND its emitted index
-// derives the probe into the decl's debug field — replacing the
-// mandatory-present empty, so the §28 §4 task-registration surface sees the
-// outstanding probe.
 @(test)
 test_build_dev_probed_tree_exits_zero_and_indexes_probe :: proc(t: ^testing.T) {
 	root, ok := write_probed_tree(t)
@@ -615,20 +438,12 @@ test_build_dev_probed_tree_exits_zero_and_indexes_probe :: proc(t: ^testing.T) {
 	testing.expect_value(t, write_err, Build_Write_Error.None)
 	testing.expect(t, os.exists(product.artifact_path))
 	testing.expect(t, os.exists(product.index_path))
-	// The probed behavior's decl line carries the DERIVED debug field — the
-	// @log probe by its directive name — while the probe-free bindings fn stays
-	// the mandatory-present empty.
 	testing.expect(t, strings.contains(product.index, "\"qualified_name\":\"drift\""))
 	testing.expect(t, strings.contains(product.index, "\"debug\":[\"log\"]"))
 	testing.expect(t, strings.contains(product.index, "\"debug\":[]"))
 	log.infof("dev probes compile: the probed tree builds exit 0 in dev mode and the index derives the probe (debug=[\"log\"])")
 }
 
-// test_release_debug_decl_walk unit-tests the pure-AST finder (gates.odin) the
-// build-seam ban consults, mirroring test_release_holed_decl_walk: a probed
-// behavior is found by its own name, a probed fn by its name (the parser
-// admits a probe on every directive-carrying decl; placement is a downstream
-// concern, the ban refuses them all), and a probe-free AST reports none.
 @(test)
 test_release_debug_decl_walk :: proc(t: ^testing.T) {
 	probed_behavior_ast, behavior_err := stage_parse(stage_lex("@trace\nbehavior serve on Ball {\n  fn step(self: Ball) -> Ball {\n    return self\n  }\n}\n"))
@@ -650,11 +465,6 @@ test_release_debug_decl_walk :: proc(t: ^testing.T) {
 	log.infof("release_debug_decl: finds a probed behavior and a probed fn by name, none on a probe-free AST")
 }
 
-// test_build_release_multi_module_offender_qualified pins the offender's §15
-// qualification on the multi-module path: a two-module tree whose hole lives in
-// the beta module refuses with the MODULE-QUALIFIED offender
-// (`beta.approx_speed`), matching the Index Contract's qualified_name — the
-// single-module bare rule (lore #11) applies only to one-source projects.
 @(test)
 test_build_release_multi_module_offender_qualified :: proc(t: ^testing.T) {
 	root, ok := write_two_module_holed_tree(t)
@@ -669,25 +479,10 @@ test_build_release_multi_module_offender_qualified :: proc(t: ^testing.T) {
 	log.infof("release offender qualification: a multi-module tree names the module-qualified offender (beta.approx_speed)")
 }
 
-// EPLAST_ALPHA_HOLED is the entrypoint-last fixture's first-by-path module
-// (alpha): a doc-headed fn carrying a §05 expression-position hole — the decoy
-// offender a plain sorted-by-path walk would name first.
 EPLAST_ALPHA_HOLED :: "@doc(\"The alpha module: first by sorted path, NOT the entrypoint.\")\n\n@doc(\"An expression hole the index lists AFTER zeta's.\")\nfn alpha_speed(base: Fixed) -> Fixed {\n  return base + @stub(Fixed, 0.5)\n}\n"
 
-// EPLAST_ZETA_HOLED is the entrypoint-last fixture's entrypoint module (zeta,
-// last by sorted path): the minimal compileable module plus a §05
-// expression-position hole — the offender the index lists FIRST
-// (entrypoint-first module order), so the refusal must name it.
 EPLAST_ZETA_HOLED :: MINI_SOURCE + "\n@doc(\"An expression hole in the entrypoint module — index-first.\")\nfn zeta_speed(base: Fixed) -> Fixed {\n  return base + @stub(Fixed, 0.5)\n}\n"
 
-// test_build_release_holed_offender_walks_index_order pins the refusal walk's
-// ORDER against the Index Contract's: a two-module tree whose ENTRYPOINT module
-// (zeta) sorts LAST by path, with a §05 EXPRESSION-position hole in BOTH
-// modules, refuses naming zeta's hole (`zeta.zeta_speed`) — the entrypoint
-// module's decl block leads the emitted index (order_index_modules), so the
-// refusal's first offender is the first offender in index order, NOT the
-// plain sorted-by-path first (`alpha.alpha_speed`). The same tree's dev index
-// confirms the order the refusal mirrors: zeta's block before alpha's.
 @(test)
 test_build_release_holed_offender_walks_index_order :: proc(t: ^testing.T) {
 	root, ok := write_entrypoint_last_tree(t, "holed", EPLAST_ALPHA_HOLED, EPLAST_ZETA_HOLED)
@@ -700,8 +495,6 @@ test_build_release_holed_offender_walks_index_order :: proc(t: ^testing.T) {
 	testing.expect_value(t, verdict.err, Build_Error.Holed_Declaration)
 	testing.expect_value(t, verdict.offender, "zeta.zeta_speed")
 
-	// The dev build of the SAME tree emits the index whose module order the
-	// refusal walk mirrors: zeta (entrypoint) leads, alpha follows.
 	product, dev_verdict := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, dev_verdict.err, Build_Error.None)
 	if dev_verdict.err != .None {
@@ -717,13 +510,6 @@ test_build_release_holed_offender_walks_index_order :: proc(t: ^testing.T) {
 	log.infof("release hole-ban walk order: an entrypoint-last tree names the index-first offender (zeta.zeta_speed, never alpha.alpha_speed)")
 }
 
-// test_build_release_probed_offender_walks_index_order is the debug-directive
-// sibling of the holed walk-order pin: the same entrypoint-last two-module
-// shape with a §05 §5 @log probe in BOTH modules (hole-free, so the hole-ban
-// never fires) refuses naming zeta's probed fn (`zeta.zeta_speed`) — the
-// index-first offender — never the sorted-by-path first (`alpha.alpha_speed`).
-// Both project walkers share order_release_sources, so the two refusal arms
-// can never disagree on walk order.
 @(test)
 test_build_release_probed_offender_walks_index_order :: proc(t: ^testing.T) {
 	alpha :: "@doc(\"The alpha module: first by sorted path, NOT the entrypoint.\")\n\n@doc(\"A probed fn the index lists AFTER zeta's.\")\n@log(alpha_speed)\nfn alpha_speed() -> Fixed {\n  return 1.5\n}\n"
@@ -740,11 +526,6 @@ test_build_release_probed_offender_walks_index_order :: proc(t: ^testing.T) {
 	log.infof("release debug-ban walk order: an entrypoint-last tree names the index-first offender (zeta.zeta_speed, never alpha.alpha_speed)")
 }
 
-// test_build_refusal_message_shapes pins build_refusal_message's two line
-// shapes: an offender-less arm renders the closed arm's name alone, and a
-// release-refusal verdict appends the module-qualified offender after a colon.
-// The line is advisory wording (§29 §3 — the machine contract is the exit
-// code) but deterministic, so the goldens pin it byte-for-byte.
 @(test)
 test_build_refusal_message_shapes :: proc(t: ^testing.T) {
 	testing.expect_value(t, build_refusal_message(Build_Verdict{err = .Malformed_Tree}, context.temp_allocator), "Malformed_Tree")
@@ -752,12 +533,6 @@ test_build_refusal_message_shapes :: proc(t: ^testing.T) {
 	testing.expect_value(t, build_refusal_message(Build_Verdict{err = .Debug_Directive, offender = "beta.DebugMarker"}, context.temp_allocator), "Debug_Directive: beta.DebugMarker")
 }
 
-// module_prefix_order extracts the distinct §15 module prefixes from the index
-// stream's decl lines in first-seen order — the multi-module decl-block order the
-// order test pins. A decl line's qualified_name is `<module>.<name>`, so the
-// prefix is the substring before the first dot; a bare (single-module) decl has no
-// dot and is skipped. First-seen dedup over the line order recovers the block
-// order without a map reaching the result, so the order is deterministic.
 module_prefix_order :: proc(stream: string) -> []string {
 	order := make([dynamic]string, 0, 4, context.temp_allocator)
 	seen := make(map[string]bool, context.temp_allocator)
@@ -789,25 +564,10 @@ module_prefix_order :: proc(stream: string) -> []string {
 	return order[:]
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────
-
-// copy_pong_tree_to_temp copies the live pong project tree into a fresh temp
-// root so a build test can write derived products without touching the committed
-// checkout. ok = false (with the golden SKIP semantics) when the sibling pong
-// checkout is absent or the copy fails. The copy is recursive over the tree's
-// regular files, recreating the directory structure under the temp root.
 copy_pong_tree_to_temp :: proc() -> (root: string, ok: bool) {
 	return copy_spec_tree_to_temp(resolve_pong_dir(), "pong", "FUNPACK_PONG_DIR")
 }
 
-// copy_spec_tree_to_temp copies a live spec example tree into a fresh temp root so
-// a build test can write derived products without touching the committed checkout
-// — the generic form copy_pong_tree_to_temp and the multi-module/package build
-// tests share. ok = false (with the golden SKIP semantics, naming the env
-// override) when the sibling checkout is absent or the copy fails. The copy is
-// recursive over the tree's regular files, recreating the directory structure
-// under the temp root; the temp-root label keeps concurrent build tests from
-// colliding.
 copy_spec_tree_to_temp :: proc(src: string, label: string, env_name: string) -> (root: string, ok: bool) {
 	if !os.is_dir(src) {
 		log.warnf("SKIP build %s: %s not found — set %s or ensure the in-repo fixture exists", label, src, env_name)
@@ -823,11 +583,6 @@ copy_spec_tree_to_temp :: proc(src: string, label: string, env_name: string) -> 
 	return root, true
 }
 
-// copy_tree recursively copies every regular file under `src` into `dst`,
-// recreating the interior directory structure. It is scoped to the build test's
-// fixture need (materialize a real §14 tree in temp) — it copies file bytes
-// verbatim and skips non-regular entries, so the copied tree is a faithful build
-// input. false on any directory-create or file-write failure.
 copy_tree :: proc(src: string, dst: string) -> bool {
 	if !ensure_dir(dst) {
 		return false
@@ -857,22 +612,11 @@ copy_tree :: proc(src: string, dst: string) -> bool {
 	return true
 }
 
-// ensure_dir creates a directory and its parents idempotently: an
-// already-present directory is success, not an error. os.make_directory_all
-// reports General_Error.Exist when the path already exists, so a recursive copy
-// that touches a shared parent more than once treats that as a no-op rather than
-// a failure.
 ensure_dir :: proc(path: string) -> bool {
 	err := os.make_directory_all(path)
 	return err == nil || err == os.General_Error.Exist
 }
 
-// write_broken_pong_tree materializes a §14 tree whose configs are valid but
-// whose single source is a deliberately-malformed program the checked pipeline
-// rejects, so stage_build reaches the compile floor and refuses with
-// Compile_Failed. The configs mirror the pong tree (so read_project and the
-// index's authored read succeed) — only the source is broken, isolating the
-// failure to the compile floor rather than a tree-shape error.
 write_broken_pong_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-broken")})
 	remove_scratch_tree(root)
@@ -887,8 +631,6 @@ write_broken_pong_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 		os.write_entire_file(scratch_join({configs, "entrypoints.fcfg"}), "use pong.{Pong, bindings}\n\nentrypoint main {\n  pipeline = Pong\n  tick = 60hz\n  logical = 160x120\n  bindings = bindings\n}\n") == nil &&
 		os.write_entire_file(scratch_join({configs, "builds.fcfg"}), "build native {\n  platform = desktop\n}\n") == nil &&
 		os.write_entire_file(scratch_join({configs, "tags.fcfg"}), "tags {\n  game\n}\n") == nil &&
-		// A source that fails to parse — a `fn` head with no body and a dangling
-		// brace — so the checked pipeline rejects it at the parse floor.
 		os.write_entire_file(src_path, "fn broken( {\n") == nil
 	if !ok_writes {
 		remove_scratch_tree(root)
@@ -898,16 +640,6 @@ write_broken_pong_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	return root, true
 }
 
-// write_minimal_valid_tree materializes a minimal valid §14 project tree whose
-// configs and single source all compile, so stage_build emits both products. The
-// source declares exactly what the entrypoint references — an empty pipeline
-// and a deviceless bindings fn — so emission's reference validation (§07)
-// resolves and the schedule flattens empty, exercising the full build path
-// without reproducing the pong source. It is the pong-independent fixture the
-// determinism test builds twice, so the byte-identity check holds on any host.
-// MINI_SOURCE is the minimal compileable module the valid-tree fixture carries:
-// it declares the `Loop` pipeline and `bindings` fn the fixture's
-// entrypoints.fcfg references, so emission's reference validation resolves.
 MINI_SOURCE :: "@doc(\"Minimal buildable module: an empty pipeline and a deviceless bindings fn.\")\n\nimport engine.input.{Bindings}\n\n@doc(\"No bindings — the minimal deviceless map.\")\nfn bindings() -> Bindings {\n  return Bindings.empty()\n}\n\n@doc(\"The empty schedule.\")\npipeline Loop {\n}\n"
 
 write_minimal_valid_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
@@ -933,16 +665,8 @@ write_minimal_valid_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	return root, true
 }
 
-// HOLED_SOURCE is the minimal compileable module plus one §05 typed hole — the
-// fixture the release hole-ban tests build in both modes: dev compiles it
-// (exit 0, both products), release refuses it (Holed_Declaration, exit 2, no
-// product).
 HOLED_SOURCE :: MINI_SOURCE + "\n@doc(\"A typed hole: dev compiles it, release refuses to ship it.\")\nfn approx_speed() -> Fixed @stub(Fixed)\n"
 
-// write_holed_tree materializes the write_minimal_valid_tree fixture with one
-// §05 typed hole added to its source (HOLED_SOURCE) — a valid §14 tree whose
-// only "defect" is the hole, isolating the release-vs-dev verdict to the
-// hole-ban rather than any tree-shape or compile floor.
 write_holed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-holed")})
 	remove_scratch_tree(root)
@@ -966,12 +690,6 @@ write_holed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	return root, true
 }
 
-// write_two_module_holed_tree materializes a TWO-module §14 tree whose §05
-// typed hole lives in the second-by-path module (src/beta.fun) — the fixture
-// the offender-qualification test builds: with more than one source the
-// release refusal must name the offender module-qualified (beta.approx_speed),
-// never bare. src/alpha.fun is the clean entrypoint module; the refusal fires
-// before emission, so only read_project + parse must succeed on the tree.
 write_two_module_holed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-twomod-holed")})
 	remove_scratch_tree(root)
@@ -997,18 +715,8 @@ write_two_module_holed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	return root, true
 }
 
-// PROBED_SOURCE is the minimal compileable module plus one §05 §5 debug probe
-// (a @log on a behavior, the §28 §4 placement) — the fixture the release
-// debug-directive-ban tests build in both modes: dev compiles it AND derives
-// the probe into the index's debug field; release refuses it
-// (Debug_Directive, exit 2, no product).
 PROBED_SOURCE :: MINI_SOURCE + "\n@doc(\"A probed thing the debug fixture observes.\")\nthing Ball {\n  pos: Int\n}\n\n@doc(\"A probed behavior: dev compiles and indexes the probe, release refuses to ship it.\")\n@log(self.pos)\nbehavior drift on Ball {\n  fn step(self: Ball) -> Ball {\n    return self\n  }\n}\n"
 
-// write_probed_tree materializes the write_minimal_valid_tree fixture with one
-// §05 §5 debug probe added to its source (PROBED_SOURCE) — a valid §14 tree
-// whose only "defect" is the probe, isolating the release-vs-dev verdict to
-// the debug-directive ban rather than any tree-shape or compile floor
-// (mirroring write_holed_tree).
 write_probed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	root = scratch_join({scratch_base(), tprintf_seq("funpack-build-probed")})
 	remove_scratch_tree(root)
@@ -1032,14 +740,6 @@ write_probed_tree :: proc(t: ^testing.T) -> (root: string, ok: bool) {
 	return root, true
 }
 
-// write_entrypoint_last_tree materializes a TWO-module §14 tree whose
-// ENTRYPOINT module (zeta — src/zeta.fun) sorts LAST by path while the sibling
-// module (alpha — src/alpha.fun) sorts first — the fixture discriminating the
-// release-refusal walk order from plain Project.sources order: the Index
-// Contract lists zeta's decl block first (entrypoint-first,
-// order_index_modules), so with an offender in BOTH modules the refusal must
-// name zeta's, never alpha's. The caller supplies each module's source so the
-// one shape serves both refusal arms (hole and probe).
 write_entrypoint_last_tree :: proc(t: ^testing.T, label: string, alpha_source: string, zeta_source: string) -> (root: string, ok: bool) {
 	root = scratch_join({scratch_base(), tprintf_seq(fmt.tprintf("funpack-build-eplast-%s", label))})
 	remove_scratch_tree(root)
@@ -1064,9 +764,6 @@ write_entrypoint_last_tree :: proc(t: ^testing.T, label: string, alpha_source: s
 	return root, true
 }
 
-// tprintf_seq builds a per-process-unique scratch dir name from a prefix and the
-// shared scratch sequence counter, so concurrently-scheduled build tests never
-// collide on a temp root.
 tprintf_seq :: proc(prefix: string) -> string {
 	return fmt.tprintf("%s-%d", prefix, scratch_seq())
 }

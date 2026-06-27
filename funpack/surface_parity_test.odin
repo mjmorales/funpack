@@ -1,29 +1,3 @@
-// The deliberate spec for the surface-parity gate (surface_parity.odin) — in the
-// funpack compiler package that owns the live dump (surface_dump_test.odin sits
-// beside this) and reads the stdlib/engine/*.fun signature files from disk
-// (golden_fmt_test.odin). Five junctions are pinned:
-//
-//  1. THE GATE PROPER — against the current (restored, in-parity) surface, the
-//     .fun signature files advertise no surface the LIVE build_surface_dump()
-//     lacks beyond the audited RESIDUAL_OVER_DECLARES allow-list. This is the
-//     content-level check the version-string corpus-pin detector cannot be.
-//  2. THE NEGATIVE CONTROL — an injected same-version divergence (a documented
-//     enum/struct variant or module type the dump rejects, not on the allow-list)
-//     is DETECTED, NAMED with .Docs_Ahead_Of_Compiler + the .fun source, and
-//     surfaced in the failure message — proving the gate is a real detector.
-//  3. NO STALE ALLOW-LIST — every RESIDUAL_OVER_DECLARES entry still corresponds
-//     to a live docs-ahead divergence, so a restored symbol forces its entry's
-//     removal (the allow-list shrinks toward empty as the tracker task drains).
-//  4. MODELS NON-EMPTY — a silently-empty model (a parser regression) reading as
-//     falsely-in-parity is guarded; the canonical Color palette must be present in
-//     BOTH the compiler and .fun models.
-//  5. EXCLUDED-SURFACE DOCUMENTED — every EXCLUDED_SURFACE axis carries a WHY, so
-//     an exclusion can never silently become a coverage hole.
-//
-// The gate runs INSIDE the toolchain off the in-memory dump: no fixture, no temp
-// build, no introspect subprocess. The .fun arm reads stdlib/engine/*.fun via
-// resolve_stdlib_dir(); an absent tree SKIPs loudly (the golden_fmt_test.odin
-// discipline), keeping the suite hermetic in a bare checkout.
 package funpack
 
 import "core:log"
@@ -32,12 +6,6 @@ import "core:slice"
 import "core:strings"
 import "core:testing"
 
-// load_fun_sources reads the stdlib/engine/*.fun signature files into Fun_Source
-// records keyed by their engine.<module> path (input.fun -> engine.input), in
-// sorted filename order for determinism. ok = false (with a loud warn) when the
-// tree is absent, so a checkout without the fixture SKIPs rather than yielding an
-// empty (falsely-in-parity) model — the golden_fmt_test.odin resolve/SKIP
-// protocol. Allocated on alloc.
 load_fun_sources :: proc(alloc := context.allocator) -> (sources: []Fun_Source, ok: bool) {
 	dir := resolve_stdlib_dir()
 	if !os.is_dir(dir) {
@@ -65,7 +33,6 @@ load_fun_sources :: proc(alloc := context.allocator) -> (sources: []Fun_Source, 
 			log.errorf("surface-parity: read %s failed: %v", path, read_err)
 			continue
 		}
-		// module = "engine." + the .fun file stem.
 		base := path[strings.last_index_byte(path, '/') + 1:]
 		stem := strings.trim_suffix(base, ".fun")
 		append(&out, Fun_Source{module = strings.concatenate({"engine.", stem}, alloc), text = string(bytes)})
@@ -73,17 +40,11 @@ load_fun_sources :: proc(alloc := context.allocator) -> (sources: []Fun_Source, 
 	return out[:], true
 }
 
-// test_surface_parity_gate is the gate proper: against the CURRENT (restored,
-// in-parity) surface, the .fun signature files advertise no surface the LIVE
-// build_surface_dump() lacks BEYOND the audited RESIDUAL_OVER_DECLARES allow-list.
-// A fresh same-version surface divergence — a .fun symbol the compiler rejects,
-// not on the allow-list — fails here, named. This is the check the version-string
-// corpus-pin detector cannot be.
 @(test)
 test_surface_parity_gate :: proc(t: ^testing.T) {
 	sources, ok := load_fun_sources(context.temp_allocator)
 	if !ok {
-		return // absent fixture tree — SKIP loudly (already warned).
+		return
 	}
 	fun := parse_fun_model(sources, context.temp_allocator)
 	compiler := compiler_model_from_dump(build_surface_dump(), context.temp_allocator)
@@ -94,13 +55,6 @@ test_surface_parity_gate :: proc(t: ^testing.T) {
 	}
 }
 
-// test_surface_parity_detects_synthetic_divergence is the negative control proving
-// the gate is a real DETECTOR, not a no-op: it injects a same-version surface
-// divergence into a FRESH-PARSED copy of the .fun model — a documented symbol the
-// compiler dump does not admit — and asserts the gate (a) FAILS and (b) NAMES the
-// injected symbol with the harmful direction, source, and kind. This is the exact
-// shape of the canonical break (a documented Color-palette member the compiler
-// rejects). Three sub-cases span the three doc-ahead granularities.
 @(test)
 test_surface_parity_detects_synthetic_divergence :: proc(t: ^testing.T) {
 	sources, ok := load_fun_sources(context.temp_allocator)
@@ -110,9 +64,9 @@ test_surface_parity_detects_synthetic_divergence :: proc(t: ^testing.T) {
 	compiler := compiler_model_from_dump(build_surface_dump(), context.temp_allocator)
 
 	Injection :: enum {
-		Enum_Variant, // Color::Chartreuse — a palette member the compiler lacks.
-		Struct_Variant, // Draw::Hologram — a struct-payload variant on a known type.
-		Module_Type, // engine.render::Hologram — a type the compiler does not know.
+		Enum_Variant,
+		Struct_Variant,
+		Module_Type,
 	}
 	Case :: struct {
 		name:   string,
@@ -132,9 +86,6 @@ test_surface_parity_detects_synthetic_divergence :: proc(t: ^testing.T) {
 	}
 
 	for tc in cases {
-		// Fresh-parse the .fun model each case so the synthetic symbol is the ONLY
-		// new divergence and the real residuals stay allow-listed (parse_fun_model
-		// builds independent maps each call, so no cross-case bleed).
 		mutated := parse_fun_model(sources, context.temp_allocator)
 		switch tc.inject {
 		case .Enum_Variant:
@@ -172,13 +123,6 @@ test_surface_parity_detects_synthetic_divergence :: proc(t: ^testing.T) {
 	}
 }
 
-// test_no_stale_residual_allow_list_entry asserts every RESIDUAL_OVER_DECLARES
-// entry corresponds to a divergence that ACTUALLY occurs against the current LIVE
-// dump. A stale entry — one whose symbol the compiler now admits, or whose name
-// drifted — would silently suppress a finding it no longer matches, masking a real
-// future divergence. So when a restore lands and the dump grows, the matching
-// entry MUST be removed or this fails. This is the mechanism that forces the
-// allow-list to SHRINK toward empty as the residual tracker task is drained.
 @(test)
 test_no_stale_residual_allow_list_entry :: proc(t: ^testing.T) {
 	sources, ok := load_fun_sources(context.temp_allocator)
@@ -188,7 +132,6 @@ test_no_stale_residual_allow_list_entry :: proc(t: ^testing.T) {
 	fun := parse_fun_model(sources, context.temp_allocator)
 	compiler := compiler_model_from_dump(build_surface_dump(), context.temp_allocator)
 
-	// Collect the actual docs-ahead findings from the .fun source.
 	doc_ahead := make(map[Residual_Key]bool, context.temp_allocator)
 	for f in diff_surfaces(fun, compiler, ".fun", context.temp_allocator) {
 		if f.direction == .Docs_Ahead_Of_Compiler {
@@ -209,11 +152,6 @@ test_no_stale_residual_allow_list_entry :: proc(t: ^testing.T) {
 	}
 }
 
-// test_surface_parity_models_non_empty guards against a silently-empty model (a
-// parser regression or a missing source) reading as falsely in-parity: an empty
-// doc or compiler model would make every diff vacuous. Asserts each source yields
-// a non-trivial surface, and that the canonical Color palette (the §26-restore
-// proof: 5 named members + the Rgb struct payload) is present in BOTH models.
 @(test)
 test_surface_parity_models_non_empty :: proc(t: ^testing.T) {
 	sources, ok := load_fun_sources(context.temp_allocator)
@@ -242,10 +180,6 @@ test_surface_parity_models_non_empty :: proc(t: ^testing.T) {
 	}
 }
 
-// test_excluded_surface_documented guards the audited exclusion list: every
-// comparison axis the gate deliberately skips must carry a non-empty WHY, so an
-// exclusion can never silently become a coverage hole (and the list stays
-// referenced, not dead).
 @(test)
 test_excluded_surface_documented :: proc(t: ^testing.T) {
 	testing.expect(t, len(EXCLUDED_SURFACE) > 0, "EXCLUDED_SURFACE is empty — the gate's intentional exclusions must stay documented and auditable")

@@ -1,36 +1,9 @@
-// The funpack COMPILER command subtree — the pure-compiler verbs (version, test,
-// build, check, fmt, and the warden index-query group) the single binary's entry
-// package (cmd/funpack) grafts onto the unified root alongside the runtime verbs
-// (run, live, attach). Every front-door verb here is one cli.Cli_Command node,
-// its handler a thin adapter that reads the resolved flags/positionals and calls
-// the verb's run_X_verb / *_verb_exit core — so each verb keeps its documented
-// {0, 1, 2} exit contract (§29 §3); the framework (the cli package) owns only the
-// argument plumbing.
-//
-// Two domain seams keep the generic framework from needing to know funpack's
-// types: cli_validate_index_decl_kind is the per-flag predicate that adjudicates
-// `warden find --kind` against the closed Index_Decl_Kind member names at parse
-// time, and cli_validate_warden_find is the command-level predicate for find's
-// "at least one non-empty filter, never an empty name-query" gate (the one
-// constraint that is neither a flag nor an arity rule).
-//
-// This file owns the COMPILER half only. The run verb (which builds then launches
-// the runtime in-process) and the live/attach verbs live in cmd/funpack, because
-// they call into funpack_runtime — a dependency the pure compiler package must not
-// take (it would pull SDL into `odin test funpack/`). The compiler subtree is
-// returned UNFINALIZED: the entry package appends the runtime nodes and finalizes
-// the whole tree at once, so cross-verb uniqueness is checked over the real root.
 package funpack
 
 import "../cli"
 import "core:reflect"
 import "core:slice"
 
-// build_funpack_compiler_subtree constructs the compiler verb nodes and returns
-// them as a slice for the entry package to graft onto the unified root. The nodes
-// are allocated in `allocator` (process-lifetime for main, a scratch arena in
-// tests) so every node has a stable address for the parent pointers cli_finalize
-// wires when the entry package finalizes the composed root.
 build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli.Cli_Command {
 	find := cli.cli_new_command(
 		cli.Cli_Command {
@@ -236,12 +209,6 @@ build_funpack_compiler_subtree :: proc(allocator := context.allocator) -> []^cli
 	)
 }
 
-// ── verb handlers ────────────────────────────────────────────────────────────
-// Each handler is the adapter from a resolved invocation to a run_X_verb core.
-// Verbs that read no flags/positionals ignore the invocation (the `_` parameter
-// makes that explicit); build/check/fmt/find/graph project the invocation onto
-// the verb's existing mode/query type through the mappers below.
-
 cli_run_version :: proc(inv: ^cli.Cli_Invocation) -> int {
 	return run_version_verb(cli.cli_flag_bool(inv, "json"))
 }
@@ -302,26 +269,14 @@ cli_run_warden_graph :: proc(inv: ^cli.Cli_Invocation) -> int {
 	return run_warden_verb(.Graph, arg, {})
 }
 
-// ── invocation → verb-type mappers ───────────────────────────────────────────
-
-// cli_build_mode maps the build/check `--release` flag to its Build_Mode: the
-// flag present is Release (the §29 §4 hole-ban mode), absent is Dev. Both build
-// and check read `--release` through this mapper, and the entry package's run verb
-// reuses it for `funpack run --release`.
 cli_build_mode :: proc(inv: ^cli.Cli_Invocation) -> Build_Mode {
 	return .Release if cli.cli_flag_bool(inv, "release") else .Dev
 }
 
-// cli_fmt_mode maps the fmt `--check` flag to its Fmt_Mode: present is the
-// verdict-only Check face, absent is the in-place Write face.
 cli_fmt_mode :: proc(inv: ^cli.Cli_Invocation) -> Fmt_Mode {
 	return .Check if cli.cli_flag_bool(inv, "check") else .Write
 }
 
-// cli_warden_find_query projects the find invocation onto its Warden_Find_Query:
-// the optional positional becomes the name substring, and the validated --kind /
-// --gtag flags become the kind/gtag filters ("" when absent — the sentinel the
-// query treats as "filter not provided").
 cli_warden_find_query :: proc(inv: ^cli.Cli_Invocation) -> Warden_Find_Query {
 	query: Warden_Find_Query
 	if len(inv.args) == 1 {
@@ -332,22 +287,11 @@ cli_warden_find_query :: proc(inv: ^cli.Cli_Invocation) -> Warden_Find_Query {
 	return query
 }
 
-// ── domain validators ────────────────────────────────────────────────────────
-
-// cli_validate_index_decl_kind is the `warden find --kind` value predicate: the
-// value must be an EXACT Index_Decl_Kind member name (reflect.enum_from_name —
-// never case-folded, never fuzzy), so an unknown kind is a usage error at parse,
-// before any index read.
 cli_validate_index_decl_kind :: proc(value: string) -> bool {
 	_, known := reflect.enum_from_name(Index_Decl_Kind, value)
 	return known
 }
 
-// cli_validate_warden_find is find's command-level gate: find answers a lookup,
-// not an index dump, so it requires at least one filter — a name, a --kind, or a
-// --gtag — and rejects an explicitly-empty name-query (a disguised dump). Run
-// over the fully bound invocation after arity, so an over-long positional list
-// is already a Bad_Arg_Count by the time this sees it.
 cli_validate_warden_find :: proc(inv: ^cli.Cli_Invocation) -> bool {
 	if len(inv.args) == 1 && inv.args[0] == "" {
 		return false

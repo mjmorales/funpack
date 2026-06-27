@@ -2,16 +2,6 @@ package funpack
 
 import "core:testing"
 
-// The .fpm parser builds the model/rig IR over the Solid algebra (spec §16 §2).
-// These tests parse a well-formed `rig Krognid { … }` to the expected
-// param/fn/part/mirror/clearance counts — the exact-count pin the golden-source
-// shape demands (the live krognid.fpm example) — plus per-production unit checks
-// and the casing-rejection paths.
-
-// KROGNID_RIG mirrors the krognid.fpm example (§16 §7): a humanoid
-// rig with five params, six mesh fns, six part bindings, one mirror, a clearance,
-// and a material. The counts are pinned exactly below; when the example evolves,
-// these counts change in lockstep.
 KROGNID_RIG :: `// krognid.fpm — a rig: parts + skeleton + their pivots. Bake-time, imperative, float-ok.
 rig Krognid {
   skeleton: humanoid
@@ -52,7 +42,6 @@ test_fpm_parse_krognid_rig_counts :: proc(t: ^testing.T) {
 	testing.expect_value(t, unit.skeleton, "humanoid")
 	testing.expect_value(t, len(unit.params), 5)
 	testing.expect_value(t, len(unit.fns), 6)
-	// Six part bindings plus the one material binding share the binds slice.
 	part_count := 0
 	material_count := 0
 	for bind in unit.binds {
@@ -74,8 +63,6 @@ test_fpm_parse_krognid_rig_counts :: proc(t: ^testing.T) {
 
 @(test)
 test_fpm_parse_part_resolves_to_solid_via_fn :: proc(t: ^testing.T) {
-	// A `part ... = torso_mesh()` resolves to the capsule geometry the fn returns
-	// — the part's modeled mesh is a scorable Solid through the fn (§16 §7).
 	unit, err := fpm_parse(fpm_lex(KROGNID_RIG))
 	testing.expect_value(t, err, Fpm_Parse_Error.None)
 	torso_fn_solid: Fpm_Solid
@@ -84,7 +71,6 @@ test_fpm_parse_part_resolves_to_solid_via_fn :: proc(t: ^testing.T) {
 			torso_fn_solid = fn.solid
 		}
 	}
-	// torso_mesh returns capsule(...).up(0) — a transform over a capsule primitive.
 	xf, is_xf := torso_fn_solid.(^Fpm_Transform)
 	testing.expect(t, is_xf, "torso_mesh returns a transform")
 	if is_xf {
@@ -99,8 +85,6 @@ test_fpm_parse_part_resolves_to_solid_via_fn :: proc(t: ^testing.T) {
 
 @(test)
 test_fpm_parse_model_block :: proc(t: ^testing.T) {
-	// A `model` block (not a rig) with emit/anchor/socket/material/collide members
-	// (§16 §2) parses to the expected binding kinds.
 	src := `model Table {
   param width: Length = 120
   fn leg() -> Solid { return box(6, 6, 70) }
@@ -131,9 +115,6 @@ test_fpm_parse_model_block :: proc(t: ^testing.T) {
 
 @(test)
 test_fpm_parse_named_call_args :: proc(t: ^testing.T) {
-	// A call takes named arguments (`pbr(color: teal, rough: 0.7)`) — the
-	// not-LL(1) labeled-vs-positional peek (fpm.ebnf header). The labels are
-	// recorded on the args.
 	unit, err := fpm_parse(fpm_lex("model M {\nmaterial body = pbr(color: teal, rough: 0.7)\n}\n"))
 	testing.expect_value(t, err, Fpm_Parse_Error.None)
 	testing.expect_value(t, len(unit.binds), 1)
@@ -150,9 +131,6 @@ test_fpm_parse_named_call_args :: proc(t: ^testing.T) {
 
 @(test)
 test_fpm_parse_accumulating_loop_and_assign :: proc(t: ^testing.T) {
-	// The bake-time-only imperative forms (§16 §1): an accumulating `for x in
-	// a..b` loop and a local reassignment `acc = expr`. Neither has a `.fun`
-	// counterpart.
 	src := `model M {
   fn build() -> Solid {
     let acc = box(1, 1, 1)
@@ -167,7 +145,6 @@ test_fpm_parse_accumulating_loop_and_assign :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Fpm_Parse_Error.None)
 	testing.expect_value(t, len(unit.fns), 1)
 	body := unit.fns[0].body
-	// let, for, return
 	testing.expect_value(t, len(body), 3)
 	_, is_for := body[1].(Fpm_For)
 	testing.expect(t, is_for, "second statement is a for-loop")
@@ -183,8 +160,6 @@ test_fpm_parse_accumulating_loop_and_assign :: proc(t: ^testing.T) {
 
 @(test)
 test_fpm_parse_rejects_wrong_case_bone :: proc(t: ^testing.T) {
-	// A part's attach bone is an UPPER_IDENT (§16 §7); a lowercase bone is a
-	// casing error, named Wrong_Case, not a generic Unexpected_Token.
 	src := `rig R {
   part torso at torso = torso_mesh()
 }
@@ -195,7 +170,6 @@ test_fpm_parse_rejects_wrong_case_bone :: proc(t: ^testing.T) {
 
 @(test)
 test_fpm_parse_rejects_non_block :: proc(t: ^testing.T) {
-	// A .fpm unit must open with `model` or `rig`; anything else is rejected.
 	_, err := fpm_parse(fpm_lex("param x: Length = 1"))
 	testing.expect_value(t, err, Fpm_Parse_Error.Unexpected_Token)
 }

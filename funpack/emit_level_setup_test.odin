@@ -1,20 +1,8 @@
-// The v15 level-backed [setup] fold's unit fixtures (emit_level_setup.odin):
-// the batch detection (a setup() that is a lone call to a threaded
-// `<level>_spawns` extern folds; every other shape falls through), the per-row
-// §13 byte shape (pos spread → facing bits → params), and the declared-type
-// param encoding the live dungeon/warren corpus does not fully exercise (a
-// Bool param, a Fixed param, an authored facing, the Ref-param skip). The live
-// corpus pins ride golden_tilemap_e2e_test.odin; these fixtures pin the closed
-// encoding rules byte-exact, hand-built so every expectation derives from the
-// rule, never from the implementation.
 package funpack
 
 import "core:strings"
 import "core:testing"
 
-// level_setup_thing_fixture is the placed-thing schema the param encoding
-// reads declared field types from: a Guard with an Int, a Bool, a Fixed, and a
-// Ref[Door] field beside its pos.
 level_setup_thing_fixture :: proc() -> []Thing_Node {
 	fields := make([]Field_Decl, 5, context.temp_allocator)
 	fields[0] = Field_Decl{name = "pos", type = Type_Ref{name = "Vec2"}}
@@ -29,15 +17,11 @@ level_setup_thing_fixture :: proc() -> []Thing_Node {
 	return things
 }
 
-// level_setup_batch_fixture is one hand-built two-spawn batch: a Guard with an
-// authored facing and the three scalar param types plus a Ref param (skipped),
-// and a bare marker-style spawn (pos only). Coordinates are exact Q32.32
-// constants (24 → 103079215104, 8 → 34359738368, 2.5 → 10737418240).
 level_setup_batch_fixture :: proc() -> Level_Spawn_Batch {
 	params := make([]Baked_Param, 4, context.temp_allocator)
 	params[0] = Baked_Param{field = "hp", value = to_fixed(7)}
 	params[1] = Baked_Param{field = "alert", value = to_fixed(1)}
-	params[2] = Baked_Param{field = "rate", value = Fixed(10737418240)} // 2.5
+	params[2] = Baked_Param{field = "rate", value = Fixed(10737418240)}
 	params[3] = Baked_Param{field = "gate", is_ref = true, ref_id = 42}
 	spawns := make([]Baked_Spawn, 2, context.temp_allocator)
 	spawns[0] = Baked_Spawn {
@@ -45,7 +29,7 @@ level_setup_batch_fixture :: proc() -> Level_Spawn_Batch {
 		id         = 1,
 		has_facing = true,
 		pos        = Baked_Coord{dim = .D2, x = to_fixed(24), y = to_fixed(8)},
-		facing     = Fixed(6746518852), // 1.5707963… ≈ π/2, an arbitrary exact bit pattern
+		facing     = Fixed(6746518852),
 		params     = params,
 	}
 	spawns[1] = Baked_Spawn {
@@ -58,11 +42,6 @@ level_setup_batch_fixture :: proc() -> Level_Spawn_Batch {
 
 @(test)
 test_emit_level_setup_encodes_rows_by_declared_type :: proc(t: ^testing.T) {
-	// AC (the §13 v15 row shape, byte-exact): pos as the vec2 spread, facing as
-	// raw Fixed bits, then params in source order — the Int re-truncated to
-	// decimal, the Bool as its bare token, the Fixed as raw bits — and the
-	// Ref param SKIPPED (no ratified §13 encoding until the level-accessor
-	// bump), so field_count counts exactly the emitted set rows (5, not 6).
 	b := strings.builder_make(context.temp_allocator)
 	emit_level_setup(&b, level_setup_batch_fixture(), level_setup_thing_fixture(), nil)
 	expected :=
@@ -80,20 +59,13 @@ test_emit_level_setup_encodes_rows_by_declared_type :: proc(t: ^testing.T) {
 
 @(test)
 test_emit_level_setup_unresolved_schema_falls_back_to_fixed_bits :: proc(t: ^testing.T) {
-	// AC (fallback encoding): a placed type outside the schema lookup (own +
-	// imported things) encodes its params as raw Q32.32 bits — the bake's
-	// native representation — deterministically, never a guess at Int.
 	b := strings.builder_make(context.temp_allocator)
 	emit_level_setup(&b, level_setup_batch_fixture(), nil, nil)
-	testing.expect(t, strings.contains(strings.to_string(b), "set hp =30064771072\n")) // 7 << 32
+	testing.expect(t, strings.contains(strings.to_string(b), "set hp =30064771072\n"))
 }
 
 @(test)
 test_level_setup_batch_detects_lone_extern_call :: proc(t: ^testing.T) {
-	// AC (batch detection): a setup() whose body is a lone `return
-	// fort_spawns()` selects the batch keyed by that name; a setup() returning
-	// a literal list (pong's shape) falls through to the resolve_setup_spawns
-	// path; an empty batch set never matches.
 	source := "fn setup() -> [Spawn] {\n  return fort_spawns()\n}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -114,8 +86,6 @@ test_level_setup_batch_detects_lone_extern_call :: proc(t: ^testing.T) {
 
 @(test)
 test_emit_level_setup_deterministic :: proc(t: ^testing.T) {
-	// §29 determinism: two renders of the same batch are byte-identical —
-	// every walk is slice-order, no map reaches the emission.
 	first := strings.builder_make(context.temp_allocator)
 	emit_level_setup(&first, level_setup_batch_fixture(), level_setup_thing_fixture(), nil)
 	second := strings.builder_make(context.temp_allocator)

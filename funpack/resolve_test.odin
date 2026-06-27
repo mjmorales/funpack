@@ -1,18 +1,7 @@
-// The user-declaration resolver's fixtures: the live pong golden source's
-// declarations must lift into the Type_Env (every thing/data/enum/signal/
-// fn/behavior name and module-let constant binds, variant sets and record
-// field schemas readable), and the §02 one-name-one-meaning rule must
-// reject a colliding user name while a genuinely free name still rejects as
-// Unresolved_Name through the extended resolver.
 package funpack
 
 import "core:testing"
 
-// resolve_source lexes, parses, and resolves a complete source's user
-// environment under its own imports — the resolver entry point the fixtures
-// exercise. A parse failure surfaces as an empty env with the parse mapped
-// to Unsupported_Expr so a malformed fixture fails loudly rather than
-// silently resolving nothing.
 resolve_source :: proc(source: string) -> (env: Type_Env, err: Type_Error) {
 	ast, parse_err := stage_parse(stage_lex(source))
 	if parse_err != .None {
@@ -24,11 +13,6 @@ resolve_source :: proc(source: string) -> (env: Type_Env, err: Type_Error) {
 
 @(test)
 test_resolve_pong_declarations_into_environment :: proc(t: ^testing.T) {
-	// AC: the pong golden source's declarations resolve into the
-	// environment — every thing/singleton/data/enum/signal/fn/behavior name
-	// and the module-let constant bind, the enum variant sets are recorded,
-	// and the record field schemas are readable. The fixture resolves the
-	// live golden source (or FUNPACK_PONG_DIR) and SKIPs loudly when absent.
 	source, ok := pong_source()
 	if !ok {
 		return
@@ -36,28 +20,21 @@ test_resolve_pong_declarations_into_environment :: proc(t: ^testing.T) {
 	env, err := resolve_source(source)
 	testing.expect_value(t, err, Type_Error.None)
 
-	// The full declared inventory binds: 3 things + 1 data + 1 signal =
-	// 5 record schemas; 2 enums; 1 let + 9 fns + 10 behaviors = 20 terms.
 	testing.expect_value(t, len(env.records), 5)
 	testing.expect_value(t, len(env.enums), 2)
 	testing.expect_value(t, len(env.terms), 20)
 
-	// Every type-position name binds to its handle.
 	type_names := []string{"Paddle", "Ball", "Scoreboard", "Board", "Goal"}
 	for name in type_names {
 		_, found := env_type_name(env, name)
 		testing.expectf(t, found, "%s did not bind as a type", name)
 	}
-	// Every term-position name binds (the §04 name.step form reaches a
-	// behavior through its own name key).
 	term_names := []string{"BOARD", "advance", "goal_side", "setup", "paddle_move", "score", "tally", "draw_ball"}
 	for name in term_names {
 		_, found := env_term_name(env, name)
 		testing.expectf(t, found, "%s did not bind as a term", name)
 	}
 
-	// The enum variant sets are recorded: Side::Left/Right and Steer::Move,
-	// with Steer carrying its §03 §4 role kind `Axis`.
 	side := env.enums["Side"]
 	testing.expect_value(t, side.role, "")
 	testing.expect_value(t, len(side.variants), 2)
@@ -69,9 +46,6 @@ test_resolve_pong_declarations_into_environment :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(steer.variants), 1)
 	testing.expect_value(t, steer.variants[0], "Move")
 
-	// The record field schemas are readable: Paddle.x:Fixed (a ground
-	// type), Ball.pos:Vec2 (an engine-record ground), Goal.side:Side (a user
-	// enum nominal handle).
 	paddle := env.records["Paddle"]
 	x_type, has_x := field_type(paddle, "x")
 	testing.expect(t, has_x)
@@ -93,8 +67,6 @@ test_resolve_pong_declarations_into_environment :: proc(t: ^testing.T) {
 		testing.expect_value(t, side_user.kind, User_Kind.Enum)
 	}
 
-	// A singleton-or-thing record keeps its declared kind and defaulted
-	// fields: Scoreboard's Int fields carry `= 0` (§03 §1).
 	scoreboard := env.records["Scoreboard"]
 	testing.expect_value(t, scoreboard.kind, User_Kind.Thing)
 	left_type, has_left := field_type(scoreboard, "left")
@@ -103,8 +75,6 @@ test_resolve_pong_declarations_into_environment :: proc(t: ^testing.T) {
 	testing.expect(t, scoreboard.fields[0].has_default)
 }
 
-// field_type reads a record schema's field type by name — a linear lookup
-// the fixtures use so a schema assertion does not depend on field order.
 field_type :: proc(schema: Record_Schema, name: string) -> (type: Type, found: bool) {
 	for field in schema.fields {
 		if field.name == name {
@@ -116,9 +86,6 @@ field_type :: proc(schema: Record_Schema, name: string) -> (type: Type, found: b
 
 @(test)
 test_user_type_colliding_with_import_rejected :: proc(t: ^testing.T) {
-	// AC: one-name-one-meaning across user and imported names. A user `data`
-	// named Vec2 collides with the imported engine.math Vec2 — a resolution
-	// error, never silent last-wins.
 	source := "import engine.math.{Vec2}\n" + "data Vec2 { x: Fixed }\n"
 	_, err := resolve_source(source)
 	testing.expect_value(t, err, Type_Error.Name_Collision)
@@ -126,9 +93,6 @@ test_user_type_colliding_with_import_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_two_user_decls_same_name_rejected :: proc(t: ^testing.T) {
-	// AC: one-name-one-meaning within the user namespace. Two user
-	// declarations claiming Score — one a thing, one a data — collide; the
-	// resolver rejects rather than letting the second silently win.
 	source := "thing Score { points: Int }\n" + "data Score { total: Int }\n"
 	_, err := resolve_source(source)
 	testing.expect_value(t, err, Type_Error.Name_Collision)
@@ -136,8 +100,6 @@ test_two_user_decls_same_name_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_user_type_colliding_with_prelude_rejected :: proc(t: ^testing.T) {
-	// The prelude is always in scope (no import), so a user enum named
-	// Option collides with it just as it would with an explicit import.
 	source := "enum Option { Yes, No }\n"
 	_, err := resolve_source(source)
 	testing.expect_value(t, err, Type_Error.Name_Collision)
@@ -145,9 +107,6 @@ test_user_type_colliding_with_prelude_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_free_name_with_no_decl_and_no_import_unresolved :: proc(t: ^testing.T) {
-	// AC: a free name with no user decl and no import still rejects as
-	// Unresolved_Name through the extended resolver — the resolver widened
-	// the bound set but did not weaken the unresolved verdict.
 	source := "test \"x\" {\n\tassert nonexistent == 1\n}\n"
 	typed, err := stage_typecheck_source(source)
 	_ = typed
@@ -156,11 +115,6 @@ test_free_name_with_no_decl_and_no_import_unresolved :: proc(t: ^testing.T) {
 
 @(test)
 test_user_declared_name_binds_as_function_value :: proc(t: ^testing.T) {
-	// A name a user fn declares binds through the resolver and now types as a
-	// function value (its recorded signature), never Unresolved_Name. Comparing
-	// that function value to an Int is a Type_Mismatch — proof the resolver
-	// widened the bound set AND the typing pass grounds a bare fn name as its
-	// signature (the form fold's accumulator argument takes).
 	source := "fn helper(n: Int) -> Int {\n\treturn n\n}\n" +
 		"test \"x\" {\n\tassert helper == 1\n}\n"
 	_, err := stage_typecheck_source(source)
@@ -169,12 +123,6 @@ test_user_declared_name_binds_as_function_value :: proc(t: ^testing.T) {
 
 @(test)
 test_user_name_in_fold_lambda_body_types_as_function :: proc(t: ^testing.T) {
-	// The fold lambda body checks under a child context that inherits the
-	// enclosing scope and the env; a user-declared name referenced there
-	// types as its function-value signature, never a mis-reported
-	// Unresolved_Name from a context that dropped the env. The body returns a
-	// function while the accumulator is Int, so the fold rejects as
-	// Type_Mismatch.
 	source := "import engine.list.fold\n" +
 		"fn helper(n: Int) -> Int {\n\treturn n\n}\n" +
 		"test \"x\" {\n\tassert fold([1, 2], 0, fn(acc, x) { return helper }) == 0\n}\n"
@@ -182,9 +130,6 @@ test_user_name_in_fold_lambda_body_types_as_function :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Type_Error.Type_Mismatch)
 }
 
-// stage_typecheck_source runs lex → parse → typecheck on a full source,
-// returning the typecheck verdict — the resolver fixtures' window onto the
-// extended name-resolution path the test blocks exercise.
 stage_typecheck_source :: proc(source: string) -> (typed: Typed_Ast, err: Type_Error) {
 	ast, parse_err := stage_parse(stage_lex(source))
 	if parse_err != .None {
@@ -195,12 +140,6 @@ stage_typecheck_source :: proc(source: string) -> (typed: Typed_Ast, err: Type_E
 
 @(test)
 test_fn_typed_param_signature_resolves_and_checks_lambda :: proc(t: ^testing.T) {
-	// A declared fn-typed parameter (spec §02 §3: `f: fn(Int) -> Int`)
-	// resolves to a real Func_Type row (resolve_type_ref's "fn" arm), and a
-	// literal lambda argument checks against it through the combinator
-	// inference mold (check_args → combinator_check): the lambda's parameter
-	// infers as Int and its body must yield the declared Int result. The
-	// whole call then types as the extern's declared result.
 	source := "extern fn apply(x: Int, f: fn(Int) -> Int) -> Int\n" +
 		"test \"x\" {\n\tassert apply(1, fn(n) { return n + 1 }) == 2\n}\n"
 	_, err := stage_typecheck_source(source)
@@ -209,10 +148,6 @@ test_fn_typed_param_signature_resolves_and_checks_lambda :: proc(t: ^testing.T) 
 
 @(test)
 test_fn_typed_param_rejects_wrong_lambda :: proc(t: ^testing.T) {
-	// The declared row is enforced, not advisory: a lambda whose body yields
-	// Bool against a declared `fn(Int) -> Int`, and a lambda of the wrong
-	// arity, both reject as Type_Mismatch — the same verdicts the stdlib
-	// combinators give their function arguments.
 	wrong_result := "extern fn apply(x: Int, f: fn(Int) -> Int) -> Int\n" +
 		"test \"x\" {\n\tassert apply(1, fn(n) { return n == 1 }) == 2\n}\n"
 	_, result_err := stage_typecheck_source(wrong_result)
@@ -225,10 +160,6 @@ test_fn_typed_param_rejects_wrong_lambda :: proc(t: ^testing.T) {
 
 @(test)
 test_fn_typed_param_accepts_bare_fn_value :: proc(t: ^testing.T) {
-	// A bare user-fn name argument types as its recorded signature (the
-	// function-value form fold's accumulator already takes), so it checks
-	// structurally against the declared fn-typed parameter: a matching
-	// signature is admitted, a result-mismatched one rejects.
 	matching := "extern fn apply(x: Int, f: fn(Int) -> Int) -> Int\n" +
 		"fn helper(n: Int) -> Int {\n\treturn n\n}\n" +
 		"test \"x\" {\n\tassert apply(1, helper) == 1\n}\n"
@@ -243,12 +174,6 @@ test_fn_typed_param_accepts_bare_fn_value :: proc(t: ^testing.T) {
 
 @(test)
 test_fn_typed_param_invocation_stays_fail_closed :: proc(t: ^testing.T) {
-	// The DEPTH decision pinned: a fn-typed parameter's SIGNATURE resolves and
-	// call sites check lambda arguments against it, but INVOKING the bound fn
-	// value inside the body stays the fail-closed Unsupported_Expr arm
-	// (call_check) — a first-class fn value has no runtime representation, and
-	// funpack does not grammar-include what it cannot run. Lifting this is the
-	// first-class-fn-values story.
 	source := "fn twice(x: Int, f: fn(Int) -> Int) -> Int {\n\treturn f(x)\n}\n"
 	_, err := stage_typecheck_source(source)
 	testing.expect_value(t, err, Type_Error.Unsupported_Expr)
@@ -256,11 +181,6 @@ test_fn_typed_param_invocation_stays_fail_closed :: proc(t: ^testing.T) {
 
 @(test)
 test_fn_typed_query_param_rejected_by_value_domain :: proc(t: ^testing.T) {
-	// The §08 §3 query value-param-only gate already names ^Func_Type as
-	// outside the value domain (type_outside_value_domain); now that a
-	// fn-typed parameter PARSES and resolves to a real Func_Type, a query
-	// declaring one lands that named verdict — the resolve arm feeds the
-	// existing gate, no new diagnostic.
 	source := "query bad(pred: fn(Int) -> Bool) -> Int {\n\treturn 1\n}\n"
 	_, err := stage_typecheck_source(source)
 	testing.expect_value(t, err, Type_Error.Query_Param_Not_Value)

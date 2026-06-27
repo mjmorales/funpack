@@ -1,19 +1,8 @@
-// Canonical-renderer unit tests (spec §02: one canonical rendering, the AST
-// as source of truth). Every fixture runs the same three-part contract
-// through expect_canonical: (1) the rendered text equals the expected
-// canonical form byte-for-byte, (2) re-parsing the rendering yields an AST
-// equivalent to the original (ast_equiv — equality modulo the `line` span
-// fields, which are projection metadata), and (3) rendering is idempotent
-// (the canonical form renders to itself). ast_equiv lives here and is shared
-// by the fmt-verb property tests and the golden sweep (one package).
 package funpack
 
 import "core:strings"
 import "core:testing"
 
-// expect_canonical parses a source, asserts its canonical rendering equals
-// `expected`, that the rendering re-parses to an equivalent AST, and that the
-// renderer is idempotent on its own output.
 expect_canonical :: proc(t: ^testing.T, source: string, expected: string, loc := #caller_location) {
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None, loc = loc)
@@ -40,19 +29,12 @@ test_fmt_module_doc_and_import_forms :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_string_escapes_reemit_canonical_spelling :: proc(t: ^testing.T) {
-	// The closed lexical-core §4 escapes (`\"` `\{` `\}`) re-emit verbatim —
-	// the raw-spelling carry IS the canonical (and only legal) spelling, so
-	// fmt(fmt(x)) == fmt(x) holds through expect_canonical's idempotence leg.
-	// The @doc line is the stdlib prelude.fun shape; the let pins the
-	// expression-position literal.
 	source := "@doc(\"Built by interpolation (\\\"{x}\\\"), never +.\")\nlet GREETING: String = \"say \\\"hi\\\" \\{now\\}\"\n"
 	expect_canonical(t, source, source)
 }
 
 @(test)
 test_fmt_let_decl_directive_block_order :: proc(t: ^testing.T) {
-	// @gtag labels split across two directives accumulate; the canonical form
-	// is ONE @gtag in the fixed @doc → @gtag → @todo → probe order.
 	source := "@gtag(\"a\")\n@doc(\"Speed.\")\n@gtag(\"b\", \"c\")\n@todo(\"note\", T-0042)\n@break(x > 1)\n@trace\nlet SPEED: Fixed = 0.5\n"
 	expected := "@doc(\"Speed.\")\n@gtag(\"a\", \"b\", \"c\")\n@todo(\"note\", T-0042)\n@break(x > 1)\n@trace\nlet SPEED: Fixed = 0.5\n"
 	expect_canonical(t, source, expected)
@@ -60,9 +42,6 @@ test_fmt_let_decl_directive_block_order :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_expose_directive_canonical_order :: proc(t: ^testing.T) {
-	// The bare §05 §4 @expose marker renders right after @doc (the §30 §6
-	// exemplar order) and before @gtag; a repeated @expose collapses to one
-	// line (the flag is idempotent), and an unmarked sibling renders none.
 	source := "@expose\n@gtag(\"grid\")\n@expose\n@doc(\"Axial to pixel.\")\nfn axial_to_pixel(size: Fixed) -> Fixed {\n  return size\n}\n\nfn cube_round(x: Fixed) -> Fixed {\n  return x\n}\n"
 	expected := "@doc(\"Axial to pixel.\")\n@expose\n@gtag(\"grid\")\nfn axial_to_pixel(size: Fixed) -> Fixed {\n  return size\n}\n\nfn cube_round(x: Fixed) -> Fixed {\n  return x\n}\n"
 	expect_canonical(t, source, expected)
@@ -70,8 +49,6 @@ test_fmt_expose_directive_canonical_order :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_todo_window_forms :: proc(t: ^testing.T) {
-	// All four §05 §2 window forms keep their one obvious spelling — the
-	// T-ref keeps its zero padding, the date its 4/2/2 shape.
 	source := "@todo(\"a\", 30d)\nlet A: Int = 1\n@todo(\"b\", 2026-09-01)\nlet B: Int = 2\n@todo(\"c\", 5builds)\nlet C: Int = 3\n@todo(\"d\", T-0042)\nlet D: Int = 4\n"
 	expected := "@todo(\"a\", 30d)\nlet A: Int = 1\n\n@todo(\"b\", 2026-09-01)\nlet B: Int = 2\n\n@todo(\"c\", 5builds)\nlet C: Int = 3\n\n@todo(\"d\", T-0042)\nlet D: Int = 4\n"
 	expect_canonical(t, source, expected)
@@ -86,12 +63,6 @@ test_fmt_data_enum_signal_single_line :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_enum_variant_doc_multiline :: proc(t: ^testing.T) {
-	// An enum any of whose variants carries a §05 §1 @doc renders multiline
-	// (the thing/singleton mold): one variant per line, comma-terminated
-	// except the last, each doc line above its variant at the same indent;
-	// struct payloads keep the tight-brace spelling; an inline-doc spelling
-	// normalizes onto its own line. Idempotence (fmt(fmt(x)) == fmt(x)) rides
-	// expect_canonical's third leg.
 	source := "@doc(\"A 2D draw command.\")\n" +
 		"enum Draw { @doc(\"A filled rectangle.\") Rect{ at: Vec2, color: Color }, @doc(\"A move-to op.\") MoveTo(Vec2), Close }\n"
 	expected := "@doc(\"A 2D draw command.\")\n" +
@@ -107,9 +78,6 @@ test_fmt_enum_variant_doc_multiline :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_enum_docless_stays_single_line :: proc(t: ^testing.T) {
-	// The doc-less enum keeps the single-line canonical rendering — the
-	// variant-doc multiline form must NOT reshape the existing corpus — even
-	// when authored multiline, and even beside a doc-carrying sibling.
 	source := "enum Side {\n  Left\n  Right\n}\n\nenum Flip {\n  @doc(\"Mirror on X.\")\n  X\n  None\n}\n"
 	expected := "enum Side { Left, Right }\n\nenum Flip {\n  @doc(\"Mirror on X.\")\n  X,\n  None\n}\n"
 	expect_canonical(t, source, expected)
@@ -117,8 +85,6 @@ test_fmt_enum_docless_stays_single_line :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_thing_alignment_and_defaults :: proc(t: ^testing.T) {
-	// thing/singleton bodies render multiline with the type column aligned to
-	// the longest field name, defaults trailing unaligned.
 	source := "thing Snake { head: Cell = Cell{x: 10, y: 10}, body: [Cell] = [], dir: Dir = Dir::Right }\n\nsingleton Scoreboard {\n  left: Int = 0\n}\n"
 	expected := "thing Snake {\n  head: Cell = Cell{x: 10, y: 10}\n  body: [Cell] = []\n  dir:  Dir = Dir::Right\n}\n\nsingleton Scoreboard {\n  left: Int = 0\n}\n"
 	expect_canonical(t, source, expected)
@@ -126,8 +92,6 @@ test_fmt_thing_alignment_and_defaults :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_fn_forms :: proc(t: ^testing.T) {
-	// The three fn body forms: a statement body, the body-less extern fn, and
-	// the §05 §2 typed hole in both its spellings.
 	source := "fn advance(at: Vec2, vel: Vec2, dt: Fixed) -> Vec2 {\n  return at + vel * dt\n}\n\nextern fn arena_spawns() -> [Spawn]\n\nfn drag() -> Fixed @stub(Fixed)\n\nfn launch_speed(boost: Fixed) -> Fixed @stub(Fixed, boost + 6.0)\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -135,10 +99,6 @@ test_fmt_fn_forms :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_extern_type :: proc(t: ^testing.T) {
-	// An `extern type Name` declaration (§02 §7, §26 §2) renders as the one
-	// keyword-pair line after its directive block — the opaque type has no
-	// fields or body to project — and round-trips canonically beside its
-	// extern-fn sibling (the stdlib surface shape, e.g. geom.fun).
 	source := "@doc(\"an immutable 2D outline\")\n@expose\nextern type Sketch\n\nextern type Anchors\n\nextern fn outline(s: Sketch) -> [Vec2]\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -146,11 +106,6 @@ test_fmt_extern_type :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_generic_declaration_headers :: proc(t: ^testing.T) {
-	// The §03 §3 generic declaration headers on the three admitting decl kinds
-	// (data / enum / extern type, fun.ebnf §4/§8) render tight against the
-	// declared name with comma-space separation — the same spelling
-	// fmt_type_ref gives a generic application — and round-trip canonically.
-	// A tight authored comma (`[T,E]`) canonicalizes to the spaced form.
 	source := "enum Option[T] { Some(T), None }\n\nenum Result[T,E] { Ok(T), Err(E) }\n\ndata Ref[T] { id: Id }\n\ndata Pair[K, V] { k: K, v: V }\n\n@doc(\"a view subtree\")\nextern type View[Msg]\n"
 	expected := "enum Option[T] { Some(T), None }\n\nenum Result[T, E] { Ok(T), Err(E) }\n\ndata Ref[T] { id: Id }\n\ndata Pair[K, V] { k: K, v: V }\n\n@doc(\"a view subtree\")\nextern type View[Msg]\n"
 	expect_canonical(t, source, expected)
@@ -158,12 +113,6 @@ test_fmt_generic_declaration_headers :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_fn_typed_parameters :: proc(t: ^testing.T) {
-	// The §02 §3 function type (fun.ebnf §11 FnType) renders comma-space
-	// separated with the spaced `-> R` — the same spelling fmt_signature gives
-	// a declared signature — wherever a Type stands: a parameter annotation
-	// (the stdlib list.fun combinator signatures), a zero-parameter form, a
-	// generic argument, and a return position. A tight authored spelling
-	// (`fn(A,T)->A`) canonicalizes to the spaced form and round-trips.
 	source := "extern fn find(self: [T], pred: fn(T) -> Bool) -> Option[T]\n\nextern fn fold(self: [T], init: A, step: fn(A,T)->A) -> A\n\nextern fn thunk(supplier: fn() -> Int) -> Int\n\nextern fn pick(opts: Option[fn(T) -> Bool]) -> Bool\n\nextern fn make() -> fn(Int) -> Int\n"
 	expected := "extern fn find(self: [T], pred: fn(T) -> Bool) -> Option[T]\n\nextern fn fold(self: [T], init: A, step: fn(A, T) -> A) -> A\n\nextern fn thunk(supplier: fn() -> Int) -> Int\n\nextern fn pick(opts: Option[fn(T) -> Bool]) -> Bool\n\nextern fn make() -> fn(Int) -> Int\n"
 	expect_canonical(t, source, expected)
@@ -178,8 +127,6 @@ test_fmt_behavior_and_holed_step :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_pipeline_alignment_battery_empty :: proc(t: ^testing.T) {
-	// Stage values align to the longest stage name; the bare battery form and
-	// the empty body (drift's Drift) keep their corpus spellings.
 	source := "pipeline Pong {\n  startup: [setup]\n  collision: [wall_bounce, paddle_bounce]\n  physics: solve\n}\n\npipeline Drift {\n}\n"
 	expected := "pipeline Pong {\n  startup:   [setup]\n  collision: [wall_bounce, paddle_bounce]\n  physics:   solve\n}\n\npipeline Drift {\n}\n"
 	expect_canonical(t, source, expected)
@@ -194,8 +141,6 @@ test_fmt_test_block :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_if_statement_single_and_multi_line :: proc(t: ^testing.T) {
-	// A single-statement guard renders the corpus one-liner; a multi-statement
-	// body renders multiline.
 	source := "fn body_after(snake: Snake) -> [Cell] {\n  let extended = prepend(snake.head, snake.body)\n  if snake.grow { return extended }\n  return init(extended)\n}\n\nfn guard(x: Fixed) -> Fixed {\n  if x > 1.0 {\n    let y = x * 2.0\n    return y\n  }\n  return x\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -203,9 +148,6 @@ test_fmt_if_statement_single_and_multi_line :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_precedence_parens_restored :: proc(t: ^testing.T) {
-	// The parser unwraps groupings; the renderer restores exactly the pairs
-	// precedence requires — left child below the parent's power, right child
-	// at-or-below it, unary over a binary operand.
 	source := "test \"parens\" {\n  assert (1 + 2) * 3 == 9\n  assert a - (b - c) == d\n  assert not (p and q)\n  assert -(x + y) < z\n  assert p and (q or r)\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -213,9 +155,6 @@ test_fmt_precedence_parens_restored :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_match_patterns_multiline :: proc(t: ^testing.T) {
-	// match always renders multiline, one arm per line, covering the full
-	// pattern set: bare variant, payload binders, struct field-pun, tuple with
-	// nested sub-patterns, and the wildcard.
 	source := "fn classify(d: Shape2, p: (Option[Cell], Rng)) -> Int {\n  let a = match d {\n    Shape2::Box{size} => size\n    Shape2::Dot => 0\n    _ => 1\n  }\n  return match p {\n    (Option::Some(cell), next) => 1\n    (Option::None, _) => 0\n  }\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -230,9 +169,6 @@ test_fmt_if_expr_else_if_chain :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_lambda_chain_and_records :: proc(t: ^testing.T) {
-	// Tight record literals, spaced `with` updates, single-line member chains
-	// (the leading-dot continuation normalizes onto one line), and the lambda
-	// single-return body.
 	source := "fn bindings() -> Bindings {\n  return Bindings.empty()\n    .axis(P, S, keys_axis(K, J))\n    .axis(Q, S, stick_y(L))\n}\n\nfn nearest(self: Ball, paddles: View[Paddle]) -> Ball {\n  return first(paddles, fn(pad) { return overlaps(self.pos, Vec2{x: pad.x, y: pad.y}) })\n}\n"
 	expected := "fn bindings() -> Bindings {\n  return Bindings.empty().axis(P, S, keys_axis(K, J)).axis(Q, S, stick_y(L))\n}\n\nfn nearest(self: Ball, paddles: View[Paddle]) -> Ball {\n  return first(paddles, fn(pad) { return overlaps(self.pos, Vec2{x: pad.x, y: pad.y}) })\n}\n"
 	expect_canonical(t, source, expected)
@@ -240,9 +176,6 @@ test_fmt_lambda_chain_and_records :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_guarded_scrutinee_and_condition_parenthesized :: proc(t: ^testing.T) {
-	// A record literal on a scrutinee/condition spine only parses inside
-	// parentheses (the no-struct-literal context, spec §02 §5); the renderer
-	// restores the wrap.
 	source := "fn f(v: Vec2) -> Int {\n  if (v == Vec2{x: 1.0, y: 0.0}) { return 1 }\n  return match (v == Vec2{x: 0.0, y: 0.0}) {\n    _ => 0\n  }\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -250,7 +183,6 @@ test_fmt_guarded_scrutinee_and_condition_parenthesized :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_bare_scrutinee_stays_bare :: proc(t: ^testing.T) {
-	// A safe spine (names, calls, variants without fields) renders unwrapped.
 	source := "fn g(side: Side) -> Int {\n  return match side {\n    Side::Left => 0\n    Side::Right => 1\n  }\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -258,9 +190,6 @@ test_fmt_bare_scrutinee_stays_bare :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_fixed_literal_shortest_round_trip :: proc(t: ^testing.T) {
-	// A Fixed literal renders as the shortest decimal whose fixed_from_decimal
-	// bits equal the stored bits: `0.50` canonicalizes to `0.5`, whole values
-	// keep the `.0`, and a long mantissa survives exactly.
 	source := "let A: Fixed = 0.5\nlet B: Fixed = 160.0\nlet C: Fixed = 0.1\nlet D: Fixed = 3.14159265\nlet E: Fixed = 0.50\nlet F: Fixed = 2.250\n"
 	expected := "let A: Fixed = 0.5\n\nlet B: Fixed = 160.0\n\nlet C: Fixed = 0.1\n\nlet D: Fixed = 3.14159265\n\nlet E: Fixed = 0.5\n\nlet F: Fixed = 2.25\n"
 	expect_canonical(t, source, expected)
@@ -275,8 +204,6 @@ test_fmt_string_interpolation_verbatim :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_tuple_expr_and_types :: proc(t: ^testing.T) {
-	// Return-position tuples (spec §02 §8): the tuple type head "()" and the
-	// tuple expression both render parenthesized comma forms.
 	source := "fn split(rng: Rng) -> (Rng, [Spawn]) {\n  return (rng, [])\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -284,7 +211,6 @@ test_fmt_tuple_expr_and_types :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_stub_expression_position :: proc(t: ^testing.T) {
-	// The §05 §2 expression-position hole, bare and with a record fallback.
 	source := "fn approx() -> Vec2 {\n  return Vec2{x: @stub(Fixed, 0.5), y: @stub(Fixed)}\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -292,8 +218,6 @@ test_fmt_stub_expression_position :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_separators_normalize :: proc(t: ^testing.T) {
-	// Newline separators and trailing commas normalize to `, ` lists — the
-	// pong setup program's multi-line Spawn list becomes one canonical line.
 	source := "fn setup() -> [Spawn] {\n  return [\n    Spawn( Paddle{side: Side::Left} )\n    Spawn( Ball{pos: Vec2{x: 80.0, y: 60.0}} )\n  ]\n}\n"
 	expected := "fn setup() -> [Spawn] {\n  return [Spawn(Paddle{side: Side::Left}), Spawn(Ball{pos: Vec2{x: 80.0, y: 60.0}})]\n}\n"
 	expect_canonical(t, source, expected)
@@ -301,11 +225,6 @@ test_fmt_separators_normalize :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_source_ordered_declarations :: proc(t: ^testing.T) {
-	// Interleaved kinds project in SOURCE ORDER — the Ast's source-ordered
-	// declaration sequence carries the author's cross-kind interleaving, and
-	// the projection preserves it (ADR
-	// 2026-06-10-formatter-canon-source-ordered-declarations: the formatter
-	// never reorders declarations).
 	source := "fn helper() -> Int {\n  return 1\n}\n\ndata Cell { x: Int }\n\nlet SIZE: Int = 8\n\ndata Grid { size: Cell }\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -313,10 +232,6 @@ test_fmt_source_ordered_declarations :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_feature_interleaving_preserved :: proc(t: ^testing.T) {
-	// The doctrine-corpus shape the ADR protects: a thing beside its behavior
-	// and signal, a second feature block following — the first format of an
-	// interleaved file is a whitespace-only normalization, never a whole-file
-	// reorder.
 	source := "thing Ball {\n  x: Fixed\n}\n\nbehavior roll on Ball {\n  fn step(self: Ball) -> Ball {\n    return self\n  }\n}\n\nsignal Bounced {}\n\nthing Paddle {\n  y: Fixed\n}\n\nbehavior track on Paddle {\n  fn step(self: Paddle) -> Paddle {\n    return self\n  }\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -324,10 +239,6 @@ test_fmt_feature_interleaving_preserved :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_query_declaration :: proc(t: ^testing.T) {
-	// A §08 §3 query declaration renders like a fn with the `query` keyword,
-	// its §05 §3 index requirements as one directive line each (slice order,
-	// adjacent to the keyword — the spec §08 §3 spelling), after the ordinary
-	// @doc/@gtag directive block.
 	source := "@doc(\"Enemies within radius.\")\n@spatial(Enemy.cell)\n@index(Enemy.squad)\nquery enemies_near(origin: Cell, r: Fixed) -> [Enemy] {\n  return nearest_first(within(all[Enemy], origin, r), origin)\n}\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -335,9 +246,6 @@ test_fmt_query_declaration :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_migrate_field_forms :: proc(t: ^testing.T) {
-	// All three closed §05 §6 field forms survive the canonical projection
-	// inline before their field — fmt must never strip the schema-evolution
-	// channel (a silent @migrate drop is save-breaking data loss).
 	source := "data Player { @migrate(from: \"old_pos\") pos: Vec2, @migrate(with: meters_to_units) reach: Fixed, @migrate(from: \"speed\", with: to_velocity) velocity: Fixed, hp: Int }\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -345,8 +253,6 @@ test_fmt_migrate_field_forms :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_migrate_decl_rename :: proc(t: ^testing.T) {
-	// The decl-level rename form renders adjacent to the `data` keyword,
-	// after the ordinary directive block — the @index/@spatial adjacency mold.
 	source := "@doc(\"Renamed from Old.\")\n@migrate(from: \"OldPlayer\")\ndata Player { hp: Int }\n"
 	expected := source
 	expect_canonical(t, source, expected)
@@ -354,18 +260,10 @@ test_fmt_migrate_decl_rename :: proc(t: ^testing.T) {
 
 @(test)
 test_fmt_migrate_multiline_normalizes_inline :: proc(t: ^testing.T) {
-	// A field-level @migrate written on its own line normalizes to the
-	// canonical inline spelling — same node, one projection.
 	source := "data Player {\n  @migrate(from: \"old_pos\")\n  pos: Vec2,\n  hp: Int\n}\n"
 	expected := "data Player { @migrate(from: \"old_pos\") pos: Vec2, hp: Int }\n"
 	expect_canonical(t, source, expected)
 }
-
-// ── ast_equiv: AST equivalence modulo span provenance ────────────────────
-// Structural equality over every parse-level node, ignoring the 1-based
-// `line` fields (projection metadata, not AST content). Shared by the
-// renderer round-trip tests, the fmt-verb property tests, and the golden
-// idempotence sweep.
 
 ast_equiv :: proc(a, b: Ast) -> bool {
 	if a.module_doc != b.module_doc {
@@ -386,9 +284,6 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 	   len(a.extern_types) != len(b.extern_types) {
 		return false
 	}
-	// The source-ordered declaration sequence is AST content (the canonical
-	// declaration order), so equivalence requires the same kinds in the same
-	// order pointing at the same per-kind slots.
 	for ref, i in a.decls {
 		if ref != b.decls[i] {
 			return false
@@ -417,7 +312,6 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if decl.name != other.name || decl.kind != other.kind || !field_decls_equiv(decl.fields, other.fields) {
 			return false
 		}
-		// The §03 §3 generic header's parameter names are AST content.
 		if !string_slice_equal(decl.type_params, other.type_params) {
 			return false
 		}
@@ -433,7 +327,6 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		if decl.name != other.name || decl.kind != other.kind || len(decl.variants) != len(other.variants) {
 			return false
 		}
-		// The §03 §3 generic header's parameter names are AST content.
 		if !string_slice_equal(decl.type_params, other.type_params) {
 			return false
 		}
@@ -490,7 +383,6 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 			return false
 		}
 		for index, j in decl.indexes {
-			// The §05 §3 requirement set is AST content modulo the `line` span.
 			if index.kind != other.indexes[j].kind || index.thing != other.indexes[j].thing || index.field != other.indexes[j].field {
 				return false
 			}
@@ -533,9 +425,6 @@ ast_equiv :: proc(a, b: Ast) -> bool {
 		}
 	}
 	for decl, i in a.extern_types {
-		// An opaque type is its name, its §03 §3 generic header, and the shared
-		// directive surface (§26 §2) — there is no field or body content to
-		// compare.
 		other := b.extern_types[i]
 		if decl.name != other.name || !string_slice_equal(decl.type_params, other.type_params) {
 			return false
@@ -567,8 +456,6 @@ directives_equiv :: proc(a_doc: string, a_exposed: bool, a_gtags: []string, a_to
 		return false
 	}
 	for todo, i in a_todos {
-		// Todo_Window is all-scalar, so struct equality compares the form plus
-		// its meaningful (and consistently-zeroed) components.
 		if todo.message != b_todos[i].message || todo.window != b_todos[i].window {
 			return false
 		}
@@ -612,9 +499,6 @@ field_decls_equiv :: proc(a, b: []Field_Decl) -> bool {
 	return true
 }
 
-// migrate_equiv compares the §05 §6 @migrate carry — schema-evolution AST
-// content (a dropped node is silent save-breaking data loss), modulo the
-// `line` span.
 migrate_equiv :: proc(a: Migrate_Node, a_has: bool, b: Migrate_Node, b_has: bool) -> bool {
 	if a_has != b_has {
 		return false
@@ -626,8 +510,6 @@ migrate_equiv :: proc(a: Migrate_Node, a_has: bool, b: Migrate_Node, b_has: bool
 }
 
 variant_decl_equiv :: proc(a, b: Variant_Decl) -> bool {
-	// The §05 §1 variant-level @doc is AST content (the sole documentation
-	// channel — a dropped doc is silent data loss), compared like the name.
 	if a.name != b.name || a.payload != b.payload || a.doc != b.doc {
 		return false
 	}
@@ -826,8 +708,6 @@ expr_equiv :: proc(a, b: Expr) -> bool {
 
 @(test)
 test_fmt_render_is_byte_deterministic :: proc(t: ^testing.T) {
-	// Two renders of the same AST are byte-identical — the §02 purity floor
-	// (no map walks, no host state in the projection).
 	source := "data Cell { x: Int, y: Int }\n\nfn id(c: Cell) -> Cell {\n  return c\n}\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)

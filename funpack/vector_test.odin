@@ -25,12 +25,8 @@ test_vec_dot_cross_length :: proc(t: ^testing.T) {
 
 @(test)
 test_vec2_div_by_fixed_round_toward_zero :: proc(t: ^testing.T) {
-	// §10: Vec2 / Fixed divides each lane through the same round-toward-zero
-	// fixed_div kernel vec2_scale uses for mul — step_to's `(delta * speed) / d`.
-	// (10,0) / 10.0 == (1.0, 0) exactly, lane-for-lane.
 	v := Vec2_Value{x = to_fixed(10), y = to_fixed(0)}
 	testing.expect_value(t, vec2_div(v, to_fixed(10)), Vec2_Value{x = to_fixed(1), y = to_fixed(0)})
-	// Mul-then-div round-trips the reordered form: (delta * speed) / speed.
 	delta := Vec2_Value{x = to_fixed(3), y = to_fixed(4)}
 	speed := to_fixed(2)
 	testing.expect_value(t, vec2_div(vec2_scale(delta, speed), speed), delta)
@@ -53,7 +49,6 @@ test_quat_slerp_endpoints_exact :: proc(t: ^testing.T) {
 
 @(test)
 test_quat_axis_angle_deterministic_unit :: proc(t: ^testing.T) {
-	// Same input → same bits, and the result is renormalized.
 	first := quat_axis_angle(Vec3_Value{z = FIXED_ONE}, PI_FIXED)
 	second := quat_axis_angle(Vec3_Value{z = FIXED_ONE}, PI_FIXED)
 	testing.expect_value(t, first, second)
@@ -61,9 +56,6 @@ test_quat_axis_angle_deterministic_unit :: proc(t: ^testing.T) {
 
 @(test)
 test_pipeline_slerp_endpoint_golden_values :: proc(t: ^testing.T) {
-	// The golden block binds a and b with let; the same endpoint laws
-	// are pinned with the expressions inlined — both sides of the t=1
-	// case recompute axis_angle deterministically to the same bits.
 	report, err := run_golden_asserts(
 		"assert Quat.identity.slerp(Quat.axis_angle(Vec3{x: 0.0, y: 0.0, z: 1.0}, pi), 0.0) == Quat.identity\n" +
 		"assert Quat.identity.slerp(Quat.axis_angle(Vec3{x: 0.0, y: 0.0, z: 1.0}, pi), 1.0) == Quat.axis_angle(Vec3{x: 0.0, y: 0.0, z: 1.0}, pi)\n")
@@ -85,8 +77,6 @@ test_pipeline_vector_golden_values :: proc(t: ^testing.T) {
 
 @(test)
 test_pipeline_quaternion_identity_golden_values :: proc(t: ^testing.T) {
-	// The golden block binds v with let; until the environment lands the
-	// same laws are pinned with the literal inlined.
 	report, err := run_golden_asserts(
 		"assert Quat.identity.rotate(Vec3{x: 1.0, y: 2.0, z: 3.0}) == Vec3{x: 1.0, y: 2.0, z: 3.0}\n" +
 		"assert Quat.identity.mul(Quat.identity) == Quat.identity\n")

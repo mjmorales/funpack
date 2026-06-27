@@ -1,15 +1,3 @@
-// The §05 §2 typed-holes governance golden: the drift example tree
-// (examples/drift) is the live fixture proving the whole @stub
-// surface end-to-end — a bare @stub(T) hole a caller typechecks against, a
-// @stub(T, fallback) hole whose approximation runs to its asserted value, the
-// Index Contract carrying stub=true for both holed declarations, and the §29
-// §4 release hole-ban refusing the same tree that dev builds clean (spec §01
-// §5 / §29 §4: funpack does not grammar-include what it cannot run). Like the
-// other goldens it resolves the sibling checkout (or FUNPACK_DRIFT_DIR) and
-// SKIPs loudly when it is absent — a skipped golden is a warning, never a
-// pass. The parse fixture pins exact declaration counts against the live
-// source; when the spec evolves, the counts change in lockstep — never loosen
-// them to ranges.
 package funpack
 
 import "core:log"
@@ -34,19 +22,11 @@ test_golden_drift_full_file_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	testing.expect(t, ast.module_doc != "")
 
-	// The drift golden surface's exact declaration inventory: one import
-	// (engine.input.Bindings); four top-level fns (drag, damped, launch_speed,
-	// bindings); one pipeline (Drift, the empty hole-first schedule); one
-	// inline test (the fallback observation).
 	testing.expect_value(t, len(ast.imports), 1)
 	testing.expect_value(t, len(ast.fns), 4)
 	testing.expect_value(t, len(ast.pipelines), 1)
 	testing.expect_value(t, len(ast.tests), 1)
 
-	// The load-bearing hole shapes the counts alone do not pin: drag is the
-	// bare typecheck-only hole (holed, no fallback), launch_speed is the
-	// two-argument form (holed, fallback carried), and damped — the caller
-	// typechecking against the drag hole — is an intact body, not a hole.
 	drag, found_drag := find_fn(ast, "drag")
 	testing.expect(t, found_drag)
 	if found_drag {
@@ -68,11 +48,6 @@ test_golden_drift_full_file_parses :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_drift_dev_pipeline_passes :: proc(t: ^testing.T) {
-	// AC (dev compiles + caller-against-hole + fallback runs): the drift source
-	// compiles clean through every stage — `damped` typechecks its `v * drag()`
-	// body against the drag hole's declared Fixed in the same compile — and the
-	// inline test observes the launch_speed fallback's value (boost + 6.0 with
-	// boost bound to 1.5 ⇒ 7.5): one passed, zero failed, exit 0.
 	source, ok := drift_source()
 	if !ok {
 		return
@@ -89,11 +64,6 @@ test_golden_drift_dev_pipeline_passes :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_drift_variant_hole_disagreeing_type_rejected :: proc(t: ^testing.T) {
-	// The negative obligation through the live fixture: re-typing drag's bare
-	// hole to disagree with its `-> Fixed` ascription (`@stub(Int)`) rejects the
-	// whole file at typecheck — the signature callers see and the hole standing
-	// for the body must be the same type, so the golden cannot drift into a
-	// hole the caller check would not catch.
 	source, ok := drift_source()
 	if !ok {
 		return
@@ -106,11 +76,6 @@ test_golden_drift_variant_hole_disagreeing_type_rejected :: proc(t: ^testing.T) 
 
 @(test)
 test_golden_drift_index_carries_stub_for_both_holes :: proc(t: ^testing.T) {
-	// AC (Index Contract): the emitted .funpack/index.ndjson carries stub=true
-	// for BOTH holed declarations — the bare @stub(T) drag and the
-	// @stub(T, fallback) launch_speed — and stub=false for the intact caller,
-	// so the index discriminates the holes, not merely the file. Asserted on
-	// the written product's bytes, the same file `funpack warden` reads.
 	root, ok := copy_spec_tree_to_temp(resolve_drift_dir(), "drift", "FUNPACK_DRIFT_DIR")
 	if !ok {
 		return
@@ -148,14 +113,6 @@ test_golden_drift_index_carries_stub_for_both_holes :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_drift_release_build_exits_two :: proc(t: ^testing.T) {
-	// AC (release hole-ban): `funpack build --release` over the drift tree is
-	// the exit-2 compile-error outcome — stage_build refuses with a
-	// Holed_Declaration verdict NAMING the first holed declaration (drag, the
-	// bare @stub(T) hole; drift is single-module so the qualified name is bare,
-	// lore #11) and writes NEITHER product. The refusal line is pinned
-	// byte-for-byte for determinism — stdout/stderr stay advisory (§29 §3, the
-	// machine contract is the exit code), but the NAME in the message is the
-	// deliverable. Never a counted failure: build has no exit-1 tier.
 	root, ok := copy_spec_tree_to_temp(resolve_drift_dir(), "drift", "FUNPACK_DRIFT_DIR")
 	if !ok {
 		return
@@ -176,9 +133,6 @@ test_golden_drift_release_build_exits_two :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_drift_dev_build_exits_zero_writes_both_products :: proc(t: ^testing.T) {
-	// AC (dev build): the SAME holed tree built in Dev mode (the no-flag
-	// default) is exit 0 and writes BOTH products — a hole is a first-class dev
-	// citizen; only release refuses it.
 	root, ok := copy_spec_tree_to_temp(resolve_drift_dir(), "drift", "FUNPACK_DRIFT_DIR")
 	if !ok {
 		return
@@ -202,9 +156,6 @@ test_resolve_drift_dir_is_absolute :: proc(t: ^testing.T) {
 	testing.expect(t, filepath.is_abs(resolve_drift_dir()))
 }
 
-// drift_source reads the drift project's single source file via the §14
-// project-tree reader; ok = false (with a loud SKIP warning) when the sibling
-// checkout is absent, matching the numerics/pong goldens' skip semantics.
 drift_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_drift_dir()
 	if !os.is_dir(dir) {
@@ -222,11 +173,6 @@ drift_source :: proc() -> (source: string, ok: bool) {
 	return string(source_bytes), true
 }
 
-// index_decl_line finds the NDJSON line carrying the given qualified_name —
-// the per-decl record the stub assertions read. The drift project is
-// single-module, so decls qualify to their bare names (read_index_project's
-// lore-#11 rule); found = false when no line names the decl, so a renamed
-// fixture fails loudly instead of silently asserting nothing.
 index_decl_line :: proc(stream: string, qualified_name: string) -> (line: string, found: bool) {
 	needle := strings.concatenate({"\"qualified_name\":\"", qualified_name, "\""}, context.temp_allocator)
 	rest := stream

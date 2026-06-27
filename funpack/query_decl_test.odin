@@ -1,21 +1,8 @@
-// The §08 §3 query-declaration surface: the QueryDecl parse production
-// (grammar/fun.ebnf §7), the §05 §3 @index/@spatial prefix directives with
-// their lexical-core §5 FieldPath argument, the named wrong-placement and
-// malformed-path verdicts (the @todo/@migrate mold), the check_index_paths
-// typecheck gate (the path must name a declared thing and one of its fields),
-// query-body typing through the shared check_fn_body window, the gate /
-// release-ban admission of query bodies, and query EVALUATION — a test-position
-// query call runs the body through the eval_user_fn funnel (find_user_callable
-// projects the query onto the fn window), unmemoized because the test
-// interpreter defines no tick. Self-contained sources per test.
 package funpack
 
 import "core:strings"
 import "core:testing"
 
-// typecheck_query runs the lex → parse → typecheck path over a source and
-// returns the typecheck verdict (the typecheck_migrate idiom). Parse must
-// succeed: these fixtures probe the typecheck gate, never the parser's.
 typecheck_query :: proc(t: ^testing.T, source: string) -> Type_Error {
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -28,8 +15,6 @@ typecheck_query :: proc(t: ^testing.T, source: string) -> Type_Error {
 
 @(test)
 test_parse_query_decl_with_spatial :: proc(t: ^testing.T) {
-	// AC (parse): the §08 §3 exemplar shape — a @spatial requirement prefixing
-	// a query whose signature and Block body parse like a fn's.
 	source := "@spatial(Enemy.cell)\n" +
 		"query enemies_near(origin: Vec2, r: Fixed) -> [Vec2] {\n" +
 		"  return [origin]\n" +
@@ -60,9 +45,6 @@ test_parse_query_decl_with_spatial :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_query_directives_carry :: proc(t: ^testing.T) {
-	// A query consumes the whole accumulated directive set like any
-	// declaration: @doc/@gtag/@todo plus SEVERAL @index/@spatial requirements,
-	// in authored order.
 	source := "@doc(\"Nearest pickups by cell.\")\n" +
 		"@gtag(\"pickups\")\n" +
 		"@todo(\"tune the radius\", T-0042)\n" +
@@ -93,9 +75,6 @@ test_parse_query_directives_carry :: proc(t: ^testing.T) {
 
 @(test)
 test_index_wrong_target_named_verdict :: proc(t: ^testing.T) {
-	// AC (placement): §08 §3 places @index/@spatial on a `query` declaration —
-	// the spec names no other target — so any other consumer is the named
-	// Index_Wrong_Target, the @migrate wrong-target mold.
 	wrong_targets := [4]string{
 		"@index(Door.gate)\nthing Door { gate: Int }\n",
 		"@spatial(Door.gate)\ndata Door { gate: Int }\n",
@@ -110,9 +89,6 @@ test_index_wrong_target_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_index_malformed_path_named_verdict :: proc(t: ^testing.T) {
-	// AC (named diagnostic): a path outside the closed `(Thing.field)` shape is
-	// the named Malformed_Index_Path — missing parens, empty list, missing dot,
-	// trailing junk — so an agent repairs the exact path shape.
 	tail := "query q(origin: Vec2) -> Vec2 {\n  return origin\n}\n"
 	malformed := [5]string{
 		"@index\n",
@@ -130,9 +106,6 @@ test_index_malformed_path_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_index_path_casing_keeps_wrong_case :: proc(t: ^testing.T) {
-	// The casing-class deviations keep the parser-wide Wrong_Case verdict (the
-	// parse_migrate_args precedent): a lowercase thing head, a non-snake_case
-	// field — and an UpperCamel query name.
 	tail := "query q(origin: Vec2) -> Vec2 {\n  return origin\n}\n"
 	head_source := strings.concatenate({"@index(door.gate)\n", tail}, context.temp_allocator)
 	_, head_err := stage_parse(stage_lex(head_source))
@@ -146,17 +119,12 @@ test_index_path_casing_keeps_wrong_case :: proc(t: ^testing.T) {
 
 @(test)
 test_query_body_admits_no_stub_hole :: proc(t: ^testing.T) {
-	// QueryDecl takes a Block, never a StubExpr body (grammar/fun.ebnf §7) —
-	// a `@stub` where the body brace belongs is a clean Unexpected_Token.
 	_, err := stage_parse(stage_lex("query q(origin: Vec2) -> Vec2 @stub(Vec2)\n"))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
 }
 
 @(test)
 test_query_typechecks_against_declared_schemas :: proc(t: ^testing.T) {
-	// AC (typecheck): a well-typed query over a declared thing's schema —
-	// the @spatial path resolves to the thing and its field, the body returns
-	// the declared type.
 	err := typecheck_query(t,
 		"thing Enemy { cell: Vec2 }\n" +
 		"@spatial(Enemy.cell)\n" +
@@ -168,9 +136,6 @@ test_query_typechecks_against_declared_schemas :: proc(t: ^testing.T) {
 
 @(test)
 test_index_unknown_thing_named_verdict :: proc(t: ^testing.T) {
-	// AC (named diagnostic): the path head must name a declared thing — an
-	// undeclared name, and a `data` head (the §05 §3 index is INSTANCE-level,
-	// only a thing has rows), are each Index_Unknown_Thing.
 	err := typecheck_query(t,
 		"@index(Ghost.cell)\n" +
 		"query q(origin: Vec2) -> Vec2 {\n" +
@@ -188,8 +153,6 @@ test_index_unknown_thing_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_index_unknown_field_named_verdict :: proc(t: ^testing.T) {
-	// AC (named diagnostic): a declared thing but a field its schema lacks is
-	// Index_Unknown_Field.
 	err := typecheck_query(t,
 		"thing Enemy { cell: Vec2 }\n" +
 		"@index(Enemy.speed)\n" +
@@ -201,9 +164,6 @@ test_index_unknown_field_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_query_body_ill_typed_named_verdicts :: proc(t: ^testing.T) {
-	// AC (named diagnostics): an ill-typed query body surfaces the same named
-	// verdicts a fn body gets — a return off the declared type is
-	// Type_Mismatch, a free name nothing declares is Unresolved_Name.
 	mismatch := typecheck_query(t,
 		"query q(origin: Vec2) -> Fixed {\n" +
 		"  return origin\n" +
@@ -218,10 +178,6 @@ test_query_body_ill_typed_named_verdicts :: proc(t: ^testing.T) {
 
 @(test)
 test_query_callable_and_collides_like_a_term :: proc(t: ^testing.T) {
-	// A query is a value-position callable (spec §08 §3: its read-set composes
-	// into callers): a test calls it through the same call_check a fn rides,
-	// with arguments checked against the recorded signature. One name, one
-	// meaning still holds: a fn and a query under one name is Name_Collision.
 	callable := typecheck_query(t,
 		"query doubled(x: Fixed) -> Fixed {\n" +
 		"  return x * 2.0\n" +
@@ -250,9 +206,6 @@ test_query_callable_and_collides_like_a_term :: proc(t: ^testing.T) {
 
 @(test)
 test_query_body_is_a_gate_unit :: proc(t: ^testing.T) {
-	// A query body is a code unit the structural gates score (spec §01 P5: no
-	// per-site waiver): two queries whose bodies normalize to the same AST hash
-	// collide on the duplication gate exactly like two fns would.
 	source := "query first_pick(x: Fixed, y: Fixed) -> Fixed {\n" +
 		"  let scaled = x * 2.0 + y\n" +
 		"  return scaled + 1.0\n" +
@@ -268,14 +221,6 @@ test_query_body_is_a_gate_unit :: proc(t: ^testing.T) {
 
 @(test)
 test_query_call_evaluates_world_read :: proc(t: ^testing.T) {
-	// AC (evaluation): a test-position query call RUNS the query body. Before
-	// the find_user_callable seam the call compiled — call_check admits .Query
-	// at call position — but the evaluator's fn-only lookup missed it, so the
-	// assert failed COUNTED. The query reads the world through `all[T]` over
-	// the setup-seeded startup population (the §08 §3 spec-true read shape —
-	// a View[T] parameter on a query is the retired interim form, now the
-	// named Query_Param_Not_Value), and both asserts pin exact equality on
-	// the folded value, so the report's pass count is the regression tripwire.
 	report, err := run_test_pipeline(
 		"import engine.math.{Fixed, Vec2}\n" +
 		"import engine.world.{Spawn}\n" +
@@ -303,12 +248,6 @@ test_query_call_evaluates_world_read :: proc(t: ^testing.T) {
 
 @(test)
 test_query_param_not_value_named_verdict :: proc(t: ^testing.T) {
-	// AC (named diagnostic, spec §08 §3 "takes only value parameters"): a
-	// View[T], a Ref[T] (wrapped or bare), and a resource (Time/Rng) are each
-	// the named Query_Param_Not_Value — a query reads the world ONLY through
-	// `all[T]` and the combinators, and its memo identity is (version,
-	// params). (The walk also bans a function-typed param; the surface
-	// parameter grammar does not admit one today, so no fixture spells it.)
 	view_param := typecheck_query(t,
 		"import engine.world.View\n" +
 		"thing Enemy { hp: Fixed }\n" +
@@ -346,10 +285,6 @@ test_query_param_not_value_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_query_composes_into_query_evaluation :: proc(t: ^testing.T) {
-	// AC (evaluation): a query call inside another query body evaluates —
-	// spec §08 §3 "its derived read-set composes into callers" — through the
-	// same eval_call arm a test-position call rides, so composition needs no
-	// second path. Exact-equality pin on the composed value.
 	report, err := run_test_pipeline(
 		"query doubled(x: Fixed) -> Fixed {\n" +
 		"  return x * 2.0\n" +
@@ -367,10 +302,6 @@ test_query_composes_into_query_evaluation :: proc(t: ^testing.T) {
 
 @(test)
 test_bare_query_name_as_fold_combinator_evaluates :: proc(t: ^testing.T) {
-	// AC (evaluation): a bare query name in fold's combinator slot runs the
-	// query body per element — name_check reads the bare name as a function
-	// value exactly like a fn's (the add_goal form), so apply_combinator must
-	// resolve it too. Exact-equality pin on the left fold.
 	report, err := run_test_pipeline(
 		"import engine.list.fold\n" +
 		"query add_hp(acc: Fixed, x: Fixed) -> Fixed {\n" +
@@ -386,8 +317,6 @@ test_bare_query_name_as_fold_combinator_evaluates :: proc(t: ^testing.T) {
 
 @(test)
 test_query_expression_hole_release_banned :: proc(t: ^testing.T) {
-	// A §15 StubExpr expression-position hole inside a query body is found by
-	// the release hole-ban walk (release_holed_decl), naming the query.
 	source := "query q(origin: Vec2) -> Fixed {\n" +
 		"  return @stub(Fixed, 1.0)\n" +
 		"}\n"
@@ -400,8 +329,6 @@ test_query_expression_hole_release_banned :: proc(t: ^testing.T) {
 
 @(test)
 test_query_probe_release_banned :: proc(t: ^testing.T) {
-	// A §05 §5 debug probe on a query declaration is found by the release
-	// debug-directive ban walk (release_debug_decl), naming the query.
 	source := "@log(origin)\n" +
 		"query q(origin: Vec2) -> Vec2 {\n" +
 		"  return origin\n" +

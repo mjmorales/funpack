@@ -1,19 +1,7 @@
-// Exposure-closure fixtures (spec §30 §6, §27 §2): an @expose'd declaration
-// whose public signature references a non-@expose'd user type is a compile
-// error naming BOTH ends — the exposed declaration and the unexposed type —
-// while a fully-exposed (transitive) signature chain passes. All fixtures are
-// deterministic in-memory sources (the module_index_test package-edge fixtures'
-// template); no spec checkout needed. The same check gates a package's api
-// seam and a game's modapi surface, so the fixtures run plain within-project
-// modules — the closure keys off the @expose flags, never the package edge.
 package funpack
 
 import "core:testing"
 
-// closure_module_verdict parses one module source, resolves its imports
-// against an index, and returns the exposure-closure verdict — the unit seam
-// the named-both-ends fixtures pin. The source is fixed and well-formed; a
-// parse or resolve failure is a test-authoring bug, surfaced by the expects.
 closure_module_verdict :: proc(t: ^testing.T, source: string, index: Module_Index) -> Expose_Closure_Verdict {
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -24,10 +12,6 @@ closure_module_verdict :: proc(t: ^testing.T, source: string, index: Module_Inde
 
 @(test)
 test_expose_closure_open_signature_refused_named_both_ends :: proc(t: ^testing.T) {
-	// AC: an @expose'd fn whose param references an unexposed local type is a
-	// compile error (.Expose_Closure_Violation through the typecheck seam), and
-	// the verdict names BOTH ends — the exposed declaration AND the unexposed
-	// type — so the refusal tells the author exactly which edge to close.
 	source := "data Cube { x: Int }\n" +
 		"@expose\n" +
 		"fn cube_volume(c: Cube) -> Int {\n" +
@@ -46,12 +30,6 @@ test_expose_closure_open_signature_refused_named_both_ends :: proc(t: ^testing.T
 
 @(test)
 test_expose_closure_fully_exposed_chain_passes :: proc(t: ^testing.T) {
-	// AC: a transitively-exposed signature chain compiles clean — an exposed
-	// fn over an exposed type whose own field references another exposed type
-	// (Hex → Layout → fn), plus builtin params (Int/Fixed), a structural tuple
-	// return over builtins, and an exposed let of a builtin type. Every type
-	// reachable from the exposed surface is itself exposed or primitive, so the
-	// closure holds (spec §27 §2).
 	source := "@expose\ndata Hex { q: Int, r: Int }\n" +
 		"@expose\ndata Layout { origin: Hex }\n" +
 		"@expose\n" +
@@ -76,12 +54,6 @@ test_expose_closure_fully_exposed_chain_passes :: proc(t: ^testing.T) {
 
 @(test)
 test_expose_closure_every_signature_surface_gated :: proc(t: ^testing.T) {
-	// The closure spans every public signature surface (the §27 §2 contract
-	// kinds): data/thing/signal field types, enum tuple AND struct payload
-	// types, fn/query params and returns (a list return reaches its element
-	// type), and a let's declared type. Each fixture references the same
-	// unexposed Cube from a different surface; every one refuses through the
-	// typecheck seam AND names both ends.
 	Closure_Case :: struct {
 		source:      string,
 		declaration: string,
@@ -112,9 +84,6 @@ test_expose_closure_every_signature_surface_gated :: proc(t: ^testing.T) {
 
 @(test)
 test_expose_closure_unexposed_decl_unconstrained :: proc(t: ^testing.T) {
-	// The closure is over the EXPOSED set only: an unmarked (package-private)
-	// declaration referencing another unmarked type is no violation — privacy
-	// composes freely inside the package; only the contract surface must close.
 	source := "data Cube { x: Int }\n" +
 		"fn cube_volume(c: Cube) -> Int {\n" +
 		"  return c.x\n" +
@@ -127,11 +96,6 @@ test_expose_closure_unexposed_decl_unconstrained :: proc(t: ^testing.T) {
 
 @(test)
 test_expose_closure_first_offender_deterministic :: proc(t: ^testing.T) {
-	// Determinism: a multi-violation module always names the FIRST offender in
-	// the Ast's source-ordered declaration sequence (the release_holed_decl
-	// discipline), and within one signature the params walk before the return —
-	// so the named edge is reproducible from the source alone and matches
-	// index order.
 	source := "data Cube { x: Int }\n" +
 		"data Slab { y: Int }\n" +
 		"@expose\nsignal Tick { what: Slab }\n" +
@@ -140,13 +104,9 @@ test_expose_closure_first_offender_deterministic :: proc(t: ^testing.T) {
 		"}\n"
 	verdict := closure_module_verdict(t, source, Module_Index{})
 	testing.expect(t, verdict.violation)
-	// The signal declares before the fn, so it is the named offender even
-	// though the fn violates twice; its referenced type is Slab.
 	testing.expect_value(t, verdict.declaration, "Tick")
 	testing.expect_value(t, verdict.type_name, "Slab")
 
-	// Drop the signal: the fn is now first, and its PARAM (Cube) names before
-	// its return (Slab).
 	fn_only := "data Cube { x: Int }\n" +
 		"data Slab { y: Int }\n" +
 		"@expose\nfn first_param(c: Cube) -> Slab {\n" +
@@ -160,13 +120,6 @@ test_expose_closure_first_offender_deterministic :: proc(t: ^testing.T) {
 
 @(test)
 test_expose_closure_cross_module_reference_gated :: proc(t: ^testing.T) {
-	// The closure spans the whole project's exposed set: an exposed fn whose
-	// param type is IMPORTED from a sibling module violates when that type is
-	// unexposed and passes when it is exposed. The import itself resolves clean
-	// either way (within-project entries are public-by-default, §15 §4) —
-	// pinning that contract membership (the exposure flag) and import
-	// visibility (module_export_importable) are different predicates: the
-	// closure consults the flag even where the import gate never would.
 	geo := "data Cube { x: Int }\n" +
 		"@expose\ndata Hex { q: Int }\n"
 	geo_ast, geo_parse := stage_parse(stage_lex(geo))
@@ -198,14 +151,6 @@ test_expose_closure_cross_module_reference_gated :: proc(t: ^testing.T) {
 
 @(test)
 test_expose_closure_behavior_outside_closure :: proc(t: ^testing.T) {
-	// Boundary pin: a behavior does not participate in the closure — it is
-	// unexportable at the resolution layer (collect_module_exports lifts no
-	// behaviors; a behavior is reached through its pipeline, never an
-	// importable name), and the §27 §2 pipeline-SLOT exposure is the modapi
-	// generator's concern over stage names, which carry no type references. So
-	// an @expose'd behavior over an unexposed thing is no closure violation
-	// HERE; when the modapi seam generator lands, slot exposure rides the same
-	// closure mechanism and this pin flips in lockstep with that story.
 	source := "thing Crate { weight: Int }\n" +
 		"@expose\nbehavior settle on Crate {\n" +
 		"  fn step(self: Crate) -> Crate {\n" +

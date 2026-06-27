@@ -1,13 +1,3 @@
-// The warden decl-predicate projection tests: the shared filter-and-reproject
-// core re-emits matches byte-identical to their producer lines in the input
-// stream's pinned order (no re-sort, no map iteration — two passes over the
-// same slice concatenate the same bytes), the holes/debt predicates match
-// exactly their §29 §4 semantics (stub; todo OR the registered `debt` gtag),
-// an empty match set projects to "" and exits 0 at the verb tier
-// (empty-result-is-success — the warden adjudicates nothing), and the live
-// drift tree's two §05 typed holes (drag, launch_speed) project end-to-end
-// through the producer's own emitted stream. The drift fixture SKIP-warns
-// when the sibling checkout is absent, mirroring the golden skip semantics.
 package funpack
 
 import "core:log"
@@ -15,30 +5,20 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-// warden_match_all is the identity predicate: every record matches, so the
-// core's output must be the producer lines' exact concatenation — the
-// byte-identity and order pin with no filtering in the way.
 warden_match_all :: proc(decl: Decl_Record, needle: string) -> bool {
 	_ = decl
 	_ = needle
 	return true
 }
 
-// warden_match_none is the empty predicate: no record matches, so the core's
-// output must be "" — the empty projection, a success and not an error.
 warden_match_none :: proc(decl: Decl_Record, needle: string) -> bool {
 	_ = decl
 	_ = needle
 	return false
 }
 
-// warden_project_fixture builds a three-record slice with distinct hole/debt
-// shapes: a stubbed fn (holes hit), an intact data record carrying the
-// registered `debt` gtag (debt hit), and an intact behavior with neither
-// (no query hits it). The slice order is the pinned "stream" order every
-// order assertion reads against.
 warden_project_fixture :: proc() -> []Decl_Record {
-	stubbed := decl_record_fixture(.Fn) // fixture stamps stub = true
+	stubbed := decl_record_fixture(.Fn)
 	stubbed.qualified_name = "drift.launch_speed"
 
 	indebted := decl_record_fixture(.Data)
@@ -59,9 +39,6 @@ warden_project_fixture :: proc() -> []Decl_Record {
 
 @(test)
 test_warden_project_decls_byte_identity_and_order :: proc(t: ^testing.T) {
-	// The identity projection: every record re-emits, and the output is the
-	// producer lines' exact concatenation in input order — a projected line
-	// is byte-identical to its producer line, never a re-marshal drift.
 	decls := warden_project_fixture()
 	want := strings.concatenate(
 		{
@@ -74,15 +51,12 @@ test_warden_project_decls_byte_identity_and_order :: proc(t: ^testing.T) {
 	got := warden_project_decls(decls, warden_match_all, "", context.temp_allocator)
 	testing.expect_value(t, got, want)
 
-	// Determinism pin: a second pass over the same slice is byte-identical.
 	again := warden_project_decls(decls, warden_match_all, "", context.temp_allocator)
 	testing.expect_value(t, again, got)
 }
 
 @(test)
 test_warden_project_decls_filter_preserves_stream_order :: proc(t: ^testing.T) {
-	// A filtering predicate (holes ∪ debt here: records 0 and 1, not 2) keeps
-	// the survivors in input order — the filter pass never re-sorts.
 	decls := warden_project_fixture()
 	either := proc(decl: Decl_Record, needle: string) -> bool {
 		return warden_holes_predicate(decl, needle) || warden_debt_predicate(decl, needle)
@@ -100,9 +74,6 @@ test_warden_project_decls_filter_preserves_stream_order :: proc(t: ^testing.T) {
 
 @(test)
 test_warden_project_decls_empty_result_is_empty_output :: proc(t: ^testing.T) {
-	// Zero matches project to zero bytes — an empty result is a successful
-	// projection (the verb prints nothing and exits 0), never an error. The
-	// empty input slice projects the same "" through the same path.
 	decls := warden_project_fixture()
 	testing.expect_value(t, warden_project_decls(decls, warden_match_none, "", context.temp_allocator), "")
 	testing.expect_value(t, warden_project_decls(nil, warden_match_all, "", context.temp_allocator), "")
@@ -110,34 +81,25 @@ test_warden_project_decls_empty_result_is_empty_output :: proc(t: ^testing.T) {
 
 @(test)
 test_warden_holes_predicate_is_stub :: proc(t: ^testing.T) {
-	// holes ⇔ stub: the §05 §2 typed-hole flag alone decides — a debt gtag,
-	// a todo, or any other field never makes a hole.
 	decls := warden_project_fixture()
-	testing.expect(t, warden_holes_predicate(decls[0], ""))  // stubbed fn
-	testing.expect(t, !warden_holes_predicate(decls[1], "")) // intact, debt-tagged
-	testing.expect(t, !warden_holes_predicate(decls[2], "")) // intact, untagged
+	testing.expect(t, warden_holes_predicate(decls[0], ""))
+	testing.expect(t, !warden_holes_predicate(decls[1], ""))
+	testing.expect(t, !warden_holes_predicate(decls[2], ""))
 }
 
 @(test)
 test_warden_probes_predicate_is_debug_presence :: proc(t: ^testing.T) {
-	// probes ⇔ a non-empty `debug` field: the §05 §5 probe-name presence alone
-	// decides — a stub, a debt gtag, a todo, or any other field never makes a
-	// decl probed, and a probe-free decl's mandatory-present empty `debug` is
-	// not a match (the §29 §2 absence-is-empty-list shape). The empty-but-
-	// present [] is the probe-free case the empty-projection golden rides.
-	probed := decl_record_fixture(.Fn) // fixture stamps debug = ["probe"]
+	probed := decl_record_fixture(.Fn)
 	probed.stub = false
 	testing.expect(t, warden_probes_predicate(probed, ""))
 
 	multi := decl_record_fixture(.Behavior)
 	multi.stub = false
 	two := make([]string, 2, context.temp_allocator)
-	two[0], two[1] = "break", "log" // one decl, two probes — never deduped (§28 §4)
+	two[0], two[1] = "break", "log"
 	multi.debug = two
 	testing.expect(t, warden_probes_predicate(multi, ""))
 
-	// A stubbed, debt-tagged, todo-carrying decl with NO probe is not probed —
-	// the debug field is the sole discriminator, disjoint from holes/debt.
 	unprobed := decl_record_fixture(.Data)
 	unprobed.stub = true
 	unprobed.todo = true
@@ -151,18 +113,11 @@ test_warden_probes_predicate_is_debug_presence :: proc(t: ^testing.T) {
 
 @(test)
 test_warden_debt_predicate_todo_or_debt_gtag :: proc(t: ^testing.T) {
-	// debt ⇔ todo == true OR "debt" ∈ gtags — each half alone matches, both
-	// together match (once), neither leaves the record out, and a non-debt
-	// gtag never matches.
 	decls := warden_project_fixture()
-	testing.expect(t, warden_debt_predicate(decls[1], ""))  // gtag half, live
-	testing.expect(t, !warden_debt_predicate(decls[0], "")) // stubbed but not debt
-	testing.expect(t, !warden_debt_predicate(decls[2], "")) // neither half
+	testing.expect(t, warden_debt_predicate(decls[1], ""))
+	testing.expect(t, !warden_debt_predicate(decls[0], ""))
+	testing.expect(t, !warden_debt_predicate(decls[2], ""))
 
-	// The todo half: the v3 producer derives the flag from parsed §05 §2
-	// @todo notes (todo_flag, index_decl.odin), and the predicate reads the
-	// contract field as defined — a decoded todo=true record is debt with no
-	// gtag needed.
 	todo_only := decl_record_fixture(.Fn)
 	todo_only.stub = false
 	todo_only.todo = true
@@ -176,11 +131,6 @@ test_warden_debt_predicate_todo_or_debt_gtag :: proc(t: ^testing.T) {
 
 @(test)
 test_warden_verb_exit_empty_projection_zero :: proc(t: ^testing.T) {
-	// Empty-result-is-success at the verb tier: the planted fixture stream
-	// (data Board / signal Goal / fn add — no stubs, no gtags, no probes)
-	// matches none of these queries, and each command still exits 0 printing
-	// nothing. The warden has no exit-1 tier; an empty projection is a clean
-	// verdict.
 	root, stream, _, _, ok := warden_stream_fixture(t)
 	if !ok {
 		return
@@ -197,12 +147,6 @@ test_warden_verb_exit_empty_projection_zero :: proc(t: ^testing.T) {
 
 @(test)
 test_warden_holes_drift_live :: proc(t: ^testing.T) {
-	// End-to-end over live data: the drift tree's emitted stream decodes
-	// through the warden consumer and the holes projection lists EXACTLY the
-	// two §05 typed holes — fn drag() @stub(Fixed) and fn launch_speed
-	// @stub(Fixed, boost+6.0) — each line byte-identical to its producer
-	// line in the stream. debt projects empty on drift: no @todo parses and
-	// no `debt` gtag is authored there.
 	dir := resolve_drift_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP warden holes drift: %s not found — set FUNPACK_DRIFT_DIR or ensure the in-repo fixture exists", dir)

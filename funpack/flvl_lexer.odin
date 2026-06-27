@@ -1,40 +1,7 @@
-// Lexer for the §17 flat-text level grammar (`.flvl`). This is the THIRD
-// config-class grammar in the family, distinct from `.fun` and from the §14
-// smaller-config grammar (lex_fcfg): unlike `.fcfg` it carries EXPRESSIONS —
-// offset arithmetic (`-48 + i * 24`) and for-range bounds (`0..5`) — so it
-// gets its own lexer/parser pair rather than reusing either, mirroring why
-// `.fcfg` did not reuse the `.fun` lexer (grammar/flvl.ebnf §0).
-//
-// The lexer is total: an unrecognized glyph becomes an Invalid token for the
-// parser to reject, so an expression operator or control-flow punctuation
-// cannot slip through as layout. Two scans the family lexers do not need land
-// here: the `..` range glyph (the only place in the family ranges appear,
-// grammar/flvl.ebnf §0) is matched before the member-access `.`, and the
-// dimension words `2d`/`3d` are digit-led keywords scanned by the number
-// scanner (a digit run followed by a `d` suffix), kept distinct from a bare
-// numeric literal. Whitespace and newlines are insignificant layout: the level
-// grammar separates items by newline OR comma but, like the smaller-config
-// grammar, the parser tolerates either, so the lexer drops both classes of
-// separator down to a single Comma/Newline-agnostic stream by emitting only
-// the glyphs the grammar reads. A `//` line comment (the level surface admits
-// comments, grammar/flvl.ebnf §0) is skipped to end-of-line.
 package funpack
 
-// Flvl_Token_Kind is the closed token set the §17 level grammar reads. Keyword
-// tokens (Level/Bounds/Things/Place/At/Facing/Prefab/For/In, plus the §18 §3
-// tilemap-layer keywords Tilemap/Legend/Grid/Spawn/Empty) open the level's
-// productions; Dim carries a `2d`/`3d` header word; Int/Fixed/String are the
-// anchor-expression atoms; Char_Lit and Triple_String are the §18 §3 legend/grid
-// literals; the operator/bracket glyphs drive the offset arithmetic, range,
-// dotted-path, and block structure. Dot_Dot is the range operator `..`, scanned
-// ahead of the member-access Dot so `0..5` never lexes as two member accesses.
-// NOTE: `cell` is deliberately NOT a keyword — it is a CONTEXTUAL word
-// (grammar/flvl.ebnf Tilemap): the tilemap header reads it as the cell-size
-// marker by text, while `cell(13, 4)` stays an ordinary LOWER_IDENT anchor
-// callee (grammar/flvl.ebnf AnchorAtom / spec §18 §3).
 Flvl_Token_Kind :: enum {
-	Invalid, // end of input or an unrecognized glyph
-	// production-opening keywords
+	Invalid,
 	Level,
 	Bounds,
 	Things,
@@ -44,62 +11,49 @@ Flvl_Token_Kind :: enum {
 	Prefab,
 	For,
 	In,
-	// the §18 §3 tilemap-layer keywords
 	Tilemap,
 	Legend,
 	Grid,
 	Spawn,
 	Empty,
-	// names, the dimension header word, and literals
 	Ident,
-	Dim,           // the `2d` / `3d` header word
+	Dim,
 	Int_Lit,
 	Fixed_Lit,
 	String_Lit,
-	Char_Lit,      // a single-quoted legend char `'#'` (spec §18 §3)
-	Triple_String, // a `"""…"""` grid block, raw interior bytes (spec §18 §3)
-	// brackets
+	Char_Lit,
+	Triple_String,
 	L_Paren,
 	R_Paren,
 	L_Brace,
 	R_Brace,
-	// operators and separators — one concept per glyph
-	Dot,     // member access / dotted name-path segment
-	Dot_Dot, // the `..` for-range operator (`0..5`)
-	Colon,   // param-entry / named-arg key separator
-	Comma,   // coordinate / argument separator
+	Dot,
+	Dot_Dot,
+	Colon,
+	Comma,
 	Plus,
 	Minus,
 	Star,
 	Slash,
-	Newline, // item separator (the grammar also accepts `,`; the parser tolerates either)
+	Newline,
 }
 
-// Flvl_Ident_Case is the upper/lower split the level grammar reads (UPPER_IDENT
-// for a placed type or prefab name, LOWER_IDENT for an instance name, field,
-// schema module, or loop var). The decision is by the first letter alone — the
-// level grammar does not carry the §02 UpperCamel-vs-UPPER_SNAKE band — so the
-// parser only ever asks "upper or lower" of a name's grammar position.
 Flvl_Ident_Case :: enum {
-	None,  // non-identifier tokens
-	Upper, // a type or prefab name (UPPER_IDENT)
-	Lower, // an instance name, field, module, or loop var (LOWER_IDENT)
+	None,
+	Upper,
+	Lower,
 }
 
 Flvl_Token :: struct {
 	kind:       Flvl_Token_Kind,
 	text:       string,
-	case_class: Flvl_Ident_Case, // Ident first-letter case
-	int_value:  i64,             // Int_Lit value
-	fixed_bits: Fixed,           // Fixed_Lit value
-	char_value: u8,              // Char_Lit value (the legend char, spec §18 §3)
-	line:       int,             // 1-based source line of the token's first byte (§17 diagnostic provenance)
+	case_class: Flvl_Ident_Case,
+	int_value:  i64,
+	fixed_bits: Fixed,
+	char_value: u8,
+	line:       int,
 }
 
-// lex_flvl tokenizes the §17 level surface. It tracks the 1-based source line
-// of each token's first byte for diagnostic provenance, mirroring stage_lex.
-// Whitespace (space/tab/CR) is dropped; a newline emits a Newline token (the
-// item separator); a `//` line comment is skipped to the line's end.
 lex_flvl :: proc(content: string) -> []Flvl_Token {
 	tokens := make([dynamic]Flvl_Token, 0, 32, context.temp_allocator)
 	line := 1
@@ -114,17 +68,10 @@ lex_flvl :: proc(content: string) -> []Flvl_Token {
 		case ch == ' ' || ch == '\t' || ch == '\r':
 			i += 1
 		case ch == '/' && i+1 < len(content) && content[i+1] == '/':
-			// A `//` line comment runs to end-of-line; the trailing newline is
-			// scanned on the next iteration so it still terminates the item.
 			for i < len(content) && content[i] != '\n' {
 				i += 1
 			}
 		case ch == '"':
-			// The `"""` grid opener is matched before the plain string scan
-			// (maximal munch) so a triple-quoted block never lexes as an empty
-			// string plus a stray quote. The interior is raw bytes — it spans
-			// newlines — so the line counter advances past every interior LF
-			// to keep token provenance exact for whatever follows the grid.
 			if i+2 < len(content) && content[i+1] == '"' && content[i+2] == '"' {
 				tok, next := flvl_scan_triple_string(content, i)
 				tok.line = line
@@ -166,22 +113,11 @@ lex_flvl :: proc(content: string) -> []Flvl_Token {
 	return tokens[:]
 }
 
-// flvl_scan_string returns the contents between the quotes (the socket-name
-// argument of `table.socket("cup")`, grammar/flvl.ebnf §AnchorAtom). An
-// unterminated string (end of input or a newline before the closing quote) is
-// Invalid, the parser's reject signal — the single-line scan is shared with the
-// other sub-language lexers, so only the token kind is stamped here.
 flvl_scan_string :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
 	inner, terminated, next2 := scan_quoted_inner(content, start)
 	return Flvl_Token{kind = .String_Lit if terminated else .Invalid, text = inner}, next2
 }
 
-// flvl_scan_triple_string scans a `"""…"""` grid block (grammar/flvl.ebnf Grid,
-// spec §18 §3): the token text is the RAW interior between the two triple-quote
-// fences, newlines included — the parser owns the dedent (the common-leading-
-// indentation strip the grammar mandates BEFORE the §18 §5 rectangularity
-// gate). An unterminated block (end of input before the closing fence) is
-// Invalid, the parser's reject signal.
 flvl_scan_triple_string :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
 	i := start + 3
 	for i+2 < len(content) {
@@ -193,18 +129,11 @@ flvl_scan_triple_string :: proc(content: string, start: int) -> (tok: Flvl_Token
 	return Flvl_Token{kind = .Invalid, text = content[start:]}, len(content)
 }
 
-// flvl_scan_char scans a single-quoted legend char `'#'` (grammar/flvl.ebnf
-// LegendEntry, spec §18 §3): exactly one byte between the quotes — the legend
-// maps single CHARACTERS, so a multi-byte body, an empty `''`, or an
-// unterminated quote is Invalid, the parser's reject signal. The space char
-// `' '` is a legal body (the corpus `' ' empty` bind).
 flvl_scan_char :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
 	if start+2 < len(content) && content[start+1] != '\n' && content[start+2] == '\'' {
 		body := content[start+1]
 		return Flvl_Token{kind = .Char_Lit, text = content[start+1 : start+2], char_value = body}, start + 3
 	}
-	// Reject without consuming past the line so the parser's diagnostic stays
-	// anchored to the malformed literal.
 	end := start + 1
 	for end < len(content) && content[end] != '\n' && end < start+3 {
 		end += 1
@@ -212,26 +141,15 @@ flvl_scan_char :: proc(content: string, start: int) -> (tok: Flvl_Token, next: i
 	return Flvl_Token{kind = .Invalid, text = content[start:end]}, end
 }
 
-// flvl_scan_number scans a number atom, the dimension header word, or stops
-// short of a range operator. A digit run followed by a lone `d` (and no further
-// ident char) is the dimension word `2d`/`3d` (Dim). A digit run with a
-// fractional part (`.` then a digit) is a Fixed, matching §10's type-directed
-// rule. A bare digit run is an Int. The range operator `..` must NOT be eaten as
-// a fractional point: a `.` is only consumed into a Fixed when a digit follows
-// it, so `0..5` scans the `0` as an Int and leaves `..5` for the punct scanner.
 flvl_scan_number :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
 	i := start
 	for i < len(content) && is_digit(content[i]) {
 		i += 1
 	}
-	// Dimension header word: a digit run followed by exactly `d` (`2d`, `3d`).
 	if i < len(content) && content[i] == 'd' && (i+1 >= len(content) || !is_ident_char(content[i+1])) {
 		end := i + 1
 		return Flvl_Token{kind = .Dim, text = content[start:end]}, end
 	}
-	// Fixed literal: a `.` followed by a fractional digit run. A `.` with no
-	// trailing digit (the `..` range, or a member access) is left for the punct
-	// scanner.
 	if i+1 < len(content) && content[i] == '.' && is_digit(content[i+1]) {
 		frac_start := i + 1
 		j := frac_start
@@ -245,9 +163,6 @@ flvl_scan_number :: proc(content: string, start: int) -> (tok: Flvl_Token, next:
 	return Flvl_Token{kind = .Int_Lit, text = text, int_value = parse_digits(text)}, i
 }
 
-// flvl_scan_ident scans an identifier run and maps the level keywords. A
-// non-keyword run is an Ident carrying its first-letter case class — the level
-// grammar's upper/lower split for type-vs-name positions.
 flvl_scan_ident :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
 	i := start
 	for i < len(content) && is_ident_char(content[i]) {
@@ -273,9 +188,6 @@ flvl_scan_ident :: proc(content: string, start: int) -> (tok: Flvl_Token, next: 
 		return Flvl_Token{kind = .For, text = text}, i
 	case "in":
 		return Flvl_Token{kind = .In, text = text}, i
-	// The §18 §3 tilemap-layer keywords. `cell` is deliberately absent — it is
-	// contextual (the tilemap header reads the Ident's text), because it is also
-	// the `cell(col, row)` anchor callee, a LOWER_IDENT atom position.
 	case "tilemap":
 		return Flvl_Token{kind = .Tilemap, text = text}, i
 	case "legend":
@@ -290,10 +202,6 @@ flvl_scan_ident :: proc(content: string, start: int) -> (tok: Flvl_Token, next: 
 	return Flvl_Token{kind = .Ident, text = text, case_class = flvl_classify_case(text)}, i
 }
 
-// flvl_classify_case decides a name's level-grammar case from its first letter
-// only (the upper/lower split of grammar/lexical-core.ebnf §2 the level grammar
-// reads). An underscore-led or digit-led leading char is Lower by default — the
-// parser rejects a malformed name positionally, not the lexer.
 flvl_classify_case :: proc(text: string) -> Flvl_Ident_Case {
 	first := text[0]
 	if first >= 'A' && first <= 'Z' {
@@ -302,10 +210,6 @@ flvl_classify_case :: proc(text: string) -> Flvl_Ident_Case {
 	return .Lower
 }
 
-// flvl_scan_punct maps the operator/bracket glyphs the level grammar uses. The
-// two-glyph `..` range operator is matched before the one-glyph member-access
-// `.` (maximal munch), so a for-range bound never lexes as two member accesses.
-// Every other single character is Invalid, the parser's reject signal.
 flvl_scan_punct :: proc(content: string, start: int) -> (tok: Flvl_Token, next: int) {
 	if start+1 < len(content) && content[start] == '.' && content[start+1] == '.' {
 		return Flvl_Token{kind = .Dot_Dot, text = ".."}, start + 2

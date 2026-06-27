@@ -1,12 +1,3 @@
-// The .gen.fun seam-emitter golden: a hand-built Seam model corresponding to the
-// committed exemplar examples/arena/gen/arena.gen.fun, emitted
-// through emit_gen_fun, must reproduce that exemplar byte-for-byte, and emitting
-// the same model twice must be byte-identical (spec §09/§29 purity). The model
-// is built BY HAND here — never parsed from the file — so the test pins the
-// emitter's byte contract, not a round-trip. Like the artifact golden
-// (golden_emit_test.odin), it resolves the live exemplar (or FUNPACK_ARENA_GEN)
-// and SKIPs loudly when the in-repo fixture is absent; a skipped golden is
-// a warning, never a pass.
 package funpack
 
 import "core:log"
@@ -14,21 +5,8 @@ import "core:os"
 import "core:path/filepath"
 import "core:testing"
 
-// ARENA_GEN_DEFAULT_REL is the committed exemplar's path relative to the main
-// checkout root (one level up from this package), resolved through
-// resolve_spec_dir so it survives an orchestrator task-worktree #directory.
 ARENA_GEN_DEFAULT_REL :: "examples/arena/gen/arena.gen.fun"
 
-// arena_seam builds, by hand, the Seam model that corresponds exactly to the
-// committed arena.gen.fun exemplar: the file-leading @doc, the engine + schema
-// imports, the inline ArenaTurret prefab record, the aligned-multiline Arena
-// symbol table, and the two extern-fn accessors — all in the exemplar's
-// declaration order. This is the byte contract's input; the exemplar is its
-// expected output. The em-dash in the Arena doc is the exemplar's literal UTF-8
-// em-dash, kept verbatim so the byte comparison exercises multibyte content.
-//
-// The nested slices are allocated into `allocator` (Odin forbids returning a
-// stack-backed compound-literal slice), so the returned Seam outlives this call.
 arena_seam :: proc(allocator := context.allocator) -> Seam {
 	imports := make([]Seam_Import, 2, allocator)
 	imports[0] = Seam_Import {
@@ -77,20 +55,10 @@ arena_seam :: proc(allocator := context.allocator) -> Seam {
 	}
 }
 
-// resolve_arena_gen_path resolves the committed arena.gen.fun exemplar: the
-// FUNPACK_ARENA_GEN env override when set, else the sibling-checkout default
-// anchored at the main checkout root (resolve_spec_dir handles the worktree
-// infix). The path points at the file, not a directory.
 resolve_arena_gen_path :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_ARENA_GEN", ARENA_GEN_DEFAULT_REL)
 }
 
-// test_gen_emit_arena_byte_exact is the load-bearing acceptance: the hand-built
-// arena Seam model, emitted through emit_gen_fun, reproduces the committed
-// arena.gen.fun exemplar byte-for-byte. A diff in any byte — a doc character,
-// an import member, a field-alignment space, the trailing newline — fails here.
-// SKIPs loudly when the in-repo fixture is absent (a skipped golden is not
-// a pass).
 @(test)
 test_gen_emit_arena_byte_exact :: proc(t: ^testing.T) {
 	path := resolve_arena_gen_path()
@@ -112,15 +80,9 @@ test_gen_emit_arena_byte_exact :: proc(t: ^testing.T) {
 		report_first_byte_diff(emitted, golden)
 		return
 	}
-	// odin test echoes a name only on failure, so announce the byte match so a
-	// passing run leaves a trace the acceptance gate can read.
 	log.infof("gen-emit golden: arena.gen.fun reproduces the exemplar byte-for-byte (%d bytes)", len(emitted))
 }
 
-// test_gen_emit_double_emit_identical proves emission is deterministic (spec
-// §09, §29): two emissions of the same hand-built model are byte-identical, so
-// the seam bytes carry no field whose value depends on when, where, or on which
-// machine they were emitted. Self-contained — no golden checkout needed.
 @(test)
 test_gen_emit_double_emit_identical :: proc(t: ^testing.T) {
 	model := arena_seam(context.temp_allocator)
@@ -133,10 +95,6 @@ test_gen_emit_double_emit_identical :: proc(t: ^testing.T) {
 	}
 }
 
-// test_gen_emit_inline_data_layout pins the single-line data layout in
-// isolation: a multiline=false record emits `data Name { f: T, g: U }` with one
-// space inside each brace and ", " between fields. Self-contained, so the inline
-// layout's byte shape is fixed even without the golden checkout.
 @(test)
 test_gen_emit_inline_data_layout :: proc(t: ^testing.T) {
 	seam := Seam {
@@ -165,11 +123,6 @@ test_gen_emit_inline_data_layout :: proc(t: ^testing.T) {
 	}
 }
 
-// test_gen_emit_multiline_alignment pins the aligned-multiline layout in
-// isolation: a multiline=true record indents every field two spaces and pads
-// after the colon so the type column aligns to the longest field name. The
-// short name gets more padding than the long one, both types landing at the
-// same column. Self-contained.
 @(test)
 test_gen_emit_multiline_alignment :: proc(t: ^testing.T) {
 	seam := Seam {
@@ -189,8 +142,6 @@ test_gen_emit_multiline_alignment :: proc(t: ^testing.T) {
 			},
 		},
 	}
-	// longest name is "longest" (7); type column = 2 indent + 7 + 1 space = 10.
-	// x: 1 char -> (7-1)+1 = 7 spaces after colon; longest -> (7-7)+1 = 1 space.
 	expected := "@doc(\"d\")\n" + "import engine.world.{Ref}\n" + "\n" + "@doc(\"s\")\n" + "data Sym {\n" + "  x:       Ref[A]\n" + "  longest: Ref[B]\n" + "}\n"
 	emitted := emit_gen_fun(seam, context.temp_allocator)
 	testing.expect_value(t, len(emitted), len(expected))
@@ -200,9 +151,6 @@ test_gen_emit_multiline_alignment :: proc(t: ^testing.T) {
 	}
 }
 
-// test_resolve_arena_gen_path_is_absolute keeps the exemplar resolver honest:
-// the resolved path is absolute (so a bare `odin test .` from any cwd, and a
-// worktree validation run, resolve the same sibling file).
 @(test)
 test_resolve_arena_gen_path_is_absolute :: proc(t: ^testing.T) {
 	testing.expect(t, filepath.is_abs(resolve_arena_gen_path()))

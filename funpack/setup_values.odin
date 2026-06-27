@@ -2,28 +2,16 @@ package funpack
 
 import "core:strings"
 
-// The §06 [Spawn] batch is EVALUATED through the full evaluator (the surface
-// `funpack test` runs), not an AST fold. Evaluation is what lets a setup() spawn
-// through an idiomatic multi-statement (`let`-binding) constructor: a fold that
-// only inlines single-`return` helpers cannot, and yields an empty [setup] — a
-// baked black screen on a check-clean, test-green program.
-
 Setup_Spawn_Value :: struct {
 	type_name: string,
 	record:    Record_Value,
 }
 
-// found=false: no setup() (legal). ok=false: setup() exists but did not evaluate
-// to a closed [Spawn] batch — the build gate refuses loudly rather than baking an
-// empty [setup].
 resolve_setup_values :: proc(ctx: Eval_Ctx) -> (spawns: []Setup_Spawn_Value, found: bool, ok: bool) {
 	fn, declared := find_user_fn(ctx.ast, "setup")
 	if !declared {
 		return nil, false, true
 	}
-	// The §25/§26 seeded form `fn setup(rng: Rng) -> (Rng, [Spawn])` is folded LIVE
-	// by the runtime against the root seed, so its compile-time batch is empty; only
-	// the static `fn setup() -> [Spawn]` (no params) bakes here.
 	if len(fn.params) != 0 {
 		return nil, false, true
 	}
@@ -59,9 +47,6 @@ spawn_command_record :: proc(element: Value) -> (record: Record_Value, ok: bool)
 	return
 }
 
-// A top-level Vec2 field keeps the §13 spread `vec2 x y`; every other value is one
-// space-free §6 token. ok=false for an arm the format cannot carry, so the gate
-// refuses an undecodable field instead of writing a token the runtime mis-reads.
 encode_setup_value_field :: proc(v: Value) -> (encoded: string, ok: bool) {
 	#partial switch e in v {
 	case Vec2_Value:
@@ -89,8 +74,6 @@ encode_setup_value_token :: proc(v: Value) -> (token: string, ok: bool) {
 	case string:
 		return encode_string(e, context.temp_allocator), true
 	case Enum_Value:
-		// A payload-tagged variant has no §13 token form (struct-variant payloads
-		// ride the Record_Value arm); only a bare `Type::Case` encodes.
 		if e.payload != nil {
 			return "", false
 		}

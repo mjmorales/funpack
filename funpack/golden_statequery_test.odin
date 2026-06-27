@@ -1,21 +1,3 @@
-// The §08 §3 state-query END-TO-END fixture's emission side: one project tree
-// declaring @index/@spatial queries, compiled by the production emitter, whose
-// artifact the runtime acceptance golden (runtime/statequery_acceptance_test.odin)
-// #loads to pin index maintenance and query results per tick.
-//
-// FIXTURE TECHNIQUE — the amended-scratch producer-real mold (the probes /
-// expr-holes goldens' precedent): NO COMMITTED SPEC EXAMPLE declares a query
-// or an @index/@spatial directive yet — none of the nine golden projects
-// exercises the §08 §3 surface, a MISSING-ACCEPTANCE-EXAMPLE GAP for the
-// operator to close in the in-repo spec — so the fixture is the live PONG tree
-// with the STATE_QUERY_ADDITION appended BEFORE the build, and every asserted
-// byte is what funpack really wrote over the amended tree, never a doctored
-// product. Pong is the base deliberately: it is query-free, single-module,
-// and its Ball.pos (a moving Vec2) and Paddle.side (a keyed variant) are
-// exactly the two column shapes the directive pair wants. When a spec example
-// authors queries, these pins move to the pristine tree. Like the other
-// goldens it resolves the sibling checkout (or FUNPACK_PONG_DIR) and SKIPs
-// loudly when absent — a skipped golden is a warning, never a pass.
 package funpack
 
 import "core:log"
@@ -24,15 +6,6 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// STATE_QUERY_ADDITION is the query addendum appended to the copied pong
-// source — the SPEC-TRUE §08 §3 read shape: every query takes only value
-// parameters and reads the world through `all[T]` and the spatial
-// combinators (the View-parameter interim form is retired — it is now the
-// named Query_Param_Not_Value diagnostic). Two @spatial(Ball.pos) queries
-// pin the radius read and the nearest-first kernel order, an
-// @index(Paddle.side) query pins the keyed read over all[Paddle], and
-// corridor_half stays the pure value-parameter memoizable form. The names
-// share no substring with any pristine pong decl.
 STATE_QUERY_ADDITION ::
 	"\n@doc(\"How many balls sit within r of origin — the §08 exemplar read: within over all[Ball] under the declared spatial structure, counted by an ordered fold.\")\n" +
 	"@spatial(Ball.pos)\n" +
@@ -66,17 +39,9 @@ STATE_QUERY_ADDITION ::
 	"  return clamp(r * 0.5, 0.0, BOARD.h)\n" +
 	"}\n"
 
-// The addendum's bodies read the §08 §3 spatial combinators, which pong's
-// pristine import line does not bind — the pre-build amendment widens that
-// ONE import member group (the same amended-scratch technique as the source
-// append: a developer edit before the build, never a doctored artifact).
 STATE_QUERY_PRISTINE_IMPORT :: "import engine.list.{fold, first}"
 STATE_QUERY_AMENDED_IMPORT :: "import engine.list.{fold, first, within, nearest_first}"
 
-// statequery_emit builds the amended fixture through the production emitter:
-// the live pong tree's emit inputs with the addendum appended to the source —
-// the pre-build amendment seam, so the artifact is a real emitter product over
-// the amended tree. ok = false on the golden SKIP (absent checkout).
 statequery_emit :: proc(t: ^testing.T) -> (artifact: string, ok: bool) {
 	inputs, present := pong_emit_inputs(t)
 	if !present {
@@ -93,11 +58,6 @@ statequery_emit :: proc(t: ^testing.T) -> (artifact: string, ok: bool) {
 	return emitted, true
 }
 
-// test_emit_statequery_carries_declared_queries pins the [queries] surface the
-// runtime acceptance consumes: four records in source order, each requirement
-// line naming its (KIND, THING, FIELD), the `all` world-read nodes the v10
-// bodies carry, and a well-formed artifact whose every section count
-// reconciles under the funpack reader. Double-emit pins determinism (spec §29).
 @(test)
 test_emit_statequery_carries_declared_queries :: proc(t: ^testing.T) {
 	artifact, ok := statequery_emit(t)
@@ -124,13 +84,6 @@ test_emit_statequery_carries_declared_queries :: proc(t: ^testing.T) {
 	}
 }
 
-// test_emit_statequery_matches_runtime_testdata is the cross-package byte seam
-// (the krognid emit golden's mold): the freshly-emitted fixture equals the
-// committed runtime/testdata/statequery.artifact the runtime acceptance #loads,
-// byte-for-byte. FUNPACK_REGEN_GOLDEN=1 rewrites the committed copy from the
-// live emission (the operator-gated regen path); a normal run only compares. A
-// staged schema bump SKIPs loudly (committed stamp trailing the emitter's); a
-// SAME-version divergence is the staleness this seam exists to catch.
 @(test)
 test_emit_statequery_matches_runtime_testdata :: proc(t: ^testing.T) {
 	emitted, ok := statequery_emit(t)

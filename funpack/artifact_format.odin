@@ -1,382 +1,21 @@
-// The artifact-format primitive encoders and the golden-fixture seam.
-// This is the funpack side of the spec-§29 process-boundary data contract
-// with the runtime: a versioned byte format whose layout is written in
-// docs/artifact-format.md and whose pong instance is committed at
-// testdata/pong.artifact. The runtime (Odin, runtime/**) parses those
-// bytes from the doc alone with ZERO funpack imports; this file owns only
-// the funpack-side encoders the production emitter reuses, so the
-// encoding rules are executable and the byte-identical-twice obligation is
-// provable here under `odin test`.
-//
-// The format is deterministic by construction (spec §09, §29): no clock,
-// no machine paths, no float. Every Fixed is its raw Q32.32 i64 bits in
-// decimal — the same kernel representation as fixed.odin — so emission and
-// load are exact and identical on every machine.
 package funpack
 
 import "core:strconv"
 import "core:strings"
 
-// ARTIFACT_SCHEMA_VERSION is the leading stamp every artifact carries
-// (docs/artifact-format.md §1). Any field/layout/encoding change bumps it;
-// a runtime exact-matches it and refuses a mismatch rather than
-// best-effort parsing. It is the single compatibility gate.
-//
-// Version 2 ratifies two §2.7 body-node arm KINDs the snake/hunt goldens first
-// emit: `bare_binder` (a tuple position binding the whole element — snake's
-// `next` Rng position) and `tuple` (a positional tuple pattern, e.g.
-// `(Option::Some(cell), next)`). The closed node-kind set gains the `tuple` arm,
-// and — the layout-changing part — a `tuple` arm carries its positional
-// sub-pattern arms as CHILDREN, so its line ends in a child count read the
-// generic way, unlike every other arm whose child count is fixed at 0 by kind.
-// A new arm kind and an arm-with-children are both layout changes, so the
-// version bumps from 1 to 2 (it is the single compatibility gate, §1).
-//
-// Version 3 ratifies the closed §14 binding source-form set the emitter lowers
-// the §23 §3 builder helpers into: a key-list button source spreads to one
-// `key(…)` bind per listed key (stacking, §23 §3), `wasd()` lowers to the 2D
-// `keys_quad(neg_x,pos_x,neg_y,pos_y)` form, and `stick(Stick)` is a
-// first-class 2D source the runtime folds as both components — never spread
-// into stick_x/stick_y 1D halves. The source vocabulary is a closed taxonomy,
-// so growing it is a deliberate bump from 2 to 3 (§1; ADR
-// 2026-06-06-binding-source-lowering-2d-quad-and-stick).
-//
-// Version 4 adds the required `logical:WxH` field to the §15 entrypoint record
-// — the fixed logical draw space (§20 §3) in integer world units, lifted from
-// the entrypoint block's `logical = WxH` (§14 §4) so the present pass
-// letterboxes from the artifact instead of a hardcoded board constant. A
-// required field on an existing record is a layout change: 3 → 4 (§1; ADR
-// 2026-06-06-logical-space-entrypoint-field).
-//
-// Version 5 is the yard cross-epic format the §11 physics, §20 camera, and §24
-// persistence surfaces first reach. Four layout changes ride it: (1) the §06 §2
-// SINGLETON tick-0 spawn marker — a `singleton`'s [things] row carries SINGLETON
-// true plus its COMPLETE defaulted field schema, so the runtime spawns the
-// singleton population (Scoreboard/Camera/Menu) from the artifact alone; (2) the
-// §11 §3 PHYSICS-STAGE encoding — the engine-closed `physics: solve` battery
-// occupies a [pipeline_flattened] step (`stage:physics behavior:solve`), a battery
-// step distinct from a behavior step, recording the engine boundary in the total
-// order (intent before, reactions after); (3) the §03 §4 CollisionLayer KIND tag —
-// an `enum Layer: CollisionLayer` [enums] record stamps the `CollisionLayer` role
-// kind; (4) the §6 ENGINE-TYPE field defaults — Option[String] singleton defaults
-// (`status: Option[String] = Option::None`), and engine-type composite defaults
-// (a Settings static-builder default `Settings.defaults()` lowered to its evaluated
-// `Settings(volume=128,fullscreen=false,access=AccessOpts(reduce_motion=false))`
-// record inline, against a synthesized §8 Settings + AccessOpts data projection —
-// the nested `access` sub-record yard reads back). A marker row, a new flattened-step
-// occupant kind, an enum KIND value, and widened §6/§8 default forms are layout
-// changes: 4 → 5 (§1).
-//
-// Version 6 is the krognid MULTI-MODULE format: the first artifact the runtime
-// executes whose [functions] section carries fn records from MORE than the
-// entrypoint module. The single layout change is the §17 CROSS-MODULE SEAM-FN
-// CARRY — when the entrypoint module (krognid's `stroll`) imports a fn from a
-// sibling USER module (`import krognid.{krognid_skeleton, krognid_parts}` from the
-// baked rig seam), the emitter appends that imported fn's full record — signature,
-// body node run, and a span keyed to the SEAM module (`span:krognid:8`) — into
-// [functions] after the entrypoint module's own records, so the Rigged draw body's
-// `krognid_skeleton()` / `krognid_parts()` calls resolve to a self-contained record
-// the runtime's bare-name program_function lookup finds (the seam bodies would
-// otherwise be absent and the call would return nil). The carried records keep
-// their BARE names — the artifact disambiguates by the span's module, not a §15
-// qualifier, because the runtime resolves functions by bare name (the §15
-// qualification ADR governs the SEPARATE Index Contract decl surface, not the
-// artifact [functions] name token). NO new §2.7 node KIND rides this bump: the seam
-// bodies (`Skeleton.humanoid()`, a `.bind(Slot::…, mesh(…))` builder chain ending in
-// `.mirror(Side::L, Side::R)`) and the entrypoint's first §05/§20 anim/Draw3 forms
-// (`Draw3::Rigged{…}`, `Pose.blend(…)`, the `Audio.track(…).pitch(…)` chain) all
-// serialize through the existing call/field/variant/record/list/string node arms —
-// the body walk was already generic over them. A widened [functions] population
-// (records from imported modules) is a layout change: 5 → 6 (§1).
-//
-// Version 7 carries the §05 §2 TYPED HOLE through to the runtime — the dev
-// artifact of a holed declaration was hole-blind before this (a holed fn or
-// behavior emitted an empty body and ticked as a no-op live, silently dropping
-// the P8 "the game stays playable" fallback approximation that already ran in
-// the compiler's test interpreter, evaluate.odin eval_stub_hole). The single
-// layout change is one new §2.7 body-node KIND, `stub`, standing as a holed
-// body's sole statement subtree (body_count 1) exactly where the grammar puts
-// the hole (fun.ebnf §7: FnBody ::= Block | StubExpr): `node stub fallback 1`
-// carries the @stub(T, fallback) approximation expression as its one child, and
-// `node stub bare 0` is the typecheck-only @stub(T) the runtime FAILS CLOSED on
-// (the spec's defined no-value outcome — never undefined behavior). The hole's
-// T is NOT carried: the typechecker proves T identical to the record's declared
-// return type, so `return:TYPE` already states it. The node-kind set is closed,
-// so the new kind is a deliberate bump: 6 → 7 (§1). A release artifact never
-// carries a `stub` node — the §29 §4 hole-ban refuses the tree before emission.
-//
-// Version 8 carries the §05 §6 @migrate SCHEMA-EVOLUTION channel through to the
-// loader — the rename/retype metadata the name-keyed schema-diff (spec §09 §4,
-// §24) cannot derive on its own. The single layout change is one new sub-record
-// keyword, `migrate`, a fixed three-token line `migrate FROM WITH` appearing in
-// [data] records only: after a `field` line it migrates that field (FROM the
-// prior key or `-`, WITH the pure conversion fn's name or `-`, never both `-`),
-// and between the `data` lead line and the first `field` line it is the renamed
-// TYPE declaration's prior name (rename form only, so WITH is always `-`
-// there). The line is emitted only where the source carries the directive, so
-// an artifact of a migration-free source changes by the version stamp alone —
-// the v7 stamp-only restamp precedent. The conversion fn is an ordinary
-// [functions] record the loader resolves by name. The sub-record keyword set
-// is closed, so the new keyword is a deliberate bump: 7 → 8 (§1).
-//
-// Version 9 carries the §08 §3 STATE-QUERY declarations through to the runtime —
-// the first-class `query` declarations and their §05 §3 @index/@spatial index
-// requirements, which the runtime needs to MAINTAIN the declared engine indices
-// over the world database (an artifact-blind runtime could neither build the
-// declared structures nor evaluate a query call). Two layout changes ride it:
-// (1) one new section, `[queries Q]`, appended after [entrypoint] — one record
-// per entrypoint-module `query` declaration in source order, the [functions]
-// record mold (`query NAME param_count return:TYPE index_count body_count
-// span:MODULE:LINE`, then the `param` lines, the `index` requirement lines, and
-// the §2.7 body node run); (2) one new sub-record keyword, `index`, a fixed
-// four-token line `index KIND THING FIELD` (KIND ∈ index|spatial) carrying one
-// declared §05 §3 requirement. A query body is a Block by grammar (no
-// body-position hole), so its body run is the plain statement forest. A new
-// section and a new sub-record keyword are layout changes: 8 → 9 (§1).
-//
-// v10 ratifies the §08 §3 world read `all[T]` as a §2.7 node KIND: `node all
-// THING 0` — a leaf carrying the read table's thing type name, the form a
-// spec-true query body reads the world through (value parameters only; the
-// View-parameter interim shape is retired by the same bump). A new node KIND
-// is a layout change: 9 → 10 (§1).
-//
-// Version 11 carries the §18 §3 TILE LAYERS through to the runtime — the
-// static environment a tilemap's ASCII grid bakes to, which the runtime
-// renders BATCHED and collides against (never per-tile Draw::Sprite, §18 §3)
-// and which an artifact-blind runtime could neither draw nor collide. Two
-// layout changes ride it: (1) one new section, `[tilemaps T]`, appended after
-// [queries] — one record per baked layer in level declaration order: a lead
-// line `tilemap NAME CELL_SIZE COLS ROWS PALETTE_COUNT`, then PALETTE_COUNT
-// `tile NAME SOLID` palette lines (the layer's legend-declared tile types in
-// legend order, each carrying its §18 §2 baked collision verdict), then ROWS
-// `row …` lines of COLS space-separated cells — a decimal palette index or
-// `-` for a tile-less cell (an `empty` legend bind or a marker cell). Markers
-// are NOT in this section: they lower to the spawn machinery like every
-// placement. (2) two new closed sub-record keywords, `tile` and `row`. A new
-// section and new sub-record keywords are layout changes: 10 → 11 (§1).
-//
-// Version 12 makes the §18 §3 tile-layer record SELF-DESCRIBING for any level
-// bounds: the [tilemaps] lead line gains the grid→world ANCHOR — the world
-// point of the grid's top-left corner, two raw Q32.32 Fixed fields (§2.3)
-// between ROWS and PALETTE_COUNT: `tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X
-// ANCHOR_Y PALETTE_COUNT`. The bake emits it from the level bounds
-// (bounds_min.x, bounds_max.y) — the same corner the marker/cell() lowering
-// anchored on — and the runtime loader READS it instead of deriving
-// (0, rows*cell_size), so §17's documented mapping is reproducible from the
-// record alone (the v11 record carried no bounds, leaving an artifact-blind
-// runtime to a derivation that is exact only when the grid spans its bounds
-// from the origin — the format gap the tilemap-anchor ADR closes). A lead-line
-// field is a layout change: 11 → 12 (§1). Every level-less artifact moves by
-// the version stamp alone (the v7 stamp-only restamp precedent).
-//
-// Version 13 carries the §12 §1 NAV GRAPHS through to the runtime — the
-// walkable-cell topology a tilemap's solids imply, baked once so the runtime
-// path-finds over a graph it never authored (the picture IS the topology, §12
-// §1). Two layout changes ride it: (1) one new section, `[nav N]`, appended
-// after [tilemaps] as the fixed §3 section tail — one record per baked tile
-// layer in the SAME slice order [tilemaps] emits, so a nav record keys 1:1 to its
-// tilemap: a lead line `nav NAME NODE_COUNT EDGE_COUNT` carrying NO grid metadata
-// (§12 §5 forbids exposing the raw Cell index, so the artifact leaks no col/row),
-// then NODE_COUNT `navnode FIXED_X FIXED_Y` sub-records (each a walkable cell's
-// world-space CENTER as two raw Q32.32 Fixed, §2.3 — the v12 anchor encoding,
-// reconstructed from the layer's anchor + cell_size alone; centers, not indices,
-// because the Cell index is not exposed) in ROW-MAJOR order so the line position
-// IS the node index, then EDGE_COUNT `navedge A B` sub-records (two decimal node
-// indices into the row-major node list, `A < B` canonical, in ascending (A, B)
-// order) — the 4-NEIGHBOR orthogonal adjacencies (right/down deduped to one
-// undirected edge each; §12 §4 makes diagonal/cost a bake-time stance, so the
-// conservative single-algorithm 4-neighbor bake is the default, never an 8-
-// neighbor diagonal toggle without a spec decision). The §12 §1 hierarchical
-// decomposition stays INVISIBLE: one FLAT graph per layer, no tiers in the wire
-// format. (2) two new closed sub-record keywords, `navnode` and `navedge`. A
-// new section and new sub-record keywords are layout changes: 12 → 13 (§1).
-// Every artifact without a multi-statement guard moves to v14 by the version
-// stamp alone (the v7 stamp-only restamp precedent; v14 adds the `block` node
-// in if_return's outcome position, §2.7).
-//
-// Version 15 makes a multi-module game's artifact SELF-CONTAINED for live level
-// execution — the runtime-level-load format. Three layout changes ride it, all
-// widened POPULATIONS (the v6 widened-[functions] precedent), no new keyword and
-// no new node kind: (1) the cross-module DECLARATION carry — the enum/data/
-// signal/thing declarations the entrypoint module imports from sibling USER
-// modules append after each section's own records (dungeon_world's
-// Player/Slime/Chest things with their complete defaulted field schemas, the
-// Dir enum, the Looted signal), in import-then-member order, so the schema the
-// [setup] batch spawns against rides in the artifact; (2) the imported-CONST
-// carry — an imported module-level `let` (the level seam's `terrain:
-// TilemapHandle`) appends to [functions] as the existing `function NAME const`
-// record form with the seam module's span, alongside the §17 v6 fn carry, so a
-// behavior body's bare-name read resolves; (3) the LEVEL-BACKED [setup] fold —
-// a setup() that is a lone call to a baked level's `<level>_spawns` extern
-// emits the bake's deterministic spawn list as concrete §13 `spawn`/`set` rows
-// (pos as the Vec2 spread, facing as raw Fixed bits, params by their declared
-// schema field type), honoring §13's no-expressions contract where the prior
-// emitter left `[setup 0]`. The level ACCESSOR extern (`dungeon() -> Dungeon`)
-// is deliberately NOT carried — its consumer is a later schema bump. Widened
-// populations are layout changes: 14 → 15 (§1). A single-module, level-less
-// artifact moves by the version stamp alone (the v7 stamp-only restamp
-// precedent).
-//
-// Version 16 carries the §19 ASSET PIXELS through to the runtime — the decoded
-// atlas/image art a textured render (`Draw_Sprite{atlas, cell}`) needs and which
-// an artifact-blind runtime could not draw (the v11 [tilemaps] carried the tile
-// GRID but no pixels; the sprite art never reached the runtime). One layout change
-// rides it: one new section, `[assets A]`, appended after [nav] as the new fixed
-// §3 section TAIL (the [nav] tail precedent). Its records are two TOP-LEVEL kinds
-// plus one sub-record. (1) `image HASH W H b64:RGBA` — one per DISTINCT decoded
-// image, content-addressed by its §2 image hash: HASH is the canonical hash
-// (`sha256:…`), W/H the decoded pixel dimensions, and b64:RGBA the canonical RGBA8
-// buffer (W·H·4 bytes, row-major top-to-bottom, import_image's
-// `.alpha_add_if_missing` output) base64-encoded (core:encoding/base64, the
-// std-alphabet RFC-4648 encoding) as one ASCII token on the line, so the committed
-// text golden stays diffable and the runtime decodes with the same core pkg.
-// Two atlases sharing one image carry the blob ONCE (the §2 hash dedup); each atlas
-// references it by HASH, never by repeating the pixels. (2) `atlas NAME IMAGE_HASH
-// CELL_COUNT` — one per registered atlas, in committed-registry order: NAME is the
-// atlas's registered name, IMAGE_HASH the `image` record it slices (the dedup key),
-// CELL_COUNT the number of `region` sub-records. (3) the new sub-record keyword
-// `region NAME PX_X PX_Y PX_W PX_H` — one per atlas cell in source-declaration
-// order: NAME the cell name a `Draw_Sprite{atlas, cell}` carries, and the pixel
-// rect into the image (PX_X = cell.x·grid_w, PX_Y = cell.y·grid_h, PX_W = grid_w,
-// PX_H = grid_h, all decimal Int §2.2 — the grid-coord×cell-size lowering), so
-// (atlas-name, cell-name) → (image pixels, pixel rect) is resolvable from the
-// artifact alone. The pixels are NOT a §29 purity break: import_image decodes
-// deterministically and base64 is a pure byte→ASCII map, so two emissions are
-// byte-identical (the walk is slice-order over the baked model, never map order).
-// A game with NO assets writes the constant `[assets 0]` tail and moves by the
-// version stamp alone (the v7 stamp-only restamp / [nav 0] tail precedent). A new
-// section and one new sub-record keyword are layout changes: 15 → 16 (§1). ADR
-// 2026-06-12-assets-section-base64-content-addressed.
-//
-// Version 17 carries the §19 TEXTURED-RENDER cross-boundary links the runtime needs
-// to actually TEXTURE the dungeon — the v16 pixel pipeline carried the sprite art,
-// but the artifact held no bridge from a sprite/tile reference to those pixels, so
-// every real dungeon sprite and tile fail-closed to no texture (the runtime-confirmed
-// Stage-2b gap). Three coupled layout changes ride it, all on the EXACT-MATCH side of
-// the contract (committed runtime/testdata pins moved at v16, so the window is CLOSED
-// and any byte movement is a bump, lore #20). (1) the [assets] `atlas` record is keyed
-// by the manifest HANDLE name — `atlas dungeon_atlas IMAGE_HASH CELL_COUNT`, the same
-// name a `Draw_Sprite{atlas: assets.dungeon_atlas, cell}` references through its
-// AtlasHandle const, NOT the .atlas-file-declared name (`DungeonAtlas`) v16 emitted,
-// which no reference names — so asset_region(handle, cell) resolves from the artifact
-// alone. (2) the WHOLE-MODULE const carry + bare-name lowering — the entrypoint
-// reaches its handle const through a whole-module import (`import assets`, then
-// `assets.dungeon_atlas`), which binds no bare name, so the v6/v15 brace-group carry
-// missed it and the handle const never reached [functions]. The emitter now carries
-// each whole-module-referenced handle const into [functions] as a `function NAME
-// const` record (the v15 imported-const form, the seam module's span, the source's
-// §26 typed handle value — AtlasHandle / SoundHandle / MeshHandle / TextureHandle,
-// the kind READ from the declared type, never hardcoded) AND lowers every
-// `assets.NAME` body member-expr to a bare `node name NAME` (the v6 qualified→bare
-// lowering), so the runtime resolves it by bare name with no special-case. A bare-name
-// collision with an own-module declaration refuses the build (the v6 disambiguation).
-// (3) the [tilemaps] per-layer ATLAS + per-tile atlas-CELL — the lead line gains the
-// layer's tileset atlas handle name between ANCHOR_Y and PALETTE_COUNT (`tilemap NAME
-// CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT`, `-` for a degenerate
-// palette-less layer), and each palette `tile` sub-record gains the atlas-cell
-// coordinate (`tile NAME SOLID CELL_X CELL_Y`, the §18 §2 tileset cell the v16 emit
-// READ but DROPPED). The bake READS this off the tileset already; v17 carries it, so
-// the runtime resolves a tile's texture through asset_region(atlas, cell) exactly as a
-// sprite does. A layer whose palette mixes tilesets with different atlases is the
-// Tileset_Atlas_Conflict bake gate (one atlas per layer, refused rather than silently
-// picked). No new section and no new sub-record KEYWORD (the `atlas` lead keyword and
-// the `tile`/`row` sub-record keywords already exist — only their token shapes and the
-// atlas record's NAME token change, plus a widened [functions] population); the three
-// are field/keying/population layout changes: 16 → 17 (§1). A single-module, asset-less,
-// level-less artifact (pong) moves by the version stamp alone (the v7 stamp-only restamp
-// precedent). ADR 2026-06-12-v17-textured-render-cross-boundary-links.
-//
-// Version 18 carries the §28 §4 PROBE SECTION through to the runtime — the in-code
-// @break/@watch/@log/@trace directives a LIVE debug session honors. The §29 §2 index
-// contract is the funpack-side record of every probe (for operator review) and does
-// NOT reach the runtime; for a live session to honor an in-code probe the directive
-// must ride the thing the runtime executes, so the dev-build artifact gains a probe
-// section (spec §28 §4 "Probes ride the executable artifact"). One layout change rides
-// it: one new section, `[probes P]`, appended after [assets] as the new fixed §3 section
-// TAIL (the [assets]/[nav] tail precedent). Each record is one top-level kind plus the
-// existing `node` body run: `probe KIND TARGET body_count` — KIND is the closed §05 §5
-// directive family lowercased (`break`/`log`/`watch`/`trace`, the same token the index
-// `debug` field carries); TARGET is the §28 §2 addressing site (the "addressing reuses
-// index identity" the runtime resolves the probe against) — a BARE declaration name for a
-// behavior probe, or a QUALIFIED `Owner.member` site for a §28 §4 sub-declaration probe (a
-// `data` field @watch → `<data>.<field>`, a pipeline stage @trace → `<pipeline>.<stage>`),
-// one space-free name-field token either way (the qualified form rides the same free-string
-// TARGET slot with no record-grammar change — it is NOT a separate bump; the format always
-// accommodated a name field whose internal spelling it does not constrain, the §8
-// path-projection open-window discipline applied to a value the format does not pin);
-// body_count is 1 for a @break/@log/@watch (whose predicate/expression rides as the single
-// §2.7 node-forest subtree that follows — NEVER funpack source, §28 §2: the body is compiled
-// funpack-side to a node forest and folded by the runtime's interpreter when the probe is
-// honored) and 0 for a @trace (which carries no argument). `probe` is a new TOP-LEVEL record keyword,
-// NOT a sub-record keyword, so SUB_RECORD_KEYWORDS is unchanged: the body `node` lines are
-// the existing sub-records, so a probe-with-body is a variable-length top-level record read
-// by the SAME lead-line discipline as a [functions] record. The section is DEV-ONLY by
-// construction: the §29 §3 release debug-directive ban (Build_Error.Debug_Directive) refuses
-// the WHOLE build before emission whenever any declaration carries a probe under --release —
-// exactly the v7 hole-ban / `stub`-node precedent (a release artifact never carries a `stub`
-// because the hole-ban refuses the holed tree first). So a --release artifact's AST is
-// probe-free, and the emitter — which stays mode-blind — writes the constant `[probes 0]`
-// tail for it, the same stamp-only move the [assets 0]/[nav 0] tails make. A probe-free dev
-// build likewise writes `[probes 0]`. A new section is a layout change: 17 → 18 (§1). Every
-// probe-free artifact (every release artifact, plus a probe-free dev build) moves to v18 by
-// the version stamp plus this constant tail (the v7 stamp-only restamp / [nav 0] tail
-// precedent). ADRs 2026-06-12-probes-ride-the-artifact, 2026-06-12-28-value-language-node-forests.
-//
-// Version 19 carries a `let (a, b, …) = expr` TUPLE-DESTRUCTURE through to the
-// gameplay wire (ADR 2026-06-24-let-tuple-destructure-binding). The form parses,
-// typechecks, and runs in `test` blocks at v18 (off the wire, via the compiler
-// evaluator), but the v18 §2.7 body grammar encodes a `let` as ONE name scalar
-// (`node let NAME 1`), so an N-name binder list had no encoding — a gameplay-body
-// tuple-`let` was refused before emission (the v18 let_tuple_wire_gate →
-// Build_Error.Let_Tuple_Unsupported_Wire, exit 2). v19 adds ONE new §2.7 body-node
-// KIND, `let_tuple`, to the closed node-kind set: `node let_tuple BINDER_COUNT
-// name1 … nameN 1`. BINDER_COUNT is the count of the positional binder names that
-// follow it (≥ 2 — a single-name `let` stays the `let` kind), the nameI are the
-// snake_case binders in source order, and the trailing `1` is the generic child
-// count — the single value subtree that follows, evaluated to a tuple whose
-// elements bind positionally to name1…nameN (the runtime mirrors evaluate.odin
-// bind_let_tuple_value). The binder list rides BEFORE the trailing child count, so
-// node_child_count reads the count the generic way (last token) with NO special
-// case — the `string`/`arm` exceptions are untouched — and node_scalar_fields
-// returns [BINDER_COUNT, name1, …, nameN] (every token between the kind tag and the
-// trailing count) with NO special case. `let_tuple` is a body `node` line, so
-// SUB_RECORD_KEYWORDS is unchanged (the single `node` keyword already frames it).
-// A new node KIND is a layout change: 18 → 19 (§1). Every tuple-`let`-free artifact
-// (any gameplay code that never destructures) moves to v19 by the version stamp
-// alone — the new KIND only appears
-// when a gameplay body actually destructures (the v10 `all` / v7 `stub` born-staged
-// node-KIND precedent: a new node kind costs nothing until a body emits it).
-// ADR 2026-06-24-let-tuple-destructure-binding.
 ARTIFACT_SCHEMA_VERSION :: 19
 
-// ARTIFACT_MAGIC is the first token of line 1, before the version integer:
-// `funpack-artifact <version>` (e.g. `funpack-artifact 2`). A parser asserts the
-// magic and the version before reading any payload.
 ARTIFACT_MAGIC :: "funpack-artifact"
 
-// encode_int writes a funpack Int (64-bit signed saturating, §10) as plain
-// decimal: a leading `-` for negatives, no leading zeros, no `+`, no
-// separators (docs/artifact-format.md §2.2). The encoding is a pure
-// function of the value, so it is byte-identical across emissions.
 encode_int :: proc(value: i64, allocator := context.allocator) -> string {
 	buf: [32]byte
 	return strings.clone(strconv.write_int(buf[:], value, 10), allocator)
 }
 
-// encode_fixed writes a Fixed as its raw Q32.32 i64 bits in decimal
-// (docs/artifact-format.md §2.3) — value*2^32, the exact integer the
-// fixed-point lowering produced. There is no decimal-point round-trip, so
-// the bits are bit-identical on every machine; the runtime divides by 2^32
-// in its own fixed representation to recover the logical value.
 encode_fixed :: proc(value: Fixed, allocator := context.allocator) -> string {
 	return encode_int(i64(value), allocator)
 }
 
-// encode_string writes a length-prefixed string field `Lbyte_count:raw`
-// (docs/artifact-format.md §2.4). The byte count is the UTF-8 length; the
-// raw bytes follow the colon verbatim, so a value containing a space or
-// newline never breaks the line-oriented frame and a parser consumes
-// exactly byte_count bytes without scanning for a delimiter.
 encode_string :: proc(value: string, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	strings.write_byte(&b, 'L')
@@ -386,56 +25,36 @@ encode_string :: proc(value: string, allocator := context.allocator) -> string {
 	return strings.to_string(b)
 }
 
-// encode_bool writes the lowercase token `true`/`false`
-// (docs/artifact-format.md §2.5).
 encode_bool :: proc(value: bool) -> string {
 	return "true" if value else "false"
 }
 
-// SUB_RECORD_KEYWORDS is the closed set of keywords that begin a
-// SUB-record — a line that belongs to the preceding top-level record rather
-// than starting a new one (docs/artifact-format.md §2.1). A top-level
-// record (`enum`, `thing`, `behavior`, …) may be followed by a
-// variable-length run of these; the section's declared count is the number
-// of top-level records, so a reader separates the two by this set. Closed
-// and format-fixed: a new sub-record kind is a schema-version bump.
 @(rodata)
 SUB_RECORD_KEYWORDS := []string{
-	"variant", // an enum's variant (§5)
-	"field", // a data/signal/thing field (§6-§8)
-	"gtag", // a thing's/behavior's registered tag (§8, §10)
-	"param", // a function's/behavior-step's parameter (§9, §10)
-	"emit", // a behavior-step's return-side emission (§10)
-	"producer", // a signal route's producer (§12)
-	"consumer", // a signal route's consumer (§12)
-	"set", // a setup spawn's supplied field (§13)
-	"node", // a body checked-AST node line (§2.7) — every fn/step/const/bindings/setup body is a run of these
-	"migrate", // a [data] record's §05 §6 rename/retype carry (§6, schema v8) — after a `field` line for that field, before any `field` line for the renamed type
-	"index", // a [queries] record's §05 §3 @index/@spatial requirement `index KIND THING FIELD` (§16, schema v9)
-	"tile", // a [tilemaps] record's palette entry `tile NAME SOLID CELL_X CELL_Y` (§17, schema v12; the v17 atlas-cell coords CELL_X CELL_Y joined the line — the §19 textured-render link)
-	"row", // a [tilemaps] record's row-major cell line `row …` (§17, schema v12)
-	"navnode", // a [nav] record's walkable-cell center `navnode FIXED_X FIXED_Y` (§18, schema v13)
-	"navedge", // a [nav] record's 4-neighbor adjacency `navedge A B` (§18, schema v13)
-	"region", // an [assets] atlas record's cell rect `region NAME PX_X PX_Y PX_W PX_H` (§19, schema v16)
+	"variant",
+	"field",
+	"gtag",
+	"param",
+	"emit",
+	"producer",
+	"consumer",
+	"set",
+	"node",
+	"migrate",
+	"index",
+	"tile",
+	"row",
+	"navnode",
+	"navedge",
+	"region",
 }
 
-// Artifact_Section is one parsed `[name N]` block from an artifact: the
-// section name, its declared TOP-LEVEL record count, and every body line up
-// to the next section header. A section's records are variable-length — a
-// top-level record (e.g. `enum Side - 2`) is followed by its own count of
-// sub-records (its `variant` lines) — so the body holds both; `count` is the
-// top-level total, and section_lead_count separates lead lines from sub
-// lines via SUB_RECORD_KEYWORDS (docs/artifact-format.md §2.1).
 Artifact_Section :: struct {
 	name:  string,
 	count: int,
 	body:  []string,
 }
 
-// Artifact_Doc is a parsed artifact: the schema version from line 1 and the
-// ordered sections (docs/artifact-format.md §3). It is the funpack-side
-// reader used to verify the committed golden fixture is well-formed against
-// the written layout; the runtime carries its own zero-import parser.
 Artifact_Doc :: struct {
 	schema_version: int,
 	sections:       []Artifact_Section,
@@ -446,17 +65,9 @@ Artifact_Parse_Error :: enum {
 	Bad_Magic,
 	Bad_Version,
 	Bad_Section_Header,
-	Count_Mismatch, // a section's declared count != its top-level record count
+	Count_Mismatch,
 }
 
-// parse_artifact reads an artifact's bytes into the ordered section model,
-// validating the §1 stamp and every section's declared top-level count
-// against the lead records that follow. It mirrors the runtime's §17
-// parsing recipe (read line 1, then each `[name N]` header and its records)
-// so the golden fixture is checked against the same count-driven discipline
-// the runtime relies on. A section body runs to the next `[` header — the
-// only line class that opens with `[` — so variable-length records inside a
-// section are unambiguous. It is pure over the input bytes.
 parse_artifact :: proc(content: string) -> (doc: Artifact_Doc, err: Artifact_Parse_Error) {
 	lines := split_artifact_lines(content)
 	if len(lines) == 0 {
@@ -490,17 +101,10 @@ parse_artifact :: proc(content: string) -> (doc: Artifact_Doc, err: Artifact_Par
 	return Artifact_Doc{schema_version = version, sections = sections[:]}, .None
 }
 
-// is_section_header_line reports whether a line opens a `[name N]` section
-// header. Only headers begin with `[`, so this is the section delimiter.
 is_section_header_line :: proc(line: string) -> bool {
 	return len(line) > 0 && line[0] == '['
 }
 
-// section_lead_count counts a section's top-level records: body lines whose
-// leading keyword is NOT in SUB_RECORD_KEYWORDS. A top-level record opens a
-// new entry (an `enum`, `thing`, `behavior`, …); a sub-record continues the
-// previous one (its `variant`/`field`/`param`/… lines). This is how the
-// declared count and the body reconcile for variable-length records.
 section_lead_count :: proc(section: Artifact_Section) -> int {
 	lead := 0
 	for line in section.body {
@@ -511,9 +115,6 @@ section_lead_count :: proc(section: Artifact_Section) -> int {
 	return lead
 }
 
-// is_sub_record_line reports whether a body line's leading keyword is a
-// sub-record kind (SUB_RECORD_KEYWORDS). The keyword is the token up to the
-// first space (or the whole line when there is none).
 is_sub_record_line :: proc(line: string) -> bool {
 	keyword := line
 	if space := strings.index_byte(line, ' '); space >= 0 {
@@ -527,11 +128,6 @@ is_sub_record_line :: proc(line: string) -> bool {
 	return false
 }
 
-// split_artifact_lines splits on the single LF the format mandates and
-// drops the trailing empty element from the final terminator, so a file
-// ending in exactly one `\n` yields one element per record line (no phantom
-// empty line). It does not strip interior content — a length-prefixed
-// string's bytes are inside a single line by construction.
 split_artifact_lines :: proc(content: string) -> []string {
 	trimmed := strings.trim_suffix(content, "\n")
 	if trimmed == "" {
@@ -540,9 +136,6 @@ split_artifact_lines :: proc(content: string) -> []string {
 	return strings.split(trimmed, "\n", context.temp_allocator)
 }
 
-// parse_version_stamp splits line 1 into its magic token and integer
-// version: `funpack-artifact <version>`. ok is false on a missing space or a
-// non-integer version, which the caller maps to Bad_Magic/Bad_Version.
 parse_version_stamp :: proc(line: string) -> (magic: string, version: int, ok: bool) {
 	space := strings.index_byte(line, ' ')
 	if space < 0 {
@@ -552,8 +145,6 @@ parse_version_stamp :: proc(line: string) -> (magic: string, version: int, ok: b
 	return line[:space], version, ok
 }
 
-// parse_section_header parses `[name N]` into the section name and its
-// record count. ok is false on a malformed bracket or a non-integer count.
 parse_section_header :: proc(line: string) -> (name: string, count: int, ok: bool) {
 	if len(line) < 3 || line[0] != '[' || line[len(line) - 1] != ']' {
 		return "", 0, false
@@ -567,10 +158,6 @@ parse_section_header :: proc(line: string) -> (name: string, count: int, ok: boo
 	return inner[:space], count, ok
 }
 
-// artifact_find_section returns the first section with the given name, or
-// found = false. The format fixes section order (docs/artifact-format.md
-// §3), so a lookup by name is a convenience for verification, not the
-// runtime's path — the runtime reads sections positionally.
 artifact_find_section :: proc(doc: Artifact_Doc, name: string) -> (section: Artifact_Section, found: bool) {
 	for candidate in doc.sections {
 		if candidate.name == name {
@@ -580,29 +167,12 @@ artifact_find_section :: proc(doc: Artifact_Doc, name: string) -> (section: Arti
 	return Artifact_Section{}, false
 }
 
-// NODE_LINE_KEYWORD is the lead token of every body line (§2.7). A body is a
-// pre-order run of these — one checked-AST node per line, each declaring how
-// many of the immediately-following lines are its children.
 NODE_LINE_KEYWORD :: "node"
 
-// ARM_NODE_KIND is the node kind whose child count is governed by its arm
-// PATTERN kind, not the generic trailing-token rule (§2.7). A scalar-pattern arm
-// (`wildcard`/`bare_variant`/`variant_binds`/`bare_binder`) ends in its
-// variable-length `binders` list and carries 0 children; a `tuple` arm
-// (schema v2) instead carries its positional sub-pattern arms as children and
-// ends in a trailing child count read the generic way.
 ARM_NODE_KIND :: "arm"
 
-// ARM_TUPLE_PATTERN is the one arm pattern kind that carries children: a `tuple`
-// arm's positional sub-pattern arms (e.g. `(Option::Some(cell), next)` over its
-// two sub-arms). Its line is `node arm tuple <child_count>`, so the count is the
-// trailing token — unlike every scalar arm pattern, whose child count is fixed at
-// 0 (§2.7, schema v2).
 ARM_TUPLE_PATTERN :: "tuple"
 
-// node_line_kind returns a body node line's KIND token — the second
-// space-separated field after the `node` keyword (`node KIND field… count`).
-// ok is false when the line is not a `node …` line or carries no kind.
 node_line_kind :: proc(line: string) -> (kind: string, ok: bool) {
 	prefix := NODE_LINE_KEYWORD + " "
 	if !strings.has_prefix(line, prefix) {
@@ -615,20 +185,12 @@ node_line_kind :: proc(line: string) -> (kind: string, ok: bool) {
 	return tail, true
 }
 
-// node_child_count returns a body node line's declared child count: the
-// trailing decimal token (§2.7). An `arm` line is special: a scalar-pattern arm
-// is fixed at 0 by its kind (its trailing field is the binder list), while a
-// `tuple` arm (schema v2) carries its positional sub-pattern arms as children, so
-// its trailing token IS the child count read the generic way. ok is false on a
-// malformed line or a non-integer trailing token.
 node_child_count :: proc(line: string) -> (count: int, ok: bool) {
 	kind, kind_ok := node_line_kind(line)
 	if !kind_ok {
 		return 0, false
 	}
 	if kind == ARM_NODE_KIND {
-		// A `tuple` arm carries children (the trailing count); every other arm
-		// pattern is fixed at 0 (its trailing field is the binder list).
 		if arm_pattern_kind(line) == ARM_TUPLE_PATTERN {
 			return parse_trailing_int(line)
 		}
@@ -637,10 +199,6 @@ node_child_count :: proc(line: string) -> (count: int, ok: bool) {
 	return parse_trailing_int(line)
 }
 
-// parse_trailing_int reads a body-node line's trailing decimal token — the child
-// count after the last space (§2.7). ok is false when the line has no space or
-// the trailing token is not an integer, so a malformed line never yields a bogus
-// count.
 parse_trailing_int :: proc(line: string) -> (int, bool) {
 	space := strings.last_index_byte(line, ' ')
 	if space < 0 {
@@ -649,11 +207,6 @@ parse_trailing_int :: proc(line: string) -> (int, bool) {
 	return strconv.parse_int(line[space + 1:])
 }
 
-// arm_pattern_kind returns an `arm` line's pattern-kind token — the field after
-// the `node arm ` prefix (`wildcard`/`bare_variant`/`variant_binds`/`bare_binder`
-// /`tuple`, §2.7). It is the empty string for a non-arm line or an arm with no
-// pattern token; the caller distinguishes a `tuple` arm (children) from every
-// other arm pattern (0 children) through this.
 arm_pattern_kind :: proc(line: string) -> string {
 	prefix := NODE_LINE_KEYWORD + " " + ARM_NODE_KIND + " "
 	if !strings.has_prefix(line, prefix) {
@@ -666,12 +219,6 @@ arm_pattern_kind :: proc(line: string) -> string {
 	return tail
 }
 
-// consume_node_subtree consumes one pre-order checked-AST subtree from a body
-// node-line slice starting at index `start`: the node line, then recursively
-// its declared `child_count` children (§2.7). It returns the index one past
-// the subtree, or ok = false on a malformed node or a child run that overruns
-// the slice. This is the runtime's count-driven body reader, expressed on the
-// funpack side so the golden fixture's bodies are checked under `odin test`.
 consume_node_subtree :: proc(nodes: []string, start: int) -> (next: int, ok: bool) {
 	if start >= len(nodes) {
 		return start, false
@@ -690,12 +237,6 @@ consume_node_subtree :: proc(nodes: []string, start: int) -> (next: int, ok: boo
 	return i, true
 }
 
-// body_forest_is_well_formed reports whether a body's node-line slice is
-// exactly `statement_count` back-to-back pre-order subtrees with no leftover
-// lines (§2.7): the `body_count` a `function`/`behavior` record declares must
-// account for every body `node` line and no more. A leftover line or an
-// overrun is an under-/over-shaped body — the same exact-match discipline
-// section counts enforce (§29).
 body_forest_is_well_formed :: proc(nodes: []string, statement_count: int) -> bool {
 	i := 0
 	for _ in 0 ..< statement_count {

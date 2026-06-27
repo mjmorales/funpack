@@ -1,131 +1,37 @@
-// Per-format asset importers for the §19 bake pipeline: one engine-closed,
-// deterministic, pure source -> content-hashed-asset function per source kind
-// (§4). These are the functions the §2 hasher (asset_hash.odin) hashes OVER —
-// distinct from the manifest reader (asset_manifest.odin), which is the
-// registry the importer OUTPUTS index into. The three kinds the closed
-// Asset_Kind set covers:
-//
-//   - .fpm model   -> import_model:  a mesh+collider record from the modeling
-//     DSL (§16) — `model <Name> { param … ; emit … ; material … }`
-//   - .atlas sheet -> import_atlas:  regions + named cells + named clips from
-//     the image+slice spec, RECORDING the raw image as a dependency (§4:
-//     editing the PNG re-bakes only this atlas and whatever references it)
-//   - raw audio    -> import_audio:  content-hashing the raw binary directly
-//     (no DSL — a Tier-1 binary input hashed as-is)
-//   - raw image    -> import_image:  content-hashing the raw PNG bytes AND
-//     decoding them to a canonical RGBA8 buffer via core:image/png (§1: a
-//     raw file imports to a decoded buffer; Tier-1 native, deterministic)
-//
-// Each importer carries its own importer-version string (model@3, atlas@2,
-// audio@1, matching the committed assets.manifest), folded into the content
-// hash so a version bump invalidates EXACTLY that importer's outputs and their
-// dependents — never more (§2 correct invalidation).
-//
-// Purity boundary (§29): an importer reads ONLY its source bytes (and, for the
-// atlas, the dependency hashes the caller resolved for it). No clock, no host
-// nondeterminism, no map iteration whose order the runtime could shuffle — so
-// the same source yields the same asset, and the same asset yields the same
-// content hash, anywhere. The importers are the parallelizable DAG nodes of §4:
-// the atlas node deps-on its raw image hash, the model and audio nodes have no
-// dependencies, so a bake walks them in any order.
-//
-// The fourth kind — the .tiles tileset (§18 §2) — lives in its own file
-// (tiles_importer.odin, the grammar is its own lexer/parser pair) and joins
-// the battery through the closed import_asset dispatch below; like the atlas
-// it is a DAG node with one dependency (its atlas, §19 §5).
 package funpack
 
-// core:image/png is the Odin-first PNG decoder (load_from_bytes + destroy) —
-// import_image decodes through it, never a custom PNG reader (§4: binary
-// importers are Tier-1 native but contracted deterministic, and decode is a
-// pure function of the source bytes). core:bytes reads the decoded pixel
-// buffer out of the image's bytes.Buffer.
 import "core:bytes"
 import png "core:image/png"
 
-// ── Importer version strings ─────────────────────────────────────────────
-// Each importer-version constant is folded into the §2 content hash. Bumping
-// one changes the hash of everything that importer produced — a kernel fix
-// rebuilds exactly its outputs (§2 correct invalidation). They match the
-// committed assets.manifest `importer =` values exactly so a hash this battery
-// computes is comparable against the manifest's pinned hash.
 MODEL_IMPORTER_VERSION :: "model@3"
 ATLAS_IMPORTER_VERSION :: "atlas@2"
 AUDIO_IMPORTER_VERSION :: "audio@1"
 IMAGE_IMPORTER_VERSION :: "image@1"
 
-// Importer_Error is closed with one arm per way an importer can reject. None
-// is success. Malformed_Source is any grammar violation in a DSL source (the
-// .fpm, .atlas, or .tiles surface): a stray glyph, a value of the wrong shape,
-// an unterminated string, a missing required clause, a clip naming an
-// undeclared cell. The set is uniform across importers so a caller branches on
-// one enum regardless of which kind it imported; the tiles arms below are the
-// .tiles importer's SEMANTIC rejects — grammar-legal sources that fail a §18
-// §2 bake floor — named so an agent repairing a tileset is told which field is
-// missing rather than re-deriving it from a generic reject.
 Importer_Error :: enum {
 	None,
 	Malformed_Source,
-	// Missing_Tile_Cell: a grammar-legal tile declares no `cell:` — without an
-	// atlas cell the tile cannot draw, and §18 §2 bakes tile content, never
-	// defaults it (the fail-closed required-ness verdict, tiles_parse_tile).
 	Missing_Tile_Cell,
-	// Missing_Tile_Solid: a grammar-legal tile declares no `solid:` — the
-	// sim-side collision verdict is baked into the tile layer (§18 §2), so an
-	// absent verdict is a named reject, never an assumed `false`.
 	Missing_Tile_Solid,
-	// Duplicate_Tile_Name: two tiles in one tileset share a name — the §18 §3
-	// one-name-one-tile discipline applied inside the file (the cross-tileset
-	// project-global namespace check is the tilemap layer story's).
 	Duplicate_Tile_Name,
-	// Malformed_Image: import_image could not decode the raw image bytes — a
-	// truncated, corrupt, or non-PNG input the core:image/png decoder rejects.
-	// Distinct from Malformed_Source (a DSL grammar violation): an image has no
-	// DSL, so its only reject is the decoder failing closed on bad bytes (§4:
-	// the binary importer is deterministic, so a garbage input is a named
-	// reject, never a panic).
 	Malformed_Image,
 }
 
-// ── Model importer (.fpm) ────────────────────────────────────────────────
-// Model_Asset is the imported coin.fpm: the model name, its disc params
-// (radius/thickness — the tunable Length knobs §16 turns into params-`data`
-// fields), the emitted geometry primitive, the named material, and the §2
-// content hash that is this asset's identity. The params are the proof
-// surface: import_model on coin.fpm yields radius/thickness. Geometry is held
-// as the primitive name + its positional arguments (parse+produce, no CSG
-// evaluation — that is the bake's mesh stage, not this importer's concern).
 Model_Asset :: struct {
 	name:      string,
 	params:    []Model_Param,
-	emit_prim: string, // the `emit` geometry primitive (`cyl`)
-	emit_args: []string, // the primitive's positional arguments, as written (`radius`, `thickness`)
-	material:  string, // the named `material` slot (`body`)
+	emit_prim: string,
+	emit_args: []string,
+	material:  string,
 	hash:      string,
 }
 
-// Model_Param is one `param <name>: <type> = <default>` knob (§16: a tunable
-// knob + default that becomes a params-`data` field). The default is held as a
-// Fixed — Length is a §10 fixed-point dimension — parsed from the literal so
-// the disc dimensions (radius 4, thickness 1) are recoverable numerically.
 Model_Param :: struct {
 	name:    string,
-	type:    string, // the declared dimension type (`Length`)
-	default: Fixed, // the parsed default value
+	type:    string,
+	default: Fixed,
 }
 
-// import_model parses a .fpm modeling source into a content-hashed Model_Asset.
-// It reads the §16 `model <Name> { … }` vocabulary this battery covers — param,
-// emit, material — over the CANONICAL .fpm token stream (fpm_lex, the single
-// fpm_scan_* lexer family the package owns), left to right; a missing model
-// header, a malformed clause, or a stray glyph rejects the whole source. The
-// narrowed read below is the model/param/emit/material productions only: the
-// full §16 rig grammar (fn/let/for, CSG transforms) is fpm_parser.odin's
-// concern, and this importer captures the param defaults and emit arguments the
-// asset seam exposes without lifting geometry. The content hash folds the raw
-// source bytes, the model importer version, and (for a model) an empty
-// dependency list — a model has no input assets (§4), so its hash depends only
-// on its own source and the importer version.
 import_model :: proc(src: string, allocator := context.temp_allocator) -> (asset: Model_Asset, err: Importer_Error) {
 	p := Fpm_Parser{tokens = fpm_lex(src)}
 	asset = fpm_import_model_block(&p) or_return
@@ -133,14 +39,6 @@ import_model :: proc(src: string, allocator := context.temp_allocator) -> (asset
 	return asset, .None
 }
 
-// fpm_import_model_block parses one `model <Name> { … }` block over the canonical
-// token stream: the header, then the param/emit/material clauses in any order
-// (Sep-separated, §16 §2) until the closing brace. emit and material are
-// single-slot (§16: a model declares one `emit`); a duplicate or a missing model
-// header is malformed. params accumulate in source order. Any token kind outside
-// the model/param/emit/material surface this importer reads — a rig-only member
-// the wider canonical lexis admits, a stray glyph — rejects the source: this is a
-// total parser over a narrowed read, never a best-effort one.
 fpm_import_model_block :: proc(p: ^Fpm_Parser) -> (asset: Model_Asset, err: Importer_Error) {
 	if _, e := fpm_expect(p, .Model); e != .None {
 		return Model_Asset{}, .Malformed_Source
@@ -182,11 +80,6 @@ fpm_import_model_block :: proc(p: ^Fpm_Parser) -> (asset: Model_Asset, err: Impo
 	return asset, .None
 }
 
-// fpm_import_param parses `param <name>: <Type> = <default>` over the canonical
-// stream. The default is a numeric literal (Int_Lit or Float_Lit), folded into a
-// Fixed because Length is a §10 fixed-point dimension — fpm_token_fixed does the
-// all-integer fold so an integer default (`radius = 4`) yields to_fixed(4). The
-// terminating Sep is consumed by the caller's fpm_skip_seps.
 fpm_import_param :: proc(p: ^Fpm_Parser) -> (param: Model_Param, err: Importer_Error) {
 	if _, e := fpm_expect(p, .Param); e != .None {
 		return Model_Param{}, .Malformed_Source
@@ -215,12 +108,6 @@ fpm_import_param :: proc(p: ^Fpm_Parser) -> (param: Model_Param, err: Importer_E
 	return param, .None
 }
 
-// fpm_import_emit parses `emit <prim>(<arg>, …)` — the render geometry. The
-// primitive is the geometry-algebra name (§16: box/sphere/cyl/capsule, unions);
-// arguments are the as-written param references, captured by text for the
-// content surface without evaluating the CSG (the bake's mesh stage owns that).
-// Arguments are bare identifiers in the asset surface this importer covers; the
-// commas between them are the canonical Comma tokens.
 fpm_import_emit :: proc(p: ^Fpm_Parser) -> (prim: string, args: []string, err: Importer_Error) {
 	if _, e := fpm_expect(p, .Emit); e != .None {
 		return "", nil, .Malformed_Source
@@ -246,10 +133,6 @@ fpm_import_emit :: proc(p: ^Fpm_Parser) -> (prim: string, args: []string, err: I
 	return prim_tok.text, arg_list[:], .None
 }
 
-// fpm_import_material parses `material <name> = <appearance>` and records the
-// named slot. The appearance expression (`pbr(color: gold, rough: 0.3)`) is the
-// bake's material-binding concern (§16); this importer records the slot name the
-// seam exposes and consumes the appearance to the clause's end.
 fpm_import_material :: proc(p: ^Fpm_Parser) -> (name: string, err: Importer_Error) {
 	if _, e := fpm_expect(p, .Material); e != .None {
 		return "", .Malformed_Source
@@ -261,7 +144,7 @@ fpm_import_material :: proc(p: ^Fpm_Parser) -> (name: string, err: Importer_Erro
 	if _, e := fpm_expect(p, .Eq); e != .None {
 		return "", .Malformed_Source
 	}
-	ctor, ce := cursor_advance(p) // the appearance constructor (`pbr`)
+	ctor, ce := cursor_advance(p)
 	if ce != .None || (ctor.kind != .Lower_Ident && ctor.kind != .Upper_Ident) {
 		return "", .Malformed_Source
 	}
@@ -269,24 +152,10 @@ fpm_import_material :: proc(p: ^Fpm_Parser) -> (name: string, err: Importer_Erro
 	return name_tok.text, .None
 }
 
-// fpm_import_skip_balanced_parens consumes a balanced `( … )` group (the material
-// appearance constructor's argument list, whose interior — named args, decimal
-// literals — is the bake's concern, not this importer's). A missing opener, an
-// unbalanced group, or an Invalid token inside is malformed. Over the canonical
-// stream a leading Sep (the lexer's coalesced Newline) before the opener is not
-// expected — the appearance follows `=` on the same clause line.
 fpm_import_skip_balanced_parens :: proc(p: ^Fpm_Parser) -> Importer_Error {
 	return import_skip_balanced_parens(p, Fpm_Token_Kind.L_Paren, Fpm_Token_Kind.R_Paren)
 }
 
-// fpm_token_fixed folds a canonical numeric token (Int_Lit or Float_Lit) to a
-// §10 Fixed through the all-integer path so the recovered param default is exact
-// and machine-independent (no float anywhere in the fold): an Int_Lit is to_fixed
-// of its int_value; a Float_Lit is fixed_from_decimal over its literal text's
-// integer and fractional digit runs (the deterministic Q32.32 conversion). A
-// `1.5f` FLOAT spelling's trailing `f` is stripped before the split, and a
-// Float_Lit text always carries a `.` (the lexer only emits one for a fractional
-// literal), so the split is total.
 fpm_token_fixed :: proc(tok: Fpm_Token) -> Fixed {
 	if tok.kind == .Int_Lit {
 		return to_fixed(tok.int_value)
@@ -303,59 +172,32 @@ fpm_token_fixed :: proc(tok: Fpm_Token) -> Fixed {
 	return to_fixed(parse_digits(text))
 }
 
-// ── Atlas importer (.atlas) ──────────────────────────────────────────────
-// Atlas_Asset is the imported pickups.atlas: the atlas name, the raw image its
-// cells slice (the §4 DEPENDENCY — its hash feeds this atlas's content hash, so
-// editing the PNG re-bakes only this atlas), the grid cell dimensions, the
-// named cells (regions in the sheet), the named clips (animation sequences over
-// cells), and the §2 content hash. The cells and clips are the proof surface:
-// import_atlas on pickups.atlas yields coin/gem/key + the spin clip.
 Atlas_Asset :: struct {
 	name:        string,
-	image:       string, // the raw image this atlas slices — the §4 dependency
-	grid_w:      i64, // cell width in the sheet
-	grid_h:      i64, // cell height in the sheet
+	image:       string,
+	grid_w:      i64,
+	grid_h:      i64,
 	cells:       []Atlas_Cell,
 	clips:       []Atlas_Clip,
-	image_dep:   string, // the dependency entry recorded for the image (image@hash)
+	image_dep:   string,
 	hash:        string,
 }
 
-// Atlas_Cell is one `cell <name> at (<x>, <y>)` region — a named sub-rectangle
-// of the sheet at the given grid coordinate. Cells accumulate in source order
-// (the clip frame indices below reference them by name, resolved at parse).
 Atlas_Cell :: struct {
 	name: string,
 	x:    i64,
 	y:    i64,
 }
 
-// Atlas_Clip is one `clip <name> cells [<cell>, …] fps <n>` animation — a named
-// sequence of cell references played at a frame rate. The proof surface's spin
-// clip is 4 frames at fps 8. The frame names must each name a declared cell;
-// referencing an undeclared cell is malformed (the closed-name discipline the
-// manifest registry mirrors at the asset level).
 Atlas_Clip :: struct {
 	name:   string,
-	frames: []string, // the cell names this clip cycles, in order
+	frames: []string,
 	fps:    i64,
 }
 
-// import_atlas parses an .atlas image+slice source into a content-hashed
-// Atlas_Asset, recording the raw image as a §4 dependency. dep_hashes are the
-// content hashes the caller resolved for this atlas's inputs (the raw image
-// hash) — folded into this atlas's own hash so a PNG edit invalidates it. The
-// atlas is the DAG node that deps-on its image: pass the image's resolved hash
-// here, and import_atlas threads it into both the recorded dependency and the
-// content hash. The image filename declared in the source must be the single
-// dependency the caller resolved; an empty dep list with a declared image, or a
-// mismatch in count, is malformed.
 import_atlas :: proc(src: string, dep_hashes: []string, allocator := context.temp_allocator) -> (asset: Atlas_Asset, err: Importer_Error) {
 	p := Atlas_Parser{tokens = lex_atlas(src)}
 	asset = atlas_parse(&p) or_return
-	// An atlas declares exactly one image, so it carries exactly one resolved
-	// dependency hash. A count mismatch means the caller resolved the wrong
-	// inputs for this source — a malformed bake graph, not a tolerated state.
 	if len(dep_hashes) != 1 {
 		return Atlas_Asset{}, .Malformed_Source
 	}
@@ -364,10 +206,6 @@ import_atlas :: proc(src: string, dep_hashes: []string, allocator := context.tem
 	return asset, .None
 }
 
-// atlas_parse parses one `atlas <Name> { … }` block: the header, then the
-// image/grid/cell/clip clauses in source order. image and grid are single-slot;
-// cells and clips accumulate. A clip frame naming an undeclared cell, a missing
-// required clause, or a stray glyph rejects the whole source.
 atlas_parse :: proc(p: ^Atlas_Parser) -> (asset: Atlas_Asset, err: Importer_Error) {
 	atlas_expect(p, .Atlas) or_return
 	name := atlas_expect(p, .Ident) or_return
@@ -413,8 +251,6 @@ atlas_parse :: proc(p: ^Atlas_Parser) -> (asset: Atlas_Asset, err: Importer_Erro
 	return asset, .None
 }
 
-// atlas_parse_cell parses `cell <name> at (<x>, <y>)` — a named region at a grid
-// coordinate. The coordinates are integer cell indices into the sheet.
 atlas_parse_cell :: proc(p: ^Atlas_Parser) -> (cell: Atlas_Cell, err: Importer_Error) {
 	atlas_expect(p, .Cell) or_return
 	name := atlas_expect(p, .Ident) or_return
@@ -430,11 +266,6 @@ atlas_parse_cell :: proc(p: ^Atlas_Parser) -> (cell: Atlas_Cell, err: Importer_E
 	return cell, .None
 }
 
-// atlas_parse_clip parses `clip <name> cells [<cell>, …] fps <n>`. Each frame is
-// a quoted cell name that must reference a cell declared earlier in this atlas
-// (declared) — a clip over an undeclared cell is malformed, the closed-name
-// discipline at the asset level. Frames retain source order (the animation
-// sequence); the spin clip's four frames cycle coin/gem/key/gem.
 atlas_parse_clip :: proc(p: ^Atlas_Parser, declared: map[string]bool) -> (clip: Atlas_Clip, err: Importer_Error) {
 	atlas_expect(p, .Clip) or_return
 	name := atlas_expect(p, .Ident) or_return
@@ -460,13 +291,6 @@ atlas_parse_clip :: proc(p: ^Atlas_Parser, declared: map[string]bool) -> (clip: 
 	return clip, .None
 }
 
-// ── Closed dispatch keyed on Asset_Kind ──────────────────────────────────
-// Imported_Asset is the closed union over the four importer outputs, tagged
-// by the same Asset_Kind the manifest registry uses. The bake walks the
-// manifest, dispatches each entry's kind to its importer, and folds the result
-// into this union — so a kind that has no importer arm is a compile error in
-// the dispatch below, never a silently-skipped asset (the registry is closed,
-// §3).
 Imported_Asset :: union {
 	Model_Asset,
 	Atlas_Asset,
@@ -475,22 +299,6 @@ Imported_Asset :: union {
 	Image_Asset,
 }
 
-// import_asset is the closed dispatch keyed on Asset_Kind: one arm per kind,
-// each routing to its format importer over the same source bytes the manifest
-// names. The model, audio, and image importers take no dependency hashes
-// (their §4 DAG nodes have no inputs); the atlas takes the resolved hash of
-// its raw image and the tileset the resolved hash of its atlas (§19 §5).
-// Passing audio's and image's DSL-less source as bytes is the binary path —
-// audio is hashed as-is, image is hashed AND decoded; the model, atlas, and
-// tileset paths parse the bytes as their DSL text. Because Asset_Kind is
-// closed, adding a kind without an arm here fails the build — the dispatch can
-// never silently drop an asset.
-//
-// `allocator` governs every arm's output content hash; the .Image arm's payload
-// is ASYMMETRIC — only it carries a decoded pixel buffer, and those pixels are
-// likewise CALLER-OWNED on `allocator` (the other arms' Imported_Asset variants
-// are hash-only). The caller frees/reclaims the .Image pixels through the same
-// allocator it passed.
 import_asset :: proc(kind: Asset_Kind, src: []byte, dep_hashes: []string, allocator := context.temp_allocator) -> (asset: Imported_Asset, err: Importer_Error) {
 	switch kind {
 	case .Model:
@@ -512,69 +320,22 @@ import_asset :: proc(kind: Asset_Kind, src: []byte, dep_hashes: []string, alloca
 	return nil, .Malformed_Source
 }
 
-// ── Audio importer (raw binary) ──────────────────────────────────────────
-// Audio_Asset is an imported raw audio input: just the §2 content hash of its
-// bytes. Audio is a Tier-1 binary input (§4) with no authoring DSL — the
-// importer content-hashes the raw binary directly, no parse. The hash is the
-// proof surface: import_audio on the same bytes is deterministic.
 Audio_Asset :: struct {
 	hash: string,
 }
 
-// import_audio content-hashes a raw audio binary directly (§4: a raw external
-// file hashed through a binary importer). No DSL, no dependencies — the hash
-// folds the raw bytes and the audio importer version. Always succeeds (raw
-// bytes have no grammar to violate), so the error arm exists only for the
-// uniform Importer signature.
 import_audio :: proc(bytes: []byte, allocator := context.temp_allocator) -> (asset: Audio_Asset, err: Importer_Error) {
 	asset.hash = asset_content_hash(bytes, AUDIO_IMPORTER_VERSION, nil, allocator)
 	return asset, .None
 }
 
-// ── Image importer (raw PNG binary) ──────────────────────────────────────
-// Image_Asset is an imported raw PNG: the §2 content hash of its source bytes
-// PLUS the decoded canonical buffer (§1: a raw image imports to a decoded
-// buffer). Unlike audio — content-hashed but never decoded by funpack — an
-// image is decoded here to RGBA8 so the downstream atlas-slice and texture
-// stages read pixels, not bytes. The buffer is canonical: 8-bit RGBA, four
-// channels, width*height*4 bytes, row-major top-to-bottom. The hash is the
-// asset's identity (the same PNG bytes always hash identically); the decoded
-// buffer is the proof surface (the same bytes always decode to the same
-// pixels). Both are pure functions of the source bytes (§4 determinism).
 Image_Asset :: struct {
-	width:  int, // decoded image width in pixels
-	height: int, // decoded image height in pixels
-	pixels: []byte, // canonical RGBA8 buffer, width*height*4 bytes, row-major
-	hash:   string, // the §2 content hash of the raw PNG source bytes
+	width:  int,
+	height: int,
+	pixels: []byte,
+	hash:   string,
 }
 
-// import_image content-hashes a raw PNG binary AND decodes it to a canonical
-// RGBA8 buffer (§1: a raw file imports to a decoded buffer). The hash folds
-// the raw bytes and the image importer version (image@1) over an empty
-// dependency list — a raw image has no input assets (§4), so its hash is
-// H(png_bytes ⊕ "image@1"), mirroring import_audio's binary-input fold.
-//
-// Decode is Odin-first: core:image/png.load_from_bytes, never a custom PNG
-// reader. The .alpha_add_if_missing option canonicalizes the output to RGBA8
-// regardless of the source's color type (an RGB PNG gains an opaque alpha
-// channel, grayscale expands to RGB then RGBA), so the buffer is always four
-// 8-bit channels — the single canonical shape the atlas/texture stages read.
-// A truncated, corrupt, or non-PNG input is Malformed_Image: the importer
-// fails closed on the decoder's error, never panics (§4 deterministic binary
-// importer). The decoded pixel bytes are copied out of the image's owned
-// bytes.Buffer into the asset's own slice before the image is destroyed, so
-// the asset outlives the decoder's allocation.
-//
-// `allocator` governs the OUTPUTS — both the content hash AND the pixel buffer
-// ride it, so the two share one caller-chosen lifetime; it defaults to temp
-// scratch and a PERSISTENT caller (the emit image bake) passes its own. It is
-// decoupled from the DECODE SCRATCH: png.load_from_bytes/png.destroy run on
-// context.allocator (the ambient heap), which supports the individual frees
-// png.destroy needs and an arena/temp output allocator may not. png.destroy is
-// deferred BEFORE the decode-error check so a malformed PNG (which still leaves
-// a partial decoder allocation) is freed too, not just the success path. The one
-// unavoidable copy lifts the decoded bytes out of the decoder-owned buffer into
-// the asset's own slice on `allocator`; .pixels are CALLER-OWNED there.
 import_image :: proc(bytes_in: []byte, allocator := context.temp_allocator) -> (asset: Image_Asset, err: Importer_Error) {
 	asset.hash = asset_content_hash(bytes_in, IMAGE_IMPORTER_VERSION, nil, allocator)
 	img, decode_err := png.load_from_bytes(bytes_in, png.Options{.alpha_add_if_missing}, context.allocator)
@@ -591,14 +352,8 @@ import_image :: proc(bytes_in: []byte, allocator := context.temp_allocator) -> (
 	return asset, .None
 }
 
-// ── .atlas lexer ─────────────────────────────────────────────────────────
-// Atlas_Token_Kind is the closed token set the .atlas image+slice surface
-// needs. The atlas/image/grid/cell/clip keywords open the productions; the
-// at/cells/fps keywords mark the cell coordinate and clip fields; Ident/Number/
-// String are the atoms; the bracket/comma glyphs drive the coordinate tuple and
-// the frame list.
 Atlas_Token_Kind :: enum {
-	Invalid, // end of input or an unrecognized glyph
+	Invalid,
 	Atlas,
 	Image,
 	Grid,
@@ -622,21 +377,15 @@ Atlas_Token_Kind :: enum {
 Atlas_Token :: struct {
 	kind:      Atlas_Token_Kind,
 	text:      string,
-	int_value: i64, // Number value (cell coordinate, grid dim, fps)
+	int_value: i64,
 }
 
-// Atlas_Parser binds the shared Cursor to the .atlas token/kind pair; the cursor
-// data and the error-free primitives (cursor_at_end / cursor_peek) live in
-// parser_cursor.odin, the importer expect in asset_cursor.odin.
 Atlas_Parser :: Cursor(Atlas_Token, Atlas_Token_Kind)
 
 atlas_expect :: proc(p: ^Atlas_Parser, kind: Atlas_Token_Kind) -> (tok: Atlas_Token, err: Importer_Error) {
 	return import_expect(p, kind, Importer_Error.Malformed_Source)
 }
 
-// lex_atlas tokenizes the atlas surface. It is total: an unrecognized glyph
-// becomes an Invalid token for the parser to reject. `//` opens a line comment
-// consumed to end-of-line; whitespace and newlines are insignificant.
 lex_atlas :: proc(content: string) -> []Atlas_Token {
 	tokens := make([dynamic]Atlas_Token, 0, 32, context.temp_allocator)
 	i := 0
@@ -669,9 +418,6 @@ lex_atlas :: proc(content: string) -> []Atlas_Token {
 	return tokens[:]
 }
 
-// atlas_scan_string returns the contents between the quotes (the image filename,
-// a clip frame's cell name). An unterminated string is Invalid, the parser's
-// reject signal.
 atlas_scan_string :: proc(content: string, start: int) -> (tok: Atlas_Token, next: int) {
 	i := start + 1
 	for i < len(content) && content[i] != '"' && content[i] != '\n' {
@@ -683,9 +429,6 @@ atlas_scan_string :: proc(content: string, start: int) -> (tok: Atlas_Token, nex
 	return Atlas_Token{kind = .String, text = content[start + 1 : i]}, i + 1
 }
 
-// atlas_scan_number scans an integer literal — cell coordinates, grid
-// dimensions, and fps are all whole-number indices, so the atlas surface has no
-// fractional literal.
 atlas_scan_number :: proc(content: string, start: int) -> (tok: Atlas_Token, next: int) {
 	i := start
 	for i < len(content) && is_digit(content[i]) {
@@ -695,8 +438,6 @@ atlas_scan_number :: proc(content: string, start: int) -> (tok: Atlas_Token, nex
 	return Atlas_Token{kind = .Number, text = text, int_value = parse_digits(text)}, i
 }
 
-// atlas_scan_ident scans an identifier run and maps the atlas keywords. A
-// non-keyword run is an Ident.
 atlas_scan_ident :: proc(content: string, start: int) -> (tok: Atlas_Token, next: int) {
 	i := start
 	for i < len(content) && is_ident_char(content[i]) {
@@ -724,8 +465,6 @@ atlas_scan_ident :: proc(content: string, start: int) -> (tok: Atlas_Token, next
 	return Atlas_Token{kind = .Ident, text = text}, i
 }
 
-// atlas_scan_punct maps the structural glyphs the atlas surface uses; every
-// other single character is Invalid, the parser's reject signal.
 atlas_scan_punct :: proc(ch: u8) -> Atlas_Token {
 	switch ch {
 	case '{':

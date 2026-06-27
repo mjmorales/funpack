@@ -1,19 +1,9 @@
-// The §08 §3 world read `all[T]`: the contextual `all` + `[` atom (expr.odin
-// parse_all_tail — the fun.ebnf §14 index PostfixOp's one ratified use), the
-// query-only typing rule with its two named verdicts (all_check:
-// All_Outside_Query / All_Unknown_Thing), the View[T] result composing into
-// the existing combinator surface, and TEST-interpreter evaluation over the
-// setup-seeded world (eval_all: the startup spawn batch IS the world the
-// runtime's tick 0 holds, materialized in spawn = Id order). Self-contained
-// sources per test, the query_decl_test mold.
 package funpack
 
 import "core:testing"
 
 @(test)
 test_parse_all_expr_atom :: proc(t: ^testing.T) {
-	// AC (parse): `all[Enemy]` parses as the one-token-lookahead All_Expr atom
-	// inside a query body — the exemplar §08 §3 read position.
 	source := "query enemy_count() -> Int {\n" +
 		"  return len(all[Enemy])\n" +
 		"}\n"
@@ -28,9 +18,6 @@ test_parse_all_expr_atom :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_all_expr_malformed_tails :: proc(t: ^testing.T) {
-	// AC (named diagnostics): T is an UPPER_IDENT type name — a lowercase head
-	// is the parser-wide Wrong_Case — and a broken bracket tail is a clean
-	// Unexpected_Token, never a silent fallback to a name read.
 	_, lower := stage_parse(stage_lex("query q() -> Int {\n  return len(all[enemy])\n}\n"))
 	testing.expect_value(t, lower, Parse_Error.Wrong_Case)
 	_, unclosed := stage_parse(stage_lex("query q() -> Int {\n  return len(all[Enemy)\n}\n"))
@@ -41,8 +28,6 @@ test_parse_all_expr_malformed_tails :: proc(t: ^testing.T) {
 
 @(test)
 test_all_name_stays_a_legal_binding :: proc(t: ^testing.T) {
-	// `all` is contextual — only the immediate `[` selects the world read, so
-	// a plain `all` binding keeps its §02 value-name meaning everywhere else.
 	report, err := run_test_pipeline(
 		"test \"all binds as a name\" {\n" +
 		"  let all = 2\n" +
@@ -55,8 +40,6 @@ test_all_name_stays_a_legal_binding :: proc(t: ^testing.T) {
 
 @(test)
 test_all_outside_query_named_verdict :: proc(t: ^testing.T) {
-	// AC (named diagnostic): `all[T]` is the QUERY read path alone (spec §08
-	// §3) — a fn body and a test block each surface All_Outside_Query.
 	ast, parse_err := stage_parse(stage_lex(
 		"import engine.list.len\n" +
 		"thing Enemy { hp: Fixed }\n" +
@@ -80,9 +63,6 @@ test_all_outside_query_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_all_unknown_thing_named_verdict :: proc(t: ^testing.T) {
-	// AC (named diagnostic): T must name a declared thing/singleton — an
-	// undeclared name, and a `data` head (no instance rows), are each
-	// All_Unknown_Thing.
 	ast, parse_err := stage_parse(stage_lex(
 		"import engine.list.len\n" +
 		"query q() -> Int {\n" +
@@ -105,10 +85,6 @@ test_all_unknown_thing_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_all_composes_into_list_combinators :: proc(t: ^testing.T) {
-	// AC (typecheck): the read yields View[T], so the existing combinator
-	// surface composes over it through source_element — a fold off the
-	// element's schema types clean, and a wrong-typed fold accumulator is the
-	// same Type_Mismatch a View param would surface.
 	clean_ast, clean_parse := stage_parse(stage_lex(
 		"import engine.list.fold\n" +
 		"thing Enemy { hp: Fixed }\n" +
@@ -132,10 +108,6 @@ test_all_composes_into_list_combinators :: proc(t: ^testing.T) {
 
 @(test)
 test_all_evaluates_over_setup_seeded_world :: proc(t: ^testing.T) {
-	// AC (evaluation): a query reading all[T] folds the SETUP-SEEDED world —
-	// the startup spawn batch the runtime's tick 0 holds — in spawn (= Id)
-	// order. Exact fixed-point equality pins the fold; the untouched thing
-	// (Crate) reads its own table, not Enemy's.
 	report, err := run_test_pipeline(
 		"import engine.world.{Spawn}\n" +
 		"import engine.list.fold\n" +
@@ -162,8 +134,6 @@ test_all_evaluates_over_setup_seeded_world :: proc(t: ^testing.T) {
 
 @(test)
 test_all_reads_empty_table_without_setup :: proc(t: ^testing.T) {
-	// AC (evaluation): a module with no setup() reads the empty table — the
-	// defined zero world, never a fault.
 	report, err := run_test_pipeline(
 		"import engine.list.fold\n" +
 		"thing Enemy { hp: Fixed }\n" +
@@ -180,9 +150,6 @@ test_all_reads_empty_table_without_setup :: proc(t: ^testing.T) {
 
 @(test)
 test_all_row_applies_schema_field_defaults :: proc(t: ^testing.T) {
-	// AC (evaluation): a spawn omitting a defaulted field reads the schema
-	// default — the same overlay the runtime's row decoder applies — so the
-	// two interpreters agree on the materialized row.
 	report, err := run_test_pipeline(
 		"import engine.world.{Spawn}\n" +
 		"import engine.list.fold\n" +

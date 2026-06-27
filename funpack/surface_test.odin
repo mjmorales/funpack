@@ -4,8 +4,6 @@ import "core:testing"
 
 @(test)
 test_golden_imports_resolve_clean :: proc(t: ^testing.T) {
-	// The golden file's three import forms, verbatim, ahead of a
-	// passing assert: the whole pipeline accepts them.
 	source := "import engine.prelude.Option\n" +
 		"import engine.math.{Vec2, Vec3, Quat, clamp, lerp, dot, cross, length, sin, cos, to_fixed, trunc, floor, round, checked_div, pi}\n" +
 		"import engine.list.fold\n" +
@@ -49,11 +47,6 @@ test_golden_imports_populate_bindings :: proc(t: ^testing.T) {
 
 @(test)
 test_pong_imports_populate_bindings :: proc(t: ^testing.T) {
-	// The pong golden source's six engine.* import forms, verbatim
-	// (engine.prelude is pre-bound, so the file omits it). Every member
-	// must bind to its owning module with the expected Decl_Kind — the
-	// boundary this story owns: imports resolve to bindings, no call site
-	// is typed yet.
 	source := "import engine.math.{Fixed, Vec2, abs, clamp}\n" +
 		"import engine.world.{View, Spawn}\n" +
 		"import engine.input.{Input, Key, PlayerId, Bindings, keys_axis, stick_y, Stick}\n" +
@@ -65,17 +58,12 @@ test_pong_imports_populate_bindings :: proc(t: ^testing.T) {
 	bindings, err := resolve_imports(ast)
 	testing.expect_value(t, err, Type_Error.None)
 
-	// Each row is one imported member, the module it must resolve to, and
-	// the Decl_Kind the surface table declares for it.
 	Expectation :: struct {
 		name:   string,
 		module: string,
 		kind:   Decl_Kind,
 	}
 	expectations := []Expectation{
-		// Fixed binds to the OWNING prelude even when imported through
-		// engine.math — the declared re-export (§26 §3) canonicalizes the
-		// binding, so the meaning is route-independent.
 		{"Fixed", "engine.prelude", .Type_Name},
 		{"Vec2", "engine.math", .Type_Name},
 		{"abs", "engine.math", .Func},
@@ -105,11 +93,6 @@ test_pong_imports_populate_bindings :: proc(t: ^testing.T) {
 
 @(test)
 test_snake_imports_populate_bindings :: proc(t: ^testing.T) {
-	// snake.fun's seven engine.* import forms, verbatim (engine.prelude is
-	// pre-bound, so the file omits it). Every member must bind to its owning
-	// module with the expected Decl_Kind — the new engine.rand surface, the
-	// engine.world Despawn command, the engine.grid helper, and the engine.list
-	// combinators snake adds beyond the existing fold/map/filter set.
 	source := "import engine.math.{Vec2, to_fixed}\n" +
 		"import engine.world.{View, Spawn, Despawn}\n" +
 		"import engine.input.{Input, Key, PlayerId, Bindings}\n" +
@@ -124,8 +107,6 @@ test_snake_imports_populate_bindings :: proc(t: ^testing.T) {
 
 	expectations := []Surface_Expectation {
 		{"Vec2", "engine.math", .Type_Name},
-		// to_fixed canonicalizes to the owning prelude even through engine.math —
-		// the spec-03 Prelude function re-exported by engine.math (the Fixed pattern).
 		{"to_fixed", "engine.prelude", .Func},
 		{"View", "engine.world", .Type_Name},
 		{"Spawn", "engine.world", .Type_Name},
@@ -152,11 +133,6 @@ test_snake_imports_populate_bindings :: proc(t: ^testing.T) {
 
 @(test)
 test_hunt_imports_populate_bindings :: proc(t: ^testing.T) {
-	// hunt.fun's seven engine.* import forms, verbatim. Every member binds to
-	// its owning module: Fixed re-exports through engine.math to the OWNING
-	// prelude (§26 §3), the engine.input Stick enum and wasd/stick axis-source
-	// helpers, and the engine.list.first combinator imported as a dotted single
-	// member.
 	source := "import engine.math.{Fixed, Vec2, length}\n" +
 		"import engine.world.{Spawn, View}\n" +
 		"import engine.input.{Input, PlayerId, Bindings, Stick, wasd, stick}\n" +
@@ -169,7 +145,6 @@ test_hunt_imports_populate_bindings :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Type_Error.None)
 
 	expectations := []Surface_Expectation {
-		// Fixed canonicalizes to the owning prelude even through engine.math.
 		{"Fixed", "engine.prelude", .Type_Name},
 		{"Vec2", "engine.math", .Type_Name},
 		{"length", "engine.math", .Func},
@@ -191,13 +166,6 @@ test_hunt_imports_populate_bindings :: proc(t: ^testing.T) {
 
 @(test)
 test_input_device_button_helpers_bind :: proc(t: ^testing.T) {
-	// The §23 §3 device-button surface (ADR
-	// 2026-06-15-engine-input-source-helpers-split): pad/mouse/arrows/dpad are funcs
-	// and PadButton/MouseButton are type names, each owned by engine.input. pad/mouse
-	// close the gamepad/mouse digital-button gap the keyboard-only [Key::…] list
-	// cannot reach; arrows is the only arrow-key 2D source; dpad is the only d-pad 2D
-	// source. Each member binds to engine.input with the expected Decl_Kind — the
-	// closed-table admission this surface owns.
 	source := "import engine.input.{Bindings, PlayerId, Key, PadButton, MouseButton, pad, mouse, arrows, dpad, wasd, stick, Stick}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -223,15 +191,6 @@ test_input_device_button_helpers_bind :: proc(t: ^testing.T) {
 
 @(test)
 test_input_device_button_bindings_body_typechecks :: proc(t: ^testing.T) {
-	// End-to-end surface admission: a bindings() body binding pad(PadButton::A) and
-	// mouse(MouseButton::Left) to a Button action and arrows()/dpad() to an Axis
-	// action typechecks clean through the whole pipeline (ADR
-	// 2026-06-15-engine-input-source-helpers-split). pad/mouse type as the nil
-	// unknown Bindings.button's source slot consumes (the same slot the [Key::…]
-	// list feeds); arrows/dpad type like wasd into Bindings.axis (dpad stacks the
-	// d-pad 2D source onto the same action). The trailing passing test pins a clean
-	// run (Pipeline_Error.None, one passed assert) — a missing helper would halt at
-	// Typecheck_Failed (Unknown_Member) before the assert.
 	source := "import engine.input.{Bindings, PlayerId, PadButton, MouseButton, pad, mouse, arrows, dpad}\n" +
 		"import engine.math.to_fixed\n" +
 		"enum Fire: Button { Shoot, Jump }\n" +
@@ -252,11 +211,6 @@ test_input_device_button_bindings_body_typechecks :: proc(t: ^testing.T) {
 
 @(test)
 test_input_device_button_unknown_variant_rejected :: proc(t: ^testing.T) {
-	// The closed-enum guard on the new device enums: a variant outside the admitted
-	// PadButton set is not a value, mirroring how a Key/Stick variant outside its
-	// set rejects. `PadButton::Triangle` is no §23 pad button (the set is the SDL→§23
-	// face/shoulder/dpad map), so the call site fails typecheck rather than binding a
-	// phantom device code the runtime could never resolve.
 	source := "import engine.input.{Bindings, PlayerId, PadButton, pad}\n" +
 		"enum Fire: Button { Shoot }\n" +
 		"fn bindings() -> Bindings {\n" +
@@ -270,10 +224,6 @@ test_input_device_button_unknown_variant_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_snake_hunt_import_lines_compile_clean :: proc(t: ^testing.T) {
-	// The whole pipeline accepts the snake and hunt import lines ahead of a
-	// passing assert — no unknown-module / unknown-member halts typecheck, so
-	// the example surfaces resolve clean through run_test_pipeline. Body typing
-	// of the call sites is the next story; this pins import admission alone.
 	source := "import engine.math.{Vec2, to_fixed, length, Fixed}\n" +
 		"import engine.world.{View, Spawn, Despawn}\n" +
 		"import engine.input.{Input, Key, PlayerId, Bindings, Stick, wasd, stick}\n" +
@@ -291,9 +241,6 @@ test_snake_hunt_import_lines_compile_clean :: proc(t: ^testing.T) {
 
 @(test)
 test_engine_rand_despawn_resolve_to_handles :: proc(t: ^testing.T) {
-	// AC: engine_type_name maps Rng and Despawn to their nominal Engine_Type
-	// handles, so an `rng: Rng` param and a `[Despawn]` return resolve. The
-	// existing Spawn handle is unchanged; the two new spellings join it.
 	rng, has_rng := engine_type_name("Rng")
 	testing.expect(t, has_rng)
 	testing.expect(t, is_engine(rng, .Rng))
@@ -305,9 +252,6 @@ test_engine_rand_despawn_resolve_to_handles :: proc(t: ^testing.T) {
 
 @(test)
 test_despawn_types_as_command :: proc(t: ^testing.T) {
-	// AC: surface_command types Despawn() as a §04 command (mirroring Spawn) —
-	// a no-argument constructor whose result is the Despawn command handle, so
-	// snake's despawn_eaten `[Despawn()]` is a recognized command list.
 	signature, found := surface_command("Despawn")
 	testing.expect(t, found)
 	command, is_func := signature.(^Func_Type)
@@ -320,11 +264,6 @@ test_despawn_types_as_command :: proc(t: ^testing.T) {
 
 @(test)
 test_input_test_producers_resolve :: proc(t: ^testing.T) {
-	// AC: the §23 inline-test producers resolve to their engine-value
-	// signatures — Input.empty() and Time.at(dt) as static builders, View.of()
-	// as a §08 read-table static builder, Input.with_pressed and Bindings.button
-	// as chained engine methods returning the resource/builder. Deep call typing
-	// is the next story; this pins the table rows the producers resolve through.
 	empty, has_empty := surface_static_method("Input", "empty")
 	testing.expect(t, has_empty)
 	testing.expect(t, returns_engine(empty, .Input))
@@ -348,17 +287,12 @@ test_input_test_producers_resolve :: proc(t: ^testing.T) {
 	testing.expect(t, returns_engine(button, .Bindings))
 }
 
-// Surface_Expectation is one imported member, the module it must resolve to,
-// and the Decl_Kind the surface table declares for it — the row shape the
-// snake/hunt import fixtures and the pong import fixture assert against.
 Surface_Expectation :: struct {
 	name:   string,
 	module: string,
 	kind:   Decl_Kind,
 }
 
-// expect_bindings asserts each expectation row binds to its owning module with
-// the declared kind — the shared check the import-line fixtures run.
 expect_bindings :: proc(t: ^testing.T, bindings: Bindings, expectations: []Surface_Expectation) {
 	for want in expectations {
 		binding, bound := bindings.names[want.name]
@@ -368,9 +302,6 @@ expect_bindings :: proc(t: ^testing.T, bindings: Bindings, expectations: []Surfa
 	}
 }
 
-// returns_engine reports whether a func signature's result is an engine type of
-// the given kind — the producer fixtures assert a static builder / engine method
-// yields the expected engine value without depending on its parameter shape.
 returns_engine :: proc(signature: Type, kind: Engine_Kind) -> bool {
 	command, is_func := signature.(^Func_Type)
 	if !is_func {
@@ -381,9 +312,6 @@ returns_engine :: proc(signature: Type, kind: Engine_Kind) -> bool {
 
 @(test)
 test_pong_unknown_world_member_rejected :: proc(t: ^testing.T) {
-	// The closed-table proof: a name absent from the engine.world partition
-	// still rejects with Unknown_Member. Admitting View/Spawn/Despawn did not
-	// open the module to arbitrary names — `Reap` is owned by no module.
 	ast, parse_err := stage_parse(stage_lex("import engine.world.{View, Reap}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	_, err := resolve_imports(ast)
@@ -392,8 +320,6 @@ test_pong_unknown_world_member_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_prelude_is_always_in_scope :: proc(t: ^testing.T) {
-	// The prelude needs no import (spec §26): Fixed and Option are
-	// bound on an importless source.
 	ast, parse_err := stage_parse(stage_lex("test \"x\" {\n\tassert 1 == 1\n}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	bindings, err := resolve_imports(ast)
@@ -450,22 +376,14 @@ test_import_bare_unknown_module_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_pipeline_bad_import_is_typecheck_failed :: proc(t: ^testing.T) {
-	// The compile-error contract at the pipeline seam: a bad import is
-	// Typecheck_Failed (exit 2 at the CLI), never a counted failure.
 	source := "import engine.math.bogus\n" +
 		"test \"x\" {\n\tassert to_fixed(2) == 2.0\n}\n"
 	_, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.Typecheck_Failed)
 }
 
-// ── §26 §3 re-exports and the resolver collision floor ─────────────────
-
 @(test)
 test_stdlib_surface_single_owner_per_name :: proc(t: ^testing.T) {
-	// §02 one-name-one-meaning at the table layer: no name is owned by two
-	// partitions — a cross-partition duplicate is legal only as a declared
-	// STDLIB_REEXPORTS row. A future story admitting a name twice fails
-	// here instead of resolving last-write-wins.
 	for module, i in STDLIB_SURFACE {
 		for decl in module.decls {
 			for other in STDLIB_SURFACE[i + 1:] {
@@ -481,9 +399,6 @@ test_stdlib_surface_single_owner_per_name :: proc(t: ^testing.T) {
 			}
 		}
 	}
-	// Every declared re-export resolves: the owner exists and owns the
-	// name, and the re-exporting partition does not ALSO own it (one
-	// owning row per name).
 	for row in STDLIB_REEXPORTS {
 		owner, has_owner := surface_module(row.owner)
 		testing.expectf(t, has_owner, "re-export %s.%s names unknown owner %s", row.module, row.name, row.owner)
@@ -502,10 +417,6 @@ test_stdlib_surface_single_owner_per_name :: proc(t: ^testing.T) {
 
 @(test)
 test_reexported_fixed_binds_identically_on_both_routes :: proc(t: ^testing.T) {
-	// The §26 §3 exception in action: Fixed imported through engine.math
-	// binds to the owning prelude — the identical binding the prelude
-	// pre-bind already inserted — so the re-import is legal and the
-	// meaning is route-independent.
 	ast, parse_err := stage_parse(stage_lex("import engine.math.{Fixed, Vec2}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	bindings, err := resolve_imports(ast)
@@ -518,12 +429,6 @@ test_reexported_fixed_binds_identically_on_both_routes :: proc(t: ^testing.T) {
 
 @(test)
 test_yard_physics_save_imports_populate_bindings :: proc(t: ^testing.T) {
-	// yard.fun's engine.physics and engine.save import forms, verbatim. Every
-	// member binds to its owning module with the expected Decl_Kind — the new
-	// §11 physics surface (Body/BodyKind/Shape2/Trigger type names + the solve
-	// battery func) and the §24 persistence surface (the Save/Restore/
-	// ApplySettings command constructors, the Saved/Restored/SettingsApplied
-	// outcome signals, and the Settings record — all type names).
 	source := "import engine.physics.{Body, BodyKind, Shape2, Trigger, solve}\n" +
 		"import engine.save.{Save, Restore, ApplySettings, Saved, Restored, SettingsApplied, Settings}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -553,13 +458,8 @@ test_yard_physics_save_imports_populate_bindings :: proc(t: ^testing.T) {
 	}
 }
 
-// ── §08 engine.world.Ref + engine.nav surface admission ────────────────
-
 @(test)
 test_surface_admits_world_ref :: proc(t: ^testing.T) {
-	// AC: `import engine.world.{Ref}` resolves to .None and Ref binds to the
-	// engine.world partition as a Type_Name — the §08 typed reference joins
-	// View/Spawn/Despawn without opening the module to arbitrary names.
 	source := "import engine.world.{View, Ref, Spawn, Despawn}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -574,9 +474,6 @@ test_surface_admits_world_ref :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_admits_engine_nav :: proc(t: ^testing.T) {
-	// AC: `import engine.nav.{Nav, Path, NavError}` resolves to .None — the new
-	// §08 navigation partition the chase AI imports. Each member binds to the
-	// engine.nav partition as a Type_Name.
 	source := "import engine.nav.{Nav, Path, NavError}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -593,9 +490,6 @@ test_surface_admits_engine_nav :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_engine_nav_unknown_member_rejected :: proc(t: ^testing.T) {
-	// The closed-table proof for the new partition: a name absent from
-	// engine.nav rejects with Unknown_Member. Admitting Nav/Path/NavError did
-	// not open the module to arbitrary names — `Route` is owned by no module.
 	ast, parse_err := stage_parse(stage_lex("import engine.nav.{Nav, Route}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	_, err := resolve_imports(ast)
@@ -604,12 +498,6 @@ test_surface_engine_nav_unknown_member_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_typecheck_nav_path_advance :: proc(t: ^testing.T) {
-	// AC: a small fixture exercising the nav surface methods over a Nav/Path
-	// pair typechecks to .None — `nav.path(from, to)` queries a Result[Path]
-	// route, and `route.advance(from, arrive)` walks one waypoint returning the
-	// (Option[Vec2], Path) pair, destructured into the next waypoint and the
-	// remaining route. Both methods resolve through their engine-kind receivers
-	// and type clean; deep Result-unwrap typing is a downstream story.
 	source := "import engine.math.{Vec2, Fixed}\n" +
 		"import engine.nav.{Nav, Path, NavError}\n" +
 		"fn step(nav: Nav, route: Path, from: Vec2, to: Vec2) -> Path {\n" +
@@ -624,14 +512,8 @@ test_typecheck_nav_path_advance :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Type_Error.None)
 }
 
-// ── §16 anim / §20 render3 / §22 audio surface admission ───────────────
-
 @(test)
 test_surface_admits_engine_anim :: proc(t: ^testing.T) {
-	// AC: `import engine.anim.{…}` resolves to .None — the new §16 §7 rig/animation
-	// partition the gen rig seam and the pose generators import. The seven type
-	// names bind as Type_Name; rot_x/up as Func. Skeleton/PartSet/Slot/Side are the
-	// gen-seam imports; Pose/Bone + rot_x/up the pose-generator imports.
 	source := "import engine.anim.{Skeleton, PartSet, Slot, Side, Pose, Bone, Transform, rot_x, up}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -654,9 +536,6 @@ test_surface_admits_engine_anim :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_engine_anim_unknown_member_rejected :: proc(t: ^testing.T) {
-	// The closed-table proof for engine.anim: a name absent from the partition
-	// rejects with Unknown_Member. Admitting the rig names did not open the module
-	// to arbitrary names — `Joint` is owned by no module.
 	ast, parse_err := stage_parse(stage_lex("import engine.anim.{Pose, Joint}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	_, err := resolve_imports(ast)
@@ -665,10 +544,6 @@ test_surface_engine_anim_unknown_member_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_admits_engine_render3 :: proc(t: ^testing.T) {
-	// AC: `import engine.render3.{Draw3, Color}` resolves to .None — Draw3 binds to
-	// the engine.render3 partition (a NEW engine type, NOT the §20 2D Draw), and
-	// Color resolves through the §26 §3 re-export to its OWNING engine.render, so the
-	// palette meaning is route-independent. Material binds to render3 too.
 	source := "import engine.render3.{Draw3, Material, Color}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -678,7 +553,6 @@ test_surface_admits_engine_render3 :: proc(t: ^testing.T) {
 	expectations := []Surface_Expectation {
 		{"Draw3", "engine.render3", .Type_Name},
 		{"Material", "engine.render3", .Type_Name},
-		// Color canonicalizes to its owning engine.render even through render3.
 		{"Color", "engine.render", .Type_Name},
 	}
 	expect_bindings(t, bindings, expectations)
@@ -686,9 +560,6 @@ test_surface_admits_engine_render3 :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_engine_render3_unknown_member_rejected :: proc(t: ^testing.T) {
-	// The closed-table proof for engine.render3: a name neither owned nor
-	// re-exported rejects with Unknown_Member. `Shader` is owned by no module
-	// (engine PBR has no user-authored shaders, §20 §1).
 	ast, parse_err := stage_parse(stage_lex("import engine.render3.{Draw3, Shader}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	_, err := resolve_imports(ast)
@@ -697,9 +568,6 @@ test_surface_engine_render3_unknown_member_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_admits_engine_audio :: proc(t: ^testing.T) {
-	// AC: `import engine.audio.{Audio, Bus}` resolves to .None — the §22 §2
-	// sustained-audio partition this task owns. Audio and Bus bind as Type_Name.
-	// (Sibling 5.2 adds the §22 §1 one-shot Sound into this same partition.)
 	source := "import engine.audio.{Audio, Bus}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -715,9 +583,6 @@ test_surface_admits_engine_audio :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_engine_audio_unknown_member_rejected :: proc(t: ^testing.T) {
-	// The closed-table proof for engine.audio: a name absent from the partition
-	// rejects with Unknown_Member. `Reverb` is owned by no module (there is no
-	// DSP-effect-chain authoring surface, §22 §4).
 	ast, parse_err := stage_parse(stage_lex("import engine.audio.{Audio, Reverb}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	_, err := resolve_imports(ast)
@@ -726,9 +591,6 @@ test_surface_engine_audio_unknown_member_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_admits_input_stick_x :: proc(t: ^testing.T) {
-	// AC: stick_x joins engine.input as the horizontal axis-source twin of stick_y
-	// (krognid binds the left stick's x to Strafe). It binds to engine.input as a
-	// Func, and its signature is (Stick) -> the nil axis-source unknown.
 	source := "import engine.input.{stick_x, stick_y, Stick}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -747,11 +609,6 @@ test_surface_admits_input_stick_x :: proc(t: ^testing.T) {
 
 @(test)
 test_anim_render3_audio_typecheck_fixture :: proc(t: ^testing.T) {
-	// PROOF (the task's hand-built fixture): every new anim/render3/audio name,
-	// plus stick_x and the Drive: Axis role, typechecks clean over the existing
-	// expression grammar. Mirrors stroll.fun's usage but stays inside this task's
-	// scope — the skeleton/parts are produced locally (user-module resolution is a
-	// separate seam) and the Time read uses dt (Time.t is a render/time concern).
 	source := KROGNID_SURFACE_FIXTURE
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -759,13 +616,6 @@ test_anim_render3_audio_typecheck_fixture :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Type_Error.None)
 }
 
-// KROGNID_SURFACE_FIXTURE is the self-contained .fun source the typecheck PROOF
-// runs: it imports every new surface name and exercises each construct — the
-// static builders (Skeleton.humanoid(), Pose.empty(), Pose.blend, PartSet.empty(),
-// Audio.track), the value-method chains (.set/.bind/.mirror/.pitch/.gain/.bus/.get),
-// the struct-payload Draw3 variants (Camera/Light/Plane/Rigged/Mesh), the enum
-// variants (Slot/Side/Bone/Color::Gray/Bus::Sfx), stick_x, and the Drive: Axis
-// role read via input.value(self.player, Drive::Strafe).
 KROGNID_SURFACE_FIXTURE :: "import engine.math.{Fixed, Vec2, Vec3, sin, abs, length, clamp}\n" +
 	"import engine.anim.{Skeleton, PartSet, Slot, Side, Pose, Bone, Transform, rot_x, up}\n" +
 	"import engine.render3.{Draw3, Material, Color}\n" +
@@ -835,10 +685,6 @@ KROGNID_SURFACE_FIXTURE :: "import engine.math.{Fixed, Vec2, Vec3, sin, abs, len
 
 @(test)
 test_anim_unknown_pose_member_is_compile_error :: proc(t: ^testing.T) {
-	// PROOF (the reject side): an unknown anim member is a compile error, not a
-	// counted failure. Pose has no `Nope` value method — the closed surface rejects
-	// it with Unsupported_Expr, the typecheck-fail verdict the pipeline maps to a
-	// compile error (exit 2).
 	source := "import engine.anim.{Pose, Bone, Transform}\n" +
 		"fn bad(p: Pose) -> Transform { return p.nope(Bone::Torso) }\n"
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -849,8 +695,6 @@ test_anim_unknown_pose_member_is_compile_error :: proc(t: ^testing.T) {
 
 @(test)
 test_audio_unknown_method_is_compile_error :: proc(t: ^testing.T) {
-	// PROOF (the reject side): an unknown sustained-audio builder is a compile
-	// error. Audio has no `.badmethod` — the closed chain rejects it.
 	source := "import engine.audio.{Audio, Bus}\n" +
 		"import engine.assets.sound\n" +
 		"fn bad() -> Audio { return Audio.track(\"k\", sound(\"krognid_step\")).badmethod(0.5) }\n"
@@ -862,9 +706,6 @@ test_audio_unknown_method_is_compile_error :: proc(t: ^testing.T) {
 
 @(test)
 test_draw3_unknown_field_is_compile_error :: proc(t: ^testing.T) {
-	// PROOF (the reject side): an unknown field on a Draw3 struct-payload variant
-	// is a compile error. Draw3::Camera has no `tilt` field — the closed schema
-	// rejects it with Type_Mismatch.
 	source := "import engine.math.{Fixed, Vec3}\n" +
 		"import engine.render3.Draw3\n" +
 		"fn bad() -> Draw3 { return Draw3::Camera{ eye: Vec3{x: 0.0, y: 0.0, z: 0.0}, tilt: 1.0 } }\n"
@@ -876,9 +717,6 @@ test_draw3_unknown_field_is_compile_error :: proc(t: ^testing.T) {
 
 @(test)
 test_color_gray_variant_is_a_value :: proc(t: ^testing.T) {
-	// AC: Color::Gray joins the closed palette (stroll.fun's ground-plane shade) and
-	// types as the Color engine value; an unknown palette entry rejects. The palette
-	// is the one §20 §1 closed set shared by 2D render and 3D render3.
 	gray, has_gray := surface_enum_variant("Color", "Gray")
 	testing.expect(t, has_gray)
 	testing.expect(t, is_engine(gray, .Color))
@@ -889,8 +727,6 @@ test_color_gray_variant_is_a_value :: proc(t: ^testing.T) {
 
 @(test)
 test_anim_enum_variants_type_to_handles :: proc(t: ^testing.T) {
-	// AC: the anim enum variants (Slot/Side/Bone) and Bus::Sfx type to their engine
-	// handles, and an unknown variant of each rejects — the closed enum surface.
 	slot, has_slot := surface_enum_variant("Slot", "LUpperLeg")
 	testing.expect(t, has_slot)
 	testing.expect(t, is_engine(slot, .Slot))
@@ -915,13 +751,6 @@ test_anim_enum_variants_type_to_handles :: proc(t: ^testing.T) {
 
 @(test)
 test_full_closed_variant_sets_restore :: proc(t: ^testing.T) {
-	// The mechanical variant re-admit (the Color-palette restore shape): each
-	// engine enum's FULL declared variant set types to its engine handle, and a
-	// member outside the set is not a value (the closed-enum guard). The runtime
-	// already carries every code (PlayerId P1-P4 in input.odin, keys/bones keyed by
-	// opaque interned string), so admitting the variant here is the typecheck gate.
-	// Pins the restored portions against silent re-dropping: a variant removed from a
-	// surface_enum_variant arm fails its row here.
 	Case :: struct {
 		type_name: string,
 		kind:      Engine_Kind,
@@ -929,10 +758,7 @@ test_full_closed_variant_sets_restore :: proc(t: ^testing.T) {
 		unknown:   string,
 	}
 	cases := []Case {
-		// §23 PlayerId — the four split-screen slots (P3/P4 the restored portion).
 		{"PlayerId", .PlayerId, {"P1", "P2", "P3", "P4"}, "P5"},
-		// §23 Key — the full A-Z + Up/Down/Left/Right + Space/Enter/Escape/Shift/Tab
-		// physical-key set (input.fun:16) plus the F5/F9 yard menu keybinds.
 		{
 			"Key",
 			.Key,
@@ -944,7 +770,6 @@ test_full_closed_variant_sets_restore :: proc(t: ^testing.T) {
 			},
 			"Backspace",
 		},
-		// §16 §7 Bone — spine + four limbs both sides + extremities + Joint0-7.
 		{
 			"Bone",
 			.Bone,
@@ -958,7 +783,6 @@ test_full_closed_variant_sets_restore :: proc(t: ^testing.T) {
 			},
 			"Tail",
 		},
-		// §16 §7 Slot — torso/head + four limbs both sides + extremities + Slot0-3.
 		{
 			"Slot",
 			.Slot,
@@ -985,10 +809,6 @@ test_full_closed_variant_sets_restore :: proc(t: ^testing.T) {
 
 @(test)
 test_anim_audio_static_and_method_builders_resolve :: proc(t: ^testing.T) {
-	// AC: the anim/audio static builders and value methods resolve to engine-value
-	// signatures — Skeleton.humanoid()/PartSet.empty()/Pose.empty()/Pose.blend and
-	// Audio.track as statics, PartSet.bind/Pose.set/Audio.bus as value methods. Deep
-	// arg typing is exercised by the fixture; this pins the table rows.
 	humanoid, has_humanoid := surface_static_method("Skeleton", "humanoid")
 	testing.expect(t, has_humanoid)
 	testing.expect(t, returns_engine(humanoid, .Skeleton))
@@ -1021,14 +841,8 @@ test_anim_audio_static_and_method_builders_resolve :: proc(t: ^testing.T) {
 	testing.expect(t, returns_engine(bus, .Audio))
 }
 
-// ── §20 engine.render Flip + Draw::Sprite surface admission ────────────
-
 @(test)
 test_surface_admits_engine_render_flip :: proc(t: ^testing.T) {
-	// AC: `import engine.render.{Draw, Color, Flip}` resolves to .None — Flip is the
-	// §20 sprite-mirroring enum (None | X | Y | XY) joining the engine.render
-	// partition without opening it to arbitrary names. Each member binds to
-	// engine.render as a Type_Name.
 	source := "import engine.render.{Draw, Color, Flip}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -1045,10 +859,6 @@ test_surface_admits_engine_render_flip :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_engine_render_unknown_member_rejected :: proc(t: ^testing.T) {
-	// The closed-table proof for engine.render: a name absent from the partition
-	// rejects with Unknown_Member. Admitting Flip did not open the module to
-	// arbitrary names — `Mirror` is owned by no module (Flip is the only
-	// mirroring spelling, §20).
 	ast, parse_err := stage_parse(stage_lex("import engine.render.{Draw, Mirror}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	_, err := resolve_imports(ast)
@@ -1057,12 +867,6 @@ test_surface_engine_render_unknown_member_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_draw_sprite_typecheck_fixture :: proc(t: ^testing.T) {
-	// PROOF (the admit side): a Draw::Sprite struct-payload construction typechecks
-	// clean over the §20 field schema — `atlas` an AtlasHandle (built from an
-	// AtlasHandle{name:…} literal), `cell` a String, `at`/`size` Vec2, `tint` a
-	// Color palette value, `flip` a Flip mirroring value, `layer` an Int z-key. This
-	// is the CI-executing, sibling-independent twin of the whole-example pickups
-	// golden, mirroring the Draw3 fixture pattern.
 	source := "import engine.math.Vec2\n" +
 		"import engine.render.{Draw, Color, Flip}\n" +
 		"import engine.assets.AtlasHandle\n" +
@@ -1080,10 +884,6 @@ test_draw_sprite_typecheck_fixture :: proc(t: ^testing.T) {
 
 @(test)
 test_draw_sprite_unknown_field_is_compile_error :: proc(t: ^testing.T) {
-	// PROOF (the reject side): an unknown field on Draw::Sprite is a compile error.
-	// Draw::Sprite has no `opacity` field — the closed §20 schema rejects it with
-	// Type_Mismatch (the typecheck-fail verdict the pipeline maps to a compile error,
-	// exit 2). Mirrors test_draw3_unknown_field_is_compile_error.
 	source := "import engine.math.Vec2\n" +
 		"import engine.render.{Draw, Color, Flip}\n" +
 		"import engine.assets.AtlasHandle\n" +
@@ -1098,9 +898,6 @@ test_draw_sprite_unknown_field_is_compile_error :: proc(t: ^testing.T) {
 
 @(test)
 test_flip_unknown_variant_is_compile_error :: proc(t: ^testing.T) {
-	// PROOF (the reject side): an unknown Flip variant is a compile error. The closed
-	// §20 mirroring set is {None, X, Y, XY} — `Diagonal` is owned by no variant, so
-	// surface_enum_variant rejects it and the field typecheck fails.
 	source := "import engine.math.Vec2\n" +
 		"import engine.render.{Draw, Color, Flip}\n" +
 		"import engine.assets.AtlasHandle\n" +
@@ -1115,12 +912,6 @@ test_flip_unknown_variant_is_compile_error :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_admits_engine_render_align :: proc(t: ^testing.T) {
-	// §20 the horizontal text-alignment enum (render.fun:18, `enum Align { Left,
-	// Center, Right }`), admitted the Flip mold: it imports from engine.render as a
-	// Type_Name, grounds in type position via engine_type_name, its three variants
-	// type to the Align engine value through surface_enum_variant, and a variant
-	// outside the closed set is not a value. No Draw command consumes Align yet —
-	// admitting the enum type is the surface restore, not a Draw::Text wiring.
 	source := "import engine.render.{Draw, Color, Flip, Align}\n"
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -1131,7 +922,6 @@ test_surface_admits_engine_render_align :: proc(t: ^testing.T) {
 	testing.expect_value(t, align.module, "engine.render")
 	testing.expect_value(t, align.kind, Decl_Kind.Type_Name)
 
-	// engine_type_name grounds a bare `align: Align` field/param/return.
 	ground, has_ground := engine_type_name("Align")
 	testing.expect(t, has_ground)
 	testing.expect(t, is_engine(ground, .Align))
@@ -1147,10 +937,6 @@ test_surface_admits_engine_render_align :: proc(t: ^testing.T) {
 
 @(test)
 test_align_value_typechecks_and_evals :: proc(t: ^testing.T) {
-	// The end-to-end junction: an Align value constructs, types against a `-> Align`
-	// return, and compares equal under evaluation (the bare-variant Enum_Value mold
-	// Color/Flip/Bus share — no per-enum eval special-casing). A clean run pins the
-	// whole surface→typecheck→eval path the restore opened.
 	source := "import engine.render.Align\n" +
 		"fn left() -> Align { return Align::Left }\n" +
 		"fn center() -> Align { return Align::Center }\n" +
@@ -1161,20 +947,12 @@ test_align_value_typechecks_and_evals :: proc(t: ^testing.T) {
 		"}\n"
 	report, err := run_test_pipeline(source)
 	testing.expect_value(t, err, Pipeline_Error.None)
-	// Three asserts in the one test block; report.passed counts each assert.
 	testing.expect_value(t, report.passed, 3)
 	testing.expect_value(t, report.failed, 0)
 }
 
 @(test)
 test_input_axis_button_role_kinds_are_engine_input_types :: proc(t: ^testing.T) {
-	// §03 §4 the ascription-only role kinds (input.fun:7,10 `extern type Axis` /
-	// `extern type Button`): the §26 engine.input partition OWNS them as type-position
-	// names, so they project as engine.input types in the introspect dump (the parity
-	// gate the .fun corpus compares against). The ascription path is independent —
-	// `enum Drive: Axis` captures the kind as a contextual string the parser stores on
-	// Enum_Schema.role, never resolving it through the surface table — so admitting the
-	// type-decl row does not change how an action enum ascribes its role.
 	axis, axis_bound := surface_resolve(must_surface_module(t, "engine.input"), "Axis")
 	testing.expect(t, axis_bound)
 	testing.expect_value(t, axis.module, "engine.input")
@@ -1185,9 +963,6 @@ test_input_axis_button_role_kinds_are_engine_input_types :: proc(t: ^testing.T) 
 	testing.expect_value(t, button.module, "engine.input")
 	testing.expect_value(t, button.kind, Decl_Kind.Type_Name)
 
-	// The ascription still compiles clean: a Button-kinded and an Axis-kinded action
-	// enum, bound and queried through a full pipeline run — the admission of the
-	// type-decl rows did not disturb the role-kind contextual-string path.
 	source := "import engine.input.{Bindings, PlayerId, PadButton, pad}\n" +
 		"import engine.math.to_fixed\n" +
 		"enum Act: Button { Jump }\n" +
@@ -1204,28 +979,14 @@ test_input_axis_button_role_kinds_are_engine_input_types :: proc(t: ^testing.T) 
 	testing.expect_value(t, report.failed, 0)
 }
 
-// must_surface_module resolves a partition by path or fails the test — the small
-// helper the engine.input role-kind spec reads the partition through.
 must_surface_module :: proc(t: ^testing.T, path: string) -> Module_Surface {
 	module, found := surface_module(path)
 	testing.expectf(t, found, "partition %s exists", path)
 	return module
 }
 
-// ── §26 prelude compare/Ordering + §20 Color palette/Rgb parity restore ──
-// (ADR stdlib-surface-source-of-truth-parity-restore — the spec + .fun signature
-// files are source of truth; these constructs are spec-declared and restored to
-// the surface they regressed below.)
-
 @(test)
 test_compare_returns_ordering_and_matches :: proc(t: ^testing.T) {
-	// The whole junction for §26/spec-03 `compare(a: T, b: T) -> Ordering`
-	// (prelude.fun:50): compare yields the Ordering enum value a three-way match
-	// destructures, and the kernel orders both Int and Fixed (the Ord grounds).
-	// Run through run_test_pipeline so typecheck (the Fixed/Int overload set), the
-	// exhaustiveness gate (the CLOSED_VARIANT_SETS Ordering entry), AND eval
-	// (eval_compare → ordering_value) all hold on one fixture. Less/Equal/Greater
-	// each evaluate to the correct arm.
 	source := "import engine.prelude.{Int, Fixed, Ordering}\n" +
 		"fn rank(o: Ordering) -> Int {\n" +
 		"  return match o {\n" +
@@ -1251,11 +1012,6 @@ test_compare_returns_ordering_and_matches :: proc(t: ^testing.T) {
 
 @(test)
 test_compare_overload_set_and_ordering_variants :: proc(t: ^testing.T) {
-	// The surface-table rows behind the fixture: compare is the prelude
-	// {(Fixed,Fixed)->Ordering, (Int,Int)->Ordering} closed overload set (the Ord
-	// bound realized over the kernel ordered grounds, mirroring max), and the three
-	// Ordering variants type to the Ordering engine handle. An entry outside the
-	// declared set is not a value — the closed-enum guard.
 	overloads, found := surface_signatures("compare")
 	testing.expect(t, found)
 	testing.expect_value(t, len(overloads), 2)
@@ -1271,7 +1027,6 @@ test_compare_overload_set_and_ordering_variants :: proc(t: ^testing.T) {
 	_, has_unknown := surface_enum_variant("Ordering", "Greatest")
 	testing.expect(t, !has_unknown)
 
-	// The bare `Ordering` type-name grounds for a param/return position.
 	ordering, has_ordering := engine_type_name("Ordering")
 	testing.expect(t, has_ordering)
 	testing.expect(t, is_engine(ordering, .Ordering))
@@ -1279,10 +1034,6 @@ test_compare_overload_set_and_ordering_variants :: proc(t: ^testing.T) {
 
 @(test)
 test_compare_mixed_kind_pair_rejected :: proc(t: ^testing.T) {
-	// The `a, b: T` same-type constraint: the closed overload set has no
-	// (Int, Fixed) arm, so a mixed-kind pair matches neither and is Type_Mismatch
-	// (no implicit Int→Fixed promotion, spec §10). A compile error, never a counted
-	// failure.
 	source := "import engine.prelude.{Int, Fixed, Ordering}\n" +
 		"fn bad() -> Ordering { return compare(1, 2.0) }\n"
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -1293,11 +1044,6 @@ test_compare_mixed_kind_pair_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_incomplete_ordering_match_is_non_exhaustive :: proc(t: ^testing.T) {
-	// The load-bearing exhaustiveness floor (the reason Ordering joins
-	// CLOSED_VARIANT_SETS): the prelude doc "forces a match", so a match leaving
-	// Greater unhandled is Non_Exhaustive_Match (spec §02 §5), not a silent pass.
-	// Without the closed-set entry the gate would leave the match "for a later
-	// stage" and admit the hole.
 	source := "import engine.prelude.{Int, Ordering}\n" +
 		"fn bad(o: Ordering) -> Int {\n" +
 		"  return match o {\n" +
@@ -1315,11 +1061,6 @@ test_incomplete_ordering_match_is_non_exhaustive :: proc(t: ^testing.T) {
 
 @(test)
 test_color_palette_full_set_and_rgb_are_values :: proc(t: ^testing.T) {
-	// The §20 §1 palette parity restore (render.fun:12-15): the full named set
-	// White/Black/Red/Green/Blue/Yellow/Cyan/Magenta/Gray types to the Color engine
-	// value, and the struct-payload escape Color::Rgb{r,g,b} yields the same Color
-	// type — so a `tint`/`color` field accepts either form. The secondary/CMY trio
-	// (Yellow/Cyan/Magenta) is the restored portion; the rest pin the closed set.
 	for variant in ([]string{
 		"White", "Black", "Red", "Green", "Blue",
 		"Yellow", "Cyan", "Magenta", "Gray",
@@ -1344,10 +1085,6 @@ test_color_palette_full_set_and_rgb_are_values :: proc(t: ^testing.T) {
 
 @(test)
 test_color_palette_and_rgb_typecheck_and_eval :: proc(t: ^testing.T) {
-	// The end-to-end junction: the restored palette entries and Color::Rgb
-	// construct as values through the whole pipeline (typecheck + eval). Rgb built
-	// from to_fixed(...) compares equal to the literal-channel form (the generic
-	// eval_struct_variant builds a structural Record_Value value_equal compares).
 	source := "import engine.render.Color\n" +
 		"import engine.math.to_fixed\n" +
 		"fn yellow() -> Color { return Color::Yellow }\n" +
@@ -1368,9 +1105,6 @@ test_color_palette_and_rgb_typecheck_and_eval :: proc(t: ^testing.T) {
 
 @(test)
 test_color_rgb_unknown_field_is_compile_error :: proc(t: ^testing.T) {
-	// The closed-schema guard on the struct-payload escape: Color::Rgb carries
-	// exactly r/g/b, so an `a` channel is Type_Mismatch (a compile error, exit 2) —
-	// the Shape2::Box / Draw::Sprite mold.
 	source := "import engine.render.Color\n" +
 		"fn bad() -> Color { return Color::Rgb{ r: 1.0, g: 0.0, b: 0.0, a: 1.0 } }\n"
 	ast, parse_err := stage_parse(stage_lex(source))
@@ -1381,9 +1115,6 @@ test_color_rgb_unknown_field_is_compile_error :: proc(t: ^testing.T) {
 
 @(test)
 test_view_count_and_at_typecheck :: proc(t: ^testing.T) {
-	// The §08 read-table iteration surface (world.fun:24/:27): count() reads an Int
-	// and at(i) reads the element T off a View[T] receiver — restored beside the
-	// existing ref/resolve reference surface. Typechecks clean over a View[T] param.
 	source := "import engine.prelude.Int\n" +
 		"import engine.world.View\n" +
 		"data Switch { on: Bool }\n" +
@@ -1394,8 +1125,6 @@ test_view_count_and_at_typecheck :: proc(t: ^testing.T) {
 	_, err := stage_typecheck(ast)
 	testing.expect_value(t, err, Type_Error.None)
 
-	// The surface rows behind it: count is ()->Int, at is (Int)->T (the receiver's
-	// element), both off the .View engine method surface.
 	view := engine_type_of(.View, user_type_of("Switch", .Data)).(^Engine_Type)
 	count, has_count := surface_engine_method(view, "count")
 	testing.expect(t, has_count)
@@ -1417,9 +1146,6 @@ test_view_count_and_at_typecheck :: proc(t: ^testing.T) {
 
 @(test)
 test_view_unknown_method_is_compile_error :: proc(t: ^testing.T) {
-	// The closed-surface proof: restoring count/at did not open View to arbitrary
-	// methods — `tail` is no View method, so the call is Unsupported_Expr (the
-	// typecheck-fail verdict the pipeline maps to a compile error).
 	source := "import engine.prelude.Int\n" +
 		"import engine.world.View\n" +
 		"fn bad(v: View[Int]) -> Int { return v.tail() }\n"
@@ -1431,10 +1157,6 @@ test_view_unknown_method_is_compile_error :: proc(t: ^testing.T) {
 
 @(test)
 test_bind_name_rejects_conflicting_rebind :: proc(t: ^testing.T) {
-	// The binding-layer floor behind the table test: re-binding the
-	// identical declaration is legal (the prelude pre-bind + a golden
-	// re-export import), but a DIFFERENT declaration under a bound name is
-	// the §02 violation — rejected, never last-write-wins.
 	bindings: Bindings
 	bindings.names = make(map[string]Binding, context.temp_allocator)
 	first := Binding{module = "engine.prelude", kind = .Type_Name}

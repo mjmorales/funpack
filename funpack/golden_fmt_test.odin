@@ -1,26 +1,3 @@
-// The fmt idempotence golden sweep — the canonical-formatter epic's
-// surface-done proof across ALL TEN in-repo example trees plus the
-// stdlib surface files. Per tree (on a temp copy, the committed checkout
-// untouched): fmt writes exit 0, the written tree is canonical (`--check`
-// exits 0 — on-disk idempotence), every formatted source re-parses to an AST
-// equivalent to its pre-fmt parse (ast_equiv, modulo line spans), the
-// canonical projection is byte-deterministic across two independent
-// parse+render passes (the warden six-command double-acquisition discipline),
-// and formatting NEVER changes `funpack check`'s verdict — the stage_build
-// Build_Error arm is compared before/after, so a tree that refuses keeps
-// refusing with the same arm and a clean tree stays clean. Every tree
-// resolves through the resolve_spec_dir env-override/SKIP-warn protocol — a
-// skipped golden warns loudly, never silently passes.
-//
-// The stdlib sweep is TOTAL: every stdlib/engine/*.fun file is grammar-
-// admitted, and both counts are pinned exactly (the golden-count discipline:
-// when the spec or the grammar evolves, the pins change in lockstep — never
-// loosened to ranges). The once-gapped surface is all admitted — escaped
-// string quotes, generic declaration headers, function-typed parameters,
-// @doc on enum variants, and grid.fun, whose reserved-keyword parameter name
-// (`fn`, contradicting fun.ll1.md §2 / fun.ebnf §7) was renamed `builder`
-// spec-side; `fn` itself stays reserved in name position
-// (parser_test.odin test_parse_fn_keyword_param_name_rejected).
 package funpack
 
 import "core:log"
@@ -30,41 +7,16 @@ import "core:slice"
 import "core:strings"
 import "core:testing"
 
-// STDLIB_DEFAULT_DIR is the stdlib surface tree in the in-repo fixture
-// checkout, resolved like every golden (FUNPACK_STDLIB_DIR overrides).
 STDLIB_DEFAULT_DIR :: "stdlib/engine"
 
-// STDLIB_SURFACE_FILE_COUNT pins the stdlib/engine/*.fun file count; a new
-// or removed surface file moves this pin in lockstep.
 STDLIB_SURFACE_FILE_COUNT :: 22
 
-// STDLIB_PARSEABLE_FILE_COUNT pins how many stdlib surface files the §02
-// grammar currently admits (and the sweep therefore proves fmt-idempotent).
-// The pin's history tracks the grammar lockstep: `extern type Name` admission
-// lifted it from 6 to 12; §03 §3 generic declaration headers to 13 —
-// world.fun; §02 §3 function-typed parameters to 14 — list.fun; lexical-core
-// §4 escaped string quotes to 19 — model.fun, nav.fun, prelude.fun,
-// string.fun, ui.fun; §05 §1 @doc on enum variants to 21 — render.fun,
-// render3.fun; the spec-side rename of grid.fun's reserved-keyword parameter
-// (`fn` -> `builder`, resolving the fun.ll1.md §2 / fun.ebnf §7
-// contradiction at its source) to 22 — grid.fun. The sweep is TOTAL: this
-// pin equals STDLIB_SURFACE_FILE_COUNT, and a divergence means a residual
-// grammar gap — a hard failure, never a silent exclusion.
 STDLIB_PARSEABLE_FILE_COUNT :: 22
 
-// resolve_stdlib_dir resolves the stdlib surface tree (env override, else
-// the sibling checkout), mirroring the per-example resolvers.
 resolve_stdlib_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_STDLIB_DIR", STDLIB_DEFAULT_DIR)
 }
 
-// expect_fmt_golden_tree runs the whole fmt golden contract over one live
-// example tree: copy to temp, record the pre-fmt parse of every authored
-// source and the stage_build verdict, prove the canonical projection
-// byte-deterministic across two independent parse+render passes, fmt-write
-// (exit 0), prove the written tree canonical (`--check` exit 0), re-parse
-// every formatted source to an equivalent AST, and prove the post-fmt
-// stage_build verdict arm unchanged. ok = false on the golden SKIP.
 expect_fmt_golden_tree :: proc(t: ^testing.T, src: string, label: string, env_name: string) {
 	root, copied := copy_spec_tree_to_temp(src, label, env_name)
 	if !copied {
@@ -95,8 +47,6 @@ expect_fmt_golden_tree :: proc(t: ^testing.T, src: string, label: string, env_na
 		if parse_err != .None {
 			return
 		}
-		// Byte-determinism: a second independent parse+render pass of the same
-		// bytes projects identically (the double-acquisition discipline).
 		first := render_canonical(ast, context.temp_allocator)
 		again, again_err := stage_parse(stage_lex(string(bytes)))
 		testing.expect_value(t, again_err, Parse_Error.None)
@@ -107,7 +57,6 @@ expect_fmt_golden_tree :: proc(t: ^testing.T, src: string, label: string, env_na
 	testing.expect(t, len(paths) > 0)
 
 	testing.expect_value(t, fmt_verb_exit(root, .Write), 0)
-	// On-disk idempotence: the written tree is already canonical.
 	testing.expect_value(t, fmt_verb_exit(root, .Check), 0)
 
 	for path, i in paths {
@@ -131,8 +80,6 @@ expect_fmt_golden_tree :: proc(t: ^testing.T, src: string, label: string, env_na
 
 @(test)
 test_golden_fmt_ten_example_idempotence_sweep :: proc(t: ^testing.T) {
-	// All ten committed spec examples through the full fmt golden contract.
-	// Each entry SKIPs independently (loudly) when its checkout is absent.
 	Sweep_Entry :: struct {
 		dir:      string,
 		label:    string,
@@ -157,13 +104,6 @@ test_golden_fmt_ten_example_idempotence_sweep :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
-	// The stdlib surface files, swept per-file (they are bare modules, not §14
-	// trees): every file must parse, render canonically such that the
-	// rendering re-parses to an equivalent AST, render idempotently, and
-	// project byte-identically across two independent passes. Both pins hold
-	// at the same value — the sweep is total, so a non-parsing file is a hard
-	// failure named per file, never a silent exclusion; only an absent
-	// checkout SKIPs, loudly.
 	dir := resolve_stdlib_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP golden fmt stdlib: %s not found — set FUNPACK_STDLIB_DIR or ensure the in-repo fixture exists", dir)
@@ -191,8 +131,6 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 		ast, parse_err := stage_parse(stage_lex(string(bytes)))
 		testing.expect_value(t, parse_err, Parse_Error.None)
 		if parse_err != .None {
-			// A residual grammar gap — the sweep is total, so this is a
-			// FAILURE, named loudly per file and counted by the pin below.
 			log.errorf("golden fmt stdlib %s: %v — outside the parser-admitted §02 surface", filepath.base(path), parse_err)
 			continue
 		}
@@ -204,8 +142,6 @@ test_golden_fmt_stdlib_surface_sweep :: proc(t: ^testing.T) {
 		}
 		testing.expect(t, ast_equiv(ast, reparsed), "stdlib canonical form re-parses to a different AST")
 		testing.expect_value(t, render_canonical(reparsed, context.temp_allocator), canonical)
-		// Byte-determinism: an independent second parse+render pass projects
-		// the same bytes.
 		again, again_err := stage_parse(stage_lex(string(bytes)))
 		testing.expect_value(t, again_err, Parse_Error.None)
 		testing.expect_value(t, render_canonical(again, context.temp_allocator), canonical)

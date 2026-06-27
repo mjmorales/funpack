@@ -4,15 +4,12 @@ import "core:testing"
 
 @(test)
 test_trig_exact_at_zero :: proc(t: ^testing.T) {
-	// Cardinal exactness is structural: the odd polynomial vanishes at
-	// zero and the even one yields its unit constant term.
 	testing.expect_value(t, fixed_sin(Fixed(0)), Fixed(0))
 	testing.expect_value(t, fixed_cos(Fixed(0)), FIXED_ONE)
 }
 
 @(test)
 test_pi_pinned_bits :: proc(t: ^testing.T) {
-	// round(π · 2³²) = 13493037705 — the constant is its own golden bits.
 	testing.expect_value(t, PI_FIXED, Fixed(13493037705))
 }
 

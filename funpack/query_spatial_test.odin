@@ -1,18 +1,7 @@
-// The §08 §3 spatial combinators within/nearest_first over the compiler's
-// test interpreter, pinned to MIRROR THE RUNTIME KERNEL EXACTLY
-// (runtime/index.odin spatial_within + spatial_hit_less; vectors copied from
-// runtime/query_eval_test.odin): fixed-point kernel distance (vec2_length/
-// vec3_length over the component difference), the inclusive `<= r` bound, and
-// nearest-first with the stable Id tiebreak — here the source's spawn (= Id)
-// order under a stable sort. Typing rides spatial_combinator_check: the
-// measured field resolves from the ENCLOSING query's @spatial declaration,
-// with named missing/ambiguous verdicts. Self-contained sources per test.
 package funpack
 
 import "core:testing"
 
-// typecheck_spatial runs lex → parse → typecheck and returns the verdict —
-// the typecheck_query idiom; parse must succeed.
 typecheck_spatial :: proc(t: ^testing.T, source: string) -> Type_Error {
 	ast, parse_err := stage_parse(stage_lex(source))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -25,9 +14,6 @@ typecheck_spatial :: proc(t: ^testing.T, source: string) -> Type_Error {
 
 @(test)
 test_spatial_combinators_typecheck_against_declared_requirement :: proc(t: ^testing.T) {
-	// AC (typecheck): the §08 §3 exemplar shape — nearest_first(within(
-	// all[T], origin, r), origin) under a declared @spatial(T.field) — types
-	// to the declared [T] result.
 	err := typecheck_spatial(t,
 		"import engine.list.{within, nearest_first}\n" +
 		"thing Enemy { pos: Vec2 }\n" +
@@ -40,9 +26,6 @@ test_spatial_combinators_typecheck_against_declared_requirement :: proc(t: ^test
 
 @(test)
 test_spatial_requirement_missing_named_verdict :: proc(t: ^testing.T) {
-	// AC (named diagnostic): a spatial combinator whose element thing has no
-	// @spatial on the ENCLOSING query — including any non-query position,
-	// which can declare none — is Spatial_Requirement_Missing.
 	undeclared := typecheck_spatial(t,
 		"import engine.list.within\n" +
 		"thing Enemy { pos: Vec2 }\n" +
@@ -62,8 +45,6 @@ test_spatial_requirement_missing_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_spatial_requirement_ambiguous_named_verdict :: proc(t: ^testing.T) {
-	// AC (named diagnostic): SEVERAL @spatial declarations over one thing on
-	// one query leave the combinator no single field to measure.
 	err := typecheck_spatial(t,
 		"import engine.list.within\n" +
 		"thing Enemy { pos: Vec2, vel: Vec2 }\n" +
@@ -77,9 +58,6 @@ test_spatial_requirement_ambiguous_named_verdict :: proc(t: ^testing.T) {
 
 @(test)
 test_spatial_value_shape_mismatches :: proc(t: ^testing.T) {
-	// AC: the origin must carry the declared field's type, the radius is
-	// Fixed, and a non-vector @spatial field has no kernel distance — each is
-	// the same-typed-sides Type_Mismatch.
 	wrong_origin := typecheck_spatial(t,
 		"import engine.list.within\n" +
 		"thing Enemy { pos: Vec2 }\n" +
@@ -109,13 +87,6 @@ test_spatial_value_shape_mismatches :: proc(t: ^testing.T) {
 
 @(test)
 test_within_nearest_first_mirror_kernel_vectors :: proc(t: ^testing.T) {
-	// AC (evaluation, the runtime kernel's pinned vectors — copied from
-	// runtime/query_eval_test.odin test_spatial_within_nearest_first_id_tiebreak):
-	// from origin (0,0) with r = 10, (3,4) and (0,5) both measure exactly 5
-	// and TIE — they answer in spawn (= Id) order — (6,8) measures exactly 10
-	// and rides the INCLUSIVE bound, (20,0) is outside. The digit fold pins
-	// the full nearest-first order [3, 0, 6] (Ids 0, 2, 1) in one exact value,
-	// and the count pins the radius read.
 	report, err := run_test_pipeline(
 		"import engine.world.{Spawn}\n" +
 		"import engine.math.{Vec2}\n" +
@@ -150,10 +121,6 @@ test_within_nearest_first_mirror_kernel_vectors :: proc(t: ^testing.T) {
 
 @(test)
 test_within_measures_vec3_lanes :: proc(t: ^testing.T) {
-	// AC (evaluation, the kernel's Vec3 vector — copied from
-	// test_spatial_vec3_keys_measure_in_three_lanes): (1,2,2) from the origin
-	// measures exactly 3 through vec3_length and rides the inclusive bound;
-	// (9,0,0) is outside.
 	report, err := run_test_pipeline(
 		"import engine.world.{Spawn}\n" +
 		"import engine.math.{Vec3}\n" +

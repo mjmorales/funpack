@@ -1,10 +1,3 @@
-// The §06/§07 gameplay golden: the pong example tree
-// (examples/pong) is the live source the declaration grammar
-// must parse exactly. The full-file fixture pins the declaration counts
-// against that source — when the spec evolves, the counts change in
-// lockstep; never loosen them to ranges. Like the numerics golden, the
-// fixture resolves the sibling checkout (or FUNPACK_PONG_DIR) and SKIPs
-// loudly when it is absent, so a missing checkout never silently passes.
 package funpack
 
 import "core:log"
@@ -23,14 +16,6 @@ test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	testing.expect(t, ast.module_doc != "")
 
-	// The pong golden surface's exact declaration inventory (§06/§07):
-	// six imports; two enums (Side, Steer: Axis); one data (Board); one
-	// module-level let (BOARD); three things (Paddle, Ball, Scoreboard);
-	// one signal (Goal); nine top-level fns (advance, reflect_y, reflect_x,
-	// overlaps, goal_side, serve_velocity, add_goal, bindings, setup); ten
-	// behaviors (paddle_move, ball_move, wall_bounce, paddle_bounce, score,
-	// tally, serve, draw_paddle, draw_ball, draw_score); one pipeline
-	// (Pong); five inline tests.
 	testing.expect_value(t, len(ast.imports), 6)
 	testing.expect_value(t, len(ast.enums), 2)
 	testing.expect_value(t, len(ast.datas), 1)
@@ -42,9 +27,6 @@ test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(ast.pipelines), 1)
 	testing.expect_value(t, len(ast.tests), 5)
 
-	// Spot-check the load-bearing details the count alone does not pin: the
-	// enum-as-role kind, the singleton-vs-thing flag, the behavior step
-	// reserved name and its target, and the pipeline's ordered stages.
 	steer, found_steer := find_enum(ast, "Steer")
 	testing.expect(t, found_steer)
 	if found_steer {
@@ -55,7 +37,6 @@ test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
 	scoreboard, found_score := find_thing(ast, "Scoreboard")
 	testing.expect(t, found_score)
 	if found_score {
-		// Scoreboard's Int fields carry `= 0` defaults (§03 §1).
 		testing.expect_value(t, len(scoreboard.fields), 2)
 		testing.expect(t, scoreboard.fields[0].has_default)
 	}
@@ -66,7 +47,7 @@ test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
 		testing.expect_value(t, len(pong.stages), 5)
 		testing.expect_value(t, pong.stages[0].name, "startup")
 		testing.expect_value(t, pong.stages[4].name, "render")
-		testing.expect_value(t, len(pong.stages[3].behaviors), 3) // scoring: [score, tally, serve]
+		testing.expect_value(t, len(pong.stages[3].behaviors), 3)
 	}
 
 	paddle_move, found_pm := find_behavior(ast, "paddle_move")
@@ -80,13 +61,6 @@ test_golden_pong_full_file_parses :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_pong_full_file_typechecks :: proc(t: ^testing.T) {
-	// The load-bearing acceptance: the full pong golden source typechecks
-	// end-to-end through stage_typecheck — every behavior step body, helper
-	// fn, bindings(), and setup() types over the resolved environment, with
-	// the View[Paddle]/first, fold(goals, self, add_goal),
-	// input.value(self.player, Steer::Move), and `with`-update sites all
-	// checking. The fixture resolves the live golden source (or
-	// FUNPACK_PONG_DIR) and SKIPs loudly when absent.
 	source, ok := pong_source()
 	if !ok {
 		return
@@ -100,18 +74,6 @@ test_golden_pong_full_file_typechecks :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_pong_full_pipeline_passes :: proc(t: ^testing.T) {
-	// The §06/§07 gameplay golden's defining outcome: the full pong source
-	// compiles clean through every stage — parse → gates → typecheck →
-	// contracts → flatten → effect-closure — and its five inline test blocks
-	// evaluate to their golden values (eight asserts: the overlaps rail test
-	// carries four). The five are advance (a user fn call over Vec2
-	// arithmetic), score.step (the §04 name.step behavior invocation emitting
-	// a Goal signal record), tally.step (a fold over the add_goal user fn with
-	// a `with`-update on a user thing), draw_ball.step (a render behavior
-	// emitting a Draw::Rect command), and overlaps (a Bool user fn pinned at
-	// its §20 drawn-geometry contact rail) — so passing all five exercises
-	// every §06 evaluable form. The fixture reads the live golden source (or
-	// FUNPACK_PONG_DIR) and SKIPs loudly when absent.
 	source, ok := pong_source()
 	if !ok {
 		return
@@ -123,9 +85,6 @@ test_golden_pong_full_pipeline_passes :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.exit_code, 0)
 }
 
-// pong_source reads the pong project's single source file via the §14
-// project-tree reader; ok = false (with a SKIP warning) when the sibling
-// checkout is absent, matching the numerics golden's skip semantics.
 pong_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_pong_dir()
 	if !os.is_dir(dir) {
@@ -147,11 +106,6 @@ resolve_pong_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_PONG_DIR", PONG_DEFAULT_DIR)
 }
 
-// find_thing / find_pipeline / find_behavior are linear lookups by declared
-// name over the parsed AST — the spot-check fixtures read one declaration
-// without depending on its source position. (find_enum lives in
-// emit_seam_decls.odin — the v15 declaration carry's production lookup — and
-// these fixtures share it.)
 find_thing :: proc(ast: Ast, name: string) -> (Thing_Node, bool) {
 	for decl in ast.things {
 		if decl.name == name {

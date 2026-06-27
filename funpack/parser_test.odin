@@ -10,9 +10,6 @@ test_parse_module_doc :: proc(t: ^testing.T) {
 	testing.expect_value(t, ast.module_doc, "the module doc")
 }
 
-// A blank line between the file-leading @doc and the first import must not drop
-// the module doc: the import check skips any run of newlines after the doc's
-// terminator.
 @(test)
 test_parse_module_doc_blank_line_before_import :: proc(t: ^testing.T) {
 	tokens := stage_lex("@doc(\"the module doc\")\n\nimport engine.list.fold\n")
@@ -21,8 +18,6 @@ test_parse_module_doc_blank_line_before_import :: proc(t: ^testing.T) {
 	testing.expect_value(t, ast.module_doc, "the module doc")
 }
 
-// Several blank lines between the @doc and the first import attribute the same
-// way — the skip is over a run of newlines, not a single one.
 @(test)
 test_parse_module_doc_many_blank_lines_before_import :: proc(t: ^testing.T) {
 	tokens := stage_lex("@doc(\"the module doc\")\n\n\n\nimport engine.list.fold\n")
@@ -31,9 +26,6 @@ test_parse_module_doc_many_blank_lines_before_import :: proc(t: ^testing.T) {
 	testing.expect_value(t, ast.module_doc, "the module doc")
 }
 
-// A file-leading @doc followed (across a blank line) by a declaration keyword
-// rather than an import is that declaration's doc, NOT the module doc — the
-// blank-line skip must not misfile the doc when no import follows.
 @(test)
 test_parse_first_doc_before_decl_not_module_doc :: proc(t: ^testing.T) {
 	tokens := stage_lex("@doc(\"the data doc\")\n\ndata Pt { x: Int }\n")
@@ -89,10 +81,6 @@ test_parse_import_member_group :: proc(t: ^testing.T) {
 
 @(test)
 test_stage_parse_located_anchors_post_advance_offender :: proc(t: ^testing.T) {
-	// reject stamps the offending token at the rejection site, so a post-advance
-	// casing reject anchors on the mis-cased identifier even though p.pos has
-	// moved past it. `thing widget {` rejects on `widget` (line 1, col 7), NOT on
-	// the `{` (col 14) the prior parser_stop_span guess reported.
 	_, verdict := stage_parse_located(stage_lex("thing widget { x: Int }\n"))
 	testing.expect_value(t, verdict.err, Parse_Error.Wrong_Case)
 	testing.expect_value(t, verdict.line, 1)
@@ -101,10 +89,6 @@ test_stage_parse_located_anchors_post_advance_offender :: proc(t: ^testing.T) {
 
 @(test)
 test_stage_parse_located_peek_reject_falls_back_to_stop_span :: proc(t: ^testing.T) {
-	// A peek-reject leaves err_line/err_col unset, so stage_parse_located falls
-	// back to parser_stop_span — correct there, because p.pos already points AT
-	// the offender for a reject raised before advance. `extern data` rejects with
-	// Malformed_Extern anchored on the stray `data` follower (line 1, col 8).
 	_, verdict := stage_parse_located(stage_lex("extern data X\n"))
 	testing.expect_value(t, verdict.err, Parse_Error.Malformed_Extern)
 	testing.expect_value(t, verdict.line, 1)
@@ -113,9 +97,6 @@ test_stage_parse_located_peek_reject_falls_back_to_stop_span :: proc(t: ^testing
 
 @(test)
 test_parse_import_carries_keyword_provenance :: proc(t: ^testing.T) {
-	// Import_Node carries the `import` keyword's 1-based line/col — the
-	// provenance the import-resolution typecheck arms anchor on. The second
-	// import sits on line 2 with the keyword at col 1.
 	tokens := stage_lex("import assets\nimport engine.math.{Vec2}\n")
 	ast, err := stage_parse(tokens)
 	testing.expect_value(t, err, Parse_Error.None)
@@ -128,7 +109,6 @@ test_parse_import_carries_keyword_provenance :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_import_group_newline_separated :: proc(t: ^testing.T) {
-	// Members separate by `,` or newline — both legal (spec §02).
 	tokens := stage_lex("import engine.math.{\n  Vec2\n  abs,\n  fold\n}\n")
 	ast, err := stage_parse(tokens)
 	testing.expect_value(t, err, Parse_Error.None)
@@ -137,7 +117,6 @@ test_parse_import_group_newline_separated :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_import_interior_segment_wrong_case :: proc(t: ^testing.T) {
-	// An interior path segment is a module name — snake_case only.
 	tokens := stage_lex("import Engine.math.fold\n")
 	_, err := stage_parse(tokens)
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
@@ -165,14 +144,8 @@ test_parse_let_wrong_case_name :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
-// ── let tuple-destructure parses (spec §02 §5/§8) ───────────────────────────────
 @(test)
 test_parse_let_tuple_destructure :: proc(t: ^testing.T) {
-	// `let (a, b) = expr` destructures a return-position tuple (ADR
-	// 2026-06-24-let-tuple-destructure-binding) — the threaded-Rng consume site
-	// `let (value, next) = draw(rng)`. The `(` immediately after `let` is the LL(1)
-	// signal that selects the tuple form; the binder list parses into Let_Node.names
-	// with is_tuple set, and `name` stays empty.
 	tokens := stage_lex("fn draw() -> Int {\n  let (a, b) = pair()\n  return a\n}\n")
 	ast, err := stage_parse(tokens)
 	testing.expect_value(t, err, Parse_Error.None)
@@ -185,8 +158,6 @@ test_parse_let_tuple_destructure :: proc(t: ^testing.T) {
 	testing.expect_value(t, let_node.names[1], "b")
 }
 
-// A three-binder tuple destructure parses the same way — the binder list is any
-// arity, zipped against the RHS tuple by the type checker.
 @(test)
 test_parse_let_tuple_destructure_three_binders :: proc(t: ^testing.T) {
 	tokens := stage_lex("fn f() -> Int {\n  let (a, b, c) = triple()\n  return a\n}\n")
@@ -198,8 +169,6 @@ test_parse_let_tuple_destructure_three_binders :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(let_node.names), 3)
 }
 
-// A tuple-destructure binder that is not snake_case keeps the parser-wide
-// Wrong_Case verdict (a tuple binder is a local value name).
 @(test)
 test_parse_let_tuple_destructure_wrong_case :: proc(t: ^testing.T) {
 	tokens := stage_lex("fn f() -> Int {\n  let (A, b) = pair()\n  return b\n}\n")
@@ -209,9 +178,6 @@ test_parse_let_tuple_destructure_wrong_case :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_match_well_formed :: proc(t: ^testing.T) {
-	// A well-formed match over the minimal pattern set — variant with
-	// binders, bare variant, wildcard — parses to Parse_Error.None
-	// (spec §02 §5).
 	source := "match seen {\n" +
 		"  Option::Some(p) => p\n" +
 		"  Option::None => 0\n" +
@@ -229,15 +195,12 @@ test_parse_match_well_formed :: proc(t: ^testing.T) {
 	testing.expect_value(t, m.arms[0].pattern.kind, Pattern_Kind.Variant_Binds)
 	testing.expect_value(t, m.arms[0].pattern.type_name, "Option")
 	testing.expect_value(t, m.arms[0].pattern.variant, "Some")
-	// The payload is now a nested sub-pattern (grammar §13): Option::Some(p) carries
-	// one element, the Bare_Binder `p`.
 	testing.expect_value(t, len(m.arms[0].pattern.elements), 1)
 	testing.expect_value(t, m.arms[0].pattern.elements[0].kind, Pattern_Kind.Bare_Binder)
 	testing.expect_value(t, len(m.arms[0].pattern.elements[0].binders), 1)
 	testing.expect_value(t, m.arms[0].pattern.elements[0].binders[0], "p")
 	testing.expect_value(t, m.arms[1].pattern.kind, Pattern_Kind.Bare_Variant)
 	testing.expect_value(t, m.arms[2].pattern.kind, Pattern_Kind.Wildcard)
-	// The scrutinee is the bare value name, not a record literal off it.
 	scrutinee, is_name := m.scrutinee.(^Name_Expr)
 	testing.expect(t, is_name)
 	if is_name {
@@ -247,9 +210,6 @@ test_parse_match_well_formed :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_match_struct_payload_destructure :: proc(t: ^testing.T) {
-	// The yard `box_size` shape (spec §02 §5): a struct-payload field-pun arm
-	// `Shape2::Box{size} => size` binds the field `size` by name, parallel to
-	// the value-side struct-payload Variant_Expr. A wildcard arm follows.
 	source := "match shape {\n" +
 		"  Shape2::Box{size} => size\n" +
 		"  _ => fallback\n" +
@@ -267,8 +227,6 @@ test_parse_match_struct_payload_destructure :: proc(t: ^testing.T) {
 	testing.expect_value(t, pat.kind, Pattern_Kind.Struct_Binds)
 	testing.expect_value(t, pat.type_name, "Shape2")
 	testing.expect_value(t, pat.variant, "Box")
-	// The field-pun binder is the single field name `size` (binds `size` to the
-	// `size` field).
 	testing.expect_value(t, len(pat.binders), 1)
 	testing.expect_value(t, pat.binders[0], "size")
 	testing.expect_value(t, m.arms[1].pattern.kind, Pattern_Kind.Wildcard)
@@ -276,8 +234,6 @@ test_parse_match_struct_payload_destructure :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_match_struct_payload_multi_field :: proc(t: ^testing.T) {
-	// A struct-payload field-pun arm binds every named field, in source order —
-	// the binder list pins more than one pun.
 	expr, err := parse_expr_text("match shape { Shape2::Rect{w, h} => w, _ => h }")
 	testing.expect_value(t, err, Parse_Error.None)
 	m, is_match := expr.(^Match_Expr)
@@ -294,16 +250,12 @@ test_parse_match_struct_payload_multi_field :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_match_struct_payload_wrong_case_field_rejected :: proc(t: ^testing.T) {
-	// A field-pun binder is a value name — snake_case (spec §02); an UpperCamel
-	// field name in the pun position rejects as Wrong_Case.
 	_, err := parse_expr_text("match shape { Shape2::Box{Size} => 0, _ => 1 }")
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
 @(test)
 test_parse_match_comma_separated_arms :: proc(t: ^testing.T) {
-	// `,` is a legal arm separator (Sep), so the inline one-line form
-	// parses too (spec §02 §5).
 	expr, err := parse_expr_text("match self { Screen::Hud => 1, _ => 2 }")
 	testing.expect_value(t, err, Parse_Error.None)
 	m, is_match := expr.(^Match_Expr)
@@ -315,7 +267,6 @@ test_parse_match_comma_separated_arms :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_match_missing_arrow_rejected :: proc(t: ^testing.T) {
-	// A malformed arm — the `=>` separator omitted — rejects at parse.
 	expr, err := parse_expr_text("match seen {\n  Option::None 0\n}\n")
 	testing.expect(t, err != .None)
 	testing.expect(t, expr == nil)
@@ -323,18 +274,10 @@ test_parse_match_missing_arrow_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_match_bad_pattern_case_rejected :: proc(t: ^testing.T) {
-	// A bad pattern — a snake_case head where the variant pattern demands
-	// an UpperCamel enum type — rejects as Wrong_Case (spec §02).
 	_, err := parse_expr_text("match seen {\n  option::None => 0\n}\n")
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
-// F6 (dogfood-mario): a match dispatched on a bool literal pattern. `true`/`false`
-// lex as snake_case Idents in variant-head position, so the casing check would
-// mis-flag them as Wrong_Case ("snake_case for fn/field names…") — a misdiagnosis
-// of the real fault: Bool's two values are not a §02 §5 match domain. The
-// dedicated Bool_Pattern_Unsupported verdict branches AHEAD of the casing check
-// and steers the author to if/else. The `true` and `false` arms each trip it.
 @(test)
 test_parse_match_on_bool_true_pattern_steers_to_if :: proc(t: ^testing.T) {
 	_, err := parse_expr_text("match hit {\n  true => 1\n  false => 0\n}\n")
@@ -343,18 +286,10 @@ test_parse_match_on_bool_true_pattern_steers_to_if :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_match_on_bool_false_first_arm_steers_to_if :: proc(t: ^testing.T) {
-	// The verdict is per-pattern, so a `false`-first arm trips it too — the
-	// branch keys on the literal text, not arm order.
 	_, err := parse_expr_text("match done {\n  false => 0\n  true => 1\n}\n")
 	testing.expect_value(t, err, Parse_Error.Bool_Pattern_Unsupported)
 }
 
-// F5 (dogfood-mario): the exact two-line case through a full fn parse. `return a
-// < b` ends at the §02 §1 newline (a complete expression), so the `and c < d`
-// continuation dangles at the next statement-start. The fn-body statement loop
-// catches the leading binary operator ahead of the R_Brace expectation that
-// would otherwise report a bare Unexpected_Token on `and` (the misfire F5
-// reported), naming Newline_Before_Binary_Op instead.
 @(test)
 test_parse_fn_body_leading_binary_op_after_newline_rejected :: proc(t: ^testing.T) {
 	source := "fn keep() -> Bool {\n  return a < b\n  and c < d\n}\n"
@@ -362,9 +297,6 @@ test_parse_fn_body_leading_binary_op_after_newline_rejected :: proc(t: ^testing.
 	testing.expect_value(t, err, Parse_Error.Newline_Before_Binary_Op)
 }
 
-// parse_match_from_keyword consumes the leading `match` token then
-// delegates to parse_match — mirroring how parse_atom dispatches the
-// keyword, for a test that drives parse_match directly.
 parse_match_from_keyword :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 	match_tok := expect(p, .Match) or_return
 	return parse_match(p, match_tok)
@@ -372,8 +304,6 @@ parse_match_from_keyword :: proc(p: ^Parser) -> (expr: Expr, err: Parse_Error) {
 
 @(test)
 test_parse_golden_prefix :: proc(t: ^testing.T) {
-	// The golden file's opening shape: module doc, the three import
-	// forms, a documented test block.
 	source := "@doc(\"contract\")\n" +
 		"import engine.prelude.Option\n" +
 		"import engine.math.{to_fixed, pi}\n" +
@@ -394,8 +324,6 @@ test_parse_golden_prefix :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_data_decl_with_fields :: proc(t: ^testing.T) {
-	// `data Name { field: T = default … }` (spec §03 §1): a plain field and
-	// a defaulted field, both kept in declaration order.
 	ast, err := stage_parse(stage_lex("data Board { w: Fixed, h: Fixed = 120.0 }\n"))
 	testing.expect_value(t, err, Parse_Error.None)
 	testing.expect_value(t, len(ast.datas), 1)
@@ -411,8 +339,6 @@ test_parse_data_decl_with_fields :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_enum_as_role_kind :: proc(t: ^testing.T) {
-	// The §03/§06 enum-as-role form `enum Steer: Axis { Move }`: a kind
-	// ascription after the type name, contextual (Axis is not reserved).
 	ast, err := stage_parse(stage_lex("enum Steer: Axis { Move }\n"))
 	testing.expect_value(t, err, Parse_Error.None)
 	testing.expect_value(t, len(ast.enums), 1)
@@ -426,8 +352,6 @@ test_parse_enum_as_role_kind :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_enum_payload_variants :: proc(t: ^testing.T) {
-	// Plain, tuple-payload, and struct-payload variants in one enum
-	// (spec §03 §2).
 	source := "enum PathOp {\n" +
 		"  Close\n" +
 		"  MoveTo(Vec2)\n" +
@@ -444,19 +368,8 @@ test_parse_enum_payload_variants :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(e.variants[2].fields), 2)
 }
 
-// ── §05 §1 @doc on enum variants ──────────────────────────────────────────────
-// A variant admits exactly @doc ("each `Draw` variant carries a @doc" —
-// fun.ebnf §4 Variant ::= Directive* UPPER_IDENT VariantPayload?); the carry is
-// Variant_Decl.doc. Every other directive in variant position is a keyed
-// wrong-target verdict: @migrate/@index/@spatial keep their directive-keyed
-// verdicts, the rest of the declaration family is
-// Variant_Directive_Wrong_Target — the @migrate Migrate_Wrong_Target mold.
-
 @(test)
 test_parse_variant_doc_carried :: proc(t: ^testing.T) {
-	// The stdlib render.fun shape: each @doc on its own line above its variant
-	// (struct, tuple, and plain payloads), the enum's own @doc untouched, and a
-	// doc-less variant carrying "".
 	source := "@doc(\"A 2D draw command.\")\n" +
 		"enum Draw {\n" +
 		"  @doc(\"A filled rectangle.\")\n" +
@@ -483,9 +396,6 @@ test_parse_variant_doc_carried :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_doc_inline :: proc(t: ^testing.T) {
-	// The grammar puts no line break between a variant's directives and its
-	// name (fun.ebnf §4), so the inline spelling parses too — attached to the
-	// variant that follows, the field-level inline-@migrate mold.
 	source := "enum Side { @doc(\"The left side.\") Left, Right }\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -500,9 +410,6 @@ test_parse_variant_doc_inline :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_gtag_rejected :: proc(t: ^testing.T) {
-	// @gtag labels an indexed declaration (spec §05 §1); a variant is not a
-	// decl record, so a variant-position @gtag is the named wrong-target
-	// verdict, never a silently dropped label.
 	source := "enum Side { @gtag(\"side\") Left, Right }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
@@ -510,8 +417,6 @@ test_parse_variant_gtag_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_todo_rejected :: proc(t: ^testing.T) {
-	// @todo notes are index-recorded per declaration (spec §05 §2, §29 §2) —
-	// no variant target exists.
 	source := "enum Side {\n  @todo(\"rename\", T-0042)\n  Left\n}\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
@@ -519,9 +424,6 @@ test_parse_variant_todo_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_probe_rejected :: proc(t: ^testing.T) {
-	// The §05 §5 debug probes observe declarations and fields (fun.ebnf §1
-	// Annotation positions), never a variant — the Variant production admits
-	// Directive*, not Annotation*, so a probe there is wrong-target.
 	source := "enum Side { @log(side) Left, Right }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
@@ -529,9 +431,6 @@ test_parse_variant_probe_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_expose_rejected :: proc(t: ^testing.T) {
-	// @expose publishes a DECLARATION into the external contract (spec §05
-	// §4); a variant ships with its enum, so a variant-level @expose is
-	// wrong-target.
 	source := "enum Side { @expose Left, Right }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
@@ -539,9 +438,6 @@ test_parse_variant_expose_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_migrate_rejected :: proc(t: ^testing.T) {
-	// @migrate keeps its directive-keyed verdict on a variant — the
-	// schema-evolution channel targets data fields and renamed type
-	// declarations only (spec §05 §6), mirroring the field-body rejection.
 	source := "enum Side { @migrate(from: \"L\") Left, Right }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
@@ -549,8 +445,6 @@ test_parse_variant_migrate_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_index_rejected :: proc(t: ^testing.T) {
-	// @index/@spatial keep their directive-keyed verdict on a variant — §08
-	// §3 places the index requirement on a `query` declaration only.
 	source := "enum Side { @index(Enemy.cell) Left, Right }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Index_Wrong_Target)
@@ -558,28 +452,13 @@ test_parse_variant_index_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_doc_dangling_rejected :: proc(t: ^testing.T) {
-	// A @doc with no variant following it documents nothing — dangling at the
-	// body's close is the wrong-target verdict (the dangling-@migrate mold).
 	source := "enum Side {\n  Left\n  @doc(\"nothing follows\")\n}\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Variant_Directive_Wrong_Target)
 }
 
-// fun.ll1.md §2 classifies `thing`/`singleton`/`data`/`enum`/`on` as CONTEXTUAL
-// keywords: a keyword only where it opens a module-level declaration (or, for
-// `on`, separates a behavior header), an ordinary §02 snake_case value name
-// everywhere else. This proves the value-position direction the contextual rule
-// adds — a binding name, an expression-position read, a member access, and a
-// field name — all five words legal as identifiers. The declaration-position
-// direction (keyword still selects the production) is held by
-// test_parse_data_decl_with_fields / test_parse_enum_as_role_kind /
-// test_parse_thing_and_singleton, which parse unchanged.
 @(test)
 test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
-	// A no-ascription `let <word> = …` binding: each contextual keyword is a legal
-	// binding name (the latent restriction this story removes — the hard-keyword
-	// lexer path rejected `let thing = …` before). The let value reads `on`, a
-	// fifth contextual word, as an ordinary Name_Expr.
 	source := "test \"contextual words bind\" {\n" +
 		"  let thing = 1\n" +
 		"  let singleton = 2\n" +
@@ -600,9 +479,6 @@ test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
 			testing.expect_value(t, let_node.name, want)
 		}
 	}
-	// The `on` binding's value is the bare value name `thing` — a Name_Expr, proof
-	// a contextual word reads as an identifier in expression position, not a
-	// keyword.
 	on_let, on_is_let := body[4].(Let_Node)
 	testing.expect(t, on_is_let)
 	if on_is_let {
@@ -614,8 +490,6 @@ test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
 		}
 	}
 
-	// A member-access receiver dotted into a contextual word: `s.data` reads the
-	// `data` field, an Ident in member position.
 	member_expr, member_err := parse_expr_text("s.data")
 	testing.expect_value(t, member_err, Parse_Error.None)
 	member, is_member := member_expr.(^Member_Expr)
@@ -624,8 +498,6 @@ test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
 		testing.expect_value(t, member.member, "data")
 	}
 
-	// A contextual word as a data FIELD name: `enum: Bool` is a legal field, the
-	// word an Ident the field grammar consumes.
 	field_ast, field_err := stage_parse(stage_lex("data Flags { enum: Bool, thing: Int }\n"))
 	testing.expect_value(t, field_err, Parse_Error.None)
 	testing.expect_value(t, len(field_ast.datas), 1)
@@ -633,10 +505,6 @@ test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
 	testing.expect_value(t, field_ast.datas[0].fields[0].name, "enum")
 	testing.expect_value(t, field_ast.datas[0].fields[1].name, "thing")
 
-	// And the declaration-position direction in the SAME test: a `thing` opener
-	// immediately after the field-name `thing` above still selects the thing
-	// production — the word is the keyword only at the start of a module-level
-	// statement.
 	decl_ast, decl_err := stage_parse(stage_lex("thing Paddle { y: Fixed }\n"))
 	testing.expect_value(t, decl_err, Parse_Error.None)
 	testing.expect_value(t, len(decl_ast.things), 1)
@@ -644,21 +512,8 @@ test_contextual_keywords_legal_in_value_position :: proc(t: ^testing.T) {
 	testing.expect(t, !decl_ast.things[0].is_singleton)
 }
 
-// fun.ll1.md §2 also lists `query` and `mut` as contextual keywords. `query`'s
-// §08 §3 declaration production exists (parse_query), so it is in
-// is_decl_opener_keyword and a module-level `query` opener dispatches to the
-// query production — while staying an ordinary value name everywhere else, like
-// `data`/`thing`. `mut`'s production does NOT exist (`mut data` (§03 §7) is
-// unparsed — emit_data hardcodes mut=false), so it stays OUT of the set: a word
-// arms a block only if its declaration parses. This pins both directions for
-// each word — the value half (value-position legality, since query/mut never
-// were hard keywords) and the declaration half (`query` dispatches its
-// production; `mut` is a clean Unexpected_Token until its production lands and
-// flips its expectation here).
 @(test)
 test_query_mut_contextual_value_only :: proc(t: ^testing.T) {
-	// Value position: `let query = …` / `let mut = …` bind as ordinary snake_case
-	// names; `mut`'s value reads the bare name `query` as a Name_Expr.
 	source := "test \"query and mut bind\" {\n" +
 		"  let query = 1\n" +
 		"  let mut = query\n" +
@@ -685,8 +540,6 @@ test_query_mut_contextual_value_only :: proc(t: ^testing.T) {
 		}
 	}
 
-	// Field-name position: both legal as data field names, Idents the field grammar
-	// consumes.
 	field_ast, field_err := stage_parse(stage_lex("data Q { query: Int, mut: Bool }\n"))
 	testing.expect_value(t, field_err, Parse_Error.None)
 	testing.expect_value(t, len(field_ast.datas), 1)
@@ -694,12 +547,6 @@ test_query_mut_contextual_value_only :: proc(t: ^testing.T) {
 	testing.expect_value(t, field_ast.datas[0].fields[0].name, "query")
 	testing.expect_value(t, field_ast.datas[0].fields[1].name, "mut")
 
-	// Declaration position: a module-level `query` opener now dispatches the
-	// §08 §3 query production — `query Recent { … }` reaches parse_query and
-	// fails on its UpperCamel name (a query name is snake_case), the
-	// production's own verdict, not a generic token error. `mut` stays
-	// DEFERRED: no production, so a clean Unexpected_Token — the guard that
-	// keeps that deferral honest until `mut data` lands.
 	_, q_decl_err := stage_parse(stage_lex("query Recent { since: Int }\n"))
 	testing.expect_value(t, q_decl_err, Parse_Error.Wrong_Case)
 	_, m_decl_err := stage_parse(stage_lex("mut Board { score: Int }\n"))
@@ -708,9 +555,6 @@ test_query_mut_contextual_value_only :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_thing_and_singleton :: proc(t: ^testing.T) {
-	// `thing` and `singleton` share the body grammar; only the is_singleton
-	// flag tells them apart (spec §06 §1–2). Scoreboard's Int fields carry
-	// `= 0` defaults.
 	source := "thing Ball { pos: Vec2, vel: Vec2 }\n" +
 		"singleton Scoreboard { left: Int = 0, right: Int = 0 }\n"
 	ast, err := stage_parse(stage_lex(source))
@@ -725,7 +569,6 @@ test_parse_thing_and_singleton :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_signal_decl :: proc(t: ^testing.T) {
-	// `signal Name { field: T }` (spec §03 §6, §06 §5).
 	ast, err := stage_parse(stage_lex("signal Goal { side: Side }\n"))
 	testing.expect_value(t, err, Parse_Error.None)
 	testing.expect_value(t, len(ast.signals), 1)
@@ -736,8 +579,6 @@ test_parse_signal_decl :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_module_let_decl :: proc(t: ^testing.T) {
-	// A module-level constant `let NAME: T = expr` (spec §02 §6–7), distinct
-	// from a test-body let in carrying an explicit type ascription.
 	ast, err := stage_parse(stage_lex("let BOARD: Board = Board{ w: 160.0, h: 120.0 }\n"))
 	testing.expect_value(t, err, Parse_Error.None)
 	testing.expect_value(t, len(ast.lets), 1)
@@ -749,8 +590,6 @@ test_parse_module_let_decl :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_top_level_fn_multistatement_body :: proc(t: ^testing.T) {
-	// A top-level fn with a multi-statement body — a let then a return —
-	// generalizing the single-return lambda the Pratt cascade carries.
 	source := "fn advance(at: Vec2, vel: Vec2, dt: Fixed) -> Vec2 {\n" +
 		"  let step = vel * dt\n" +
 		"  return at + step\n" +
@@ -772,9 +611,6 @@ test_parse_top_level_fn_multistatement_body :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_fn_if_early_return_body :: proc(t: ^testing.T) {
-	// An `if cond { return … }` early-return guard as a statement form in a
-	// fn body (spec §02 §5). The condition ends in a field access whose
-	// trailing `{` opens the guard block, not a record literal.
 	source := "fn goal_side(at: Vec2) -> Option[Side] {\n" +
 		"  if at.x < 0.0 { return Option::Some(Side::Right) }\n" +
 		"  return Option::None\n" +
@@ -786,8 +622,6 @@ test_parse_fn_if_early_return_body :: proc(t: ^testing.T) {
 	if_node, first_is_if := f.body[0].(If_Node)
 	testing.expect(t, first_is_if)
 	if first_is_if {
-		// The guard condition is the `at.x < 0.0` comparison, and the guarded
-		// body holds the single early return.
 		_, cond_is_binary := if_node.cond.(^Binary_Expr)
 		testing.expect(t, cond_is_binary)
 		testing.expect_value(t, len(if_node.body), 1)
@@ -798,8 +632,6 @@ test_parse_fn_if_early_return_body :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_behavior_with_reserved_step :: proc(t: ^testing.T) {
-	// `behavior name on Thing { fn step(…) -> … { … } }` (spec §06 §3): the
-	// reserved `step` entry point, its target, and its read parameters.
 	source := "behavior paddle_move on Paddle {\n" +
 		"  fn step(self: Paddle, input: Input, time: Time) -> Paddle {\n" +
 		"    return self\n" +
@@ -818,8 +650,6 @@ test_parse_behavior_with_reserved_step :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_behavior_non_step_entry_rejected :: proc(t: ^testing.T) {
-	// `step` is the built-in, reserved entry point (spec §06 §3); a behavior
-	// names no other, so a `fn update(…)` body is rejected at parse.
 	source := "behavior bad on Paddle {\n" +
 		"  fn update(self: Paddle) -> Paddle {\n" +
 		"    return self\n" +
@@ -831,9 +661,6 @@ test_parse_behavior_non_step_entry_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_fn_stub_body :: proc(t: ^testing.T) {
-	// A fn body may BE a typed hole (spec §05 §2; fun.ebnf §7 FnBody ::=
-	// Block | StubExpr): `@stub(T)` records the hole flag and the declared T,
-	// leaves the body empty, and carries no fallback.
 	source := "fn serve(b: Ball) -> Ball @stub(Ball)\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -848,8 +675,6 @@ test_parse_fn_stub_body :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_fn_stub_body_with_fallback :: proc(t: ^testing.T) {
-	// The two-argument form `@stub(T, fallback)` additionally records the
-	// approximation expression (spec §05 §2).
 	source := "fn speed() -> Fixed @stub(Fixed, 1.5)\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -863,8 +688,6 @@ test_parse_fn_stub_body_with_fallback :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_fn_stub_body_generic_hole_type :: proc(t: ^testing.T) {
-	// The declared hole type is a full Type_Ref — a generic application
-	// parses like any `-> R` ascription would.
 	source := "fn pick() -> Option[Side] @stub(Option[Side])\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -877,8 +700,6 @@ test_parse_fn_stub_body_generic_hole_type :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_behavior_step_stub_body :: proc(t: ^testing.T) {
-	// A behavior's reserved `step` entry point may be holed exactly like a fn
-	// (parse_fn_rest is shared): the hole lands on Behavior_Node.step.
 	source := "behavior serve on Ball {\n" +
 		"  fn step(self: Ball) -> Ball @stub(Ball)\n" +
 		"}\n"
@@ -894,9 +715,6 @@ test_parse_behavior_step_stub_body :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_as_prefix_directive_rejected :: proc(t: ^testing.T) {
-	// @stub is NOT a leading prefix directive (spec §05: it stands in
-	// body/expression position only) — a declaration-prefixing `@stub` is a
-	// parse error, never silently accepted.
 	source := "@stub(Ball)\nfn serve(b: Ball) -> Ball {\n  return b\n}\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
@@ -904,8 +722,6 @@ test_parse_stub_as_prefix_directive_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_inside_block_rejected :: proc(t: ^testing.T) {
-	// The hole stands FOR the body, never inside one (fun.ebnf §7: FnBody is
-	// Block OR StubExpr) — a `@stub(…)` as a block statement is a parse error.
 	source := "fn serve(b: Ball) -> Ball {\n  @stub(Ball)\n}\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
@@ -913,8 +729,6 @@ test_parse_stub_inside_block_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_missing_type_rejected :: proc(t: ^testing.T) {
-	// `@stub()` declares no T to typecheck callers against — the hole type is
-	// mandatory (spec §05 §2).
 	source := "fn serve(b: Ball) -> Ball @stub()\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
@@ -922,8 +736,6 @@ test_parse_stub_missing_type_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_non_stub_directive_in_body_position_rejected :: proc(t: ^testing.T) {
-	// Only @stub may stand for a body: any other directive after `-> R` is an
-	// Unexpected_Token in parse_stub_body's name check.
 	source := "fn serve(b: Ball) -> Ball @doc(\"not a body\")\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
@@ -931,10 +743,6 @@ test_parse_non_stub_directive_in_body_position_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_expr_atom_bare :: proc(t: ^testing.T) {
-	// A typed hole may stand in EXPRESSION position (spec §05 §2; fun.ebnf §15:
-	// StubExpr is an Atom): `base + @stub(Fixed)` parses the hole as the
-	// binary's rhs operand, the enclosing fn stays INTACT (holed false, body
-	// present), and the bare form carries no fallback.
 	source := "fn boost(base: Fixed) -> Fixed {\n  return base + @stub(Fixed)\n}\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -963,9 +771,6 @@ test_parse_stub_expr_atom_bare :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_expr_atom_with_fallback :: proc(t: ^testing.T) {
-	// The two-argument expression form `@stub(T, fallback)` records the
-	// fallback approximation, here as a top-level `let` initializer — any
-	// expression position admits the Atom.
 	source := "let SPEED: Fixed = @stub(Fixed, 1.5)\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -983,10 +788,6 @@ test_parse_stub_expr_atom_with_fallback :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_expr_atom_nested_positions :: proc(t: ^testing.T) {
-	// The StubExpr Atom rides the Pratt cascade like any other atom: holes
-	// nest inside a record literal's fields (one per field, bare and fallback
-	// forms side by side), proving the production composes rather than being a
-	// top-of-expression special case.
 	source := "fn place() -> Vec2 {\n  return Vec2{x: @stub(Fixed), y: @stub(Fixed, 1.0)}\n}\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -1015,9 +816,6 @@ test_parse_stub_expr_atom_nested_positions :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_expr_atom_in_call_args :: proc(t: ^testing.T) {
-	// A hole standing as a call argument parses through CallArgs like any
-	// expression — `clamp(@stub(Fixed, 0.5), limit)` carries the hole at
-	// argument position 0.
 	source := "fn capped(limit: Fixed) -> Fixed {\n  return clamp(@stub(Fixed, 0.5), limit)\n}\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -1038,9 +836,6 @@ test_parse_stub_expr_atom_in_call_args :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_non_stub_directive_in_expression_rejected :: proc(t: ^testing.T) {
-	// Only @stub names a value (spec §05: every other directive prefixes a
-	// declaration) — a `@doc(…)` in expression position is an Unexpected_Token
-	// in parse_stub_parts' name check, never silently accepted.
 	source := "fn boost() -> Fixed {\n  return @doc(\"not a value\")\n}\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
@@ -1048,8 +843,6 @@ test_parse_non_stub_directive_in_expression_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_expr_missing_type_rejected :: proc(t: ^testing.T) {
-	// `@stub()` in expression position declares no T for the hole to ascribe —
-	// the hole type is mandatory in both positions (spec §05 §2).
 	source := "fn boost() -> Fixed {\n  return @stub()\n}\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
@@ -1057,9 +850,6 @@ test_parse_stub_expr_missing_type_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stub_expr_missing_separator_rejected :: proc(t: ^testing.T) {
-	// The fallback is comma-separated from the declared T (fun.ebnf §15:
-	// StubExpr ::= '@stub' '(' Type (',' Expr)? ')') — two bare tokens inside
-	// the parens are an Unexpected_Token at the missing `)`.
 	source := "fn boost() -> Fixed {\n  return @stub(Fixed 1.0)\n}\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
@@ -1067,8 +857,6 @@ test_parse_stub_expr_missing_separator_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_pipeline_ordered_named_stages :: proc(t: ^testing.T) {
-	// `pipeline Name { stage: [behaviors] … }` (spec §07 §1): stages keep
-	// source order, and each stage value is a behavior-name list.
 	source := "pipeline Pong {\n" +
 		"  startup:   [setup]\n" +
 		"  control:   [paddle_move, ball_move]\n" +
@@ -1081,7 +869,6 @@ test_parse_pipeline_ordered_named_stages :: proc(t: ^testing.T) {
 	pl := ast.pipelines[0]
 	testing.expect_value(t, pl.name, "Pong")
 	testing.expect_value(t, len(pl.stages), 4)
-	// Stage order is the contract — the slice preserves source order.
 	testing.expect_value(t, pl.stages[0].name, "startup")
 	testing.expect_value(t, len(pl.stages[0].behaviors), 1)
 	testing.expect_value(t, pl.stages[1].name, "control")
@@ -1093,11 +880,6 @@ test_parse_pipeline_ordered_named_stages :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_pipeline_bare_battery_stage :: proc(t: ^testing.T) {
-	// The yard `physics: solve` shape (spec §07 §1): a stage whose value is a
-	// single bare battery name, not a `[behavior, …]` list. The battery stage
-	// is_battery is set and its name lives in `battery`; behavior-list stages
-	// around it keep the list form. The battery name is recorded as written,
-	// not validated here.
 	source := "pipeline Yard {\n" +
 		"  control:  [drive]\n" +
 		"  physics:  solve\n" +
@@ -1108,11 +890,9 @@ test_parse_pipeline_bare_battery_stage :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(ast.pipelines), 1)
 	pl := ast.pipelines[0]
 	testing.expect_value(t, len(pl.stages), 3)
-	// The bordering stages stay behavior-list stages.
 	testing.expect_value(t, pl.stages[0].name, "control")
 	testing.expect(t, !pl.stages[0].is_battery)
 	testing.expect_value(t, len(pl.stages[0].behaviors), 1)
-	// The `physics: solve` stage is a single-battery stage.
 	battery := pl.stages[1]
 	testing.expect_value(t, battery.name, "physics")
 	testing.expect(t, battery.is_battery)
@@ -1125,19 +905,12 @@ test_parse_pipeline_bare_battery_stage :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_pipeline_battery_wrong_case_rejected :: proc(t: ^testing.T) {
-	// A battery name is a value name — snake_case (spec §07); an UpperCamel
-	// battery name rejects as Wrong_Case.
 	_, err := stage_parse(stage_lex("pipeline Yard {\n  physics: Solve\n}\n"))
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
 @(test)
 test_parse_fn_tuple_of_command_lists_return_type :: proc(t: ^testing.T) {
-	// The yard `deliver` return signature (spec §02 §3; §04 §1): a tuple of two
-	// list types `([Despawn], [Delivered])`. The tuple is the head "()" with two
-	// args, each a list head "[]" whose single arg is the element command type —
-	// composing the existing tuple-type and list-type productions, no new
-	// grammar. The tuple VALUE `([Despawn()], [Delivered{}])` is two List_Expr.
 	source := "fn step(self: Crate, pads: [Trigger]) -> ([Despawn], [Delivered]) {\n" +
 		"  return ([Despawn()], [Delivered{}])\n" +
 		"}\n"
@@ -1147,13 +920,11 @@ test_parse_fn_tuple_of_command_lists_return_type :: proc(t: ^testing.T) {
 	rt := f.return_type
 	testing.expect_value(t, rt.name, "()")
 	testing.expect_value(t, len(rt.args), 2)
-	// Each tuple element is a list type `[T]` (head "[]") of one command type.
 	testing.expect_value(t, rt.args[0].name, "[]")
 	testing.expect_value(t, len(rt.args[0].args), 1)
 	testing.expect_value(t, rt.args[0].args[0].name, "Despawn")
 	testing.expect_value(t, rt.args[1].name, "[]")
 	testing.expect_value(t, rt.args[1].args[0].name, "Delivered")
-	// The return value is a Tuple_Expr of two List_Expr (both already parse).
 	ret, is_return := f.body[0].(Return_Node)
 	testing.expect(t, is_return)
 	if is_return {
@@ -1171,8 +942,6 @@ test_parse_fn_tuple_of_command_lists_return_type :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_gtag_directive_retained :: proc(t: ^testing.T) {
-	// `@gtag("…", …)` is parsed and retained on the declaration it precedes,
-	// alongside @doc (spec §05). Multiple labels accumulate.
 	source := "@doc(\"a ball\")\n" +
 		"@gtag(\"ball\", \"score\")\n" +
 		"thing Ball { pos: Vec2, vel: Vec2 }\n"
@@ -1186,10 +955,6 @@ test_parse_gtag_directive_retained :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_expose_on_fn :: proc(t: ^testing.T) {
-	// `@expose` (spec §05 §4) is a bare prefix directive carried on the
-	// declaration it precedes — the §30 §6 exemplar shape: a @doc'd, @expose'd
-	// fn beside an unmarked package-private sibling. Only the marked fn
-	// records the flag.
 	source := "@doc(\"the package's public API\")\n" +
 		"@expose\n" +
 		"fn axial_to_pixel(cell: Int, size: Fixed) -> Fixed {\n" +
@@ -1209,9 +974,6 @@ test_parse_expose_on_fn :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_expose_on_every_declaration_form :: proc(t: ^testing.T) {
-	// `@expose` rides the grammar's Annotation* prefix (fun.ebnf §1), so every
-	// importable declaration form carries the flag: thing, data, signal, enum,
-	// let, extern fn, and query alike record exposed = true.
 	source := "@expose\nthing Ball { pos: Vec2 }\n" +
 		"@expose\ndata Hex { q: Int, r: Int }\n" +
 		"@expose\nsignal Hit { side: Int }\n" +
@@ -1234,10 +996,6 @@ test_parse_expose_on_every_declaration_form :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_expose_accumulates_with_directive_block :: proc(t: ^testing.T) {
-	// @expose joins the shared prefix block (spec §05): the declaration
-	// consumes the whole accumulated set — doc, gtags, and the exposed flag —
-	// regardless of authored order, and a repeated @expose is idempotent (a
-	// flag, never an accumulating family).
 	source := "@gtag(\"grid\")\n" +
 		"@expose\n" +
 		"@doc(\"axial coords\")\n" +
@@ -1253,9 +1011,6 @@ test_parse_expose_accumulates_with_directive_block :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_expose_does_not_leak_to_next_declaration :: proc(t: ^testing.T) {
-	// A declaration consumes its leading directives whole (stage_parse resets
-	// the accumulator), so an @expose on one declaration never bleeds onto the
-	// next — the package-private default stays the default.
 	source := "@expose\n" +
 		"fn shown() -> Int {\n" +
 		"  return 1\n" +
@@ -1270,9 +1025,6 @@ test_parse_expose_does_not_leak_to_next_declaration :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_expose_with_arg_rejected :: proc(t: ^testing.T) {
-	// @expose is bare (lexical-core §5): a parenthesized argument is the named
-	// Expose_Unexpected_Arg verdict — the @trace mold — never silently
-	// consumed.
 	source := "@expose(\"api\")\n" +
 		"fn shown() -> Int {\n" +
 		"  return 1\n" +
@@ -1283,10 +1035,6 @@ test_parse_expose_with_arg_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_break_probe_on_behavior :: proc(t: ^testing.T) {
-	// `@break(<pred>)` (spec §05 §5, §28 §4) carries a funpack PREDICATE over
-	// self/signals/resources and rides the declaration it prefixes, like
-	// @gtag. The argument is an ordinary parsed expression — here a Binary_Expr
-	// comparison — and the probe records the directive's source line.
 	source := "@break(self.pos.x > 70.0)\n" +
 		"behavior move on Ball {\n" +
 		"  fn step(self: Ball) -> Ball {\n" +
@@ -1305,9 +1053,6 @@ test_parse_break_probe_on_behavior :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_log_probe_on_behavior :: proc(t: ^testing.T) {
-	// `@log(<expr>)` (spec §05 §5, §28 §4) carries the funpack expression
-	// whose value is emitted each step — the `@log(self.head)` shape that
-	// replaces print-debugging. The argument parses as a member access.
 	source := "@log(self.head)\n" +
 		"behavior crawl on Snake {\n" +
 		"  fn step(self: Snake) -> Snake {\n" +
@@ -1325,9 +1070,6 @@ test_parse_log_probe_on_behavior :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_watch_probe_on_behavior :: proc(t: ^testing.T) {
-	// `@watch(<expr>)` (spec §05 §5, §28 §4) names the value whose change
-	// fires watch_fired; the argument shape is the same funpack expression
-	// @log takes.
 	source := "@watch(self.score)\n" +
 		"behavior tally on Scoreboard {\n" +
 		"  fn step(self: Scoreboard) -> Scoreboard {\n" +
@@ -1345,9 +1087,6 @@ test_parse_watch_probe_on_behavior :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_trace_probe_on_pipeline :: proc(t: ^testing.T) {
-	// `@trace` (spec §05 §5, §28 §4) takes NO argument — it records the full
-	// per-step (in -> out) transition of what it prefixes (a behavior or a
-	// pipeline stage). Parsed bare, its probe carries a nil arg.
 	source := "@trace\n" +
 		"pipeline Game {\n" +
 		"  update: [move]\n" +
@@ -1362,9 +1101,6 @@ test_parse_trace_probe_on_pipeline :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_probes_accumulate_with_doc_and_gtag :: proc(t: ^testing.T) {
-	// Debug probes accumulate in the same prefix block as @doc/@gtag
-	// (spec §05): the declaration consumes the whole set, probes in source
-	// order, without disturbing the doc or the gtag labels.
 	source := "@doc(\"the ball mover\")\n" +
 		"@gtag(\"ball\")\n" +
 		"@log(self.pos)\n" +
@@ -1386,9 +1122,6 @@ test_parse_probes_accumulate_with_doc_and_gtag :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_break_probe_missing_arg_rejected :: proc(t: ^testing.T) {
-	// A bare `@break` with no `(pred)` is malformed (spec §05 §5: the
-	// predicate is mandatory) — the named Probe_Missing_Arg diagnostic, not a
-	// generic Unexpected_Token.
 	source := "@break\n" +
 		"behavior move on Ball {\n" +
 		"  fn step(self: Ball) -> Ball {\n" +
@@ -1401,8 +1134,6 @@ test_parse_break_probe_missing_arg_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_log_probe_empty_args_rejected :: proc(t: ^testing.T) {
-	// `@log()` with empty parens has no value to emit — Probe_Missing_Arg,
-	// the same named verdict as the parenless form.
 	source := "@log()\n" +
 		"behavior move on Ball {\n" +
 		"  fn step(self: Ball) -> Ball {\n" +
@@ -1415,8 +1146,6 @@ test_parse_log_probe_empty_args_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_watch_probe_missing_arg_rejected :: proc(t: ^testing.T) {
-	// A bare `@watch` with no `(expr)` names nothing to watch —
-	// Probe_Missing_Arg.
 	source := "@watch\n" +
 		"data Board { score: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -1425,9 +1154,6 @@ test_parse_watch_probe_missing_arg_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_trace_probe_with_arg_rejected :: proc(t: ^testing.T) {
-	// `@trace(expr)` is malformed — @trace takes no argument (spec §05 §5;
-	// grammar/fun.ebnf §1 DebugDirective) — and reports the named
-	// Probe_Unexpected_Arg diagnostic.
 	source := "@trace(self.pos)\n" +
 		"behavior move on Ball {\n" +
 		"  fn step(self: Ball) -> Ball {\n" +
@@ -1438,17 +1164,8 @@ test_parse_trace_probe_with_arg_rejected :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Parse_Error.Probe_Unexpected_Arg)
 }
 
-// Field-/stage-granular debug probes (spec §28 §4 On-table): @watch prefixes a
-// `data` FIELD and @trace prefixes a pipeline STAGE entry — the grammar puts
-// Annotation* on FieldDecl and StageEntry (fun.ebnf §5/§9), and the probe is
-// carried onto the field/stage the same way a declaration-prefix probe is.
-
 @(test)
 test_parse_watch_probe_on_data_field :: proc(t: ^testing.T) {
-	// `@watch(<expr>)` on a `data` field (spec §28 §4 On-table): the field
-	// carries the probe; an unprefixed sibling carries none. The argument is the
-	// same funpack expression the declaration-prefix @watch takes — here a
-	// member access, asserted by shape.
 	source := "data Board {\n" +
 		"  @watch(self.score)\n" +
 		"  score: Int\n" +
@@ -1474,9 +1191,6 @@ test_parse_watch_probe_on_data_field :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_watch_probe_on_data_field_inline :: proc(t: ^testing.T) {
-	// The grammar puts no line break between a field's directives and its name
-	// (fun.ebnf §5: Annotation* LOWER_IDENT), so the inline spelling parses too —
-	// attached to the field that follows, the inline-@migrate mold.
 	source := "data Board { @watch(score) score: Int }\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -1492,10 +1206,6 @@ test_parse_watch_probe_on_data_field_inline :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_trace_probe_on_pipeline_stage :: proc(t: ^testing.T) {
-	// `@trace` on a pipeline stage entry (spec §28 §4 On-table): the stage
-	// carries the probe with a nil arg (@trace takes none); a bordering
-	// unprefixed stage carries none, and the stage's value form (behavior list
-	// or battery) is unaffected.
 	source := "pipeline Game {\n" +
 		"  @trace\n" +
 		"  control: [move]\n" +
@@ -1522,9 +1232,6 @@ test_parse_trace_probe_on_pipeline_stage :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_trace_probe_on_battery_stage :: proc(t: ^testing.T) {
-	// @trace rides the bare-battery stage form too (`physics: solve`), not only
-	// a behavior-list stage — the carry is on the stage entry, independent of
-	// its value shape.
 	source := "pipeline Yard {\n" +
 		"  @trace\n" +
 		"  physics: solve\n" +
@@ -1545,10 +1252,6 @@ test_parse_trace_probe_on_battery_stage :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_watch_probe_on_thing_field_rejected :: proc(t: ^testing.T) {
-	// The On-table admits @watch on a `data` field, NOT a `thing` field — a
-	// `thing`/`singleton`/`signal` field is not a `data` record field (spec §03
-	// §1, §06). A field @watch outside a `data` body is the keyed
-	// Probe_Wrong_Target verdict, the `data`-only gate @migrate uses.
 	source := "thing Marker {\n" +
 		"  @watch(self.pos)\n" +
 		"  pos: Int\n" +
@@ -1559,9 +1262,6 @@ test_parse_watch_probe_on_thing_field_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_field_break_probe_rejected :: proc(t: ^testing.T) {
-	// @break/@log/@trace observe a behavior or a stage, never a field (spec §28
-	// §4 On-table) — a field-position @break is the keyed Probe_Wrong_Target
-	// verdict, never a silently dropped probe or a generic token error.
 	source := "data Board {\n" +
 		"  @break(score > 9)\n" +
 		"  score: Int\n" +
@@ -1572,8 +1272,6 @@ test_parse_field_break_probe_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_field_watch_dangling_rejected :: proc(t: ^testing.T) {
-	// A @watch with no field following it watches nothing — dangling at the
-	// body's close is Probe_Wrong_Target (the dangling-@migrate mold).
 	source := "data Board {\n" +
 		"  score: Int\n" +
 		"  @watch(self.score)\n" +
@@ -1584,9 +1282,6 @@ test_parse_field_watch_dangling_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_field_watch_missing_arg_rejected :: proc(t: ^testing.T) {
-	// A field @watch with no `(expr)` names nothing to watch — the same
-	// Probe_Missing_Arg verdict the declaration-prefix form gives, parsed
-	// through the field body's @watch arm.
 	source := "data Board {\n" +
 		"  @watch\n" +
 		"  score: Int\n" +
@@ -1597,8 +1292,6 @@ test_parse_field_watch_missing_arg_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stage_watch_probe_rejected :: proc(t: ^testing.T) {
-	// The On-table admits @trace on a stage, NOT @watch (a field/behavior probe)
-	// — a stage-position @watch is the keyed Probe_Wrong_Target verdict.
 	source := "pipeline Game {\n" +
 		"  @watch(self.x)\n" +
 		"  control: [move]\n" +
@@ -1609,9 +1302,6 @@ test_parse_stage_watch_probe_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stage_trace_unexpected_arg_rejected :: proc(t: ^testing.T) {
-	// `@trace(expr)` on a stage is malformed — @trace takes no argument (spec
-	// §05 §5; fun.ebnf §1 DebugDirective) — the named Probe_Unexpected_Arg
-	// verdict, the declaration-prefix @trace mold.
 	source := "pipeline Game {\n" +
 		"  @trace(self.x)\n" +
 		"  control: [move]\n" +
@@ -1622,9 +1312,6 @@ test_parse_stage_trace_unexpected_arg_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_stage_migrate_rejected :: proc(t: ^testing.T) {
-	// @migrate is a `data`-field / type-declaration directive (spec §05 §6); a
-	// stage entry is neither, so a non-probe @-form there is the generic token
-	// error, mirroring the field-body default for non-@migrate/@watch forms.
 	source := "pipeline Game {\n" +
 		"  @migrate(from: \"old\")\n" +
 		"  control: [move]\n" +
@@ -1635,10 +1322,6 @@ test_parse_stage_migrate_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_all_duration_units :: proc(t: ^testing.T) {
-	// The relative-duration window `<int>` + unit (spec §05 §2, §29 §4)
-	// admits exactly six units — h/d/w/mo/q/y. All six parse, each recording
-	// the count and the unit as written; multiple @todo notes accumulate on
-	// the one declaration they prefix.
 	source := "@todo(\"hours\", 1h)\n" +
 		"@todo(\"days\", 30d)\n" +
 		"@todo(\"weeks\", 2w)\n" +
@@ -1661,10 +1344,6 @@ test_parse_todo_all_duration_units :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_date_window :: proc(t: ^testing.T) {
-	// The absolute-date window is ISO-8601 `YYYY-MM-DD` (spec §05 §2). The
-	// parser records the three components verbatim — no expiry evaluation:
-	// the build-clock is a recorded input to `funpack build` (spec §29 §4),
-	// not something the parse stage holds.
 	source := "@todo(\"ship the tutorial\", 2026-09-01)\n" +
 		"thing Ball { pos: Vec2 }\n"
 	ast, err := stage_parse(stage_lex(source))
@@ -1680,9 +1359,6 @@ test_parse_todo_date_window :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_build_count_window :: proc(t: ^testing.T) {
-	// The build-count window `<int>builds` (spec §05 §2) shares its leading
-	// Int_Lit with the duration form; the trailing `builds` unit tells them
-	// apart (the §05 disambiguation rule).
 	source := "@todo(\"rebalance\", 50builds)\n" +
 		"fn tick(n: Int) -> Int {\n" +
 		"  return n\n" +
@@ -1697,11 +1373,6 @@ test_parse_todo_build_count_window :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_task_ref_with_doc_and_gtag :: proc(t: ^testing.T) {
-	// The task-ref window `T-<digits>` — the recommended default (spec §05
-	// §2) — keeps its digits as WRITTEN (zero padding included: the ref
-	// resolves against the operator's task tooling, whose ids are spelled
-	// strings), records the `@` token's source line for provenance, and rides
-	// the same prefix block as @doc/@gtag without disturbing either.
 	source := "@doc(\"the ball\")\n" +
 		"@gtag(\"ball\")\n" +
 		"@todo(\"rebalance drops\", T-0042)\n" +
@@ -1721,9 +1392,6 @@ test_parse_todo_task_ref_with_doc_and_gtag :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_multiple_accumulate :: proc(t: ^testing.T) {
-	// Multiple @todo notes accumulate like @gtag labels (spec §05): the
-	// declaration consumes the whole set in source order, window forms mixed
-	// freely.
 	source := "@todo(\"first\", 30d)\n" +
 		"@todo(\"second\", T-7)\n" +
 		"behavior move on Ball {\n" +
@@ -1743,9 +1411,6 @@ test_parse_todo_multiple_accumulate :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_unknown_unit_rejected :: proc(t: ^testing.T) {
-	// `30x` names no duration unit (the closed set is h/d/w/mo/q/y, spec §05
-	// §2) and is not `builds` — the named Malformed_Todo_Window verdict, not
-	// a generic token error.
 	source := "@todo(\"m\", 30x)\n" +
 		"data Board { score: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -1754,9 +1419,6 @@ test_parse_todo_unknown_unit_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_missing_window_rejected :: proc(t: ^testing.T) {
-	// The window is MANDATORY (spec §05 §2: past it the directive is a
-	// compile error — a @todo with no expiry can rot forever). A
-	// message-only @todo is Malformed_Todo_Window.
 	source := "@todo(\"m\")\n" +
 		"data Board { score: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -1765,8 +1427,6 @@ test_parse_todo_missing_window_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_bad_date_shape_rejected :: proc(t: ^testing.T) {
-	// `2026-9-01` is not the ISO shape — the month is the zero-padded
-	// two-digit spelling, the one obvious spelling (spec §05 §2).
 	source := "@todo(\"m\", 2026-9-01)\n" +
 		"data Board { score: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -1775,9 +1435,6 @@ test_parse_todo_bad_date_shape_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_month_out_of_range_rejected :: proc(t: ^testing.T) {
-	// Month 13 fails the 1–12 range check. Range is parse-side; calendar
-	// validity (a Feb 30) deliberately is not — that belongs to the window
-	// evaluator (spec §29 §4).
 	source := "@todo(\"m\", 2026-13-01)\n" +
 		"data Board { score: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -1786,8 +1443,6 @@ test_parse_todo_month_out_of_range_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_bare_count_rejected :: proc(t: ^testing.T) {
-	// A bare `30` names no unit — neither a duration nor a build count
-	// (spec §05 §2: one obvious spelling each), so it matches no form.
 	source := "@todo(\"m\", 30)\n" +
 		"data Board { score: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -1796,8 +1451,6 @@ test_parse_todo_bare_count_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_lowercase_task_ref_rejected :: proc(t: ^testing.T) {
-	// `t-0042` is no task ref: the form leads with the literal uppercase `T`
-	// (spec §05 §2).
 	source := "@todo(\"m\", t-0042)\n" +
 		"data Board { score: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -1806,8 +1459,6 @@ test_parse_todo_lowercase_task_ref_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_todo_quoted_window_rejected :: proc(t: ^testing.T) {
-	// A quoted window `"30d"` is a string, not one of the four bare forms —
-	// Malformed_Todo_Window, never a silent unquote.
 	source := "@todo(\"m\", \"30d\")\n" +
 		"data Board { score: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -1816,8 +1467,6 @@ test_parse_todo_quoted_window_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_list_newline_separated_elements :: proc(t: ^testing.T) {
-	// The pong `setup` shape: a multi-line list whose `Spawn(…)` elements are
-	// separated by newline alone (no commas). Each element is a call.
 	source := "fn setup() -> [Spawn] {\n" +
 		"  return [\n" +
 		"    Spawn( Ball{pos: Vec2{x: 80.0, y: 60.0}, vel: Vec2{x: 70.0, y: 40.0}} )\n" +
@@ -1842,10 +1491,6 @@ test_parse_list_newline_separated_elements :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_fn_tuple_return_type :: proc(t: ^testing.T) {
-	// The snake `setup`/`step` return signature (spec §02 §3; §04 §1 — every
-	// draw returns `(value, next_rng)`): a tuple type in return position. It is
-	// recorded as the head "()" with its positional element Type_Refs as args,
-	// mirroring the list head "[]".
 	source := "fn setup(rng: Rng) -> (Rng, [Spawn]) {\n" +
 		"  return (rng, [])\n" +
 		"}\n"
@@ -1854,7 +1499,6 @@ test_parse_fn_tuple_return_type :: proc(t: ^testing.T) {
 	f := ast.fns[0]
 	testing.expect_value(t, f.return_type.name, "()")
 	testing.expect_value(t, len(f.return_type.args), 2)
-	// First element is the bare `Rng`, second is the list `[Spawn]` (head "[]").
 	testing.expect_value(t, f.return_type.args[0].name, "Rng")
 	testing.expect_value(t, f.return_type.args[1].name, "[]")
 	testing.expect_value(t, f.return_type.args[1].args[0].name, "Spawn")
@@ -1862,9 +1506,6 @@ test_parse_fn_tuple_return_type :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_nested_tuple_return_type :: proc(t: ^testing.T) {
-	// A tuple element may itself be a tuple — the head recurses by
-	// construction, so `(Rng, (A, B))` records a tuple whose second arg is
-	// again the head "()".
 	source := "fn step(rng: Rng) -> (Rng, (Food, Snake)) {\n" +
 		"  return rng\n" +
 		"}\n"
@@ -1881,11 +1522,6 @@ test_parse_nested_tuple_return_type :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_in_if_condition_leaves_guard_brace :: proc(t: ^testing.T) {
-	// The snake `dir_from_input` shape (spec §02 §5): an `if` condition ending in
-	// a bare variant comparison (`current != Dir::Down`) must leave the trailing
-	// `{` for the guard block, not consume it as a struct-payload variant
-	// `Dir::Down{…}`. In the no-struct-literal context an `if`-guard condition
-	// shares with a match scrutinee, a `{` after a variant opens the block.
 	source := "fn turn(current: Dir) -> Dir {\n" +
 		"  if current != Dir::Down { return Dir::Up }\n" +
 		"  return current\n" +
@@ -1896,9 +1532,6 @@ test_parse_variant_in_if_condition_leaves_guard_brace :: proc(t: ^testing.T) {
 	guard, is_if := f.body[0].(If_Node)
 	testing.expect(t, is_if)
 	if is_if {
-		// The condition is the `!=` comparison; its rhs is a BARE variant (no
-		// struct payload) — the brace went to the guard block, which holds the
-		// return.
 		cond, is_binary := guard.cond.(^Binary_Expr)
 		testing.expect(t, is_binary)
 		if is_binary {
@@ -1917,8 +1550,6 @@ test_parse_variant_in_if_condition_leaves_guard_brace :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_variant_in_match_scrutinee_leaves_block_brace :: proc(t: ^testing.T) {
-	// The match-scrutinee analogue: a scrutinee ending in a bare variant compare
-	// (`x == Dir::Up`) leaves the `{` for the match block, not a struct payload.
 	source := "fn pick(x: Dir) -> Bool {\n" +
 		"  return match x == Dir::Up {\n" +
 		"    Bool::True => true\n" +
@@ -1929,16 +1560,8 @@ test_parse_variant_in_match_scrutinee_leaves_block_brace :: proc(t: ^testing.T) 
 	testing.expect_value(t, err, Parse_Error.None)
 }
 
-// ── §05 §6 @migrate — the schema-evolution directive ─────────────────────────
-// The three closed argument forms (rename / retype / both) on data fields, the
-// decl-level renamed-type form, and the named Malformed_Migrate /
-// Migrate_Wrong_Target verdicts for every deviation — mirroring the @todo
-// window molds: closed shapes, one named diagnostic per malformation class.
-
 @(test)
 test_parse_migrate_rename_field :: proc(t: ^testing.T) {
-	// The rename form on its own line above the field (spec §05 §6 table row
-	// 1): the field carries the prior key; an unprefixed sibling carries none.
 	source := "data Player {\n" +
 		"  @migrate(from: \"old_pos\")\n" +
 		"  pos: Int\n" +
@@ -1958,8 +1581,6 @@ test_parse_migrate_rename_field :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_retype_field_inline :: proc(t: ^testing.T) {
-	// The retype form inline before its field (spec §05 §6 table row 2): the
-	// conversion fn's name is carried; no prior key.
 	source := "data Player { @migrate(with: meters_to_units) pos: Fixed }\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -1972,8 +1593,6 @@ test_parse_migrate_retype_field_inline :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_rename_retype_field :: proc(t: ^testing.T) {
-	// The combined form (spec §05 §6 table row 3): both halves carried, in the
-	// table's fixed from-then-with order.
 	source := "data Player {\n" +
 		"  @migrate(from: \"speed\", with: to_velocity)\n" +
 		"  vel: Fixed\n" +
@@ -1988,9 +1607,6 @@ test_parse_migrate_rename_retype_field :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_renamed_type_decl :: proc(t: ^testing.T) {
-	// The decl-level form — a renamed TYPE declaration (spec §05 §6 "or a
-	// renamed type declaration"): the data node carries the prior type name,
-	// alongside its other prefix directives.
 	source := "@doc(\"the player\")\n" +
 		"@migrate(from: \"OldPlayer\")\n" +
 		"data Player { hp: Int }\n"
@@ -2007,8 +1623,6 @@ test_parse_migrate_renamed_type_decl :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_with_before_from_rejected :: proc(t: ^testing.T) {
-	// The combined form is from-then-with — the spec table's one spelling
-	// (the formatter's canonical order); the reversed order matches no form.
 	source := "data Player { @migrate(with: lift, from: \"old\") hp: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
@@ -2016,8 +1630,6 @@ test_parse_migrate_with_before_from_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_empty_args_rejected :: proc(t: ^testing.T) {
-	// An empty argument list names neither a prior key nor a conversion —
-	// no form, the named verdict.
 	source := "data Player { @migrate() hp: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
@@ -2025,8 +1637,6 @@ test_parse_migrate_empty_args_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_missing_args_rejected :: proc(t: ^testing.T) {
-	// A bare @migrate carries nothing to migrate by — the argument list is
-	// mandatory, like a @todo's window.
 	source := "data Player { @migrate hp: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
@@ -2034,8 +1644,6 @@ test_parse_migrate_missing_args_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_unquoted_from_rejected :: proc(t: ^testing.T) {
-	// `from:` is the prior name AS A STRING (spec §05 §6) — a bare identifier
-	// is not the form, never a silent quote.
 	source := "data Player { @migrate(from: old_pos) pos: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
@@ -2043,7 +1651,6 @@ test_parse_migrate_unquoted_from_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_empty_from_rejected :: proc(t: ^testing.T) {
-	// An empty prior name names no key to read the old value from.
 	source := "data Player { @migrate(from: \"\") pos: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
@@ -2051,8 +1658,6 @@ test_parse_migrate_empty_from_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_unknown_key_rejected :: proc(t: ^testing.T) {
-	// The key vocabulary is closed to `from`/`with` — any other key matches
-	// no form.
 	source := "data Player { @migrate(to: \"new_pos\") pos: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
@@ -2060,8 +1665,6 @@ test_parse_migrate_unknown_key_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_duplicate_from_rejected :: proc(t: ^testing.T) {
-	// After a rename key only `with:` may follow — a second `from` falls
-	// outside the three closed forms.
 	source := "data Player { @migrate(from: \"a\", from: \"b\") pos: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
@@ -2069,8 +1672,6 @@ test_parse_migrate_duplicate_from_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_wrong_case_convert_rejected :: proc(t: ^testing.T) {
-	// The conversion is a fn — snake_case (spec §02); a wrong-cased name keeps
-	// the parser-wide Wrong_Case verdict rather than the migrate-shape one.
 	source := "data Player { @migrate(with: Lift) pos: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
@@ -2078,9 +1679,6 @@ test_parse_migrate_wrong_case_convert_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_on_thing_field_rejected :: proc(t: ^testing.T) {
-	// The schema-evolution channel is the name-keyed `data` schema (spec §09
-	// §4): a @migrate inside a thing body is the named wrong-target verdict,
-	// never a silently-accepted directive.
 	source := "thing Ball { @migrate(from: \"p\") pos: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
@@ -2088,7 +1686,6 @@ test_parse_migrate_on_thing_field_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_on_signal_field_rejected :: proc(t: ^testing.T) {
-	// A signal is per-tick, never persisted — its fields admit no migration.
 	source := "signal Goal { @migrate(from: \"s\") side: Int }\n"
 	_, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.Migrate_Wrong_Target)
@@ -2096,8 +1693,6 @@ test_parse_migrate_on_signal_field_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_prefix_non_data_decl_rejected :: proc(t: ^testing.T) {
-	// The decl-level form marks a renamed `data` type only — an enum (or any
-	// other declaration) consuming a pending @migrate is the wrong target.
 	source := "@migrate(from: \"OldColor\")\n" +
 		"enum Color { Red, Blue }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -2106,9 +1701,6 @@ test_parse_migrate_prefix_non_data_decl_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_decl_level_retype_rejected :: proc(t: ^testing.T) {
-	// A type declaration admits the RENAME form only (spec §05 §6: "a renamed
-	// type declaration") — there is no decl-level value to convert, so a
-	// `with:` there is the wrong target, not a silently-dropped conversion.
 	source := "@migrate(with: lift)\n" +
 		"data Player { hp: Int }\n"
 	_, err := stage_parse(stage_lex(source))
@@ -2117,8 +1709,6 @@ test_parse_migrate_decl_level_retype_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_dangling_in_body_rejected :: proc(t: ^testing.T) {
-	// A @migrate with no field following it migrates nothing — dangling at the
-	// body's close is the wrong-target verdict.
 	source := "data Player {\n" +
 		"  hp: Int\n" +
 		"  @migrate(from: \"old\")\n" +
@@ -2129,8 +1719,6 @@ test_parse_migrate_dangling_in_body_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_migrate_duplicate_before_field_rejected :: proc(t: ^testing.T) {
-	// One @migrate per field: a second before the same field is malformed,
-	// never a silent overwrite.
 	source := "data Player {\n" +
 		"  @migrate(from: \"a\")\n" +
 		"  @migrate(from: \"b\")\n" +
@@ -2140,11 +1728,6 @@ test_parse_migrate_duplicate_before_field_rejected :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Parse_Error.Malformed_Migrate)
 }
 
-// The Ast's source-ordered declaration sequence: one Decl_Ref per declaration
-// in parse order, each pointing at its per-kind slot — so the author's
-// cross-kind interleaving survives the parse (ADR
-// 2026-06-10-formatter-canon-source-ordered-declarations). Imports are the
-// module header, never a sequence entry.
 @(test)
 test_parse_decl_sequence_source_order :: proc(t: ^testing.T) {
 	source := "import assets\n" +
@@ -2181,9 +1764,7 @@ test_parse_decl_sequence_source_order :: proc(t: ^testing.T) {
 	for ref, i in expected {
 		testing.expect_value(t, ast.decls[i], ref)
 	}
-	// The second data declaration's slot resolves to the node it marked.
 	testing.expect_value(t, ast.datas[ast.decls[9].index].name, "Grid")
-	// An extern fn joins ast.fns AND the sequence like a bodied fn.
 	extern_ast, extern_err := stage_parse(stage_lex("data A { x: Int }\nextern fn arena_spawns() -> Int\n"))
 	testing.expect_value(t, extern_err, Parse_Error.None)
 	testing.expect_value(t, len(extern_ast.decls), 2)
@@ -2194,10 +1775,6 @@ test_parse_decl_sequence_source_order :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_extern_type_decl :: proc(t: ^testing.T) {
-	// `extern type Name` (spec §02 §7, §26 §2) parses into its dedicated
-	// Extern_Type_Node carrier: the opaque type is the name alone — no fields,
-	// no body — and it joins the source-ordered declaration sequence under its
-	// own kind, with the span anchored on the `extern` keyword's line.
 	source := "data A { x: Int }\nextern type Sketch\nextern type Anchors\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -2217,9 +1794,6 @@ test_parse_extern_type_decl :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_extern_type_carries_directive_block :: proc(t: ^testing.T) {
-	// An extern type consumes the shared §05 prefix block like every other
-	// declaration form: @doc, @gtag, and the @expose flag land on the node and
-	// never bleed onto the next declaration.
 	source := "@doc(\"an immutable 2D outline\")\n" +
 		"@gtag(\"geometry\")\n" +
 		"@expose\n" +
@@ -2241,19 +1815,12 @@ test_parse_extern_type_carries_directive_block :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_extern_type_wrong_case_rejected :: proc(t: ^testing.T) {
-	// A declared type name is UPPER_IDENT (lexical-core.ebnf §2) — a
-	// snake_case extern type name is the named Wrong_Case verdict, the same
-	// casing-is-structural rule every type declaration enforces.
 	_, err := stage_parse(stage_lex("extern type sketch\n"))
 	testing.expect_value(t, err, Parse_Error.Wrong_Case)
 }
 
 @(test)
 test_parse_extern_family_closed :: proc(t: ^testing.T) {
-	// The §02 §7 extern family is closed (fun.ebnf §8: ExternDecl ::= 'extern'
-	// (ExternFn | ExternType)): an `extern` prefixing anything else — a data
-	// declaration, or nothing at all — is the named Malformed_Extern verdict,
-	// never a generic token error.
 	_, data_err := stage_parse(stage_lex("extern data Foo { x: Int }\n"))
 	testing.expect_value(t, data_err, Parse_Error.Malformed_Extern)
 	_, bare_err := stage_parse(stage_lex("extern\n"))
@@ -2262,11 +1829,6 @@ test_parse_extern_family_closed :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_extern_type_trailing_junk_rejected :: proc(t: ^testing.T) {
-	// Trailing junk after a well-formed `extern type Name` header stays the
-	// generic Unexpected_Token (the named diagnostics cover the malformed
-	// family and the casing deviation): an opaque type has no body, so a brace
-	// where the terminator belongs is rejected — with or without the §03 §3
-	// generic header in between.
 	_, brace_err := stage_parse(stage_lex("extern type Sketch { x: Int }\n"))
 	testing.expect_value(t, brace_err, Parse_Error.Unexpected_Token)
 	_, generic_brace_err := stage_parse(stage_lex("extern type View[T] { x: Int }\n"))
@@ -2275,12 +1837,6 @@ test_parse_extern_type_trailing_junk_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_generic_data_header :: proc(t: ^testing.T) {
-	// The §03 §3 generic declaration header on a data declaration (fun.ebnf §4:
-	// DataDecl ::= 'data' UPPER_IDENT TypeParams? KindAsc? RecordBody): the
-	// declared parameter names land on the node in source order, and the body's
-	// field types reference the binder as ordinary Type_Refs (the stdlib
-	// world.fun `data Ref[T] { id: Id }` / ui.fun `data Choice[T] { value: T }`
-	// shapes).
 	source := "data Ref[T] { id: Id }\ndata Choice[T] { label: String, value: T }\ndata Pair[K, V] { k: K, v: V }\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -2293,8 +1849,6 @@ test_parse_generic_data_header :: proc(t: ^testing.T) {
 	if len(ast.datas[0].type_params) == 1 {
 		testing.expect_value(t, ast.datas[0].type_params[0], "T")
 	}
-	// The binder is usable in the body's field types: `value: T` parses as the
-	// plain named Type_Ref "T".
 	testing.expect_value(t, len(ast.datas[1].fields), 2)
 	if len(ast.datas[1].fields) == 2 {
 		testing.expect_value(t, ast.datas[1].fields[1].type.name, "T")
@@ -2308,9 +1862,6 @@ test_parse_generic_data_header :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_generic_enum_header :: proc(t: ^testing.T) {
-	// The §03 §3 generic declaration header on an enum (fun.ebnf §4: EnumDecl
-	// ::= 'enum' UPPER_IDENT TypeParams? KindAsc? '{' … '}') — the prelude's
-	// two engine containers, with the binder referenced in variant payloads.
 	source := "enum Option[T] { Some(T), None }\nenum Result[T, E] { Ok(T), Err(E) }\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -2325,7 +1876,6 @@ test_parse_generic_enum_header :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, len(ast.enums[0].variants), 2)
 	if len(ast.enums[0].variants) == 2 {
-		// Some(T)'s tuple payload references the binder as a plain Type_Ref.
 		testing.expect_value(t, len(ast.enums[0].variants[0].tuple), 1)
 		if len(ast.enums[0].variants[0].tuple) == 1 {
 			testing.expect_value(t, ast.enums[0].variants[0].tuple[0].name, "T")
@@ -2340,10 +1890,6 @@ test_parse_generic_enum_header :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_generic_extern_type_header :: proc(t: ^testing.T) {
-	// The §03 §3 generic header on an extern type (fun.ebnf §8: ExternType ::=
-	// 'type' UPPER_IDENT TypeParams?) — the stdlib `extern type View[T]` /
-	// `extern type View[Msg]` shapes the wave-1 reject fixture deliberately
-	// pinned as Unexpected_Token until this story admitted them.
 	source := "extern type View[T]\nextern type Widget[Msg]\nextern type Theme\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -2360,14 +1906,11 @@ test_parse_generic_extern_type_header :: proc(t: ^testing.T) {
 	if len(ast.extern_types[1].type_params) == 1 {
 		testing.expect_value(t, ast.extern_types[1].type_params[0], "Msg")
 	}
-	// The bare form keeps its nil header.
 	testing.expect_value(t, len(ast.extern_types[2].type_params), 0)
 }
 
 @(test)
 test_parse_generic_header_then_kind_order :: proc(t: ^testing.T) {
-	// The fun.ebnf §4 declaration order is TypeParams? KindAsc? — the header
-	// binds tight to the name, the kind ascription follows it.
 	ast, err := stage_parse(stage_lex("data Vel[T]: Num { x: T }\n"))
 	testing.expect_value(t, err, Parse_Error.None)
 	testing.expect_value(t, len(ast.datas), 1)
@@ -2380,10 +1923,6 @@ test_parse_generic_header_then_kind_order :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_generic_header_closed_decl_kinds :: proc(t: ^testing.T) {
-	// Only the engine-container decl kinds the grammar names admit a generic
-	// header — data, enum, extern type (fun.ebnf §4/§8). Every other declared
-	// type form (ThingDecl, SignalDecl — fun.ebnf §5) has no TypeParams slot,
-	// so a post-name `[` keeps that production's generic token error.
 	_, thing_err := stage_parse(stage_lex("thing Foo[T] { x: Int }\n"))
 	testing.expect_value(t, thing_err, Parse_Error.Unexpected_Token)
 	_, signal_err := stage_parse(stage_lex("signal Hit[T] { amount: T }\n"))
@@ -2392,12 +1931,6 @@ test_parse_generic_header_closed_decl_kinds :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_malformed_type_params_rejected :: proc(t: ^testing.T) {
-	// A mis-shaped §03 §3 header is the named Malformed_Type_Params verdict
-	// (fun.ebnf §4: TypeParams ::= '[' UPPER_IDENT (',' UPPER_IDENT)* ']'):
-	// empty brackets, a trailing comma, a missing comma between parameters, a
-	// non-identifier parameter, or a never-closed header. The one casing-class
-	// deviation — a lowercase parameter name — keeps the parser-wide Wrong_Case
-	// verdict (the Malformed_Index_Path split).
 	_, empty_err := stage_parse(stage_lex("enum Option[] { None }\n"))
 	testing.expect_value(t, empty_err, Parse_Error.Malformed_Type_Params)
 	_, trailing_err := stage_parse(stage_lex("data Ref[T,] { id: Id }\n"))
@@ -2414,10 +1947,6 @@ test_parse_malformed_type_params_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_fn_type_param :: proc(t: ^testing.T) {
-	// The §02 §3 function type in parameter position (fun.ebnf §11: FnType ::=
-	// 'fn' '(' (Type (',' Type)*)? ')' '->' Type) — the stdlib list.fun
-	// combinator signatures. The head is "fn"; the args are the parameter
-	// types followed by the result (the LAST arg is always the result).
 	source := "extern fn find(self: [T], pred: fn(T) -> Bool) -> Option[T]\nextern fn fold(self: [T], init: A, step: fn(A, T) -> A) -> A\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -2444,10 +1973,6 @@ test_parse_fn_type_param :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_fn_type_general_type_position :: proc(t: ^testing.T) {
-	// The grammar admits FnType wherever a Type stands (fun.ll1.md §3:
-	// FIRST(Type) = { Ʉ, '[', fn }), not just in parameter position: a
-	// zero-parameter form, a return position, a generic argument, a list
-	// element, and a nested fn-typed result all parse.
 	source := "extern fn thunk(supplier: fn() -> Int) -> Int\nextern fn make() -> fn(Int) -> Int\nextern fn pick(opts: Option[fn(T) -> Bool]) -> Bool\nextern fn many(steps: [fn(Int) -> Int]) -> Int\nextern fn curry(f: fn(Int) -> fn(Int) -> Int) -> Int\n"
 	ast, err := stage_parse(stage_lex(source))
 	testing.expect_value(t, err, Parse_Error.None)
@@ -2455,19 +1980,14 @@ test_parse_fn_type_general_type_position :: proc(t: ^testing.T) {
 	if len(ast.fns) != 5 {
 		return
 	}
-	// fn() -> Int: a zero-parameter function type carries exactly one arg —
-	// its result.
 	thunk := ast.fns[0].params[0].type
 	testing.expect_value(t, thunk.name, "fn")
 	testing.expect_value(t, len(thunk.args), 1)
-	// Return position.
 	testing.expect_value(t, ast.fns[1].return_type.name, "fn")
-	// Generic argument and list element keep their heads; the fn rides inside.
 	testing.expect_value(t, ast.fns[2].params[0].type.name, "Option")
 	testing.expect_value(t, ast.fns[2].params[0].type.args[0].name, "fn")
 	testing.expect_value(t, ast.fns[3].params[0].type.name, "[]")
 	testing.expect_value(t, ast.fns[3].params[0].type.args[0].name, "fn")
-	// A nested fn-typed result: the outer "fn"'s last arg is itself "fn".
 	curry := ast.fns[4].params[0].type
 	testing.expect_value(t, curry.name, "fn")
 	testing.expect_value(t, len(curry.args), 2)
@@ -2478,12 +1998,6 @@ test_parse_fn_type_general_type_position :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_malformed_fn_type_rejected :: proc(t: ^testing.T) {
-	// A mis-shaped §02 §3 function type is the named Malformed_Fn_Type verdict
-	// (fun.ebnf §11; the Malformed_Type_Params mold): a missing `(` after
-	// `fn`, a missing `->` before the result, a trailing comma, a missing
-	// comma between parameters, and a never-closed parameter list. An element
-	// type's OWN errors keep their verdicts — a lowercase parameter type stays
-	// the parser-wide Wrong_Case.
 	_, no_parens_err := stage_parse(stage_lex("extern fn f(g: fn Int -> Int) -> Int\n"))
 	testing.expect_value(t, no_parens_err, Parse_Error.Malformed_Fn_Type)
 	_, no_arrow_err := stage_parse(stage_lex("extern fn f(g: fn(Int) Int) -> Int\n"))
@@ -2500,22 +2014,12 @@ test_parse_malformed_fn_type_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_fn_keyword_param_name_rejected :: proc(t: ^testing.T) {
-	// `fn` stays a RESERVED keyword in value-name position (fun.ll1.md §2;
-	// fun.ebnf §7: Param ::= LOWER_IDENT ':' Type admits no keyword) — so a
-	// `fn: fn(Int, Int) -> Cell` parameter is FAIL-CLOSED: the fn-type
-	// production does not smuggle the keyword into the identifier namespace.
-	// A spec file carrying this spelling is fixed spec-side (grid.fun's
-	// parameter is named `builder`), never by a parser carve-out; this pin
-	// keeps the keyword reserved.
 	_, err := stage_parse(stage_lex("extern fn grid_cells(w: Int, h: Int, fn: fn(Int, Int) -> Cell) -> [Cell]\n"))
 	testing.expect_value(t, err, Parse_Error.Unexpected_Token)
 }
 
 @(test)
 test_parse_string_escapes_carried_raw :: proc(t: ^testing.T) {
-	// The closed lexical-core §4 escapes parse in every string position and
-	// carry the RAW spelling, backslash included — the stdlib @doc shape and
-	// an expression-position literal both land verbatim in the AST.
 	ast, err := stage_parse(stage_lex("@doc(\"Built by interpolation (\\\"{x}\\\"), never +.\")\nlet GREETING: String = \"say \\\"hi\\\" \\{now\\}\"\n"))
 	testing.expect_value(t, err, Parse_Error.None)
 	testing.expect_value(t, len(ast.lets), 1)
@@ -2529,11 +2033,6 @@ test_parse_string_escapes_carried_raw :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_malformed_string_escape_named_verdict :: proc(t: ^testing.T) {
-	// A backslash escape outside the closed §4 set is the named
-	// Malformed_String_Escape verdict (the Malformed_Fn_Type mold) in every
-	// string position — a @doc argument, an expression literal, a test name —
-	// for the unknown-escape and trailing-backslash shapes alike. An
-	// UNTERMINATED string keeps its existing Unexpected_Token verdict.
 	_, doc_err := stage_parse(stage_lex("@doc(\"a \\n newline\")\nfn f() -> Int {\n  return 1\n}\n"))
 	testing.expect_value(t, doc_err, Parse_Error.Malformed_String_Escape)
 	_, expr_err := stage_parse(stage_lex("let S: String = \"no \\\\ backslash\"\n"))

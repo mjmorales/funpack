@@ -6,10 +6,6 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// The golden numerics tree lives in the in-repo examples tree.
-// A relative FUNPACK_NUMERICS_DIR — and the documented default — resolves
-// against the repo root, not the cwd, so `task funpack:test` (cwd
-// funpack/) and a bare `odin test .` from anywhere behave identically.
 GOLDEN_DEFAULT_DIR :: "examples/numerics"
 
 @(test)
@@ -23,9 +19,6 @@ test_golden_numerics_full_file_parses :: proc(t: ^testing.T) {
 	testing.expect_value(t, read_err, Project_Error.None)
 	testing.expect_value(t, project.name, "numerics")
 	testing.expect(t, len(project.sources) > 0)
-	// The golden tree's single source is src/numerics.fun, so its
-	// path-derived module is `numerics` — the namespace this file owns,
-	// against which its engine.* imports resolve (§15).
 	testing.expect_value(t, project.sources[0].module, "numerics")
 
 	source_bytes, file_err := os.read_entire_file_from_path(project.sources[0].path, context.temp_allocator)
@@ -40,7 +33,6 @@ test_golden_numerics_full_file_parses :: proc(t: ^testing.T) {
 	assert_count := 0
 	let_count := 0
 	for test in ast.tests {
-		// Every golden test block carries its own @doc.
 		testing.expect(t, test.doc != "")
 		for stmt in test.body {
 			if _, is_assert := stmt.(Assert_Node); is_assert {
@@ -56,8 +48,6 @@ test_golden_numerics_full_file_parses :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_numerics_full_pipeline_passes :: proc(t: ^testing.T) {
-	// The numeric kernel's defining outcome: every golden assertion
-	// evaluates to its golden value — 30 passed, 0 failed, bit-identical.
 	dir := resolve_golden_dir()
 	if !os.is_dir(dir) {
 		log.warnf("SKIP golden numerics: %s not found — set FUNPACK_NUMERICS_DIR or ensure the in-repo fixture exists", dir)
@@ -77,8 +67,6 @@ test_golden_numerics_full_pipeline_passes :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.exit_code, 0)
 }
 
-// golden_source reads the golden project's single source file; ok =
-// false (with a SKIP warning) when the sibling checkout is absent.
 golden_source :: proc() -> (source: string, ok: bool) {
 	dir := resolve_golden_dir()
 	if !os.is_dir(dir) {
@@ -96,10 +84,6 @@ golden_source :: proc() -> (source: string, ok: bool) {
 	return string(source_bytes), true
 }
 
-// golden_variant derives a negative fixture from the golden source by
-// applying one exact replacement. found = false when the anchor text
-// is absent — the golden file moved and the fixture must be
-// re-anchored, loudly, instead of silently testing nothing.
 golden_variant :: proc(source: string, anchor: string, replacement: string) -> (variant: string, found: bool) {
 	if !strings.contains(source, anchor) {
 		return "", false
@@ -110,10 +94,6 @@ golden_variant :: proc(source: string, anchor: string, replacement: string) -> (
 
 @(test)
 test_golden_variant_removed_to_fixed_rejected :: proc(t: ^testing.T) {
-	// The epic's negative obligation, permanently homed: strip the
-	// explicit to_fixed lift from the golden source so a bare Int meets
-	// a Fixed context — the whole file must reject at typecheck (the
-	// funpack test CLI maps this to exit 2 via test_exit_code).
 	source, ok := golden_source()
 	if !ok {
 		return
@@ -126,9 +106,6 @@ test_golden_variant_removed_to_fixed_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_golden_variant_unimported_name_rejected :: proc(t: ^testing.T) {
-	// Second fixture family through the same harness: swap the imported
-	// pi for the unimported tau in the slerp block — resolution, not
-	// arithmetic, rejects the file.
 	source, ok := golden_source()
 	if !ok {
 		return
@@ -143,13 +120,6 @@ resolve_golden_dir :: proc() -> string {
 	return resolve_spec_dir("FUNPACK_NUMERICS_DIR", GOLDEN_DEFAULT_DIR)
 }
 
-// resolve_spec_dir resolves an in-repo golden tree (examples/…, stdlib/…): the
-// env override when set, else the repo-relative default made absolute against
-// this checkout's root. #directory is the funpack package dir, so the root is
-// one level up — the main checkout, or, inside an orchestrator task worktree
-// (.claude/worktrees/<slug>-task-<id>/funpack), that worktree's own root. The
-// fixtures are committed in-repo, so every worktree carries its own copy and
-// golden coverage reads worktree-local — no sibling checkout, no infix strip.
 resolve_spec_dir :: proc(env_name: string, default_rel: string) -> string {
 	dir, has_env := os.lookup_env(env_name, context.temp_allocator)
 	if !has_env || dir == "" {
@@ -158,7 +128,6 @@ resolve_spec_dir :: proc(env_name: string, default_rel: string) -> string {
 	if filepath.is_abs(dir) {
 		return dir
 	}
-	// #directory is this package dir; the checkout root is one level up.
 	root, _ := filepath.join({#directory, ".."}, context.temp_allocator)
 	resolved, _ := filepath.join({root, dir}, context.temp_allocator)
 	return resolved

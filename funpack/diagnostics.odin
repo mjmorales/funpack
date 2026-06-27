@@ -1,73 +1,29 @@
-// The fix-criteria diagnostic seam (README quality-gate non-negotiable): a
-// compiler refusal is not a bare enum name (`Gate_Failed`, `Compile_Failed`)
-// but a `rustc`/`gofmt`-flavored block naming the offending construct, its
-// `file:line:col`, the specific closed-enum rule, and a concise fix sentence —
-// so an agent's write→check→fix loop converges. This file owns the core
-// Diagnostic record, the PURE renderer (render_diagnostic — a function of
-// (Diagnostic, source) alone, so goldens pin it byte-for-byte), and the closed
-// per-stage mapping procs (one per stage error enum) that are the SINGLE source
-// of truth for the human wording. Each stage's seam (gates.odin, parser.odin,
-// typecheck.odin, contracts.odin, pipeline_flatten.odin) keeps its existing
-// closed enum as the machine contract and ADDS the offender coordinates beside
-// the arm; the mapping proc here turns (arm, line, col, declaration) into the
-// rendered Diagnostic. The CLI (main.odin, build.odin) fills `path` and re-reads
-// the source the renderer excerpts from — funpack stays pure (no clock, no host
-// nondeterminism beyond the file read the CLI owns).
 package funpack
 
 import "core:fmt"
 import "core:strings"
 
-// Diag_Stage names which pipeline stage refused, so a diagnostic header carries
-// the same stage vocabulary the Pipeline_Error / Build_Error arms do. Closed
-// like every funpack taxonomy: one member per stage seam, never a catch-all.
 Diag_Stage :: enum {
-	Parse,     // stage_parse rejected the token stream (Parse_Error)
-	Gate,      // stage_gates overshot a structural budget (Gate_Error)
-	Typecheck, // stage_typecheck_indexed found a type fault (Type_Error)
-	Contract,  // stage_contracts rejected a behavior's slot contract (Contract_Error)
-	Closure,   // stage_flatten rejected flattening or effect-closure (Flatten_Error)
+	Parse,
+	Gate,
+	Typecheck,
+	Contract,
+	Closure,
 }
 
-// Diagnostic is one compiler refusal rendered as fix-criteria: the stage that
-// refused, the specific closed-enum arm name as `rule`, the offender's 1-based
-// line/col (0 = unknown, as for a declaration-anchored gate offender or a
-// synthetic node), the offending declaration's §15 name (module-qualified by
-// the project layer; "" when the fault has no owning declaration), the fix
-// sentence, and the source file `path` the CLI fills from the failing module.
-// The stage seams build everything but `path`; the CLI stamps `path` and
-// re-reads the file render_diagnostic excerpts the offending line from.
 Diagnostic :: struct {
 	stage:       Diag_Stage,
-	rule:        string, // the closed-enum arm's own name, e.g. "Type_Mismatch"
-	line:        int,    // 1-based; 0 = unknown
-	col:         int,    // 1-based; 0 = unknown
-	declaration: string, // offending decl name (module-qualified); "" if none
-	message:     string, // the fix-criteria sentence for this rule
-	hint:        string, // optional per-instance detail appended after message (e.g. the receiver type's real methods for Unknown_Method); "" for the static-message arms
-	path:        string, // source file; filled by the CLI/project layer
+	rule:        string,
+	line:        int,
+	col:         int,
+	declaration: string,
+	message:     string,
+	hint:        string,
+	path:        string,
 }
 
-// render_diagnostic renders one Diagnostic as the deterministic rustc/gofmt
-// block — a PURE function of (d, source) so a golden pins it byte-for-byte:
-//
-//   <path>:<line>:<col>: <rule>: <message>
-//     <line> | <the offending source line>
-//            |        ^   (caret under col; omitted when col == 0)
-//
-// A set `declaration` rides the header in parens (`<rule> (<declaration>):`).
-// When `line == 0` (no position — a declaration-anchored gate offender whose
-// decl line was not captured, or a synthetic node) the block collapses to the
-// one-line header, no excerpt. `source` is the file text the CLI re-reads from
-// `d.path`; the excerpt is `source`'s 1-based `line`th line. A `line` past the
-// source (a stale span) prints the header and the gutter with an empty line,
-// never crashes — the renderer fails open on a bad coordinate, never silent.
 render_diagnostic :: proc(d: Diagnostic, source: string, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
-	// Header: `<path>:<line>:<col>: <rule> (<declaration>): <message>`. The
-	// position triple omits the unknown halves so a declaration-anchored gate
-	// offender reads `<path>: <rule> …` (no `:0:0:` noise), the rustc form for a
-	// position-less diagnostic.
 	fmt.sbprint(&b, d.path)
 	if d.line != 0 {
 		fmt.sbprintf(&b, ":%d", d.line)
@@ -81,25 +37,15 @@ render_diagnostic :: proc(d: Diagnostic, source: string, allocator := context.al
 		fmt.sbprintf(&b, " (%s)", d.declaration)
 	}
 	fmt.sbprintf(&b, ": %s", d.message)
-	// A per-instance hint (the receiver type's real methods for an Unknown_Method,
-	// say) rides after the static fix-sentence — the dynamic detail the static
-	// per-arm message cannot carry, kept OFF the header's machine-stable triple so
-	// it never disturbs rule/declaration parsing. "" for the static-message arms.
 	if d.hint != "" {
 		fmt.sbprintf(&b, " — %s", d.hint)
 	}
-	// Excerpt: only when a line is known. The gutter width is the line number's
-	// decimal width, so the `|` rules align under the header's path and the caret
-	// gutter matches the excerpt gutter exactly.
 	if d.line != 0 {
 		excerpt := source_line(source, d.line)
 		number := fmt.tprintf("%d", d.line)
 		fmt.sbprintf(&b, "\n  %s | %s", number, excerpt)
 		if d.col != 0 {
 			fmt.sbprint(&b, "\n  ")
-			// The caret gutter is blanks the width of the line number, then `| `,
-			// then (col-1) blanks and the caret — so `^` sits under the offending
-			// column of the excerpt above (the excerpt body starts after `| `).
 			for _ in 0 ..< len(number) {
 				fmt.sbprint(&b, " ")
 			}
@@ -113,11 +59,6 @@ render_diagnostic :: proc(d: Diagnostic, source: string, allocator := context.al
 	return strings.to_string(b)
 }
 
-// source_line returns the 1-based `line`th line of `source` (no trailing
-// newline), or "" when `line` is out of range — the fail-open excerpt for a
-// stale or synthetic coordinate. strings.split_lines is the same line splitter
-// the Index Contract config reader uses (index_contract.odin), so the excerpt
-// indexes lines exactly as the rest of the compiler counts them.
 source_line :: proc(source: string, line: int) -> string {
 	if line < 1 {
 		return ""
@@ -129,25 +70,6 @@ source_line :: proc(source: string, line: int) -> string {
 	return lines[line - 1]
 }
 
-// render_assert_failure renders ONE failed `assert` as the deterministic
-// rustc/gofmt-flavored block — the EXIT-1 sibling of render_diagnostic (a compile
-// error is exit 2; the machine contract is unchanged, this is the added human
-// body for a failed assertion). Like render_diagnostic it is a PURE function of
-// (f, source) so a golden pins it byte-for-byte:
-//
-//   <path>:<line>: assertion failed (<test name>): <assert expression>
-//     <line> | <the offending source line>
-//            left:  <lhs display>
-//            right: <rhs display>
-//
-// The header carries the test name in parens (the declaration analogue of
-// render_diagnostic's `(<declaration>)`), the §02 §4 assert expression text as
-// the body, and the source line as the gutter-numbered excerpt. The left/right
-// operand lines are shown only for a top-level `==`/`!=` whose both sides
-// evaluated (f.has_operands); a bare-predicate assert renders the expression and
-// excerpt alone. `line == 0` (a synthetic span) collapses to the header; a `line`
-// past the source prints the header and an empty excerpt, never crashes — the
-// fail-open coordinate discipline render_diagnostic holds.
 render_assert_failure :: proc(f: Assert_Failure, source: string, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	fmt.sbprint(&b, f.path)
@@ -163,8 +85,6 @@ render_assert_failure :: proc(f: Assert_Failure, source: string, allocator := co
 		excerpt := source_line(source, f.line)
 		number := fmt.tprintf("%d", f.line)
 		fmt.sbprintf(&b, "\n  %s | %s", number, excerpt)
-		// The left/right gutter aligns under the excerpt gutter: blanks the width
-		// of the line number, then `| `, matching render_diagnostic's caret gutter.
 		if f.has_operands {
 			gutter := strings.repeat(" ", len(number), context.temp_allocator)
 			fmt.sbprintf(&b, "\n  %s | left:  %s", gutter, f.lhs_display)
@@ -174,15 +94,6 @@ render_assert_failure :: proc(f: Assert_Failure, source: string, allocator := co
 	return strings.to_string(b)
 }
 
-// parse_diagnostic builds a Diagnostic from a Parse_Error arm and the offending
-// token's line/col. The `rule` is the arm's own name; the `message` is the
-// fix-criteria sentence distilled from the arm's rich doc-comment in
-// parser.odin's Parse_Error declaration. A parse fault has no resolved
-// declaration (the parser failed before the declaration was built), so
-// declaration is always "". The switch is total over Parse_Error so a new arm
-// is a visible compile gap here, never a silently-wordless diagnostic. .None is
-// not a fault; it maps to an empty rule so a caller that never reaches a fault
-// renders nothing.
 parse_diagnostic :: proc(err: Parse_Error, line: int, col: int) -> Diagnostic {
 	d := Diagnostic{stage = .Parse, line = line, col = col, rule = fmt.tprintf("%v", err)}
 	switch err {
@@ -236,20 +147,6 @@ parse_diagnostic :: proc(err: Parse_Error, line: int, col: int) -> Diagnostic {
 	return d
 }
 
-// gate_diagnostic builds a Diagnostic from a Gate_Error arm, the offending
-// declaration's line, its name, and (for the nesting arm) which depth source
-// tripped the ceiling. Gate offenders are declaration-anchored — the budget is a
-// per-declaration compiler constant (spec §01 P5) — so col is always 0 (no
-// expression column; the whole declaration overshot) and the declaration name
-// rides the header. The duplication gate's offender is a colliding pair, not a
-// single declaration, so its name/line may be "" / 0 (gate_verdict leaves them
-// unset there). `cause` is consulted only on the Nesting_Exceeded arm (it is
-// .None on every other arm); it selects the remedy that actually drops the depth
-// — block nesting flattens with early returns, expression-composition nesting
-// extracts a helper or binds an intermediate `let`. Total over Gate_Error, and
-// the nesting arm is total over Nesting_Cause, so a new gate arm OR a new depth
-// source is a visible compile gap here, never a silently-wordless or
-// mis-remedied refusal.
 gate_diagnostic :: proc(err: Gate_Error, line: int, declaration: string, cause := Nesting_Cause.None) -> Diagnostic {
 	d := Diagnostic{stage = .Gate, line = line, declaration = declaration, rule = fmt.tprintf("%v", err)}
 	switch err {
@@ -277,21 +174,6 @@ gate_diagnostic :: proc(err: Gate_Error, line: int, declaration: string, cause :
 	return d
 }
 
-// nesting_exceeded_message is the §01 P5 nesting refusal's fix sentence, with the
-// remedy clause chosen to fit the depth source that tripped the ceiling — a block
-// here nesting deeper does NOT fit pure call-expression depth (`np_id(np_id(…))`
-// has no block and no branch to early-return from), so the remedy must name what
-// actually drops the depth:
-//   - Block       — flatten the structure with early returns (collapse the
-//                    guard ladder so the body stops re-entering deeper blocks);
-//   - Expression  — extract a named helper or bind an intermediate `let` (pull
-//                    the nested call/composition out so no single expression
-//                    nests past the ceiling).
-// .None is defensive: a Nesting_Exceeded verdict always carries a real cause
-// (check_nesting sets it at the overshoot), but should that ever not hold, name
-// BOTH remedies precisely rather than guess one — never a misleading single
-// remedy. Total over Nesting_Cause, so a new depth source is a visible compile
-// gap here.
 nesting_exceeded_message :: proc(cause: Nesting_Cause) -> string {
 	switch cause {
 	case .Block:
@@ -304,11 +186,6 @@ nesting_exceeded_message :: proc(cause: Nesting_Cause) -> string {
 	return ""
 }
 
-// type_diagnostic builds a Diagnostic from a Type_Error arm, the offending
-// expression's span (expr_span) or the offending declaration's line, and the
-// owning declaration's name. The `message` is the fix-criteria sentence
-// distilled from the arm's rich doc-comment in typecheck.odin's Type_Error
-// declaration. Total over Type_Error so a new arm is a visible compile gap.
 type_diagnostic :: proc(err: Type_Error, line: int, col: int, declaration: string, hint := "") -> Diagnostic {
 	d := Diagnostic{stage = .Typecheck, line = line, col = col, declaration = declaration, rule = fmt.tprintf("%v", err), hint = hint}
 	switch err {
@@ -370,11 +247,6 @@ type_diagnostic :: proc(err: Type_Error, line: int, col: int, declaration: strin
 	return d
 }
 
-// contract_diagnostic builds a Diagnostic from a Contract_Error arm, the
-// offending behavior's declaration line, and its name. Every contract fault is
-// behavior-level (the reject names which behavior broke which slot contract,
-// spec §06 §6), so the declaration is the behavior name and col is 0 (the whole
-// signature, not a column, violated). Total over Contract_Error.
 contract_diagnostic :: proc(err: Contract_Error, line: int, declaration: string) -> Diagnostic {
 	d := Diagnostic{stage = .Contract, line = line, declaration = declaration, rule = fmt.tprintf("%v", err)}
 	switch err {
@@ -400,12 +272,6 @@ contract_diagnostic :: proc(err: Contract_Error, line: int, declaration: string)
 	return d
 }
 
-// flatten_diagnostic builds a Diagnostic from a Flatten_Error arm, the
-// offending declaration's line, and its name. An Unclosed_Signal names the
-// signal that went unclosed (spec §07 §2); the structural flatten faults
-// (Unknown_Member / Recursive_Pipeline) name the offending pipeline member.
-// col is 0 (the fault is a declaration/signal-level edge, not a column).
-// Total over Flatten_Error.
 flatten_diagnostic :: proc(err: Flatten_Error, line: int, declaration: string) -> Diagnostic {
 	d := Diagnostic{stage = .Closure, line = line, declaration = declaration, rule = fmt.tprintf("%v", err)}
 	switch err {

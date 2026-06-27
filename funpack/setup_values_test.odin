@@ -9,9 +9,6 @@ setup_values_emit :: proc(source: string) -> (artifact: string, err: Emit_Error)
 	return stage_emit(source, "mini", identity, SETUP_VALUES_ENTRYPOINT, context.temp_allocator)
 }
 
-// A setup() that spawns through a multi-statement (`let`-binding) constructor —
-// the idiomatic shape a single-`return`-only fold cannot bake — must bake its real
-// spawn through the full evaluator, not drop it to an empty [setup] black screen.
 @(test)
 test_setup_bakes_computed_multistatement_constructor :: proc(t: ^testing.T) {
 	source := `import engine.input.{Bindings}
@@ -56,10 +53,6 @@ pipeline Loop {
 	testing.expect(t, artifact_has_line(artifact, "set y =10"))
 }
 
-// A game that imports the structural stdlib engine.grid.Cell (rather than
-// declaring its own `data Cell`) gets a synthesized `data Cell` projection in
-// [data], so the runtime types Cell's Int fields and decodes a `Cell(x=N,y=N)`
-// token as integers rather than 1/2^32-scaled Fixed bits.
 @(test)
 test_setup_imported_cell_gets_synthetic_data_decl :: proc(t: ^testing.T) {
 	source := `import engine.input.{Bindings}
@@ -102,9 +95,6 @@ pipeline Loop {
 	testing.expect(t, artifact_has_line(artifact, "set at =Cell(x=3,y=4)"))
 }
 
-// A static setup() the evaluator cannot resolve to a closed batch — here a spawn
-// through a bare typed hole, which fails closed — refuses the build loudly
-// (Setup_Eval_Failed) instead of emitting a silently-empty [setup].
 @(test)
 test_setup_unevaluable_static_refuses_loudly :: proc(t: ^testing.T) {
 	source := `import engine.input.{Bindings}

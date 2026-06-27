@@ -2,16 +2,6 @@ package funpack
 
 import "core:testing"
 
-// Hand-built `.fui` fixtures exercising each §21 production, pinning the parsed
-// AST node counts and shapes — NOT reading the sibling examples/hud/ui checkout
-// (the inference proof pins the three example screens inline). Each fixture is the
-// minimal source that drives one production: a screen with a nested layout block,
-// the directive triad (`@event`, `:attr`, `bind:value`), a text node with
-// interpolation holes, an `if` block, and a `for` block with a row-type
-// ascription and a `key`. The rejection tests pin that malformed templates fail
-// the grammar — a lower-case screen name, an unterminated block, an unterminated
-// interpolation hole.
-
 @(test)
 test_fui_parses_screen_and_nested_block :: proc(t: ^testing.T) {
 	src := "screen Hud {\n  row class=\"top-bar\" {\n    text { \"Score\" }\n  }\n}\n"
@@ -23,7 +13,6 @@ test_fui_parses_screen_and_nested_block :: proc(t: ^testing.T) {
 	testing.expect(t, is_el, "top node is a row element")
 	testing.expect_value(t, row.widget, Fui_Widget_Kind.Row)
 	testing.expect_value(t, row.has_block, true)
-	// The row has one plain `class` attribute and one child element.
 	testing.expect_value(t, len(row.attrs), 1)
 	testing.expect_value(t, row.attrs[0].kind, Fui_Attr_Kind.Plain)
 	testing.expect_value(t, row.attrs[0].name, "class")
@@ -39,8 +28,6 @@ test_fui_parses_screen_and_nested_block :: proc(t: ^testing.T) {
 
 @(test)
 test_fui_parses_directive_triad :: proc(t: ^testing.T) {
-	// One element each for the three directive kinds: an event with a payload, a
-	// bind-in, and a two-way. A self-closing input widget (no `{ }` block).
 	src := "screen S {\n" +
 		"  button @click=SetVolume(p.value) { \"go\" }\n" +
 		"  text :class=tone { \"x\" }\n" +
@@ -50,7 +37,6 @@ test_fui_parses_directive_triad :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Fui_Parse_Error.None)
 	testing.expect_value(t, len(screen.body), 3)
 
-	// Event directive with a payload path.
 	btn := screen.body[0].(^Fui_Element)
 	testing.expect_value(t, len(btn.attrs), 1)
 	testing.expect_value(t, btn.attrs[0].kind, Fui_Attr_Kind.Event)
@@ -63,14 +49,12 @@ test_fui_parses_directive_triad :: proc(t: ^testing.T) {
 	testing.expect_value(t, ref.payload.segments[0], "p")
 	testing.expect_value(t, ref.payload.segments[1], "value")
 
-	// Bind-in directive.
 	txt := screen.body[1].(^Fui_Element)
 	testing.expect_value(t, txt.attrs[0].kind, Fui_Attr_Kind.Bind_In)
 	testing.expect_value(t, txt.attrs[0].name, "class")
 	bind_path := txt.attrs[0].value.(Fui_Path)
 	testing.expect_value(t, bind_path.segments[0], "tone")
 
-	// Two-way directive on a self-closing slider (no block).
 	sld := screen.body[2].(^Fui_Element)
 	testing.expect_value(t, sld.widget, Fui_Widget_Kind.Slider)
 	testing.expect_value(t, sld.has_block, false)
@@ -82,19 +66,15 @@ test_fui_parses_directive_triad :: proc(t: ^testing.T) {
 
 @(test)
 test_fui_parses_text_interpolation_holes :: proc(t: ^testing.T) {
-	// A text node with a literal prefix and an interpolation hole, plus a
-	// hole-free literal text node.
 	src := "screen S {\n  text { \"Score: {score}\" }\n  text { \"Settings\" }\n}\n"
 	screen, err := parse_fui(src)
 	testing.expect_value(t, err, Fui_Parse_Error.None)
-	// First text element's child is the interpolated text node.
 	first := screen.body[0].(^Fui_Element)
 	tn, is_tn := first.children[0].(^Fui_Text)
 	testing.expect(t, is_tn, "child is a text node")
 	testing.expect_value(t, tn.text, "Score: {score}")
 	testing.expect_value(t, len(tn.holes), 1)
 	testing.expect_value(t, tn.holes[0].segments[0], "score")
-	// Second text element's child is hole-free literal text.
 	second := screen.body[1].(^Fui_Element)
 	tn2 := second.children[0].(^Fui_Text)
 	testing.expect_value(t, len(tn2.holes), 0)
@@ -116,7 +96,6 @@ test_fui_parses_if_block :: proc(t: ^testing.T) {
 
 @(test)
 test_fui_parses_for_with_row_type_and_key :: proc(t: ^testing.T) {
-	// A for-list with an explicit inline row-type ascription and a `key`.
 	src := "screen S {\n" +
 		"  for opt in difficulties : { id: Ref[Difficulty], label: String } key=opt.id {\n" +
 		"    button @click=Pick(opt.id) { \"{opt.label}\" }\n" +
@@ -129,14 +108,12 @@ test_fui_parses_for_with_row_type_and_key :: proc(t: ^testing.T) {
 	testing.expect(t, is_for, "top node is a for node")
 	testing.expect_value(t, n.var, "opt")
 	testing.expect_value(t, n.list.segments[0], "difficulties")
-	// The inline row type pins two fields with rendered type tokens.
 	testing.expect_value(t, n.has_row_type, true)
 	testing.expect_value(t, len(n.row_type), 2)
 	testing.expect_value(t, n.row_type[0].name, "id")
 	testing.expect_value(t, n.row_type[0].type, "Ref[Difficulty]")
 	testing.expect_value(t, n.row_type[1].name, "label")
 	testing.expect_value(t, n.row_type[1].type, "String")
-	// The `key` is the row's id path.
 	testing.expect_value(t, n.has_key, true)
 	testing.expect_value(t, n.key.segments[0], "opt")
 	testing.expect_value(t, n.key.segments[1], "id")
@@ -145,7 +122,6 @@ test_fui_parses_for_with_row_type_and_key :: proc(t: ^testing.T) {
 
 @(test)
 test_fui_parses_nullary_and_int_attr :: proc(t: ^testing.T) {
-	// A nullary event variant (no payload) and integer plain attributes.
 	src := "screen S {\n  slider min=0 max=100 bind:value=v\n  button @click=Back { \"Back\" }\n}\n"
 	screen, err := parse_fui(src)
 	testing.expect_value(t, err, Fui_Parse_Error.None)
@@ -156,7 +132,6 @@ test_fui_parses_nullary_and_int_attr :: proc(t: ^testing.T) {
 	testing.expect_value(t, min_lit.int_value, 0)
 	max_lit := sld.attrs[1].value.(Fui_Literal)
 	testing.expect_value(t, max_lit.int_value, 100)
-	// Nullary event variant.
 	btn := screen.body[1].(^Fui_Element)
 	ref := btn.attrs[0].value.(Fui_Msg_Ref)
 	testing.expect_value(t, ref.variant, "Back")
@@ -165,19 +140,14 @@ test_fui_parses_nullary_and_int_attr :: proc(t: ^testing.T) {
 
 @(test)
 test_fui_rejects_malformed :: proc(t: ^testing.T) {
-	// A lower-case screen name where UPPER_IDENT is required rejects as Wrong_Case.
 	lower_name := "screen hud {\n  text { \"x\" }\n}\n"
 	_, err_name := parse_fui(lower_name)
 	testing.expect_value(t, err_name, Fui_Parse_Error.Wrong_Case)
 
-	// An unterminated screen block (no closing `}` before end of input) rejects
-	// with the dedicated Unexpected_End arm.
 	unterminated := "screen Hud {\n  text { \"x\" }\n"
 	_, err_block := parse_fui(unterminated)
 	testing.expect_value(t, err_block, Fui_Parse_Error.Unexpected_End)
 
-	// An unterminated interpolation hole (`{` with no `}`) inside a text node
-	// rejects with Unexpected_End.
 	bad_hole := "screen Hud {\n  text { \"Score: {score\" }\n}\n"
 	_, err_hole := parse_fui(bad_hole)
 	testing.expect_value(t, err_hole, Fui_Parse_Error.Unexpected_End)

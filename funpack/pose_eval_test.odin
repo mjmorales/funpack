@@ -1,28 +1,7 @@
-// Proof that the §16 §7 pose/anim EVALUATION surface runs through stage_evaluate.
-// The fixture is a hand-built .fun whose inline tests mirror stroll.fun's pure
-// fixed-point pose/gait assertions (examples/krognid/src/stroll.fun): pose_walk
-// holds the legs at rest on the zero crossing (get == rot_x(0.0)), Pose.blend at
-// weight 0 equals the base pose's driven bones, Pose.layer lets the overlay win
-// per bone, .set/.get drive and read a bone, rot_x/up build the per-bone
-// transforms, a sparse .get of an undriven bone reads the rest transform, a
-// blend of disjoint bone sets keeps every bone (per-bone, §07), walk_weight
-// clamps the blend factor, and advance_gait accumulates the walk-cycle phase.
-// All FIXED-POINT — these are sim-side pose generators, never float (the
-// no-float-in-sim doctrine; float is confined to the .fpm bake stories). The
-// source compiles clean through every stage (parse → gates → typecheck →
-// contracts → flatten) and its inline tests evaluate to their golden values, so
-// run_test_pipeline reporting all-passed is the EVALUATION-surface proof.
 package funpack
 
 import "core:testing"
 
-// POSE_EVAL_FIXTURE is the hand-built pose/gait source. It imports only the
-// pose/anim names this story arms (engine.anim.{Pose, Bone, rot_x, up}) plus the
-// math/input/core names the gait scaffolding needs — no Skeleton/PartSet/render3,
-// keeping the fixture to the pose/anim evaluation surface. The advance_gait body
-// accumulates phase without the spec's `% tau` wrap (tau is an engine.math
-// constant outside this story's pose/anim scope, and the test inputs never reach
-// one turn, so the wrap is a no-op here); every other shape mirrors stroll.fun.
 POSE_EVAL_FIXTURE :: `@doc("Pose/gait evaluation proof. Pure fixed-point pose generators over the anim surface.")
 
 import engine.anim.{Pose, Bone, rot_x, up}
@@ -152,15 +131,6 @@ test "advance_gait records the speed" {
 
 @(test)
 test_pose_eval_fixture_all_pass :: proc(t: ^testing.T) {
-	// The pose/anim EVALUATION-surface proof: the hand-built fixture compiles
-	// clean through every stage and its thirteen inline pose/gait asserts evaluate
-	// to their golden values — pose_walk's zero-crossing rest pose, set/get
-	// round-trip, the undriven-bone rest read, blend at weight 0 / weight 1, a
-	// disjoint-bone-set blend, the interior-weight absent-bone rest fallback, layer
-	// overlay-wins and base-shows-through, walk_weight's clamp at both ends, and
-	// advance_gait's phase/speed accumulation. All thirteen passing exercises
-	// Pose_Value/Transform_Value, eval_pose_set/get/blend/layer, rot_x/up, Bone
-	// enum-variant values, and Transform equality.
 	report, err := run_test_pipeline(POSE_EVAL_FIXTURE)
 	testing.expect_value(t, err, Pipeline_Error.None)
 	testing.expect_value(t, report.passed, 13)

@@ -1,17 +1,3 @@
-// §30 dependency-surface fixtures: the deps.fcfg grammar (§30 §3), the
-// path-source package resolution that roots a dependency's modules under its
-// project name (§30 §7, §15 §5), the §30 §4 pin gate (a registry/url dep's
-// vendored tree re-hashes at project read — exact match builds clean, a
-// mismatch refuses with the fix-it carrying the actual hash, an absent
-// vendored tree refuses hermetically instead of fetching), and the two named
-// refusals the package edge rests on — the §30 §2 star-graph violation (a
-// package importing a package, pinned both structurally over a scratch tree
-// and at the import level in-memory) and the reserved-root collisions (a
-// package named like the unshadowable `engine` root; a local module
-// shadowing a dependency's root).
-// The tree fixtures ride the project_test scratch helpers; the dependency's
-// exposed API is fully @expose'd so no fixture depends on the (parallel)
-// exposure-closure story's verdicts.
 package funpack
 
 import "core:fmt"
@@ -21,13 +7,8 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
-// ── §30 §3 deps.fcfg grammar ─────────────────────────────────────────────
-
 @(test)
 test_parse_deps_fcfg_all_three_sources :: proc(t: ^testing.T) {
-	// The §30 §3 exemplar: one dep per provenance source, with @doc admitted
-	// under the P6 discipline. Each row carries its name/source/value, and
-	// the hash rides only where the table grants one (registry + url).
 	content := "@doc(\"the declared dependency set\")\n" +
 		"use hexgrid version \"0.4\" hash \"sha256:1c77\"\n" +
 		"use shared path \"../studio-shared\"\n" +
@@ -53,8 +34,6 @@ test_parse_deps_fcfg_all_three_sources :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_deps_fcfg_empty_is_zero_deps :: proc(t: ^testing.T) {
-	// deps.fcfg is optional and an empty-but-present file declares nothing —
-	// only a malformed construct rejects (mirroring builds.fcfg).
 	deps, err := parse_deps_fcfg("")
 	testing.expect_value(t, err, Project_Error.None)
 	testing.expect_value(t, len(deps), 0)
@@ -62,20 +41,14 @@ test_parse_deps_fcfg_empty_is_zero_deps :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_deps_fcfg_rejects_malformed :: proc(t: ^testing.T) {
-	// Every way out of the closed `use <name> <source> "…" [hash "…"]`
-	// production is the named Malformed_Deps_Fcfg reject: an unknown source
-	// kind (the set is closed), a registry/url dep missing its required hash
-	// (§30 §4 — the pin IS the lockfile), a hash on a path dep (the table
-	// grants path deps none), a duplicate dependency name, a non-`use`
-	// top-level construct, and a bare value where a string belongs.
 	malformed := []string {
-		"use hexgrid git \"somewhere\"\n",                                    // unknown source kind
-		"use hexgrid version \"0.4\"\n",                                      // registry without hash
-		"use steering url \"https://example.com/x.tar\"\n",                   // url without hash
-		"use shared path \"../studio-shared\" hash \"sha256:1c77\"\n",        // hash on a path dep
-		"use shared path \"../a\"\nuse shared path \"../b\"\n",               // duplicate name
-		"dep hexgrid version \"0.4\" hash \"sha256:1c77\"\n",                 // non-`use` opener
-		"use shared path ../studio-shared\n",                                 // bare value, not a string
+		"use hexgrid git \"somewhere\"\n",
+		"use hexgrid version \"0.4\"\n",
+		"use steering url \"https://example.com/x.tar\"\n",
+		"use shared path \"../studio-shared\" hash \"sha256:1c77\"\n",
+		"use shared path \"../a\"\nuse shared path \"../b\"\n",
+		"dep hexgrid version \"0.4\" hash \"sha256:1c77\"\n",
+		"use shared path ../studio-shared\n",
 	}
 	for content in malformed {
 		_, err := parse_deps_fcfg(content)
@@ -83,13 +56,6 @@ test_parse_deps_fcfg_rejects_malformed :: proc(t: ^testing.T) {
 	}
 }
 
-// ── §30 §7 scratch trees: a consumer with one path dependency ────────────
-
-// HEXGRID_LAYOUT_FUN is the dependency's one module: a fully
-// @expose'd public API (so no fixture leans on the parallel exposure-closure
-// story) beside a package-private helper, plus the dependency's own inline
-// test — §30 §7: the dep is compiled through the consumer's pipeline with
-// the same gates, so its assertions count in the consumer's run.
 HEXGRID_LAYOUT_FUN :: "@expose\n" +
 	"fn axial_to_pixel(q: Int) -> Int {\n" +
 	"  return q\n" +
@@ -101,12 +67,6 @@ HEXGRID_LAYOUT_FUN :: "@expose\n" +
 	"  assert cube_round(2) == 2\n" +
 	"}\n"
 
-// write_dep_scratch_tree materializes a consumer tree with one path
-// dependency: the consumer's identity + deps.fcfg + a src/game.fun of the
-// given content, and the dependency package under packages/<dep_name>/ with
-// its own identity (project name = dep_project_name) and a single
-// src/layout.fun. ok = false (logged skip) when scratch I/O fails, matching
-// write_scratch_tree's sandboxed-runner degradation.
 write_dep_scratch_tree :: proc(
 	t: ^testing.T,
 	consumer_fun: string,
@@ -143,11 +103,6 @@ write_dep_scratch_tree :: proc(
 	return root, true
 }
 
-// project_fcfg_for renders a package identity config naming the given
-// project. Built by concatenation, NEVER fmt.tprintf: Odin's fmt treats a
-// bare `{` in the format string as a placeholder opener, so a tprintf'd
-// `project %s { … }` template silently writes `%!(MISSING ARGUMENT)` noise
-// into the fixture bytes and every tree reads as malformed.
 project_fcfg_for :: proc(project_name: string) -> string {
 	return strings.concatenate(
 		{"project ", project_name, " { version = \"0.4.0\" }\n"},
@@ -155,11 +110,6 @@ project_fcfg_for :: proc(project_name: string) -> string {
 	)
 }
 
-// write_scratch_file writes one file, creating its interior directories.
-// The directory is probed before make_directory_all because that call
-// returns .Exist — not nil — for an already-present directory, so the
-// second file written into any directory would otherwise degrade the whole
-// fixture to a silent skip.
 write_scratch_file :: proc(path: string, content: string) -> bool {
 	dir := filepath.dir(path)
 	if !os.is_dir(dir) && os.make_directory_all(dir) != nil {
@@ -170,12 +120,6 @@ write_scratch_file :: proc(path: string, content: string) -> bool {
 
 @(test)
 test_path_dep_resolves_under_project_name_root :: proc(t: ^testing.T) {
-	// AC: a path-source package resolves with the PROJECT NAME as root
-	// namespace — the dependency's module enters the build as
-	// `hexgrid.layout` with package_root stamped, the consumer's
-	// `import hexgrid.layout.{axial_to_pixel}` resolves across the edge, and
-	// the full project walk (consumer + dependency, one index) runs both
-	// modules' assertions green.
 	consumer := "import hexgrid.layout.{axial_to_pixel}\n" +
 		"test \"imports under the dependency's root namespace\" {\n" +
 		"  assert axial_to_pixel(3) == 3\n" +
@@ -197,7 +141,6 @@ test_path_dep_resolves_under_project_name_root :: proc(t: ^testing.T) {
 		testing.expect_value(t, project.package_sources[0].module, "hexgrid.layout")
 		testing.expect_value(t, project.package_sources[0].package_root, "hexgrid")
 	}
-	// The consumer's own sources stay unprefixed and unstamped.
 	testing.expect_value(t, len(project.sources), 1)
 	if len(project.sources) == 1 {
 		testing.expect_value(t, project.sources[0].module, "game")
@@ -207,18 +150,12 @@ test_path_dep_resolves_under_project_name_root :: proc(t: ^testing.T) {
 	report := run_project_pipeline(project_pipeline_sources(project))
 	testing.expect_value(t, report.index_err, Project_Pipeline_Error.None)
 	testing.expect_value(t, report.module_err, Pipeline_Error.None)
-	// Both the consumer's assertion and the dependency's own inline test
-	// counted — the dep rides the same pipeline (§30 §7).
 	testing.expect_value(t, report.passed, 2)
 	testing.expect_value(t, report.failed, 0)
 }
 
 @(test)
 test_path_dep_fn_in_combinator_slot :: proc(t: ^testing.T) {
-	// A dep's exposed fn passed BARE-NAME into a stdlib combinator slot
-	// (map's mapper) types as a function value and evaluates in its owning
-	// module's ctx — the apply_combinator sibling of eval_call's
-	// cross-module arm, end-to-end across the §30 package edge.
 	consumer := "import engine.list.{map, contains}\n" +
 		"import hexgrid.layout.{axial_to_pixel}\n" +
 		"test \"imported fn rides the combinator slot\" {\n" +
@@ -244,12 +181,6 @@ test_path_dep_fn_in_combinator_slot :: proc(t: ^testing.T) {
 
 @(test)
 test_path_dep_checks_builds_and_indexes :: proc(t: ^testing.T) {
-	// AC for the §30 §7 combined-set discipline on the build/check/index
-	// walks: a dep-importing tree compiles through stage_build — the same
-	// pure seam funpack check adjudicates — instead of refusing with the
-	// consumer's import unresolved, and BOTH sides' decls project into the
-	// Index Contract: the consumer's under its own module, the dependency's
-	// under the package-prefixed qualified_name.
 	consumer := "import hexgrid.layout.{axial_to_pixel}\n" +
 		"fn double_pixel(q: Int) -> Int {\n" +
 		"  return axial_to_pixel(q) + axial_to_pixel(q)\n" +
@@ -269,10 +200,6 @@ test_path_dep_checks_builds_and_indexes :: proc(t: ^testing.T) {
 
 @(test)
 test_path_dep_hole_refuses_release_build :: proc(t: ^testing.T) {
-	// The release bans scan the COMBINED set: a typed hole in the DEP refuses
-	// the consumer's --release build naming the dep's module-qualified
-	// declaration — dep code ships in your product, so it rides your floors
-	// (§29 §4, §30 §7).
 	holed_dep := "@expose\n" +
 		"fn axial_to_pixel(q: Int) -> Int @stub(Int)\n"
 	root, ok := write_dep_scratch_tree(t, "@doc(\"consumer\")\n", "hexgrid", "hexgrid", holed_dep)
@@ -288,10 +215,6 @@ test_path_dep_hole_refuses_release_build :: proc(t: ^testing.T) {
 
 @(test)
 test_path_dep_private_member_fails_project_walk :: proc(t: ^testing.T) {
-	// The §30 §6 edge holds through the full tree walk: the consumer
-	// importing the dependency's package-private helper is a compile error
-	// (the resolver's named .Package_Private verdict, surfaced as the
-	// consumer module's Typecheck_Failed — never a counted test failure).
 	consumer := "import hexgrid.layout.{cube_round}\n" +
 		"test \"private member refused\" {\n" +
 		"  assert cube_round(2) == 2\n" +
@@ -311,14 +234,8 @@ test_path_dep_private_member_fails_project_walk :: proc(t: ^testing.T) {
 	testing.expect_value(t, report.module_err, Pipeline_Error.Typecheck_Failed)
 }
 
-// ── the two named refusals (AC: dep-imports-dep + engine-root collision) ──
-
 @(test)
 test_dep_imports_dep_structural_refusal :: proc(t: ^testing.T) {
-	// AC: the §30 §2 star-graph violation, structurally — a path dependency
-	// whose OWN tree declares dependencies is refused with the NAMED
-	// Package_Imports_Package verdict: a package depends only on engine; the
-	// graph is depth-1, always.
 	root, ok := write_dep_scratch_tree(t, "@doc(\"consumer\")\n", "hexgrid", "hexgrid", HEXGRID_LAYOUT_FUN)
 	if !ok {
 		return
@@ -336,10 +253,6 @@ test_dep_imports_dep_structural_refusal :: proc(t: ^testing.T) {
 
 @(test)
 test_package_named_like_engine_root_refused :: proc(t: ^testing.T) {
-	// AC: a package whose project name is the reserved `engine` root is
-	// refused with the NAMED Package_Shadows_Engine_Root verdict — the
-	// package name joins `engine` as a root namespace (§30 §7) and reserved
-	// roots are unshadowable (§15 §7).
 	root, ok := write_dep_scratch_tree(t, "@doc(\"consumer\")\n", "engine", "engine", HEXGRID_LAYOUT_FUN)
 	if !ok {
 		return
@@ -352,9 +265,6 @@ test_package_named_like_engine_root_refused :: proc(t: ^testing.T) {
 
 @(test)
 test_local_module_shadowing_dep_root_refused :: proc(t: ^testing.T) {
-	// §30 §7's consumer-side half: a local src/hexgrid.fun beside a declared
-	// `use hexgrid` dependency shadows the dependency's root namespace — the
-	// named Module_Shadows_Package_Root compile error.
 	root, ok := write_dep_scratch_tree(t, "@doc(\"consumer\")\n", "hexgrid", "hexgrid", HEXGRID_LAYOUT_FUN, "hexgrid.fun")
 	if !ok {
 		return
@@ -367,9 +277,6 @@ test_local_module_shadowing_dep_root_refused :: proc(t: ^testing.T) {
 
 @(test)
 test_dep_name_mismatch_refused :: proc(t: ^testing.T) {
-	// The deps.fcfg label IS the package identity (§14 §4): a `use hexgrid`
-	// whose tree declares `project hexgrove` is the same label/identity
-	// drift class §30 §4 refuses for hashes — the named Dep_Name_Mismatch.
 	root, ok := write_dep_scratch_tree(t, "@doc(\"consumer\")\n", "hexgrid", "hexgrove", HEXGRID_LAYOUT_FUN)
 	if !ok {
 		return
@@ -378,18 +285,12 @@ test_dep_name_mismatch_refused :: proc(t: ^testing.T) {
 
 	_, err, detail := read_project(root)
 	testing.expect_value(t, err, Project_Error.Dep_Name_Mismatch)
-	// The uniform detail channel carries BOTH identities — the declared `use`
-	// name and the tree's project name — so the refusal line names the drift.
 	testing.expect(t, strings.contains(detail, "hexgrid"))
 	testing.expect(t, strings.contains(detail, "hexgrove"))
 }
 
 @(test)
 test_path_dep_with_entrypoint_is_not_a_package :: proc(t: ^testing.T) {
-	// §30 §7's structural definition: a game RUNS (has entrypoints.fcfg), a
-	// package is IMPORTED (has none) — a path dependency carrying an
-	// entrypoint is a game, and depending on a game is the named
-	// Malformed_Package_Tree refusal.
 	root, ok := write_dep_scratch_tree(t, "@doc(\"consumer\")\n", "hexgrid", "hexgrid", HEXGRID_LAYOUT_FUN)
 	if !ok {
 		return
@@ -407,8 +308,6 @@ test_path_dep_with_entrypoint_is_not_a_package :: proc(t: ^testing.T) {
 
 @(test)
 test_path_dep_missing_tree_refused :: proc(t: ^testing.T) {
-	// A declared path that holds no package tree (no funpack_configs) is the
-	// named Malformed_Package_Tree refusal, never a silent skip.
 	root, ok := write_scratch_tree(t, "project consumer { version = \"0.1.0\" }\n")
 	if !ok {
 		return
@@ -424,19 +323,8 @@ test_path_dep_missing_tree_refused :: proc(t: ^testing.T) {
 	testing.expect_value(t, err, Project_Error.Malformed_Package_Tree)
 }
 
-// ── §30 §4 pin gate: vendored verification + hermetic refusals ────────────
-
-// PLACEHOLDER_PIN is a syntactically-valid registry declaration whose hash
-// matches no tree — the fixtures below either re-pin it to the computed
-// vendored hash (the match arm) or leave it standing (the mismatch arm).
 PLACEHOLDER_PIN :: "use hexgrid version \"0.4\" hash \"sha256:dead\"\n"
 
-// write_pinned_dep_scratch_tree materializes a consumer tree whose deps.fcfg
-// carries the given declaration verbatim and whose src/game.fun compiles, plus
-// — when vendor_name is non-empty — a vendored package tree under
-// packages/<vendor_name>/ (its own identity + one src/layout.fun) for the
-// hash gate to verify over. ok = false (logged skip) when scratch I/O fails,
-// matching write_dep_scratch_tree's sandboxed-runner degradation.
 write_pinned_dep_scratch_tree :: proc(t: ^testing.T, deps_fcfg: string, vendor_name: string = "") -> (root: string, ok: bool) {
 	root = scratch_join({scratch_base(), fmt.tprintf("funpack-deps-%d", scratch_seq())})
 	remove_scratch_tree(root)
@@ -459,8 +347,6 @@ write_pinned_dep_scratch_tree :: proc(t: ^testing.T, deps_fcfg: string, vendor_n
 	return root, true
 }
 
-// repin_deps_fcfg rewrites the consumer's deps.fcfg pinning the registry dep
-// to the given hash — the deliberate re-pin the §30 §4 fix-it points at.
 repin_deps_fcfg :: proc(root: string, dep_name: string, hash: string) -> bool {
 	return write_scratch_file(
 		scratch_join({root, "funpack_configs", "deps.fcfg"}),
@@ -470,11 +356,6 @@ repin_deps_fcfg :: proc(root: string, dep_name: string, hash: string) -> bool {
 
 @(test)
 test_vendored_pin_match_builds_clean :: proc(t: ^testing.T) {
-	// AC: a matching pin builds clean — re-pinning the declaration to the
-	// hash the vendored tree actually computes passes the gate: read_project
-	// succeeds and the build verb's pure seam returns a clean verdict. The
-	// registry dep's sources do NOT join the build yet (that lands later
-	// behind this same gate), so package_sources stays empty.
 	root, ok := write_pinned_dep_scratch_tree(t, PLACEHOLDER_PIN, "hexgrid")
 	if !ok {
 		return
@@ -504,13 +385,6 @@ test_vendored_pin_match_builds_clean :: proc(t: ^testing.T) {
 
 @(test)
 test_vendored_pin_mismatch_refused_with_fix_it :: proc(t: ^testing.T) {
-	// AC: a hash mismatch is a refusal carrying the fix-it — the placeholder
-	// pin never matches the vendored tree, so read_project refuses with the
-	// NAMED Package_Hash_Mismatch arm, the build verb refuses the same tree
-	// (Malformed_Tree, the exit-2 class), and the fix-it beside the arm
-	// carries BOTH hashes: the actual one (so the author can re-pin
-	// deliberately after reviewing the vendored diff, §30 §5) and the
-	// declared pin it failed against.
 	root, ok := write_pinned_dep_scratch_tree(t, PLACEHOLDER_PIN, "hexgrid")
 	if !ok {
 		return
@@ -519,13 +393,10 @@ test_vendored_pin_mismatch_refused_with_fix_it :: proc(t: ^testing.T) {
 
 	_, err, detail := read_project(root)
 	testing.expect_value(t, err, Project_Error.Package_Hash_Mismatch)
-	// The fix-it rides read_project's uniform detail channel — not dropped.
 	testing.expect(t, strings.contains(detail, "re-pin"))
 
 	_, build_verdict := stage_build(root, .Dev, context.temp_allocator)
 	testing.expect_value(t, build_verdict.err, Build_Error.Malformed_Tree)
-	// The build refusal line names the project arm + fix-it through the
-	// offender channel instead of a bare Malformed_Tree.
 	build_message := build_refusal_message(build_verdict, context.temp_allocator)
 	testing.expect(t, strings.contains(build_message, "Package_Hash_Mismatch"))
 	testing.expect(t, strings.contains(build_message, "re-pin"))
@@ -546,10 +417,6 @@ test_vendored_pin_mismatch_refused_with_fix_it :: proc(t: ^testing.T) {
 
 @(test)
 test_vendored_pin_exact_match_discipline :: proc(t: ^testing.T) {
-	// AC: exact-match discipline, no partial acceptance — a pin that is a
-	// strict PREFIX of the actual hash, and a case-flipped variant of it,
-	// both refuse exactly like a wholly-wrong pin (§29 §2: byte-equal or
-	// refused, the Index Contract discipline applied to the package edge).
 	root, ok := write_pinned_dep_scratch_tree(t, PLACEHOLDER_PIN, "hexgrid")
 	if !ok {
 		return
@@ -574,10 +441,6 @@ test_vendored_pin_exact_match_discipline :: proc(t: ^testing.T) {
 
 @(test)
 test_pinned_dep_missing_vendored_tree_refused :: proc(t: ^testing.T) {
-	// AC hermeticity: a pinned url dep with NO vendored tree is the named
-	// Missing_Vendored_Package refusal whose fix-it names the missing
-	// packages/<name>/ tree — the build never reaches for the network
-	// (fetching is out of scope for every build verb; §30 §4).
 	root, ok := write_pinned_dep_scratch_tree(
 		t,
 		"use steering url \"https://example.com/steering-2.0.tar\" hash \"sha256:9f3a\"\n",
@@ -601,9 +464,6 @@ test_pinned_dep_missing_vendored_tree_refused :: proc(t: ^testing.T) {
 
 @(test)
 test_path_dep_never_hash_verified :: proc(t: ^testing.T) {
-	// §30 §3: a path dep carries no hash — you vouch for the tree directly —
-	// so the pin gate skips it without touching the filesystem at all (the
-	// root below does not exist, and the gate still passes).
 	err, fix_it := verify_vendored_deps(
 		"/nonexistent-funpack-root",
 		[]Dep{{name = "shared", source = .Path, value = "../studio-shared"}},
@@ -614,11 +474,6 @@ test_path_dep_never_hash_verified :: proc(t: ^testing.T) {
 
 @(test)
 test_hash_vendored_tree_deterministic_and_content_sensitive :: proc(t: ^testing.T) {
-	// The §30 §4 hash recipe is deterministic (two walks of the same tree
-	// hash identically, in the canonical `sha256:<hex>` shape) and covers
-	// the whole tree: a changed file's BYTES move the hash, and a NEW file
-	// (same bytes everywhere else) moves it again — content and structure
-	// are both pinned, with no exclusion list.
 	root, ok := write_pinned_dep_scratch_tree(t, PLACEHOLDER_PIN, "hexgrid")
 	if !ok {
 		return
@@ -650,11 +505,6 @@ test_hash_vendored_tree_deterministic_and_content_sensitive :: proc(t: ^testing.
 	testing.expect(t, structure_changed != content_changed)
 }
 
-// ── the import-level star graph (in-memory, the resolver's vantage) ──────
-
-// two_package_index builds a consumer-side index carrying one consumer
-// module (`game`) and two §30 dependencies (`alpha.lib`, `beta.util`), every
-// export @expose'd so the star verdicts below are visibility-independent.
 two_package_index :: proc(t: ^testing.T) -> Module_Index {
 	game_ast, game_err := stage_parse(stage_lex("fn tick(x: Int) -> Int {\n  return x\n}\n"))
 	testing.expect_value(t, game_err, Parse_Error.None)
@@ -671,16 +521,11 @@ two_package_index :: proc(t: ^testing.T) -> Module_Index {
 
 @(test)
 test_package_importing_other_package_refused :: proc(t: ^testing.T) {
-	// AC: the §30 §2 star-graph violation at the IMPORT level — a module
-	// inside package alpha importing package beta's (even @expose'd) surface
-	// is the NAMED .Package_Imports_Package verdict, never a resolve. The
-	// expose gate is irrelevant here: the edge alpha→beta does not exist in
-	// the star, exposed or not.
 	index := two_package_index(t)
 	forms := []string {
-		"import beta.util.{beta_fn}\n", // member group
-		"import beta.util\n",           // whole-module handle
-		"import beta.util.beta_fn\n",   // dotted single member
+		"import beta.util.{beta_fn}\n",
+		"import beta.util\n",
+		"import beta.util.beta_fn\n",
 	}
 	for source in forms {
 		ast, parse_err := stage_parse(stage_lex(source))
@@ -692,9 +537,6 @@ test_package_importing_other_package_refused :: proc(t: ^testing.T) {
 
 @(test)
 test_package_importing_consumer_module_refused :: proc(t: ^testing.T) {
-	// A package importing the consuming game's own module is the same §30 §2
-	// refusal: a package depends only on engine — the hub's modules are not
-	// in its namespace.
 	index := two_package_index(t)
 	ast, parse_err := stage_parse(stage_lex("import game.{tick}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -704,10 +546,6 @@ test_package_importing_consumer_module_refused :: proc(t: ^testing.T) {
 
 @(test)
 test_package_internal_import_resolves_unprefixed_without_gate :: proc(t: ^testing.T) {
-	// §15 §5: within the package, modules root UNPREFIXED at the package's
-	// own source root — `import lib.{alpha_private}` from inside alpha maps
-	// onto the consumer index's `alpha.lib` entry, and crossing NO edge it
-	// never consults @expose (the package-private helper resolves).
 	index := two_package_index(t)
 	ast, parse_err := stage_parse(stage_lex("import lib.{alpha_private}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -722,10 +560,6 @@ test_package_internal_import_resolves_unprefixed_without_gate :: proc(t: ^testin
 
 @(test)
 test_package_self_prefixed_import_unknown :: proc(t: ^testing.T) {
-	// From INSIDE alpha, `import alpha.lib.{…}` names a module that does not
-	// exist: the project name is not a namespace prefix within the project
-	// (§15 §5) — the prefixed entry is the OUTSIDE view. .Unknown_Module,
-	// never a star verdict against itself.
 	index := two_package_index(t)
 	ast, parse_err := stage_parse(stage_lex("import alpha.lib.{alpha_fn}\n"))
 	testing.expect_value(t, parse_err, Parse_Error.None)
@@ -735,10 +569,6 @@ test_package_self_prefixed_import_unknown :: proc(t: ^testing.T) {
 
 @(test)
 test_consumer_vantage_unchanged_by_star_arm :: proc(t: ^testing.T) {
-	// The consumer ("" vantage, the default) keeps the wave-1 behavior
-	// byte-for-byte: a package's @expose'd surface resolves, its private
-	// surface is .Package_Private — never a star verdict (the game→package
-	// edge IS the star).
 	index := two_package_index(t)
 	ok_ast, ok_parse := stage_parse(stage_lex("import alpha.lib.{alpha_fn}\n"))
 	testing.expect_value(t, ok_parse, Parse_Error.None)

@@ -3,8 +3,6 @@ package funpack
 import "core:strings"
 import "core:testing"
 
-// check_expr_source lexes and parses a single expression, then types
-// it against an empty scope under the golden import bindings.
 check_expr_source :: proc(source: string) -> (type: Type, err: Type_Error) {
 	p := Parser{tokens = stage_lex(source)}
 	expr, parse_err := parse_expression(&p)
@@ -18,8 +16,6 @@ check_expr_source :: proc(source: string) -> (type: Type, err: Type_Error) {
 	return expr_check(ctx, expr)
 }
 
-// golden_import_bindings resolves the golden import header, so
-// expression fixtures bind the same surface numerics.fun does.
 golden_import_bindings :: proc() -> Bindings {
 	ast, _ := stage_parse(stage_lex(GOLDEN_IMPORT_HEADER))
 	bindings, _ := resolve_imports(ast)
@@ -28,10 +24,6 @@ golden_import_bindings :: proc() -> Bindings {
 
 @(test)
 test_match_expr_types_unified_arm_type :: proc(t: ^testing.T) {
-	// A match over an Option[Fixed] scrutinee types each arm and unifies
-	// them: Some(v) binds v to the element (Fixed), both arm bodies are
-	// Fixed, so the match's type is Fixed. The scrutinee is itself a typed
-	// expression — checked_div returns Option[Fixed] (§10).
 	type, err := check_expr_source(
 		"match checked_div(6.0, 2.0) {\n  Option::Some(v) => v\n  Option::None => 0.0\n}\n")
 	testing.expect_value(t, err, Type_Error.None)
@@ -40,8 +32,6 @@ test_match_expr_types_unified_arm_type :: proc(t: ^testing.T) {
 
 @(test)
 test_match_arms_disagreeing_rejected :: proc(t: ^testing.T) {
-	// Arm bodies must agree: a Fixed arm and an Int arm over the same match
-	// is a Type_Mismatch — no implicit promotion across arms (§10).
 	_, err := check_expr_source(
 		"match checked_div(6.0, 2.0) {\n  Option::Some(v) => v\n  Option::None => 0\n}\n")
 	testing.expect_value(t, err, Type_Error.Type_Mismatch)
@@ -49,8 +39,6 @@ test_match_arms_disagreeing_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_option_payload_types_are_distinct :: proc(t: ^testing.T) {
-	// Option[Fixed] and Option[Int] are different types; Option's
-	// unknown (the None element) unifies with either.
 	testing.expect(t, !types_compatible(option_of(Ground_Type.Fixed), option_of(Ground_Type.Int)))
 	testing.expect(t, types_compatible(option_of(Ground_Type.Fixed), option_of(Ground_Type.Fixed)))
 	testing.expect(t, types_compatible(option_of(nil), option_of(Ground_Type.Fixed)))
@@ -65,10 +53,6 @@ test_option_heads_do_not_cross :: proc(t: ^testing.T) {
 
 @(test)
 test_tuple_type_node_in_union :: proc(t: ^testing.T) {
-	// AC: the Type union carries a tuple node — tuple_of builds it, and a value
-	// of that type variant-matches as ^Tuple_Type carrying its positional
-	// elements in order. This is the §04 §1 `(value, next_rng)` return pair's
-	// checker type.
 	pair := tuple_of({option_of(Ground_Type.Fixed), engine_type_of(.Rng)})
 	tuple, is_tuple := pair.(^Tuple_Type)
 	testing.expect(t, is_tuple)
@@ -81,10 +65,6 @@ test_tuple_type_node_in_union :: proc(t: ^testing.T) {
 
 @(test)
 test_tuple_compatibility_is_structural :: proc(t: ^testing.T) {
-	// AC: types_compatible's tuple arm is structural over positions — same arity
-	// and each position unifies, with a nil position unifying like List/Option.
-	// So (Option[Fixed], Rng) matches itself, a position swap does not, an arity
-	// mismatch does not, and a nil position unifies against a concrete one.
 	rng_pair := tuple_of({option_of(Ground_Type.Fixed), engine_type_of(.Rng)})
 	same := tuple_of({option_of(Ground_Type.Fixed), engine_type_of(.Rng)})
 	swapped := tuple_of({engine_type_of(.Rng), option_of(Ground_Type.Fixed)})
@@ -94,15 +74,11 @@ test_tuple_compatibility_is_structural :: proc(t: ^testing.T) {
 	testing.expect(t, !types_compatible(rng_pair, swapped))
 	testing.expect(t, !types_compatible(rng_pair, shorter))
 	testing.expect(t, types_compatible(rng_pair, nil_first))
-	// A tuple head never crosses with a list or an option of the same elements.
 	testing.expect(t, !types_compatible(rng_pair, list_of(engine_type_of(.Rng))))
 }
 
 @(test)
 test_if_expr_types_unified_arm_type :: proc(t: ^testing.T) {
-	// AC: a value-producing if-expression types its condition as Bool and unifies
-	// the two arms — a Fixed condition comparison with two Fixed arms types the
-	// whole if-expression as Fixed, exactly like a two-armed match (spec §02 §5).
 	type, err := check_expr_source("if 6.0 < 2.0 { 0.0 } else { 1.0 }")
 	testing.expect_value(t, err, Type_Error.None)
 	testing.expect(t, is_ground(type, .Fixed))
@@ -110,27 +86,18 @@ test_if_expr_types_unified_arm_type :: proc(t: ^testing.T) {
 
 @(test)
 test_if_expr_disagreeing_arms_rejected :: proc(t: ^testing.T) {
-	// AC: the two arms must agree — a Fixed then-arm and an Int else-arm is a
-	// Type_Mismatch, no implicit promotion across arms (the same rule the match
-	// arm unification enforces).
 	_, err := check_expr_source("if 6.0 < 2.0 { 0.0 } else { 1 }")
 	testing.expect_value(t, err, Type_Error.Type_Mismatch)
 }
 
 @(test)
 test_if_expr_non_bool_condition_rejected :: proc(t: ^testing.T) {
-	// AC: a non-Bool condition is a Type_Mismatch — the guard must be Bool-typed
-	// (spec §02 §5). Here the condition is a bare Fixed literal, not a predicate.
 	_, err := check_expr_source("if 1.0 { 0.0 } else { 1.0 }")
 	testing.expect_value(t, err, Type_Error.Type_Mismatch)
 }
 
 @(test)
 test_tuple_pattern_arity_mismatch_rejected :: proc(t: ^testing.T) {
-	// AC: a tuple match pattern whose positional arity disagrees with its
-	// Tuple-typed scrutinee is the precise error .Tuple_Pattern_Arity (spec §02
-	// §5) — a 2-binder pattern over a 3-tuple can never bind coherently, so it is
-	// a compile error rather than a silent nil-bound position.
 	scrutinee := tuple_of({Ground_Type.Int, Ground_Type.Fixed, engine_type_of(.Rng)})
 	two_position := Pattern {
 		kind = .Tuple,
@@ -144,9 +111,6 @@ test_tuple_pattern_arity_mismatch_rejected :: proc(t: ^testing.T) {
 
 @(test)
 test_tuple_pattern_arity_match_accepted :: proc(t: ^testing.T) {
-	// AC: a tuple pattern whose arity AGREES with the scrutinee tuple type passes
-	// the arity check — the `(Option::Some(wp), rest)` 2-position shape over a
-	// 2-tuple is .None, and a nested tuple is checked at every level.
 	scrutinee := tuple_of({option_of(Ground_Type.Fixed), engine_type_of(.Rng)})
 	matching := Pattern {
 		kind = .Tuple,
@@ -165,10 +129,6 @@ test_tuple_pattern_arity_match_accepted :: proc(t: ^testing.T) {
 
 @(test)
 test_pattern_binders_destructure_tuple_scrutinee :: proc(t: ^testing.T) {
-	// AC: pattern_binders destructures a tuple scrutinee against a tuple pattern —
-	// the `(Option::Some(cell), next)` arm binds `cell` to the option's element
-	// (a Cell) and `next` to the second tuple position (an Rng), in left-to-right
-	// position order.
 	cell := user_type_of("Cell", .Data)
 	scrutinee := tuple_of({option_of(cell), engine_type_of(.Rng)})
 	pattern := Pattern {
@@ -200,9 +160,6 @@ test_pattern_binders_destructure_tuple_scrutinee :: proc(t: ^testing.T) {
 
 @(test)
 test_bool_literals_type_as_bool :: proc(t: ^testing.T) {
-	// §02 §2: `true`/`false` are Bool literals riding as Ident tokens, so a
-	// Bool-returning expression compares against them (snake's `== true`,
-	// pong's overlaps rail test).
 	for literal in ([]string{"true", "false"}) {
 		type, err := check_expr_source(literal)
 		testing.expect_value(t, err, Type_Error.None)
@@ -274,8 +231,6 @@ test_lambda_types_as_placeholder_func :: proc(t: ^testing.T) {
 
 @(test)
 test_fold_infers_lambda_params_and_types_body :: proc(t: ^testing.T) {
-	// acc and x infer as Fixed from the init and the list element; the
-	// body types statically and the whole fold comes back as A.
 	type, err := check_expr_source("fold([1.0, -1.0], 2.0, fn(acc, x) { return acc + x })")
 	testing.expect_value(t, err, Type_Error.None)
 	testing.expect(t, is_ground(type, .Fixed))
@@ -283,8 +238,6 @@ test_fold_infers_lambda_params_and_types_body :: proc(t: ^testing.T) {
 
 @(test)
 test_fold_over_empty_list_types_via_unknown_element :: proc(t: ^testing.T) {
-	// The empty list's element is the nil unknown: x unifies with the
-	// Fixed accumulator on the body's right-hand side.
 	type, err := check_expr_source("fold([], 2.0, fn(acc, x) { return acc + x })")
 	testing.expect_value(t, err, Type_Error.None)
 	testing.expect(t, is_ground(type, .Fixed))
@@ -329,7 +282,6 @@ test_surface_value_type_pi :: proc(t: ^testing.T) {
 
 @(test)
 test_expr_pi_types_fixed_via_binding :: proc(t: ^testing.T) {
-	// pi reaches Fixed through the import binding, not a special case.
 	type, err := check_expr_source("pi")
 	testing.expect_value(t, err, Type_Error.None)
 	testing.expect(t, is_ground(type, .Fixed))
@@ -337,8 +289,6 @@ test_expr_pi_types_fixed_via_binding :: proc(t: ^testing.T) {
 
 @(test)
 test_expr_unbound_surface_name_is_unresolved :: proc(t: ^testing.T) {
-	// tau exists on the surface but the golden header does not import
-	// it; a known spelling without a binding is an unresolved name.
 	_, err := check_expr_source("tau")
 	testing.expect_value(t, err, Type_Error.Unresolved_Name)
 }
@@ -378,25 +328,12 @@ test_surface_method_quat_only :: proc(t: ^testing.T) {
 	testing.expect(t, !fixed_found)
 }
 
-// ── Unknown method on a known type ─────────────────────────────────────
-// A `recv.NAME(…)` whose receiver typed CLEAN but exposes no method NAME and
-// no §02 §4 UFCS-reachable free fn is the distinct Unknown_Method arm, NOT
-// the Unsupported_Expr catch-all. These pin the SPLIT at the typecheck-arm
-// junction (the rendered member-name caret + hint are pinned through the
-// pipeline in diagnostics_test.odin).
-
 @(test)
 test_unknown_method_on_list_is_unknown_method :: proc(t: ^testing.T) {
-	// A list receiver typed clean (List[Int]); `bogus` is neither a list method
-	// nor a stdlib free fn reachable via UFCS — so the arm is Unknown_Method, not
-	// the Unsupported_Expr that read as "this expression form is illegal".
 	_, err := check_expr_source("[1, 2].bogus(3)\n")
 	testing.expect_value(t, err, Type_Error.Unknown_Method)
 }
 
-// check_let_module types a `let rolled = <EXPR>` body inside a fn under the given
-// import header and returns the typecheck verdict's error — the harness for the
-// arms whose receiver needs a real import (Rng) the golden expr bindings omit.
 check_let_module :: proc(import_header: string, expr: string) -> Type_Error {
 	source := strings.concatenate(
 		{import_header, "fn roll() -> Int {\n  let rolled = ", expr, "\n  return 0\n}\n"},
@@ -412,24 +349,12 @@ check_let_module :: proc(import_header: string, expr: string) -> Type_Error {
 
 @(test)
 test_unknown_method_on_call_receiver_is_unknown_method :: proc(t: ^testing.T) {
-	// The exact repro: a CALL-EXPRESSION receiver. `Rng.seed(1)`
-	// is the §26 §1.10 static constructor, so it types to an Rng — a KNOWN type —
-	// and the chained `.bogus_method` is no method of it, so the arm is
-	// Unknown_Method, NOT the Unsupported_Expr an untypeable receiver yields. The
-	// diagnostic reaches a
-	// typed call-expression receiver identically to a typed identifier receiver
-	// (the simple-identifier case is test_unknown_method_on_list_is_unknown_method).
 	err := check_let_module("import engine.rand.{Rng}\n", "Rng.seed(1).bogus_method(0, 9)")
 	testing.expect_value(t, err, Type_Error.Unknown_Method)
 }
 
 @(test)
 test_rng_seed_static_constructor_types_to_rng :: proc(t: ^testing.T) {
-	// The receiver of the chained call must itself type CLEAN for the
-	// Unknown_Method split to fire — `Rng.seed(1)` is the §26 §1.10 deterministic
-	// constructor (the Time.at/View.of class), typing to an Rng. A wrong-typed
-	// argument (a Fixed for the Int seed) is a Type_Mismatch through check_args, so
-	// the static form carries the same arity/type checking as the free `seed(n)`.
 	ok_err := check_let_module("import engine.rand.{Rng}\n", "Rng.seed(1)")
 	testing.expect_value(t, ok_err, Type_Error.None)
 	bad_err := check_let_module("import engine.rand.{Rng}\n", "Rng.seed(1.0)")
@@ -438,10 +363,6 @@ test_rng_seed_static_constructor_types_to_rng :: proc(t: ^testing.T) {
 
 @(test)
 test_rng_seed_static_constructor_equals_free_seed :: proc(t: ^testing.T) {
-	// The static `Rng.seed(n)` and the free `seed(n)` lower to the SAME rand_seed
-	// kernel, so they evaluate bit-identically — the §10 dual-interpreter contract
-	// over the two constructor spellings. Driven end-to-end so the eval arm
-	// (eval_resource_builder) actually runs, not just the typecheck.
 	source := "import engine.rand.{Rng, seed}\n" +
 		"test \"static seed equals free seed\" {\n" +
 		"  assert Rng.seed(7) == seed(7)\n" +
@@ -454,11 +375,6 @@ test_rng_seed_static_constructor_equals_free_seed :: proc(t: ^testing.T) {
 
 @(test)
 test_real_list_method_still_types :: proc(t: ^testing.T) {
-	// The split must not break a REAL UFCS method: `[1,2].len()` lowers to
-	// `len([1,2])` (Int) exactly as before — Unknown_Method fires only when no
-	// method resolves. Driven through the full pipeline so `len` is imported (the
-	// golden expr bindings carry only math + fold, so the lowering would otherwise
-	// hit Unresolved_Name on the bare `len`).
 	source := "import engine.list.len\n" +
 		"test \"list len method types and runs\" {\n" +
 		"  assert [1, 2, 3].len() == 3\n" +
@@ -471,17 +387,9 @@ test_real_list_method_still_types :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_methods_for_receiver_lists_rng_draws :: proc(t: ^testing.T) {
-	// The Unknown_Method hint enumerates a receiver's real methods from the
-	// closed surface tables. An Rng's available list is its fixed-signature
-	// self-first draws (chance/next/range/split) PLUS the call-site-inferred
-	// pick combinator (path 4), sorted into one deterministic list.
 	hint := surface_methods_for_receiver(engine_type_of(.Rng))
 	testing.expect_value(t, hint, "available methods: chance, next, pick, range, split")
 
-	// A list receiver reaches the call-site-inferred list combinators (path 4): the
-	// source_element family (fold/first/find/last/map/filter/is_empty/len/get) plus the
-	// List-only append/concat/contains/init/reverse. They carry no fixed signature, so
-	// the path-3 free-fn scan cannot reach them; path 4 lists the full reachable set.
 	list_hint := surface_methods_for_receiver(list_of(Ground_Type.Int))
 	testing.expect_value(
 		t,
@@ -489,27 +397,15 @@ test_surface_methods_for_receiver_lists_rng_draws :: proc(t: ^testing.T) {
 		"available methods: append, concat, contains, filter, find, first, fold, get, init, is_empty, last, len, map, reverse",
 	)
 
-	// An Option receiver reaches the self-first or_else combinator (path 4).
 	option_hint := surface_methods_for_receiver(option_of(Ground_Type.Int))
 	testing.expect_value(t, option_hint, "available methods: or_else")
 
-	// A Quat's ground methods come through surface_method (the rotate/mul/slerp
-	// set), sorted into the same hint shape.
 	quat_hint := surface_methods_for_receiver(Ground_Type.Quat)
 	testing.expect_value(t, quat_hint, "available methods: mul, rotate, slerp")
 }
 
 @(test)
 test_surface_combinator_probes_drift_gate :: proc(t: ^testing.T) {
-	// Drift gate on SURFACE_COMBINATOR_PROBES (surface.odin), the path-4
-	// receiver→combinator association. Mirrors test_surface_dump_probe_tables_type_live's
-	// philosophy: every probe must (a) name a LIVE stdlib free fn — a renamed/removed
-	// combinator trips is_stdlib_free_fn — and (b) accept a receiver of its declared
-	// kind through the SAME predicate the checker guards args[0] with, so the table can
-	// never list a name the checker no longer reaches. The exact per-receiver name sets
-	// are pinned end-to-end in test_surface_methods_for_receiver_lists_rng_draws; the
-	// self-first method forms themselves type live in test_real_list_method_still_types
-	// (a list's len) and the rng.pick / or_else fixtures.
 	for probe in SURFACE_COMBINATOR_PROBES {
 		testing.expectf(
 			t,
@@ -525,8 +421,6 @@ test_surface_combinator_probes_drift_gate :: proc(t: ^testing.T) {
 			probe.name,
 			probe.receiver,
 		)
-		// Discrimination: a bare scalar is the self position of NO combinator — the
-		// matcher never false-lists a combinator on a non-source, non-engine receiver.
 		testing.expectf(
 			t,
 			!surface_receiver_matches_combinator(Ground_Type.Int, probe.receiver),
@@ -534,16 +428,11 @@ test_surface_combinator_probes_drift_gate :: proc(t: ^testing.T) {
 			probe.name,
 		)
 	}
-	// List_Only is strictly narrower than List: a View[T] is a read source (lists
-	// fold/map/…) but NOT a ^List_Type (concat/contains/init reject it) — the View/List
-	// split the checker enforces in source_element vs the concat/contains type assertion.
 	view := engine_type_of(.View, user_type_of("T", .Data))
 	testing.expect(t, surface_receiver_matches_combinator(view, .List))
 	testing.expect(t, !surface_receiver_matches_combinator(view, .List_Only))
 }
 
-// surface_combinator_probe_receiver builds a representative receiver of a probe's
-// declared kind — the self position the drift gate proves the combinator accepts.
 surface_combinator_probe_receiver :: proc(kind: Surface_Combinator_Receiver) -> Type {
 	switch kind {
 	case .List, .List_Only:

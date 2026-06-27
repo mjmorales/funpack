@@ -28,7 +28,6 @@ test_lex_literal_values :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_single_equals_is_binding :: proc(t: ^testing.T) {
-	// `=` is binding, never equality (spec §02) — a distinct token from ==.
 	tokens := stage_lex("=")
 	testing.expect_value(t, len(tokens), 1)
 	testing.expect_value(t, tokens[0].kind, Token_Kind.Eq)
@@ -43,10 +42,6 @@ test_lex_unterminated_string_is_invalid :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_string_escapes_accepted_raw :: proc(t: ^testing.T) {
-	// The closed lexical-core §4 escape set — the escaped quote and the
-	// EscapedBrace pair — lexes as ONE String_Lit whose text is the RAW
-	// source spelling, backslash included (the byte-deterministic carry
-	// every consumer reads). The stdlib @doc shape is the canonical case.
 	tokens := stage_lex(`"interpolation (\"{x}\"), never +"`)
 	testing.expect_value(t, len(tokens), 1)
 	testing.expect_value(t, tokens[0].kind, Token_Kind.String_Lit)
@@ -57,8 +52,6 @@ test_lex_string_escapes_accepted_raw :: proc(t: ^testing.T) {
 	testing.expect_value(t, braces[0].kind, Token_Kind.String_Lit)
 	testing.expect_value(t, braces[0].text, `a literal \{brace\} pair`)
 
-	// An escaped quote hard against the closer — the prelude.fun shape
-	// `(\"{x}\")` ends `\")` — must not swallow the real terminator.
 	edge := stage_lex(`"\"" x`)
 	testing.expect_value(t, len(edge), 2)
 	testing.expect_value(t, edge[0].kind, Token_Kind.String_Lit)
@@ -68,10 +61,6 @@ test_lex_string_escapes_accepted_raw :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_string_unknown_escape_is_malformed :: proc(t: ^testing.T) {
-	// A backslash before anything outside the closed §4 set is the named
-	// Malformed_Escape token — including `\\` and `\n`: the spec names no
-	// C-style zoo, so there is no literal-backslash spelling. The token
-	// consumes through the closing quote, so the stream resynchronizes.
 	tokens := stage_lex(`"bad \n escape" x`)
 	testing.expect_value(t, len(tokens), 2)
 	testing.expect_value(t, tokens[0].kind, Token_Kind.Malformed_Escape)
@@ -84,8 +73,6 @@ test_lex_string_unknown_escape_is_malformed :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_string_trailing_backslash_is_malformed :: proc(t: ^testing.T) {
-	// A trailing backslash at input end or line end has no escape character
-	// to consume — Malformed_Escape, not the unterminated-string Invalid.
 	at_eof := stage_lex("\"abc\\")
 	testing.expect_value(t, len(at_eof), 1)
 	testing.expect_value(t, at_eof[0].kind, Token_Kind.Malformed_Escape)
@@ -96,9 +83,6 @@ test_lex_string_trailing_backslash_is_malformed :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_string_escaped_quote_then_unterminated_is_invalid :: proc(t: ^testing.T) {
-	// `\"` escapes the only quote in sight, so the literal never closes:
-	// the well-formed escape leaves an UNTERMINATED string, which keeps its
-	// existing Invalid verdict (first failure in source order decides).
 	tokens := stage_lex("\"abc\\\"")
 	testing.expect_value(t, len(tokens), 1)
 	testing.expect_value(t, tokens[0].kind, Token_Kind.Invalid)
@@ -169,10 +153,6 @@ test_lex_comparison_arrow_directive_ops :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_newline_kept_in_list :: proc(t: ^testing.T) {
-	// A list literal's newlines are SEPARATORS, not layout (spec §02 §1;
-	// the pong `setup` list separates its elements by newline alone). So a
-	// newline inside `[ ]` survives to the parser, unlike inside `( )` or a
-	// record literal. Here the newline after the `,` is kept.
 	tokens := stage_lex("[1.0,\n  2.0]\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.L_Bracket, .Fixed_Lit, .Comma, .Newline, .Fixed_Lit, .R_Bracket, .Newline,
@@ -181,8 +161,6 @@ test_lex_newline_kept_in_list :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_newline_separates_list_elements :: proc(t: ^testing.T) {
-	// The pong `setup` shape: list elements separated by newline with no
-	// comma. The newlines survive so the parser sees element boundaries.
 	tokens := stage_lex("[\n  Spawn(a)\n  Spawn(b)\n]\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.L_Bracket, .Newline,
@@ -220,9 +198,6 @@ test_lex_newline_preserved_at_statement_boundary :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_newline_preserved_in_block_braces :: proc(t: ^testing.T) {
-	// A block's interior is a statement sequence (spec §02), so its
-	// newlines terminate statements — only record-literal braces are
-	// layout context.
 	tokens := stage_lex("test \"n\" {\nassert 1.0 == 1.0\n}\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Test, .String_Lit, .L_Brace, .Newline,
@@ -241,10 +216,6 @@ test_lex_newline_joined_before_leading_dot :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_block_inside_call_keeps_statement_newlines :: proc(t: ^testing.T) {
-	// A lambda body nested in call args opens a block frame, so the layout
-	// newlines AROUND the lambda (between the fold arguments) are suppressed by
-	// the enclosing paren frame, while the single-line body itself carries no
-	// interior newline. The golden file's single-return lambdas are unaffected.
 	tokens := stage_lex("fold([],\n  z,\n  fn(acc, x) { return acc })\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Ident, .L_Paren, .L_Bracket, .R_Bracket, .Comma, .Ident, .Comma,
@@ -255,13 +226,6 @@ test_lex_block_inside_call_keeps_statement_newlines :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_match_arms_in_lambda_inside_call_keep_newlines :: proc(t: ^testing.T) {
-	// The §24 outcome-match shape: a multi-arm `match` inside a lambda body
-	// passed as a combinator argument. The innermost frame at each arm-separator
-	// newline is the match BLOCK brace, not the enclosing fold paren — so the arm
-	// separators survive even though a `(` is open further out. Counting "any
-	// paren open" would drop these and break the match parse (the bug this fix
-	// closes). The newlines around the lambda arguments and after the lambda's
-	// inner `return` line are still suppressed by their paren/block frames.
 	tokens := stage_lex(
 		"fold(rs, m, fn(a, r) {\n" +
 		"  return match r.result {\n" +
@@ -289,8 +253,6 @@ test_classify_ident_classes :: proc(t: ^testing.T) {
 	testing.expect_value(t, classify_ident("UPPER_SNAKE"), Ident_Class.Upper_Snake)
 	testing.expect_value(t, classify_ident("fooBar"), Ident_Class.Mixed)
 	testing.expect_value(t, classify_ident("Foo_Bar"), Ident_Class.Mixed)
-	// The sanctioned lowercase constants classify as plain snake_case —
-	// the exception needs no special case in the taxonomy.
 	testing.expect_value(t, classify_ident("pi"), Ident_Class.Snake_Case)
 	testing.expect_value(t, classify_ident("tau"), Ident_Class.Snake_Case)
 }
@@ -305,8 +267,6 @@ test_lex_ident_carries_class :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_match_keyword_and_arrow :: proc(t: ^testing.T) {
-	// `match` is a keyword token and `=>` is the arm separator, distinct
-	// from `=` binding and `->` return-type arrow (spec §02 §5).
 	tokens := stage_lex("match seen {\n  Option::None => 0\n}\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Match, .Ident, .L_Brace, .Newline,
@@ -317,9 +277,6 @@ test_lex_match_keyword_and_arrow :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_match_block_keeps_arm_newlines :: proc(t: ^testing.T) {
-	// A bare-name scrutinee ends in an Ident, but the match brace is a
-	// block — its interior newlines (the arm separators) must survive,
-	// not be suppressed like a record literal's.
 	tokens := stage_lex("match side {\n  Side::Left => 1\n  Side::Right => 2\n}\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Match, .Ident, .L_Brace, .Newline,
@@ -331,11 +288,6 @@ test_lex_match_block_keeps_arm_newlines :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_declaration_keywords :: proc(t: ^testing.T) {
-	// `behavior`/`signal`/`pipeline` are reserved declaration openers and `with`/
-	// `if` reserved expression keywords — each lexes to its own token kind.
-	// `thing`/`singleton`/`data`/`enum` are CONTEXTUAL keywords (fun.ll1.md §2):
-	// scanned in isolation, with no declaration-opening position to select them,
-	// they lex as plain Idents (see test_lex_contextual_keywords_lex_as_ident).
 	tokens := stage_lex("behavior signal pipeline with if")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Behavior, .Signal, .Pipeline, .With, .If,
@@ -344,13 +296,6 @@ test_lex_declaration_keywords :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_contextual_keywords_lex_as_ident :: proc(t: ^testing.T) {
-	// `on`/`thing`/`singleton`/`data`/`enum` are contextual keywords (fun.ll1.md
-	// §2): each selects a production only where it opens a module-level
-	// declaration (or, for `on`, separates a behavior header), yet is a valid §02
-	// snake_case value name everywhere else — a `let thing = …` binding, a `data`
-	// field, an `s.on` read. The lexer never reserves them: they always tokenize
-	// as Ident, and the parser recognizes the keyword by text in the one position
-	// it is the keyword.
 	tokens := stage_lex("on thing singleton data enum")
 	expect_kinds(t, tokens, []Token_Kind{.Ident, .Ident, .Ident, .Ident, .Ident})
 	for tok in tokens {
@@ -360,7 +305,6 @@ test_lex_contextual_keywords_lex_as_ident :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_existing_keywords_unchanged :: proc(t: ^testing.T) {
-	// The pre-existing keyword set stays intact alongside the new ones.
 	tokens := stage_lex("test assert import let return fn match")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Test, .Assert, .Import, .Let, .Return, .Fn, .Match,
@@ -369,12 +313,7 @@ test_lex_existing_keywords_unchanged :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_behavior_body_keeps_newlines :: proc(t: ^testing.T) {
-	// `behavior … on Thing {` and `-> Ret {` arm the block_pending flag so
-	// the body braces open blocks (newlines kept), even though the token
-	// before each `{` is an Ident the record rule would otherwise claim.
 	tokens := stage_lex("behavior b on Ball {\n  fn step(self: Ball) -> Ball {\n    return self\n  }\n}\n")
-	// The newline after the behavior-body `{` and after the step-body `{`
-	// must survive; assert by counting the Newline terminators.
 	newlines := 0
 	for tok in tokens {
 		if tok.kind == .Newline {
@@ -386,9 +325,6 @@ test_lex_behavior_body_keeps_newlines :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_no_comment_production :: proc(t: ^testing.T) {
-	// P6: the lexer has no comment production — `//` is two division
-	// glyphs and the rest of the line lexes as ordinary tokens, never a
-	// swallowed span.
 	tokens := stage_lex("// not a comment\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Slash, .Slash, .Ident, .Ident, .Ident, .Newline,
@@ -397,22 +333,16 @@ test_lex_no_comment_production :: proc(t: ^testing.T) {
 
 @(test)
 test_lex_stamps_col_and_offset :: proc(t: ^testing.T) {
-	// Every token carries its 1-based column (first byte within its line) and
-	// its 0-based source offset (first byte in source) — the §15 span
-	// coordinates beyond the line. A second line resets col to its line start
-	// (col = i - line_start + 1) while offset keeps climbing past the newline.
 	tokens := stage_lex("a + bb\nc\n")
 	expect_kinds(t, tokens, []Token_Kind{
 		.Ident, .Plus, .Ident, .Newline, .Ident, .Newline,
 	})
-	// Line 1: `a`@col1/off0, `+`@col3/off2, `bb`@col5/off4, `\n`@col7/off6.
 	cols := [?]int{1, 3, 5, 7, 1, 2}
 	offs := [?]int{0, 2, 4, 6, 7, 8}
 	for tok, i in tokens {
 		testing.expect_value(t, tok.col, cols[i])
 		testing.expect_value(t, tok.offset, offs[i])
 	}
-	// Line 2 resets col: `c` is the line's first byte (col 1) yet offset 7.
 	testing.expect_value(t, tokens[4].line, 2)
 	testing.expect_value(t, tokens[4].col, 1)
 	testing.expect_value(t, tokens[4].offset, 7)

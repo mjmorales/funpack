@@ -2,14 +2,6 @@ package funpack
 
 import "core:testing"
 
-// The engine.map method typecheck layer: the eight call-site-inferred combinators
-// (empty/len/get/has/set/remove/keys/values) with K,V inference off the receiver.
-// These prove TYPING only — evaluation lands in the compiler-evaluator story, so
-// the fixtures type expressions, they do not run them.
-
-// check_map_expr types a single expression under a custom import header, so the
-// engine.map methods bind (the golden header check_expr_source uses carries only
-// math + fold). Mirrors check_expr_source otherwise: empty scope, no user env.
 check_map_expr :: proc(import_header, expr_source: string) -> (type: Type, err: Type_Error) {
 	ast, _ := stage_parse(stage_lex(import_header))
 	bindings, _ := resolve_imports(ast)
@@ -25,15 +17,10 @@ check_map_expr :: proc(import_header, expr_source: string) -> (type: Type, err: 
 	return expr_check(ctx, expr)
 }
 
-// MAP_HEADER imports the full engine.map surface — the Map type, the owned
-// methods, and the re-exported get/len — the idiomatic one-module import line.
 MAP_HEADER :: "import engine.map.{Map, empty, len, get, has, set, remove, keys, values}\n"
 
 @(test)
 test_engine_map_full_import_resolves :: proc(t: ^testing.T) {
-	// AC: the idiomatic `import engine.map.{Map, empty, len, get, has, set, remove,
-	// keys, values}` resolves clean — Map and the owned methods bind to engine.map,
-	// the re-exported get/len bind to their engine.list owner.
 	ast, parse_err := stage_parse(stage_lex(MAP_HEADER))
 	testing.expect_value(t, parse_err, Parse_Error.None)
 	bindings, err := resolve_imports(ast)
@@ -42,16 +29,12 @@ test_engine_map_full_import_resolves :: proc(t: ^testing.T) {
 		_, bound := bindings.names[name]
 		testing.expectf(t, bound, "name %q binds from engine.map", name)
 	}
-	// get/len resolve to their engine.list owner via the re-export.
 	get_binding := bindings.names["get"]
 	testing.expect_value(t, get_binding.module, "engine.list")
 }
 
 @(test)
 test_map_empty_constructor_types_undetermined :: proc(t: ^testing.T) {
-	// AC: both empty forms yield the empty Map[_, _] — the bare `empty()` combinator
-	// and the idiomatic static `Map.empty()` constructor, K and V undetermined until
-	// a set or context unifies them.
 	for form in ([]string{"empty()", "Map.empty()"}) {
 		type, err := check_map_expr(MAP_HEADER, form)
 		testing.expect_value(t, err, Type_Error.None)
@@ -66,9 +49,6 @@ test_map_empty_constructor_types_undetermined :: proc(t: ^testing.T) {
 
 @(test)
 test_map_set_infers_kv_from_args :: proc(t: ^testing.T) {
-	// AC: set on the empty map infers K and V from its arguments — `empty().set(1,
-	// true)` yields Map[Int, Bool], the empty-map-takes-its-types-from-the-first-set
-	// rule (the empty list's nil-element analogue).
 	type, err := check_map_expr(MAP_HEADER, "empty().set(1, true)")
 	testing.expect_value(t, err, Type_Error.None)
 	node, is_map := type.(^Map_Type)
@@ -81,8 +61,6 @@ test_map_set_infers_kv_from_args :: proc(t: ^testing.T) {
 
 @(test)
 test_map_get_returns_option_of_value :: proc(t: ^testing.T) {
-	// AC: get on a typed map is the total keyed lookup get(self, key: K) -> Option[V]
-	// — `empty().set(1, true).get(1)` yields Option[Bool].
 	type, err := check_map_expr(MAP_HEADER, "empty().set(1, true).get(1)")
 	testing.expect_value(t, err, Type_Error.None)
 	option, is_option := type.(^Option_Type)
@@ -94,15 +72,12 @@ test_map_get_returns_option_of_value :: proc(t: ^testing.T) {
 
 @(test)
 test_map_get_wrong_key_type_rejected :: proc(t: ^testing.T) {
-	// AC: the key argument must unify with K — a Fixed key against a Map[Int, _] is a
-	// Type_Mismatch, no implicit promotion (the key is the inferred Int).
 	_, err := check_map_expr(MAP_HEADER, "empty().set(1, true).get(2.0)")
 	testing.expect_value(t, err, Type_Error.Type_Mismatch)
 }
 
 @(test)
 test_map_has_returns_bool :: proc(t: ^testing.T) {
-	// AC: has(self, key: K) -> Bool — the key presence test over the inferred K.
 	type, err := check_map_expr(MAP_HEADER, "empty().set(1, true).has(1)")
 	testing.expect_value(t, err, Type_Error.None)
 	testing.expect(t, is_ground(type, .Bool))
@@ -110,8 +85,6 @@ test_map_has_returns_bool :: proc(t: ^testing.T) {
 
 @(test)
 test_map_remove_preserves_map_type :: proc(t: ^testing.T) {
-	// AC: remove(self, key: K) -> Map[K, V] — a new map of the same type (remove
-	// never widens K/V).
 	type, err := check_map_expr(MAP_HEADER, "empty().set(1, true).remove(1)")
 	testing.expect_value(t, err, Type_Error.None)
 	node, is_map := type.(^Map_Type)
@@ -124,8 +97,6 @@ test_map_remove_preserves_map_type :: proc(t: ^testing.T) {
 
 @(test)
 test_map_keys_and_values_project_lists :: proc(t: ^testing.T) {
-	// AC: keys(self) -> [K] and values(self) -> [V] — the insertion-ordered key/value
-	// projections, each a list of the respective parameter.
 	keys_type, keys_err := check_map_expr(MAP_HEADER, "empty().set(1, true).keys()")
 	testing.expect_value(t, keys_err, Type_Error.None)
 	keys_list, keys_is_list := keys_type.(^List_Type)
@@ -145,8 +116,6 @@ test_map_keys_and_values_project_lists :: proc(t: ^testing.T) {
 
 @(test)
 test_map_len_returns_int :: proc(t: ^testing.T) {
-	// AC: len is polymorphic over a Map (engine.map `len(self: Map[K, V]) -> Int`) as
-	// well as a list/view — the entry count.
 	type, err := check_map_expr(MAP_HEADER, "empty().set(1, true).len()")
 	testing.expect_value(t, err, Type_Error.None)
 	testing.expect(t, is_ground(type, .Int))
@@ -154,10 +123,6 @@ test_map_len_returns_int :: proc(t: ^testing.T) {
 
 @(test)
 test_surface_methods_for_receiver_lists_map_methods :: proc(t: ^testing.T) {
-	// AC: a Map receiver reaches its seven self-first methods through path (4) of the
-	// Unknown_Method hint (SURFACE_COMBINATOR_PROBES). empty is omitted — it is a
-	// no-receiver constructor, not a self-first method on a Map value. The names are
-	// deduplicated and sorted into the deterministic hint shape.
 	hint := surface_methods_for_receiver(map_of(Ground_Type.Int, Ground_Type.Bool))
 	testing.expect_value(t, hint, "available methods: get, has, keys, len, remove, set, values")
 }
