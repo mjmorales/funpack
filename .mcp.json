@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "funpack-dev": {
+      "command": "./ci/scripts/funpack-dev-mcp.sh"
+    }
+  }
+}
