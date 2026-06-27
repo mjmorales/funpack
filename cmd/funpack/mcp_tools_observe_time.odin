@@ -47,7 +47,7 @@ obs_enriches_status :: proc(spec: funpack.Tool_Spec) -> bool {
 }
 
 obs_owns_command :: proc(spec: funpack.Tool_Spec) -> bool {
-	return spec.group == "inspect" || spec.group == "time"
+	return obs_enriches_command(spec) || spec.group == "time"
 }
 
 obs_build_request_line :: proc(command: string, arguments: json.Object, allocator := context.allocator) -> string {

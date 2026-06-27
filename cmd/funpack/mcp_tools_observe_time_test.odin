@@ -114,7 +114,7 @@ test_obs_owns_only_inspect_and_time :: proc(t: ^testing.T) {
 		testing.expectf(t, found, "owned tool %s is in the generated table", name)
 		testing.expectf(t, obs_owns_command(spec), "the family claims %s", name)
 	}
-	declined := []string{"control_set", "control_spawn", "break", "watch", "capture_test", "audit"}
+	declined := []string{"inspect_screenshot", "control_set", "control_spawn", "break", "watch", "capture_test", "audit"}
 	for name in declined {
 		spec, found := mcp_lookup_tool(name)
 		testing.expectf(t, found, "declined tool %s is in the generated table", name)
