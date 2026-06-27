@@ -1,47 +1,13 @@
-// engine.save IO boundary acceptance (spec §24, team Lore #9): the command-out /
-// outcome-signal-back surface yard's persist+settings glue drives, proven on
-// HAND-BUILT fixtures (the yard artifact is the sibling-compiler epic's leaf, team
-// Lore #8 — runtime proves the IO arm on a node-forest before the artifact lands).
-// These tests assert, end to end against the IN-MEMORY store (hermetic, cwd-free):
-//
-//   - SAVE ROUND-TRIPS THE COMMITTED VERSION: serialize_snapshot → deserialize_snapshot
-//     reproduces a bit-identical World_Version, and the restored version digests
-//     identically to the saved one (the snapshot codec is exact over §10 fixed-point);
-//   - NEXT-TICK OUTCOME DEFERRAL (§24 §1): a Save/Restore/ApplySettings command emitted
-//     at tick N returns its outcome signal (Saved/Restored/SettingsApplied) one tick
-//     boundary LATER, at tick N+1 — the menu's on_persist_result/on_settings_applied
-//     fold it then, exactly the spawn-batch deferral shape;
-//   - RESTORE SWAPS THE WORLD AT THE TICK BOUNDARY: a Restore at tick N makes the
-//     restored version the world tick N+1 folds from (the swap presents to the digest
-//     as the next committed version);
-//   - FORCED IO-ERROR → Result::Err: a Save against an unwritable disk store yields
-//     Result::Err the menu fold records (the §24 forced-match error arm, never dropped);
-//   - DETERMINISM BOUNDARY (Lore #9): the replay log carries NO Save/ApplySettings
-//     entry (Replay_Log is identity + []Input by construction), and a re-fold of a
-//     recorded session WITH a mid-session Restore produces the SAME per-tick frame
-//     digests as the live capture — §24 persistence is NOT the replay record, yet a
-//     restore-bearing run stays bit-identical because the F5/F9 presses ride the
-//     RECORDED INPUT stream (the same Save re-serializes the same committed version,
-//     the same Restore swaps it back).
-//
-// No float (spec §10): every assertion is the bit-exact kernel value / digest.
 package funpack_runtime
 
 import "core:fmt"
 import "core:testing"
 
-// p_aprintf is the test-local string formatter the node builders use to encode
-// literal tokens (Int/String/record-field-count) — a thin wrapper over fmt.aprintf
-// pinned to the supplied arena, so a built node's token strings outlive the builder
-// call (a stack literal cannot escape in Odin).
 @(private = "file")
 p_aprintf :: proc(a: Runtime_Allocator, format: string, args: ..any) -> string {
 	return fmt.aprintf(format, ..args, allocator = a)
 }
 
-// SAVE_BTN / RESTORE_BTN / APPLY_BTN are the Cmd::* Button ActionIds the registry
-// mints from the hand-built program's Cmd enum, in variant order (Save=0, Restore=1,
-// Apply=2). The scripted sessions press these to drive the save/restore/apply glue.
 @(private = "file")
 SAVE_BTN :: ActionId(0)
 @(private = "file")
@@ -49,24 +15,12 @@ RESTORE_BTN :: ActionId(1)
 @(private = "file")
 APPLY_BTN :: ActionId(2)
 
-// STEER is the Drive::Step Axis ActionId — minted after the Cmd buttons in the enum
-// walk (Cmd is declared first, three buttons, so the lone Drive axis is id 3). The
-// player behavior reads it to advance the world each tick so the per-tick digests
-// are distinct (a static world would make every tick's digest identical and a swap
-// undetectable in the digest stream).
 @(private = "file")
 STEER :: ActionId(3)
 
 @(private = "file")
 PERSIST_SLOT :: "quicksave"
 
-// --- (1) Save round-trips the committed version ---------------------------
-
-// A Save serializes the committed World_Version and a deserialize reproduces it
-// bit-for-bit: same tick, same tables (thing/singleton/next_id), same rows down to
-// the fixed-point bits. The codec carries next_id + singleton (which the frame
-// digest omits), so the restored version is fully spawnable AND digests identically
-// to the saved version — the property a Restore swap relies on.
 @(test)
 test_save_snapshot_round_trips_committed_version :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -79,22 +33,13 @@ test_save_snapshot_round_trips_committed_version :: proc(t: ^testing.T) {
 		return
 	}
 
-	// The deserialized version equals the saved one column-for-column (same Ids, same
-	// fixed-point bits) — world_versions_equal is the byte-exact world comparison the
-	// singleton-determinism test uses.
 	testing.expect(t, world_versions_equal(committed, restored))
 
-	// And it digests identically: a restored world the frame digest reads produces the
-	// SAME per-tick digest the saved world would, so a Restore swap is digest-transparent.
 	saved_digest := frame_digest(committed, nil)
 	restored_digest := frame_digest(restored, nil)
 	testing.expect_value(t, restored_digest.digest, saved_digest.digest)
 }
 
-// A re-serialize of a deserialized snapshot is byte-identical to the original bytes:
-// the codec is a fixed point (serialize ∘ deserialize ∘ serialize == serialize), so
-// the content hash is stable and a slot written on one machine restores identically
-// on another — the cross-machine reproducibility the content-hash pin guarantees.
 @(test)
 test_snapshot_codec_is_a_fixed_point :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -116,21 +61,10 @@ test_snapshot_codec_is_a_fixed_point :: proc(t: ^testing.T) {
 	}
 }
 
-// A payload-carrying variant NESTED in a structural column (a wall's
-// `body.shape = Shape2::Box{size}`) round-trips through the snapshot codec with
-// its payload intact — the arm a §24 Restore swaps back into the solver's
-// collision-extent read and the renderer's box_size read. Asserted through
-// world_versions_equal (universal Eq compares type + case + PAYLOAD), so a codec
-// that flattens the variant to its bare token fails here: a restored body would
-// degrade to the renderer's fallback extent and a degenerate collision shape —
-// the live-yard quickload that visually removed the walls.
 @(test)
 test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 
-	// One wall-shaped row hand-built at the committed-column level: `body` is a
-	// Record column whose `shape` is a struct-payload variant and whose `mask` is
-	// a [Layer] list of unit variants — the exact nesting yard commits every tick.
 	size_fields := make(map[string]Value)
 	size_fields["size"] = Vec2{to_fixed(160), to_fixed(4)}
 	shape_payload := new(Value)
@@ -145,10 +79,6 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	body_fields["shape"] = Variant_Value{enum_type = "Shape2", case_name = "Box", payload = shape_payload}
 	body_fields["mask"] = List_Value{elements = mask}
 
-	// status/note exercise the TOP-LEVEL v3 arms alongside the nested shape: a
-	// payload-variant column (Menu.status = Option::Some("saved")) and a String
-	// column — both committable Field_Values whose loss was the blackboard-column
-	// gap (a status read back after a tick boundary saw the bare token).
 	status_payload := new(Value)
 	status_payload^ = String_Value{text = "saved"}
 
@@ -164,8 +94,6 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	tables[0] = Version_Table{thing = "Wall", singleton = false, rows = rows, next_id = 2}
 	committed := World_Version{tick = 7, tables = tables}
 
-	// The codec round-trip needs no schema authority — an empty program writes
-	// empty v5 schema blocks, and the hand-built rows round-trip regardless.
 	bare_program := Program{}
 	bytes := serialize_snapshot(&bare_program, committed)
 	restored, _, _, ok := deserialize_snapshot(bytes)
@@ -174,9 +102,6 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, world_versions_equal(committed, restored))
 
-	// Read the restored shape payload back explicitly: the size Vec2 must survive
-	// bit-for-bit — the exact value box_size and the solver extent read after a
-	// quickload.
 	restored_body := restored.tables[0].rows[0].fields["body"].(Record_Value)
 	restored_shape := restored_body.fields["shape"].(Variant_Value)
 	if !testing.expect(t, restored_shape.payload != nil) {
@@ -185,8 +110,6 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	payload_rec := restored_shape.payload^.(Record_Value)
 	testing.expect_value(t, payload_rec.fields["size"].(Vec2), Vec2{to_fixed(160), to_fixed(4)})
 
-	// And the top-level arms: the status variant keeps its boxed String text and
-	// the String column its bytes — the exact values a menu fold reads back.
 	restored_status := restored.tables[0].rows[0].fields["status"].(Variant_Value)
 	if !testing.expect(t, restored_status.payload != nil) {
 		return
@@ -195,12 +118,6 @@ test_save_snapshot_round_trips_nested_payload_variant :: proc(t: ^testing.T) {
 	testing.expect_value(t, restored.tables[0].rows[0].fields["note"].(String_Value).text, "quicksave row")
 }
 
-// The COMMIT lowering itself preserves what the codec then serializes: a
-// payload-carrying variant lowers to a full Variant_Value column (not its bare
-// token — the loss that made Option::Some("saved") read back payload-less after
-// a tick boundary), a unit variant still lowers to its byte-stable token string,
-// a String lowers to a committable column, and the read-side lift round-trips
-// payload-equal under the §03 universal Eq.
 @(test)
 test_commit_lowering_preserves_payload_and_string :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -216,8 +133,6 @@ test_commit_lowering_preserves_payload_and_string :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, committed.payload^.(String_Value).text, "saved")
 
-	// A unit variant still lowers to its bare token — the encoding every existing
-	// digest/snapshot stream carries, so payload-free worlds stay byte-identical.
 	unit_fv, unit_ok := value_to_field_value(Variant_Value{enum_type = "Side", case_name = "Left"})
 	testing.expect(t, unit_ok)
 	testing.expect_value(t, unit_fv.(string), "Side::Left")
@@ -226,16 +141,9 @@ test_commit_lowering_preserves_payload_and_string :: proc(t: ^testing.T) {
 	testing.expect(t, str_ok)
 	testing.expect_value(t, str_fv.(String_Value).text, "note")
 
-	// The read-side lift hands a match arm the same value the behavior committed.
 	testing.expect(t, values_equal(field_value_to_value(fv), some))
 }
 
-// --- (2) Save round-trips through the store + next-tick Saved outcome ------
-
-// A Save command emitted at tick N writes the committed snapshot to the slot AND
-// queues a Saved{slot, Ok} outcome that arrives at tick N+1 — not the same tick. The
-// carrier carries the pending outcome forward, and the menu's on_persist_result folds
-// it the NEXT tick (status "saved"), proving the §24 §1 one-tick deferral end to end.
 @(test)
 test_save_emits_saved_outcome_next_tick :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -245,32 +153,20 @@ test_save_emits_saved_outcome_next_tick :: proc(t: ^testing.T) {
 	carrier := new_persist_carrier(&store)
 	time := persist_time(60)
 
-	// Tick 0: press Save. The command runs at the boundary; NO Saved outcome is
-	// delivered THIS tick (the carrier started empty), so the menu status stays None.
 	save_input := with_pressed(empty(), .P1, SAVE_BTN)
 	v0: World_Version
 	v0, carrier = step_tick_persist(&program, committed, save_input, time, carrier)
 	testing.expect_value(t, menu_status(&v0), "")
 
-	// The slot now holds the committed snapshot — the Save serialized tick 0's world.
 	snapshot, slot_ok := store_read_slot(&store, PERSIST_SLOT)
 	testing.expect(t, slot_ok)
 	testing.expect(t, len(snapshot.bytes) > 0)
 
-	// Tick 1: no key. The Saved{Ok} outcome queued last tick is delivered into this
-	// tick's mailbox, so on_persist_result folds it to status "saved" — the outcome
-	// arrived ONE tick after the command (§24 §1).
 	v1: World_Version
 	v1, carrier = step_tick_persist(&program, v0, empty(), time, carrier)
 	testing.expect_value(t, menu_status(&v1), "Saved")
 }
 
-// --- (3) Restore swaps the world at the tick boundary, outcome one tick later
-
-// A Restore at tick N swaps the world to the saved snapshot at the tick boundary —
-// tick N+1 folds from the RESTORED world — and the Restored{Ok} outcome arrives at
-// tick N+1 (one tick after the command). This is the sharp determinism case: the
-// restored version IS the next committed version the frame digest reads.
 @(test)
 test_restore_swaps_world_and_signals_next_tick :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -280,47 +176,29 @@ test_restore_swaps_world_and_signals_next_tick :: proc(t: ^testing.T) {
 	carrier := new_persist_carrier(&store)
 	time := persist_time(60)
 
-	// Tick 0: steer (advance the player) AND Save — captures the world at tick 0's
-	// player position into the slot.
 	t0_input := with_pressed(with_value(empty(), .P1, STEER, to_fixed(1)), .P1, SAVE_BTN)
 	v0: World_Version
 	v0, carrier = step_tick_persist(&program, committed, t0_input, time, carrier)
 	saved_pos := player_pos(&v0)
 
-	// Ticks 1..3: keep steering (the Saved outcome lands tick 1; the player keeps
-	// advancing PAST the saved position).
 	cur := v0
 	for _ in 0 ..< 3 {
 		steer := with_value(empty(), .P1, STEER, to_fixed(1))
 		cur, carrier = step_tick_persist(&program, cur, steer, time, carrier)
 	}
 	advanced_pos := player_pos(&cur)
-	// The player moved past where it was saved — the swap must bring it BACK.
 	testing.expect(t, advanced_pos.x != saved_pos.x)
 
-	// Tick 4: press Restore (no steer, so the only change this tick is the restore
-	// queued for the boundary). Tick 4 itself folds from the advanced world.
 	restore_input := with_pressed(empty(), .P1, RESTORE_BTN)
 	v4: World_Version
 	v4, carrier = step_tick_persist(&program, cur, restore_input, time, carrier)
 
-	// Tick 5: the swap takes effect — tick 5 folds from the RESTORED world, so the
-	// player is back at (near) the saved position, and the Restored{Ok} outcome
-	// arrives (status "restored"). No steer, so the position reflects the swap only.
 	v5: World_Version
 	v5, carrier = step_tick_persist(&program, v4, empty(), time, carrier)
 	testing.expect_value(t, menu_status(&v5), "Restored")
-	// The restored world's player is back at the saved position (the swap brought the
-	// snapshot's row back) — the world was swapped at the tick boundary.
 	testing.expect_value(t, player_pos(&v5).x, saved_pos.x)
 }
 
-// --- (4) ApplySettings persists and signals next tick ---------------------
-
-// An ApplySettings at tick N persists the settings per-machine AND returns a
-// SettingsApplied{Ok} at tick N+1 the menu folds (status "settings applied", dirty
-// cleared). The settings land in the store (per-machine, NOT sim state), readable
-// back independently of any version.
 @(test)
 test_apply_settings_persists_and_signals_next_tick :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -330,65 +208,41 @@ test_apply_settings_persists_and_signals_next_tick :: proc(t: ^testing.T) {
 	carrier := new_persist_carrier(&store)
 	time := persist_time(60)
 
-	// Tick 0: press Apply. apply_settings emits [ApplySettings{settings}] (the menu's
-	// settings, unconditionally in this fixture's apply behavior). The settings are
-	// persisted at the boundary.
 	apply_input := with_pressed(empty(), .P1, APPLY_BTN)
 	v0: World_Version
 	v0, carrier = step_tick_persist(&program, committed, apply_input, time, carrier)
 
-	// The settings persisted to the store — per-machine, not a versioned snapshot.
 	_, settings_ok := store_read_settings(&store)
 	testing.expect(t, settings_ok)
 
-	// Tick 1: the SettingsApplied{Ok} outcome arrives; on_settings_applied folds it to
-	// status "settings applied".
 	v1: World_Version
 	v1, carrier = step_tick_persist(&program, v0, empty(), time, carrier)
 	testing.expect_value(t, menu_status(&v1), "SettingsApplied")
 }
 
-// --- (5) Forced IO-error → Result::Err the menu fold records --------------
-
-// A Save against a disk store rooted at an UNWRITABLE path fails the write, so the
-// command yields Saved{Err} the menu records as status "save failed" the next tick
-// — the §24 forced-match error arm, never silently dropped. The store is on-disk
-// (core:os) rooted under a path that cannot be created, so os.write_entire_file
-// returns an error.
 @(test)
 test_forced_io_error_yields_err_outcome :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	program := persist_program()
-	// A disk store rooted at a path under a non-existent, non-creatable parent: the
-	// slot write fails (the directory does not exist and is not created here), so the
-	// Save outcome is Err. A NUL-containing root is rejected by every OS, the most
-	// portable forced failure.
 	store := new_on_disk_store("/proc/nonexistent-funpack-save-dir/\x00bad")
 	committed := persist_startup(&program)
 	carrier := new_persist_carrier(&store)
 	time := persist_time(60)
 
-	// Tick 0: press Save. The disk write fails → Saved{Err} queued.
 	save_input := with_pressed(empty(), .P1, SAVE_BTN)
 	v0: World_Version
 	v0, carrier = step_tick_persist(&program, committed, save_input, time, carrier)
 
-	// Tick 1: the Err outcome arrives; on_persist_result folds it to "save failed" —
-	// the error arm the §24 forced match covers.
 	v1: World_Version
 	v1, carrier = step_tick_persist(&program, v0, empty(), time, carrier)
 	testing.expect_value(t, menu_status(&v1), "SaveFailed")
 }
 
-// A Restore of an EMPTY slot (no save was ever taken) yields Restored{Err} the menu
-// records — the absent-slot read is the other forced error arm. No swap happens (a
-// failed restore never swaps a partial world), so the world keeps advancing from its
-// own state.
 @(test)
 test_restore_missing_slot_yields_err :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	program := persist_program()
-	store := new_in_memory_store() // empty — nothing was saved
+	store := new_in_memory_store()
 	committed := persist_startup(&program)
 	carrier := new_persist_carrier(&store)
 	time := persist_time(60)
@@ -401,10 +255,6 @@ test_restore_missing_slot_yields_err :: proc(t: ^testing.T) {
 	testing.expect_value(t, menu_status(&v1), "RestoreFailed")
 }
 
-// A content-hash MISMATCH (a tampered slot) is refused: store the snapshot, corrupt
-// its recorded hash, and a Restore yields ok=false — the pin catches the corruption
-// before swapping a tampered world. This is the content-hash-pinned property the
-// determinism boundary rests on (the restored snapshot is verified, not trusted).
 @(test)
 test_restore_rejects_content_hash_mismatch :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -412,36 +262,24 @@ test_restore_rejects_content_hash_mismatch :: proc(t: ^testing.T) {
 	store := new_in_memory_store()
 	committed := persist_startup(&program)
 
-	// Save a real snapshot, then poison its recorded hash so the bytes no longer match.
 	testing.expect(t, apply_save(&store, &program, committed, PERSIST_SLOT))
 	snapshot, read_ok := store_read_slot(&store, PERSIST_SLOT)
 	testing.expect(t, read_ok)
 	snapshot.content_hash = snapshot.content_hash ~ 0xDEAD_BEEF
 	store_write_slot(&store, PERSIST_SLOT, snapshot)
 
-	// The restore refuses the corrupt slot — the pin failed, so no version is returned.
 	_, restore_ok := apply_restore(&store, &program, PERSIST_SLOT)
 	testing.expect(t, !restore_ok)
 }
 
-// --- (6) Determinism boundary: no replay entry + re-fold across a Restore --
-
-// The replay log carries NO Save/ApplySettings entry: a Replay_Log is its identity
-// header plus an ordered []Input — there is NO field for a persist command, so §24
-// persistence is structurally absent from the determinism record (team Lore #9, AC4).
-// The F5/F9 presses that TRIGGER persistence ride the INPUT stream (a button action),
-// so a recording captures the input that caused a save, never the save effect itself.
 @(test)
 test_replay_log_carries_no_persist_entry :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 
-	// Record a session through the production recorder: every recorded tick is an Input
-	// snapshot. The recorded log's only payload is snapshots — there is no Save entry.
 	program := persist_program()
 	identity := identity_from_program(program, "persist-fixture-bytes")
 	writer := open_replay_writer(identity)
 	defer delete_replay_writer(&writer)
-	// A tick whose input PRESSES the Save button — the F5 press rides the input stream.
 	record_tick(&writer, with_pressed(empty(), .P1, SAVE_BTN))
 	record_tick(&writer, empty())
 	log_bytes := finish_replay(&writer)
@@ -450,20 +288,10 @@ test_replay_log_carries_no_persist_entry :: proc(t: ^testing.T) {
 	if !testing.expect(t, parse_ok) {
 		return
 	}
-	// The parsed log is identity + snapshots — the type has no persist field. The Save
-	// press is recoverable as INPUT (pressed Save on tick 0), but no Save effect rode
-	// the log: persistence is not the determinism record.
 	testing.expect_value(t, len(log.snapshots), 2)
 	testing.expect(t, pressed(log.snapshots[0], .P1, SAVE_BTN))
 }
 
-// A recorded session WITH a mid-session Restore re-folds bit-identically: driving the
-// SAME scripted input session (steer, save, steer, restore) through step_tick_persist
-// twice — a "live" capture and a "re-fold" — produces identical per-tick frame
-// digests. The persist IO is a deterministic FUNCTION of the committed versions
-// (themselves deterministic functions of the input), so the same input re-serializes
-// the same Save and swaps back the same Restore: the restored swap is digest-stable
-// across re-folds (team Lore #9, AC4). This is the §24-on-the-determinism-target proof.
 @(test)
 test_refold_across_restore_is_bit_identical :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -481,26 +309,13 @@ test_refold_across_restore_is_bit_identical :: proc(t: ^testing.T) {
 		testing.expect_value(t, refold[i].digest, frame.digest)
 	}
 
-	// Guard the bit-identity above against a no-op restore: the restore MUST be
-	// observable in the digest stream, else two identical no-op runs would pass
-	// vacuously. A control session that STEERS every tick (never restores) diverges
-	// from the restore session at the swap tick — the restore brought the player back,
-	// so the post-swap digest differs from the steered-through one. A non-divergence
-	// would mean the restore did nothing.
 	steered := persist_capture(&program, persist_steer_only_session())
 	if !testing.expect_value(t, len(steered), len(live)) {
 		return
 	}
-	// Tick 5 is the first tick that folds from the RESTORED world (the Restore pressed
-	// at tick 4 swaps at the boundary). The restore session's tick-5 digest must differ
-	// from the steer-only session's tick-5 digest — the swap is observable.
 	testing.expect(t, live[5].digest != steered[5].digest)
 }
 
-// persist_steer_only_session is the control session for the re-fold guard: it steers
-// every tick and NEVER saves or restores, so its world advances monotonically. Its
-// late-tick digests differ from the restore session's, proving the restore swap is
-// observable in the digest (not a silent no-op the bit-identity check would miss).
 @(private = "file")
 persist_steer_only_session :: proc(allocator := context.allocator) -> []Input {
 	inputs := make([]Input, 8, allocator)
@@ -510,31 +325,20 @@ persist_steer_only_session :: proc(allocator := context.allocator) -> []Input {
 	return inputs
 }
 
-// persist_restore_session is the scripted input session the re-fold determinism test
-// drives: steer for a few ticks, press Save, steer more (so the world moves past the
-// save), then press Restore — a mid-session save AND restore over an evolving world.
-// The SAME slice drives both captures, so the re-fold re-feeds identical input.
 @(private = "file")
 persist_restore_session :: proc(allocator := context.allocator) -> []Input {
 	inputs := make([]Input, 8, allocator)
 	inputs[0] = with_value(empty(), .P1, STEER, to_fixed(1))
-	inputs[1] = with_pressed(with_value(empty(), .P1, STEER, to_fixed(1)), .P1, SAVE_BTN) // save tick
+	inputs[1] = with_pressed(with_value(empty(), .P1, STEER, to_fixed(1)), .P1, SAVE_BTN)
 	inputs[2] = with_value(empty(), .P1, STEER, to_fixed(1))
 	inputs[3] = with_value(empty(), .P1, STEER, to_fixed(1))
-	inputs[4] = with_pressed(empty(), .P1, RESTORE_BTN) // restore tick — swaps next tick
+	inputs[4] = with_pressed(empty(), .P1, RESTORE_BTN)
 	inputs[5] = empty()
 	inputs[6] = empty()
 	inputs[7] = empty()
 	return inputs
 }
 
-// persist_capture drives a persist session through step_tick_persist from a FRESH
-// store and startup, capturing each committed tick's frame digest over the world
-// state. It is the ground-truth capture the re-fold must reproduce: two runs of this
-// over the same inputs must agree, since the persist IO is deterministic over the
-// committed versions (themselves deterministic over the input). The store is fresh
-// per call so the two captures never share ambient disk state — the slot content is a
-// pure function of THIS run's fold.
 @(private = "file")
 persist_capture :: proc(program: ^Program, inputs: []Input, allocator := context.allocator) -> []Frame_Digest {
 	store := new_in_memory_store(allocator)
@@ -550,18 +354,6 @@ persist_capture :: proc(program: ^Program, inputs: []Input, allocator := context
 	return per_tick[:]
 }
 
-// ==========================================================================
-// The hand-built persist program: a Menu singleton + a Player singleton, the
-// save/restore/apply behaviors, and the outcome folds.
-// ==========================================================================
-
-// persist_program builds the IO-boundary test substrate: a Cmd (Button) enum minting
-// Save/Restore/Apply actions, a Drive (Axis) enum minting the Step axis, the Menu and
-// Player singletons, and six behaviors — the player advance (control), save_key /
-// restore_key / apply_settings (the command emits, control), and on_persist_result /
-// on_settings_applied (the outcome folds, scoring). The pipeline orders the folds
-// AFTER the emits so a same-tick outcome would be seen, but outcomes are deferred a
-// tick so the fold reads the PRIOR tick's outcomes. All in the temp arena (Lore #8).
 @(private = "file")
 persist_program :: proc(allocator := context.allocator) -> Program {
 	a := allocator
@@ -570,8 +362,6 @@ persist_program :: proc(allocator := context.allocator) -> Program {
 	enums[0] = Enum_Decl{name = "Cmd", kind = .Button, variants = persist_cmd_variants(a)}
 	enums[1] = Enum_Decl{name = "Drive", kind = .Axis, variants = persist_axis_variants(a)}
 
-	// Player { pos: Vec2 = {0,0} } — the advancing thing whose evolving pos makes each
-	// tick's digest distinct.
 	player_fields := make([]Field_Decl, 1, a)
 	player_fields[0] = Field_Decl {
 		name            = "pos",
@@ -580,9 +370,6 @@ persist_program :: proc(allocator := context.allocator) -> Program {
 		default_encoded = pos_default(a),
 	}
 
-	// Menu { status: Option = Option::None } — the singleton the persist folds write
-	// their status onto. dirty is unused by this fixture's unconditional apply, so the
-	// menu carries only status.
 	menu_fields := make([]Field_Decl, 1, a)
 	menu_fields[0] = Field_Decl {
 		name            = "status",
@@ -620,16 +407,12 @@ persist_program :: proc(allocator := context.allocator) -> Program {
 	return program
 }
 
-// persist_startup runs the engine singleton-spawn pass — the Player and Menu rows
-// land before tick 0, so the persist behaviors read a populated world the first tick.
 @(private = "file")
 persist_startup :: proc(program: ^Program, allocator := context.allocator) -> World_Version {
 	world := new_world(program^, allocator)
 	return run_startup(program, initial_version(world, allocator), allocator)
 }
 
-// persist_time is the Time resource the persist ticks step at — one dt at the fixed
-// tick rate (kernel-derived, no float).
 @(private = "file")
 persist_time :: proc(tick_hz: int, allocator := context.allocator) -> Record_Value {
 	fields := make(map[string]Value, allocator)
@@ -637,15 +420,11 @@ persist_time :: proc(tick_hz: int, allocator := context.allocator) -> Record_Val
 	return Record_Value{type_name = "Time", fields = fields}
 }
 
-// pos_default encodes the Player's `pos: Vec2 = {0,0}` default as the kernel's raw
-// Q32.32 bits (the Vec2(x=…,y=…) decode form the singleton pass reads), bit-exact.
 @(private = "file")
 pos_default :: proc(a := context.allocator) -> string {
 	return p_aprintf(a, "Vec2(x=%d,y=%d)", i64(to_fixed(0)), i64(to_fixed(0)))
 }
 
-// persist_cmd_variants is the Cmd:Button enum's three menu actions (Save/Restore/
-// Apply) — the buttons the persist behaviors gate on, minting ActionId 0/1/2.
 @(private = "file")
 persist_cmd_variants :: proc(a := context.allocator) -> []Enum_Variant {
 	v := make([]Enum_Variant, 3, a)
@@ -655,8 +434,6 @@ persist_cmd_variants :: proc(a := context.allocator) -> []Enum_Variant {
 	return v
 }
 
-// persist_axis_variants is the Drive:Axis enum's one action (Step) — the player's
-// drive axis, minting ActionId 3 (after the three Cmd buttons).
 @(private = "file")
 persist_axis_variants :: proc(a := context.allocator) -> []Enum_Variant {
 	v := make([]Enum_Variant, 1, a)
@@ -664,12 +441,6 @@ persist_axis_variants :: proc(a := context.allocator) -> []Enum_Variant {
 	return v
 }
 
-// --- behavior bodies (node forests) ---------------------------------------
-
-// persist_player_step_behavior builds player_step on Player: `return self with {
-// pos: self.pos + input.axis(P1, Drive::Step) }` — advances the player's position by
-// the steer axis each tick. A +1 steer moves pos by {1,1} per tick, so the world (and
-// hence the per-tick digest) evolves distinctly tick to tick.
 @(private = "file")
 persist_player_step_behavior :: proc(a := context.allocator) -> Behavior_Decl {
 	body := make([]Node, 1, a)
@@ -679,24 +450,16 @@ persist_player_step_behavior :: proc(a := context.allocator) -> Behavior_Decl {
 	return p_behavior("player_step", "Player", "control", p_two_params("self", "Player", "input", "Input", a), p_emit_self("Player", a), body, a)
 }
 
-// persist_save_key_behavior builds save_key on Menu: `if input.pressed(P1, Cmd::Save)
-// { return [Save{slot: SLOT}] }; return []` — the key-gated Save command emit, emit
-// type [Save] (the §24 persist command list).
 @(private = "file")
 persist_save_key_behavior :: proc(a := context.allocator) -> Behavior_Decl {
 	return persist_command_key_behavior("save_key", "Save", "Save", a)
 }
 
-// persist_restore_key_behavior builds restore_key on Menu — the key-gated Restore
-// command emit, emit type [Restore].
 @(private = "file")
 persist_restore_key_behavior :: proc(a := context.allocator) -> Behavior_Decl {
 	return persist_command_key_behavior("restore_key", "Restore", "Restore", a)
 }
 
-// persist_command_key_behavior is the shared body of save_key/restore_key: gate a
-// `[Command{slot: SLOT}]` emit on `input.pressed(P1, Cmd::Button)`, else []. The emit
-// type is `[Command]` so fold_behavior_result routes it to the persist batch.
 @(private = "file")
 persist_command_key_behavior :: proc(name, button, command: string, a := context.allocator) -> Behavior_Decl {
 	body := make([]Node, 2, a)
@@ -709,16 +472,10 @@ persist_command_key_behavior :: proc(name, button, command: string, a := context
 	return Behavior_Decl{name = name, on_thing = "Menu", stage = "control", params = p_two_params("self", "Menu", "input", "Input", a), emits = emit, body = body}
 }
 
-// persist_apply_settings_behavior builds apply_settings on Menu: `if input.pressed(
-// P1, Cmd::Apply) { return [ApplySettings{settings: self.settings}] }; return []` —
-// the Apply-gated ApplySettings emit. This fixture's menu carries a bare settings
-// record built inline (the per-machine payload), since the fixture asserts the
-// persist+signal round-trip, not the dirty-gate (which the glue test covers).
 @(private = "file")
 persist_apply_settings_behavior :: proc(a := context.allocator) -> Behavior_Decl {
 	body := make([]Node, 2, a)
 	pressed := p_method_call(p_name("input", a), "pressed", a, p_variant_unit("PlayerId", "P1", a), p_variant_unit("Cmd", "Apply", a))
-	// ApplySettings{settings: Settings{volume: 1}} — a bare per-machine settings record.
 	settings := p_record_fields("Settings", a, p_recfield("volume", p_int(1, a)))
 	cmd := p_record_fields("ApplySettings", a, p_recfield("settings", settings))
 	body[0] = p_if_return(pressed, p_list(a, cmd), a)
@@ -728,11 +485,6 @@ persist_apply_settings_behavior :: proc(a := context.allocator) -> Behavior_Decl
 	return Behavior_Decl{name = "apply_settings", on_thing = "Menu", stage = "control", params = p_two_params("self", "Menu", "input", "Input", a), emits = emit, body = body}
 }
 
-// persist_on_persist_result_behavior builds on_persist_result on Menu: a fold over
-// [Saved] then [Restored], each lambda matching `r.result { Ok => "saved"/"restored",
-// Err => "save failed"/"restore failed" }` — the outcome-recording fold (§24 forced
-// match). It mirrors the glue test's on_persist_result so the engine-delivered
-// outcome folds identically to the hand-built signal.
 @(private = "file")
 persist_on_persist_result_behavior :: proc(a := context.allocator) -> Behavior_Decl {
 	body := make([]Node, 2, a)
@@ -745,9 +497,6 @@ persist_on_persist_result_behavior :: proc(a := context.allocator) -> Behavior_D
 	return Behavior_Decl{name = "on_persist_result", on_thing = "Menu", stage = "scoring", params = params, emits = p_emit_self("Menu", a), body = body}
 }
 
-// persist_on_settings_applied_behavior builds on_settings_applied on Menu: `return
-// fold(applied, self, fn(m, r) { match r.result { Ok => "settings applied", Err =>
-// "settings save failed" } })` — the apply-outcome fold.
 @(private = "file")
 persist_on_settings_applied_behavior :: proc(a := context.allocator) -> Behavior_Decl {
 	body := make([]Node, 1, a)
@@ -758,16 +507,6 @@ persist_on_settings_applied_behavior :: proc(a := context.allocator) -> Behavior
 	return Behavior_Decl{name = "on_settings_applied", on_thing = "Menu", stage = "scoring", params = params, emits = p_emit_self("Menu", a), body = body}
 }
 
-// persist_result_lambda builds an `fn(m, r) { match r.result { Ok(_) => m with {
-// status: Status::OK_CASE }, Err(_) => m with { status: Status::ERR_CASE } } }`
-// combiner — the per-signal Result match the persist/apply folds thread (sets only
-// status, so the prior menu carries forward). The status is a UNIT enum variant
-// (Status::Saved, Status::SaveFailed, …) — the column shape that round-trips a
-// blackboard commit (a unit variant lowers to its "Status::Case" token, which is a
-// storable string column the digest reads). (The glue test folds `Option::Some(text)`
-// and asserts the IN-MEMORY fold result; this fixture COMMITS the menu through a tick,
-// so it uses a unit-variant status — a payload-carrying variant or a bare String drops
-// on commit, only a unit-variant token survives the round-trip the digest covers.)
 @(private = "file")
 persist_result_lambda :: proc(ok_case, err_case: string, a := context.allocator) -> Node {
 	ok_arm := p_variant_binds_arm("Result", "Ok", "_", a)
@@ -778,14 +517,6 @@ persist_result_lambda :: proc(ok_case, err_case: string, a := context.allocator)
 	return p_lambda(a, match, "m", "r")
 }
 
-// ==========================================================================
-// Read helpers + assertions.
-// ==========================================================================
-
-// menu_status reads the Menu singleton's status as its Status::Case name, or "" when
-// status is the default Option::None — the outcome the persist folds set. The status
-// is a unit enum variant column ("Status::Saved" etc.), so its committed token lifts
-// back to a Variant_Value whose case_name is the outcome the test asserts.
 @(private = "file")
 menu_status :: proc(version: ^World_Version) -> string {
 	menu, ok := singleton_row(version, "Menu")
@@ -804,8 +535,6 @@ menu_status :: proc(version: ^World_Version) -> string {
 	return variant.case_name
 }
 
-// player_pos reads the Player singleton's pos Vec2 — the advancing position the
-// digest covers and the restore swaps back.
 @(private = "file")
 player_pos :: proc(version: ^World_Version) -> Vec2 {
 	player, ok := singleton_row(version, "Player")
@@ -821,13 +550,6 @@ player_pos :: proc(version: ^World_Version) -> Vec2 {
 	}
 	return VEC2_ZERO
 }
-
-// ==========================================================================
-// Node-forest constructors (file-private; sibling test files keep their own).
-// These mirror the §2.7 subtree builders the glue/hunt fixtures define; every
-// node constructor there is @(private="file"), so this file carries its own copies
-// under a `p_`/`persist_` prefix — the file-private scope means they never collide.
-// ==========================================================================
 
 @(private = "file")
 p_name :: proc(name: string, a := context.allocator) -> Node {
@@ -1029,8 +751,6 @@ p_two_params :: proc(n0, t0, n1, t1: string, a := context.allocator) -> []Param_
 	return params
 }
 
-// p_emit_self builds a one-emit blackboard-write list `[on_thing]` (the behavior
-// returns its own thing record — a blackboard fold).
 @(private = "file")
 p_emit_self :: proc(on_thing: string, a := context.allocator) -> []string {
 	emit := make([]string, 1, a)
@@ -1038,19 +758,11 @@ p_emit_self :: proc(on_thing: string, a := context.allocator) -> []string {
 	return emit
 }
 
-// p_behavior builds a Behavior_Decl with the supplied stage/params/emit/body.
 @(private = "file")
 p_behavior :: proc(name, on_thing, stage: string, params: []Param_Decl, emits: []string, body: []Node, a := context.allocator) -> Behavior_Decl {
 	return Behavior_Decl{name = name, on_thing = on_thing, stage = stage, params = params, emits = emits, body = body}
 }
 
-// --- The §18 §4 / §24 §1 dynamic-tile save/restore fixture ------------------
-
-// sr_layer hand-builds a one-layer slice with an explicit palette and row-major
-// cells — the bake/committed-layer constructor for the save/restore tile fixture
-// (the save_io-local twin of tile_carry_test's tc_layer; this file's tests live in
-// their own @(private="file") namespace). cols·rows == len(cells) by construction
-// in every call below.
 @(private = "file")
 sr_layer :: proc(
 	name: string,
@@ -1074,36 +786,18 @@ sr_layer :: proc(
 	}
 }
 
-// test_save_restore_tile is the AC1 fixture — ONE comprehensive proc (the
-// ODIN_TEST_NAMES exact-match target the criterion pins) packing every arm of the
-// §24 §1 dynamic-tile save/restore through the REAL snapshot codec (v6). It proves
-// the delta survives the bytes: SetTile a cell → serialize → deserialize → re-apply
-// onto the restoring bake yields the dug cell; an empty-delta save round-trips
-// byte-identical; a restore under a CHANGED bake re-bases per the kernel drop rules
-// (new-bake-wins). Hand-built bakes and committed layers, pins computed by hand from
-// the fixture geometry — the tile_carry_test test_reload_tile mold, on the codec seam
-// instead of the in-memory reload seam.
 @(test)
 test_save_restore_tile :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	a := context.temp_allocator
 
-	// Shared 2-entry palette: wall (solid) = index 0, floor (non-solid) = index 1.
 	wall_floor := []Tile_Def{{name = "wall", solid = true}, {name = "floor", solid = false}}
 
-	// ===================================================================
-	// ARM (a) AC1: a dug cell SURVIVES save/restore through the codec onto the
-	// SAME bake. Saving bake: a 3×1 row "wall wall wall" (all solid). SetTile
-	// floor@(1,0) committed → live "wall floor wall". serialize records the delta
-	// (one edit, name "floor"); deserialize reconstructs it; re-apply onto the
-	// identical restoring bake re-bases the dug cell. Query through version_tilemap
-	// over a World_Version{tilemaps=carried} — the production read path.
-	// ===================================================================
 	{
 		saving_bake := make([]Tile_Layer, 1, a)
 		saving_bake[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
 		live := make([]Tile_Layer, 1, a)
-		live[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 1, 0}, a) // SetTile floor@(1,0)
+		live[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 1, 0}, a)
 
 		program := Program {
 			tilemaps = saving_bake,
@@ -1118,14 +812,12 @@ test_save_restore_tile :: proc(t: ^testing.T) {
 		if !testing.expect(t, ok) {
 			return
 		}
-		// The codec carried exactly one edit: cell (1,0) named "floor".
 		testing.expect_value(t, len(delta.edits), 1)
 		testing.expect_value(t, delta.edits[0].layer_name, "terrain")
 		testing.expect_value(t, delta.edits[0].col, 1)
 		testing.expect_value(t, delta.edits[0].row, 0)
 		testing.expect_value(t, delta.edits[0].tile_name, "floor")
 
-		// Restoring bake: an identical recompile of the same level.
 		restoring_bake := make([]Tile_Layer, 1, a)
 		restoring_bake[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
 		carried := tile_carry_apply(delta, restoring_bake, a)
@@ -1134,30 +826,19 @@ test_save_restore_tile :: proc(t: ^testing.T) {
 		}
 		layer := version_tilemap(&ver, "terrain")
 		testing.expect(t, layer != nil)
-		// The dug cell is floor (non-solid, name "floor") — it survived the codec.
 		testing.expect_value(t, tilemap_solid_at(layer, 1, 0), false)
 		name, has := tilemap_tile_at(layer, 1, 0)
 		testing.expect(t, has)
 		testing.expect_value(t, name, "floor")
-		// The untouched cells stay wall (solid).
 		testing.expect_value(t, tilemap_solid_at(layer, 0, 0), true)
 		testing.expect_value(t, tilemap_solid_at(layer, 2, 0), true)
 	}
 
-	// ===================================================================
-	// ARM (b) AC1: an EMPTY-delta save round-trips BYTE-IDENTICAL. A committed
-	// world whose live layers EQUAL the saving bake (no SetTile ran) writes a lone
-	// u64(0) delta count; serialize ∘ deserialize ∘ serialize is a fixed point, so
-	// the content hash is stable. Also assert the empty delta re-applies onto the
-	// restoring bake with WHOLE-SLICE structural sharing — the no-op carry returns
-	// the bake slice itself (annotation #55: raw_data(carried)==raw_data(bake)
-	// holds ONLY for an empty delta).
-	// ===================================================================
 	{
 		bake := make([]Tile_Layer, 1, a)
 		bake[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
 		live := make([]Tile_Layer, 1, a)
-		live[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a) // == bake: no SetTile
+		live[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
 
 		program := Program {
 			tilemaps = bake,
@@ -1174,7 +855,6 @@ test_save_restore_tile :: proc(t: ^testing.T) {
 		}
 		testing.expect_value(t, len(delta.edits), 0)
 
-		// Byte-identical re-serialize: the empty-delta count rides the fixed point.
 		second := serialize_snapshot(&program, deserialize_world(first, a))
 		testing.expect_value(t, len(second), len(first))
 		for b, i in first {
@@ -1183,34 +863,19 @@ test_save_restore_tile :: proc(t: ^testing.T) {
 			}
 		}
 
-		// The empty delta re-applies as the no-op carry: whole-slice structural
-		// sharing of the restoring bake (annotation #55 — header equality holds for
-		// the empty delta ONLY).
 		restoring_bake := make([]Tile_Layer, 1, a)
 		restoring_bake[0] = sr_layer("terrain", 3, 1, wall_floor, []int{0, 0, 0}, a)
 		carried := tile_carry_apply(delta, restoring_bake, a)
 		testing.expect(t, raw_data(carried) == raw_data(restoring_bake))
 	}
 
-	// ===================================================================
-	// ARM (c) AC1: a restore under a CHANGED bake RE-BASES per the kernel drop
-	// rules (new-bake-wins). The saved session dug a 2×2 floor passage at three
-	// cells; the restoring bake is a SMALLER 1×2 grid (the level was edited), so
-	// two of the three carried cells fall OUT of the new grid and drop, while the
-	// one in-bounds cell carries. Also pin the COW alias discipline (annotation
-	// #55): an UNtouched (non-carried) sibling layer keeps its cells aliased to the
-	// restoring bake — assert raw_data(carried[i].cells)==raw_data(bake[i].cells),
-	// NOT the slice header (a non-empty delta fresh-copies the layers-slice header).
-	// ===================================================================
 	{
-		// Saving bake: terrain 2×2 all wall + an untouched "decor" sibling layer.
 		saving_bake := make([]Tile_Layer, 2, a)
 		saving_bake[0] = sr_layer("terrain", 2, 2, wall_floor, []int{0, 0, 0, 0}, a)
 		saving_bake[1] = sr_layer("decor", 2, 1, wall_floor, []int{0, 0}, a)
-		// Live: SetTile floor at terrain (1,0)[idx 1], (0,1)[idx 2], (1,1)[idx 3].
 		live := make([]Tile_Layer, 2, a)
 		live[0] = sr_layer("terrain", 2, 2, wall_floor, []int{0, 1, 1, 1}, a)
-		live[1] = sr_layer("decor", 2, 1, wall_floor, []int{0, 0}, a) // untouched
+		live[1] = sr_layer("decor", 2, 1, wall_floor, []int{0, 0}, a)
 
 		program := Program {
 			tilemaps = saving_bake,
@@ -1225,10 +890,8 @@ test_save_restore_tile :: proc(t: ^testing.T) {
 		if !testing.expect(t, ok) {
 			return
 		}
-		// Three terrain edits carried, in row-major order; decor carried none.
 		testing.expect_value(t, len(delta.edits), 3)
 
-		// Restoring bake: terrain SHRANK to 1×2 (one column), decor unchanged.
 		restoring_bake := make([]Tile_Layer, 2, a)
 		restoring_bake[0] = sr_layer("terrain", 1, 2, wall_floor, []int{0, 0}, a)
 		restoring_bake[1] = sr_layer("decor", 2, 1, wall_floor, []int{0, 0}, a)
@@ -1236,15 +899,9 @@ test_save_restore_tile :: proc(t: ^testing.T) {
 
 		terrain := find_tile_layer(carried, "terrain")
 		testing.expect(t, terrain != nil)
-		// (1,0) and (1,1) fell OUT of the 1-wide grid → dropped (new-bake-wins),
-		// so col 0 is what survives. Only (0,1) was in bounds and carried floor.
-		testing.expect_value(t, tilemap_solid_at(terrain, 0, 0), true) // wall (no edit at col 0 row 0)
-		testing.expect_value(t, tilemap_solid_at(terrain, 0, 1), false) // (0,1) carried floor
+		testing.expect_value(t, tilemap_solid_at(terrain, 0, 0), true)
+		testing.expect_value(t, tilemap_solid_at(terrain, 0, 1), false)
 
-		// COW alias discipline (annotation #55): the UNtouched decor layer keeps its
-		// cells aliased to the restoring bake (no edit landed on it), even though the
-		// non-empty delta fresh-copied the layers-SLICE header. Assert on the layer's
-		// cells pointer, NOT the slice header.
 		decor_idx := -1
 		for layer, i in carried {
 			if layer.name == "decor" {
@@ -1257,12 +914,6 @@ test_save_restore_tile :: proc(t: ^testing.T) {
 	}
 }
 
-// deserialize_world is a fixture helper: deserialize a snapshot back into just its
-// World_Version, threading the carry/schema out-values away. The re-serialized
-// world omits tilemaps (deserialize never folds the delta into version.tilemaps),
-// but serialize_snapshot reads the DELTA from program.tilemaps vs version.tilemaps —
-// so the byte-fixed-point arm passes the SAME program both times (an empty live
-// tilemaps vs the same bake yields the same empty delta).
 @(private = "file")
 deserialize_world :: proc(bytes: []u8, allocator := context.allocator) -> World_Version {
 	world, _, _, _ := deserialize_snapshot(bytes, allocator)

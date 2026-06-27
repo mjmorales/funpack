@@ -1,77 +1,29 @@
-// The §28 §3 time command group — load / run / pause / step / rewind / reset /
-// status — riding the introspection session fold (introspect.odin). All seven
-// are observe-class: they navigate a CURSOR over the recorded canonical
-// timeline and never write the session's retained chain or fork a branch, so a
-// time battery leaves the canonical digests bit-identical (the acceptance pin
-// in introspect_time_test.odin).
-//
-// REWIND IS SNAPSHOT + BOUNDED REPLAY (§28 §3): the cursor maintains a
-// fixed-cadence ring of COW snapshots — every TIME_SNAPSHOT_CADENCE-th
-// committed cursor tick retains its World_Version root (structural sharing
-// makes the retention a root pointer, §08 §4) plus the Rng entering the next
-// tick. `rewind` restores the nearest snapshot at-or-before the target and
-// re-folds the RECORDED inputs forward to the exact tick through the SAME
-// step_tick seam every driver runs — bit-exact by determinism, which the tests
-// pin against the session's independently retained canonical chain. The ring
-// is BOUNDED (TIME_RING_SLOTS — a fixed engine budget, §28 §3: no spec
-// numbers, no per-build knob): a push past capacity overwrites the oldest
-// insertion. The post-startup version is retained permanently by the session
-// (Debug_Session.startup), so a target below the oldest ring entry restores
-// from that floor — a longer re-fold, never a refusal.
-//
-// The reclaim discipline (team Lore #17) is respected by NOT freeing: every
-// cursor fold and ring entry lives on the session allocator, and rewound-past
-// versions share structure with retained ones — a selective free here would
-// have to walk the structural-sharing aliases, so the session keeps its
-// allocations for its lifetime (sessions are dev-only and bounded, §28 §3).
-//
-// In the pure request/response fold the session is at rest between requests, so
-// `run` folds synchronously to its target and `pause` is the idempotent
-// position ack the async live host gives meaning to (the duplex adapter is the
-// deferred seam, introspect.odin header).
 package funpack_runtime
 
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 
-// TIME_SNAPSHOT_CADENCE is the fixed engine constant (§28 §3: "cadence is a
-// fixed engine constant") — the cursor retains a ring snapshot every Nth
-// committed tick (ticks 0, N, 2N, …).
 TIME_SNAPSHOT_CADENCE :: 16
 
-// TIME_RING_SLOTS is the bounded ring capacity — the fixed engine budget the
-// §28 §3 trace/time-travel buffer is bounded by. A push past capacity
-// overwrites the oldest insertion.
 TIME_RING_SLOTS :: 32
 
-// Time_Snapshot is one ring entry: the committed version OF `tick` plus the
-// Rng entering tick+1 (seeded runs; zero-valued and unread when seedless), so
-// a re-fold from this base draws exactly what the canonical tick+1 drew.
 Time_Snapshot :: struct {
 	tick:    int,
 	version: World_Version,
 	rng:     Rng,
 }
 
-// Time_Cursor is the session's time-travel position: the loaded flag (the time
-// group refuses until `load` arms it), the current tick (-1 = post-startup),
-// the committed head AT that tick, the Rng entering tick+1, and the bounded
-// fixed-cadence snapshot ring. Snapshots stay valid across rewinds — they
-// snapshot the CANONICAL recorded timeline, which is deterministic, so a
-// rewind never invalidates an entry ahead of the cursor.
 Time_Cursor :: struct {
 	loaded:    bool,
 	tick:      int,
 	head:      World_Version,
 	rng:       Rng,
 	ring:      [TIME_RING_SLOTS]Time_Snapshot,
-	ring_len:  int, // occupied slots
-	ring_next: int, // next write index (wraps — the oldest insertion is overwritten)
+	ring_len:  int,
+	ring_next: int,
 }
 
-// time_request dispatches one §28 §3 time command. `load` and `status` work on
-// any session; the navigation commands refuse until a timeline is loaded.
 time_request :: proc(
 	s: ^Debug_Session,
 	id: i64,
@@ -103,9 +55,6 @@ time_request :: proc(
 	return error_response(id, cmd, "unknown time command", allocator)
 }
 
-// time_load arms the cursor at the post-startup version (tick -1, the state
-// tick 0 folds from) with the Rng entering tick 0. Re-issuing load re-arms,
-// clearing the ring — a fresh timeline walk.
 @(private = "file")
 time_load :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -> string {
 	cursor := Time_Cursor {
@@ -120,12 +69,6 @@ time_load :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) ->
 	return time_position_response(s, id, "load", allocator)
 }
 
-// time_run folds forward to args.until — the synchronous `run`. On the CANONICAL
-// lineage it replays the recorded inputs to a recorded tick (default: the last
-// recorded tick); on the ACTIVE WRITABLE BRANCH (§28 §2, friction-6e7bb2c4) it folds
-// the PIPELINE FORWARD past the recording, computing and committing new branch ticks
-// so a staged what-if actually simulates (default: one tick past the branch tip). A
-// target behind the position is rewind's job and is refused as such.
 @(private = "file")
 time_run :: proc(
 	s: ^Debug_Session,
@@ -165,13 +108,6 @@ time_run :: proc(
 	return time_position_response(s, id, "run", allocator)
 }
 
-// time_step single-ticks forward through the production fold. On the canonical
-// lineage it replays one recorded tick (the end of the recording is a refusal); on
-// the active writable branch (friction-6e7bb2c4) it FOLDS one new pipeline tick onto
-// the branch — there is no "end of recording" on a writable branch, the fold simply
-// extends it. It takes `args` only to read the §28 §2 `branch` selector for the
-// advance-lineage guard (friction-4102ea74); the fold target itself is implicit (the
-// next tick of the active lineage), so step has no other argument.
 @(private = "file")
 time_step :: proc(
 	s: ^Debug_Session,
@@ -193,23 +129,11 @@ time_step :: proc(
 	return time_position_response(s, id, "step", allocator)
 }
 
-// time_on_writable_branch reports whether the time group's run/step should fold the
-// BRANCH forward rather than replay the canonical recording: true only when a live
-// branch is the active lineage (a `checkout` made it active). The canonical chain is
-// read-only — it cannot be folded past its recording — so a forward fold is a branch
-// operation by construction (§28 §2: control perturbs, so it forks; the branch is the
-// only writable lineage).
 @(private = "file")
 time_on_writable_branch :: proc(s: ^Debug_Session) -> bool {
 	return s.active_branch && s.has_branch
 }
 
-// time_advance_lineage_active reports the §28 §2 name of the lineage run/step
-// advance — the SAME name model time_status reports ("branch" once a `checkout`
-// makes the live branch active, "canonical" otherwise). An advance is always a
-// fold of the active lineage by construction (the canonical chain is read-only,
-// the branch is the only writable lineage), so this is the only lineage a
-// `branch=` selector may name without retargeting.
 @(private = "file")
 time_advance_lineage_active :: proc(s: ^Debug_Session) -> string {
 	if s.active_branch && s.has_branch {
@@ -218,20 +142,6 @@ time_advance_lineage_active :: proc(s: ^Debug_Session) -> string {
 	return "canonical"
 }
 
-// time_advance_lineage_refusal makes the §28 §2 `branch` selector HONEST on the
-// advance verbs (friction-4102ea74). On run/step a `branch=` was accepted and
-// SILENTLY IGNORED — both verbs fold whatever lineage is checked out — so a
-// `branch:"branch"` issued before a `control_checkout` advanced the active
-// canonical cursor and reported ITS state, discarding the selector. An advance is
-// a fold of the ACTIVE lineage by construction; the selector is therefore only a
-// no-op confirmation of the active lineage, never a cross-lineage retarget. The
-// guard:
-//   - no `branch` field         -> ok (the honored path: advance the active lineage)
-//   - `branch` = the active name -> ok (a redundant but truthful selector)
-//   - `branch` naming the OTHER lineage, or an unknown token -> refuse, naming the
-//     `control_checkout` that would make that lineage active first.
-// This honors-or-errors the selector without loosening the active-lineage-only
-// design (the advance verbs do NOT cross-fold a non-active branch).
 @(private = "file")
 time_advance_lineage_refusal :: proc(
 	s: ^Debug_Session,
@@ -278,14 +188,6 @@ time_advance_lineage_refusal :: proc(
 	), true
 }
 
-// branch_advance_tick folds ONE new pipeline tick onto the active branch through the
-// production seam — the SAME step_tick fold control_inject_input drives, here with an
-// EMPTY input (a forward fold past the recording carries no recorded snapshot, exactly
-// as observe_draw_list / screenshot read empty input past the fork) and the per-tick
-// Time derived from the branch's logical tick. The fold threads the branch Rng for a
-// seeded run and writes back the advanced head + tick count, so the branch tip is a
-// real committed version (time_position_response then reports it). This is the
-// friction-6e7bb2c4 forward-fold: a what-if edit actually simulates.
 @(private = "file")
 branch_advance_tick :: proc(s: ^Debug_Session) {
 	branch := &s.branch
@@ -299,11 +201,6 @@ branch_advance_tick :: proc(s: ^Debug_Session) {
 	branch.ticks += 1
 }
 
-// time_rewind restores the nearest snapshot at-or-before args.tick and
-// re-folds the recorded inputs to the exact target tick (§28 §3: rewind =
-// nearest snapshot ≤ target + bounded replay forward). The response names the
-// base it restored from and how many ticks it re-folded — the bounded-replay
-// shape made observable.
 @(private = "file")
 time_rewind :: proc(
 	s: ^Debug_Session,
@@ -335,9 +232,6 @@ time_rewind :: proc(
 	return strings.to_string(b)
 }
 
-// time_reset returns the cursor to tick zero's fold base — the post-startup
-// version, Rng entering tick 0. The ring is kept: its entries snapshot the
-// deterministic canonical timeline, so they stay valid for the next walk.
 @(private = "file")
 time_reset :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -> string {
 	s.cursor.tick = -1
@@ -348,11 +242,6 @@ time_reset :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -
 	return time_position_response(s, id, "reset", allocator)
 }
 
-// time_status reports the session shape: load state, cursor position, the
-// recording's extent, seededness, the ring's fixed constants and live
-// occupancy, whether a control branch is live, and the §28 §3 active lineage
-// (canonical until a `checkout` makes the branch active). Field order is fixed —
-// byte-stable for the session log, like every envelope.
 @(private = "file")
 time_status :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
@@ -365,12 +254,6 @@ time_status :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) 
 	} else {
 		strings.write_string(&b, "null")
 	}
-	// `seeded` is whether THIS session folds a recorded RNG seed; `uses_rng` is whether
-	// the PROGRAM consumes randomness at all (any behavior/function binds an `Rng`
-	// param). The pair is the friction-116a1681 distinction the empty-state diagnostic
-	// reads: seeded=false + uses_rng=true is an unmet precondition (an RNG draw could not
-	// populate without a recorded seed), but seeded=false + uses_rng=false is a genuine
-	// state read of a no-RNG game — its empty result is not a missing-seed defect.
 	fmt.sbprintf(
 		&b,
 		",\"ticks_recorded\":%d,\"seeded\":%s,\"uses_rng\":%s,\"cadence\":%d,\"ring\":{{\"slots\":%d,\"occupied\":%d,",
@@ -394,9 +277,6 @@ time_status :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) 
 	} else {
 		strings.write_string(&b, "null")
 	}
-	// §28 §3: status reports the active branch — canonical when none is checked
-	// out, the forked branch once it is. `live` is whether a fork exists; `active`
-	// is which lineage observe/time read by default.
 	fmt.sbprintf(
 		&b,
 		"}},\"branch\":{{\"live\":%s,\"active\":\"%s\"}}}}}}",
@@ -406,11 +286,6 @@ time_status :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) 
 	return strings.to_string(b)
 }
 
-// time_position_response is the shared success envelope for the position-only
-// time commands: the tick is the whole result. On the canonical lineage the position
-// is the cursor tick; on the active writable branch (after a forward fold) it is the
-// branch's logical tip — so a `run`/`step`/`pause` on a branch reports the branch's
-// real position, not a stale canonical cursor.
 @(private = "file")
 time_position_response :: proc(
 	s: ^Debug_Session,
@@ -425,12 +300,6 @@ time_position_response :: proc(
 	return strings.to_string(b)
 }
 
-// time_advance_cursor folds ONE recorded tick onto the cursor through the
-// production seam — the identical step_tick the canonical fold ran, the same
-// per-tick Time derivation, the cursor's threaded Rng for a seeded run — and
-// retains a ring snapshot on the fixed cadence. The caller guards the
-// recording bound. Cursor state outlives requests, so the fold allocates on
-// the session allocator.
 @(private = "file")
 time_advance_cursor :: proc(s: ^Debug_Session) {
 	next := s.cursor.tick + 1
@@ -446,11 +315,6 @@ time_advance_cursor :: proc(s: ^Debug_Session) {
 	}
 }
 
-// time_ring_push retains one snapshot: an entry for the same tick is replaced
-// in place (a rewind's re-fold re-reaches cadence ticks — the re-committed
-// version is bit-identical, so the replace is a no-op by value); otherwise the
-// entry lands at the write index, overwriting the oldest insertion once the
-// ring is full.
 @(private = "file")
 time_ring_push :: proc(c: ^Time_Cursor, snapshot: Time_Snapshot) {
 	for i in 0 ..< c.ring_len {
@@ -466,9 +330,6 @@ time_ring_push :: proc(c: ^Time_Cursor, snapshot: Time_Snapshot) {
 	}
 }
 
-// time_ring_base resolves rewind's restore base: the occupied ring entry with
-// the greatest tick at-or-before the target, or the permanently retained
-// post-startup floor (tick -1, Rng entering tick 0) when no entry qualifies.
 @(private = "file")
 time_ring_base :: proc(s: ^Debug_Session, target: int) -> Time_Snapshot {
 	base := Time_Snapshot {
@@ -487,8 +348,6 @@ time_ring_base :: proc(s: ^Debug_Session, target: int) -> Time_Snapshot {
 	return base
 }
 
-// time_ring_extent reports the occupied ring's tick span (oldest, newest) —
-// the status surface's ring shape. occupied=false for an empty ring.
 @(private = "file")
 time_ring_extent :: proc(c: ^Time_Cursor) -> (oldest: int, newest: int, occupied: bool) {
 	if c.ring_len == 0 {

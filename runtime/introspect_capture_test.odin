@@ -1,19 +1,3 @@
-// §28 §5 capture → test acceptance: `capture_test` exports an observed
-// (state, inputs, expected) triple as a runnable funpack test block, and the
-// EXACT exported bytes are pinned as goldens — the validation path the export
-// contract allows when the consumer (the funpack compiler) lives across the
-// product boundary. Every pinned text below was ALSO fed through the real
-// compiler against its example project (`funpack check` parses it clean;
-// `funpack test` evaluates the assert and passes), so the pins are
-// known-parseable, known-passing funpack source, not merely frozen bytes.
-//
-// The acceptance golden is the SEEDED SNAKE capture the story demands: the
-// eat tick's detect_eat — the (Snake state, View.of food fixture, [Eaten]
-// expectation) triple whose food cell only the recorded seed can place. A
-// second snake pin (turn at the scripted press tick) exercises the
-// Input.empty().with_pressed producer-chain rebuild from the recorded
-// snapshot; the pong pin exercises the exact-dyadic-decimal Fixed render and
-// View.of over multi-row state.
 package funpack_runtime
 
 import "core:encoding/json"
@@ -21,9 +5,6 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-// capture_snake_session opens the seeded golden-snake session (seed 42, the
-// scripted 16-tick run with one Down press at tick 6) — the same canonical
-// run every seeded introspection battery folds.
 @(private = "file")
 capture_snake_session :: proc(
 	t: ^testing.T,
@@ -42,16 +23,10 @@ capture_snake_session :: proc(
 	return open_debug_session(program, inputs, seeded_run(42), allocator)
 }
 
-// THE ACCEPTANCE GOLDEN — the seeded snake eat-tick capture, pinned
-// byte-for-byte: detect_eat's (self, View.of foods, [Eaten]) triple at tick 9,
-// where the head shares the seed-placed food's cell. The exported text parses
-// clean and passes under `funpack test` against the snake example project.
 @(test)
 test_capture_test_seeded_snake_golden :: proc(t: ^testing.T) {
 	s := capture_snake_session(t)
 
-	// Cross-check the pinned tick: tick 9 is the first boundary whose entering
-	// Rng advances — the replenish draw the eat fires.
 	eat_tick := -1
 	for i in 0 ..< len(s.rngs) - 1 {
 		if s.rngs[i + 1].state != s.rngs[i].state {
@@ -72,10 +47,6 @@ test_capture_test_seeded_snake_golden :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// The Input fixture rebuild: turn at the scripted press tick exports the
-// recorded snapshot as the Input.empty().with_pressed producer chain, and the
-// expected Snake carries the turned heading — pinned byte-for-byte
-// (parse-validated against the snake example like the golden above).
 @(test)
 test_capture_test_input_producer_chain :: proc(t: ^testing.T) {
 	s := capture_snake_session(t)
@@ -91,11 +62,6 @@ test_capture_test_input_producer_chain :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// The Fixed render is the EXACT dyadic decimal (Q32.32 fractions terminate in
-// base 10), and a View.of fixture carries every row of the viewed thing in
-// stable Id order — pinned over the seedless golden pong run, whose tick-3
-// ball/paddle state has non-trivial fractional bits. Parse-validated against
-// the pong example project.
 @(test)
 test_capture_test_fixed_decimal_and_view_fixture :: proc(t: ^testing.T) {
 	program := new(Program, context.allocator)
@@ -118,10 +84,6 @@ test_capture_test_fixed_decimal_and_view_fixture :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// capture_test is observe-class: a capture battery (the golden export plus an
-// Input-chain export) leaves the canonical seeded chain digest-pinned
-// bit-identical to an untouched reference — the §28 §2 warranty extended to
-// the self-heal group.
 @(test)
 test_capture_test_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 	s := capture_snake_session(t)
@@ -146,10 +108,6 @@ test_capture_test_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 	testing.expect_value(t, captured.session, baseline.session)
 }
 
-// Every unservable capture is refused with a well-formed envelope — and the
-// refusals are TYPED toward the agent: a read with no deterministic source
-// constructor (replenish's threaded rng) names the param, so the agent
-// captures at a constructible boundary instead of receiving a broken test.
 @(test)
 test_capture_test_refusals :: proc(t: ^testing.T) {
 	s := capture_snake_session(t)
@@ -177,15 +135,6 @@ test_capture_test_refusals :: proc(t: ^testing.T) {
 	}
 }
 
-// ── the committed-copy seam for the cross-product guard ──────────────────
-
-// expect_capture_matches_file pins one live capture export against its
-// committed copy under testdata/: the response's result.test payload must be
-// byte-equal to the file. The committed copies are the funpack compiler's
-// cross-product guard input (its guard test parses and runs those bytes), so
-// this pin keeps the live exporter and the committed seam from drifting apart
-// silently — the krognid committed-copy discipline applied to the §28 §5
-// export contract.
 @(private = "file")
 expect_capture_matches_file :: proc(t: ^testing.T, s: ^Debug_Session, request: string, path: string) {
 	response := session_request(s, request)

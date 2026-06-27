@@ -68,6 +68,7 @@ tasks:
       - ./cmd/eir/eir comments cmd/eir --max-comments 5
       - ./cmd/eir/eir comments cli --max-comments 5
       - ./cmd/eir/eir comments cmd/funpack --max-comments 5
+      - ./cmd/eir/eir comments runtime --max-comments 5
 
   comments-sweep:
     desc: Report files over the per-file comment budget (the comment-removal sweep target)

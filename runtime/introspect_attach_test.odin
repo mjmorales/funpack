@@ -1,18 +1,3 @@
-// §28.2 remote-attach acceptance: the introspection contract served on an
-// auth-gated transport. Remote attach is a TRANSPORT + AUTH wrapper around the
-// unchanged session_request fold, so this suite drives serve_attach_connection over
-// an IN-MEMORY Line_Transport (the same seam the when-gated core:net socket loop
-// fills) and proves the four contract floors WITHOUT a real socket:
-//
-//   - auth is REQUIRED (§28.2): a connection with NO auth line and a connection with
-//     a WRONG token are both refused — the handshake answers ok:false and NO command
-//     response follows (the gate fires before any dispatch).
-//   - an AUTHED connection serves the IDENTICAL contract: an observe round-trip over
-//     the transport returns the SAME response bytes the local session_request fold
-//     returns (the wrapper changes transport, not the contract).
-//   - the bind is LOOPBACK-only (attach_listen_endpoint pins 127.0.0.1).
-//   - the auth-required floor is enforced BY CONSTRUCTION: an empty token cannot
-//     build an auth seam (so a server cannot be gated by no secret).
 package funpack_runtime
 
 import "core:net"
@@ -22,10 +7,6 @@ import "core:strconv"
 import "core:strings"
 import "core:testing"
 
-// ATTACH_FIXTURE is the same minimal one-behavior artifact the observe suite folds
-// (a Hero with a Fixed pos advancing 1.0/tick) — the round-trip asserts the attach
-// transport returns byte-identical observe responses, so it needs the identical
-// session the local-fold envelope tests pin against.
 @(private = "file")
 ATTACH_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
@@ -62,9 +43,6 @@ ATTACH_FIXTURE :: "funpack-artifact 19\n" +
 	"[entrypoint 1]\n" +
 	"entrypoint main pipeline:Intro tick_hz:60 logical:160x120 bindings:bindings\n"
 
-// attach_fixture_session loads the fixture and opens a session over `ticks` empty
-// input snapshots — the shared opener the attach round-trip folds from (the twin of
-// introspect_test.odin's fixture_session).
 @(private = "file")
 attach_fixture_session :: proc(t: ^testing.T, ticks: int, allocator := context.allocator) -> (program: ^Program, session: Debug_Session) {
 	program = new(Program, allocator)
@@ -79,11 +57,6 @@ attach_fixture_session :: proc(t: ^testing.T, ticks: int, allocator := context.a
 	return program, session
 }
 
-// Mem_Conn is an in-memory Line_Transport backing for the headless attach tests: the
-// client's bytes (`incoming`, the NDJSON lines the client "sends") are drained by
-// recv, and the server's bytes (`outgoing`) are accumulated by send. It stands in
-// for a connected socket so serve_attach_connection runs end-to-end with no network,
-// exactly as the when-gated core:net adapter fills the same seam at runtime.
 @(private = "file")
 Mem_Conn :: struct {
 	incoming: []byte,
@@ -91,9 +64,6 @@ Mem_Conn :: struct {
 	outgoing: strings.Builder,
 }
 
-// mem_transport builds a Line_Transport over a Mem_Conn: recv hands out the client
-// bytes in chunks (0 once drained — the graceful-close signal the line reader reads
-// as EOF), send appends to the outgoing builder.
 @(private = "file")
 mem_transport :: proc(conn: ^Mem_Conn) -> Line_Transport {
 	return Line_Transport {
@@ -101,7 +71,7 @@ mem_transport :: proc(conn: ^Mem_Conn) -> Line_Transport {
 		recv = proc(userdata: rawptr, buf: []byte) -> (n: int, ok: bool) {
 			conn := (^Mem_Conn)(userdata)
 			if conn.read_pos >= len(conn.incoming) {
-				return 0, true // drained → graceful close (recv_tcp returns 0,nil too)
+				return 0, true
 			}
 			n = copy(buf, conn.incoming[conn.read_pos:])
 			conn.read_pos += n
@@ -115,8 +85,6 @@ mem_transport :: proc(conn: ^Mem_Conn) -> Line_Transport {
 	}
 }
 
-// mem_conn builds a Mem_Conn whose incoming stream is the given NDJSON lines joined
-// with newline frames (the bytes a client would write over the wire).
 @(private = "file")
 mem_conn :: proc(lines: []string, allocator := context.allocator) -> Mem_Conn {
 	b := strings.builder_make(allocator)
@@ -127,9 +95,6 @@ mem_conn :: proc(lines: []string, allocator := context.allocator) -> Mem_Conn {
 	return Mem_Conn{incoming = transmute([]byte)strings.to_string(b), outgoing = strings.builder_make(allocator)}
 }
 
-// test_attach_loopback_bind pins the §28.2 bind decision: remote attach ALWAYS binds
-// the loopback interface (127.0.0.1), never a public address. Pure over the endpoint,
-// so the loopback-only choice is proven without opening a socket.
 @(test)
 test_attach_loopback_bind :: proc(t: ^testing.T) {
 	ep := attach_listen_endpoint(7341)
@@ -139,10 +104,6 @@ test_attach_loopback_bind :: proc(t: ^testing.T) {
 	testing.expect_value(t, ep.port, 7341)
 }
 
-// test_attach_auth_required_floor pins the auth-required floor enforced BY
-// CONSTRUCTION: an empty token cannot build an auth seam (a server cannot be gated by
-// no secret), while a non-empty token builds one that ACCEPTS the matching credential
-// and REJECTS a mismatched one. §28.2: auth is required, never optional.
 @(test)
 test_attach_auth_required_floor :: proc(t: ^testing.T) {
 	_, empty_ok := attach_auth_from_token("", context.temp_allocator)
@@ -155,16 +116,13 @@ test_attach_auth_required_floor :: proc(t: ^testing.T) {
 	testing.expect(t, !attach_auth_decide(auth, ""), "an empty presented credential is rejected")
 }
 
-// test_attach_no_auth_refused pins that a connection presenting NO auth line (the
-// peer closes before authing) is refused: the handshake answers ok:false and NO
-// command response follows. The gate fires before any dispatch.
 @(test)
 test_attach_no_auth_refused :: proc(t: ^testing.T) {
 	_, session := attach_fixture_session(t, 2)
 	s := session
 	auth, _ := attach_auth_from_token("s3cret", context.allocator)
 
-	conn := mem_conn({}) // no lines at all → no auth presented
+	conn := mem_conn({})
 	transport := mem_transport(&conn)
 	serve_attach_connection(&s, auth, transport)
 
@@ -174,9 +132,6 @@ test_attach_no_auth_refused :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(out, `"cmd":`), "a refused connection serves NO command response")
 }
 
-// test_attach_wrong_auth_refused pins that a connection presenting the WRONG token —
-// even followed by a valid observe request — is refused at the gate: ok:false
-// handshake, and the trailing request is NEVER dispatched (no command response).
 @(test)
 test_attach_wrong_auth_refused :: proc(t: ^testing.T) {
 	_, session := attach_fixture_session(t, 2)
@@ -193,27 +148,17 @@ test_attach_wrong_auth_refused :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(out, `"cmd":"pipeline"`), "a refused connection never dispatches the trailing request")
 }
 
-// test_attach_authed_serves_identical_contract is the STORY ACCEPTANCE: an AUTHED
-// connection serves the IDENTICAL contract. After a valid handshake, an observe
-// round-trip (pipeline, then trace) over the in-memory transport returns response
-// bytes BYTE-IDENTICAL to the local session_request fold — proving remote attach is a
-// transport+auth wrapper that changes the transport, never the contract. The
-// handshake success line precedes the command responses, and each response carries
-// its NDJSON newline frame.
 @(test)
 test_attach_authed_serves_identical_contract :: proc(t: ^testing.T) {
 	_, session := attach_fixture_session(t, 3)
 	s := session
 	auth, _ := attach_auth_from_token("s3cret", context.allocator)
 
-	// The reference: the SAME two observe requests folded through the local stream
-	// contract (session_request) against a fresh session over the identical fixture.
 	_, ref_session := attach_fixture_session(t, 3)
 	ref := ref_session
 	ref_pipeline := session_request(&ref, `{"id":1,"cmd":"pipeline"}`)
 	ref_trace := session_request(&ref, `{"id":2,"cmd":"trace","args":{"tick":1,"behavior":"advance"}}`)
 
-	// The attach transport: auth, then the same two requests.
 	conn := mem_conn(
 		{
 			`{"v":1,"auth":"s3cret"}`,
@@ -224,9 +169,6 @@ test_attach_authed_serves_identical_contract :: proc(t: ^testing.T) {
 	transport := mem_transport(&conn)
 	serve_attach_connection(&s, auth, transport)
 
-	// The server stream is: handshake-success line, pipeline response, trace response
-	// — each newline-framed. Split and compare the command responses byte-for-byte
-	// against the local fold.
 	lines := strings.split(strings.to_string(conn.outgoing), "\n", context.allocator)
 	testing.expect(t, len(lines) >= 3, "the authed stream is handshake + 2 responses")
 	testing.expect(t, strings.contains(lines[0], `"handshake":true`), "the first line is the handshake success")
@@ -235,15 +177,6 @@ test_attach_authed_serves_identical_contract :: proc(t: ^testing.T) {
 	testing.expect_value(t, lines[2], ref_trace)
 }
 
-// test_attach_control_state_persists_across_requests pins the allocator-correctness
-// floor: a control command's forked branch MUST survive across later requests on the
-// SAME attached connection. Over one connection the client sends branch → set (forces
-// a branch column) → checkout → diff; the diff reads the branch divergence the set
-// committed, proving the branch's COW chain — committed through the allocator
-// session_request is handed — is NOT freed between lines. (A per-line free_all would
-// corrupt the branch head and this diff would fail closed; this test locks that out.)
-// It uses the golden pong session because the divergence forces a Ball column the
-// fixture's lone Hero lacks.
 @(test)
 test_attach_control_state_persists_across_requests :: proc(t: ^testing.T) {
 	program := new(Program, context.allocator)
@@ -270,18 +203,11 @@ test_attach_control_state_persists_across_requests :: proc(t: ^testing.T) {
 	serve_attach_connection(&s, auth, transport)
 
 	out := strings.to_string(conn.outgoing)
-	// The diff (the last response) reads the branch tip the set forced — the branch
-	// outlived the three requests since it. The branch was checked out, so the no-arg
-	// diff resolves the branch lineage and reports the forced Ball/pos column.
 	testing.expect(t, strings.contains(out, `"thing":"Ball"`), "the diff over the attach connection reads the branch's forced Ball")
 	testing.expect(t, strings.contains(out, `"field":"pos"`), "the forced pos column survives across requests — the branch was not freed")
 	testing.expect(t, strings.contains(out, `"warranted":false`), "the forked control lineage is non-warranted")
 }
 
-// attach_write_fixture writes ATTACH_FIXTURE to a unique temp path and returns it.
-// The helper tests need a real on-disk artifact (open_session_for_artifact reads
-// from a path, the seam the MCP session-registry will drive); each test gets its own
-// path so they never collide. The caller removes the file via the returned path.
 @(private = "file")
 attach_write_fixture :: proc(t: ^testing.T, name: string) -> string {
 	dir, dir_err := os.temp_dir(context.temp_allocator)
@@ -292,12 +218,6 @@ attach_write_fixture :: proc(t: ^testing.T, name: string) -> string {
 	return path
 }
 
-// test_open_session_for_artifact_fresh is the acceptance for the shared opener:
-// a fresh (no-replay) open resolves .Ok, yields the ATTACH_FRESH_TICKS seedless
-// empty-input window, and serves a session BYTE-IDENTICAL to one assembled the
-// long-hand way via attach_fixture_session — pinning that the shared opener and
-// the manual assembly produce the same served session. It runs in the SDL-free
-// default build, proving the helper is NOT gated behind FUNPACK_LIVE.
 @(test)
 test_open_session_for_artifact_fresh :: proc(t: ^testing.T) {
 	path := attach_write_fixture(t, "funpack-open-session-fresh.artifact")
@@ -310,9 +230,6 @@ test_open_session_for_artifact_fresh :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(s.snapshots), ATTACH_FRESH_TICKS)
 	testing.expect(t, !s.seed.has_seed, "a fresh open is seedless (NO_SEED)")
 
-	// The reference: a session over the IDENTICAL fixture + tick count assembled
-	// long-hand. An observe round-trip over each must return the same response bytes
-	// — the shared opener and the manual assembly serve one contract.
 	_, ref_session := attach_fixture_session(t, ATTACH_FRESH_TICKS)
 	ref := ref_session
 	helper_resp := session_request(&s, `{"id":1,"cmd":"pipeline"}`)
@@ -320,28 +237,21 @@ test_open_session_for_artifact_fresh :: proc(t: ^testing.T) {
 	testing.expect_value(t, helper_resp, ref_resp)
 }
 
-// test_open_session_for_artifact_replay_identity_mismatch pins the §09 §5 identity
-// gate the helper now owns: a replay log recorded against a DIFFERENT build (a
-// mismatched content_hash) is refused BEFORE opening — .Replay_Identity_Mismatch with
-// a nil program. This is the property the MCP JSON-RPC error mapping depends on: the
-// gate refuses without folding inputs shaped for another artifact.
 @(test)
 test_open_session_for_artifact_replay_identity_mismatch :: proc(t: ^testing.T) {
 	path := attach_write_fixture(t, "funpack-open-session-mismatch.artifact")
 	defer os.remove(path)
 
-	// A replay log whose header identity does NOT match the fixture build: derive the
-	// true identity, then perturb the content_hash so the every-field compare fails.
 	program := new(Program, context.temp_allocator)
 	loaded, load_err := load_program(ATTACH_FIXTURE, context.temp_allocator)
 	testing.expect(t, load_err == .None, "the fixture must load to derive its identity")
 	program^ = loaded
 	identity := identity_from_program(program^, ATTACH_FIXTURE)
-	identity.content_hash ~= 0xDEAD_BEEF // a build fingerprint that cannot match the artifact
+	identity.content_hash ~= 0xDEAD_BEEF
 
 	writer := open_replay_writer(identity, context.temp_allocator)
 	defer delete_replay_writer(&writer)
-	record_tick(&writer, empty(), context.temp_allocator) // one empty tick — enough to frame a valid log
+	record_tick(&writer, empty(), context.temp_allocator)
 	log_bytes := finish_replay(&writer, context.temp_allocator)
 
 	replay_path, join_err := filepath.join({os.temp_dir(context.temp_allocator) or_else "", "funpack-open-session-mismatch.replay"}, context.temp_allocator)
@@ -355,10 +265,6 @@ test_open_session_for_artifact_replay_identity_mismatch :: proc(t: ^testing.T) {
 	testing.expect(t, prog == nil, "an identity-mismatch open returns a nil program (refused before opening)")
 }
 
-// test_open_session_for_artifact_read_and_malformed pins the two pre-load fail-closed
-// arms map to DISTINCT discriminants: a non-existent path is .Artifact_Read_Failed,
-// garbage bytes are .Artifact_Malformed. The distinct mapping is what lets the MCP
-// caller report the right JSON-RPC error, and the helper returns a nil program on each.
 @(test)
 test_open_session_for_artifact_read_and_malformed :: proc(t: ^testing.T) {
 	_, prog_missing, missing := open_session_for_artifact("/nonexistent/funpack/no-such.artifact", "", false, context.allocator)
@@ -377,10 +283,6 @@ test_open_session_for_artifact_read_and_malformed :: proc(t: ^testing.T) {
 	testing.expect(t, prog_bad == nil, "a malformed artifact returns a nil program")
 }
 
-// test_attach_args_artifact_only pins the minimal `attach <artifact>` verb: the
-// artifact is bound, no replay log, and the port defaults to ATTACH_DEFAULT_PORT. The
-// parse is pure (no IO), so the operator-facing verb surface is proven headless even
-// though the server it feeds is FUNPACK_LIVE-gated.
 @(test)
 test_attach_args_artifact_only :: proc(t: ^testing.T) {
 	parsed, ok := parse_attach_args({"funpack", "attach", "game.artifact"})
@@ -390,9 +292,6 @@ test_attach_args_artifact_only :: proc(t: ^testing.T) {
 	testing.expect_value(t, parsed.port, ATTACH_DEFAULT_PORT)
 }
 
-// test_attach_args_replay_and_port pins the full verb surface: a second positional is
-// the recorded replay log (§28 §3 attach over a recorded run) and `--port N` overrides
-// the default loopback port.
 @(test)
 test_attach_args_replay_and_port :: proc(t: ^testing.T) {
 	parsed, ok := parse_attach_args({"funpack", "attach", "game.artifact", "run.replay", "--port", "9000"})
@@ -402,18 +301,12 @@ test_attach_args_replay_and_port :: proc(t: ^testing.T) {
 	testing.expect_value(t, parsed.replay_log, "run.replay")
 	testing.expect_value(t, parsed.port, 9000)
 
-	// --port=N (the equals form) parses identically.
 	eq, eq_ok := parse_attach_args({"funpack", "attach", "game.artifact", "--port=9000"})
 	testing.expect(t, eq_ok, "the --port=N form must parse")
 	testing.expect_value(t, eq.port, 9000)
 	testing.expect(t, !eq.has_replay, "a flag is not a positional — no replay log here")
 }
 
-// test_attach_args_seed pins the `--seed` bare-open override (the agentic seed knob,
-// mirroring `funpack live --seed`): both the spaced and `=` forms parse into
-// has_seed/seed, an unset flag leaves has_seed false (the helper resolves the default),
-// `--seed 0` is a real value (not elided), and a negative seed is accepted (any base-10
-// i64). A malformed or dangling `--seed` is a usage error.
 @(test)
 test_attach_args_seed :: proc(t: ^testing.T) {
 	spaced, spaced_ok := parse_attach_args({"funpack", "attach", "game.artifact", "--seed", "1337"})
@@ -439,10 +332,6 @@ test_attach_args_seed :: proc(t: ^testing.T) {
 	testing.expect(t, !unset.has_seed, "an unset --seed leaves has_seed false (resolve the default)")
 }
 
-// test_attach_args_refusals pins the usage-error fail-closed cases: no artifact, an
-// unknown flag, a malformed/out-of-range port, a --port with no value, a malformed or
-// dangling --seed, and a third positional are each ok=false — the caller prints usage
-// and exits non-zero rather than guessing.
 @(test)
 test_attach_args_refusals :: proc(t: ^testing.T) {
 	_, no_artifact := parse_attach_args({"funpack", "attach"})
@@ -470,9 +359,6 @@ test_attach_args_refusals :: proc(t: ^testing.T) {
 	testing.expect(t, !third_positional, "a third positional is a usage error")
 }
 
-// test_attach_handshake_carries_version pins the handshake envelope is versioned
-// exact-match like every §28 envelope (§28 §2) and a foreign-version auth line is
-// refused — the §29 index-contract discipline applied to the transport pre-amble.
 @(test)
 test_attach_handshake_carries_version :: proc(t: ^testing.T) {
 	_, parsed_v1 := parse_attach_auth_line(`{"v":1,"auth":"t"}`, context.temp_allocator)
@@ -488,12 +374,6 @@ test_attach_handshake_carries_version :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(ok_line, `"v":1`), "the handshake response stamps the protocol version")
 }
 
-// test_attach_ephemeral_endpoint pins the §28.2 ephemeral-bind REQUEST: --port 0
-// resolves to a port-0 loopback endpoint, the POSIX wildcard the kernel reads as "any
-// free port". The bind decision is pure (no socket), so the ephemeral request is
-// proven headless even though the kernel assigns the real port only at bind time. This
-// is the host-side TOCTOU's fix at the decision layer: the server asks for 0 instead of
-// a host-probed "probably free" port.
 @(test)
 test_attach_ephemeral_endpoint :: proc(t: ^testing.T) {
 	ep := attach_listen_endpoint(ATTACH_EPHEMERAL_PORT)
@@ -504,26 +384,16 @@ test_attach_ephemeral_endpoint :: proc(t: ^testing.T) {
 	testing.expect_value(t, ATTACH_EPHEMERAL_PORT, 0)
 }
 
-// test_attach_port_file_format pins the EXACT bytes the server writes to --port-file:
-// the bound port as a decimal ASCII integer with ONE trailing newline. The supervisor's
-// reader parses this form, so this test is the byte contract between the two — a change
-// here is a wire-format change the supervisor must mirror.
 @(test)
 test_attach_port_file_format :: proc(t: ^testing.T) {
 	contents := attach_port_file_contents(54231, context.temp_allocator)
 	testing.expect_value(t, contents, "54231\n")
 
-	// A trimmed parse recovers the integer regardless of the newline — the reader
-	// contract the supervisor follows.
 	port, ok := strconv.parse_int(strings.trim_space(contents))
 	testing.expect(t, ok, "the port-file contents parse as a decimal integer")
 	testing.expect_value(t, port, 54231)
 }
 
-// test_attach_args_file_handshake pins the two FILE-handshake flags parse into their
-// Attach_Args fields (both the spaced and =-joined forms), and that --port 0 is a valid
-// EPHEMERAL request (the parse no longer rejects 0 the way it rejects a negative port).
-// Pure, so the operator-facing verb surface is proven headless.
 @(test)
 test_attach_args_file_handshake :: proc(t: ^testing.T) {
 	parsed, ok := parse_attach_args(
@@ -536,7 +406,6 @@ test_attach_args_file_handshake :: proc(t: ^testing.T) {
 	testing.expect(t, parsed.has_token_file, "--token-file binds has_token_file")
 	testing.expect_value(t, parsed.token_file, "/tmp/t")
 
-	// The =-joined forms parse identically.
 	eq, eq_ok := parse_attach_args(
 		{"funpack", "attach", "game.artifact", "--port=0", "--port-file=/tmp/p2", "--token-file=/tmp/t2"},
 	)
@@ -545,28 +414,17 @@ test_attach_args_file_handshake :: proc(t: ^testing.T) {
 	testing.expect_value(t, eq.port_file, "/tmp/p2")
 	testing.expect_value(t, eq.token_file, "/tmp/t2")
 
-	// An empty file-flag value is a usage error — a path is required, never silently
-	// blank.
 	_, blank_port_file := parse_attach_args({"funpack", "attach", "game.artifact", "--port-file", ""})
 	testing.expect(t, !blank_port_file, "an empty --port-file value is a usage error")
 	_, blank_token_file := parse_attach_args({"funpack", "attach", "game.artifact", "--token-file="})
 	testing.expect(t, !blank_token_file, "an empty --token-file= value is a usage error")
 
-	// A NEGATIVE port is still a usage error (the only invalid low value now that 0 is
-	// the ephemeral wildcard).
 	_, neg_port := parse_attach_args({"funpack", "attach", "game.artifact", "--port", "-1"})
 	testing.expect(t, !neg_port, "a negative port is a usage error")
 }
 
-// test_attach_token_source_precedence pins the §28.2 token-SOURCE resolution: a
-// --token-file takes PRECEDENCE over the FUNPACK_ATTACH_TOKEN env, and the
-// auth-required floor holds from EITHER source — an empty token from the file or the
-// env still refuses to build a seam (NO secret ⇒ NO server). It writes a real temp
-// token file and toggles the env, restoring the env at the end so the global state does
-// not leak into sibling tests.
 @(test)
 test_attach_token_source_precedence :: proc(t: ^testing.T) {
-	// Snapshot + restore the env so this test's mutation is self-contained.
 	saved, had_saved := os.lookup_env(ATTACH_AUTH_ENV, context.temp_allocator)
 	defer {
 		if had_saved {
@@ -582,8 +440,6 @@ test_attach_token_source_precedence :: proc(t: ^testing.T) {
 	testing.expect(t, join_err == nil, "the token-file path joins")
 	defer os.remove(token_path)
 
-	// FILE OVER ENV: with both present, the file token is the one resolved — the trailing
-	// newline (the `echo "$tok" > file` shape) is trimmed off.
 	testing.expect(t, os.set_env(ATTACH_AUTH_ENV, "env-token") == nil, "the env token sets")
 	testing.expect(
 		t,
@@ -595,17 +451,13 @@ test_attach_token_source_precedence :: proc(t: ^testing.T) {
 	testing.expect(t, attach_auth_decide(auth, "file-token"), "the FILE token wins over the env token")
 	testing.expect(t, !attach_auth_decide(auth, "env-token"), "the env token is NOT the resolved secret when a file is given")
 
-	// EMPTY-FROM-FILE STILL REFUSES: a passed --token-file is the sole source, so a
-	// whitespace-only file refuses (the auth floor) — it does NOT fall back to the env.
 	testing.expect(t, os.write_entire_file_from_string(token_path, "   \n") == nil, "the empty token file writes")
 	_, empty_file_ok := attach_auth_resolve(token_path, true)
 	testing.expect(t, !empty_file_ok, "an empty token file refuses — the auth floor, no env fallback")
 
-	// ENV FALLBACK: with NO --token-file the env is the source.
 	_, no_file_ok := attach_auth_resolve("", false)
 	testing.expect(t, no_file_ok, "with no --token-file the env token resolves")
 
-	// EMPTY-FROM-ENV STILL REFUSES: clear the env, no file → no secret → no seam.
 	os.unset_env(ATTACH_AUTH_ENV)
 	_, empty_env_ok := attach_auth_resolve("", false)
 	testing.expect(t, !empty_env_ok, "an absent env token with no file refuses — the auth floor")

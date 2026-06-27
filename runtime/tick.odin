@@ -1,200 +1,47 @@
-// The per-tick transaction (spec §07 §4, §08): one tick is one deterministic
-// fold over the flattened pipeline that reads a committed world version and
-// commits the next. The tick is the WRITE side state.odin's read layer is the
-// counterpart of — a behavior never mutates the world it observes; it RETURNS a
-// blackboard/signal/command, and this file folds those returns into the next COW
-// version (commit_version, state.odin).
-//
-// The fold's determinism rests on a fixed visitation order, restated here so the
-// ordering rules live with the code that enforces them:
-//   1. startup runs once before tick 0 — setup's [Spawn] batch is the initial
-//      population, so tick 0 already sees the spawned things.
-//   2. stages run top-to-bottom in the one flattened total order (§11).
-//   3. within a stage, a behavior runs ONCE PER INSTANCE of its on-Thing in
-//      stable Id order (the View iteration order, §08 §2).
-//   4. a blackboard write folds FORWARD within the tick: a later stage reads
-//      every earlier stage's writes (the working rows carry them).
-//   5. a signal routes FORWARD synchronously in pipeline order: a signal a
-//      producer emits is delivered to every later consuming stage the same tick,
-//      with no mailbox and no concurrency (the inbound lists accumulate).
-//   6. Spawn/Despawn apply as ONE deterministic batch at the tick boundary, so a
-//      thing spawned this tick is first queryable NEXT tick and population is
-//      fixed within a tick.
-//
-// Every committed Version_Table keeps its rows ASCENDING by Id — the invariant
-// find_row_by_id's binary search (state.odin) and View iteration both depend on.
-// The fold sorts each table's working rows by Id before committing, so an
-// out-of-order spawn batch still commits an ordered table. No float (spec §10).
 package funpack_runtime
 
 import "core:slice"
 import "core:strings"
 
-// --- Working state the fold threads ---------------------------------------
-
-// Tick_Table is one thing type's MUTABLE working rows during a tick: the rows a
-// behavior's blackboard write folds into, keyed for in-place update by Id, plus
-// the next-Id counter the spawn batch mints from. It is the per-tick scratch
-// counterpart of the committed Version_Table — committed (sorted, immutable) at
-// the tick boundary, never read by the next tick directly.
 Tick_Table :: struct {
 	thing:     string,
 	singleton: bool,
-	rows:      [dynamic]Row, // working rows, updated in place; sorted at commit
-	next_id:   Thing_Id, // the deterministic spawn counter
+	rows:      [dynamic]Row,
+	next_id:   Thing_Id,
 }
 
-// Signal_Mailbox accumulates the signals emitted SO FAR this tick. It carries TWO
-// routing surfaces, by the signal's delivery shape (§12 forward synchronous):
-//   - by_type: BROADCAST user signals (pong's Goal, yard's Delivered). Every
-//     consumer of the type reads the same accumulated list — a fan-out signal.
-//   - by_instance: PER-INSTANCE engine signals (§11 §4 Contact/Trigger), keyed by
-//     type then by the TARGET row's Id. The engine routes each to the specific
-//     participating instance, and a consumer `on T` reading `[Trigger]` sees ONLY
-//     its own instance's entries (§11 §4: "no self.id to fetch, no list to
-//     filter"). A broadcast read of a per-instance signal would deliver one
-//     overlapping crate's Trigger to EVERY crate — three deliveries from one
-//     overlap — so the split is load-bearing for yard's single-crate delivery.
-// Because the fold is forward in pipeline order, a list a consumer reads holds
-// exactly the signals every earlier producer emitted this tick. It is reset each
-// tick.
 Signal_Mailbox :: struct {
-	by_type:     map[string][]Value, // BROADCAST signal type → emitted records this tick
-	by_instance: map[string]map[Id][]Value, // PER-INSTANCE signal type → target Id → records
+	by_type:     map[string][]Value,
+	by_instance: map[string]map[Id][]Value,
 }
 
-// Tick_State is all the mutable working state one tick threads: the per-thing
-// working tables (blackboard writes fold here), the signal mailbox (forward
-// routing), the pending spawn/despawn batch (applied at the boundary), the THREADED
-// per-tick Rng resource, and the arena the tick's intermediate values live in. It
-// is built fresh each tick from the prior committed version and discarded after the
-// commit.
-//
-// The Rng is threaded the same way the world version is: it enters at tick start
-// (the prior tick's advanced state — or the tick-0 seed retained from setup),
-// every behavior that draws ADVANCES it in fold-forward order (so the draw order is
-// the deterministic flattened-pipeline + stable-Id order this file already
-// enforces), and the advanced state is read back out at the tick boundary into the
-// run's persistent Rng so the NEXT tick observes it (§04 §1 — never silently
-// advanced, threaded forward). Whether a fold threads an Rng at all is the
-// nil-gating in step_tick (`rng != nil`): a non-RNG program (pong, hunt) passes
-// no Rng and the fold never perturbs one it has no business touching.
 Tick_State :: struct {
 	tables:          []Tick_Table,
 	mailbox:         Signal_Mailbox,
 	spawns:          [dynamic]Pending_Spawn,
 	despawns:        [dynamic]Ref,
-	persist_commands: [dynamic]Record_Value, // the §24 Save/Restore/ApplySettings emits this tick
-	// terrain_commands collects this tick's §18 §4 committed-tile-state emits —
-	// BOTH [SetTile] (per-cell) and [BuildLayer] (whole-layer) — as ONE ordered
-	// stream of kind-tagged Terrain_Commands carrying the raw Record_Values the
-	// fold produced (the persist-batch mold: read at the boundary, never lowered
-	// into a blackboard row). fold_tile_layers dispatches per kind in THIS single
-	// collection order at commit — the deterministic tick-end application, so a
-	// same-tick BuildLayer-then-SetTile (or the reverse) folds last-write-wins
-	// across both kinds. tile_refusals records each command that failed its
-	// application as a NAMED per-command refusal (never a silent drop, never a
-	// halted tick — the persist Result::Err arm, tilemap.odin).
+	persist_commands: [dynamic]Record_Value,
 	terrain_commands: [dynamic]Terrain_Command,
 	tile_refusals:    [dynamic]Tile_Command_Refusal,
-	rng:             Rng, // the per-tick PRNG state a draw advances, threaded fold-forward
-	// superseded collects the blackboard maps this tick ABANDONED — a row's prior
-	// map replaced by write_blackboard's fresh one, or a despawned row's map. These
-	// are exactly the prior-version (and intermediate same-tick) maps the next
-	// committed version no longer aliases, so the live generational reclaimer
-	// (reclaim.odin) frees them O(delta) once this tick commits. Empty for a tick
-	// that writes/despawns nothing (pure read tick). The live driver consumes it;
-	// the bounded test/re-fold drivers ignore it (their wholesale temp-free covers
-	// the same maps).
+	rng:             Rng,
 	superseded:      [dynamic]map[string]Field_Value,
-	// allocator is the TRANSIENT eval/working allocator: the working tables' Row
-	// backing, the mailbox routing, the spawn/despawn/persist batches, and every
-	// intermediate value a behavior builds during the fold live here. It is the
-	// tick's scratch — discarded after the tick.
 	allocator:       Runtime_Allocator,
-	// commit_allocator is the PERSISTENT allocator the committed-state allocations
-	// target — the blackboard MAPS and the cloned structural COLUMNS that survive
-	// into the next version (write_blackboard's fresh map, queue_commands' spawn
-	// fields). It is split from `allocator` SOLELY so the live loop can run the
-	// transient eval on a per-tick scratch arena (freed each tick) while the
-	// committed columns persist on the heap the generational reclaimer manages
-	// (reclaim.odin). In every bounded path (step_tick, replay re-fold, tests) the
-	// two are the SAME allocator, so the split is a no-op there and the committed
-	// bytes are byte-identical regardless of the split — the determinism floor reads
-	// values, never addresses.
 	commit_allocator: Runtime_Allocator,
-	// observe is the §28 OBSERVE-class introspection tap (introspect.odin). When
-	// non-nil, the fold COPIES each behavior step's bound env/result and each
-	// routed signal into the capture buffers as it folds — a pure read of values
-	// the fold already computed, never a write into tick state, so an observed
-	// fold commits bit-identical state to an unobserved one (the §28 §2
-	// non-perturbation warranty; the introspect digest-pin test holds it). nil
-	// (every production driver) costs one pointer compare per tap site.
 	observe:          ^Tick_Observe,
-	// honor is the §28 §4 PROBE-honor tap (probes.odin) — the probe-side twin of
-	// observe. When non-nil, the fold evaluates every behavior-targeted @break/
-	// @watch/@log/@trace against the step's bound env and APPENDS its firing into
-	// the honor buffer as it folds — a pure read of the bound scope (predicate/
-	// expression bodies fold the artifact's node forest, NEVER source, and never
-	// write tick state), so an honored fold commits bit-identical state to an
-	// un-honored one (the §28 §2 non-perturbation warranty). nil (every production
-	// driver) costs one pointer compare per tap site. The current tick ordinal it
-	// stamps firings with is carried here too (the §28 §2 tick context), since the
-	// fold seam has the env but not the tick number.
 	honor:            ^Probe_Honor,
 	honor_tick:       int,
 }
 
-// Pending_Spawn is one queued Spawn command awaiting the tick-boundary batch: the
-// thing type and the fully-evaluated blackboard the new row will carry. It is
-// applied (a fresh Id minted, the row appended) only at the boundary, so a thing
-// spawned this tick is first queryable next tick.
 Pending_Spawn :: struct {
 	thing:  string,
 	fields: map[string]Field_Value,
 }
 
-// --- Startup: the pre-tick-0 spawn batch (§06 setup, §13) -----------------
-
-// run_startup populates the empty initial version tick 0 reads (§06 setup runs
-// before tick 0) in two passes, in this fixed order:
-//   1. the engine mints each singleton's guaranteed-single row from its
-//      defaulted-field schema (§06 §2) — the sole, authoritative minter of a
-//      singleton row, run BEFORE setup because a singleton exists before tick 0
-//      and is never setup-spawned;
-//   2. setup's [Spawn] batch mints the ordinary initial population, each
-//      Spawn_Command filling supplied fields from the decoded setup values and
-//      every omitted field from the thing's Field_Decl default.
-// So the committed base carries a complete blackboard per row. The committed
-// tables are sorted ascending by Id (the spawn counters mint densely, so they
-// already are; the sort makes the invariant explicit).
-//
-// THE SEEDLESS-BODY FALLBACK (the friction-116a1681 root fix). The §13 [setup]
-// batch is the COMPILE-TIME constant fold of setup()'s body (resolve_setup_spawns):
-// it folds only a literal `return [Spawn(…), …]` list. A seedless setup whose body
-// builds its population PROGRAMMATICALLY — a fold/concat/comprehension over a grid
-// (colony-sim's 144-agent `concat(red, blue)`, where each column is folded) — is NOT
-// a literal list, so the emitter folds it to `[setup 0]` and carries the BODY in
-// [functions] instead. The SEEDED path (run_startup_seeded) already evaluates such a
-// body to thread its Rng, but a seedless game never reaches it (open_debug_session /
-// the live loop take the bare run_startup batch when has_seed=false), so the
-// programmatic startup population silently never spawned — the empty-timeline bug.
-// run_startup closes that gap symmetrically: when the pre-evaluated batch is empty AND
-// a startup body that returns a bare `[Spawn]` list exists, it EVALUATES the body
-// (seedlessly, no Rng) and applies the resulting spawn batch through the SAME
-// queue_commands → apply_spawn_batch seam the seeded path uses, so a seedless and a
-// seeded programmatic setup populate by one code path. A foldable literal setup
-// (yard/pong) keeps `[setup ≥1]` and takes the batch directly — the body fallback is
-// not reached.
 run_startup :: proc(
 	program: ^Program,
 	base: World_Version,
 	allocator := context.allocator,
 ) -> World_Version {
-	// A seedless startup body the compiler could not constant-fold into the [setup]
-	// batch: evaluate it through the shared body seam, identical to the seeded path
-	// minus the Rng thread. Detected by an EMPTY batch + a [Spawn]-returning startup
-	// body — a foldable literal setup carries a non-empty batch and is handled below.
 	if len(program.setup) == 0 {
 		if setup_fn := program_startup(program); setup_fn != nil && len(setup_fn.body) > 0 && is_command_list_type(setup_fn.return_type) {
 			if populated, ran := run_startup_body(program, base, setup_fn, allocator); ran {
@@ -205,10 +52,8 @@ run_startup :: proc(
 
 	tables := new_tick_tables(base, allocator)
 
-	// Pass 1: the engine mints each singleton's single row before setup runs.
 	spawn_engine_singletons(program, tables, allocator)
 
-	// Pass 2: setup's [Spawn] batch mints the ordinary initial population.
 	for command in program.setup {
 		table := find_tick_table(tables, command.thing)
 		if table == nil {
@@ -223,22 +68,6 @@ run_startup :: proc(
 	return commit_tick_tables(base, tables, allocator)
 }
 
-// run_startup_body evaluates a SEEDLESS setup body that returns a bare `[Spawn]`
-// list — the seedless twin of run_startup_seeded, sharing the same eval+commit
-// machinery minus the Rng thread. It is reached only when the compile-time [setup]
-// fold left `[setup 0]` (a programmatic, non-literal population the emitter cannot
-// constant-fold) AND the startup body returns `[Spawn]` (not the seeded `(Rng,
-// [Spawn])` tuple). The body binds no params (a seedless setup takes no Rng), so the
-// env is empty; its `[Spawn]` return queues through dispatch_emit_component's command-
-// list arm exactly as the seeded tuple's [Spawn] half does, and apply_spawn_batch
-// mints the population on top of the engine singletons. ran=false on a body that does
-// not return or returns a non-list — the caller falls back to the (empty) batch path
-// rather than committing a half-evaluated world.
-//
-// DETERMINISM: the body is a pure §29 fold over the schema/constants (no Rng, no
-// input, no committed state beyond defaults), so it evaluates bit-identically every
-// run and the populated version is a pure function of the program — the same
-// invariant the seeded path rests on, minus the seed input.
 run_startup_body :: proc(
 	program: ^Program,
 	base: World_Version,
@@ -248,11 +77,6 @@ run_startup_body :: proc(
 	populated: World_Version,
 	ran: bool,
 ) {
-	// Build the working state through new_tick_state (not a bare literal) so every
-	// field — commit_allocator, the superseded list — is initialized; a nil
-	// commit_allocator would corrupt the cloned spawn columns (the same guard the
-	// seeded path documents). Startup is one bounded fold, so eval and commit share
-	// one allocator.
 	state := new_tick_state(base, allocator, allocator)
 	base_version := base
 	interp := new_interp(program, &base_version, &state, empty(), Record_Value{}, allocator)
@@ -265,33 +89,12 @@ run_startup_body :: proc(
 	if _, is_list := result.(List_Value); !is_list {
 		return {}, false
 	}
-	// Engine singletons mint BEFORE setup's [Spawn] batch (§06 §2, §13) — the engine
-	// pass is the sole authoritative singleton minter and a singleton exists before
-	// tick 0, so it runs first; the body's queued spawns mint the ordinary population
-	// on top. The [Spawn] return queues through the same command-list arm the seeded
-	// tuple's [Spawn] half takes (no behavior context: a startup body has no self row).
 	dispatch_emit_component(&interp, &state, nil, Row{}, setup_fn.return_type, result)
 	spawn_engine_singletons(program, state.tables, allocator)
 	apply_spawn_batch(&state)
 	return commit_tick_tables(base, state.tables, allocator), true
 }
 
-// spawn_engine_singletons mints ONE row per `Thing_Decl.singleton == true` thing
-// from its Field_Decl defaults (§06 §2: a singleton is engine-spawned, accessed by
-// type, never iterated). It is the SOLE, authoritative minter of a singleton row —
-// run before the setup batch, since a singleton exists before tick 0 and is never
-// setup-spawned (§13). It walks program.things in declaration order — the same
-// stable order new_world builds the tables in — so the spawn sequence is a pure
-// function of the schema, identical every run (no RNG, no input). Each singleton's
-// row fills every field from its decoded Field_Decl default via decode_default (the
-// SAME composite Body/Settings/Option decode the setup-batch path uses), so a
-// singleton row carries a complete blackboard exactly as a setup spawn does. The
-// row lands at the table's next minted Id (Id 0 in the otherwise-empty singleton
-// table this pass runs against); the commit's sort keeps it ascending.
-//
-// A field with no default is left absent — the loader's §6 gate already proved a
-// singleton's fields all carry defaults, so this never drops a required column for a
-// well-formed artifact.
 spawn_engine_singletons :: proc(
 	program: ^Program,
 	tables: []Tick_Table,
@@ -312,14 +115,6 @@ spawn_engine_singletons :: proc(
 	}
 }
 
-// build_singleton_blackboard decodes a singleton thing's complete blackboard from
-// its Field_Decl defaults — every field filled from its `=ENCODED` default through
-// decode_default (the bare-scalar Int/Fixed/Bool/Vec2 forms AND the composite
-// Body/Settings/Option forms the v5 decode story landed). Unlike a setup spawn,
-// a singleton supplies NO fields (it has no Spawn_Command), so every column comes
-// from the schema default — the singleton's row is the pure schema-default image.
-// A field without a default is omitted (a malformed artifact the §6 gate refuses);
-// `allocator` owns the structural columns (the commit arena).
 build_singleton_blackboard :: proc(
 	program: ^Program,
 	thing: Thing_Decl,
@@ -337,16 +132,6 @@ build_singleton_blackboard :: proc(
 	return fields
 }
 
-// own_committed_column re-clones a freshly-DECODED startup column into a fully-owned
-// tree on `allocator` (deep_clone_field_value, reclaim.odin), so the committed
-// initial version has the SAME uniform ownership a tick-written column has — the
-// precondition the live generational reclaimer rests on (a committed column is
-// always a freeable owned tree, never a borrowed slice into the artifact bytes).
-// The decode procs otherwise leave nested enum tags as sub-slices of the stored
-// token; without this re-clone a despawn or rewrite of a startup row would bad-free
-// those borrowed slices. The clone is value-identical, so committed bytes and the
-// frame digest are unchanged. A non-column value (none expected from a decode)
-// passes through unchanged.
 own_committed_column :: proc(fv: Field_Value, allocator := context.allocator) -> Field_Value {
 	if owned, ok := deep_clone_field_value(fv, allocator); ok {
 		return owned
@@ -354,20 +139,6 @@ own_committed_column :: proc(fv: Field_Value, allocator := context.allocator) ->
 	return fv
 }
 
-// run_startup_seeded runs an RNG-THREADED setup: it evaluates setup's BODY (the
-// `setup(rng: Rng) -> (Rng, [Spawn])` startup function) with the tick-0 seed Rng
-// bound, splits the returned `(Rng, [Spawn])` tuple, applies the [Spawn] half as
-// the initial population, and RETAINS the advanced Rng as tick-0's starting state
-// (§04 §1, §06 setup, §13). This is the seeded-population path snake takes: the
-// first food cell is drawn from the seed, so a fixed seed reproduces the same
-// initial world and the SAME tick-0 Rng — the determinism warranty starts at
-// setup, not at tick 0. The returned Rng is what the first tick threads.
-//
-// A program with no setup BODY (pong — setup is the pre-evaluated [Spawn] batch in
-// program.setup) is handled by the bare run_startup; this seeded path is only taken
-// when the run carries an RNG seed and an interpretable setup body. When the body
-// is missing or yields no tuple, it falls back to applying program.setup with the
-// seed unadvanced, so a malformed/absent setup body never faults the run.
 run_startup_seeded :: proc(
 	program: ^Program,
 	base: World_Version,
@@ -379,18 +150,9 @@ run_startup_seeded :: proc(
 ) {
 	setup_fn := program_startup(program)
 	if setup_fn == nil || len(setup_fn.body) == 0 {
-		// No interpretable setup body — apply the pre-evaluated batch, seed unchanged.
 		return run_startup(program, base, allocator), seed
 	}
 
-	// Evaluate the setup body against the populated-so-far tick tables, threading the
-	// seed Rng. Setup binds only `rng: Rng` (its sole param), draws from it, and
-	// returns `(Rng, [Spawn])`. The tuple split queues the spawns and advances the Rng.
-	// Build the working state through new_tick_state so every field (incl. the
-	// superseded list and the commit_allocator) is initialized — a bare struct
-	// literal would leave commit_allocator nil and value_to_field_value would clone
-	// the seeded spawn columns onto a nil allocator (corruption). Startup is a
-	// single bounded fold, so eval and commit share one allocator (no live split).
 	state := new_tick_state(base, allocator, allocator)
 	state.rng = seed
 	base_version := base
@@ -404,35 +166,18 @@ run_startup_seeded :: proc(
 	}
 	result, result_ok := eval_behavior_body(&interp, setup_fn.body, &env)
 	if !result_ok {
-		// A setup body that does not return is malformed — fall back to the batch.
 		return run_startup(program, base, allocator), seed
 	}
 	tuple, is_tuple := result.(Tuple_Value)
 	if !is_tuple {
-		// A body that returns anything but the `(Rng, [Spawn])` tuple is outside the
-		// seeded contract — a seedless `setup() -> [Spawn]` (yard, pong) whose batch
-		// the compiler already pre-evaluated into program.setup. Fall back to that
-		// batch with the seed unadvanced rather than dropping the spawns and
-		// committing an empty world.
 		return run_startup(program, base, allocator), seed
 	}
-	// setup has no on-Thing self row; its return type (`(Rng, [Spawn])`) names the
-	// halves so the split is type-driven, with no behavior context.
 	fold_tuple_emit(&interp, &state, nil, Row{}, setup_fn.return_type, tuple)
-	// Engine singletons mint BEFORE setup's seeded [Spawn] batch applies (§06 §2,
-	// §13): the engine pass is the sole, authoritative minter of a singleton row and
-	// a singleton exists before tick 0, so it runs first; setup's queued [Spawn]
-	// batch then mints the ordinary seeded population on top. The spawn is a pure
-	// function of the schema defaults, unaffected by the seed.
 	spawn_engine_singletons(program, state.tables, allocator)
 	apply_spawn_batch(&state)
 	return commit_tick_tables(base, state.tables, allocator), state.rng
 }
 
-// program_startup finds the §06 setup function (the one Startup-kind §9 function),
-// or nil — the body run_startup_seeded evaluates to draw the seeded initial
-// population. A program with no startup body (pong) returns nil and the caller
-// falls back to the pre-evaluated program.setup batch.
 program_startup :: proc(program: ^Program) -> ^Function_Decl {
 	for &fn in program.functions {
 		if fn.kind == .Startup {
@@ -442,12 +187,6 @@ program_startup :: proc(program: ^Program) -> ^Function_Decl {
 	return nil
 }
 
-// program_is_seeded reports whether the program's setup draws from a run seed:
-// true only when the §06 setup function binds an `Rng` param (snake's
-// `setup(rng: Rng) -> (Rng, [Spawn])`). A Startup function ALONE does not make a
-// run seeded — a seedless `setup() -> [Spawn]` (yard, pong) is compile-time
-// folded into program.setup and takes the bare run_startup batch — so the live
-// seed pick (§25 §60) applies only to a program that actually consumes a seed.
 program_is_seeded :: proc(program: ^Program) -> bool {
 	setup_fn := program_startup(program)
 	if setup_fn == nil {
@@ -461,18 +200,6 @@ program_is_seeded :: proc(program: ^Program) -> bool {
 	return false
 }
 
-// program_uses_rng reports whether the program CONSUMES randomness ANYWHERE — any
-// behavior step or function that binds an `Rng` param (§04 §1: a draw is `rng: Rng`
-// bound, drawn from, threaded back). It is BROADER than program_is_seeded: seeded keys
-// ONLY on the setup function's Rng param (does the run START from a recorded seed),
-// while uses_rng asks whether the program draws from RNG at all — including a per-tick
-// drawing behavior in a game whose setup is seedless. The distinction is the
-// friction-116a1681 root for the empty-state diagnostic: a SEEDLESS session over a
-// game that USES RNG is an unmet-precondition (no seed recorded → an RNG draw never
-// populated), but a SEEDLESS session over a game that uses NO RNG is a genuine state
-// read — its empty result is not an RNG-seed defect. A consumer (the §28 status
-// surface, the MCP empty-state enricher) reads this to tell the two apart instead of
-// blaming a missing seed for every seedless game.
 program_uses_rng :: proc(program: ^Program) -> bool {
 	for behavior in program.behaviors {
 		for param in behavior.params {
@@ -491,21 +218,8 @@ program_uses_rng :: proc(program: ^Program) -> bool {
 	return false
 }
 
-// RUNTIME_DEFAULT_SEED is the fixed root seed a fresh run/live falls back to when
-// neither an explicit `--seed` override nor an entrypoint config seed is supplied —
-// the lowest tier of the §25 §60 seed-source precedence. It is a FIXED CONSTANT,
-// never a wall-clock draw, so a bare `funpack run` of a uses_rng game is
-// reproducible out of the box (the same first RNG draw on every launch); a project
-// that wants per-launch variation passes `--seed` or bakes a captured seed into the
-// entrypoint config, and that value is recorded like any other determinism input.
-// The exact number is arbitrary — determinism rests only on it being fixed and
-// recorded — but it reads as "SEED" in a hex log for at-a-glance recognition.
 RUNTIME_DEFAULT_SEED :: i64(0x5EED)
 
-// resolve_root_seed picks a fresh run's root seed by the §25 §60 precedence,
-// highest first: an explicit `--seed` override, then the entrypoint config seed
-// (entrypoints.fcfg `seed = N`), then the fixed engine default. Pure over its two
-// inputs so the precedence is unit-tested without a live session.
 resolve_root_seed :: proc(override: Maybe(i64), entrypoint: Entrypoint) -> i64 {
 	if seed, ok := override.?; ok {
 		return seed
@@ -516,21 +230,6 @@ resolve_root_seed :: proc(override: Maybe(i64), entrypoint: Entrypoint) -> i64 {
 	return RUNTIME_DEFAULT_SEED
 }
 
-// run_startup_rooted runs setup from a resolved root seed, returning the committed
-// base version AND the root Rng entering tick 0. It separates two concerns the
-// callers used to conflate under a single "seeded" flag:
-//
-//   - SETUP CONSUMES THE SEED (program_is_seeded — setup binds `rng: Rng` and
-//     returns `(Rng, [Spawn])`, snake): run_startup_seeded evaluates the body and
-//     the Rng it returns (advanced past setup's draws) enters tick 0.
-//   - SETUP IS SEEDLESS but a PER-TICK behavior draws (a `uses_rng` game whose
-//     setup is `setup() -> [Spawn]`, deepseed): run_startup applies the
-//     pre-evaluated batch and the UNADVANCED root Rng (rand_seed(seed)) enters
-//     tick 0 for the per-tick behaviors to thread.
-//
-// The second arm is what closes the unseeded-black-screen path: such a game used to
-// get no root Rng (the run was classified seedless because setup did not bind Rng),
-// so its drawing behaviors never folded. Now it carries a real root Rng.
 run_startup_rooted :: proc(
 	program: ^Program,
 	base: World_Version,
@@ -546,11 +245,6 @@ run_startup_rooted :: proc(
 	return run_startup(program, base, allocator), rand_seed(seed)
 }
 
-// build_spawn_blackboard evaluates one Spawn_Command into a complete row
-// blackboard: every supplied setup field decoded to its column value, then every
-// thing field the command omitted filled from its Field_Decl default. A Fixed
-// numeric setup value reads as Fixed or Int by the field's declared type; a Vec2
-// field becomes a Vec2 column; an enum variant becomes its stored token.
 build_spawn_blackboard :: proc(
 	program: ^Program,
 	command: Spawn_Command,
@@ -565,8 +259,6 @@ build_spawn_blackboard :: proc(
 			allocator,
 		)
 	}
-	// Fill omitted fields from the thing's declared defaults (§06, §13: an omitted
-	// field is not carried in setup; the runtime applies the default).
 	if decl != nil {
 		for fd in decl.fields {
 			if _, present := fields[fd.name]; present {
@@ -582,15 +274,6 @@ build_spawn_blackboard :: proc(
 	return fields
 }
 
-// spawn_field_to_value lowers one decoded Spawn_Field to its blackboard column,
-// reading the field's declared type so a numeric value lands as Int when the
-// field is an Int column and as Fixed when it is a Fixed column (the loader keeps
-// both views of the same raw bits). A Vec2/Variant field carries its decoded shape
-// directly; a composite Record/List field decodes its kept raw §6 token LAZILY
-// through decode_default_value against the field's declared type — the SAME machinery
-// the §6 field-default path uses, so a setup `set body =Body(…)` and a field default
-// `body: Body = Body(…)` lift to the IDENTICAL column shape (the cross-product
-// contract the solver's gather reads). `allocator` owns the decoded structural column.
 spawn_field_to_value :: proc(
 	program: ^Program,
 	decl: ^Thing_Decl,
@@ -606,15 +289,11 @@ spawn_field_to_value :: proc(
 	case .Int:
 		return field.int_val
 	case .Fixed:
-		// A numeric setup value: pick Int vs Fixed by the field's declared type.
 		if field_is_int(decl, name) {
 			return field.int_val
 		}
 		return field.fixed
 	case .Record, .List:
-		// A composite §6 token decoded against the field's declared type from the thing
-		// decl. A decode miss (a malformed token the loader would have refused) leaves
-		// the column unset by returning nil — never a half-built record.
 		if v, ok := decode_default_value(
 			program,
 			thing_field_type(decl, name),
@@ -628,10 +307,6 @@ spawn_field_to_value :: proc(
 	return field.fixed
 }
 
-// thing_field_type returns a thing's named field's declared type, or "" when the
-// decl or field is unknown — the lookup spawn_field_to_value reads to decode a
-// composite setup field against its declared type (a `body` field's `Body`, a `mask`
-// field's `[Layer]`). The twin of data_field_type, over a Thing_Decl.
 thing_field_type :: proc(decl: ^Thing_Decl, name: string) -> string {
 	if decl == nil {
 		return ""
@@ -644,23 +319,6 @@ thing_field_type :: proc(decl: ^Thing_Decl, name: string) -> string {
 	return ""
 }
 
-// decode_default decodes a Field_Decl's `=ENCODED` default into a column value,
-// dispatching on the field's declared TYPE — the inverse of the emitter's
-// field-default token (funpack emit.odin encode_field_default, docs/artifact-
-// format.md §6). The forms, by declared type:
-//
-//   - Int          → `0`            → an i64 column (decode_int)
-//   - Fixed        → raw Q32.32 bits → a Fixed column (decode_fixed)
-//   - Bool         → `true`/`false` → a bool column
-//   - `[T]`        → `[]`           → an empty List_Value column (snake's `body: [Cell]`)
-//   - a data type  → `Type(f=enc,…)` → a Record_Value column (snake's `head: Cell`)
-//   - an enum type → `Enum::Case`   → the enum token, verbatim (snake's `dir`/`state`)
-//
-// Pong's Scoreboard `Int = 0` pair still decodes through the Int arm. ok is false
-// for an undecodable default (a malformed artifact the loader would have refused).
-// `program` resolves a nested record field's declared type so a `Cell(x=10,y=10)`
-// default decodes `x`/`y` as Int columns; `allocator` owns the structural column
-// (the commit arena), independent of the transient default arena.
 decode_default :: proc(
 	program: ^Program,
 	fd: Field_Decl,
@@ -672,17 +330,6 @@ decode_default :: proc(
 	return decode_default_value(program, fd.type, fd.default_encoded, allocator)
 }
 
-// decode_default_value decodes one `=ENCODED` token against a declared type into a
-// blackboard column. It is the recursive core decode_default and the record-field
-// decoder both call: a nested `Cell(x=10,y=10)` field decodes its `x`/`y` through
-// this same proc against the data-decl's field types, so the composite form nests
-// to any depth the emitter produces.
-// `human` is the §28 debug-surface flag: when true, a Fixed token may be a
-// source-literal decimal (`110.0`) decoded float-free via fixed_from_decimal, so a
-// control set/spawn payload accepts the legible form the observe projection
-// renders. It threads UNCHANGED through every nested decode (a `Vec2(x=2.0,y=104.0)`
-// component, a list element) so the leniency reaches any depth. The artifact load path
-// leaves it false (the default), keeping the raw Q32.32 decode byte-identical (spec §2.3).
 decode_default_value :: proc(
 	program: ^Program,
 	type_name: string,
@@ -701,77 +348,29 @@ decode_default_value :: proc(
 	case "Bool":
 		return decode_bool(encoded)
 	}
-	// A `[T]` list value — the §6/§13 `[enc,…]` bracketed run (empty `[]` or a
-	// comma-joined run of space-free element tokens, each decoded against the inner
-	// element type `T`). The empty literal is the §6 default snake reaches; the
-	// non-empty run is the §13 setup form yard reaches first (a `mask: [Layer] =
-	// [Layer::Wall,Layer::Crate]`). The list is detected on EITHER the declared `[T]`
-	// type OR the ENCODED leading `[` (§13: a reader discriminates on the leading byte
-	// of ENCODED) — the latter is load-bearing for yard's Body, an ENGINE type with no
-	// §3 Data_Decl, whose `mask` field type is unknown to data_field_type. Each element
-	// lifts through field_value_to_value so a `[Layer]` column carries Variant_Values —
-	// the shape the solver's mask read (value_to_layer_token) and the universal-Eq
-	// surface expect.
 	if strings.has_prefix(type_name, "[") || strings.has_prefix(encoded, "[") {
 		return decode_list_default(program, type_name, encoded, allocator, human)
 	}
 	if strings.contains(encoded, "(") {
-		// A composite record default `Type(f=enc,…)` — the §6 single-token inline
-		// constructor (snake's `head: Cell = Cell(x=10,y=10)`, yard's `Body(kind=…,…)`).
-		// This is tested BEFORE the enum-token arm because a composite body may itself
-		// carry a nested enum token (yard's `Body(layer=Layer::Wall,…)`): the `::`
-		// belongs to a nested field, not to a top-level `Enum::Case` default, and a
-		// `Type::Case` enum token is always paren-free (§2.6), so `(` is the sound
-		// discriminator for the composite form. A STRUCT-PAYLOAD variant
-		// (`Shape2::Box(size=…)`) never reaches a top-level COLUMN (Field_Value carries
-		// no Variant_Value arm — a struct variant lives only NESTED, as a record field
-		// `Value`); it is decoded by decode_default_to_value off the record-field path.
 		return decode_record_default(program, type_name, encoded, allocator, human)
 	}
 	if strings.contains(encoded, "::") {
-		// An enum-variant default (`Enum::Case`) carries verbatim as a token column.
 		return strings.clone(encoded, allocator), true
 	}
 	if encoded == "true" || encoded == "false" {
-		// A bare boolean token whose declared type is not the literal `Bool` (a nested
-		// field decoded against an unknown data decl — yard's `Body.sensor`, an ENGINE
-		// record with no §3 Data_Decl). §13 discriminates on the ENCODED form, so a bare
-		// `true`/`false` decodes to a Bool column regardless of declared type; without
-		// this, `sensor=true` would fall to the bare-token arm and lift to a bogus
-		// `Variant_Value{case_name="true"}` the solver's bool read rejects (the Pad would
-		// never sense, no Trigger would route).
 		return decode_bool(encoded)
 	}
 	if is_signed_decimal(encoded) {
-		// A numeric default whose declared type is not the literal `Int`/`Fixed` (a
-		// nested field decoded against an unknown data decl): decode as Fixed, the
-		// numeric reading the loader's setup-field path also defaults to.
 		return decode_fixed(encoded, human)
 	}
 	if human {
-		// In human mode a source-literal decimal (`2.0`) reaches here for an unknown-decl
-		// numeric field (is_signed_decimal rejects the dot). Take the arm ONLY when it
-		// parses as a Fixed source literal — a non-numeric dotted token falls through to
-		// the bare-token arm unchanged, so no string-shaped value regresses.
 		if fixed_value, fixed_ok := decode_fixed_source(encoded); fixed_ok {
 			return fixed_value, true
 		}
 	}
-	// A bare token with no `::` and no `(` — keep it as a token column so the field
-	// stays loadable (the gate stage already proved defaults are concrete §6 forms).
 	return strings.clone(encoded, allocator), true
 }
 
-// decode_record_default decodes a composite record default `Type(f=enc,g=enc,…)`
-// into a Record_Value column — the inverse of the emitter's encode_record_default
-// (funpack emit.odin). The body between the outer parens is split at TOP-LEVEL
-// commas (so a nested `Vec2(x=0,y=0)` inside the body is not split mid-record),
-// each `name=enc` pair decoded against that field's declared type from the data
-// decl, so a `Cell(x=10,y=10)` decodes `x`/`y` as Int columns and a value lifts
-// to the SAME Record_Value a runtime `Cell{…}` literal evaluates to. Each field
-// decodes through decode_default_to_value (the Value-returning path), so a nested
-// STRUCT-PAYLOAD variant field — yard's `Body(shape=Shape2::Box(size=…),…)` — lands
-// as a Variant_Value the solver's parse_body_shape reads, not a flat Record_Value.
 decode_record_default :: proc(
 	program: ^Program,
 	type_name: string,
@@ -786,16 +385,9 @@ decode_record_default :: proc(
 	if open < 0 || !strings.has_suffix(encoded, ")") {
 		return nil, false
 	}
-	ctor := encoded[:open] // the constructor type name, e.g. "Cell"
-	body := encoded[open + 1:len(encoded) - 1] // the interior "x=10,y=10"
+	ctor := encoded[:open]
+	body := encoded[open + 1:len(encoded) - 1]
 
-	// Vec2/Vec3 are the built-in §10 vectors — a default collapses to a Vec2/Vec3
-	// COLUMN (its x/y[/z] are Fixed components), the same shape a runtime `Vec2{…}` /
-	// `Vec3{…}` literal evaluates to, not a by-name Record_Value. Neither has a §3
-	// Data_Decl, so its components decode as Fixed. krognid's setup spawns
-	// `pos =Vec3(x=…,y=…,z=…)` (the committed artifact's [setup] batch), so the Vec3
-	// arm is the spawn-column decode that lands `pos` as a first-class Vec3 column —
-	// the SAME collapse path yard's Vec2 pos column took (mirror, third-lane delta).
 	vec2_fields := ctor == "Vec2"
 	vec3_fields := ctor == "Vec3"
 	decl := program_data(program, ctor)
@@ -835,17 +427,6 @@ decode_record_default :: proc(
 	return Record_Value{type_name = strings.clone(ctor, allocator), fields = fields}, true
 }
 
-// decode_default_to_value decodes a `=ENCODED` token into a record-field / list-
-// element Value (NOT a top-level Field_Value column). It is the value-path twin of
-// decode_default_value, adding the one arm a column cannot carry: a STRUCT-PAYLOAD
-// variant `Enum::Case(field=enc,…)` (yard's `Shape2::Box(size=…)`), which lives only
-// NESTED inside a record (Field_Value has no Variant_Value arm — a top-level enum
-// column is a string token). The discriminator is the ctor name (everything before
-// the first `(`): a `::` in it means a struct-payload variant, decoded here; every
-// other form defers to decode_default_value and lifts through field_value_to_value
-// (which maps an enum-token string to a bare Variant_Value). So `Body(…)` records,
-// `[Layer::…]` lists, scalars, and `Vec2(…)` collapses all route through the column
-// path unchanged, and only the struct-variant case takes this proc's own arm.
 decode_default_to_value :: proc(
 	program: ^Program,
 	type_name: string,
@@ -869,17 +450,6 @@ decode_default_to_value :: proc(
 	return field_value_to_value(fv), true
 }
 
-// decode_struct_variant_value decodes a struct-payload variant token
-// `Enum::Case(field=enc,…)` into a Variant_Value whose boxed payload is a
-// Record_Value of the parenthesized fields — the inverse of the emitter's
-// struct-variant token and the SAME shape eval produces for a `Shape2::Box{size}`
-// literal (interp.odin eval_variant), which parse_body_shape reads off the committed
-// `shape` column. The ctor name splits at `::` into the enum type and case; the body
-// decodes field-by-field through decode_default_to_value (each payload field's type is
-// unknown at this layer, so a `size=Vec2(…)` collapses via the record arm and a
-// `radius=<bits>` decodes as Fixed via the numeric arm — the §11 §2 Shape2 payloads
-// yard reaches). The payload Record_Value carries an empty type_name, matching the
-// boxed-payload shape the solver's variant_payload_* readers expect.
 decode_struct_variant_value :: proc(
 	program: ^Program,
 	encoded: string,
@@ -893,14 +463,14 @@ decode_struct_variant_value :: proc(
 	if open < 0 || !strings.has_suffix(encoded, ")") {
 		return nil, false
 	}
-	ctor := encoded[:open] // "Shape2::Box"
+	ctor := encoded[:open]
 	sep := strings.index(ctor, "::")
 	if sep < 0 {
 		return nil, false
 	}
 	enum_type := strings.clone(ctor[:sep], allocator)
 	case_name := strings.clone(ctor[sep + 2:], allocator)
-	body := encoded[open + 1:len(encoded) - 1] // "size=Vec2(x=…,y=…)" / "radius=…"
+	body := encoded[open + 1:len(encoded) - 1]
 
 	payload_fields := make(map[string]Value, allocator)
 	if len(body) > 0 {
@@ -922,16 +492,6 @@ decode_struct_variant_value :: proc(
 	return Variant_Value{enum_type = enum_type, case_name = case_name, payload = boxed}, true
 }
 
-// decode_list_default decodes a `[T]` list value `[enc,enc,…]` into a List_Value
-// column — the inverse of the emitter's `[`-bracketed comma run (§6/§13). The inner
-// element type `T` is the declared `[T]` type with the brackets stripped, so each
-// element decodes by the SAME decode_default_value the record-field path uses (a
-// `[Layer]` decodes each `Layer::X` element as an enum token lifting to a Variant_
-// Value, a `[Cell]` would decode each `Cell(…)` element to a Record_Value). The
-// elements split at TOP-LEVEL commas only (a nested `Cell(x=0,y=0)` element is not
-// split mid-record), and each lifts through field_value_to_value so the list column
-// carries Values — the shape the solver's mask read and the §03 universal-Eq surface
-// expect. An empty `[]` yields a length-0 list, never a nil column.
 decode_list_default :: proc(
 	program: ^Program,
 	type_name: string,
@@ -945,9 +505,8 @@ decode_list_default :: proc(
 	if !strings.has_prefix(encoded, "[") || !strings.has_suffix(encoded, "]") {
 		return nil, false
 	}
-	// The element type is the `[T]` declared type with its brackets stripped.
 	elem_type := strings.trim_suffix(strings.trim_prefix(type_name, "["), "]")
-	body := encoded[1:len(encoded) - 1] // the interior, "Layer::Wall,Layer::Crate"
+	body := encoded[1:len(encoded) - 1]
 	if len(body) == 0 {
 		return List_Value{elements = make([]Value, 0, allocator)}, true
 	}
@@ -963,13 +522,6 @@ decode_list_default :: proc(
 	return List_Value{elements = elements}, true
 }
 
-// split_top_level splits a record-body string at TOP-LEVEL `sep` bytes only —
-// commas inside a nested `Type(…)` constructor OR a `[…]` list are skipped by
-// tracking BOTH paren and bracket depth — so `x=10,y=10` splits into two pairs,
-// `inner=Vec2(x=0,y=0),z=1` into two not three, and yard's
-// `…,mask=[Layer::Wall,Layer::Crate],…` keeps the mask's interior comma joined (the
-// list is one field, not two). The pieces are sub-slices of `s` (no per-piece
-// allocation); the result slice lives in the supplied allocator.
 split_top_level :: proc(s: string, sep: byte, allocator := context.allocator) -> []string {
 	pieces := make([dynamic]string, allocator)
 	depth := 0
@@ -991,9 +543,6 @@ split_top_level :: proc(s: string, sep: byte, allocator := context.allocator) ->
 	return pieces[:]
 }
 
-// program_data finds a §3 data descriptor by name, or nil — the field-type lookup
-// decode_record_default reads to decode a composite default's nested fields by
-// their declared type (Int vs Fixed vs Bool).
 program_data :: proc(program: ^Program, name: string) -> ^Data_Decl {
 	for &decl in program.data {
 		if decl.name == name {
@@ -1003,10 +552,6 @@ program_data :: proc(program: ^Program, name: string) -> ^Data_Decl {
 	return nil
 }
 
-// data_field_type returns a data decl's named field's declared type, or "" when
-// the decl or field is unknown. An unknown field type falls through to the bare-
-// token / numeric decode arms, so a record default stays loadable even without a
-// matching data decl (e.g. the built-in Vec2, which has no §3 Data_Decl).
 data_field_type :: proc(decl: ^Data_Decl, name: string) -> string {
 	if decl == nil {
 		return ""
@@ -1019,9 +564,6 @@ data_field_type :: proc(decl: ^Data_Decl, name: string) -> string {
 	return ""
 }
 
-// field_is_int reports whether a thing's named field is declared Int (vs Fixed),
-// so a numeric setup value lands on the right column type. An unknown field
-// defaults to Fixed (the numeric reading the loader's Spawn_Field carries).
 field_is_int :: proc(decl: ^Thing_Decl, name: string) -> bool {
 	if decl == nil {
 		return false
@@ -1034,43 +576,6 @@ field_is_int :: proc(decl: ^Thing_Decl, name: string) -> bool {
 	return false
 }
 
-// --- The per-tick fold ----------------------------------------------------
-
-// step_tick folds one tick over the flattened pipeline against the prior
-// committed version, returning the next committed version. A behavior reads the
-// tick's WORKING tables (a mid-tick View/Ref sees earlier stages' SAME-TICK
-// writes — evolving columns, §08 / §07 §4 — while the row set stays the one the
-// tick fixed, since spawns/despawns land at the boundary) and the supplied
-// input/time resources; their returns fold into working rows (blackboard), the
-// signal mailbox (forward-routed signals), and the spawn/despawn batch (applied
-// at the boundary). The next version commits with every table sorted ascending by
-// Id.
-//
-// Rng threading (§04 §1): `rng` is the run's PERSISTENT Rng, carried in/out by
-// pointer. When non-nil this fold is RNG-active — the tick seeds its working Rng
-// from `rng^`, every drawing behavior advances it in fold-forward order, and the
-// advanced state is written back into `rng^` at the boundary so the NEXT tick reads
-// it. A nil `rng` (pong, hunt — no RNG) folds exactly as before, threading nothing.
-//
-// PERSIST-DROP INVARIANT (§24): this is the PLAIN driver — a pipeline that emits
-// Save/Restore/ApplySettings accumulates them in state.persist_commands via the
-// shared fold, and this proc DROPS them at commit: no store write, no outcome
-// signal, no restore swap. A §24-emitting program must run through the opt-in
-// step_tick_persist driver (save_io.odin); routing it here makes every persist
-// key a silent no-op. The deliberate plain-path consumer is replay.odin's
-// capture, whose record carries inputs only.
-// The §18 §4 [SetTile]/[BuildLayer] terrain batch is NOT under that invariant:
-// a terrain command is SIM state (committed tile-layer cells), not an IO boundary
-// effect, so EVERY driver applies it at commit (commit_tick_state →
-// fold_tile_layers) — the replay re-fold runs through this plain driver and must
-// re-apply the same terrain writes bit-identically.
-// Index maintenance (§08 §3): `indices` is the run's maintained engine-index
-// state, carried in/out by pointer exactly as the Rng is. When non-nil, the
-// fold runs against the structures as they stood at tick start (an update is
-// never observable mid-stage — the tick reads the prior version's indices),
-// and the declared structures fold forward at the COMMIT boundary, COW-sharing
-// every table the tick never replaced (index.odin fold_index_state). A nil
-// `indices` (a program declaring no query) folds exactly as before.
 step_tick :: proc(
 	program: ^Program,
 	prior: World_Version,
@@ -1083,18 +588,11 @@ step_tick :: proc(
 	honor: ^Probe_Honor = nil,
 	honor_tick: int = 0,
 ) -> World_Version {
-	// The plain (bounded) driver runs eval and commit on ONE allocator — the caller's
-	// wholesale temp-free at the end reclaims everything, so there is no scratch/persist
-	// split here (that split exists only in the live loop's step_tick_persist path).
 	state := new_tick_state(prior, allocator, allocator)
 	if rng != nil {
 		state.rng = rng^
 	}
-	// The §28 observe tap rides the SAME fold every driver runs — set here, read at
-	// the capture sites (behavior step / signal route), never written by the fold.
 	state.observe = observe
-	// The §28 §4 probe-honor tap rides the same fold, fired at the behavior-step
-	// seam with the tick ordinal it stamps firings with (nil off a honored session).
 	state.honor = honor
 	state.honor_tick = honor_tick
 	prior_version := prior
@@ -1103,51 +601,21 @@ step_tick :: proc(
 	run_pipeline_fold(&interp, &state, program)
 
 	apply_spawn_batch(&state)
-	// Read the advanced Rng back into the run's persistent state so the next tick
-	// observes every draw this tick made — threaded forward, never silently dropped.
 	if rng != nil {
 		rng^ = state.rng
 	}
 	next := commit_tick_state(prior, &state, allocator)
-	// Fold the maintained indices forward at the commit boundary — once, after
-	// every write landed, never mid-stage (§08 §3).
 	if indices != nil {
 		indices^ = fold_index_state(indices^, &prior_version, &next, allocator)
 	}
 	return next
 }
 
-// run_pipeline_fold runs the executed pipeline over the working state: every
-// interior stage (control / collision / scoring) folds its behavior's returns into
-// the tick state, the engine-closed `physics:` stage runs the native solver, and
-// startup/render are skipped (startup ran pre-tick-0; render's [Draw] projection is
-// a read-side concern, not a state write). It is the shared fold body step_tick and
-// the §24 persist driver (step_tick_persist) both run, so a persist tick folds the
-// IDENTICAL pipeline a plain tick does — the only difference is the driver's
-// pre-seeded outcome signals and post-fold persist-command processing, never the
-// fold itself.
 run_pipeline_fold :: proc(interp: ^Interp, state: ^Tick_State, program: ^Program) {
 	for step in program.pipeline {
-		// Startup ran pre-tick-0; render's [Draw] projection and audio's [Audio]
-		// keyed-track scene are TERMINAL projections produced post-commit (render.odin
-		// / audio.odin), not interior writes — the executed interior stages are
-		// control/collision/scoring. The level-triggered keyed Audio is the deferred
-		// twin of the one-shot Sound: it is the audio: slot's return, never folded into
-		// tick state here (§22 §2; the is_any_command_list exclusion the funpack side
-		// keys on routes audio: to its own deferred slot).
 		if step.stage == "startup" || step.stage == "render" || step.stage == "audio" {
 			continue
 		}
-		// The §11 §3 `physics:` stage is ENGINE-CLOSED: instead of a user
-		// Behavior_Decl, it runs the native `solve` battery over every body in stable
-		// order (solver.odin). A collision writes BOTH bodies, which a behavior may
-		// never do, so resolution is the engine's — `solve` integrates intent (written
-		// by the control stage before this), detects/resolves contacts, routes Triggers
-		// for sensor overlaps, and consumes each body's impulse. The detector is the
-		// stage kind (`physics`), not a behavior lookup, since no Behavior_Decl is bound
-		// to an engine-closed stage (artifact_load.odin load_pipeline keeps the
-		// behavior name unresolved). Stage position is the ordering: intent before,
-		// reactions after.
 		if is_physics_solve_step(step) {
 			run_solve(interp, state)
 			continue
@@ -1160,12 +628,6 @@ run_pipeline_fold :: proc(interp: ^Interp, state: ^Tick_State, program: ^Program
 	}
 }
 
-// run_behavior_over_instances runs one behavior step once per instance of its
-// on-Thing in stable Id order (§08 §2), folding each instance's return. A
-// singleton or single-instance thing runs once; an empty table runs zero times
-// (no instances, no work). The instances are read from the WORKING table so a
-// later stage sees earlier stages' blackboard writes (forward fold within tick),
-// but population is the count the prior version fixed (no spawn appears mid-tick).
 run_behavior_over_instances :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -1176,26 +638,13 @@ run_behavior_over_instances :: proc(
 	if table == nil {
 		return
 	}
-	// Iterate by index over the working rows in stable Id order. The working rows
-	// stay Id-ordered through the tick (built sorted, updated in place, never
-	// reordered until commit), so index order IS stable Id order.
 	for i in 0 ..< len(table.rows) {
 		self_row := table.rows[i]
 		env := bind_behavior_env(interp, state, step, behavior, self_row)
 		result, ok := eval_behavior_body(interp, behavior.body, &env)
-		// The §28 observe tap captures the step's (in → out) BEFORE the fold lands
-		// the result: self_row.fields still aliases the pre-eval working map (a
-		// blackboard write REPLACES the map, never mutates it), and the bound env
-		// is the behavior's declared reads. A pure copy-out — the fold below is
-		// unchanged whether the tap fired or not.
 		if state.observe != nil {
 			observe_behavior_step(state.observe, step, behavior, self_row, env, result, ok)
 		}
-		// The §28 §4 probe-honor tap rides the SAME seam: it folds every behavior-
-		// targeted @break/@watch/@log/@trace against the bound env (a pure read — the
-		// predicate/expression node forests fold without writing tick state) and
-		// appends firings to the honor buffer. Like observe, the fold below is
-		// unchanged whether the tap fired or not (non-perturbing by construction).
 		if state.honor != nil {
 			honor_behavior_step(state.honor, interp, state.honor_tick, behavior, self_row, &env, result, ok)
 		}
@@ -1206,13 +655,6 @@ run_behavior_over_instances :: proc(
 	}
 }
 
-// bind_behavior_env binds a behavior step's declared params into a fresh scope:
-// `self` is the instance's blackboard, an Input/Time param the resource, a
-// [Signal] param the inbound signal list accumulated so far this tick, a View[T]
-// param the tick's WORKING rows of T as a list (so a later stage's View sees
-// earlier stages' same-tick writes, §08 / §07 §4), and a plain Thing param an
-// other-instance read (unused by pong). The binding is by param TYPE so the step
-// body reads its declared reads (§06 §3).
 bind_behavior_env :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -1227,13 +669,6 @@ bind_behavior_env :: proc(
 	return env
 }
 
-// bind_param resolves one param's value from its declared type. `self` (the
-// on-Thing type) is the instance blackboard as a record; Input/Time are the
-// resources; a `[Signal]` type is the inbound accumulated signal list; a
-// `View[T]` is the tick's WORKING T rows as a list of record values (evolving
-// columns mid-tick, §08 / §07 §4); any other thing-typed param reads as an empty
-// record (no other-instance binding pong needs). The match is on the type string
-// the artifact carries (§06 §3).
 bind_param :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -1247,20 +682,8 @@ bind_param :: proc(
 	case type == "Time":
 		return interp.time
 	case type == "Nav":
-		// The §12 nav resource: a `nav: Nav` param IS the statement "this behavior
-		// consults navigation". The value bound here is only the receiver
-		// nav.path(...) dispatches on (eval_nav_method, nav.odin) — the graph is
-		// read through program_nav at the call, never carried in the value — so a
-		// NavHandle marker record suffices without widening the Value union (the
-		// input_marker mold). The default no-named-layer resolves to the single
-		// baked layer (§12: the default is the one resource, no name).
 		return nav_marker(interp)
 	case type == "Rng":
-		// The threaded per-tick Rng: a drawing behavior binds `rng: Rng` to the
-		// CURRENT fold-forward state, draws from it (pick advances it), and returns
-		// the advanced Rng in its (Rng, [Spawn]) tuple — which fold_behavior_result
-		// writes back into state.rng so the next behavior/tick reads the advance
-		// (§04 §1). The value bound here is state.rng at this point in the fold.
 		return state.rng
 	case is_signal_list_type(type):
 		return inbound_signal_list(interp, state, signal_type_of(type), self_row)
@@ -1269,25 +692,9 @@ bind_param :: proc(
 	case param.name == "self":
 		return row_to_record(interp, self_row)
 	}
-	// A plain thing-typed param with no instance to bind — an empty record (pong's
-	// behaviors bind only self/resources/signals/Views).
 	return row_to_record(interp, self_row)
 }
 
-// fold_behavior_result folds one instance's return into the tick state by the
-// behavior's emit shape: a `[Signal]` emit routes the returned signal list
-// forward into the mailbox (delivered to downstream consumers same-tick); a
-// `[Draw]` emit is the render projection, which this fold does not commit; a
-// Spawn/Despawn command list queues the tick-boundary batch; a bare-thing emit is
-// a blackboard write folded into the instance's working row.
-//
-// A TUPLE emit (snake's replenish `(Rng, [Spawn])`, yard's deliver
-// `([Despawn], [Delivered])`) is split into its components by the DECLARED tuple
-// emit type, not by runtime value arm: deliver's two halves are both `List_Value`
-// at runtime, so a value-arm split cannot tell the `[Despawn]` self-remove from the
-// `[Delivered]` signal route — only the declared component type disambiguates them.
-// Each component dispatches through dispatch_emit_component, the SAME per-shape fold
-// the single-emit path takes.
 fold_behavior_result :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -1304,16 +711,6 @@ fold_behavior_result :: proc(
 	dispatch_emit_component(interp, state, behavior, self_row, emit, result)
 }
 
-// dispatch_emit_component folds ONE emit value (a whole single emit, or one
-// component of a tuple emit) into the tick state by its DECLARED emit type. It is
-// the per-shape fold both the single-emit path and each tuple component route
-// through, so a `[Despawn]`/`[Delivered]`/`[Spawn]` half of a tuple lands in
-// exactly the batch its standalone counterpart would. The Rng arm is value-driven
-// (the declared `Rng` component carries no `[ ]`): a returned Rng writes the
-// advance back into the threaded tick Rng (§04 §1, never silently dropped). A
-// component with no behavior context (the startup setup tuple, behavior == nil)
-// skips the blackboard write — startup emits only `Rng`/`[Spawn]`, never a
-// self-row write.
 dispatch_emit_component :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -1324,59 +721,29 @@ dispatch_emit_component :: proc(
 ) {
 	switch {
 	case emit == "Rng":
-		// The Rng half of a `(Rng, [Spawn])` tuple — write the advance back into the
-		// threaded tick state so the next behavior's `rng: Rng` bind (and the next tick)
-		// reads exactly this.
 		if rng, is_rng := value.(Rng); is_rng {
 			state.rng = rng
 		}
 	case is_signal_list_type(emit):
 		route_signals(state, signal_type_of(emit), value)
 	case emit == "[Draw]":
-		// The render projection is not committed to the world — a Draw list is a
-		// pure read-side projection of committed state, not a state write.
 	case emit == "[Despawn]":
-		// A `[Despawn]` emit despawns the SELF row when the returned list is non-empty
-		// (snake's despawn_eaten, yard's deliver). The command targets self_row — the
-		// no-arg `Despawn()` carries no Ref, so the tick fold (which knows the bound self
-		// row) supplies the target. An empty list is the no-despawn path.
 		if behavior != nil {
 			fold_despawn_emit(state, behavior.on_thing, self_row, value)
 		}
 	case is_persist_command_list_type(emit):
-		// A §24 persist command emit (yard's save_key/restore_key/apply_settings) —
-		// collect it into the tick's persist batch. The IO runs at the tick boundary
-		// (the persist driver), never as a committed-state write, so the determinism
-		// record never sees it (team Lore #9). The outcome signal arrives NEXT tick.
 		queue_persist_commands(interp, state, value)
 	case is_settile_command_list_type(emit):
-		// A §18 §4 [SetTile] emit (the dungeon's dig) — collect it into the
-		// tick's terrain-command batch. fold_tile_layers applies the batch at the
-		// commit boundary in this collection order, so next tick's render,
-		// collision, and queries all read the rewritten terrain from the same
-		// committed data.
 		queue_settile_commands(interp, state, value)
 	case is_buildlayer_command_list_type(emit):
-		// A §18 §4 [BuildLayer] emit (a seeded generation behavior's whole-layer
-		// build — a procedural floor) — collect it into the SAME terrain-command
-		// batch SetTile rides, tagged so the boundary fold replaces the layer's
-		// contents atomically. Render, collision, and the nav graph re-derive
-		// from the new layer next tick, identically to a SetTile delta.
 		queue_buildlayer_commands(interp, state, value)
 	case is_command_list_type(emit):
 		queue_commands(interp, state, value)
 	case behavior != nil:
-		// A blackboard write: fold the returned record into the working row.
 		write_blackboard(interp, state, behavior.on_thing, self_row.id, value)
 	}
 }
 
-// fold_despawn_emit queues a tick-boundary despawn of the SELF row when a
-// `[Despawn]` behavior return is non-empty — the self-despawn the §02 `Despawn()`
-// command marks. A despawn references the on-Thing type plus the self row's Id, so
-// apply_spawn_batch removes exactly the bound instance at the boundary (population
-// stays fixed for the rest of the tick, §08). An empty `[Despawn]` list is the
-// no-op path (the food was not eaten this tick).
 fold_despawn_emit :: proc(state: ^Tick_State, on_thing: string, self_row: Row, result: Value) {
 	list, is_list := result.(List_Value)
 	if !is_list || len(list.elements) == 0 {
@@ -1385,18 +752,6 @@ fold_despawn_emit :: proc(state: ^Tick_State, on_thing: string, self_row: Row, r
 	queue_despawn(state, Ref{thing = on_thing, id = self_row.id})
 }
 
-// fold_tuple_emit splits a tuple behavior/setup return into its components by the
-// DECLARED tuple emit type, zipping each component type with its returned element
-// and folding each through dispatch_emit_component. The type-driven split is the
-// load-bearing distinction: yard's deliver returns `([Despawn], [Delivered])` —
-// two `List_Value` halves a runtime value-arm split cannot tell apart, so the
-// `[Despawn]` would never self-remove and the `[Delivered]` would never route. The
-// declared type names each half (`[Despawn]` → despawn batch, `[Delivered]` →
-// signal mailbox, `Rng` → threaded Rng, `[Spawn]` → spawn batch), so each lands in
-// exactly its standalone counterpart's path. When the declared type does not split
-// into a tuple (an empty `emit_type`, the startup fallback), it falls back to the
-// value-arm split so snake's `(Rng, [Spawn])` setup tuple still threads its Rng and
-// queues its spawns.
 fold_tuple_emit :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -1412,9 +767,6 @@ fold_tuple_emit :: proc(
 		}
 		return
 	}
-	// No declared component types (or an arity mismatch) — fall back to the value-arm
-	// split. snake's setup `(Rng, [Spawn])` is unambiguous by value (Rng vs the [Spawn]
-	// list), so the Rng threads and the spawns queue without a declared type.
 	for elem in tuple.elements {
 		switch v in elem {
 		case Rng:
@@ -1422,22 +774,10 @@ fold_tuple_emit :: proc(
 		case List_Value:
 			queue_commands(interp, state, elem)
 		case i64, Fixed, bool, Vec2, Ref, Record_Value, Variant_Value, Lambda_Value, String_Value, Tuple_Value, Vec3, Transform_Value, Pose_Value, Handle_Value, Nav_Value, Map_Value:
-		// A half that is neither the Rng nor a command list is outside the value-arm
-		// `(Rng, [Spawn])` shape — ignored, no state write.
 		}
 	}
 }
 
-// split_tuple_type splits a `(A,B,…)` tuple type string into its top-level
-// component type names (`([Despawn],[Delivered])` → `["[Despawn]", "[Delivered]"]`,
-// `(Rng,[Spawn])` → `["Rng", "[Spawn]"]`). A non-tuple type (no leading `(`) yields
-// an empty slice, the signal the caller reads to fall back to the value-arm split.
-// The split is at TOP-LEVEL commas only — a nested `[T]` or `(…)` component keeps
-// its interior commas joined (reusing split_top_level's paren/bracket depth track),
-// so a `(View[A,B],…)` component is one piece, not two. Each piece is space-trimmed,
-// so a `(Rng, [Spawn])` written with a comma-space (the spaced form a spec/test
-// declaration may carry) yields `"[Spawn]"`, not `" [Spawn]"` — the trimmed token
-// the dispatch predicates match against.
 split_tuple_type :: proc(type: string, allocator := context.allocator) -> []string {
 	if len(type) < 2 || type[0] != '(' || type[len(type) - 1] != ')' {
 		return nil
@@ -1449,10 +789,6 @@ split_tuple_type :: proc(type: string, allocator := context.allocator) -> []stri
 	return pieces
 }
 
-// --- Signal routing (§12 forward synchronous) -----------------------------
-
-// new_signal_mailbox builds an empty per-tick mailbox with both routing surfaces
-// allocated (the broadcast by_type map and the per-instance by_instance map).
 new_signal_mailbox :: proc(allocator := context.allocator) -> Signal_Mailbox {
 	return Signal_Mailbox {
 		by_type = make(map[string][]Value, allocator),
@@ -1460,26 +796,15 @@ new_signal_mailbox :: proc(allocator := context.allocator) -> Signal_Mailbox {
 	}
 }
 
-// is_per_instance_signal reports whether a signal type is an engine PER-INSTANCE
-// signal (§11 §4 Contact/Trigger) — routed by the engine to the specific
-// participating instance and read by a consumer as ONLY its own. The two engine
-// physics signals are the closed set; every user-declared signal is broadcast.
 is_per_instance_signal :: proc(signal_type: string) -> bool {
 	return signal_type == SOLVER_TRIGGER_SIGNAL || signal_type == "Contact"
 }
 
-// route_signals appends a behavior's emitted signal list to the mailbox's
-// per-type BROADCAST accumulator — the forward delivery that makes a signal a
-// later consumer reads hold every earlier producer's emissions this tick. The
-// result is a List_Value of signal records; a non-list emit (the empty no-goal
-// path returns an empty list) appends nothing.
 route_signals :: proc(state: ^Tick_State, signal_type: string, result: Value) {
 	list, is_list := result.(List_Value)
 	if !is_list || len(list.elements) == 0 {
 		return
 	}
-	// §28 observe tap: capture the routed broadcast AFTER the empty-list filter, so
-	// the capture records exactly the signals consumers will read this tick.
 	if state.observe != nil {
 		observe_broadcast_signals(state.observe, signal_type, list.elements)
 	}
@@ -1490,15 +815,7 @@ route_signals :: proc(state: ^Tick_State, signal_type: string, result: Value) {
 	state.mailbox.by_type[signal_type] = combined
 }
 
-// route_instance_signal appends one engine PER-INSTANCE signal (§11 §4) to the
-// mailbox keyed by type then by the TARGET row's Id, so the consumer instance
-// reads ONLY its own. The solver calls this once per overlapping body of a sensor
-// pair, with that body's Id — the engine doing the routing the spec says it does
-// ("routed by the engine to each participating instance"), so the consumer needs
-// no self.id filter.
 route_instance_signal :: proc(state: ^Tick_State, signal_type: string, target: Id, signal: Value) {
-	// §28 observe tap: capture the per-instance route with its target Id, so a
-	// signals query sees the engine-routed Contact/Trigger deliveries too.
 	if state.observe != nil {
 		observe_instance_signal(state.observe, signal_type, target, signal)
 	}
@@ -1514,13 +831,6 @@ route_instance_signal :: proc(state: ^Tick_State, signal_type: string, target: I
 	state.mailbox.by_instance[signal_type] = per_type
 }
 
-// inbound_signal_list reads the signals accumulated for a type so far this tick
-// as a List_Value param — what a consumer's `[Signal]` param sees. A BROADCAST
-// signal reads the whole by_type accumulator (every producer's emissions, §12); a
-// PER-INSTANCE engine signal reads only the entries routed to THIS instance's Id
-// (§11 §4 — its own contacts/triggers, already in its frame). Because the fold is
-// forward in pipeline order, either read holds exactly the earlier producers'
-// emissions.
 inbound_signal_list :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -1540,13 +850,6 @@ inbound_signal_list :: proc(
 	return List_Value{elements = elements}
 }
 
-// --- Blackboard write -----------------------------------------------------
-
-// write_blackboard folds a behavior's returned record into the instance's
-// working row IN PLACE, so a later stage in the same tick reads the write. The
-// returned record's fields lower to blackboard columns; a field that does not
-// lower (a structural value) is skipped, leaving the prior column. The row is
-// found by Id in the working table (stable Id order is preserved).
 write_blackboard :: proc(
 	interp: ^Interp,
 	state: ^Tick_State,
@@ -1562,43 +865,22 @@ write_blackboard :: proc(
 	if table == nil {
 		return
 	}
-	// Working rows stay Id-ascending mid-tick (a behavior never reorders them), so the
-	// row is a logarithmic lookup, not a linear scan — and the order find_row_by_id
-	// relies on is the order the working table preserves.
 	i, found := find_row_by_id(table.rows[:], id)
 	if !found {
 		return
 	}
-	// The fresh map AND its cloned columns target the PERSISTENT commit allocator
-	// (not the eval scratch), so the committed row survives the per-tick scratch
-	// reset in the live loop — the determinism floor is unchanged (same bytes,
-	// different heap). In bounded paths commit_allocator == the eval allocator.
 	next := make(map[string]Field_Value, state.commit_allocator)
 	for k, v in record.fields {
 		if fv, ok := value_to_field_value(v, state.commit_allocator); ok {
 			next[k] = fv
 		}
 	}
-	// The map this write REPLACES is no longer reachable from the next committed
-	// version (the row now carries `next`): on the FIRST write of a row this tick
-	// it is the PRIOR version's aliased map, on a later write it is this tick's
-	// earlier intermediate map — both freeable once the tick commits. Collect it
-	// for the live generational reclaimer (reclaim.odin); the bounded drivers
-	// ignore the list. A nil map (a row with no prior blackboard) is skipped.
 	if table.rows[i].fields != nil {
 		append(&state.superseded, table.rows[i].fields)
 	}
 	table.rows[i].fields = next
 }
 
-// --- Spawn / Despawn batch (§07 §4 tick boundary) -------------------------
-
-// queue_commands queues a behavior's Spawn/Despawn command list for the
-// tick-boundary batch. A Spawn command carries a thing record to populate; a
-// Despawn carries the Ref to remove. Pong's executed stages emit no commands
-// (its only command-shaped emit is render's [Draw]), so this path is exercised by
-// the spawn-batch test, not by the pong fold — it is the generic boundary the
-// determinism criterion requires.
 queue_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
 	list, is_list := result.(List_Value)
 	if !is_list {
@@ -1609,10 +891,6 @@ queue_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
 		if !is_record {
 			continue
 		}
-		// A spawned row's blackboard becomes committed state next tick, so its map +
-		// cloned columns target the PERSISTENT commit allocator, surviving the live
-		// loop's per-tick scratch reset (commit_allocator == eval allocator in bounded
-		// paths, so the committed bytes are identical there).
 		fields := make(map[string]Field_Value, state.commit_allocator)
 		for k, v in record.fields {
 			if fv, ok := value_to_field_value(v, state.commit_allocator); ok {
@@ -1623,12 +901,6 @@ queue_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
 	}
 }
 
-// queue_persist_commands collects a behavior's §24 command list (the Save/Restore/
-// ApplySettings records save_key/restore_key/apply_settings emit) into the tick's
-// persist batch. Unlike queue_commands, it keeps the records AS Record_Values — the
-// persist driver reads their `slot`/`settings` columns directly to run IO and never
-// lowers them into a blackboard row (a persist command is an output effect, not a
-// thing to commit). A non-record element (none expected) is skipped.
 queue_persist_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
 	list, is_list := result.(List_Value)
 	if !is_list {
@@ -1641,34 +913,14 @@ queue_persist_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Valu
 	}
 }
 
-// queue_settile_commands collects a behavior's §18 §4 [SetTile] command list
-// into the tick's ONE ordered terrain-command stream, tagged .Set_Tile and
-// keeping the records AS Record_Values (the persist-batch mold): fold_tile_layers
-// reads their map/cell/tile columns at the commit boundary and never lowers them
-// into a blackboard row (a SetTile is a terrain write, not a thing to commit). A
-// non-record element is a malformed command — recorded as the NAMED
-// Malformed_Command refusal, never silently skipped (the §18 §4 application's
-// fail-closed floor).
 queue_settile_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
 	queue_terrain_commands(state, result, .Set_Tile)
 }
 
-// queue_buildlayer_commands collects a behavior's §18 §4 [BuildLayer] command
-// list into the SAME ordered terrain-command stream, tagged .Build_Layer — the
-// whole-layer twin rides the identical batch SetTile does so a tick mixing both
-// folds them in one collection order (last write wins across kinds). Each record
-// is kept verbatim for the boundary fold; a non-record element is the NAMED
-// Malformed_Command refusal.
 queue_buildlayer_commands :: proc(interp: ^Interp, state: ^Tick_State, result: Value) {
 	queue_terrain_commands(state, result, .Build_Layer)
 }
 
-// queue_terrain_commands appends one behavior's emitted command list onto the
-// tick's ordered terrain-command stream under `kind` — the shared body of the
-// SetTile/BuildLayer collectors. The kind tags each record so fold_tile_layers
-// dispatches per command at the boundary while preserving the single collection
-// order across both. A non-record element fails closed as the kind's
-// Malformed_Command refusal, never a silent skip.
 queue_terrain_commands :: proc(state: ^Tick_State, result: Value, kind: Terrain_Command_Kind) {
 	list, is_list := result.(List_Value)
 	if !is_list {
@@ -1683,38 +935,20 @@ queue_terrain_commands :: proc(state: ^Tick_State, result: Value, kind: Terrain_
 	}
 }
 
-// queue_spawn queues a directly-built spawn (a thing name + blackboard) for the
-// tick-boundary batch — the seam a test or a future command-emitting behavior
-// drives without routing through a [Draw]-shaped emit. The row is NOT visible
-// until the batch applies, so a thing spawned this tick is first queryable next
-// tick.
 queue_spawn :: proc(state: ^Tick_State, thing: string, fields: map[string]Field_Value) {
 	append(&state.spawns, Pending_Spawn{thing = thing, fields = fields})
 }
 
-// queue_despawn queues a Ref for removal at the tick boundary. The referenced row
-// stays live for the rest of the current tick (population fixed within a tick)
-// and is gone next tick.
 queue_despawn :: proc(state: ^Tick_State, ref: Ref) {
 	append(&state.despawns, ref)
 }
 
-// apply_spawn_batch applies the queued Spawn/Despawn commands as ONE
-// deterministic batch at the tick boundary: every despawn removes its row, then
-// every spawn mints a fresh Id and appends its row. Applying spawns AFTER
-// despawns and in queue order makes the batch a pure function of the tick's
-// command sequence. The new rows land at the end of the working table; the
-// commit's sort restores ascending-Id order.
 apply_spawn_batch :: proc(state: ^Tick_State) {
 	for ref in state.despawns {
 		table := find_tick_table(state.tables, ref.thing)
 		if table == nil {
 			continue
 		}
-		// A despawned row's blackboard map leaves the next committed version entirely,
-		// so collect it for the live reclaimer the same way a rewritten map is
-		// (reclaim.odin frees it O(delta) once the tick commits). remove_row_by_id
-		// returns the dropped map (nil if the Id was already gone).
 		if dropped, removed := remove_row_by_id(table, ref.id); removed && dropped != nil {
 			append(&state.superseded, dropped)
 		}
@@ -1730,12 +964,6 @@ apply_spawn_batch :: proc(state: ^Tick_State) {
 	}
 }
 
-// remove_row_by_id drops the row carrying `id` from a working table, preserving
-// the relative order of the rest (so the table stays Id-ordered without a
-// re-sort). It returns the dropped row's blackboard map (and removed=true) so the
-// caller can hand it to the live reclaimer — the despawned map leaves the next
-// committed version, so it is freeable once the tick commits. A despawn of an
-// absent Id is a no-op (already gone): removed=false, dropped=nil.
 remove_row_by_id :: proc(table: ^Tick_Table, id: Id) -> (dropped: map[string]Field_Value, removed: bool) {
 	for i in 0 ..< len(table.rows) {
 		if table.rows[i].id == id {
@@ -1747,20 +975,6 @@ remove_row_by_id :: proc(table: ^Tick_Table, id: Id) -> (dropped: map[string]Fie
 	return nil, false
 }
 
-// --- Working-table lifecycle ----------------------------------------------
-
-// new_tick_state builds the mutable working state for one tick from the prior
-// committed version: a working table per declared thing seeded with the prior
-// rows (copied so an in-place write never mutates the prior version), an empty
-// signal mailbox, and empty spawn/despawn batches. `allocator` is the transient
-// eval/working scratch; `commit_allocator` is the persistent allocator the
-// committed blackboard maps/columns target — they are the SAME in every bounded
-// path (only the live loop splits them so it can free the eval scratch each tick
-// while the committed version persists). new_tick_tables seeds the working tables
-// on the eval scratch; the prior rows it copies still carry their committed maps
-// (on the persistent allocator), and commit_tick_tables re-packs the row structs
-// onto the persistent allocator at the boundary — so a committed map is always on
-// `commit_allocator`, never on the freed scratch.
 new_tick_state :: proc(
 	prior: World_Version,
 	allocator := context.allocator,
@@ -1780,11 +994,6 @@ new_tick_state :: proc(
 	}
 }
 
-// new_tick_tables seeds one working table per committed table, copying the prior
-// rows into a fresh dynamic array so the tick mutates a COPY and the prior
-// version stays immutable (COW at the version level, in-place at the working
-// level). The next_id counter carries forward so spawn Ids never collide with a
-// prior tick's.
 new_tick_tables :: proc(prior: World_Version, allocator := context.allocator) -> []Tick_Table {
 	tables := make([]Tick_Table, len(prior.tables), allocator)
 	for table, i in prior.tables {
@@ -1802,18 +1011,6 @@ new_tick_tables :: proc(prior: World_Version, allocator := context.allocator) ->
 	return tables
 }
 
-// commit_tick_state seals the tick into the next COW version: sort every working
-// table's rows ascending by Id (the find_row_by_id / View iteration invariant),
-// pack them into committed Version_Tables, and commit_version onto the prior. A
-// table the tick did not touch still commits its (sorted-identical) rows — the
-// version-level structural sharing is commit_version's job once the changed-set
-// is supplied; here every table is supplied so the next version is fully
-// materialized, which the determinism comparison reads as a stable snapshot.
-// The tick's collected terrain batch ([SetTile] + [BuildLayer]) applies HERE —
-// the §18 §4 deterministic tick-end application: fold_tile_layers folds the
-// commands (in one collection order) into the next version's COW tile-layer
-// state, so every commit path (plain, persist, control-class branch) carries
-// terrain identically; a command-less tick shares the prior slice by reference.
 commit_tick_state :: proc(
 	prior: World_Version,
 	state: ^Tick_State,
@@ -1824,12 +1021,6 @@ commit_tick_state :: proc(
 	return version
 }
 
-// commit_tick_tables commits a set of working tables onto a prior version: each
-// working table's rows are sorted ascending by Id, packed into a Version_Table,
-// and supplied to commit_version as the changed set. Sorting here is what
-// guarantees a committed table is ascending by Id even when the spawn batch
-// appended rows out of order — the binary-search invariant holds for every
-// committed version.
 commit_tick_tables :: proc(
 	prior: World_Version,
 	tables: []Tick_Table,
@@ -1850,18 +1041,10 @@ commit_tick_tables :: proc(
 		}
 	}
 	version := commit_version(prior, changed, allocator)
-	// The `changed` map is a TRANSIENT keyed view consumed by commit_version (it copies
-	// the retained Version_Tables — including their committed `rows` slices — into the
-	// result's tables slice); the map backing itself is dead now. Free it so the live
-	// loop does not leak one keyed map per tick on the persistent commit allocator (the
-	// retained rows/tables slices are reclaimed via free_version_structure when the
-	// version retires; this map is not part of the version).
 	delete(changed)
 	return version
 }
 
-// find_tick_table returns the working table holding rows of the named thing, or
-// nil — the descriptor-driven lookup the fold opens every per-instance run with.
 find_tick_table :: proc(tables: []Tick_Table, thing: string) -> ^Tick_Table {
 	for &table in tables {
 		if table.thing == thing {
@@ -1871,15 +1054,6 @@ find_tick_table :: proc(tables: []Tick_Table, thing: string) -> ^Tick_Table {
 	return nil
 }
 
-// --- Param-binding helpers -------------------------------------------------
-
-// row_to_record lifts a committed/working Row's blackboard into the interpreter's
-// Record_Value so a `self` param (or a View element) reads its fields. Each
-// stored column lifts to its Value arm (an enum token becomes a Variant_Value).
-// `thing` tags the record with its table's type name where the caller knows it
-// (a View binding) — the §08 §3 spatial combinators resolve their measured
-// field by that tag; record equality never reads it (values_equal compares
-// fields alone), so a tagged and an untagged row stay value-equal.
 row_to_record :: proc(interp: ^Interp, row: Row, thing := "") -> Value {
 	fields := make(map[string]Value, interp.allocator)
 	for k, v in row.fields {
@@ -1888,15 +1062,6 @@ row_to_record :: proc(interp: ^Interp, row: Row, thing := "") -> Value {
 	return Record_Value{type_name = thing, fields = fields}
 }
 
-// view_rows_as_list reads a thing's rows as a List_Value of record values — the
-// binding for a `View[T]` param (paddle_bounce's `paddles: View[Paddle]`). The
-// rows come from the tick's WORKING table when a fold is in flight, so a later
-// stage's View observes every earlier stage's SAME-TICK blackboard writes
-// (evolving columns, §08 / §07 §4); off a fold it falls back to the committed
-// version. Either way the rows are in stable Id order (the working set is
-// materialized Id-ordered at tick start and only columns evolve mid-tick;
-// spawns/despawns land at the boundary, so population stays fixed), so first/fold
-// over the view are deterministic.
 view_rows_as_list :: proc(interp: ^Interp, thing: string) -> Value {
 	view := interp_view_of_type(interp, thing)
 	elements := make([]Value, view_count(view), interp.allocator)
@@ -1907,13 +1072,6 @@ view_rows_as_list :: proc(interp: ^Interp, thing: string) -> Value {
 	return List_Value{elements = elements}
 }
 
-// interp_view_of_type opens a View over a thing's rows for a mid-tick read: the
-// tick's WORKING rows when a fold is in flight (so a later stage sees earlier
-// stages' SAME-TICK writes — evolving columns, §08 / §07 §4), else the committed
-// version (off a fold). The working rows stay ascending by Id through the tick
-// (built sorted at tick start, updated in place, never reordered until commit),
-// so the View iterates and resolves in the same stable Id order a committed View
-// does — population fixity preserved because spawns/despawns land at the boundary.
 interp_view_of_type :: proc(interp: ^Interp, thing: string) -> View {
 	if interp.tick != nil {
 		if table := find_tick_table(interp.tick.tables, thing); table != nil {
@@ -1923,11 +1081,6 @@ interp_view_of_type :: proc(interp: ^Interp, thing: string) -> View {
 	return view_of_type(interp.version, thing)
 }
 
-// interp_resolve_ref resolves a Ref against the tick's WORKING rows when a fold
-// is in flight — a mid-tick `recv.ref_field.column` join reads the referent's
-// SAME-TICK writes (evolving columns, §08 / §07 §4) over its tick-start value;
-// off a fold it resolves against the committed version. The working rows are
-// Id-ascending, so the binary search find_row_by_id rests on holds.
 interp_resolve_ref :: proc(interp: ^Interp, ref: Ref) -> (row: Row, some: bool) {
 	if interp.tick != nil {
 		if table := find_tick_table(interp.tick.tables, ref.thing); table != nil {
@@ -1941,110 +1094,53 @@ interp_resolve_ref :: proc(interp: ^Interp, ref: Ref) -> (row: Row, some: bool) 
 	return resolve_ref(interp.version, ref)
 }
 
-// input_marker returns the value a behavior's `input` param binds to. The Input
-// snapshot is read through the resource queries (eval_input_value reads
-// interp.input directly), so the param itself only needs to BE the receiver a
-// `input.value(...)` call dispatches on; an empty record marks it as that
-// receiver without widening the Value union with an Input arm.
 input_marker :: proc(interp: ^Interp) -> Value {
 	fields := make(map[string]Value, interp.allocator)
 	return Record_Value{type_name = "Input", fields = fields}
 }
 
-// is_physics_solve_step reports whether a pipeline step is the §11 §3 engine-
-// closed `physics:` stage running the native `solve` battery — a real pipeline
-// position with NO user Behavior_Decl. The detector is the (stage, behavior) pair
-// the artifact carries: the `physics:` stage's single member is the `solve`
-// battery (yard's `physics: solve`), so the step's stage is "physics" and its
-// behavior name is "solve". This is the one stage the fold dispatches to the
-// native solver instead of running a user behavior body.
 is_physics_solve_step :: proc(step: Pipeline_Step) -> bool {
 	return step.stage == "physics" && step.behavior == "solve"
 }
 
-// --- Type-string predicates (§06 §3 param/emit type forms) ----------------
-
-// is_signal_list_type reports whether a param/emit type is a `[Signal]` list of a
-// declared signal — the shape a producer emits and a consumer reads. The three
-// engine command/render lists `[Draw]`, `[Spawn]`, and `[Despawn]` are NOT signal
-// lists, so they are excluded here and routed by their own predicates (a `[Draw]`
-// projection, a `[Spawn]` mint, a `[Despawn]` self-remove) — otherwise a
-// `[Despawn]` emit would mis-route into the signal mailbox instead of the despawn
-// batch.
 is_signal_list_type :: proc(type: string) -> bool {
 	if !is_bracket_list(type) {
 		return false
 	}
 	if is_persist_command_list_type(type) {
-		// `[Save]`/`[Restore]`/`[ApplySettings]` are §24 OUTPUT-EFFECT command lists, not
-		// signals — they route to the persist batch, not the mailbox. Excluded here so a
-		// persist emit is never mis-delivered as a forward signal (the same disjointness
-		// Draw/Spawn/Despawn below get).
 		return false
 	}
 	if is_settile_command_list_type(type) || is_buildlayer_command_list_type(type) {
-		// `[SetTile]` / `[BuildLayer]` are the §18 §4 terrain-write command lists —
-		// they route to the terrain-command batch, never the mailbox (the same
-		// disjointness as above).
 		return false
 	}
 	inner := signal_type_of(type)
 	return inner != "Draw" && inner != "Spawn" && inner != "Despawn"
 }
 
-// is_command_list_type reports whether an emit type is a `[Spawn]` command list —
-// the tick-boundary mint batch. (`[Draw]` is the render projection and `[Despawn]`
-// the self-remove batch, each handled by its own arm in fold_behavior_result.)
 is_command_list_type :: proc(type: string) -> bool {
 	return type == "[Spawn]"
 }
 
-// is_persist_command_list_type reports whether an emit type is one of the §24
-// engine.save command lists `[Save]` / `[Restore]` / `[ApplySettings]`. These are
-// NOT sim state and NOT the spawn batch: they are OUTPUT EFFECTS the persist driver
-// runs against the store (save_io.odin), each returning its outcome signal one tick
-// LATER. A persist command emit collects into the tick's persist_commands batch
-// rather than the spawn batch or the signal mailbox, so the IO boundary stays off
-// the determinism record (it never touches a committed table; team Lore #9).
 is_persist_command_list_type :: proc(type: string) -> bool {
 	return type == "[Save]" || type == "[Restore]" || type == "[ApplySettings]"
 }
 
-// is_settile_command_list_type reports whether an emit type is the §18 §4
-// `[SetTile]` terrain-command list — the destructible-terrain emit a dig-shaped
-// behavior returns. Like the persist lists it is an engine-command batch, NOT a
-// signal and NOT the spawn batch: it collects into the tick's shared terrain-
-// command stream and fold_tile_layers applies it to the committed tile-layer
-// state at the boundary (a [Spawn]-class deterministic tick-end application,
-// §18 §4).
 is_settile_command_list_type :: proc(type: string) -> bool {
 	return type == "[SetTile]"
 }
 
-// is_buildlayer_command_list_type reports whether an emit type is the §18 §4
-// `[BuildLayer]` terrain-command list — SetTile's whole-layer twin a seeded
-// generation behavior returns. Like `[SetTile]` it is an engine-command batch,
-// NOT a signal and NOT the spawn batch: it collects into the tick's shared
-// terrain-command stream and fold_tile_layers replaces the named layer's
-// contents at the boundary (a [Spawn]-class deterministic tick-end application,
-// §18 §4).
 is_buildlayer_command_list_type :: proc(type: string) -> bool {
 	return type == "[BuildLayer]"
 }
 
-// is_view_type reports whether a param type is a `View[T]` read — the stable-Id
-// iterable of another thing's instances a behavior reads.
 is_view_type :: proc(type: string) -> bool {
 	return len(type) > 6 && type[:5] == "View[" && type[len(type) - 1] == ']'
 }
 
-// is_bracket_list reports whether a type is the `[X]` list form.
 is_bracket_list :: proc(type: string) -> bool {
 	return len(type) >= 3 && type[0] == '[' && type[len(type) - 1] == ']'
 }
 
-// signal_type_of strips the `[ ]` from a `[Signal]` list type, yielding the inner
-// signal/element type name.
 signal_type_of :: proc(type: string) -> string {
 	if is_bracket_list(type) {
 		return type[1:len(type) - 1]
@@ -2052,8 +1148,6 @@ signal_type_of :: proc(type: string) -> string {
 	return type
 }
 
-// view_thing_of strips the `View[ ]` wrapper from a `View[T]` type, yielding the
-// inner thing-type name a View ranges over.
 view_thing_of :: proc(type: string) -> string {
 	if is_view_type(type) {
 		return type[5:len(type) - 1]
@@ -2061,9 +1155,6 @@ view_thing_of :: proc(type: string) -> string {
 	return type
 }
 
-// primary_emit returns a behavior's first emit type — the return shape its step
-// body produces (§06 §3: a behavior step returns exactly its declared emit). A
-// behavior with no declared emit returns "" (a no-write step).
 primary_emit :: proc(behavior: ^Behavior_Decl) -> string {
 	if len(behavior.emits) == 0 {
 		return ""
@@ -2071,8 +1162,6 @@ primary_emit :: proc(behavior: ^Behavior_Decl) -> string {
 	return behavior.emits[0]
 }
 
-// program_thing finds a §8 thing descriptor by name, or nil — the field-type and
-// default lookups the spawn blackboard build reads.
 program_thing :: proc(program: ^Program, name: string) -> ^Thing_Decl {
 	for &thing in program.things {
 		if thing.name == name {
@@ -2082,8 +1171,6 @@ program_thing :: proc(program: ^Program, name: string) -> ^Thing_Decl {
 	return nil
 }
 
-// program_behavior finds a §10 behavior descriptor by name, or nil — the
-// pipeline step → behavior body lookup the fold opens each step with.
 program_behavior :: proc(program: ^Program, name: string) -> ^Behavior_Decl {
 	for &behavior in program.behaviors {
 		if behavior.name == name {
@@ -2093,14 +1180,6 @@ program_behavior :: proc(program: ^Program, name: string) -> ^Behavior_Decl {
 	return nil
 }
 
-// program_pipeline_step finds a §11 pipeline position by its behavior name, or nil.
-// The pipeline is the SUPERSET namespace: it enumerates every behavior name the §11
-// total order schedules — including a startup-stage step (`setup`, the §13 spawn batch
-// that carries NO §10 Behavior_Decl) and an engine-closed stage (`physics`/`solve`,
-// likewise body-less). program_behavior scans only the user [behaviors] table, so it
-// misses those; this lets a name-resolution stay total over the SAME vocabulary
-// inspect_pipeline reports, so the two introspection surfaces never disagree on whether
-// a name exists.
 program_pipeline_step :: proc(program: ^Program, behavior_name: string) -> ^Pipeline_Step {
 	for &step in program.pipeline {
 		if step.behavior == behavior_name {

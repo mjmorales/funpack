@@ -1,304 +1,50 @@
-// The deterministic per-tick frame digest (spec §20, §28, §10.5): the
-// comparison surface a determinism assertion compares two runs against. For each
-// COMMITTED tick this layer serializes the committed fixed-point world state
-// and/or the §20 draw-list into a CANONICAL, machine-invariant byte stream and
-// folds it to a content hash — a per-tick digest plus a session digest over the
-// whole run. It is an OBSERVE-class projection (§28, screenshot{include_drawlist}
-// style): it reads a committed version and never perturbs the fold, so digesting
-// a session cannot change its outcome.
-//
-// CANONICAL ENCODING (the byte-stability this rests on): every number is its raw
-// fixed-width LITTLE-ENDIAN bits — a Fixed or an Int as its 8-byte Q32.32 / i64
-// bits, never a float or a decimal point — so the bytes are identical on every
-// machine (§10: no float anywhere in the determinism path). Things serialize in
-// stable Id ORDER (the version already keeps each table's rows ascending by Id,
-// §08 §2); a row's blackboard is a `map[string]Field_Value` whose Odin iteration
-// order is unspecified, so this layer SORTS the field names before writing — the
-// same sorted-key discipline the replay recorder applies to its action keys. Draw
-// commands serialize in the flattened render order the §20 draw-list already
-// carries (the render stage emits them in flattened-pipeline + stable-Id order).
-// No map-iteration order and no pointer value ever reaches the bytes.
-//
-// INDEPENDENT OF THE REPLAY PATH: this digests whatever drove the tick loop — a
-// live run or a re-fold of a recorded session — because it reads only the
-// committed version (and optionally the projected draw-list), not the input
-// source. Two runs that commit bit-identical versions therefore produce
-// bit-identical digests regardless of how each was driven. Odin-first: the
-// content hash is core:hash/xxhash (the same hasher the replay header pins) and
-// the little-endian field packing is core:encoding/endian — no custom hasher,
-// no custom byte order.
 package funpack_runtime
 
 import "core:encoding/endian"
 import "core:hash/xxhash"
 import "core:slice"
 
-// FRAME_DIGEST_SCHEMA_VERSION stamps the canonical frame encoding. Any change to
-// a tag byte, a field's encoding, or the serialization order changes the bytes
-// and so bumps this — a digest is only comparable to one produced at the same
-// version (the closed-enum / exact-match discipline §04). The session digest
-// seeds from this stamp so two runs at different encodings never collide.
-// v2 adds the Bool / Record / List column tags the snake blackboard introduces
-// (`grow: Bool`, `head: Cell`, `body: [Cell]`) — a composite column is part of the
-// committed state the digest covers, so a new column arm is a digest-encoding
-// change and bumps this stamp.
-// v3 adds the Camera draw-command tag yard's `view` introduces (Cmd_Tag.Camera):
-// the digest folds the §20 draw-list, so a new Draw_Cmd union arm is a digest
-// encoding change and bumps this stamp deliberately (§04 closed-enum). pong / snake
-// / hunt emit no Draw::Camera, so their CONTENT byte streams (per-tick AND session)
-// are byte-unchanged — the new tag never appears in them, and the session fold is
-// seeded from the fixed FRAME_SESSION_SEED rather than this version (see
-// fold_session), so the committed pong/snake/hunt golden digests do NOT move under
-// the v3 bump even though the stamp advances. The version is the comparability
-// stamp; the goldens are unmoved because their bytes are identical.
-// v4 folds variant PAYLOADS and String columns: a payload-carrying variant (a
-// body's Shape2::Box{size}, a status's Option::Some("saved")) digests its boxed
-// payload under Variant_Payload instead of its bare token, and a String column
-// digests under the String tag instead of vanishing tag-less — closing the
-// blindness where two worlds differing only in a payload or a String digested
-// identically. Unit variants keep the token-only Variant encoding, so pong /
-// snake / hunt streams (no payload variants, no Strings) are byte-unchanged;
-// yard's golden digests move (its Body shapes carry payloads every tick) and
-// regenerate under the FUNPACK_REGEN_GOLDEN gate. The session fold stays seeded
-// from FRAME_SESSION_SEED (frozen, see the seed-decoupling rationale at
-// fold_session).
-// v5 extends the §20 Draw_Color closed palette from five named members to nine
-// (+ Yellow/Cyan/Magenta/Gray, render.odin) — a closed-enum extension, so the
-// comparability stamp bumps deliberately (§04). The new members are APPENDED, so
-// the original five keep their ordinals (White=0..Blue=4); write_draw_cmd folds the
-// color as that raw ordinal, so a golden whose draw-list paints only the original
-// five emits byte-identical color bytes and its CONTENT digests (per-tick AND
-// session, the latter seeded from the frozen FRAME_SESSION_SEED, not this version)
-// are UNMOVED under the v5 bump. pong/snake/hunt paint only White; yard paints only
-// White (camera-only secondary commands carry no color) — none emits a new member,
-// so every committed golden digest is byte-unchanged. Only a draw-list that paints
-// one of the four new members produces a different (correct) byte, and no current
-// golden does.
-// v6 adds the four §20 §1 3D draw-command tags krognid's [Draw3] render bodies
-// introduce (Cmd_Tag.Draw3_Camera/Draw3_Light/Draw3_Plane/Draw3_Rigged): the digest
-// folds the §20 draw-list, so a new Draw_Cmd union arm is a digest-encoding change
-// and bumps this stamp deliberately (§04 closed-enum). The new ordinals are APPENDED
-// after the 2D ordinals (Rect=0/Text=1/Camera=2 keep theirs; the 3D arms take 3..6),
-// so an existing 2D draw-list emits the SAME tag bytes it always did and the new tags
-// never appear in it. pong/snake/hunt emit Rect/Text only; yard adds the 2D Camera —
-// NONE emits a Draw3 command, so their CONTENT byte streams (per-tick AND session,
-// the session seeded from the frozen FRAME_SESSION_SEED, not this version) are
-// byte-unchanged, and the committed pong/snake/hunt/yard golden digests do NOT move
-// under the v6 bump even though the comparability stamp advances. Only a draw-list
-// carrying a 3D command (krognid) produces the new (correct) bytes; the §16 §7 rig
-// fold (the handle op-logs, the per-bone pose transforms, the Vec3 positions) is
-// raw fixed-point throughout — no float (§10).
-// v6 ALSO adds the Field_Tag.Vec3 COLUMN tag (ordinal 10, APPENDED after String=9):
-// krognid's `pos: Vec3` is the first committed Vec3 blackboard COLUMN (move_krognid
-// mutates it each tick), distinct from the v6 Cmd_Tag DRAW arms above (a draw-list
-// command). A committed Vec3 column is part of the world state the digest folds, so
-// the new column arm is part of the v6 encoding. It is byte-stable for every existing
-// golden: pong/snake/hunt/yard carry no Vec3 field, so the tag never appears in their
-// streams and their CONTENT digests (per-tick AND session, the latter seeded from the
-// frozen FRAME_SESSION_SEED) are unmoved. Only krognid's stream carries the Vec3
-// column bytes.
-// v7 adds the §18 §3 BATCHED tile-layer tag (Cmd_Tag.Tilemap): render_version
-// engine-emits one Draw_Tilemap per decoded [tilemaps] layer (never per-tile
-// commands), and the digest folds the LAYER'S FULL CONTENT — name, cell size,
-// dimensions, the grid→world anchor, the palette's (name, solid) pairs, and
-// every row-major cell index — so the rendered terrain is inside the
-// comparison surface bit-exactly (a single flipped cell changes the digest —
-// the §18 §4 SetTile command moves exactly this surface, no further digest
-// change: the application rewrites committed cells the fold already covers,
-// so the v7 encoding carries dynamic tiles as-is). The ordinal is APPENDED
-// (Tilemap=7 after Draw3_Rigged=6), and every committed golden artifact
-// carries `[tilemaps 0]` — no golden draw-list emits the new tag, so all
-// committed pong/snake/hunt/yard/krognid CONTENT digests (per-tick AND
-// session, the session seeded from the frozen FRAME_SESSION_SEED, not this
-// version) are byte-unchanged under the v7 bump. Only a tile-layer-carrying
-// artifact produces the new (correct) bytes.
-// v8 adds the §20 §1 / §18 §1 atlas-sprite tag (Cmd_Tag.Sprite): the dungeon's
-// draw_hero/draw_slime/draw_chest behaviors emit a per-entity Draw::Sprite (distinct
-// from the engine-emitted batched Draw_Tilemap — §18 §3 forbids per-tile sprite rows
-// for terrain, but a moving entity IS a behavior-emitted sprite), and the digest folds
-// the LAYER'S COMPLETE STATE — the atlas handle NAME, the cell key, the at/size Vec2s,
-// the tint ordinal, the flip token, and the layer Int — so the drawn entity is inside
-// the comparison surface bit-exactly (a moved `at`, a re-tinted sprite, or a different
-// `cell` changes the digest). The atlas is carried as a NAME only; the present pass
-// resolves the §19 atlas asset to a texture later (the assets epic), never the
-// determinism path. The ordinal is APPENDED (Sprite=8 after Tilemap=7), and NO shipped
-// golden emits a Draw::Sprite — pong/snake/hunt emit Rect/Text, yard adds the 2D
-// Camera, krognid the 3D commands, the dungeon's terrain the batched Tilemap — so all
-// committed pong/snake/hunt/yard/krognid CONTENT digests (per-tick AND session, the
-// session seeded from the frozen FRAME_SESSION_SEED, not this version) are
-// byte-unchanged under the v8 bump even though the comparability stamp advances. Only a
-// sprite-carrying draw-list produces the new (correct) bytes.
-// v9 folds the §19 RESOLVED TEXTURE references into BOTH the Sprite and the Tilemap
-// arms (the §19 textured-render comparison surface).
-//   - SPRITE arm: the post-emit resolve_sprite_textures pass binds each Draw_Sprite's
-//     (atlas, cell) NAME pair through asset_region against the baked [assets] section
-//     to its content-addressed image hash + pixel rect, and write_draw_cmd folds that
-//     Sprite_Texture — the `resolved` flag, the image hash, and the four pixel-rect
-//     fields — AFTER the existing sprite fields. The Sprite tag ordinal is UNCHANGED
-//     (Sprite=8); only the bytes the arm emits grow.
-//   - TILEMAP arm: the v17 [tilemaps] carries the per-tile atlas-cell coordinate
-//     (folded after each palette tile's solid byte) and the layer ATLAS name (folded
-//     after the palette), and the post-emit resolve_tilemap_textures pass binds each
-//     palette tile's coordinate through tile_cell_rect to its image hash + pixel rect,
-//     folded as the parallel palette_textures run AFTER the cells. The Tilemap tag
-//     ordinal is UNCHANGED (Tilemap=7); only the bytes the arm emits grow.
-// This puts the texture resolution INSIDE the comparison surface: two folds of the
-// same committed sprite/layer resolve to the SAME atlas pixels bit-identically, and a
-// sprite/tile resolving to a different cell (a chest flipping closed→open, a tile
-// rebound to a different atlas cell) moves the digest. An unresolved sprite/tile (no
-// atlas under the name, or a zero-region atlas) folds resolved=false + an empty hash +
-// a zero rect — a stable, deterministic miss, never a guess. The stamp bumps as the
-// comparability marker (§04).
-//
-// COMMITTED-GOLDEN INVARIANCE under v9: the four 2D/3D goldens (pong/snake/hunt/yard)
-// and krognid emit Rect/Text/Camera/Draw3 — NO Draw_Sprite and NO Draw_Tilemap — so
-// every committed pong/snake/hunt/yard/krognid CONTENT digest (per-tick AND session,
-// the session seeded from the frozen FRAME_SESSION_SEED, not this version) is
-// byte-unchanged under the v9 bump. The DUNGEON is the only corpus emitting a
-// Draw_Tilemap (and, with the v17 cross-boundary links landed, RESOLVED Draw_Sprites),
-// and it carries NO committed .digest/.replay golden (its acceptance is the
-// self-consistent live-vs-refold over the embedded artifact), so the Tilemap-arm and
-// resolved-sprite bytes growing moves no committed golden. Only a sprite/tilemap-bearing
-// draw-list produces the new (correct) bytes.
-// v10 extends the §20 §1 color taxonomy from a bare nine-member enum to the
-// discriminated Draw_Color (named palette OR the spec's Color::Rgb{r,g,b}
-// exact-value escape, render.odin) — the surface-parity restore. A
-// Color::Rgb now has a first-class draw-list slot (before, it refused the
-// lowering), so an arbitrary 0..1 Fixed-channel color reaches the comparison
-// surface. The fold (write_color) is APPEND-STABLE for every named color: a
-// named member still folds as its single raw ordinal byte (White=0..Gray=8), the
-// exact byte the v5..v9 `u8(c.color)` fold emitted, so a golden whose draw-list
-// paints only named members is byte-UNCHANGED. An Rgb color folds under a RESERVED
-// sentinel byte (RGB_COLOR_TAG = 255, never a named ordinal — the named palette is
-// closed at 9 members) followed by the three raw Q32.32 channel bits, so it can
-// never alias a named color and a Color::Rgb is inside the digest bit-exactly
-// (two folds of the same Rgb are identical, a one-channel-bit divergence moves the
-// digest). No float — the channels are kernel Fixed (§10). The comparability stamp
-// bumps deliberately (§04 closed-enum: a taxonomy change). COMMITTED-GOLDEN
-// INVARIANCE under v10: pong/snake/hunt paint named White, yard's 2D Camera carries
-// no color, krognid paints named Gray/White — NONE emits a Color::Rgb, so every
-// committed pong/snake/hunt/yard/krognid CONTENT digest (per-tick AND session, the
-// session seeded from the frozen FRAME_SESSION_SEED, not this version) is
-// byte-unchanged under the v10 bump. Only a draw-list carrying a Color::Rgb produces
-// the new (correct) sentinel-tagged bytes, and no current golden does.
-// v11 adds the Field_Tag.Map COLUMN arm — a stored engine.map Map[K, V] field (a
-// dungeon's `tiles: Map[Cell, Tile]`) is part of the committed world state the digest
-// folds, so a new column arm is a digest-encoding change and bumps this stamp (the v2
-// Bool/Record/List precedent). The Map is folded as the entry count then each
-// (key, value) pair in INSERTION order (write_map_column) — order is the determinism
-// contract, so two maps with the same entries built in a different order fold to
-// different bytes. The tag is APPENDED (Map=11 after Vec3=10), so every existing tag
-// keeps its byte. COMMITTED-GOLDEN INVARIANCE under v11: no committed golden
-// (pong/snake/hunt/yard/krognid/dungeon) carries a Map field, so the tag never appears
-// in their streams and every committed CONTENT digest (per-tick AND session, the
-// session seeded from the frozen FRAME_SESSION_SEED, not this version) is byte-unchanged
-// under the v11 bump. Only a Map-bearing committed state produces the new (correct) bytes.
 FRAME_DIGEST_SCHEMA_VERSION :: 11
 
-// RGB_COLOR_TAG is the reserved leading byte that disambiguates a §20 §1
-// Color::Rgb fold from a named palette member in the canonical color stream
-// (write_color). It is 255 — outside the closed named-palette ordinal range
-// (White=0..Gray=8, and the set is closed at nine members), so a named color (one
-// ordinal byte) and an Rgb color ([255, r, g, b]) can never alias. A new named
-// member would have to reach 255 to collide, which the closed-enum discipline (a
-// 256th palette member is implausible and would itself be a schema bump) forbids.
 RGB_COLOR_TAG :: u8(255)
 
-// Field_Tag is the closed set of leading tag bytes that disambiguate a
-// Field_Value arm in the canonical stream, so two distinct columns never encode
-// to the same bytes (an Int 0 and a Fixed 0 differ by their tag). A new arm is a
-// schema bump (§04) of whichever stamp's stream emits it. The ordinals are fixed
-// — reordering would change the bytes.
 Field_Tag :: enum u8 {
-	Int     = 0, // an i64 Int column
-	Fixed   = 1, // a Fixed (Q32.32 bits) column
-	Variant = 2, // an enum variant token (a length-prefixed string)
-	Vec2    = 3, // a two-Fixed vector column
-	Ref     = 4, // a weak typed handle (target thing name + raw Id)
-	Bool    = 5, // a Bool column (one tag byte + one 0/1 byte)
-	Record  = 6, // a composite record column (type name + sorted-name fields)
-	List    = 7, // a `[T]` list column (element count + each element in order)
-	// Variant_Payload is a payload-carrying variant — token + the boxed payload
-	// value — so a Restore swaps back the exact committed shape (a wall's
-	// Shape2::Box{size}) and two worlds differing only in a payload digest
-	// differently. A unit variant stays on the token-only Variant tag, keeping
-	// payload-free streams byte-identical across the digest v4 / snapshot v3
-	// encoding bumps.
+	Int     = 0,
+	Fixed   = 1,
+	Variant = 2,
+	Vec2    = 3,
+	Ref     = 4,
+	Bool    = 5,
+	Record  = 6,
+	List    = 7,
 	Variant_Payload = 8,
-	// String is a String column's text (§03 primitive) — length-prefixed bytes,
-	// digest v4 / snapshot v3.
 	String = 9,
-	// Vec3 is a three-Fixed vector column (krognid's `pos: Vec3`) — three raw
-	// Q32.32 lanes, the 3D twin of the Vec2 tag. APPENDED at ordinal 10 so every
-	// existing tag keeps its byte (Int=0..String=9), so a stream with no Vec3 column
-	// (pong/snake/hunt/yard — none has a Vec3 field) is byte-unchanged. It rides the
-	// existing digest v6 / snapshot v3 encodings: v6 already appended the Cmd_Tag 3D
-	// DRAW arms for krognid's draw-list, and the Vec3 COLUMN arm is the committed-state
-	// twin krognid's `pos` field first reaches — both land under the v6 stamp, and no
-	// other golden carries the tag, so no committed golden moves (the append-ordinal
-	// discipline, §04).
 	Vec3 = 10,
-	// Map is an engine.map Map[K, V] COLUMN — a stored associative field (a dungeon's
-	// `tiles: Map[Cell, Tile]`). Folded as the entry count then each (key, value) pair
-	// in INSERTION order (write_map_column), both nested via the same Field_Tag stream,
-	// so a Map column and a Map nested in a list/record digest identically. APPENDED at
-	// ordinal 11 so every existing tag keeps its byte; no committed golden carries a
-	// Map field, so the tag never appears in their streams and their digests are
-	// byte-unchanged under the digest v11 / snapshot v7 bump (the append-ordinal
-	// discipline, §04). Insertion order is the determinism contract — two maps built in
-	// a different order fold to different bytes.
 	Map = 11,
 }
 
-// Cmd_Tag is the closed set of leading tag bytes for a §20 draw command, so a
-// Rect, a Text, a Camera, the four 3D commands, the batched Tilemap, and the entity
-// Sprite never alias in the stream. Fixed ordinals — a draw-command kind added to the
-// §20 union is a schema bump here too (§04). The ordinals are append-only: each new
-// tag takes the next free ordinal so an existing byte stream is unchanged
-// (pong/snake/hunt/yard emit none of the 3D/Tilemap/Sprite commands, so their digests
-// are unmoved under the v6/v7/v8 appends).
 Cmd_Tag :: enum u8 {
-	Rect         = 0, // a Draw_Rect: at, size, color
-	Text         = 1, // a Draw_Text: at, length-prefixed text, color
-	Camera       = 2, // a Draw_Camera: at, zoom (Fixed), rotation (Fixed)
-	Draw3_Camera = 3, // a Draw3_Camera: eye (Vec3), at (Vec3), fov (Fixed)
-	Draw3_Light  = 4, // a Draw3_Light: dir (Vec3), color ordinal
-	Draw3_Plane  = 5, // a Draw3_Plane: at (Vec3), size (Vec2), color ordinal
-	Draw3_Rigged = 6, // a Draw3_Rigged: skeleton/parts handles, pose, at (Vec3)
-	Tilemap      = 7, // a Draw_Tilemap: the full §18 §3 batched layer (name, geometry, anchor, palette + per-tile cell coords, atlas, cells) + the v9 resolved palette textures (resolved flag, image hash, pixel rect per palette entry)
-	Sprite       = 8, // a Draw_Sprite: atlas name, cell key, at/size (Vec2), tint ordinal, flip token, layer (Int), + the v9 resolved Sprite_Texture (resolved flag, image hash, pixel rect)
+	Rect         = 0,
+	Text         = 1,
+	Camera       = 2,
+	Draw3_Camera = 3,
+	Draw3_Light  = 4,
+	Draw3_Plane  = 5,
+	Draw3_Rigged = 6,
+	Tilemap      = 7,
+	Sprite       = 8,
 }
 
-// Frame_Digest is one committed tick's digest: the tick ordinal it was taken at
-// and the xxh64 content hash over that tick's canonical byte stream. Two runs
-// that commit bit-identical state/draw-lists at the same tick produce the same
-// digest; a single differing Fixed bit changes it. The ordinal travels with the
-// hash so a per-tick comparison names which tick diverged.
 Frame_Digest :: struct {
-	tick:   int, // the committed tick ordinal this digest covers
-	digest: u64, // xxh64 over the tick's canonical byte stream
+	tick:   int,
+	digest: u64,
 }
 
-// Frame_Capture is the headless entrypoint's result over a driven session: the
-// per-tick digests in tick order plus the single session digest folded over them.
-// The acceptance harness compares two captures — equal per-tick digests prove
-// every committed tick matched; an equal session digest is the one-value summary
-// of the whole run. The slice lives in the supplied allocator.
 Frame_Capture :: struct {
-	per_tick: []Frame_Digest, // one digest per captured committed tick, in tick order
-	session:  u64, // xxh64 fold over the per-tick digests — the whole-run summary
+	per_tick: []Frame_Digest,
+	session:  u64,
 }
 
-// --- The canonical byte stream (the byte-stability load-bearing encoding) ---
-
-// frame_bytes serializes one committed tick into its CANONICAL byte stream: the
-// world state (every table in declaration order, rows ascending by Id, fields in
-// SORTED name order) followed by the §20 draw-list (commands in flattened render
-// order). The caller passes whichever surfaces it wants in the digest — passing
-// `nil` for the draw-list digests world state alone, passing a draw-list folds it
-// in. The bytes are raw little-endian fixed-point throughout: no float, no
-// decimal point, no map-iteration order, no pointer value. The returned slice
-// lives in the supplied allocator.
 frame_bytes :: proc(
 	version: World_Version,
 	draw: Maybe(Draw_List),
@@ -312,49 +58,18 @@ frame_bytes :: proc(
 	return buf[:]
 }
 
-// frame_digest hashes one committed tick's canonical byte stream into its per-tick
-// digest. It builds the SAME canonical bytes frame_bytes defines (world state then
-// the optional §20 draw-list) and hashes them with xxh64 (core:hash/xxhash, the
-// Odin-first hasher the replay header already pins), so the digest is a pure
-// content hash — byte-identical bytes hash identically on every machine. The bytes
-// are built and freed in the supplied allocator; only the digest escapes.
 frame_digest :: proc(
 	version: World_Version,
 	draw: Maybe(Draw_List),
 	allocator := context.allocator,
 ) -> Frame_Digest {
-	// Hash the SAME bytes frame_bytes defines — one source for the canonical tick
-	// stream, so the production digest and the test-asserted byte oracle can never
-	// drift apart.
 	buf := frame_bytes(version, draw, allocator)
 	defer delete(buf, allocator)
 	return Frame_Digest{tick = version.tick, digest = u64(xxhash.XXH64(buf))}
 }
 
-// FRAME_SESSION_SEED is the FIXED seed the session fold opens with. It is
-// deliberately a STABLE constant, NOT FRAME_DIGEST_SCHEMA_VERSION: the
-// cross-encoding distinction lives entirely in the per-tick stream (every
-// Field_Tag / Cmd_Tag byte is folded into each per-tick digest), so two runs at
-// different frame encodings already produce different per-tick digests and hence a
-// different session fold — the session seed need not re-encode the version to keep
-// that guarantee. Decoupling the seed from the version is what lets a closed-enum
-// bump that adds a tag NO existing golden emits (the Camera arm: pong/snake/hunt
-// emit no Draw::Camera) leave those content-identical goldens' session digests
-// unmoved, while the schema version still bumps as the comparability stamp (§04).
-// The value is pinned at 2 — the FRAME_DIGEST_SCHEMA_VERSION the committed
-// pong/snake/hunt golden digests were folded under — so decoupling the seed leaves
-// those goldens bit-identical to their committed fixtures (the "must not move"
-// invariant the camera bump must hold).
 FRAME_SESSION_SEED :: 2
 
-// fold_session folds an ordered per-tick digest sequence into the single session
-// digest. It seeds a running hash from FRAME_SESSION_SEED then chains each per-tick
-// digest in tick order — the session digest is therefore order-sensitive: the same
-// digests in a different order produce a different session hash, exactly as a run
-// whose ticks committed in a different order is a different run. The encoding
-// distinction is carried by the per-tick digests themselves (their tag bytes), so
-// the seed stays a fixed constant. xxh64 over the packed (tick, digest) pairs keeps
-// the fold on the one Odin-first hasher.
 fold_session :: proc(per_tick: []Frame_Digest, allocator := context.allocator) -> u64 {
 	buf := make([dynamic]u8, allocator)
 	defer delete(buf)
@@ -366,14 +81,6 @@ fold_session :: proc(per_tick: []Frame_Digest, allocator := context.allocator) -
 	return u64(xxhash.XXH64(buf[:]))
 }
 
-// --- World-state serialization (declaration order / Id order / sorted fields) ---
-
-// write_world_state writes every committed table in the version's declaration
-// order, each table's rows in their stable ascending-Id order (the version keeps
-// rows sorted by Id, §08 §2). A table leads with its thing name and row count so
-// two versions with a different table population never alias; the per-row writer
-// handles the field ordering. The tick ordinal leads the whole world block so a
-// digest of tick N never equals a digest of tick M with the same state.
 @(private = "file")
 write_world_state :: proc(buf: ^[dynamic]u8, version: World_Version) {
 	put_u64_le(buf, u64(version.tick))
@@ -387,14 +94,6 @@ write_world_state :: proc(buf: ^[dynamic]u8, version: World_Version) {
 	}
 }
 
-// write_row writes one thing instance: its raw stable Id, then its blackboard
-// columns in SORTED field-name order. Odin leaves map iteration order
-// unspecified, so a row writer that walked `row.fields` directly would emit
-// different bytes on different runs of the same state; sorting the field names
-// here is what makes the encoding depend on the row's CONTENT, not on how the
-// blackboard map happened to be built (the same discipline the replay recorder
-// applies to its action keys). The field count leads so a row that gained a
-// column never aliases one that did not.
 @(private = "file")
 write_row :: proc(buf: ^[dynamic]u8, row: Row) {
 	put_u64_le(buf, u64(row.id.raw))
@@ -407,11 +106,6 @@ write_row :: proc(buf: ^[dynamic]u8, row: Row) {
 	}
 }
 
-// sorted_field_names returns a row blackboard's field names in ascending byte
-// order — a DEFINED total order over the column names. Odin specifies no map
-// iteration order, so this sort is the step that makes the per-row encoding
-// machine-invariant. The dynamic array is allocated on the context allocator and
-// freed by the caller; field names are short and few, so the sort is cheap.
 @(private = "file")
 sorted_field_names :: proc(fields: map[string]Field_Value) -> [dynamic]string {
 	names := make([dynamic]string, 0, len(fields))
@@ -422,16 +116,6 @@ sorted_field_names :: proc(fields: map[string]Field_Value) -> [dynamic]string {
 	return names
 }
 
-// write_field_value writes one blackboard column tagged by its arm so two arms
-// never alias (an Int 0 and a Fixed 0 differ only by the leading tag). Every
-// numeric arm is raw fixed-width little-endian bits — a Fixed/Int as its 8-byte
-// i64 bits, a Vec2 as two such — never a float or a decimal point (§10). A Ref
-// serializes as its target thing name plus the raw target Id (a flat id-graph,
-// never a pointer value, §08 §1). A Bool is one 0/1 byte; a Record digests its
-// type name then its fields in SORTED name order (the same map-invariance the row
-// blackboard uses); a List digests its element count then each element in list
-// order (order IS canonical for a list). The Field_Value union has no other arm,
-// so the switch is total.
 @(private = "file")
 write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	switch v in value {
@@ -471,12 +155,6 @@ write_field_value :: proc(buf: ^[dynamic]u8, value: Field_Value) {
 	}
 }
 
-// write_variant_column digests one variant: a unit variant as the token-only
-// Variant tag (the encoding every payload-free stream has always carried), a
-// payload-carrying variant as Variant_Payload + token + the boxed payload —
-// so a payload difference changes the digest instead of hiding behind an
-// identical token. Shared by the top-level column arm and the nested fold so
-// the two encodings never diverge.
 @(private = "file")
 write_variant_column :: proc(buf: ^[dynamic]u8, v: Variant_Value) {
 	if v.payload == nil {
@@ -489,11 +167,6 @@ write_variant_column :: proc(buf: ^[dynamic]u8, v: Variant_Value) {
 	write_column_value(buf, v.payload^)
 }
 
-// write_record_column digests a composite record column (snake's `head: Cell`):
-// the Record tag, the type name, the field count, then each field's name and
-// value in SORTED name order — the same sorted-key discipline write_world_state
-// applies to a row blackboard, so a Record column is machine-invariant regardless
-// of Odin's unspecified map iteration order.
 @(private = "file")
 write_record_column :: proc(buf: ^[dynamic]u8, rec: Record_Value) {
 	append(buf, u8(Field_Tag.Record))
@@ -507,10 +180,6 @@ write_record_column :: proc(buf: ^[dynamic]u8, rec: Record_Value) {
 	}
 }
 
-// write_list_column digests a `[T]` list column (snake's `body: [Cell]`): the
-// List tag, the element count, then each element in LIST order — order is the
-// list's canonical sequence (the deterministic fold order it was built in), so it
-// is written verbatim, never sorted.
 @(private = "file")
 write_list_column :: proc(buf: ^[dynamic]u8, list: List_Value) {
 	append(buf, u8(Field_Tag.List))
@@ -520,13 +189,6 @@ write_list_column :: proc(buf: ^[dynamic]u8, list: List_Value) {
 	}
 }
 
-// write_map_column digests an engine.map Map[K, V] column (a dungeon's `tiles:
-// Map[Cell, Tile]`): the Map tag, the entry count, then each (key, value) pair in
-// INSERTION order — order is the map's canonical sequence (the determinism contract),
-// written verbatim, never sorted (unlike a record's sorted-name fields). Each
-// key/value digests through write_column_value, so a Map column and a Map nested in a
-// list digest identically. Two maps with the same entries built in a different order
-// fold to different bytes — the observable order equality and iteration also honor.
 @(private = "file")
 write_map_column :: proc(buf: ^[dynamic]u8, m: Map_Value) {
 	append(buf, u8(Field_Tag.Map))
@@ -537,15 +199,6 @@ write_map_column :: proc(buf: ^[dynamic]u8, m: Map_Value) {
 	}
 }
 
-// write_column_value digests one Value nested inside a structural column (a Cell
-// in `body: [Cell]`, an x/y in a Cell). It tags by the SAME Field_Tag set the
-// top-level columns use, so a Cell column and a Cell nested in a list digest
-// identically. A nested variant digests through write_variant_column — token-only
-// when unit, token + payload when payload-carrying — and a nested String digests
-// its text, exactly as the top-level arms do, so the two encodings never diverge.
-// A non-column transient (lambda / tuple / Rng) cannot appear in a committed
-// structural column; it is written tag-less as a defensive no-op rather than
-// aborting the digest.
 @(private = "file")
 write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	switch x in v {
@@ -578,22 +231,11 @@ write_column_value :: proc(buf: ^[dynamic]u8, v: Value) {
 	case List_Value:
 		write_list_column(buf, x)
 	case Map_Value:
-		// A Map nested in a record/list digests its insertion-ordered pairs, the
-		// associative twin of the List arm.
 		write_map_column(buf, x)
 	case Lambda_Value, Tuple_Value, Rng, Transform_Value, Pose_Value, Handle_Value, Nav_Value:
-	// A transient value never lands in a committed structural column — the §16 §7
-	// anim VALUES (Transform/Pose/handle) compose inside a render body into a [Draw3]
-	// draw-list, never a blackboard column the digest folds here. A Vec3 is NOT here:
-	// a committed Vec3 column (krognid's `pos`, or a Vec3 nested in a record column)
-	// digests through the Vec3 arm above, the same as a Vec2.
 	}
 }
 
-// sorted_value_field_names returns a Record_Value's field names in ascending byte
-// order — the same defined total order sorted_field_names gives a row blackboard,
-// applied to the `map[string]Value` a structural column carries so a nested record
-// is digested map-invariantly. The dynamic array is freed by the caller.
 @(private = "file")
 sorted_value_field_names :: proc(fields: map[string]Value) -> [dynamic]string {
 	names := make([dynamic]string, 0, len(fields))
@@ -604,14 +246,6 @@ sorted_value_field_names :: proc(fields: map[string]Value) -> [dynamic]string {
 	return names
 }
 
-// --- Draw-list serialization (flattened render order) -----------------------
-
-// write_draw_list writes the §20 draw commands in the order the draw-list already
-// carries them — flattened-pipeline order across render behaviors, stable-Id
-// order within each (render.odin emits them so). This layer preserves that order
-// verbatim; it never sorts or reorders, because the emit order IS the canonical
-// order (re-sorting would discard the render stage's deterministic sequencing).
-// The command count leads so two draw-lists of different length never alias.
 @(private = "file")
 write_draw_list :: proc(buf: ^[dynamic]u8, draw: Draw_List) {
 	put_u64_le(buf, u64(len(draw.cmds)))
@@ -620,21 +254,6 @@ write_draw_list :: proc(buf: ^[dynamic]u8, draw: Draw_List) {
 	}
 }
 
-// write_draw_cmd writes one §20 draw command tagged by its kind. A Rect carries
-// its at/size as fixed-point Vec2s and a color ordinal; a Text carries its at, a
-// length-prefixed interpolated string, and a color ordinal; a Camera carries its
-// at, zoom, and rotation as raw fixed-point bits (the §3 world↔screen transform —
-// no color, it is not a painted primitive). The four §20 §1 3D commands carry their
-// full fixed-point state: a Draw3_Camera its eye/at Vec3s + fov; a Draw3_Light its
-// dir Vec3 + color ordinal; a Draw3_Plane its at Vec3 + size Vec2 + color ordinal; a
-// Draw3_Rigged its two opaque handles' op-logs + the per-bone pose transforms + the
-// world position. Every number is raw Q32.32 little-endian bits, never a float (§10).
-// The 3D arms fold the COMPLETE 3D state (the determinism bet is on the lowering, not
-// the present), so two folds of the same committed rig digest identically and any
-// single Fixed bit divergence changes the digest. A Draw_Tilemap folds the §18 §3
-// batched layer; a Draw_Sprite folds the §18 §1 entity sprite's complete state — its
-// atlas NAME, cell key, at/size, tint, flip, and layer — under the appended Sprite=8
-// tag. The Draw_Cmd union has exactly these nine arms, so the switch is total.
 @(private = "file")
 write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 	switch c in cmd {
@@ -674,13 +293,6 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		write_pose(buf, c.pose)
 		write_vec3(buf, c.at)
 	case Draw_Tilemap:
-		// The batched §18 §3 layer folds COMPLETE: name, cell size, dims, the
-		// grid→world anchor, the legend-order palette (each name + solid
-		// byte), and every row-major cell index — counts lead each run so two
-		// layers never alias across a boundary. A cell index is its i64 value
-		// (TILE_CELL_EMPTY folds as the all-ones byte run), so one flipped
-		// tile changes the digest — the exact surface a committed §18 §4
-		// SetTile moves (the §28 determinism warranty over dynamic terrain).
 		append(buf, u8(Cmd_Tag.Tilemap))
 		write_length_prefixed(buf, c.layer.name)
 		put_u64_le(buf, u64(c.layer.cell_size))
@@ -691,42 +303,19 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 		for tile in c.layer.palette {
 			write_length_prefixed(buf, tile.name)
 			append(buf, u8(1) if tile.solid else u8(0))
-			// The v17 per-tile atlas-cell coordinate (the §18 §2 tileset cell) folds
-			// after the solid byte — a tile drawing from a different cell moves the
-			// digest. Appended within the existing Tilemap arm (the v9 §19 carry), so
-			// the Tilemap=7 ordinal is unchanged.
 			put_u64_le(buf, u64(i64(tile.cell_x)))
 			put_u64_le(buf, u64(i64(tile.cell_y)))
 		}
-		// The v17 layer ATLAS name folds after the palette — a layer rebound to a
-		// different tileset atlas moves the digest.
 		write_length_prefixed(buf, c.layer.atlas)
 		put_u64_le(buf, u64(len(c.layer.cells)))
 		for cell in c.layer.cells {
 			put_u64_le(buf, u64(i64(cell)))
 		}
-		// The v9 §19 RESOLVED palette textures fold after the cells (parallel to the
-		// palette): each tile's resolved image hash + pixel rect, so the terrain art
-		// resolution is inside the comparison surface — a tile resolving to a
-		// different atlas cell moves the digest, an unresolved tile (resolved=false)
-		// folds a stable deterministic miss. Appended within the Tilemap arm, so the
-		// Tilemap=7 ordinal is unchanged; only the bytes the arm emits grow.
 		put_u64_le(buf, u64(len(c.palette_textures)))
 		for tex in c.palette_textures {
 			write_tile_texture(buf, tex)
 		}
 	case Draw_Sprite:
-		// The §20 §1 / §18 §1 atlas sprite folds its COMPLETE state: the atlas
-		// handle NAME and the cell key (length-prefixed strings — the name the
-		// present pass resolves the §19 asset by, carried verbatim, never resolved
-		// here), the at/size Vec2s (raw Q32.32 bits, `at` the §20 §1 center), the
-		// tint as a §20 §1 Draw_Color (write_color: one ordinal byte for a named
-		// member, the RGB_COLOR_TAG sentinel + three channel bits for a Color::Rgb),
-		// the flip as its length-prefixed token (the §18 §1 Flip:: case name), and the layer as its
-		// raw i64 bits. Every field is in the fold, so a one-bit divergence in any of
-		// them (a moved `at`, a different `cell`, a flipped `flip`, a re-tinted `tint`,
-		// a re-layered `layer`) changes the digest — the entity sprite is inside the
-		// comparison surface bit-exactly.
 		append(buf, u8(Cmd_Tag.Sprite))
 		write_length_prefixed(buf, c.atlas)
 		write_length_prefixed(buf, c.cell)
@@ -739,15 +328,6 @@ write_draw_cmd :: proc(buf: ^[dynamic]u8, cmd: Draw_Cmd) {
 	}
 }
 
-// write_color folds a §20 §1 Draw_Color into the canonical color stream (frame
-// digest v10). A NAMED color folds as its single raw palette ordinal byte
-// (White=0..Gray=8) — the EXACT byte the v5..v9 `u8(c.color)` fold emitted, so a
-// named color is byte-identical across the v9→v10 bump and every named-only golden
-// is unmoved. An Rgb color folds under the reserved RGB_COLOR_TAG sentinel byte
-// (255, never a named ordinal) followed by its three raw Q32.32 channel bits
-// (little-endian), so it can never alias a named color and a one-channel-bit
-// divergence moves the digest — the Color::Rgb is inside the comparison surface
-// bit-exactly. No float (§10): the channels are kernel Fixed.
 @(private = "file")
 write_color :: proc(buf: ^[dynamic]u8, color: Draw_Color) {
 	switch color.kind {
@@ -761,17 +341,6 @@ write_color :: proc(buf: ^[dynamic]u8, color: Draw_Color) {
 	}
 }
 
-// write_sprite_texture folds the §19 RESOLVED texture reference appended to the
-// Sprite arm (frame digest v9): the `resolved` flag as one 0/1 byte, then the
-// content-addressed image hash (length-prefixed) and the four pixel-rect fields as
-// raw i64 little-endian bits. An UNRESOLVED sprite (resolved=false) folds the false
-// byte + the empty-string hash + a zero rect — a stable, deterministic miss the same
-// across every fold, so a fail-closed sprite digests identically run to run (never a
-// guessed rect that would diverge). A resolved sprite folds its real hash + rect, so
-// a sprite resolving to a DIFFERENT region (a chest's closed→open cell flip moving its
-// pixel rect) changes the digest — the resolution is inside the comparison surface.
-// The pixel-rect ints are world-invariant decode constants (the §19 grid-coord
-// lowering), so no float and no host nondeterminism reaches the bytes.
 @(private = "file")
 write_sprite_texture :: proc(buf: ^[dynamic]u8, tex: Sprite_Texture) {
 	append(buf, tex.resolved ? u8(1) : u8(0))
@@ -782,16 +351,6 @@ write_sprite_texture :: proc(buf: ^[dynamic]u8, tex: Sprite_Texture) {
 	put_u64_le(buf, u64(i64(tex.px_h)))
 }
 
-// write_tile_texture folds one palette tile's §19 RESOLVED texture reference (frame
-// digest v9, the tile twin of write_sprite_texture): the `resolved` flag as one 0/1
-// byte, the content-addressed image hash (length-prefixed), and the four pixel-rect
-// fields as raw i64 little-endian bits. An UNRESOLVED tile (resolved=false) folds the
-// false byte + the empty-string hash + a zero rect — a stable deterministic miss the
-// same across every fold (never a guessed rect). A resolved tile folds its real hash
-// + rect, so a layer whose palette resolves to DIFFERENT atlas cells changes the
-// digest — the terrain art resolution is inside the comparison surface. The pixel-rect
-// ints are world-invariant decode constants (the §19 grid lowering), so no float and
-// no host nondeterminism reaches the bytes.
 @(private = "file")
 write_tile_texture :: proc(buf: ^[dynamic]u8, tex: Tile_Texture) {
 	append(buf, tex.resolved ? u8(1) : u8(0))
@@ -802,10 +361,6 @@ write_tile_texture :: proc(buf: ^[dynamic]u8, tex: Tile_Texture) {
 	put_u64_le(buf, u64(i64(tex.px_h)))
 }
 
-// write_vec3 writes a Vec3 as its three Fixed components' raw Q32.32 bits in
-// little-endian order, x then y then z — 24 fixed-width bytes, no float, no decimal
-// point. The component order is fixed (the same x,y,z order the lowering reads), so
-// a vector never aliases a permutation of itself.
 @(private = "file")
 write_vec3 :: proc(buf: ^[dynamic]u8, v: Vec3) {
 	put_u64_le(buf, u64(i64(v.x)))
@@ -813,8 +368,6 @@ write_vec3 :: proc(buf: ^[dynamic]u8, v: Vec3) {
 	put_u64_le(buf, u64(i64(v.z)))
 }
 
-// write_quat writes a Quat as its four Fixed components' raw Q32.32 bits in
-// little-endian order, x,y,z,w — a §16 §7 bone orientation, fully fixed-point.
 @(private = "file")
 write_quat :: proc(buf: ^[dynamic]u8, q: Quat) {
 	put_u64_le(buf, u64(i64(q.x)))
@@ -823,10 +376,6 @@ write_quat :: proc(buf: ^[dynamic]u8, q: Quat) {
 	put_u64_le(buf, u64(i64(q.w)))
 }
 
-// write_transform writes one §16 §7 bone transform: its pos Vec3, its rot Quat, its
-// scale Vec3 — the full local transform a pose drives a bone with, all raw
-// fixed-point bits. A single differing Q32.32 bit (a leg-swing angle off by one)
-// changes the digest, so the rig pose is inside the comparison surface bit-exactly.
 @(private = "file")
 write_transform :: proc(buf: ^[dynamic]u8, t: Transform_Value) {
 	write_vec3(buf, t.pos)
@@ -834,12 +383,6 @@ write_transform :: proc(buf: ^[dynamic]u8, t: Transform_Value) {
 	write_vec3(buf, t.scale)
 }
 
-// write_pose writes a §16 §7 sparse pose: the driven-bone count, then each driven
-// bone's name (length-prefixed) and transform in the pose's INSERT order — the order
-// IS canonical for a pose (the deterministic fold order set/blend/layer built it in,
-// pose.odin), so it is written verbatim, never sorted. Two poses built the same way
-// digest identically; a different driven set, a reordered insertion, or one differing
-// transform bit changes the digest.
 @(private = "file")
 write_pose :: proc(buf: ^[dynamic]u8, pose: Pose_Value) {
 	put_u64_le(buf, u64(len(pose.bones)))
@@ -849,14 +392,6 @@ write_pose :: proc(buf: ^[dynamic]u8, pose: Pose_Value) {
 	}
 }
 
-// write_handle writes an opaque §16 §7 anim handle (a Skeleton or PartSet): its kind
-// and factory (length-prefixed), then its ordered builder op-log — each op's method
-// and its serialized args in order. The op-log order IS canonical (the builder chain
-// applied bind/mirror in that order, pose.odin), so it is written verbatim. Two
-// handles built through the same constructor + builder chain digest identically (the
-// §03 Eq handles_equal folds through); a different op, arg, or order changes the
-// digest. No rig geometry is modeled — the handle is opaque, its identity is its
-// build recipe.
 @(private = "file")
 write_handle :: proc(buf: ^[dynamic]u8, handle: Handle_Value) {
 	write_length_prefixed(buf, handle.kind)
@@ -871,34 +406,18 @@ write_handle :: proc(buf: ^[dynamic]u8, handle: Handle_Value) {
 	}
 }
 
-// --- Byte primitives (fixed-width little-endian, length-prefixed strings) ----
-
-// write_vec2 writes a Vec2 as its two Fixed components' raw Q32.32 bits in
-// little-endian order, x then y — 16 fixed-width bytes, no float, no decimal
-// point. The component order is fixed so a vector never aliases its transpose.
 @(private = "file")
 write_vec2 :: proc(buf: ^[dynamic]u8, v: Vec2) {
 	put_u64_le(buf, u64(i64(v.x)))
 	put_u64_le(buf, u64(i64(v.y)))
 }
 
-// write_length_prefixed writes a string as its byte length (u64 little-endian)
-// followed by the raw bytes — so a name containing any byte (a space, a NUL)
-// never collides with the framing, and an empty string is distinguishable from
-// an absent one. Length-prefixing rather than a delimiter keeps the encoding
-// total: there is no byte a value cannot carry.
 @(private = "file")
 write_length_prefixed :: proc(buf: ^[dynamic]u8, s: string) {
 	put_u64_le(buf, u64(len(s)))
 	append(buf, ..transmute([]u8)s)
 }
 
-// put_u64_le appends a value's 8 raw bytes in little-endian order via
-// core:encoding/endian (the Odin-first byte-order primitive — no hand-rolled
-// shift loop). Every number in the canonical stream flows through here, so the
-// fixed-width little-endian invariant lives in exactly one place. A signed value
-// is cast to u64 by the caller (same endianness, same two's-complement bits), so
-// the raw bit pattern is what gets written.
 @(private = "file")
 put_u64_le :: proc(buf: ^[dynamic]u8, v: u64) {
 	scratch: [8]u8
@@ -906,15 +425,6 @@ put_u64_le :: proc(buf: ^[dynamic]u8, v: u64) {
 	append(buf, ..scratch[:])
 }
 
-// --- The headless capture entrypoint ----------------------------------------
-
-// capture_frame is the single-tick capture the acceptance harness folds over a
-// driven session: it digests one committed version (and its optional §20
-// draw-list) into a Frame_Digest. A driver steps the tick loop and calls this per
-// committed tick, accumulating the per-tick digests, then folds them with
-// fold_session — the surface a live run and a re-fold both drive identically,
-// since both produce committed versions this digests independently of how they
-// were driven.
 capture_frame :: proc(
 	version: World_Version,
 	draw: Maybe(Draw_List),
@@ -923,12 +433,6 @@ capture_frame :: proc(
 	return frame_digest(version, draw, allocator)
 }
 
-// finish_capture assembles a session's captured per-tick digests into a
-// Frame_Capture: it takes ownership of the per-tick slice and folds the session
-// digest over it. The caller drives the tick loop, appends a capture_frame result
-// per committed tick into a [dynamic]Frame_Digest, then calls this once with the
-// finished slice — the two-step shape (per-tick accumulate, then fold) the
-// acceptance harness compares two runs through.
 finish_capture :: proc(per_tick: []Frame_Digest, allocator := context.allocator) -> Frame_Capture {
 	return Frame_Capture{per_tick = per_tick, session = fold_session(per_tick, allocator)}
 }

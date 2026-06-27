@@ -1,58 +1,13 @@
-// The DURABLE replay-log layer: the on-disk format and the production reader the
-// replay re-fold driver consumes. The recorder (replay_record.odin) assembles a
-// byte-stable in-memory log from the per-tick resolved action snapshots; this file
-// persists that log to a file and parses it back into the artifact identity + the
-// ordered snapshot sequence a re-fold re-feeds (spec §23 §4, §09 §5).
-//
-// §23 §4 vs §24 DETERMINATION (the load-bearing scope boundary): the replay log is
-// ACTION-SNAPSHOT serialization riding §23 §4's determinism record — it persists
-// the resolved Input snapshots that are the sole recorded source of nondeterminism,
-// so a faithful re-run is the same artifact re-fed the same snapshots. It is NOT
-// the §24 save/settings persistence layer: §24 owns sim-snapshot saves (committed
-// fixed-point world state) and per-machine settings (the rebinding overlay, volume,
-// resolution), which are an entirely different concern. The replay log is neither a
-// world-state save nor a settings store, so this layer DOES NOT DEPEND ON the §24
-// persistence subsystem — it reads and writes only the replay format the recorder
-// owns, through core:os, with no save-game or settings type in its path.
-//
-// ON-DISK ENCODING: the file bytes ARE the in-memory log bytes the recorder
-// produced, written verbatim. The byte-stability that holds in memory (§23 §4 —
-// fixed field order, raw Q32.32 bits, sorted-key enumeration, no float/wall-clock/
-// map-iteration order) therefore holds on disk unchanged: writing is a passthrough,
-// not a re-encode, so two runs that record identical snapshot sequences write
-// byte-identical files. File IO goes through core:os.write_entire_file /
-// read_entire_file_from_path per the Odin-first policy (the runtime owns no custom
-// IO); runtime/** never imports funpack/**.
-//
-// PRODUCTION READER: read_replay is THE parse path the re-fold driver uses — there
-// is one parser, not a separate test reader. It validates the magic + schema
-// version + header before reading a payload, yields the snapshots back in tick
-// order, and FAILS CLOSED (`ok = false`) on a truncated or malformed log rather
-// than re-folding a partial stream (the artifact format's exact-match discipline,
-// §1, applied to the replay log). The recording-side tests exercise this same
-// reader; they do not carry a second parse path.
 package funpack_runtime
 
 import "core:os"
 import "core:strconv"
 import "core:strings"
 
-// write_replay_file persists a finished replay log to a file, byte-exact. The log
-// bytes are written verbatim (core:os, Odin-first IO), so the on-disk file equals
-// the in-memory log finish_replay produced and read_replay_file round-trips it
-// without change. `ok` is false when the file cannot be written; the determinism
-// invariant lives in the bytes, so persisting is a passthrough, never a re-encode.
 write_replay_file :: proc(path: string, log_bytes: string) -> (ok: bool) {
 	return os.write_entire_file_from_string(path, log_bytes) == nil
 }
 
-// read_replay_file reads a replay log off disk and parses it into the artifact
-// identity + ordered snapshots — the on-disk entry point the re-fold driver opens a
-// committed golden log with. `io_ok` is false when the file cannot be read; a file
-// that reads but is truncated or malformed surfaces through `ok` from read_replay
-// (the same fail-closed refusal, never a best-effort partial log). The file bytes
-// are parsed by the one production reader, so an on-disk log and an in-memory log
-// take exactly the same path.
 read_replay_file :: proc(
 	path: string,
 	allocator := context.allocator,
@@ -70,18 +25,11 @@ read_replay_file :: proc(
 	return parsed, parse_ok, true
 }
 
-// --- The production reader (one parse path for disk + in-memory) ------------
-
-// Replay_Log is a parsed replay log: the artifact identity from the header plus
-// the ordered per-tick snapshots the re-fold re-feeds. The snapshots own their
-// tables — delete_replay_log frees each snapshot and the slice.
 Replay_Log :: struct {
 	identity:  Replay_Identity,
 	snapshots: []Input,
 }
 
-// delete_replay_log frees every parsed snapshot's tables, the snapshot slice, and
-// the two cloned identity strings read_replay owns (see read_replay's clone).
 delete_replay_log :: proc(log: Replay_Log) {
 	delete(log.identity.project_name)
 	delete(log.identity.project_version)
@@ -91,15 +39,6 @@ delete_replay_log :: proc(log: Replay_Log) {
 	delete(log.snapshots)
 }
 
-// read_replay is THE production parser the re-fold driver uses: it parses a log
-// the recorder produced back into its header identity and ordered snapshots. `ok`
-// is false on any malformed log — a wrong magic, a schema version this build was
-// not built for, a record that does not parse, or a truncation that runs the
-// parser past the last line — so the driver fails closed rather than re-folding a
-// partial stream. Each snapshot is rebuilt by writing the recorded bits straight
-// into the snapshot tables (NOT through the lossy producer surface, which would
-// re-derive held from pressed and drop the recorded released edge), so the query
-// API reads the re-fed snapshot identically to the recorded one.
 read_replay :: proc(
 	log_bytes: string,
 	allocator := context.allocator,
@@ -109,9 +48,6 @@ read_replay :: proc(
 ) {
 	lines := strings.split_lines(log_bytes, allocator)
 	defer delete(lines, allocator)
-	// split_lines yields a trailing empty element for the final `\n`; the cursor
-	// walks the real lines and the parsers below bound-check their reads, so a log
-	// that ends early fails closed instead of reading off the end.
 	cursor := 0
 
 	identity, identity_ok := parse_header(lines, &cursor)
@@ -137,20 +73,11 @@ read_replay :: proc(
 		append(&snapshots, snapshot)
 	}
 
-	// parse_identity_record returns the two project strings as length-prefixed VIEWS
-	// into log_bytes; clone them onto `allocator` so the returned Replay_Log owns its
-	// identity independent of the source-bytes lifetime (read_replay_file frees the
-	// file bytes on return, and the §09 §5 identity gate compares these strings after
-	// that). Cloned here, only on the success path, so an error return above never
-	// allocates them — delete_replay_log frees them for the owned log.
 	identity.project_name = strings.clone(identity.project_name, allocator)
 	identity.project_version = strings.clone(identity.project_version, allocator)
 	return Replay_Log{identity = identity, snapshots = snapshots[:]}, true
 }
 
-// parse_header reads the magic line and the artifact-identity record, advancing
-// the cursor past both. It refuses a wrong magic or a schema version this build was
-// not built for — the reader loads only the exact format the recorder writes.
 @(private = "file")
 parse_header :: proc(
 	lines: []string,
@@ -179,14 +106,6 @@ parse_header :: proc(
 	return parse_identity_record(identity_line)
 }
 
-// parse_identity_record parses the `artifact …` line back into a Replay_Identity.
-// The two project strings are length-prefixed (§2.4), so the record is scanned
-// field-by-field with a small cursor rather than split on spaces — a name could
-// contain a space inside its length-prefixed bytes. The trailing `HAS_SEED
-// SEED_BITS` (§25 §60) is parsed in fixed order after the content hash: the seed
-// flag as a bare bool, the seed as its raw integer (§10). A v1 log lacking these
-// fields fails closed here — but parse_header refuses the v1 magic before reaching
-// this parser, so a version-mismatched log never gets this far.
 @(private = "file")
 parse_identity_record :: proc(line: string) -> (identity: Replay_Identity, ok: bool) {
 	rest := line
@@ -269,7 +188,6 @@ parse_identity_record :: proc(line: string) -> (identity: Replay_Identity, ok: b
 		true
 }
 
-// parse_ticks_header reads the `[ticks N]` section header and returns N.
 @(private = "file")
 parse_ticks_header :: proc(lines: []string, cursor: ^int) -> (count: int, ok: bool) {
 	line, line_ok := next_line(lines, cursor)
@@ -283,11 +201,6 @@ parse_ticks_header :: proc(lines: []string, cursor: ^int) -> (count: int, ok: bo
 	return strconv.parse_int(inner)
 }
 
-// parse_tick reads one tick record — the `tick BUTTON_COUNT AXIS_COUNT` lead line
-// then exactly that many button and axis records — into an Input. Each button's
-// three bits and each axis's two raw Fixed components are written straight into the
-// snapshot tables, so the query API reads them back identically (no producer-side
-// re-derivation). A record line missing past the end fails closed.
 @(private = "file")
 parse_tick :: proc(
 	lines: []string,
@@ -346,7 +259,6 @@ parse_tick :: proc(
 	return snapshot, true
 }
 
-// parse_button_record parses `button PLAYER ACTION PRESSED RELEASED HELD`.
 @(private = "file")
 parse_button_record :: proc(
 	line: string,
@@ -372,8 +284,6 @@ parse_button_record :: proc(
 	return parsed_key, Button_State{pressed = pressed, released = released, held = held}, true
 }
 
-// parse_axis_record parses `axis PLAYER ACTION X_BITS Y_BITS` — the two components
-// are raw Q32.32 bits, lifted back into Fixed with no float in the path.
 @(private = "file")
 parse_axis_record :: proc(line: string) -> (key: Player_Action, vec: Vec2, ok: bool) {
 	fields := strings.fields(line, context.temp_allocator)
@@ -392,8 +302,6 @@ parse_axis_record :: proc(line: string) -> (key: Player_Action, vec: Vec2, ok: b
 	return parsed_key, Vec2{x = Fixed(x_bits), y = Fixed(y_bits)}, true
 }
 
-// parse_key lifts a `PLAYER ACTION` pair back into a Player_Action: the PlayerId
-// ordinal (bounded to the four slots) and the ActionId u32.
 @(private = "file")
 parse_key :: proc(player_tok, action_tok: string) -> (key: Player_Action, ok: bool) {
 	player_ord, player_ok := strconv.parse_int(player_tok)
@@ -406,7 +314,3 @@ parse_key :: proc(player_tok, action_tok: string) -> (key: Player_Action, ok: bo
 	}
 	return Player_Action{player = PlayerId(player_ord), action = ActionId(u32(action_raw))}, true
 }
-
-// The record read-back primitives (next_line, parse_bool, take_field,
-// take_string_field) live in record_codec.odin — shared with the replay record stream
-// and the session log so the on-disk grammar cannot drift between them.

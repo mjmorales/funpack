@@ -1,156 +1,58 @@
-// The §28 §4 probe-honor side of the introspection contract — the runtime half
-// of the probe spine. funpack EMITS the in-code @break/@watch/@log/@trace
-// directives into the executable artifact's [probes] section (the funpack-side
-// emit, schema v18); THIS file LOADS them via load_probes (artifact_load.odin) and
-// HONORS every one in a live debug session: @break pauses on its predicate, @watch
-// fires the `watch_fired` async event on a value change, @log emits its structured
-// value, @trace records the per-step (in → out) transition. The §29 §2 index
-// contract is the funpack-side record of every probe (operator review) and never
-// reaches the runtime — for a LIVE session to honor a probe the directive must ride
-// the thing the runtime executes, which the [probes] section is (§28 §4 "Probes
-// ride the executable artifact").
-//
-// NODE-FOREST-ONLY, NEVER SOURCE (§28 §2). A probe's predicate/expression body is a
-// §2.7 node forest compiled funpack-side and carried in the artifact (Probe_Decl.
-// body); this file evaluates it through the EXISTING interpreter (`eval`, interp.odin
-// — the §09 ground truth) against the behavior's bound scope. The runtime owns no
-// funpack compiler and never compiles source live; the only evaluable form is the
-// node forest the artifact supplied.
-//
-// OBSERVE-CLASS / NON-PERTURBING (§28 §2, the determinism warranty). Honoring a
-// probe is a PURE READ: a predicate/expression body folds against the behavior's
-// already-bound env and reads it, never writing tick state, and a @watch's prior
-// value lives in the Probe_Honor buffer (request/session scratch), never in the
-// committed COW chain — exactly the Tick_Observe discipline. So a probed session's
-// canonical chain digests bit-identical to the unprobed run: "observation can never
-// change behavior — no heisenbugs." The honor tap rides the SAME tick fold every
-// driver runs (set on Tick_State, read at the behavior-step seam), nil off a fold.
-//
-// HONOR TARGET MAP (spec §28 §4 On-table + §28 §2 `Owner.member` addressing). The
-// live honor surface is behavior-step-centric, and a TARGET is one of two shapes:
-//
-//   - a BARE declaration name — a §28 §4 declaration-prefix @break/@log/@watch/@trace
-//     on a BEHAVIOR; its body folds against that behavior's bound env at every step.
-//   - a QUALIFIED `<owner>.<member>` site — the §28 §4 sub-declaration positions a
-//     stage @trace (`<pipeline>.<stage>`) and a field @watch (`<data>.<field>`) carry
-//     (the funpack emitter's qualify_probe_site, the spec's `Snake.eat` form). A stage
-//     @trace IS honored: it resolves the pipeline prefix to the entrypoint's one
-//     pipeline and the stage member to a step's stage, then records the per-step
-//     (in → out) transition for every behavior the stage schedules (probe_honored_at).
-//
-// A field @watch on a QUALIFIED `<data>.<field>` site is loaded and resolvable but has
-// NO live honor site, so it fails closed: a `data` is a §03 §1 VALUE record with no
-// rows and no runtime identity (it lives only embedded on a thing's blackboard), and
-// the @watch body binds `self` to the data VALUE — never a thing row a behavior step
-// binds — so the spec gives the addressing but not which embedding a live watch diffs
-// (see the run reasoning log, runtime-field-stage-probe-honor). A probe targeting a
-// fn/let/query/enum/signal name with no per-tick behavior step is likewise loaded but
-// not honored — the broader §05 §5 parse breadth rides the artifact for the §29 §2
-// index review (see runtime-2.2-honor-target-resolution).
 package funpack_runtime
 
 import "core:fmt"
 import "core:strings"
 
-// Probe_Honor is the §28 §4 honor buffer the tick fold threads through step_tick —
-// the probe-side twin of Tick_Observe. When non-nil, the behavior-step seam folds
-// every behavior-targeted probe against the bound env and APPENDS its firings here
-// (breakpoint hits, watch fires, log emits, trace records), in fold order
-// (flattened pipeline order, stable Id order within a step — the deterministic order
-// the fold runs in, so the firing order is replayable). The tap only reads the
-// fold's values and appends; it never writes tick state, which is what keeps
-// honoring non-perturbing. The `program` and `watch_state` are read to resolve
-// targets and diff @watch values across steps WITHOUT touching the committed chain.
 Probe_Honor :: struct {
 	program:     ^Program,
 	breaks:      [dynamic]Break_Hit,
 	watches:     [dynamic]Watch_Fire,
 	logs:        [dynamic]Log_Emit,
 	traces:      [dynamic]Trace_Record,
-	// watch_state retains the LAST value each @watch saw, keyed by (probe index,
-	// instance) — the prior the next step diffs against to detect a change. It lives
-	// in this request/session scratch, never in tick state (the non-perturbation
-	// invariant): a @watch fires only on a value that DIFFERS from the previous step
-	// the same instance ran, so the first observation of an instance never fires
-	// (there is no prior to differ from).
 	watch_state: map[Watch_Key]Value,
-	// live is the §28 §3 SESSION-SET break/watch group (introspect_break.odin): the
-	// dynamically-set probes a live session set over the wire, folded at the SAME
-	// behavior-step seam as the artifact's in-code probes — a live break/watch IS the
-	// same honor, just session-set instead of [probes]-carried. Empty when the
-	// session has set none (the in-code-probe-only fold). Their @watch running-prior
-	// is keyed off a probe index past the program's probes (live_watch_key), so a
-	// live @watch never collides with an in-code @watch's prior.
 	live:        []Live_Probe,
 	allocator:   Runtime_Allocator,
 }
 
-// Watch_Key identifies one @watch's running value for one instance: the probe's
-// index in program.probes (a stable per-program identity) and the instance Id. Two
-// instances of the same on-Thing each track their own prior, so a change on one
-// never spuriously fires the other.
 Watch_Key :: struct {
 	probe:    int,
 	instance: Id,
 }
 
-// Break_Hit is one §28 §4 @break firing: the probed behavior, the instance whose
-// step satisfied the predicate, the tick, and the bound `self` blackboard rendered
-// in the artifact literal encoding (the §28 §2 breakpoint_hit payload — the firing
-// probe's target and the value/context). It becomes a `breakpoint_hit` async event.
 Break_Hit :: struct {
 	behavior: string,
-	target:   string, // the probe's §28 §2 index-identity target (the behavior name)
+	target:   string,
 	instance: Id,
 	tick:     int,
-	self_enc: string, // the bound self blackboard, artifact literal encoding
+	self_enc: string,
 }
 
-// Watch_Fire is one §28 §4 @watch firing: the watched target, the instance, the
-// tick, and the value's old → new encodings (the §28 §2 watch_fired payload — the
-// firing probe's target and value). It is appended only when the watched
-// expression's value DIFFERS from the prior step's, so the stream carries changes,
-// never every step.
 Watch_Fire :: struct {
-	target:   string, // the watched behavior or `data` field's §28 §2 identity
+	target:   string,
 	instance: Id,
 	tick:     int,
-	old_enc:  string, // the prior value, artifact literal encoding
-	new_enc:  string, // the changed-to value, artifact literal encoding
+	old_enc:  string,
+	new_enc:  string,
 }
 
-// Log_Emit is one §28 §4 @log firing: the probed behavior, the instance, the tick,
-// and the structured value rendered in the artifact literal encoding (the §28 §4
-// "structured, serialized value each step, with tick/thing context" — the
-// printf-debugging killer: typed, queryable, never a raw print). One per behavior
-// step (a @log emits every step, unconditionally).
 Log_Emit :: struct {
 	behavior: string,
 	target:   string,
 	instance: Id,
 	tick:     int,
-	value_enc: string, // the logged value, artifact literal encoding
+	value_enc: string,
 }
 
-// Trace_Record is one §28 §4 @trace firing: the full per-step (in → out)
-// transition — the behavior, the instance, the tick, the bound `self` before, and
-// the returned value after, both in the artifact literal encoding. It mirrors the
-// observe trace's (self_before, result) shape; @trace records every step (no
-// predicate).
 Trace_Record :: struct {
 	behavior:    string,
 	target:      string,
 	instance:    Id,
 	tick:        int,
-	self_before: string, // the bound self blackboard before the step, artifact literal encoding
-	result_enc:  string, // the step's returned value, artifact literal encoding
-	ok:          bool,   // false for a body that produced no return
+	self_before: string,
+	result_enc:  string,
+	ok:          bool,
 }
 
-// new_probe_honor builds an empty honor buffer over a program on `allocator` (the
-// request/session scratch) — the buffer the tick fold appends firings into. The
-// program is retained read-only so the seam resolves a probe's target against the
-// loaded [probes]/[things] without re-reading the artifact.
 new_probe_honor :: proc(program: ^Program, allocator := context.allocator) -> Probe_Honor {
 	return Probe_Honor {
 		program     = program,
@@ -159,19 +61,11 @@ new_probe_honor :: proc(program: ^Program, allocator := context.allocator) -> Pr
 		logs        = make([dynamic]Log_Emit, allocator),
 		traces      = make([dynamic]Trace_Record, allocator),
 		watch_state = make(map[Watch_Key]Value, allocator),
-		live        = nil, // seeded by the live break/watch group (introspect_break.odin)
+		live        = nil,
 		allocator   = allocator,
 	}
 }
 
-// honor_behavior_step folds every probe that targets this behavior step against the
-// bound env and appends its firing(s) to the honor buffer — called from the tick
-// fold (run_behavior_over_instances) when the honor tap is armed, at the SAME seam
-// the observe tap fires. It is a pure read of the fold's already-computed values:
-// it evaluates predicate/expression bodies against `env` (never writing tick state)
-// and records firings, so an honored fold commits bit-identical state to an
-// un-honored one (the §28 §2 non-perturbation warranty). `tick` is the 0-based tick
-// ordinal the firing is stamped with (the §28 §2 tick/thing context).
 honor_behavior_step :: proc(
 	honor: ^Probe_Honor,
 	interp: ^Interp,
@@ -197,18 +91,9 @@ honor_behavior_step :: proc(
 			honor_trace(honor, interp, probe, behavior, self_row, env, result, ok, tick)
 		}
 	}
-	// The §28 §3 SESSION-SET break/watch group rides the SAME seam (introspect_break.
-	// odin): a live break{when:<pred>}/watch is folded against the bound env exactly
-	// as an in-code @break/@watch, reusing honor_break/honor_watch. A live @watch's
-	// running-prior is keyed off an index PAST the program's probes (live_watch_key),
-	// so it never collides with an in-code @watch's prior. A live break{on_signal}
-	// carries an empty body and a non-empty on_signal — it is honored over the signal
-	// routes, not the behavior-step seam (honor_live_signal_breaks), so it is skipped
-	// here. @log/@trace are §28 §4 in-code-only directives, never live-set, so the
-	// live group is break/watch only.
 	for live, live_idx in honor.live {
 		if live.on_signal != "" {
-			continue // a signal break fires on a routed signal, not a behavior step
+			continue
 		}
 		if !probe_honored_at(honor.program, live.probe, behavior) {
 			continue
@@ -222,61 +107,20 @@ honor_behavior_step :: proc(
 	}
 }
 
-// live_watch_key maps a live @watch's registry index onto a Watch_Key probe index
-// that cannot collide with an in-code @watch's index: it lands the live watch's
-// running-prior past the program's probe slice, so a live @watch on the same
-// behavior as an in-code @watch tracks its own prior (the per-instance change
-// detection stays independent). Stable across the re-fold (the live registry order
-// is fixed for the fold), so the key is replayable like every other firing key.
 live_watch_key :: proc(honor: ^Probe_Honor, live_idx: int) -> int {
 	return len(honor.program.probes) + live_idx
 }
 
-// probe_honored_at reports whether a probe fires at THIS behavior step (spec §28 §4
-// On-table). The two live honor sites are:
-//
-//   1. A probe whose target is the behavior's NAME (a §28 §4 declaration-prefix
-//      @break/@log/@watch/@trace on a behavior) — honored against the behavior's
-//      bound env every step.
-//   2. A @trace whose target is the QUALIFIED `<pipeline>.<stage>` site (the §28 §4
-//      stage position, §28 §2 `Owner.member` addressing) — honored at every behavior
-//      step running IN that stage, so the stage's per-step (in → out) transitions are
-//      recorded across the behaviors the stage schedules. Resolved by matching the
-//      target's pipeline prefix to the entrypoint's one pipeline and its stage member
-//      to this step's stage (qualified_target_is_stage).
-//
-// Every OTHER target is loaded but NOT honored at a behavior step (§28 §4 On-table is
-// the live-honor authority; the broader §05 §5 parse breadth rides the artifact for
-// the §29 §2 index review only — see runtime-2.2-honor-target-resolution). In
-// particular a @watch on a QUALIFIED `<data>.<field>` site is loaded and resolvable
-// but has NO live behavior-step honor site: a `data` is a §03 §1 VALUE record with no
-// rows and no runtime identity (it lives only embedded on a thing's blackboard), and
-// the field @watch's emitted body binds `self` to the data VALUE — never a thing row
-// a behavior step binds — so there is no instance to diff the field across. This is
-// the field-@watch honor-site limitation surfaced for the driver (see
-// runtime-field-stage-probe-honor); the resolution fails closed here.
 probe_honored_at :: proc(program: ^Program, probe: Probe_Decl, behavior: ^Behavior_Decl) -> bool {
 	if probe.target == behavior.name {
 		return true
 	}
-	// A @trace on a QUALIFIED `<pipeline>.<stage>` site honors at every behavior step
-	// scheduled in that stage of the entrypoint's pipeline (§28 §4 stage position).
 	if probe.kind == .Trace && qualified_target_is_stage(program, probe.target, behavior.stage) {
 		return true
 	}
 	return false
 }
 
-// qualified_target_is_stage reports whether a §28 §2 qualified `Owner.member` target
-// addresses THIS behavior step's pipeline stage — the funpack emitter's `<pipeline>.
-// <stage>` form for a stage @trace (qualify_probe_site). The owner must be the
-// entrypoint's one pipeline (§15 wires exactly one) and the member must equal the
-// step's stage, so a `Loop.mark` @trace fires at every behavior the `mark` stage of
-// the `Loop` pipeline schedules. A target that is not `pipeline.stage`, names a
-// different pipeline, or names a stage no step runs in matches nothing — the
-// fail-closed reading for an unknown stage target. The split is on the FIRST `.`
-// (a stage name is one identifier, so there is at most one separator); a target with
-// no `.` is a bare declaration name, never a stage site.
 @(private = "file")
 qualified_target_is_stage :: proc(program: ^Program, target: string, stage: string) -> bool {
 	owner, member, qualified := split_qualified_target(target)
@@ -286,12 +130,6 @@ qualified_target_is_stage :: proc(program: ^Program, target: string, stage: stri
 	return owner == program.entrypoint.pipeline && member == stage
 }
 
-// split_qualified_target splits a §28 §2 `Owner.member` addressing target into its
-// owner prefix and member at the FIRST `.` — the inverse of the emitter's
-// qualify_probe_site (`<owner>.<member>`). `qualified` is false for a bare name (no
-// `.`, a declaration-prefix probe's target) so a caller distinguishes the two TARGET
-// shapes the [probes] section carries. The owner and member are sub-slices of the
-// input (no allocation), valid for the target's lifetime.
 split_qualified_target :: proc(target: string) -> (owner: string, member: string, qualified: bool) {
 	dot := strings.index_byte(target, '.')
 	if dot < 0 {
@@ -300,11 +138,6 @@ split_qualified_target :: proc(target: string) -> (owner: string, member: string
 	return target[:dot], target[dot + 1:], true
 }
 
-// honor_break evaluates a @break predicate against the behavior's bound env; when it
-// holds, it appends a Break_Hit (the §28 §2 breakpoint_hit event the live host
-// pushes, pausing the session). The predicate is a pure fold of the node forest the
-// artifact carried — no source, no write. A predicate that does not evaluate to a
-// bool (a malformed body the loader would not have emitted) does not fire.
 @(private = "file")
 honor_break :: proc(
 	honor: ^Probe_Honor,
@@ -334,10 +167,6 @@ honor_break :: proc(
 	)
 }
 
-// honor_log evaluates a @log expression against the bound env and appends a Log_Emit
-// EVERY step (a @log is unconditional — the structured value each step, §28 §4). The
-// value is rendered in the artifact literal encoding, so the emitted log is typed
-// and queryable, never a raw print.
 @(private = "file")
 honor_log :: proc(
 	honor: ^Probe_Honor,
@@ -364,12 +193,6 @@ honor_log :: proc(
 	)
 }
 
-// honor_watch evaluates a @watch expression against the bound env and appends a
-// Watch_Fire ONLY when the value DIFFERS from the prior step the same instance ran
-// (§28 §4 "fire watch_fired when the value changes"). The running prior lives in the
-// honor buffer keyed by (probe, instance) — never in tick state, so the watch is
-// non-perturbing. The first observation of an instance establishes the baseline and
-// does not fire (no prior to differ from).
 @(private = "file")
 honor_watch :: proc(
 	honor: ^Probe_Honor,
@@ -389,10 +212,10 @@ honor_watch :: proc(
 	prior, seen := honor.watch_state[key]
 	honor.watch_state[key] = value
 	if !seen {
-		return // first observation: establish the baseline, never fire
+		return
 	}
 	if values_equal(prior, value) {
-		return // unchanged: no fire
+		return
 	}
 	append(
 		&honor.watches,
@@ -406,12 +229,6 @@ honor_watch :: proc(
 	)
 }
 
-// honor_trace appends a Trace_Record for EVERY step (a @trace records the full
-// per-step (in → out) transition, §28 §4 — no predicate). It mirrors the observe
-// trace's (self_before, result) shape: the bound self before the step and the
-// returned value after, both in the artifact literal encoding. self_row.fields still
-// aliases the pre-eval working map here (a blackboard write REPLACES the map, never
-// mutates it), so it is the before-state.
 @(private = "file")
 honor_trace :: proc(
 	honor: ^Probe_Honor,
@@ -438,16 +255,6 @@ honor_trace :: proc(
 	)
 }
 
-// eval_probe_body folds a probe's predicate/expression node forest against the
-// behavior's bound env through the EXISTING interpreter's EXPRESSION evaluator (`eval`,
-// §09 ground truth). A probe body is a bare EXPRESSION the funpack emitter wrote with
-// emit_expr (a predicate `self.n > 2`, a watched/logged `self.n`) — NOT a statement
-// body, so it is evaluated with `eval` directly, never the statement fold
-// (eval_statement/eval_body reject a bare expression at statement position). The body
-// is exactly one expression subtree (body_count 1 for @break/@log/@watch); a @trace
-// body is empty (body_count 0) and never reaches here. ok is false for an empty or
-// malformed body (a body the loader would not have emitted for a value-bearing probe),
-// so a degenerate body never fires.
 @(private = "file")
 eval_probe_body :: proc(interp: ^Interp, probe: Probe_Decl, env: ^Env) -> (value: Value, ok: bool) {
 	if len(probe.body) != 1 {
@@ -456,11 +263,6 @@ eval_probe_body :: proc(interp: ^Interp, probe: Probe_Decl, env: ^Env) -> (value
 	return eval(interp, &probe.body[0], env)
 }
 
-// encode_value_text renders one interpreter Value in the artifact literal encoding
-// (the §28 §2 wire form — Int decimal, Fixed raw Q32.32 bits, records/lists/variants
-// in their inline forms). It is the PRIMITIVE both the async-event renderers (plain,
-// unquoted) and write_encoded_value (which JSON-quotes the result) build on, so the two
-// surfaces render one Value identically. Package-visible for that shared use.
 @(private)
 encode_value_text :: proc(value: Value, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
@@ -468,11 +270,6 @@ encode_value_text :: proc(value: Value, allocator := context.allocator) -> strin
 	return strings.to_string(b)
 }
 
-// encode_blackboard_text renders one row's whole blackboard as a `Thing(field=enc,…)`
-// record literal in sorted field-name order — the serialization-closure dump (§28 §1)
-// the breakpoint_hit/trace payloads carry. It is the PRIMITIVE the async-event renderers
-// (plain, unquoted) and write_encoded_blackboard (which JSON-quotes the result) share, so
-// a blackboard renders identically on both surfaces. Package-visible for that shared use.
 @(private)
 encode_blackboard_text :: proc(
 	thing: string,
@@ -495,14 +292,6 @@ encode_blackboard_text :: proc(
 	return strings.to_string(b)
 }
 
-// --- The async-event renderers (§28 §2/§3 the closed async-event set) --------
-
-// render_breakpoint_hit_event renders one Break_Hit as a §28 §2 async-event NDJSON
-// line: `{v, event, …}`, correlated by `event` name (not `id`), carrying the firing
-// probe's target and value (the §28 §2 "two that carry probe payloads"). The field
-// order is fixed (v, event, target, behavior, instance, tick, self), so the line is
-// byte-stable for the session log (§28 §3: a debug session re-runs bit-identically).
-// `breakpoint_hit` is the §28 §3 closed-set event a @break pause pushes.
 render_breakpoint_hit_event :: proc(hit: Break_Hit, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	fmt.sbprintf(&b, "{{\"v\":%d,\"event\":\"breakpoint_hit\",\"target\":", INTROSPECT_PROTOCOL_VERSION)
@@ -515,11 +304,6 @@ render_breakpoint_hit_event :: proc(hit: Break_Hit, allocator := context.allocat
 	return strings.to_string(b)
 }
 
-// render_watch_fired_event renders one Watch_Fire as a §28 §2 async-event NDJSON
-// line: `{v, event, …}` carrying the firing probe's target and the old → new value
-// (the §28 §2 watch_fired payload). Fixed field order (v, event, target, instance,
-// tick, old, new). `watch_fired` is the §28 §3 closed-set event a @watch value change
-// pushes.
 render_watch_fired_event :: proc(fire: Watch_Fire, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
 	fmt.sbprintf(&b, "{{\"v\":%d,\"event\":\"watch_fired\",\"target\":", INTROSPECT_PROTOCOL_VERSION)
@@ -532,24 +316,6 @@ render_watch_fired_event :: proc(fire: Watch_Fire, allocator := context.allocato
 	return strings.to_string(b)
 }
 
-// --- The session honor seam (the foundation the live break/watch group builds on) -
-
-// session_honor_probes re-folds the WHOLE recorded run with the probe-honor tap
-// armed and returns the populated buffer — every @break hit, @watch fire, @log emit,
-// and @trace record the run's in-code probes produced, in fold order across ticks —
-// plus the FINAL committed version the honored fold produced. It re-runs the EXACT
-// production fold (the same step_tick + recorded snapshots + per-tick Time + retained
-// entering-Rng a seeded run uses) into request-scoped scratch: the SESSION'S
-// canonical chain (s.versions) is never touched — this fold builds its own scratch
-// chain — so honoring is observe-class by construction (§28 §2). The returned
-// `final` is the comparison surface the non-perturbation pin holds against an
-// unprobed reference fold: a honored step_tick commits bit-identical state to an
-// un-honored one (the determinism warranty). It is the bounded re-fold the live
-// break/watch/clear command group will drive incrementally; here it drains the whole
-// timeline at once so the honor battery can assert the firings against a recorded
-// session. The @watch running-prior threads ACROSS ticks for an instance (the
-// buffer's watch_state outlives a single tick), so a watch fires on a real cross-step
-// change, not a per-tick reset.
 session_honor_probes :: proc(
 	s: ^Debug_Session,
 	allocator := context.allocator,
@@ -558,10 +324,6 @@ session_honor_probes :: proc(
 	final: World_Version,
 ) {
 	honor = new_probe_honor(s.program, allocator)
-	// Arm the session's live break/watch probes (§28 §3, introspect_break.odin)
-	// alongside the artifact's in-code probes: the SAME fold honors both, so a live
-	// break/watch fires exactly as an in-code @break/@watch would. Empty when the
-	// session set none (the in-code-only fold).
 	honor.live = s.live_probes[:]
 	prior := s.startup
 	tick_hz := s.program.entrypoint.tick_hz

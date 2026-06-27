@@ -1,25 +1,9 @@
-// The loader: walk the section-level Artifact_Doc (artifact_lex.odin) and build
-// the in-memory Program (program.odin) the sim executes over — the §17 step-4
-// model build. Each section maps to its descriptor list; every record is shaped
-// by the lead line's declared scalar counts (§17 step 3), and every body `node`
-// run is rebuilt into a node forest (artifact_nodes.odin).
-//
-// Fixed literals reach the runtime ONLY through decode_fixed → the kernel's
-// Fixed (artifact_lex.odin §2.3): the setup batch's Fixed/Vec2 fields are
-// decoded bit-exact here, never through a float. Function/behavior body `fixed`
-// nodes keep their raw token and are decoded at evaluation time by the interpreter
-// — also through the kernel, also never float.
 package funpack_runtime
 
 import "core:os"
 import "core:strconv"
 import "core:strings"
 
-// load_artifact_file reads an artifact off disk and loads it into a Program —
-// the production entry point. File IO goes through core:os.read_entire_file per
-// the Odin-first policy (the runtime owns no custom IO). `io_ok` is false when
-// the file cannot be read; a successfully-read-but-malformed artifact surfaces
-// through `err` (the same fail-closed refusal as load_program).
 load_artifact_file :: proc(
 	path: string,
 	allocator := context.allocator,
@@ -32,18 +16,11 @@ load_artifact_file :: proc(
 	if read_err != nil {
 		return {}, .None, false
 	}
-	// build_program clones every string field it keeps (load_meta/load_entrypoint
-	// included), so the returned Program is self-owned and the raw artifact bytes are
-	// dead once load_program returns — free them rather than leak for the allocator's
-	// life.
 	defer delete(bytes, allocator)
 	loaded, load_err := load_program(string(bytes), allocator)
 	return loaded, load_err, true
 }
 
-// load_program is the top-level entry: parse the artifact bytes into a Program.
-// It refuses on a version mismatch, a malformed section, or a malformed body —
-// the load is total or it fails closed, never a best-effort partial program.
 load_program :: proc(
 	content: string,
 	allocator := context.allocator,
@@ -58,9 +35,6 @@ load_program :: proc(
 	return build_program(doc, allocator)
 }
 
-// build_program assembles the Program from an already-parsed Artifact_Doc by
-// reading each section in the §3 fixed order. A section the program needs that
-// is absent is a refusal — the order is part of the contract (§3).
 build_program :: proc(
 	doc: Artifact_Doc,
 	allocator := context.allocator,
@@ -101,44 +75,19 @@ build_program :: proc(
 		case "tilemaps":
 			program.tilemaps = load_tilemaps(section, allocator) or_return
 		case "nav":
-			// v13 §12 nav graphs decode into the bake-static Nav_Graph slice the
-			// pure path() query searches (nav.odin), one record per baked tile
-			// layer in [tilemaps] slice order. Runtime CONSUMES the format;
-			// funpack DEFINES it (Lore #9).
 			program.navs = load_navs(section, allocator) or_return
 		case "assets":
-			// v16 §19 sprite assets decode into the bake-static Asset_Set (the
-			// content-addressed image set + atlases the textured renderer resolves
-			// a Draw_Sprite{atlas, cell} against, assets.odin). [assets] is the new
-			// fixed §3 section TAIL (after [nav]); an asset-less game carries the
-			// constant `[assets 0]`. Runtime CONSUMES the format; funpack DEFINES
-			// it (Lore #9).
 			program.assets = load_assets(section, allocator) or_return
 		case "probes":
-			// v18 §28 §4 debug directives decode into the Probe_Decl slice the live
-			// debug session HONORS (probes.odin): one `probe KIND TARGET body_count`
-			// record per in-code @break/@watch/@log/@trace, each predicate/expression
-			// body a §2.7 node forest the interpreter folds (NEVER funpack source). The
-			// new fixed §3 section TAIL (after [assets]); a release artifact — or an
-			// in-code-probe-free dev build — carries the constant `[probes 0]`. Runtime
-			// CONSUMES the format; funpack DEFINES it (Lore #9).
 			program.probes = load_probes(section, allocator) or_return
 		case:
-			return {}, .Malformed_Header // an unknown section is a schema mismatch
+			return {}, .Malformed_Header
 		}
 	}
-	// Memoize the §23 action registry off the loaded enums — a pure function of the
-	// program, minted ONCE here so new_interp/build_bindings_table never rebuild the
-	// string-concat + map per tick / per session. Built on `allocator`
-	// (the program's lifetime), so it is reclaimed with the program — including
-	// across a hot-reload, where the new program mints its own from the new enums.
 	program.registry = build_action_registry(program, allocator)
 	return program, .None
 }
 
-// --- §4 meta ---------------------------------------------------------------
-
-// load_meta reads the two §4 records: `project NAME` and `version L5:0.1.0`.
 load_meta :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -153,9 +102,6 @@ load_meta :: proc(
 	if len(project_fields) < 2 || project_fields[0] != "project" {
 		return {}, .Bad_Field
 	}
-	// Clone onto `allocator` so the Program owns its identity strings independent of
-	// the source artifact bytes — the sibling loaders' clone-everything invariant,
-	// and the strings feed identity_from_program / the replay-determinism header.
 	meta.name = strings.clone(project_fields[1], allocator)
 
 	version_fields := record_fields(section.records[1])
@@ -170,10 +116,6 @@ load_meta :: proc(
 	return meta, .None
 }
 
-// --- §5 enums --------------------------------------------------------------
-
-// load_enums reads each `enum NAME KIND variant_count` lead line plus its
-// `variant NAME PAYLOAD` sub-records, in declaration order.
 load_enums :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -184,14 +126,12 @@ load_enums :: proc(
 	out := make([]Enum_Decl, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// enum NAME KIND variant_count
 		if len(f) < 4 {
 			return nil, .Bad_Field
 		}
 		variants := make([]Enum_Variant, len(rec.subs), allocator)
 		for sub, j in rec.subs {
 			sf := strings.fields(sub, context.temp_allocator)
-			// variant NAME PAYLOAD…  (payload is the rest of the line verbatim)
 			if len(sf) < 3 || sf[0] != "variant" {
 				return nil, .Bad_Field
 			}
@@ -209,7 +149,6 @@ load_enums :: proc(
 	return out, .None
 }
 
-// enum_kind_from_tag maps the §03 §4 role-kind tag to Enum_Kind; `-` is None.
 enum_kind_from_tag :: proc(tag: string) -> Enum_Kind {
 	switch tag {
 	case "Axis":
@@ -224,13 +163,6 @@ enum_kind_from_tag :: proc(tag: string) -> Enum_Kind {
 	return .None
 }
 
-// --- §6 data / §7 signals --------------------------------------------------
-
-// load_data reads each `data NAME field_count mut` record plus its field
-// sub-records (§6), including the v8 `migrate FROM WITH` carry: a migrate line
-// between the lead line and the first field is the renamed TYPE declaration's
-// prior name (rename form only — a WITH there is a malformed artifact), and a
-// migrate line after a field migrates that field (load_data_field_decls).
 load_data :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -241,7 +173,6 @@ load_data :: proc(
 	out := make([]Data_Decl, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// data NAME field_count mut
 		if len(f) < 4 {
 			return nil, .Bad_Field
 		}
@@ -256,8 +187,6 @@ load_data :: proc(
 		subs := rec.subs
 		if len(subs) > 0 && line_keyword(subs[0]) == "migrate" {
 			from, with, mig_ok := parse_migrate_line(subs[0])
-			// The decl-level carry is the rename form only (§05 §6: a type
-			// declaration admits no `with:`), so a WITH half here is refused.
 			if !mig_ok || with != "" || from == "" {
 				return nil, .Bad_Field
 			}
@@ -271,10 +200,6 @@ load_data :: proc(
 	return out, .None
 }
 
-// parse_migrate_line decodes the fixed three-token v8 `migrate FROM WITH` line
-// (§6): each half is a bare name token or `-` for absent, and at least one is
-// present (the compiler rejects an empty form upstream, so a both-`-` line is a
-// malformed artifact). The returned halves are "" when absent.
 parse_migrate_line :: proc(line: string) -> (from: string, with: string, ok: bool) {
 	sf := strings.fields(line, context.temp_allocator)
 	if len(sf) != 3 || sf[0] != "migrate" {
@@ -288,13 +213,6 @@ parse_migrate_line :: proc(line: string) -> (from: string, with: string, ok: boo
 	return from, with, true
 }
 
-// load_data_field_decls reads a [data] record's field run — the same `field
-// NAME TYPE DEFAULT` grammar load_field_decls reads — admitting the v8
-// `migrate FROM WITH` line immediately after a field, which attaches that
-// field's §05 §6 rename/retype halves. A migrate line with no preceding field
-// is a stray sub-record and refuses. Only [data] takes this path: [signals]
-// and [things] never carry a migrate line (the data schema is the evolution
-// channel), so they keep the strict load_field_decls.
 load_data_field_decls :: proc(
 	subs: []string,
 	allocator := context.allocator,
@@ -306,7 +224,7 @@ load_data_field_decls :: proc(
 	for sub in subs {
 		if line_keyword(sub) == "migrate" {
 			if len(out) == 0 {
-				return nil, .Bad_Field // a field-level migrate needs a field to attach to
+				return nil, .Bad_Field
 			}
 			from, with, ok := parse_migrate_line(sub)
 			if !ok {
@@ -330,8 +248,6 @@ load_data_field_decls :: proc(
 	return out[:], .None
 }
 
-// load_signals reads each `signal NAME field_count` record plus its field
-// sub-records (§7) — same field grammar as data, but a signal is never mutated.
 load_signals :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -342,7 +258,6 @@ load_signals :: proc(
 	out := make([]Signal_Decl, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// signal NAME field_count
 		if len(f) < 3 {
 			return nil, .Bad_Field
 		}
@@ -355,9 +270,6 @@ load_signals :: proc(
 	return out, .None
 }
 
-// load_field_decls reads a run of `field NAME TYPE DEFAULT` sub-records (§6).
-// DEFAULT is `-` (no default) or `=ENCODED` (the default value, decoded by
-// position at use time — kept as the raw `ENCODED` token here).
 load_field_decls :: proc(
 	subs: []string,
 	allocator := context.allocator,
@@ -368,7 +280,6 @@ load_field_decls :: proc(
 	out := make([]Field_Decl, len(subs), allocator)
 	for sub, i in subs {
 		sf := strings.fields(sub, context.temp_allocator)
-		// field NAME TYPE DEFAULT
 		if len(sf) < 4 || sf[0] != "field" {
 			return nil, .Bad_Field
 		}
@@ -377,7 +288,6 @@ load_field_decls :: proc(
 			type = strings.clone(sf[2], allocator),
 		}
 		if sf[3] != "-" {
-			// `=ENCODED` — strip the leading `=`; the rest is the encoded default.
 			decl.has_default = true
 			decl.default_encoded = strings.clone(strings.trim_prefix(sf[3], "="), allocator)
 		}
@@ -386,10 +296,6 @@ load_field_decls :: proc(
 	return out, .None
 }
 
-// --- §8 things -------------------------------------------------------------
-
-// load_things reads each `thing NAME SINGLETON gtag_count field_count` record
-// plus its gtag and field sub-records, shaping them by the declared counts (§8).
 load_things :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -400,7 +306,6 @@ load_things :: proc(
 	out := make([]Thing_Decl, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// thing NAME SINGLETON gtag_count field_count
 		if len(f) < 5 {
 			return nil, .Bad_Field
 		}
@@ -412,7 +317,6 @@ load_things :: proc(
 		if !gc_ok {
 			return nil, .Bad_Field
 		}
-		// The gtag sub-records come first, then the field sub-records (§8).
 		if gtag_count > len(rec.subs) {
 			return nil, .Bad_Field
 		}
@@ -428,8 +332,6 @@ load_things :: proc(
 	return out, .None
 }
 
-// load_gtags reads a run of `gtag L4:ball` sub-records into their decoded tag
-// strings, in source order (§8).
 load_gtags :: proc(
 	subs: []string,
 	allocator := context.allocator,
@@ -452,10 +354,6 @@ load_gtags :: proc(
 	return out, .None
 }
 
-// --- §9 functions ----------------------------------------------------------
-
-// load_functions reads each function record: the signature lead line, its param
-// sub-records, then its body node run rebuilt into a forest (§9, §2.7).
 load_functions :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -466,7 +364,6 @@ load_functions :: proc(
 	out := make([]Function_Decl, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// function NAME KIND param_count return:TYPE body_count span:MODULE:LINE
 		if len(f) < 7 {
 			return nil, .Bad_Field
 		}
@@ -491,20 +388,6 @@ load_functions :: proc(
 	return out, .None
 }
 
-// --- §28 §4 probes (schema v18) ---------------------------------------------
-
-// load_probes reads each §28 §4 probe record: the `probe KIND TARGET body_count`
-// lead line, then its predicate/expression body as a §2.7 node forest (the `node`
-// sub-record run, NEVER funpack source) shaped by the declared body_count — the
-// SAME body-forest parse load_functions runs, since a probe-with-body is read by
-// the lead-line discipline a [functions] record is (`probe` is a top-level keyword,
-// `node` lines are sub-records). KIND maps to the closed Probe_Kind; TARGET is the
-// probed declaration's §28 §2 index-identity name. body_count is 1 for @break/@log/
-// @watch (the single predicate/expression subtree) and 0 for @trace (no argument),
-// so a @trace record has an empty `node` run and an empty body forest. An unknown
-// KIND, a malformed lead line, or a body run that does not split into exactly
-// body_count subtrees is the fail-closed .Bad_Field/.Body_Count_Mismatch refusal the
-// section molds share — never a best-effort partial probe.
 load_probes :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -515,7 +398,6 @@ load_probes :: proc(
 	out := make([]Probe_Decl, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// probe KIND TARGET body_count
 		if len(f) != 4 || f[0] != "probe" {
 			return nil, .Bad_Field
 		}
@@ -527,9 +409,6 @@ load_probes :: proc(
 		if !bc_ok || body_count < 0 {
 			return nil, .Bad_Field
 		}
-		// The whole sub-record run is the body's `node` forest — exactly body_count
-		// statement subtrees, no leftover (parse_node_forest refuses an over- or
-		// under-shaped run). @trace's body_count 0 yields an empty forest.
 		body := parse_node_forest(rec.subs, body_count, allocator) or_return
 		out[i] = Probe_Decl {
 			kind   = kind,
@@ -540,9 +419,6 @@ load_probes :: proc(
 	return out, .None
 }
 
-// probe_kind_from_tag maps the §28 §4 / §05 §5 directive token (the lowercased
-// family name the `probe KIND …` lead line carries) to its closed Probe_Kind. An
-// unknown tag is a schema mismatch — refused, never guessed.
 probe_kind_from_tag :: proc(tag: string) -> (kind: Probe_Kind, ok: bool) {
 	switch tag {
 	case "break":
@@ -557,13 +433,6 @@ probe_kind_from_tag :: proc(tag: string) -> (kind: Probe_Kind, ok: bool) {
 	return .Break, false
 }
 
-// --- §16 queries (schema v9) ------------------------------------------------
-
-// load_queries reads each §16 query record: the fn-mold signature lead line,
-// its param sub-records, its `index KIND THING FIELD` requirement sub-records
-// (both shaped by the lead line's declared counts), then its body node run
-// rebuilt into a forest (§16, §2.7). A query body is a Block by grammar, so the
-// forest is the plain statement run — the same parse the [functions] bodies get.
 load_queries :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -574,7 +443,6 @@ load_queries :: proc(
 	out := make([]Query_Decl, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// query NAME param_count return:TYPE index_count body_count span:MODULE:LINE
 		if len(f) < 7 {
 			return nil, .Bad_Field
 		}
@@ -604,9 +472,6 @@ load_queries :: proc(
 	return out, .None
 }
 
-// load_index_reqs reads a run of `index KIND THING FIELD` sub-records — the
-// declared §05 §3 requirements a query carries (§16). KIND is the closed
-// two-token set; anything else is a refusal, never a best-effort default.
 load_index_reqs :: proc(
 	subs: []string,
 	allocator := context.allocator,
@@ -617,7 +482,6 @@ load_index_reqs :: proc(
 	out := make([]Index_Req, len(subs), allocator)
 	for sub, i in subs {
 		sf := strings.fields(sub, context.temp_allocator)
-		// index KIND THING FIELD
 		if len(sf) < 4 || sf[0] != "index" {
 			return nil, .Bad_Field
 		}
@@ -639,25 +503,6 @@ load_index_reqs :: proc(
 	return out, .None
 }
 
-// --- §17 tilemaps (schema v12) ----------------------------------------------
-
-// load_tilemaps reads each §17 tile-layer record: the lead line `tilemap NAME
-// CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT` (v12 anchor; v17
-// ATLAS — the anchor is the world point of the grid's top-left corner as two
-// raw Q32.32 Fixed fields, the authoritative grid→world mapping datum the bake
-// emitted from its level bounds; ATLAS is the layer's tileset atlas handle name,
-// the same name the [assets] atlas record is keyed by, `-` for a degenerate
-// palette-less layer), then exactly PALETTE_COUNT `tile NAME SOLID CELL_X CELL_Y`
-// palette lines (legend order, each carrying its §18 §2 baked collision verdict +
-// atlas-cell coordinate, v17), then exactly ROWS `row …` lines of COLS cells — a
-// decimal palette index into THIS record's palette or `-` for a tile-less cell.
-// Every shape violation is the fail-closed .Bad_Field refusal the section molds
-// share: a non-positive dimension or cell size, a malformed anchor, a sub-record
-// run that does not split exactly into the declared palette+row counts, a
-// malformed palette line, a row of the wrong arity, or a cell index outside the
-// palette — never a best-effort partial layer. The anchor is READ, never derived:
-// the v11 derivation (0, rows*cell_size) — exact only for a grid spanning its
-// bounds from the origin — retired with the v12 carry (the tilemap-anchor ADR).
 load_tilemaps :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -668,7 +513,6 @@ load_tilemaps :: proc(
 	out := make([]Tile_Layer, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// tilemap NAME CELL_SIZE COLS ROWS ANCHOR_X ANCHOR_Y ATLAS PALETTE_COUNT
 		if len(f) != 9 || f[0] != "tilemap" {
 			return nil, .Bad_Field
 		}
@@ -677,23 +521,14 @@ load_tilemaps :: proc(
 		rows, r_ok := strconv.parse_int(f[4])
 		anchor_x, ax_ok := strconv.parse_i64(f[5])
 		anchor_y, ay_ok := strconv.parse_i64(f[6])
-		// f[7] is the ATLAS handle name (v17): the layer's tileset atlas, the same
-		// name the [assets] atlas record is keyed by. The wire `-` is the degenerate
-		// palette-less layer (no atlas) — carried as the empty string, so the textured
-		// tile pass fail-closes its resolution (no atlas to resolve against).
 		atlas := f[7] == "-" ? "" : strings.clone(f[7], allocator)
 		palette_count, p_ok := strconv.parse_int(f[8])
 		if !cs_ok || !c_ok || !r_ok || !ax_ok || !ay_ok || !p_ok {
 			return nil, .Bad_Field
 		}
-		// A degenerate grid or cell size never reaches a query — the §18 §5
-		// bake gates reject it upstream, so its arrival here is a malformed
-		// artifact, refused (cell_of divides by the cell size).
 		if cell_size <= 0 || cols <= 0 || rows <= 0 || palette_count < 0 {
 			return nil, .Bad_Field
 		}
-		// The sub-record run splits exactly: PALETTE_COUNT tile lines, then
-		// ROWS row lines (§17) — an under- or over-shaped record is refused.
 		if len(rec.subs) != palette_count + rows {
 			return nil, .Bad_Field
 		}
@@ -704,9 +539,6 @@ load_tilemaps :: proc(
 			cell_size = cell_size,
 			cols      = cols,
 			rows      = rows,
-			// The v12 anchor carry is authoritative: the raw Q32.32 bits read
-			// off the lead line ARE the grid's top-left world corner — the
-			// bake's (bounds_min.x, bounds_max.y).
 			top_left  = Vec2{x = Fixed(anchor_x), y = Fixed(anchor_y)},
 			atlas     = atlas,
 			palette   = palette,
@@ -716,12 +548,6 @@ load_tilemaps :: proc(
 	return out, .None
 }
 
-// load_tile_palette reads a run of `tile NAME SOLID CELL_X CELL_Y` sub-records
-// (§17) — the layer's legend-order tile types, each with its baked §18 §2
-// collision verdict and its §18 §2 atlas-cell coordinate (v17). The line is
-// exactly five tokens; SOLID is the §2.5 bare bool, CELL_X/CELL_Y the decimal
-// §2.2 tileset cell coordinate the textured render pass resolves the tile's
-// pixel rect from (against the layer's atlas, the same §19 art a sprite draws).
 load_tile_palette :: proc(
 	subs: []string,
 	allocator := context.allocator,
@@ -751,12 +577,6 @@ load_tile_palette :: proc(
 	return out, .None
 }
 
-// load_tile_rows reads the layer's `row C0 … C{COLS-1}` lines into the
-// row-major cell slice (§17): each line carries exactly COLS cells — a decimal
-// palette index in [0, palette_count) or `-` for a tile-less cell
-// (TILE_CELL_EMPTY). A wrong arity, a non-numeric cell, or an index outside
-// the palette refuses — the render and collision paths index the palette
-// unconditionally, so the gate lives here, once.
 load_tile_rows :: proc(
 	subs: []string,
 	cols: int,
@@ -788,7 +608,6 @@ load_tile_rows :: proc(
 	return out, .None
 }
 
-// function_kind_from_tag maps the §9 KIND tag to Function_Kind.
 function_kind_from_tag :: proc(tag: string) -> Function_Kind {
 	switch tag {
 	case "const":
@@ -801,8 +620,6 @@ function_kind_from_tag :: proc(tag: string) -> Function_Kind {
 	return .Fn
 }
 
-// parse_span splits a `span:MODULE:LINE` token into its module name and 1-based
-// line — diagnostic provenance only, never a filesystem path (§2 purity, §9).
 parse_span :: proc(token: string) -> (module: string, line: int) {
 	rest := strings.trim_prefix(token, "span:")
 	colon := strings.last_index_byte(rest, ':')
@@ -813,11 +630,6 @@ parse_span :: proc(token: string) -> (module: string, line: int) {
 	return rest[:colon], n
 }
 
-// --- §10 behaviors ---------------------------------------------------------
-
-// load_behaviors reads each behavior record: the stage-keyed signature, its
-// gtag/param/emit sub-records shaped by their declared counts, then its step
-// body node forest (§10, §2.7) — in source-declaration order.
 load_behaviors :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -828,7 +640,6 @@ load_behaviors :: proc(
 	out := make([]Behavior_Decl, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// behavior NAME on:THING stage:STAGE contract:CONTRACT gtag_count param_count emits_count body_count
 		if len(f) < 9 {
 			return nil, .Bad_Field
 		}
@@ -860,7 +671,6 @@ load_behaviors :: proc(
 	return out, .None
 }
 
-// load_params reads a run of `param NAME TYPE` sub-records (§9, §10).
 load_params :: proc(
 	subs: []string,
 	allocator := context.allocator,
@@ -882,8 +692,6 @@ load_params :: proc(
 	return out, .None
 }
 
-// load_emits reads a run of `emit TYPE` sub-records (§10) — step's return-side
-// writes: the blackboard type, signal lists `[S]`, and command lists.
 load_emits :: proc(
 	subs: []string,
 	allocator := context.allocator,
@@ -902,18 +710,6 @@ load_emits :: proc(
 	return out, .None
 }
 
-// --- §11 pipeline_flattened ------------------------------------------------
-
-// load_pipeline reads the one total order: each `step ORDINAL stage:STAGE
-// behavior:NAME` line (§11). The ordinals are contiguous and gap-free; a gap is
-// a refusal (the derived flattened tree never drifts).
-//
-// A step's `behavior:NAME` is kept as a string and NEVER cross-checked against
-// the [behaviors] table here: an engine-closed stage (the §10 `physics:` stage's
-// `solve` battery) is a real pipeline position with NO user Behavior_Decl, so
-// the load stays total over a name the behavior table does not carry. The
-// pipeline-to-behavior binding is a separate per-stage assertion (the loader
-// records the order; it does not resolve a user behavior for an engine stage).
 load_pipeline :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -924,13 +720,12 @@ load_pipeline :: proc(
 	out := make([]Pipeline_Step, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// step ORDINAL stage:STAGE behavior:NAME
 		if len(f) < 4 {
 			return nil, .Bad_Field
 		}
 		ordinal, ok := strconv.parse_int(f[1])
 		if !ok || ordinal != i {
-			return nil, .Bad_Field // ordinals are 0-based, contiguous, gap-free
+			return nil, .Bad_Field
 		}
 		out[i] = Pipeline_Step {
 			ordinal  = ordinal,
@@ -941,10 +736,6 @@ load_pipeline :: proc(
 	return out, .None
 }
 
-// --- §12 signal_routing ----------------------------------------------------
-
-// load_routing reads each `route SIGNAL producer_count consumer_count` record
-// plus its producer/consumer sub-records, by flattened-order ordinal (§12).
 load_routing :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -955,7 +746,6 @@ load_routing :: proc(
 	out := make([]Signal_Route, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// route SIGNAL producer_count consumer_count
 		if len(f) < 4 {
 			return nil, .Bad_Field
 		}
@@ -984,8 +774,6 @@ load_routing :: proc(
 	return out, .None
 }
 
-// load_endpoints reads a run of `producer ORDINAL behavior:NAME` (or `consumer`)
-// sub-records into endpoints (§12).
 load_endpoints :: proc(
 	subs: []string,
 	keyword: string,
@@ -1012,13 +800,6 @@ load_endpoints :: proc(
 	return out, .None
 }
 
-// --- §13 setup -------------------------------------------------------------
-
-// load_setup reads the fully-evaluated [Spawn] batch: each `spawn THING
-// field_count` record plus its `set FIELD =ENCODED` sub-records, decoded to
-// concrete values (§13). Fixed and Vec2 fields are decoded bit-exact through the
-// kernel here — NO float in the load path. A field omitted in source is not
-// carried; the runtime applies the thing's default when setup spawns it.
 load_setup :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -1029,7 +810,6 @@ load_setup :: proc(
 	out := make([]Spawn_Command, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// spawn THING field_count
 		if len(f) < 3 {
 			return nil, .Bad_Field
 		}
@@ -1046,21 +826,6 @@ load_setup :: proc(
 	return out, .None
 }
 
-// load_spawn_field decodes one `set FIELD =ENCODED` sub-record into a typed
-// Spawn_Field. The encoded value's shape is self-describing — the reader
-// discriminates on the LEADING byte of ENCODED (§13): `vec2` opens the Vec2 spread,
-// `[` a list, `(`-after-a-name a composite record, `::` a bare enum, a digit a
-// scalar (decoded as Fixed — the raw bits round-trip identically whether the source
-// type was Int or Fixed, and the thing's Field_Decl carries the type for the
-// interpreter). NO float.
-//
-// The COMPOSITE forms (a `Body(…)` record, a `[Layer::…]` list — the engine-record
-// columns yard's setup first reaches) are tested BEFORE the bare-enum `::` arm: a
-// composite token carries nested `::` tokens (e.g. `Body(layer=Layer::Wall,…)`), so
-// the `::` arm would mis-route it; a `(`-after-a-name and a leading `[` are the sound
-// discriminators (a bare `Enum::Case` is paren- and bracket-free, §2.6). A composite
-// keeps its raw token for lazy decode — its nested field types resolve against the
-// Program, which spawn_field_to_value has but the loader does not yet.
 load_spawn_field :: proc(
 	sub: string,
 	allocator := context.allocator,
@@ -1069,7 +834,6 @@ load_spawn_field :: proc(
 	err: Artifact_Error,
 ) {
 	sf := strings.fields(sub, context.temp_allocator)
-	// set FIELD =ENCODED  (Vec2 spreads to `=vec2 x y`, so 4 tokens)
 	if len(sf) < 3 || sf[0] != "set" {
 		return {}, .Bad_Field
 	}
@@ -1078,7 +842,6 @@ load_spawn_field :: proc(
 
 	switch {
 	case encoded == "vec2":
-		// `set FIELD =vec2 x_bits y_bits` — two raw Fixed bit fields (§13).
 		if len(sf) < 5 {
 			return {}, .Bad_Field
 		}
@@ -1091,55 +854,35 @@ load_spawn_field :: proc(
 		field.vec2_x = x
 		field.vec2_y = y
 	case strings.has_prefix(encoded, "["):
-		// A §6 list token `[enc,…]` (yard's `mask: [Layer]`) — kept raw for lazy decode
-		// against the field's `[T]` element type once the Program is built.
 		field.kind = .List
 		field.encoded = strings.clone(encoded, allocator)
 	case is_composite_record_token(encoded):
-		// A §6 composite record token `Type(field=enc,…)` (yard's `body: Body`) — kept
-		// raw for lazy decode against the data decl's field types.
 		field.kind = .Record
 		field.encoded = strings.clone(encoded, allocator)
 	case strings.contains(encoded, "::"):
-		// An enum variant as a name field (§2.6), e.g. `Side::Left`.
 		field.kind = .Variant
 		field.variant = strings.clone(encoded, allocator)
 	case is_signed_decimal(encoded):
-		// A numeric scalar: keep both an Int and a Fixed reading so the
-		// interpreter can apply whichever the field's declared type calls for, both
-		// from the same raw bits (a Fixed is `value*2^32`, an Int is plain).
 		n, n_ok := decode_int(encoded)
 		fx, fx_ok := decode_fixed(encoded)
 		if !n_ok || !fx_ok {
 			return {}, .Bad_Field
 		}
-		field.kind = .Fixed // numeric default reading; int_val carries the Int view
+		field.kind = .Fixed
 		field.int_val = n
 		field.fixed = fx
 	case:
-		// A bare name with no `::` and no leading digit — treat as a variant
-		// token so the field stays loadable (pong does not hit this branch).
 		field.kind = .Variant
 		field.variant = strings.clone(encoded, allocator)
 	}
 	return field, .None
 }
 
-// is_composite_record_token reports whether a §6 ENCODED token is the composite
-// inline-constructor form `Type(field=enc,…)` — a `(` after a leading name and a
-// trailing `)`. It is the §13 `(`-after-a-name discriminator that separates a
-// composite record (`Body(kind=…,…)`) from a bare enum token (`Layer::Wall`, which is
-// paren-free): a `(` at position 0 would be a malformed token (no constructor name),
-// so the open paren must follow at least one name byte. The nested `::` inside the
-// body never trips this — the test is the OUTER paren, decided before the bare-enum
-// `::` arm.
 is_composite_record_token :: proc(token: string) -> bool {
 	open := strings.index_byte(token, '(')
 	return open > 0 && strings.has_suffix(token, ")")
 }
 
-// is_signed_decimal reports whether a token is a plain signed decimal integer —
-// the cheap discriminator between a numeric setup value and a name token.
 is_signed_decimal :: proc(token: string) -> bool {
 	if len(token) == 0 {
 		return false
@@ -1159,10 +902,6 @@ is_signed_decimal :: proc(token: string) -> bool {
 	return true
 }
 
-// --- §14 bindings ----------------------------------------------------------
-
-// load_bindings reads the resolved §23 axis/button source map: each `bind KIND
-// PLAYER ACTION source:SOURCE` line, in source-call order (bindings stack, §14).
 load_bindings :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -1173,7 +912,6 @@ load_bindings :: proc(
 	out := make([]Binding, len(section.records), allocator)
 	for rec, i in section.records {
 		f := record_fields(rec)
-		// bind axis|button PLAYER ACTION source:SOURCE
 		if len(f) < 5 || f[0] != "bind" {
 			return nil, .Bad_Field
 		}
@@ -1187,17 +925,6 @@ load_bindings :: proc(
 	return out, .None
 }
 
-// --- §15 entrypoint --------------------------------------------------------
-
-// load_entrypoint reads the single `entrypoint NAME pipeline:P tick_hz:HZ
-// logical:WxH bindings:B [seed:N]` record — the runtime wiring (§15). tick_hz is
-// the one fixed tick rate (60 for pong); logical is the fixed §20 §3 draw space in
-// integer world units the present pass letterboxes to — both dimensions must
-// be positive, so a degenerate extent is refused at load, never projected. The
-// trailing `seed:N` field is OPTIONAL (the §25 §60 baked config seed): a project
-// that bakes `seed = N` in entrypoints.fcfg emits a 7th field, and an artifact with
-// no config seed emits the 6 fields only — a 6-field record loads has_seed=false, so
-// the seed field is purely additive and never required.
 load_entrypoint :: proc(
 	section: Artifact_Section,
 	allocator := context.allocator,
@@ -1209,7 +936,6 @@ load_entrypoint :: proc(
 		return {}, .Section_Count_Mismatch
 	}
 	f := record_fields(section.records[0])
-	// entrypoint NAME pipeline:PIPELINE tick_hz:HZ logical:WxH bindings:BINDINGS [seed:N]
 	if len(f) < 6 || f[0] != "entrypoint" {
 		return {}, .Bad_Field
 	}
@@ -1234,8 +960,6 @@ load_entrypoint :: proc(
 		has_seed = true
 		seed = parsed_seed
 	}
-	// Clone the three view-into-`content` strings onto `allocator` so the Program is
-	// self-owned (matches the sibling loaders; unblocks freeing the raw bytes).
 	return Entrypoint {
 			name = strings.clone(f[1], allocator),
 			pipeline = strings.clone(strings.trim_prefix(f[2], "pipeline:"), allocator),
@@ -1249,11 +973,6 @@ load_entrypoint :: proc(
 		.None
 }
 
-// parse_logical_field splits a `WxH` logical-extent value into its integer
-// width/height world units (`160x120` → 160, 120). Both dimensions must be
-// positive integers; a missing `x` separator, a non-integer side, or a
-// zero/negative extent rejects (§15 — the present pass never sees a degenerate
-// letterbox space).
 parse_logical_field :: proc(text: string) -> (w: int, h: int, ok: bool) {
 	sep := strings.index_byte(text, 'x')
 	if sep <= 0 || sep >= len(text) - 1 {
@@ -1267,20 +986,10 @@ parse_logical_field :: proc(text: string) -> (w: int, h: int, ok: bool) {
 	return parsed_w, parsed_h, true
 }
 
-// --- shared helpers --------------------------------------------------------
-
-// record_fields splits a record's lead line into space-delimited tokens. A
-// String token (Lk:bytes) never contains a raw space here — pong's String fields
-// (gtag, version) live in sub-records, and the few lead-line fields are names and
-// counts — so whitespace splitting is sound for lead lines (§2.1).
 record_fields :: proc(rec: Artifact_Record) -> []string {
 	return strings.fields(rec.lead, context.temp_allocator)
 }
 
-// split_params_and_body partitions a function record's sub-records into its
-// param run (the first `param_count` sub-records) and the body node run that
-// follows (§9). A param sub-record that is not `param …` where one is expected is
-// a refusal.
 split_params_and_body :: proc(
 	subs: []string,
 	param_count: int,
@@ -1295,8 +1004,6 @@ split_params_and_body :: proc(
 	return subs[:param_count], subs[param_count:], .None
 }
 
-// params_clone reads `param NAME TYPE` lines (already separated) into Param_Decl
-// — the function-side twin of load_params, which behaviors reuse directly.
 params_clone :: proc(
 	param_lines: []string,
 	allocator := context.allocator,
@@ -1304,8 +1011,6 @@ params_clone :: proc(
 	out := make([]Param_Decl, len(param_lines), allocator)
 	for line, i in param_lines {
 		sf := strings.fields(line, context.temp_allocator)
-		// param NAME TYPE — shape already asserted by split_params_and_body's
-		// caller via the declared count; clone the two name fields.
 		name := sf[1] if len(sf) > 1 else ""
 		type := sf[2] if len(sf) > 2 else ""
 		out[i] = Param_Decl {
@@ -1316,9 +1021,6 @@ params_clone :: proc(
 	return out
 }
 
-// slice_window returns the next `count` sub-records starting at `cursor^` and
-// advances the cursor past them — the shaping primitive for a record whose
-// sub-records are several declared-count runs back to back (§17 step 3).
 slice_window :: proc(subs: []string, cursor: ^int, count: int) -> []string {
 	start := cursor^
 	end := start + count

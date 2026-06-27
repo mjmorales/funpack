@@ -1,79 +1,19 @@
-// The LIVE device boundary: owns the SDL resource lifecycle (window, renderer,
-// controllers) and the SDL→§23 name maps that translate real keyboard + gamepad
-// events onto the SAME injected raw-event queue the headless producer drains
-// (bindings_resolve.odin's Device_Queue). The per-frame PollEvent drain itself
-// lives in the session driver (session_live.odin's poll_session_events — the
-// single drain), which routes every event through THIS layer's maps. It is an
-// interchangeable producer of the §23 §5 vocabulary — the deterministic contract
-// is the resolved snapshot, not the device, so a live session enqueues exactly
-// the raw events a headless one would and replays bit-identically (§23 §4,
-// §09 §6).
-//
-// ODIN-FIRST (verified): vendor:sdl2 covers all three surfaces this layer needs
-// — keyboard (sdl_keyboard/sdl_scancode + KEYDOWN/KEYUP events), gamepad buttons
-// (sdl_gamecontroller + CONTROLLERBUTTONDOWN/UP), and stick axes (the game
-// controller axis API + CONTROLLERAXISMOTION) — so no custom device path is
-// written; this layer is a thin SDL→§23 translation over the existing queue.
-//
-// IMPURE BY DESIGN: this is the ONLY runtime code that reads the real clock and
-// real devices. Nothing it produces reaches sim state except through the
-// already-resolved snapshot — it adds raw events to the queue, bindings
-// resolution folds them, and the resolved Input is the sole nondeterminism
-// record. It adds NO resolution logic and NO new snapshot type, and it does NOT
-// touch the snapshot, bindings resolution, or recording (those are
-// device-agnostic and resolved elsewhere).
-//
-// HEADLESS/LIVE SEPARATION: the SDL import is held only by a type alias so
-// -vet -strict-style accepts it, while every SDL CALL lives behind
-// `when #config(FUNPACK_LIVE, false)`. A default (headless/test/CI) build
-// references no SDL symbol and links nothing; the live polling compiles only
-// under `-define:FUNPACK_LIVE=true`, the build-tag/when-clause separation the
-// Odin build model allows for a single-package file (an import cannot itself sit
-// inside a `when`). The deterministic suite never compiles the live calls, so it
-// is unaffected by this file's presence (§23 §5 producer interchangeability).
 package funpack_runtime
 
 import sdl "vendor:sdl2"
 
-// Sdl_Event keeps the vendor:sdl2 import live for -vet under a headless build
-// (where every SDL call below is compiled out) WITHOUT emitting a single SDL
-// symbol — a type alias is dead-stripped, so the headless binary links no SDL.
-// The live path uses this same alias as its event buffer type.
 Sdl_Event :: sdl.Event
 
-// STICK_AXIS_RANGE is SDL's full-scale stick magnitude (SDL reports an axis as
-// an i16 in [-32768, 32767]); the live sampler divides a raw reading by this on
-// the fixed-point kernel to land it in [-1, 1] with no float in the path, so the
-// resolver's engine deadzone and clamp see a Fixed exactly like an injected one
-// (§23 §4). The negative extreme (-32768) maps slightly past -1 and the
-// resolver's clamp pins it, matching the headless contract.
 STICK_AXIS_RANGE :: 32767
 
 when #config(FUNPACK_LIVE, false) {
 
-	// Live_Device is the open SDL resource set the live producer holds for the
-	// session: the visible window the OS routes keyboard focus to, the renderer
-	// the session loop presents the frame through, and the game controllers opened
-	// at startup. The keyboard needs no handle — SDL delivers key events through
-	// the event queue once the window holds focus. The renderer is created here so
-	// its lifetime is bound to the open/close pair; this layer creates and destroys
-	// it but never draws or presents — drawing and presenting belong to the session
-	// loop, not this layer.
 	Live_Device :: struct {
 		window:      ^sdl.Window,
 		renderer:    ^sdl.Renderer,
 		controllers: [dynamic]^sdl.GameController,
 	}
 
-	// live_device_open initializes SDL's events + game controller subsystems,
-	// creates a visible width×height window so the OS delivers keyboard events and
-	// the session is on screen, creates the renderer the present boundary draws
-	// through, and opens every connected game controller. `ok` is false when SDL
-	// init, the window, or the renderer fails — each failure unwinds the resources
-	// already opened (reverse order) before returning, so a caller on a machine
-	// without a display or GPU fails closed rather than polling a half-initialized
-	// SDL. This is impure (touches the real device stack) and runs once before the
-	// tick loop, never per tick.
 	live_device_open :: proc(
 		width: i32,
 		height: i32,
@@ -120,10 +60,6 @@ when #config(FUNPACK_LIVE, false) {
 		return Live_Device{window = window, renderer = renderer, controllers = controllers}, true
 	}
 
-	// live_device_close releases every SDL resource the live producer opened —
-	// the controllers, then the renderer, then the window, then SDL itself — in
-	// reverse open order. Called once after the tick loop; the dynamic controller
-	// buffer is freed alongside.
 	live_device_close :: proc(device: Live_Device) {
 		dev := device
 		for handle in dev.controllers {
@@ -141,33 +77,10 @@ when #config(FUNPACK_LIVE, false) {
 
 }
 
-// stick_sample_to_fixed converts a raw i16 axis reading to a fixed-point
-// value in units of the full-scale range — divide with i64 arithmetic lifted
-// through to_fixed, so NO float ever enters (§23 §4). It references no SDL
-// symbol, so it compiles in every build and the headless suite pins its rails:
-// the i16 range is asymmetric, so -32768 lands just past -1 and the resolver's
-// downstream clamp pins it to exactly -1 (the deadzone/clamp is the resolver's,
-// not this conversion's). +32767 is exactly 1.0.
 stick_sample_to_fixed :: proc(raw: i16) -> Fixed {
 	return fixed_div(to_fixed(i64(raw)), to_fixed(STICK_AXIS_RANGE))
 }
 
-// --- SDL → §23 name maps (compiled in every build) -----------------------
-// These translate an SDL device identifier onto the §23 enum-variant string the
-// bindings table parses (Key::W, Stick::Left, PadButton::A). They reference only
-// vendor:sdl2 ENUM VALUES, never an SDL call, so they hold no link dependency and
-// compile in headless builds too — keeping the SDL→§23 vocabulary in one place
-// the live poll above reads.
-
-// key_code_from_scancode maps an SDL physical scancode onto the §23 "Key::<Name>"
-// token the bindings table matches by equality. `named` is false for a scancode
-// with no §23 Key variant, so an unbindable key is dropped before it reaches the
-// queue. The covered set is the full §23 Key vocabulary the surface admits — the
-// physical-key alphabet (every letter A..Z), the directional arrows + Space, the
-// control/modifier keys (Escape/Shift/Tab), and the function keys yard's menu
-// binds (F5/F9, plus M/Enter for Save/Restore/ToggleMotion/Apply). A live binding
-// written against any of these resolves its physical scancode; a scancode outside
-// the set is simply not a §23 key.
 key_code_from_scancode :: proc(scancode: sdl.Scancode) -> (code: string, named: bool) {
 	#partial switch scancode {
 	case .W:
@@ -196,11 +109,6 @@ key_code_from_scancode :: proc(scancode: sdl.Scancode) -> (code: string, named: 
 		return "Key::F5", true
 	case .F9:
 		return "Key::F9", true
-	// The full physical-key alphabet the surface admits (W/A/S/D/M are mapped
-	// above; the rest follow here so each §23 Key::<Letter> the compiler now
-	// typechecks also binds live input). The token spelling matches the surface
-	// allow-list by equality — Key::B, Key::C, ... — so a binding written against
-	// any letter resolves the matching physical scancode.
 	case .B:
 		return "Key::B", true
 	case .C:
@@ -243,9 +151,6 @@ key_code_from_scancode :: proc(scancode: sdl.Scancode) -> (code: string, named: 
 		return "Key::Y", true
 	case .Z:
 		return "Key::Z", true
-	// Control/modifier keys the surface admits. Shift maps the LEFT shift
-	// scancode to the single §23 token Key::Shift; right shift (RSHIFT) aliases
-	// to the SAME token so either physical shift resolves a Key::Shift binding.
 	case .ESCAPE:
 		return "Key::Escape", true
 	case .LSHIFT, .RSHIFT:
@@ -256,10 +161,6 @@ key_code_from_scancode :: proc(scancode: sdl.Scancode) -> (code: string, named: 
 	return "", false
 }
 
-// pad_code_from_button maps an SDL game-controller button onto the §23
-// "PadButton::<Name>" token. `named` is false for a button with no §23 variant,
-// dropping it before the queue. The names mirror SDL's standard face/shoulder/
-// dpad layout so a binding written against PadButton::A resolves the A face button.
 pad_code_from_button :: proc(button: sdl.GameControllerButton) -> (code: string, named: bool) {
 	#partial switch button {
 	case .A:
@@ -290,12 +191,6 @@ pad_code_from_button :: proc(button: sdl.GameControllerButton) -> (code: string,
 	return "", false
 }
 
-// mouse_code_from_button maps an SDL mouse-button index onto the §23
-// "MouseButton::<Name>" token — the digital mirror of pad_code_from_button.
-// SDL reports the button index as a raw u8 (sdl.BUTTON_LEFT/MIDDLE/RIGHT, the
-// standard three buttons), not an enum; an index with no §23 variant (extra
-// buttons X1/X2) is `named` false and dropped before the queue, matching the pad
-// map's drop-the-unbindable discipline.
 mouse_code_from_button :: proc(button: u8) -> (code: string, named: bool) {
 	switch button {
 	case sdl.BUTTON_LEFT:
@@ -308,12 +203,6 @@ mouse_code_from_button :: proc(button: u8) -> (code: string, named: bool) {
 	return "", false
 }
 
-// stick_from_axis maps an SDL game-controller axis onto its §23 stick code and
-// the Stick_Axis component the queue's stick sample carries. SDL's LEFTX/LEFTY
-// resolve to "Stick::Left" X/Y and RIGHTX/RIGHTY to "Stick::Right" X/Y — the same
-// (code, axis) pair bindings resolution keys a stick_x/stick_y source on. The
-// analog triggers (TRIGGERLEFT/RIGHT) are not §23 sticks, so `named` is false and
-// they are dropped before the queue.
 stick_from_axis :: proc(axis: sdl.GameControllerAxis) -> (code: string, stick_axis: Stick_Axis, named: bool) {
 	#partial switch axis {
 	case .LEFTX:

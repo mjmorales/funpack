@@ -1,24 +1,8 @@
-// §28 observe-session acceptance: the duplex NDJSON request/response fold serves
-// the observe set (signals / pipeline / trace / diff / replay_behavior /
-// draw-list dump) as PURE reads of the retained committed COW chain, and
-// observation is non-perturbing BY CONSTRUCTION — the digest-pin test below runs
-// the full observe battery against a golden pong session and proves the observed
-// session's canonical chain digests bit-identical to an unobserved reference run
-// (per-tick AND session digests, plus world_versions_equal on the final commit).
-//
-// The envelope-shape tests pin EXACT response lines against a hand-built
-// single-behavior artifact (the hot-reload fixture's shape): the envelope is
-// versioned exact-match (§28 §2), so its byte shape is contract, not styling —
-// a moved field is a protocol break the exact-string assertions catch.
 package funpack_runtime
 
 import "core:strings"
 import "core:testing"
 
-// INTROSPECT_FIXTURE is a minimal one-behavior artifact (the restore/reload
-// fixture's build-A shape): a Hero with a Fixed pos advancing 1.0/tick, plus
-// record-valued columns (stats/home) so the value encoding renders composite
-// blackboards, not just scalars.
 @(private = "file")
 INTROSPECT_FIXTURE :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
@@ -55,8 +39,6 @@ INTROSPECT_FIXTURE :: "funpack-artifact 19\n" +
 	"[entrypoint 1]\n" +
 	"entrypoint main pipeline:Intro tick_hz:60 logical:160x120 bindings:bindings\n"
 
-// fixture_session loads the fixture and opens a session over `ticks` empty
-// input snapshots — the shared opener the envelope-shape tests fold from.
 @(private = "file")
 fixture_session :: proc(
 	t: ^testing.T,
@@ -78,8 +60,6 @@ fixture_session :: proc(
 	return program, session
 }
 
-// The pipeline observe answers the flattened §11 order with the exact-match
-// versioned envelope — the full response line is pinned byte-for-byte.
 @(test)
 test_introspect_pipeline_envelope :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 2)
@@ -91,10 +71,6 @@ test_introspect_pipeline_envelope :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// The trace observe re-folds one tick and reports the behavior's (in → out):
-// pre-eval blackboard, bound reads, returned value, post-tick committed
-// blackboard — every funpack value a string in the §28 debug projection (a Fixed
-// `pos` reads as the source literal `1.0`, not raw Q32.32 bits).
 @(test)
 test_introspect_trace_behavior_transition :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 3)
@@ -111,8 +87,6 @@ test_introspect_trace_behavior_transition :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// The diff observe compares two retained committed versions and names exactly
-// the changed columns with from/to encodings — a pure two-version read.
 @(test)
 test_introspect_diff_changed_fields :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 2)
@@ -125,9 +99,6 @@ test_introspect_diff_changed_fields :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// The replay_behavior observe re-runs the behavior in isolation over its
-// captured inputs and verifies the pure re-run reproduces the in-fold result —
-// §28 §1's pure-behavior replay lever, with the purity check as a value.
 @(test)
 test_introspect_replay_behavior_purity :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 2)
@@ -141,11 +112,6 @@ test_introspect_replay_behavior_purity :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// The state observe lists a thing's committed instances with their field values — the
-// read-only state inspector, the complement to draw_list/signals/diff. It reads a
-// committed version with no fork and no re-fold; the field values render in the legible
-// projection (a Fixed `pos` as `2.0`, a record verbatim), keyed by sorted field name.
-// The full envelope is pinned: state is a contract surface, not styling.
 @(test)
 test_introspect_state_lists_committed_instance :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 2)
@@ -157,27 +123,19 @@ test_introspect_state_lists_committed_instance :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// state defaults `tick` to the lineage head when omitted, and refuses an unknown thing
-// with a Session-class error rather than a fabricated empty list — the existence question
-// gets a real answer, no longer requiring an abuse of control_set (a write) to probe a read.
 @(test)
 test_introspect_state_default_tick_and_unknown_thing :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 3)
 	s := session
-	// Omitted tick reads the head (tick 2 of a 3-tick run): pos has advanced to 3.0.
 	head := session_request(&s, `{"id":6,"cmd":"state","args":{"thing":"Hero"}}`)
 	testing.expect(t, strings.contains(head, `"ok":true`), head)
 	testing.expect(t, strings.contains(head, `"tick":2`), "an omitted tick reads the lineage head")
 	testing.expect(t, strings.contains(head, `"pos":"3.0"`), head)
-	// An unknown thing refuses.
 	unknown := session_request(&s, `{"id":7,"cmd":"state","args":{"thing":"Nope"}}`)
 	testing.expect(t, strings.contains(unknown, `"ok":false`), "an unknown thing must refuse")
 	testing.expect(t, strings.contains(unknown, "unknown thing"), unknown)
 }
 
-// state filters to one row when `instance` is supplied — pong runs two Paddles, so the
-// filter narrows a multi-instance table to the addressed id (the per-instance read the
-// debugger reaches for after seeing the full list).
 @(test)
 test_introspect_state_instance_filter :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -191,37 +149,9 @@ test_introspect_state_instance_filter :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(one, `"id":0`), "the instance filter must exclude the other paddle")
 }
 
-// SEEDLESS_STARTUP_ARTIFACT is the friction-116a1681 reproduction fixture: a real
-// funpack build of a SEEDLESS game whose startup population is built PROGRAMMATICALLY
-// (a fold/concat over a length-counted list — colony-sim's `concat(red, blue)` shape).
-// The §13 [setup] fold (resolve_setup_spawns) folds only a LITERAL `return [Spawn(…)]`
-// list, so a programmatic body lands in [functions] and the artifact carries `[setup 0]`
-// — confirmed at build time (its `[setup 0]` + `function setup startup … return:[Spawn]`).
-// The source is committed beside it (testdata/seedless_startup_spawn.fun) so the shape
-// is regenerable. #load embeds it for a hermetic golden — no cwd, no funpack invocation.
 @(private = "file")
 SEEDLESS_STARTUP_ARTIFACT := #load("testdata/seedless_startup_spawn.artifact", string)
 
-// test_introspect_seedless_programmatic_startup_populates is the friction-116a1681
-// junction: a fresh debug session over a SEEDLESS game whose startup spawns
-// PROGRAMMATICALLY must FOLD that startup body and populate the committed timeline —
-// inspect_state must list the spawned instances at the post-startup version AND at
-// every folded tick, not the empty list the bug returned at every ring snapshot.
-//
-// THE BUG (pre-fix): the §13 [setup] batch is the COMPILE-TIME constant fold of the
-// setup body, and the emitter folds only a literal `[Spawn(…)]` list — a fold/concat
-// population is not literal, so the artifact carries `[setup 0]` with the body in
-// [functions]. The SEEDED startup path evaluates such a body to thread its Rng, but a
-// SEEDLESS game (no Rng resource) takes the bare run_startup batch, which applied only
-// the EMPTY [setup 0] — so the programmatic population never spawned and the whole
-// timeline read empty. The MCP empty-state diagnostic then misblamed a missing RNG seed.
-//
-// THE FIX (run_startup_body, tick.odin): run_startup now evaluates a seedless
-// [Spawn]-returning startup body when the pre-evaluated batch is empty, through the
-// SAME queue/commit seam the seeded path uses — so a seedless programmatic startup
-// populates identically to a seeded one. This test is the living spec of that junction:
-// the fixture spawns 4 Motes at startup (cols() = [0,1,2,3]), and they must be present,
-// id-dense, and advancing one cell/tick through the introspection session.
 @(test)
 test_introspect_seedless_programmatic_startup_populates :: proc(t: ^testing.T) {
 	program := new(Program, context.allocator)
@@ -229,9 +159,6 @@ test_introspect_seedless_programmatic_startup_populates :: proc(t: ^testing.T) {
 	testing.expect(t, err == .None, "the seedless programmatic-startup artifact must load")
 	program^ = loaded
 
-	// Open a fresh session exactly as the MCP session_start path does: empty-input
-	// snapshots, NO_SEED (the game declares no Rng resource). The bug made this session's
-	// whole timeline empty; the fix folds the startup body so it populates.
 	ticks :: 4
 	inputs := make([]Input, ticks, context.allocator)
 	for i in 0 ..< ticks {
@@ -241,36 +168,22 @@ test_introspect_seedless_programmatic_startup_populates :: proc(t: ^testing.T) {
 	s := session
 	testing.expect(t, !s.seed.has_seed, "the game is seedless (no Rng resource)")
 
-	// The empty-state diagnostic's distinguishing fact (deliverable #2): status reports
-	// seeded=false AND uses_rng=false — this game draws no RNG anywhere, so an empty
-	// state read is a genuine population fact, NOT the missing-seed precondition the
-	// diagnostic must not blame. A consumer reads uses_rng to tell the two apart.
 	status := session_request(&s, `{"id":0,"cmd":"status"}`)
 	testing.expect(t, strings.contains(status, `"seeded":false`), status)
 	testing.expect(t, strings.contains(status, `"uses_rng":false`), status)
 
-	// The post-startup version (tick -1) is the state tick 0 folds from: it MUST carry
-	// the 4 programmatically-spawned Motes, not the empty list the bug returned.
 	startup := session_request(&s, `{"id":1,"cmd":"state","args":{"thing":"Mote","tick":-1}}`)
 	testing.expect(t, strings.contains(startup, `"ok":true`), startup)
 	for id in 0 ..< 4 {
 		testing.expectf(t, strings.contains(startup, sbprint_id(id)), "Mote#%d must be spawned at startup, got: %s", id, startup)
 	}
 
-	// A real ring snapshot (the friction repro inspected tick 48 of a 64-tick run): every
-	// folded tick must still carry the population. The Motes advance one cell/tick (step),
-	// so tick 2's Mote#0 sits at x = startup_x + 3 (-1 → 0 → 1 → 2 is three advances; the
-	// exact value is the step rule's, asserted only as "present and advancing").
 	tick2 := session_request(&s, `{"id":2,"cmd":"state","args":{"thing":"Mote","tick":2}}`)
 	testing.expect(t, strings.contains(tick2, `"ok":true`), tick2)
 	for id in 0 ..< 4 {
 		testing.expectf(t, strings.contains(tick2, sbprint_id(id)), "Mote#%d must persist at a folded tick, got: %s", id, tick2)
 	}
 
-	// The introspection-driven startup fold is BIT-IDENTICAL to a plain run_startup of
-	// the same program (the determinism warranty for the introspection path): the session
-	// retains exactly the version a CLI fold produces, so the two startup versions are
-	// world_versions_equal. This pins that observing the startup did not perturb it.
 	world := new_world(program^, context.allocator)
 	base := initial_version(world, context.allocator)
 	reference := run_startup(program, base, context.allocator)
@@ -281,8 +194,6 @@ test_introspect_seedless_programmatic_startup_populates :: proc(t: ^testing.T) {
 	)
 }
 
-// sbprint_id renders the `"id":N` substring a state response carries for instance N —
-// the existence probe the seedless-startup junction asserts against the rendered JSON.
 @(private = "file")
 sbprint_id :: proc(id: int) -> string {
 	b := strings.builder_make(context.allocator)
@@ -291,9 +202,6 @@ sbprint_id :: proc(id: int) -> string {
 	return strings.to_string(b)
 }
 
-// golden_pong_session opens an observe session over the EXACT golden pong run
-// (the committed acceptance script) — the shared opener for the pong-backed
-// observe tests and the digest-pin acceptance.
 @(private = "file")
 golden_pong_session :: proc(
 	t: ^testing.T,
@@ -312,11 +220,6 @@ golden_pong_session :: proc(
 	return program, inputs, session
 }
 
-// trace of a RENDER-stage behavior re-projects the render stage with the observe tap
-// armed, so a render behavior reports its in→out per instance instead of the
-// silent empty step list a sim-fold-only trace returned (the sim fold SKIPS render).
-// draw_ball runs once over the single Ball; its trace must carry a real step with the
-// instance and the behavior's returned [Draw] value, never `"steps":[]`.
 @(test)
 test_introspect_trace_render_behavior_captured :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -330,14 +233,9 @@ test_introspect_trace_render_behavior_captured :: proc(t: ^testing.T) {
 		"a render behavior that ran must trace a non-empty step list",
 	)
 	testing.expect(t, strings.contains(response, `"instance":0`), "the single Ball instance must be traced")
-	// The returned [Draw] value is rendered in the debug projection — a Ball draws a
-	// Rect, whose decimal-lane projection appears in the step's result.
 	testing.expect(t, strings.contains(response, "Rect("), response)
 }
 
-// trace of an AUDIO-stage behavior answers an explicit unsupported-stage marker:
-// audio is a deferred slot, not folded into the interior tick, so a trace returns the
-// stage + a note rather than a misleading empty step list that reads as "ran zero times."
 @(test)
 test_introspect_trace_audio_stage_marker :: proc(t: ^testing.T) {
 	program := new(Program, context.allocator)
@@ -357,23 +255,10 @@ test_introspect_trace_audio_stage_marker :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(response, `"note":`), "the marker must explain why the stage is not folded")
 }
 
-// trace of a STARTUP-stage behavior answers the SAME unsupported-stage marker as
-// audio — startup runs once before tick 0 (the §13 spawn batch), not per-tick, so it
-// is not part of a per-tick re-fold. The defect this pins: a startup behavior (`setup`)
-// exists ONLY as a §11 pipeline step, never as a §10 Behavior_Decl (the spawn batch
-// lives in Program.setup), so program_behavior misses it and the bare trace handler
-// answered the generic "unknown behavior" — a NAME/namespace error a debugger reads as
-// "wrong name, start guessing", contradicting inspect_pipeline which DOES enumerate
-// `setup`. The fix unifies the two surfaces on ONE behavior vocabulary: trace resolves a
-// name through the pipeline (the same namespace pipeline enumerates), so a startup step
-// reaches the self-describing marker. A name in NEITHER namespace still answers
-// "unknown behavior".
 @(test)
 test_introspect_trace_startup_stage_marker :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
 	s := session
-	// `setup` is pong's startup behavior — inspect_pipeline lists it as step 0
-	// stage:startup, so inspect_trace must accept it as a known name, not deny it exists.
 	response := session_request(&s, `{"id":7,"cmd":"trace","args":{"tick":0,"behavior":"setup"}}`)
 	testing.expect(t, strings.contains(response, `"ok":true`), response)
 	testing.expect(t, strings.contains(response, `"stage":"startup"`), response)
@@ -388,15 +273,11 @@ test_introspect_trace_startup_stage_marker :: proc(t: ^testing.T) {
 		!strings.contains(response, `unknown behavior`),
 		"a behavior inspect_pipeline lists must never be denied as unknown",
 	)
-	// A name in NEITHER the behavior table NOR the pipeline still fails closed.
 	unknown := session_request(&s, `{"id":8,"cmd":"trace","args":{"tick":0,"behavior":"nope"}}`)
 	testing.expect(t, strings.contains(unknown, `"ok":false`), unknown)
 	testing.expect(t, strings.contains(unknown, `unknown behavior`), unknown)
 }
 
-// The signals observe surfaces the live dataflow: somewhere in the golden pong
-// run the score behavior routes a Goal broadcast, and the observe reports it as
-// a typed funpack record string — signals are data (§28 §1).
 @(test)
 test_introspect_signals_routed_goal :: proc(t: ^testing.T) {
 	_, inputs, session := golden_pong_session(t)
@@ -422,15 +303,6 @@ test_introspect_signals_routed_goal :: proc(t: ^testing.T) {
 	testing.expect(t, found, "the golden pong run must route at least one Goal signal")
 }
 
-// A render command whose center-anchored extent crosses the logical bounds is NOT
-// culled by the draw-list projection. The deterministic draw-list is the COMPLETE,
-// viewport-independent render output — culling it would be a determinism break, and the
-// projection carries no bounds logic at all. Forcing the Ball's center off the left edge
-// via a control set (its 3×3 rect extent then crosses x=0), the draw_list still carries
-// the Ball's Rect at the out-of-bounds `at` — a missing band is never a projection drop.
-// This pins the no-cull invariant against a future regression, and exercises the
-// observe→control loop end to end: the set takes a source literal, the draw-list `at`
-// reads back as a decimal.
 @(test)
 test_draw_list_keeps_out_of_bounds_rect :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -455,10 +327,6 @@ test_draw_list_keeps_out_of_bounds_rect :: proc(t: ^testing.T) {
 	)
 }
 
-// draw_list overlay:true appends the collision-extent debug overlay — each
-// thing's center-anchored (pos,size) extent in Magenta, on top of the normal draw-list.
-// Without the flag no overlay appears (the projection is unchanged); with it, the magenta
-// commands ride along while the real commands remain, so a convention mismatch is visible.
 @(test)
 test_introspect_draw_list_overlay :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -471,8 +339,6 @@ test_introspect_draw_list_overlay :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(over, "Text(at=Vec2("), "the overlay rides on top of, not instead of, the real draw-list")
 }
 
-// The draw-list observe dumps the §20 render projection of a committed tick —
-// pong's paddles/ball Rects and the score Text, re-projected post-hoc.
 @(test)
 test_introspect_draw_list_dump :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -483,14 +349,6 @@ test_introspect_draw_list_dump :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(response, "Text(at=Vec2("), "pong tick 0 must dump the score Text")
 }
 
-// screenshot is the §28.3 render-crossing TWIN of draw_list — explicitly NOT
-// sim-pure (§28 §2). The OUTCOME is build-split: the default define-free build has no
-// display, no codec, and the else-arm stub, so the command ROUTES but reports the
-// defined "requires live present" boundary refusal (this is what `task test` pins). The
-// FUNPACK_LIVE build SERVES the capture HEADLESS — session_capture_frame forces SDL's
-// dummy video driver and renders to a CPU surface, so no display is required (this is
-// what `task runtime:test-live` pins). The command/branch/tick addressing is identical
-// in both; only the present-crossing outcome flips on the build.
 @(test)
 test_introspect_screenshot_requires_live_present :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -498,14 +356,9 @@ test_introspect_screenshot_requires_live_present :: proc(t: ^testing.T) {
 	response := session_request(&s, `{"id":40,"cmd":"screenshot","args":{"tick":0}}`)
 	testing.expect(t, strings.contains(response, `"cmd":"screenshot"`), "the envelope must name the screenshot command")
 	when #config(FUNPACK_LIVE, false) {
-		// The FUNPACK_LIVE build serves the offscreen capture with no display: the
-		// command succeeds and returns the qoi-format pixel payload (the present pass
-		// ran on the dummy driver's CPU surface).
 		testing.expect(t, strings.contains(response, `"ok":true`), "FUNPACK_LIVE screenshot serves headless via the dummy driver")
 		testing.expect(t, strings.contains(response, `"format":"qoi"`), "the served capture carries the qoi pixel payload")
 	} else {
-		// The default define-free build refuses at the present boundary — no codec, no
-		// display, the no-display stub — and the refusal points at the build that serves it.
 		testing.expect(t, strings.contains(response, `"ok":false`), "headless default screenshot must refuse — no codec, no display")
 		testing.expect(
 			t,
@@ -520,15 +373,6 @@ test_introspect_screenshot_requires_live_present :: proc(t: ^testing.T) {
 	}
 }
 
-// THE WARRANTY DISTINCTION (§28 §2): draw_list is the sim-pure draw-list dump that
-// NEVER crosses the render/present boundary; screenshot is its render-crossing twin and
-// is NOT sim-pure. Over ONE session at the SAME tick, draw_list ALWAYS serves headless
-// with the deterministic draw-list (it never touches present). screenshot ALWAYS crosses
-// present — the distinction the warranty rests on — and that crossing's outcome is
-// build-split: the default define-free build refuses it (no codec, no display), while the
-// FUNPACK_LIVE build serves it from the offscreen CPU render path with no display. Either
-// way screenshot is the render-crossing, NOT-sim-pure twin; only whether the crossing
-// completes depends on whether the present codec is compiled in.
 @(test)
 test_introspect_draw_list_screenshot_distinction :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -540,14 +384,9 @@ test_introspect_draw_list_screenshot_distinction :: proc(t: ^testing.T) {
 
 	shot_resp := session_request(&s, `{"id":42,"cmd":"screenshot","args":{"tick":0}}`)
 	when #config(FUNPACK_LIVE, false) {
-		// The render-crossing twin completes headless under FUNPACK_LIVE: the present
-		// codec is compiled in and runs on the dummy driver's CPU surface. The distinction
-		// stands — draw_list never crossed present; screenshot did, and returns pixels.
 		testing.expect(t, strings.contains(shot_resp, `"ok":true`), "FUNPACK_LIVE screenshot crosses present and serves headless")
 		testing.expect(t, strings.contains(shot_resp, `"format":"qoi"`), "the crossed-present capture carries pixels")
 	} else {
-		// The default build's present codec is compiled out, so the render-crossing twin
-		// refuses — the visible split that the warranty rests on in the deterministic suite.
 		testing.expect(
 			t,
 			strings.contains(shot_resp, `"ok":false`),
@@ -556,9 +395,6 @@ test_introspect_draw_list_screenshot_distinction :: proc(t: ^testing.T) {
 	}
 }
 
-// screenshot validates its args through the SAME observe-addressing path draw_list
-// uses (tick required, branch resolved, tick range checked) — every reject is a
-// well-formed refusal envelope, never a crash and never a partial capture.
 @(test)
 test_introspect_screenshot_arg_refusals :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -580,16 +416,6 @@ test_introspect_screenshot_arg_refusals :: proc(t: ^testing.T) {
 	}
 }
 
-// THE include_drawlist TOGGLE ON THE SERVED PATH (§20 §5, §28 §3). screenshot crosses
-// the render/present boundary and serves the impure pixel capture; `include_drawlist:true`
-// makes the DETERMINISTIC §20 draw-list ride along in the SAME envelope as data — the
-// same render_draw_cmd_text encoding draw_list emits, so the served `commands` carry the
-// `Rect(at=Vec2(` literal alongside the qoi pixels. Both surfaces cross in one response:
-// the impure pixels AND the deterministic draw-list. Omitting the flag is the lean
-// default — pixels only, no draw-list data. This pins the toggle on the SERVED path,
-// which exists only under FUNPACK_LIVE (the codec-free default build refuses the crossing
-// before it can carry either surface), so the assertions are gated like the live-branch
-// arms of the sibling screenshot tests.
 @(test)
 test_introspect_screenshot_include_drawlist_served :: proc(t: ^testing.T) {
 	_, _, session := golden_pong_session(t)
@@ -599,9 +425,6 @@ test_introspect_screenshot_include_drawlist_served :: proc(t: ^testing.T) {
 	pixels_only := session_request(&s, `{"id":48,"cmd":"screenshot","args":{"tick":0}}`)
 
 	when #config(FUNPACK_LIVE, false) {
-		// include_drawlist:true → BOTH surfaces in one envelope: the qoi pixels (the
-		// impure present crossing) and the deterministic draw-list data (the Rect literal
-		// the draw_list dump emits via the same render_draw_cmd_text encoding).
 		testing.expect(t, strings.contains(with_drawlist, `"ok":true`), "the served include_drawlist screenshot succeeds under FUNPACK_LIVE")
 		testing.expect(t, strings.contains(with_drawlist, `"format":"qoi"`), "include_drawlist carries the impure qoi pixel payload")
 		testing.expect(
@@ -610,7 +433,6 @@ test_introspect_screenshot_include_drawlist_served :: proc(t: ^testing.T) {
 			"include_drawlist appends the deterministic draw-list as data — the same Rect encoding draw_list emits",
 		)
 
-		// No flag → the lean default: pixels cross, the draw-list does NOT ride along.
 		testing.expect(t, strings.contains(pixels_only, `"ok":true`), "the plain served screenshot succeeds under FUNPACK_LIVE")
 		testing.expect(t, strings.contains(pixels_only, `"format":"qoi"`), "the plain screenshot carries the qoi pixels")
 		testing.expect(
@@ -619,17 +441,11 @@ test_introspect_screenshot_include_drawlist_served :: proc(t: ^testing.T) {
 			"the lean default screenshot carries pixels only — no draw-list data without the flag",
 		)
 	} else {
-		// The codec-free default build refuses the crossing before it can carry either
-		// surface, so neither response reaches the served shape this test pins.
 		testing.expect(t, strings.contains(with_drawlist, `"ok":false`), "the codec-free default build refuses the crossing — no served draw-list")
 		testing.expect(t, strings.contains(pixels_only, `"ok":false`), "the codec-free default build refuses the lean crossing too")
 	}
 }
 
-// reference_unobserved_capture folds the golden run with NO session and NO
-// observe tap — the production seam verbatim — capturing per-tick digests and
-// the final committed version. It is the ground truth the digest pin compares
-// the observed session against.
 @(private = "file")
 reference_unobserved_capture :: proc(
 	program: ^Program,
@@ -652,12 +468,6 @@ reference_unobserved_capture :: proc(
 	return finish_capture(per_tick[:], allocator), version
 }
 
-// THE STORY ACCEPTANCE — observe is non-perturbing, proven with a digest pin:
-// an observe session that serves the WHOLE observe battery (pipeline, signals,
-// trace, diff, replay_behavior, draw_list) over the golden pong run digests its
-// canonical chain bit-identical to a run nobody observed — per-tick digests,
-// session digest, and the final committed world (world_versions_equal). §28 §2:
-// observation can never change behavior — no heisenbugs.
 @(test)
 test_introspect_observe_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 	program, inputs, session := golden_pong_session(t)
@@ -681,13 +491,6 @@ test_introspect_observe_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 		testing.expect(t, strings.contains(response, `"ok":true`), "every observe in the battery must succeed")
 	}
 
-	// screenshot rides the SAME non-perturbing battery: it re-projects the committed
-	// tick to a draw-list (render_version — a pure post-commit projection) before it
-	// crosses into present, so whether the present crossing REFUSES (codec-free default
-	// build) or SERVES the pixels (FUNPACK_LIVE, offscreen CPU render headless), the
-	// re-projection writes nothing to the canonical chain. The per-request outcome is
-	// build-split; the digest pin below proves it left no trace in EITHER build — the
-	// warranty that screenshot, though not sim-pure, is non-perturbing.
 	screenshots := [?]string {
 		`{"id":20,"cmd":"screenshot","args":{"tick":0}}`,
 		`{"id":21,"cmd":"screenshot","args":{"tick":599,"include_drawlist":true}}`,
@@ -715,9 +518,6 @@ test_introspect_observe_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 	)
 }
 
-// Every malformed or unservable request is refused with a well-formed
-// `"ok":false` envelope — the fold never panics on wire input, and the §28 §2
-// exact-match version gate refuses a foreign protocol version.
 @(test)
 test_introspect_request_refusals :: proc(t: ^testing.T) {
 	_, session := fixture_session(t, 2)
@@ -743,27 +543,16 @@ test_introspect_request_refusals :: proc(t: ^testing.T) {
 	}
 }
 
-// test_draw_list_dump_formats_color_named_and_rgb pins the §28 draw-list color
-// projection (the Color::Rgb introspect format): render_draw_cmd_text dumps a NAMED
-// color as `Color::<Member>` (the existing line shape, preserved after Draw_Color
-// stopped being a bare enum %v could print directly) and a Color::Rgb as
-// `Color::Rgb(<r>,<g>,<b>)` with the RAW Q32.32 channel ints — the SAME `i64(fixed)`
-// convention the Vec2 `x=%d` lanes use, so the string is deterministic (no float)
-// and byte-stable across machines. This is the line `inspect_draw_list` shows.
 @(test)
 test_draw_list_dump_formats_color_named_and_rgb :: proc(t: ^testing.T) {
 	at := Vec2{to_fixed(8), to_fixed(60)}
 	size := Vec2{to_fixed(4), to_fixed(16)}
 
-	// A named Gray rect dumps `color=Color::Gray` — unchanged from the bare-enum era.
 	named_b := strings.builder_make(context.temp_allocator)
 	render_draw_cmd_text(&named_b, Draw_Rect{at = at, size = size, color = named_color(.Gray)})
 	named_out := strings.to_string(named_b)
 	testing.expect(t, strings.contains(named_out, "color=Color::Gray"), named_out)
 
-	// A Color::Rgb rect dumps `color=Color::Rgb(<r>,<g>,<b>)` with SOURCE-LITERAL decimal
-	// channels (the legible debug projection, float-free via write_source_fixed).
-	// r=1.0 (FIXED_ONE), g=0.5 (half), b=0.0 → `Rgb(1.0,0.5,0.0)`.
 	half := fixed_div(FIXED_ONE, to_fixed(2))
 	rgb_b := strings.builder_make(context.temp_allocator)
 	render_draw_cmd_text(&rgb_b, Draw_Rect{at = at, size = size, color = rgb_color(FIXED_ONE, half, Fixed(0))})

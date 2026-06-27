@@ -1,27 +1,9 @@
-// §28 §3 self-heal `audit` acceptance — the determinism-warranty audit, the
-// observe-class twin of capture_test (introspect_audit.odin). Three behaviors are
-// pinned over the golden pong recording (seedless — Input is the sole recorded
-// nondeterminism source, Lore #9):
-//   1. WARRANTED — auditing an untampered recording reports warranted:true, audits
-//      every recorded tick, and emits no diverged object (the re-run reproduces the
-//      recorded frame digests bit-identically).
-//   2. DIVERGENT — auditing a TAMPERED recording (one recorded snapshot mutated
-//      post-open, so the recording no longer reproduces its own digests) reports
-//      warranted:false with the diverged event naming the FIRST diverging tick and
-//      the recorded-vs-reproduced digest diff.
-//   3. NON-PERTURBATION — auditing changes NO canonical digest: the session's
-//      per-tick + session frame digests are byte-identical before and after the
-//      audit (audit is observe-class, it preserves the warranty it checks).
 package funpack_runtime
 
 import "core:fmt"
 import "core:strings"
 import "core:testing"
 
-// audit_pong_session loads the golden pong artifact and opens an observe session
-// over the EXACT golden pong run (golden_session_inputs — the shared script the
-// replay/probe goldens fold from). Seedless: pong has no RNG. Returns the inputs so
-// a tamper test can mutate the session's recorded snapshot slice.
 @(private = "file")
 audit_pong_session :: proc(
 	t: ^testing.T,
@@ -40,10 +22,6 @@ audit_pong_session :: proc(
 	return program, inputs, session
 }
 
-// A warranted recording audits clean: the fresh re-fold from the recording's own
-// snapshot reproduces every recorded frame digest, so the verdict is warranted:true
-// with no diverged object. This is the property the whole capture/replay/rewind loop
-// rests on — proven, not assumed.
 @(test)
 test_audit_warranted_recording_is_bit_identical :: proc(t: ^testing.T) {
 	_, inputs, session := audit_pong_session(t)
@@ -58,14 +36,11 @@ test_audit_warranted_recording_is_bit_identical :: proc(t: ^testing.T) {
 		!strings.contains(response, `"diverged"`),
 		"a warranted recording must emit no diverged event",
 	)
-	// The whole recorded run is audited (one digest per committed tick).
 	testing.expect(
 		t,
 		strings.contains(response, audit_ticks_fragment(len(inputs))),
 		"audit must report ticks_audited == the recorded tick count",
 	)
-	// The recorded and reproduced session digests are the one-value whole-run
-	// summary; under a warranted recording they are equal.
 	recorded := session_capture(&s)
 	testing.expect(
 		t,
@@ -74,25 +49,13 @@ test_audit_warranted_recording_is_bit_identical :: proc(t: ^testing.T) {
 	)
 }
 
-// A TAMPERED recording fails the warranty: mutating one recorded snapshot AFTER the
-// session folded its canonical chain means the recording's stored digests no longer
-// match what its (now-altered) inputs reproduce — exactly the broken determinism
-// warranty audit exists to catch. The verdict is warranted:false with the diverged
-// event naming the first diverging tick and the digest diff.
 @(test)
 test_audit_tampered_recording_reports_first_divergence :: proc(t: ^testing.T) {
 	_, _, session := audit_pong_session(t)
 	s := session
 
-	// The recorded baseline the session folded at open (from the ORIGINAL inputs).
 	recorded := session_capture(&s)
 
-	// TAMPER: drop the steer input at an early steered tick. The session's retained
-	// chain (s.versions) was folded from the original steered input, but the re-fold
-	// reads s.snapshots — now altered — so the re-run diverges at the first tick the
-	// paddle position differs. (Tick 10 is within the first GOLDEN_STEER_TICKS=26
-	// steered ticks.) This mutates a recorded determinism INPUT (Lore #9), not an
-	// internal version structure — a faithful tampered recording.
 	tampered_tick := 10
 	s.snapshots[tampered_tick] = empty()
 
@@ -111,9 +74,6 @@ test_audit_tampered_recording_reports_first_divergence :: proc(t: ^testing.T) {
 		"the diverged object must be the §28 §3 diverged async-event shape",
 	)
 
-	// The diverged event localizes the FIRST diverging tick with both digests; the
-	// recorded and reproduced digests at that tick must differ (a real divergence,
-	// not a spurious equal pair).
 	divergence, diverged := first_frame_divergence(recorded, audit_refold_capture_for_test(&s))
 	testing.expect(t, diverged, "the tampered re-fold must diverge from the recorded baseline")
 	testing.expect(
@@ -126,11 +86,6 @@ test_audit_tampered_recording_reports_first_divergence :: proc(t: ^testing.T) {
 		strings.contains(response, divergence_tick_fragment(divergence.tick)),
 		"the diverged event must name the first diverging tick",
 	)
-	// The first divergence cannot PRECEDE the tampered tick — every tick before it
-	// folded from identical input, so its committed digest is unchanged. (The exact
-	// diverging tick is a sim commit-timing detail — the altered input perturbs the
-	// committed state at the tampered tick or the one immediately after — so the
-	// invariant pinned here is the lower bound, not the precise ordinal.)
 	testing.expect(
 		t,
 		divergence.tick >= tampered_tick,
@@ -138,11 +93,6 @@ test_audit_tampered_recording_reports_first_divergence :: proc(t: ^testing.T) {
 	)
 }
 
-// Auditing is observe-class: it re-folds into scratch and reads the canonical chain,
-// never writing it. So the session's canonical frame digests — per-tick AND the
-// session fold — are byte-identical before and after an audit. This is the warranty
-// audit itself rests on: the diagnostic for the determinism warranty must not perturb
-// the determinism warranty.
 @(test)
 test_audit_does_not_perturb_the_canonical_digest :: proc(t: ^testing.T) {
 	_, _, session := audit_pong_session(t)
@@ -150,8 +100,6 @@ test_audit_does_not_perturb_the_canonical_digest :: proc(t: ^testing.T) {
 
 	before := session_capture(&s)
 
-	// Audit twice — a warranted and (after tamper) a divergent audit — to prove
-	// neither path writes the canonical chain.
 	_ = session_request(&s, `{"id":1,"cmd":"audit"}`)
 	s.snapshots[10] = empty()
 	_ = session_request(&s, `{"id":2,"cmd":"audit"}`)
@@ -166,9 +114,6 @@ test_audit_does_not_perturb_the_canonical_digest :: proc(t: ^testing.T) {
 	testing.expect_value(t, after.session, before.session)
 }
 
-// audit_refold_capture_for_test exposes the file-private re-fold capture to the
-// divergence assertion above — the SAME independent re-run audit_request drives, so
-// the test compares against exactly what the command computed.
 @(private = "file")
 audit_refold_capture_for_test :: proc(s: ^Debug_Session, allocator := context.allocator) -> Frame_Capture {
 	world := new_world(s.program^, allocator)
@@ -184,8 +129,6 @@ audit_refold_capture_for_test :: proc(s: ^Debug_Session, allocator := context.al
 	}
 	return finish_capture(per_tick[:], allocator)
 }
-
-// --- response-fragment builders (byte-stable substrings the verdict must carry) ---
 
 @(private = "file")
 audit_ticks_fragment :: proc(n: int, allocator := context.allocator) -> string {

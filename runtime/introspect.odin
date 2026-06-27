@@ -1,100 +1,27 @@
-// The §28 introspection session — the observe side of the fourth structured
-// contract (runtime → agent). The session layer is a PURE request/response fold
-// over (session_state, request) → (session_state, response): one NDJSON line in,
-// one NDJSON line out, no socket — the duplex transport is a thin adapter a
-// live host wires over this seam later (deliberately deferred; the fold is the
-// contract and is harness-testable without it).
-//
-// THE ENVELOPE (§28 §2): a JSON envelope with funpack payloads — every funpack
-// value crossing the wire is a STRING in the artifact's own literal encoding
-// (§16: Int decimal, Fixed raw Q32.32 bits, `Type(f=enc,…)` records, `[enc,…]`
-// lists, `Enum::Case` tokens, `Lk:bytes` strings), the one value codec the
-// runtime already owns (decode_default_value is its inverse, so a control
-// payload round-trips through the same encoding). The protocol is versioned
-// exact-match (§28 §2): every response carries `"v"`, and a request declaring a
-// different version is refused.
-//
-// OBSERVE IS NON-PERTURBING BY CONSTRUCTION (§28 §2): every observe command is
-// a pure read of the session's RETAINED COMMITTED COW chain — `pipeline` reads
-// the artifact, `diff`/`draw_list` read committed versions, and
-// `signals`/`trace`/`replay_behavior` re-fold ONE tick from its prior committed
-// version into a scratch result with the Tick_Observe tap copying values out
-// (the tap never writes tick state). The canonical chain is never touched, so
-// an observed run digests bit-identical to an unobserved one — the digest-pin
-// acceptance test (introspect_test.odin) holds the warranty, and §28's "an
-// observe-only session is safe to run in CI" follows.
-//
-// The COW chain makes retention cheap (§28 §1: snapshots ≈ retaining a root
-// pointer): open_debug_session folds the recorded run once through the SAME
-// run_startup/step_tick seam every driver uses and keeps every committed
-// version — the §28 §3 time-travel substrate.
 package funpack_runtime
 
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 
-// INTROSPECT_PROTOCOL_VERSION is the §28 §2 exact-match envelope version. Every
-// response carries it as `"v"`; a request declaring a different `"v"` is refused
-// (a request with no `"v"` speaks the current version). A change to the envelope
-// shape or the value encoding bumps it.
 INTROSPECT_PROTOCOL_VERSION :: 1
 
-// Debug_Session is the introspection session state: the loaded program, the
-// recorded determinism inputs (per-tick snapshots + the tick-0 seed, exactly the
-// replay record's inputs), and the RETAINED committed COW chain the observe
-// commands read. `rngs` retains the Rng state ENTERING each tick (seeded runs
-// only) so a single tick re-folds bit-identically in isolation — the same
-// fold-forward threading step_tick does, snapshotted per boundary.
-//
-// The canonical chain is never written after open — observe reads it; the
-// control side (§28 §2: control perturbs, so it forks) forks a branch off it
-// and never mutates the trunk.
 Debug_Session :: struct {
 	program:   ^Program,
 	seed:      Run_Seed,
-	snapshots: []Input, // the recorded per-tick action snapshots (tick i read snapshots[i])
-	startup:   World_Version, // the committed post-startup version tick 0 folds from
-	versions:  []World_Version, // versions[i] = the committed version tick i produced
-	rngs:      []Rng, // seeded runs: rngs[i] = Rng entering tick i; rngs[n] = final. Empty when seedless.
+	snapshots: []Input,
+	startup:   World_Version,
+	versions:  []World_Version,
+	rngs:      []Rng,
 	allocator: Runtime_Allocator,
-	// The control-side branch (§28 §2: control perturbs, so it forks — a new
-	// lineage off a committed snapshot, marked non-warranted; the trunk is never
-	// mutated). At most one live branch; a `branch` command re-forks it.
 	has_branch: bool,
 	branch:     Session_Branch,
-	// The §28 §2 active-lineage selector: false = the canonical chain is the
-	// observe/time default, true = the live branch is. A `checkout` command flips
-	// it to the branch ("navigation among already-existing lineages"), so
-	// subsequent observe/time commands read the branch WITHOUT a per-call `branch`
-	// arg; `checkout{canonical}` flips it back. Observe is non-perturbing whether
-	// canonical or branch — checkout mutates no recorded state, only which already-
-	// committed lineage the resolver reads.
 	active_branch: bool,
-	// The §28 §3 time-travel cursor (introspect_time.odin): the load/run/pause/
-	// step/rewind/reset/status position over the recorded timeline, with its
-	// bounded fixed-cadence snapshot ring. Observe-class — it never writes the
-	// canonical chain.
 	cursor:     Time_Cursor,
-	// The §28 §3 live break/watch registry (introspect_break.odin): the
-	// dynamically-set break/watch probes a session sets over the wire — the live
-	// counterpart to the artifact-carried @break/@watch (§28 §4). Each carries a
-	// stable session handle so `clear` removes it by id. OBSERVE-CLASS: a live
-	// break/watch is honored by re-folding the recording with these probes armed
-	// (the SAME honor seam in-code probes ride, probes.odin), which builds its own
-	// scratch chain and never touches the canonical chain — so setting a live probe
-	// is non-perturbing, exactly like an in-code one.
 	live_probes:  [dynamic]Live_Probe,
-	next_handle:  int, // monotonic per-session handle minted for each live probe
+	next_handle:  int,
 }
 
-// open_debug_session folds a recorded run once through the production seam
-// (run_startup / run_startup_seeded + step_tick — the identical fold replay_refold
-// drives) and retains the whole committed chain plus the per-boundary Rng states.
-// The retained chain is the observe surface: structural sharing makes each version
-// a near-free root pointer (§08 §4), so a session over an M-tick run holds M+1
-// roots, not M copies. The caller owns the program and the snapshots; the session
-// allocates its retained state on `allocator`.
 open_debug_session :: proc(
 	program: ^Program,
 	snapshots: []Input,
@@ -141,20 +68,11 @@ open_debug_session :: proc(
 	return session
 }
 
-// Read_Lineage is the §28 §2 observe-addressing selector: the canonical version
-// chain, or the live forked branch. It is a CLOSED two-value set — the model
-// holds at most one live branch, so "a forked branch" collapses to "the branch".
 Read_Lineage :: enum {
 	Canonical,
 	Branch,
 }
 
-// session_read_lineage resolves which lineage an observe command reads: an
-// explicit per-call `branch` arg (§28 §2: "an optional `branch` argument") wins,
-// otherwise the session default (the active-lineage selector a `checkout` flips).
-// `branch:"canonical"` forces the trunk for one call even while checked out;
-// `branch:"branch"` forces the fork. An unknown selector, or naming the branch
-// when none is live, is ok=false — the request layer turns it into a refusal.
 session_read_lineage :: proc(
 	s: ^Debug_Session,
 	args: json.Object,
@@ -180,36 +98,16 @@ session_read_lineage :: proc(
 	return .Canonical, true
 }
 
-// observe_refold_on_canonical guards the re-fold observe commands (signals /
-// trace / replay_behavior): a re-fold replays a RECORDED tick from its retained
-// snapshot, which only the canonical chain has — a branch tick advanced through
-// control folds, not the recording, so it has no snapshot to re-fold. The guard
-// returns true only when the addressed lineage is canonical (no `branch` arg and
-// not checked out, or `branch:"canonical"` explicitly); a branch address fails
-// closed at the caller rather than silently re-folding the trunk.
 observe_refold_on_canonical :: proc(s: ^Debug_Session, args: json.Object) -> bool {
 	lineage, ok := session_read_lineage(s, args)
 	return ok && lineage == .Canonical
 }
 
-// session_version_at resolves a tick ordinal onto the SESSION-DEFAULT lineage's
-// retained committed chain (canonical, or the active branch once checked out):
-// -1 is the post-startup version (the state tick 0 folds from), 0..n-1 the
-// committed result of that tick. Out-of-range is ok=false — the request layer
-// turns it into a refusal, never a crash.
 session_version_at :: proc(s: ^Debug_Session, tick: int) -> (version: World_Version, ok: bool) {
 	default := s.active_branch && s.has_branch ? Read_Lineage.Branch : Read_Lineage.Canonical
 	return session_version_on(s, default, tick)
 }
 
-// session_version_on resolves a tick ordinal on a NAMED lineage. The canonical
-// arm reads the retained trunk chain. The branch arm reads the fork: a branch
-// retains its pre-fork history shared with canonical (it forked off the trunk at
-// base_tick — structural sharing makes ticks ≤ base_tick value-identical) and its
-// current committed head at the branch's logical tip. Ticks strictly between the
-// fork point and the tip are NOT retained on the branch (the branch holds only
-// its head), so they are ok=false — the resolver fails closed rather than reading
-// a stale trunk version while the branch is the addressed lineage.
 session_version_on :: proc(
 	s: ^Debug_Session,
 	lineage: Read_Lineage,
@@ -236,19 +134,10 @@ session_version_on :: proc(
 	return s.versions[tick], true
 }
 
-// branch_tip_tick is the logical tick ordinal of the live branch's committed
-// head — the canonical numbering continued past the fork point by the branch's
-// own commits (the §28 §2 forked lineage's current position).
 branch_tip_tick :: proc(s: ^Debug_Session) -> int {
 	return s.branch.base_tick + s.branch.ticks
 }
 
-// session_lineage_input selects the input snapshot a render re-projection reads for one
-// addressed (lineage, tick): the canonical chain replays its recorded snapshot, but a
-// branch tick PAST the fork point carries no recorded snapshot (the branch advanced
-// through control folds, not the recording), so it reads empty input there. Render is a
-// pure post-commit projection of the committed world, so this is the deterministic
-// branch-tip input trace/draw_list/screenshot share.
 session_lineage_input :: proc(s: ^Debug_Session, lineage: Read_Lineage, tick: int) -> Input {
 	if lineage == .Branch && tick > s.branch.base_tick {
 		return empty()
@@ -256,14 +145,6 @@ session_lineage_input :: proc(s: ^Debug_Session, lineage: Read_Lineage, tick: in
 	return s.snapshots[tick]
 }
 
-// resolve_observe_version resolves the addressed (lineage, version) for one tick — the
-// observe-addressing preamble every lineage-keyed read shares: read the lineage (refusing
-// `unknown branch` on a bad `branch` arg), then resolve the version (refusing `tick out of
-// range` when the tick is not retained on that lineage). On a miss it returns the
-// pre-rendered refusal envelope and ok=false; the caller returns `refusal` verbatim. It
-// does NOT apply the `tick < 0` floor some callers add on top (draw_list/screenshot refuse
-// the pre-tick-0 startup version; diff/capture_tick accept tick -1 as the startup base),
-// so that floor stays at the caller.
 resolve_observe_version :: proc(
 	s: ^Debug_Session,
 	id: i64,
@@ -288,13 +169,6 @@ resolve_observe_version :: proc(
 	return ver, lin, "", true
 }
 
-// refold_tick_obs re-folds one recorded tick into a FRESH observe buffer and returns the
-// buffer plus the re-committed version — the obs+refold+range-refusal core the bounded
-// re-fold commands (signals / trace / replay_behavior / capture_test) share. It does NOT
-// apply the canonical-only guard (signals/trace/replay_behavior gate that BEFORE calling,
-// each in its own control-flow position; capture_test has no such gate), so the guard
-// stays at the caller. A tick outside the recorded range returns the pre-rendered `tick
-// out of range` refusal and ok=false.
 refold_tick_obs :: proc(
 	s: ^Debug_Session,
 	id: i64,
@@ -315,13 +189,6 @@ refold_tick_obs :: proc(
 	return obs, refolded, "", true
 }
 
-// session_capture digests the session's retained canonical chain exactly as the
-// production capture drivers do — per committed tick, render_version's §20
-// draw-list projection over the SAME per-tick Time derivation, capture_frame,
-// then the session fold. It is the comparison surface the non-perturbation and
-// canonical-untouched acceptance tests pin against an unobserved reference run:
-// equal captures prove the observed/controlled session's canonical chain is
-// bit-identical to a run nobody touched.
 session_capture :: proc(s: ^Debug_Session, allocator := context.allocator) -> Frame_Capture {
 	tick_hz := s.program.entrypoint.tick_hz
 	per_tick := make([dynamic]Frame_Digest, 0, len(s.versions), allocator)
@@ -333,23 +200,12 @@ session_capture :: proc(s: ^Debug_Session, allocator := context.allocator) -> Fr
 	return finish_capture(per_tick[:], allocator)
 }
 
-// --- The Tick_Observe tap (the capture seam the tick fold carries) ---------
-
-// Tick_Observe is the §28 observe-class capture buffer a re-fold threads through
-// step_tick: the per-behavior-step (in → out) transitions and the routed signals,
-// in fold order (flattened pipeline order, stable Id order within a step — the
-// deterministic order the fold itself runs in, so the capture order is replayable).
-// The tap sites (tick.odin) only APPEND copies here; they never read it back into
-// the fold, which is what makes observation non-perturbing by construction.
 Tick_Observe :: struct {
 	steps:     [dynamic]Step_Capture,
 	signals:   [dynamic]Signal_Capture,
 	allocator: Runtime_Allocator,
 }
 
-// new_tick_observe builds an empty capture buffer on `allocator` — the request
-// scratch, so a capture's values (which alias the re-fold's tick-allocated
-// values) stay live exactly as long as the response is being rendered.
 new_tick_observe :: proc(allocator := context.allocator) -> Tick_Observe {
 	return Tick_Observe {
 		steps     = make([dynamic]Step_Capture, allocator),
@@ -358,36 +214,23 @@ new_tick_observe :: proc(allocator := context.allocator) -> Tick_Observe {
 	}
 }
 
-// Step_Capture is one behavior instance's (in → out) at one pipeline step: the
-// step ordinal, the instance, the pre-eval blackboard (the working map the fold
-// later REPLACES, never mutates — so the alias stays the before-state), the bound
-// param environment (the behavior's declared reads, copied shallowly), and the
-// returned value. `ok` is false for a body that produced no return.
 Step_Capture :: struct {
 	ordinal:     int,
 	behavior:    string,
 	instance:    Id,
-	self_before: map[string]Field_Value, // aliases the pre-eval working map (replaced, not mutated)
-	env:         map[string]Value, // the bound reads, copied at capture (values aliased)
+	self_before: map[string]Field_Value,
+	env:         map[string]Value,
 	result:      Value,
 	ok:          bool,
 }
 
-// Signal_Capture is one routed signal delivery: the signal type, the routed
-// values, and — for a §11 §4 engine per-instance signal — the target instance
-// the engine routed it to. Broadcast routes carry per_instance=false.
 Signal_Capture :: struct {
 	signal:       string,
 	per_instance: bool,
-	target:       Id, // meaningful only when per_instance
+	target:       Id,
 	values:       []Value,
 }
 
-// observe_behavior_step copies one behavior instance's transition into the
-// capture buffer — called from the tick fold (run_behavior_over_instances) when
-// the tap is armed. The env map is copied (the fold's env is scratch the next
-// instance rebinds); the values inside it are aliased, safe because the capture
-// and the re-fold share one request-scoped allocator.
 observe_behavior_step :: proc(
 	obs: ^Tick_Observe,
 	step: Pipeline_Step,
@@ -415,17 +258,12 @@ observe_behavior_step :: proc(
 	)
 }
 
-// observe_broadcast_signals copies one broadcast route (route_signals) into the
-// capture buffer — the elements slice is copied so the capture survives the
-// mailbox's own combining.
 observe_broadcast_signals :: proc(obs: ^Tick_Observe, signal_type: string, values: []Value) {
 	copied := make([]Value, len(values), obs.allocator)
 	copy(copied, values)
 	append(&obs.signals, Signal_Capture{signal = signal_type, values = copied})
 }
 
-// observe_instance_signal copies one engine per-instance route
-// (route_instance_signal) with its target Id into the capture buffer.
 observe_instance_signal :: proc(obs: ^Tick_Observe, signal_type: string, target: Id, signal: Value) {
 	values := make([]Value, 1, obs.allocator)
 	values[0] = signal
@@ -435,15 +273,6 @@ observe_instance_signal :: proc(obs: ^Tick_Observe, signal_type: string, target:
 	)
 }
 
-// session_refold_tick re-folds ONE recorded tick from its prior committed version
-// with the observe tap armed — the bounded re-fold `signals`/`trace`/
-// `replay_behavior` read (§28 §3: causality is recomputed, not stored). It re-runs
-// the EXACT production fold (same step_tick, same recorded snapshot, same per-tick
-// Time, the retained entering-Rng for a seeded run) into request-scoped scratch:
-// the canonical chain is read, never written, so the re-fold is observe-class by
-// construction. Returns the re-committed version (the tick's after-state the
-// trace's self_after reads) — bit-identical to the retained versions[tick], since
-// the inputs are identical and the fold is deterministic.
 session_refold_tick :: proc(
 	s: ^Debug_Session,
 	tick: int,
@@ -465,16 +294,6 @@ session_refold_tick :: proc(
 	return step_tick(s.program, prior, s.snapshots[tick], time, allocator, nil, observe = observe), true
 }
 
-// --- The request fold: one NDJSON line in, one NDJSON line out -------------
-
-// session_request is the duplex seam's pure fold: parse one request line
-// (`{"id":N,"cmd":"…","args":{…}`), dispatch it, and render one response line
-// (no trailing newline — the transport adapter owns framing). Observe commands
-// leave the session untouched; control commands (introspect_control.odin) write
-// only the branch. Every refusal is a well-formed `"ok":false` envelope carrying
-// the request id (0 when the line was too malformed to carry one), so the
-// command stream stays loggable and replayable (§28 §3: sessions are themselves
-// replayable).
 session_request :: proc(
 	s: ^Debug_Session,
 	line: string,
@@ -538,11 +357,6 @@ session_request :: proc(
 	return error_response(id, cmd, "unknown command", allocator)
 }
 
-// --- Observe commands -------------------------------------------------------
-
-// observe_pipeline answers the flattened §11 total order — every Pipeline_Step's
-// ordinal, stage, and behavior, exactly as the artifact carries them. A pure read
-// of the loaded program; stepping granularity IS this schedule (§28 §1).
 @(private = "file")
 observe_pipeline :: proc(s: ^Debug_Session, id: i64, allocator := context.allocator) -> string {
 	b := strings.builder_make(allocator)
@@ -562,10 +376,6 @@ observe_pipeline :: proc(s: ^Debug_Session, id: i64, allocator := context.alloca
 	return strings.to_string(b)
 }
 
-// observe_signals answers the signals routed during one recorded tick — the live
-// dataflow as data (§28 §1). It re-folds the tick with the tap armed and renders
-// every route in fold order: broadcast routes with their value lists, engine
-// per-instance routes with their target Id.
 @(private = "file")
 observe_signals :: proc(
 	s: ^Debug_Session,
@@ -611,16 +421,6 @@ observe_signals :: proc(
 	return strings.to_string(b)
 }
 
-// observe_trace answers one behavior's per-instance (in → out) for one recorded
-// tick — the §28 §3 bounded re-fold ("causality is recomputed, not stored"). Per
-// instance it renders the pre-eval blackboard, the bound reads (the declared
-// params, in declaration order), the returned value, and the post-tick committed
-// blackboard (null when the tick despawned the instance). It routes by the
-// behavior's STAGE: an interior behavior is captured by re-folding the sim
-// tick; a RENDER behavior is captured by re-projecting the render stage with the
-// same tap (the sim fold skips render, so a re-fold alone left it silently empty);
-// audio/startup answer an explicit unsupported-stage marker (they are not part of a
-// per-tick fold).
 @(private = "file")
 observe_trace :: proc(
 	s: ^Debug_Session,
@@ -635,30 +435,11 @@ observe_trace :: proc(
 	}
 	behavior := program_behavior(s.program, behavior_name)
 	if behavior == nil {
-		// program_behavior scans only the user [behaviors] table, but inspect_pipeline
-		// enumerates the SUPERSET §11 namespace — a startup step (`setup`, the §13 spawn
-		// batch in Program.setup) and an engine-closed stage (`physics`/`solve`) are real
-		// pipeline positions that carry NO §10 Behavior_Decl. So a name the behavior table
-		// misses might still be one inspect_pipeline lists. Resolving it through the
-		// pipeline keeps the two surfaces on ONE behavior vocabulary: a body-less pipeline
-		// step is not a per-tick-traceable body, so it answers the self-describing
-		// unsupported-stage marker (run elsewhere / not folded) instead of the generic
-		// "unknown behavior" that reads as a name/namespace error. A name in NEITHER
-		// namespace stays genuinely unknown.
 		if step := program_pipeline_step(s.program, behavior_name); step != nil {
 			return trace_unsupported_stage(id, behavior_name, step.stage, int(tick), allocator)
 		}
 		return error_response(id, "trace", "unknown behavior", allocator)
 	}
-	// Route by the behavior's STAGE. The interior stages (control/collision/
-	// scoring/…) are captured by re-folding the sim tick. The terminal RENDER stage is
-	// skipped by the sim fold (run_pipeline_fold — render is a post-commit projection),
-	// so re-folding alone left its trace silently empty, indistinguishable from "ran
-	// zero times"; instead the render stage is RE-PROJECTED with the same observe tap
-	// armed, so a render behavior reports its in→out per instance like any other. Audio
-	// (a deferred slot) and startup (runs pre-tick-0, not per-tick) are not part of a
-	// per-tick fold at all, so they answer with an explicit unsupported-stage marker
-	// rather than a misleading empty step list.
 	obs := new_tick_observe(allocator)
 	committed: World_Version
 	switch behavior.stage {
@@ -722,19 +503,6 @@ observe_trace :: proc(
 	return strings.to_string(b)
 }
 
-// trace_unsupported_stage answers a trace for a behavior whose stage carries NO
-// per-instance body the per-tick fold can tap. Three cases reach here, each a behavior
-// inspect_pipeline lists but which is not a per-tick-traceable user body:
-//   - `audio` — a deferred §22 slot whose return is never folded into tick state.
-//   - `startup` — the §13 spawn batch (Program.setup), runs once before tick 0, not
-//     per-tick; it carries no §10 Behavior_Decl, so it resolves through the pipeline.
-//   - an engine-closed stage (`physics`/`solve`) — a real §11 pipeline position run by an
-//     engine battery, with no user Behavior_Decl to trace per instance.
-// Rather than the silent empty step list that reads as "ran zero times" — or the generic
-// "unknown behavior" that reads as a name error — it returns an explicit `stage` + `note`
-// so a debugger knows the behavior is real, ran elsewhere, and where to look. The `steps`
-// array stays present and empty so the response shape is a superset of the ordinary
-// trace, never a parse break for an existing reader.
 @(private = "file")
 trace_unsupported_stage :: proc(
 	id: i64,
@@ -764,9 +532,6 @@ trace_unsupported_stage :: proc(
 	return strings.to_string(b)
 }
 
-// write_committed_row renders one committed row's blackboard (the trace's
-// self_after) — null when the Id is absent from the committed version (the tick
-// despawned it; the dangling case is a value, never a crash).
 @(private = "file")
 write_committed_row :: proc(
 	b: ^strings.Builder,
@@ -785,11 +550,6 @@ write_committed_row :: proc(
 	strings.write_string(b, "null")
 }
 
-// observe_diff answers the committed-state delta between two retained ticks — a
-// pure read of two COW versions (serialization closure: any tick, no
-// instrumentation). Per table (declaration order) it names the rows added,
-// removed, and — per surviving row in Id order — each changed field with its
-// from/to encodings (sorted field names). Tables with no delta are omitted.
 @(private = "file")
 observe_diff :: proc(
 	s: ^Debug_Session,
@@ -834,9 +594,6 @@ observe_diff :: proc(
 	return strings.to_string(b)
 }
 
-// session_head_tick is the latest committed tick ordinal on a lineage — the default
-// `state` reads when no `tick` is supplied. Canonical's head is the last retained
-// version; a live branch's head is its logical tip (the §28 §2 forked position).
 session_head_tick :: proc(s: ^Debug_Session, lineage: Read_Lineage) -> int {
 	if lineage == .Branch && s.has_branch {
 		return branch_tip_tick(s)
@@ -844,16 +601,6 @@ session_head_tick :: proc(s: ^Debug_Session, lineage: Read_Lineage) -> int {
 	return len(s.versions) - 1
 }
 
-// observe_state lists the committed instances of one thing at a tick — the §28 §1
-// read-only STATE inspector. It answers the obvious first debug question, "what
-// instances of thing T exist at tick N, and what are their field values," which the
-// other observe surfaces left unanswerable: draw_list shows what was DRAWN, signals
-// what was ROUTED, diff what CHANGED — none show what state simply EXISTS, so an
-// existence/value check previously had to abuse control_set (a fork-causing WRITE) as a
-// read. This is a pure read of the retained COW chain (no fork, no instrumentation),
-// the natural complement to draw_list and signals. `tick` defaults to the lineage head;
-// an optional `instance` filters to one row; the field values render in the legible
-// projection (a Fixed as `96.0`, a Vec2 as `Vec2(x=96.0,y=90.0)`), keyed by field name.
 @(private = "file")
 observe_state :: proc(
 	s: ^Debug_Session,
@@ -865,9 +612,6 @@ observe_state :: proc(
 	if !has_thing {
 		return error_response(id, "state", "missing args.thing", allocator)
 	}
-	// State resolves its tick from the lineage HEAD when none is given, so the lineage
-	// read is interleaved with the tick default — it does not fit resolve_observe_version's
-	// caller-supplied-tick shape, but the refusal strings are centralized all the same.
 	lineage, lineage_ok := session_read_lineage(s, args)
 	if !lineage_ok {
 		return err_unknown_branch(id, "state", allocator)
@@ -906,11 +650,6 @@ observe_state :: proc(
 	return strings.to_string(b)
 }
 
-// write_state_fields renders one row's blackboard as a JSON object keyed by field name
-// (sorted — the deterministic order), each value the legible §28 projection. Distinct
-// from write_encoded_blackboard's single `Thing(field=val,…)` string: a keyed object is
-// what a reader actually wants from a state dump (address a field by name), while the
-// blackboard string is the round-trippable control-payload form.
 @(private = "file")
 write_state_fields :: proc(
 	b: ^strings.Builder,
@@ -930,10 +669,6 @@ write_state_fields :: proc(
 	strings.write_byte(b, '}')
 }
 
-// diff_table_json renders one table's delta between two committed row sets, or ""
-// when the table is unchanged. Both row slices are ascending by Id (the committed
-// invariant), so the walk is a linear merge: an Id only in `to` was added, only in
-// `from` removed, and a shared Id compares field-by-field in sorted name order.
 @(private = "file")
 diff_table_json :: proc(
 	thing: string,
@@ -999,9 +734,6 @@ diff_table_json :: proc(
 	return strings.to_string(b)
 }
 
-// diff_fields_json renders one row's changed columns in sorted field-name order,
-// or "" when every column compares equal (field_values_equal — the same
-// structural equality the determinism comparisons use).
 @(private = "file")
 diff_fields_json :: proc(
 	from_fields: map[string]Field_Value,
@@ -1040,14 +772,6 @@ diff_fields_json :: proc(
 	return strings.to_string(b)
 }
 
-// observe_replay_behavior re-runs one behavior in isolation from its captured
-// inputs (§28 §1: pure behaviors → replay one behavior from captured inputs). The
-// tick re-fold captures each instance's bound environment and in-fold result;
-// then the behavior body is evaluated a SECOND time over the captured env against
-// the prior COMMITTED version (no tick in flight — true isolation), and the two
-// results are compared with values_equal. refold_matches=true is the purity
-// theorem holding for that instance; a false is a runtime bug to file (a behavior
-// read something outside its declared inputs).
 @(private = "file")
 observe_replay_behavior :: proc(
 	s: ^Debug_Session,
@@ -1072,9 +796,6 @@ observe_replay_behavior :: proc(
 		return refusal
 	}
 
-	// The isolated re-run reads the prior COMMITTED version (tick = nil): the
-	// captured env carries every declared read, so the only fallback surface is a
-	// committed-version Ref resolve — the §08 population-fixity guarantee.
 	prior := new(World_Version, allocator)
 	prior^ = int(tick) == 0 ? s.startup : s.versions[int(tick) - 1]
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
@@ -1110,12 +831,6 @@ observe_replay_behavior :: proc(
 	return strings.to_string(b)
 }
 
-// observe_draw_list dumps one committed tick's §20 draw-list — the render
-// projection re-run post-hoc over the retained version (render is a post-commit
-// projection, so re-projecting commits nothing). This is §28's
-// screenshot{include_drawlist} surface scoped to the deterministic half: the
-// draw-list IS the determinism-path render output; the pixel surface is a
-// present-boundary concern the session does not serve.
 @(private = "file")
 observe_draw_list :: proc(
 	s: ^Debug_Session,
@@ -1134,16 +849,8 @@ observe_draw_list :: proc(
 	if int(tick) < 0 {
 		return err_tick_out_of_range(id, "draw_list", allocator)
 	}
-	// The recorded snapshot drives render-behavior input on the canonical chain;
-	// a branch tick at-or-beyond the fork carries no recorded snapshot (the branch
-	// advanced through control folds, not the recording), so the projection reads
-	// empty input there — render is a pure post-commit projection of the committed
-	// world, so this is the deterministic branch-tip draw list.
 	input := session_lineage_input(s, lineage, int(tick))
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
-	// overlay:true appends the §28 collision-extent debug overlay — each thing's
-	// center-anchored (pos,size) extent, so a top-left-vs-center convention mismatch is
-	// visible in the dump instead of only at runtime.
 	overlay, _ := json_bool_field(args, "overlay")
 	draw := render_version(s.program, version, input, time, allocator, nil, overlay)
 	b := strings.builder_make(allocator)
@@ -1154,30 +861,6 @@ observe_draw_list :: proc(
 	return strings.to_string(b)
 }
 
-// observe_screenshot is the §28 §3 render-crossing TWIN of draw_list — and the one
-// observe command that is explicitly NOT sim-pure (§28 §2). draw_list dumps the
-// deterministic draw-list and stops at it; screenshot CROSSES the render/present
-// boundary to capture the presented frame as pixels (§28: "the lone visual artifact,
-// requested programmatically"). The pixel surface is rasterized/letterboxed/post —
-// §20 §5 "pixels are not deterministic and need not be" — so it is bound to the
-// impure FUNPACK_LIVE present path; the headless default build (no display) routes
-// the command but returns a defined "requires live present" refusal rather than a
-// crash. Both commands re-project the SAME committed version (render is a pure
-// post-commit projection, so re-projecting commits nothing — the canonical chain is
-// untouched and the observe-non-perturbing warranty holds for both).
-//
-// The §20 §5 deterministic half rides along on demand: `include_drawlist:true`
-// appends the draw-list as data (the SAME render_draw_cmd_text encoding draw_list
-// emits) — "screenshot{include_drawlist} returns it as data". Default false: the lean
-// visual-only capture.
-//
-// The pixel capture + its QOI encoding live ENTIRELY behind the FUNPACK_LIVE gate
-// (session_capture_frame returns the base64-QOI string directly): the codec
-// (core:image/qoi → core:compress) is an impure present-boundary dependency, so it
-// stays out of the always-compiled deterministic translation unit (which would
-// otherwise pull a heavy codec graph into the headless test binary). This keeps the
-// runtime's pure core import-clean and matches capture_test's inline-artifact
-// convention: the runtime writes no file, the client persists the returned artifact.
 @(private = "file")
 observe_screenshot :: proc(
 	s: ^Debug_Session,
@@ -1196,25 +879,11 @@ observe_screenshot :: proc(
 	if int(tick) < 0 {
 		return err_tick_out_of_range(id, "screenshot", allocator)
 	}
-	// Re-project the committed tick to the draw-list (the SAME projection draw_list
-	// reads): a branch tick past the fork carries no recorded snapshot, so it projects
-	// empty input there — render is a pure post-commit projection of the committed
-	// world (identical to observe_draw_list's branch-tip handling).
 	input := session_lineage_input(s, lineage, int(tick))
 	time := time_resource_at(s.program.entrypoint.tick_hz, int(tick), allocator)
-	// overlay:true paints the §28 collision-extent debug overlay into the captured
-	// frame too — the SAME projection draw_list reads, so the magenta center-anchored
-	// extents are visible in the pixels and in the rode-along draw-list alike.
 	overlay, _ := json_bool_field(args, "overlay")
 	draw := render_version(s.program, version, input, time, allocator, nil, overlay)
 
-	// CROSS THE PRESENT BOUNDARY: capture the rasterized frame as base64-encoded QOI
-	// (the Odin-first lossless encoder; core:image/png is decode-only in this
-	// toolchain). Under FUNPACK_LIVE this paints the draw-list through an offscreen
-	// software surface, reads the pixels back, and encodes them; the headless build
-	// has no display, so the capture fails closed and the command reports the defined
-	// boundary refusal — never a crash, never a silent empty frame (the §28 contract:
-	// screenshot needs the impure present path).
 	encoded, width, height, captured := session_capture_frame(s.program, draw, allocator)
 	if !captured {
 		return error_response(
@@ -1229,9 +898,6 @@ observe_screenshot :: proc(
 	ok_response_open(&b, id, "screenshot")
 	fmt.sbprintf(&b, "{{\"tick\":%d,\"width\":%d,\"height\":%d,\"format\":\"qoi\",\"pixels\":", tick, width, height)
 	write_json_string(&b, encoded)
-	// §20 §5: the deterministic draw-list rides along when the client asks for it —
-	// screenshot{include_drawlist} returns it as data, the SAME encoding draw_list
-	// emits. The default (absent/false) is the lean visual-only capture.
 	if include, _ := json_bool_field(args, "include_drawlist"); include {
 		strings.write_string(&b, ",\"commands\":[")
 		write_draw_commands_json(&b, draw.cmds, allocator)
@@ -1241,11 +907,6 @@ observe_screenshot :: proc(
 	return strings.to_string(b)
 }
 
-// write_draw_commands_json writes a §20 draw-list as a comma-separated JSON array BODY
-// (no enclosing brackets — the caller writes `[`/`]`): each command rendered to its text
-// form via render_draw_cmd_text, then JSON-string-escaped. The SAME encoding draw_list
-// emits and screenshot{include_drawlist} rides along with, so the two surfaces stay
-// byte-identical.
 write_draw_commands_json :: proc(b: ^strings.Builder, cmds: []Draw_Cmd, allocator := context.allocator) {
 	for cmd, i in cmds {
 		if i > 0 {
@@ -1257,22 +918,12 @@ write_draw_commands_json :: proc(b: ^strings.Builder, cmds: []Draw_Cmd, allocato
 	}
 }
 
-// --- The envelope builders ---------------------------------------------------
-
-// ok_response_open writes the success envelope up to the `result` value — the
-// caller writes the result object and the closing brace. Field order is fixed
-// (v, id, ok, cmd, result), so a response line is byte-stable for the session
-// log (§28 §3: a debug session re-runs bit-identically). Shared by every
-// observe-side command file (introspect.odin / introspect_time.odin).
 ok_response_open :: proc(b: ^strings.Builder, id: i64, cmd: string) {
 	fmt.sbprintf(b, "{{\"v\":%d,\"id\":%d,\"ok\":true,\"cmd\":", INTROSPECT_PROTOCOL_VERSION, id)
 	write_json_string(b, cmd)
 	strings.write_string(b, ",\"result\":")
 }
 
-// error_response renders the refusal envelope: same fixed field order, an
-// `"error"` string instead of a result. Every malformed or refused request gets
-// one — the fold never panics on wire input.
 error_response :: proc(
 	id: i64,
 	cmd: string,
@@ -1288,25 +939,14 @@ error_response :: proc(
 	return strings.to_string(b)
 }
 
-// err_tick_out_of_range is the §28 refusal for an addressed tick outside the retained
-// chain — the one wire string every observe/capture command shares. Centralized so the
-// exact bytes stay identical across the 8+ sites that refuse it (the session log is
-// byte-stable, §28 §3).
 err_tick_out_of_range :: proc(id: i64, cmd: string, allocator := context.allocator) -> string {
 	return error_response(id, cmd, "tick out of range", allocator)
 }
 
-// err_unknown_branch is the §28 refusal for a `branch` arg naming no checked-out lineage
-// — the shared wire string the lineage-addressed reads refuse with.
 err_unknown_branch :: proc(id: i64, cmd: string, allocator := context.allocator) -> string {
 	return error_response(id, cmd, "unknown branch — checkout an existing lineage", allocator)
 }
 
-// err_refold_canonical_only is the §28 refusal for a re-fold command (signals / trace /
-// replay_behavior) addressed at a branch lineage: a re-fold replays a RECORDED tick,
-// which only the canonical chain retains. The command name is interpolated into the
-// message AND is the envelope cmd, so each command refuses in its own voice while the
-// shared shape stays byte-identical.
 err_refold_canonical_only :: proc(id: i64, cmd: string, allocator := context.allocator) -> string {
 	message := fmt.aprintf(
 		"branch refold unsupported — %s re-folds a recorded tick (canonical only)",
@@ -1316,8 +956,6 @@ err_refold_canonical_only :: proc(id: i64, cmd: string, allocator := context.all
 	return error_response(id, cmd, message, allocator)
 }
 
-// write_json_string writes one JSON string literal with the mandatory escapes
-// (quote, backslash, control bytes); UTF-8 payload bytes pass through verbatim.
 write_json_string :: proc(b: ^strings.Builder, s: string) {
 	strings.write_byte(b, '"')
 	for i in 0 ..< len(s) {
@@ -1344,12 +982,6 @@ write_json_string :: proc(b: ^strings.Builder, s: string) {
 	strings.write_byte(b, '"')
 }
 
-// json_int_field reads one integer field off a parsed request object — the single
-// int-arg reader the §28 request path and every MCP int argument route through.
-// Requests are parsed with parse_integers=true, so a whole number arrives as a
-// json.Integer; a number written with a decimal point (42.0) arrives as a json.Float
-// even so. An integral float is accepted as the integer it names; a fractional float
-// (42.5) is out of contract and rejected — never silently truncated.
 json_int_field :: proc(object: json.Object, key: string) -> (value: i64, ok: bool) {
 	field, has := object[key]
 	if !has {
@@ -1366,7 +998,6 @@ json_int_field :: proc(object: json.Object, key: string) -> (value: i64, ok: boo
 	return 0, false
 }
 
-// json_string_field reads one string field off a parsed request object.
 json_string_field :: proc(object: json.Object, key: string) -> (value: string, ok: bool) {
 	field, has := object[key]
 	if !has {
@@ -1379,9 +1010,6 @@ json_string_field :: proc(object: json.Object, key: string) -> (value: string, o
 	return text, true
 }
 
-// json_bool_field reads one boolean field off a parsed request object — an absent
-// or non-boolean field is ok=false (the caller's default), so an optional flag like
-// screenshot's `include_drawlist` defaults off when the arg is omitted.
 json_bool_field :: proc(object: json.Object, key: string) -> (value: bool, ok: bool) {
 	field, has := object[key]
 	if !has {
@@ -1394,10 +1022,6 @@ json_bool_field :: proc(object: json.Object, key: string) -> (value: bool, ok: b
 	return flag, true
 }
 
-// json_array_field reads one array field off a parsed request object — an absent or
-// non-array field is ok=false. Shared by the control side (inject_input's
-// pressed/held/values/axes entry lists) and the break group (break/watch's `body`
-// node-forest line array).
 json_array_field :: proc(object: json.Object, key: string) -> (values: json.Array, ok: bool) {
 	field, has := object[key]
 	if !has {

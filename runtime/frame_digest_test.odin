@@ -1,42 +1,15 @@
-// Frame-digest acceptance (spec §20, §28, §10.5): the deterministic per-tick
-// frame digest is the comparison surface two runs are checked equal against.
-// These tests prove the four load-bearing properties the acceptance harness rests
-// on:
-//
-//   - RE-FOLD IDENTITY: a live golden pong session and a re-fold of its RECORDED
-//     input log produce bit-identical per-tick AND session digests — the digest
-//     depends on the committed state, not on how the tick loop was driven;
-//   - STABILITY: digesting the same captured frame sequence twice yields
-//     byte-identical per-tick and session digests (the digest is a pure content
-//     hash, no wall-clock, no run-to-run state);
-//   - ORDER-STABILITY: re-emitting a frame whose row blackboard columns were
-//     inserted in a DIFFERENT map order produces the IDENTICAL canonical bytes —
-//     the serializer sorts field names, never leaking Odin's unspecified map
-//     iteration order; and a draw-list serializes in its emitted order;
-//   - NO FLOAT: the canonical frame bytes are raw fixed-width little-endian
-//     fixed-point — a known Fixed column encodes to exactly its Q32.32 i64 bits,
-//     never a float byte pattern (§10: no float in the determinism path).
 package funpack_runtime
 
 import "core:encoding/endian"
 import "core:testing"
 
-// FD_STEER is pong's Steer::Move axis action id (the sole Axis variant, ActionId
-// 0 — the same stand-in the render tests drive a paddle with). The digest tests
-// drive an input-shaped session through it so the committed state actually evolves
-// tick to tick, making the per-tick digests distinct.
 FD_STEER :: ActionId(0)
 
-// fd_dt is the fixed 60hz step the Time resource carries each tick: 1/60 in
-// Q32.32 through the kernel — the same dt the fold and the render projection
-// advance by, no float.
 @(private = "file")
 fd_dt :: proc() -> Fixed {
 	return fixed_div(to_fixed(1), to_fixed(60))
 }
 
-// fd_time is the Time resource the fold and the render pass read: the one `dt`
-// field at the fixed 60hz step.
 @(private = "file")
 fd_time :: proc(allocator := context.allocator) -> Record_Value {
 	fields := make(map[string]Value, allocator)
@@ -44,8 +17,6 @@ fd_time :: proc(allocator := context.allocator) -> Record_Value {
 	return Record_Value{type_name = "Time", fields = fields}
 }
 
-// fd_startup runs setup's [Spawn] batch against the empty initial version,
-// returning the populated base tick 0 reads.
 @(private = "file")
 fd_startup :: proc(program: ^Program, allocator := context.allocator) -> World_Version {
 	world := new_world(program^, allocator)
@@ -53,12 +24,6 @@ fd_startup :: proc(program: ^Program, allocator := context.allocator) -> World_V
 	return run_startup(program, base, allocator)
 }
 
-// drive_capture drives a golden pong session over an ordered input sequence and
-// returns the finished Frame_Capture: it steps the tick loop once per supplied
-// snapshot, capturing each committed tick's digest over the world state AND its
-// §20 draw-list, then folds the session digest. This is the headless capture
-// shape a live run and a re-fold both drive — the only difference between two
-// captures is the committed state each step produced, never how it was captured.
 @(private = "file")
 drive_capture :: proc(
 	program: ^Program,
@@ -75,11 +40,6 @@ drive_capture :: proc(
 	return finish_capture(per_tick[:], allocator)
 }
 
-// session_inputs builds a fixed multi-tick input sequence for the golden pong
-// program: a few ticks holding P1's steer axis at +1 then a few at -1, so the
-// paddle (and the free-running ball) move every tick and the per-tick digests
-// differ. The same sequence drives both the live run and, after recording, the
-// re-fold — so the two captures must agree.
 @(private = "file")
 session_inputs :: proc(allocator := context.allocator) -> []Input {
 	inputs := make([]Input, 6, allocator)
@@ -92,10 +52,6 @@ session_inputs :: proc(allocator := context.allocator) -> []Input {
 
 @(test)
 test_recorded_session_and_refold_have_identical_digests :: proc(t: ^testing.T) {
-	// A recorded pong session and a re-fold of its RECORDED input log produce
-	// bit-identical per-tick and session digests (§23 §4, §20): the digest reads
-	// the committed state, so a live run and a re-fold that re-feeds the same
-	// recorded snapshots commit the same versions and therefore digest identically.
 	context.allocator = context.temp_allocator
 
 	live_program, ok := load_golden(t)
@@ -105,8 +61,6 @@ test_recorded_session_and_refold_have_identical_digests :: proc(t: ^testing.T) {
 	inputs := session_inputs()
 	live := drive_capture(&live_program, inputs)
 
-	// Record exactly the snapshots the live run was driven by, then read them back
-	// through the production parser — the re-fold re-feeds these parsed snapshots.
 	identity := identity_from_program(live_program, GOLDEN_ARTIFACT)
 	writer := open_replay_writer(identity)
 	for input in inputs {
@@ -119,8 +73,6 @@ test_recorded_session_and_refold_have_identical_digests :: proc(t: ^testing.T) {
 		return
 	}
 
-	// Re-fold against a FRESH program load, driven only by the parsed log — no
-	// reference to the live run's state.
 	refold_program, refold_ok := load_golden(t)
 	if !refold_ok {
 		return
@@ -139,10 +91,6 @@ test_recorded_session_and_refold_have_identical_digests :: proc(t: ^testing.T) {
 
 @(test)
 test_digesting_same_session_twice_is_byte_identical :: proc(t: ^testing.T) {
-	// Digesting the same driven session twice yields byte-identical per-tick and
-	// session digests — the digest is a pure content hash with no run-to-run state
-	// and no wall-clock (the stability invariant §10.5). Two captures of the same
-	// program from the same inputs must match digest-for-digest.
 	context.allocator = context.temp_allocator
 
 	program_a, ok_a := load_golden(t)
@@ -167,10 +115,6 @@ test_digesting_same_session_twice_is_byte_identical :: proc(t: ^testing.T) {
 
 @(test)
 test_session_digest_distinguishes_different_runs :: proc(t: ^testing.T) {
-	// The session digest is a faithful summary: two runs whose committed state
-	// diverges (different driving input) produce different session digests, so the
-	// digest cannot silently report two divergent runs as equal. A digest that
-	// ignored the state would collide here.
 	context.allocator = context.temp_allocator
 
 	program_a, ok_a := load_golden(t)
@@ -181,8 +125,6 @@ test_session_digest_distinguishes_different_runs :: proc(t: ^testing.T) {
 	if !ok_b {
 		return
 	}
-	// One run holds the paddle, the other runs over empty input — the paddle's
-	// committed position diverges, so the captures must not collide.
 	held := make([]Input, 4, context.temp_allocator)
 	for i in 0 ..< 4 {
 		held[i] = with_value(empty(), .P1, FD_STEER, to_fixed(1))
@@ -197,13 +139,6 @@ test_session_digest_distinguishes_different_runs :: proc(t: ^testing.T) {
 	testing.expect(t, moving.session != still.session)
 }
 
-// --- canonical-encoding tests (no float, order-stable) ----------------------
-
-// row_forward / row_reverse build the SAME logical thing instance — one Fixed
-// column and one Int column with identical values — but insert the two columns
-// into the blackboard map in OPPOSITE orders. Odin leaves map iteration order
-// unspecified, so a serializer that walked the map directly could emit different
-// bytes for these two; the sorted-field-name discipline must collapse them.
 @(private = "file")
 row_forward :: proc(allocator := context.allocator) -> Row {
 	fields := make(map[string]Field_Value, allocator)
@@ -220,9 +155,6 @@ row_reverse :: proc(allocator := context.allocator) -> Row {
 	return Row{id = Id{raw = Thing_Id(0)}, fields = fields}
 }
 
-// one_row_version wraps a single row in a one-table committed version — the
-// minimal frame the canonical-encoding tests serialize, with no draw-list, so the
-// assertion isolates the world-state field-order behavior.
 @(private = "file")
 one_row_version :: proc(row: Row, allocator := context.allocator) -> World_Version {
 	rows := make([]Row, 1, allocator)
@@ -234,10 +166,6 @@ one_row_version :: proc(row: Row, allocator := context.allocator) -> World_Versi
 
 @(test)
 test_frame_bytes_are_order_stable_across_field_insertion :: proc(t: ^testing.T) {
-	// Re-emitting a frame whose row columns were inserted in a different map order
-	// produces the IDENTICAL canonical bytes (the order-stability the determinism
-	// assertion rests on): the serializer sorts field names, so the bytes depend on
-	// the row's CONTENT, not on how the blackboard map was assembled.
 	context.allocator = context.temp_allocator
 
 	forward := one_row_version(row_forward())
@@ -247,8 +175,6 @@ test_frame_bytes_are_order_stable_across_field_insertion :: proc(t: ^testing.T) 
 	reverse_bytes := frame_bytes(reverse, nil)
 	testing.expect(t, slices_equal(forward_bytes, reverse_bytes))
 
-	// And the digest collapses the two identically — the per-tick digest of two
-	// insertion-orderings of the same state is one value.
 	a := frame_digest(forward, nil)
 	b := frame_digest(reverse, nil)
 	testing.expect_value(t, a.digest, b.digest)
@@ -256,15 +182,9 @@ test_frame_bytes_are_order_stable_across_field_insertion :: proc(t: ^testing.T) 
 
 @(test)
 test_frame_bytes_encode_fixed_as_raw_bits_no_float :: proc(t: ^testing.T) {
-	// The canonical bytes are raw fixed-width little-endian fixed-point: a Fixed
-	// column encodes to exactly its Q32.32 i64 bits — never a float byte pattern
-	// (§10: no float in the determinism path). Encode a frame carrying one Fixed
-	// column at a value whose float and fixed-point representations differ, and
-	// confirm the frame bytes contain the RAW Q32.32 bits and NOT the IEEE-754
-	// double bits of the same magnitude.
 	context.allocator = context.temp_allocator
 
-	value := fixed_from_decimal(1, "5") // 1.5 in Q32.32 — bits 0x0000_0001_8000_0000
+	value := fixed_from_decimal(1, "5")
 	fields := make(map[string]Field_Value)
 	fields["v"] = value
 	row := Row{id = Id{raw = Thing_Id(0)}, fields = fields}
@@ -272,13 +192,10 @@ test_frame_bytes_encode_fixed_as_raw_bits_no_float :: proc(t: ^testing.T) {
 
 	bytes := frame_bytes(version, nil)
 
-	// The raw Q32.32 little-endian bits of 1.5 must appear verbatim in the stream.
 	fixed_le: [8]u8
 	_ = endian.put_u64(fixed_le[:], .Little, u64(i64(value)))
 	testing.expect(t, contains_subsequence(bytes, fixed_le[:]))
 
-	// The IEEE-754 double bits of 1.5 (0x3FF8_0000_0000_0000) must NOT appear — a
-	// serializer that wrote a float would leak exactly these bytes.
 	float_le: [8]u8
 	_ = endian.put_u64(float_le[:], .Little, transmute(u64)f64(1.5))
 	testing.expect(t, !contains_subsequence(bytes, float_le[:]))
@@ -286,11 +203,6 @@ test_frame_bytes_encode_fixed_as_raw_bits_no_float :: proc(t: ^testing.T) {
 
 @(test)
 test_draw_list_serializes_in_emitted_order :: proc(t: ^testing.T) {
-	// The draw-list serializes in the order the render stage emitted it — the
-	// canonical order IS the emit order (flattened-pipeline + stable-Id, §20). Two
-	// draw-lists with the SAME commands in a DIFFERENT order produce DIFFERENT
-	// bytes, so the digest is sensitive to render ordering, never collapsing a
-	// reordered draw-list to the same frame.
 	context.allocator = context.temp_allocator
 
 	empty_version := World_Version{tick = 0, tables = nil}
@@ -304,22 +216,10 @@ test_draw_list_serializes_in_emitted_order :: proc(t: ^testing.T) {
 	reverse_bytes := frame_bytes(empty_version, reverse)
 	testing.expect(t, !slices_equal(forward_bytes, reverse_bytes))
 
-	// The same draw-list serialized twice is byte-identical (stability).
 	again := frame_bytes(empty_version, forward)
 	testing.expect(t, slices_equal(forward_bytes, again))
 }
 
-// --- v5 palette: ordinal stability + new-member sensitivity ------------------
-
-// test_draw_color_ordinals_are_append_stable pins the byte-stability the golden
-// invariant rests on across the v10 Draw_Color restructure: the nine named members
-// keep their raw ordinals (White=0..Gray=8) on the inner Draw_Palette enum, and
-// write_color folds a NAMED color as exactly that single ordinal byte — the SAME
-// byte the pre-v10 `u8(c.color)` bare-enum fold emitted. A golden whose draw-list
-// paints only named members is byte-UNMOVED under the v9→v10 bump (the whole reason
-// the schema bump regenerates no named-only golden). The RGB_COLOR_TAG sentinel
-// (255) is reserved OUTSIDE the named ordinal range, so a Color::Rgb fold can never
-// alias a named color.
 @(test)
 test_draw_color_ordinals_are_append_stable :: proc(t: ^testing.T) {
 	testing.expect_value(t, u8(Draw_Palette.White), 0)
@@ -331,18 +231,9 @@ test_draw_color_ordinals_are_append_stable :: proc(t: ^testing.T) {
 	testing.expect_value(t, u8(Draw_Palette.Cyan), 6)
 	testing.expect_value(t, u8(Draw_Palette.Magenta), 7)
 	testing.expect_value(t, u8(Draw_Palette.Gray), 8)
-	// The Rgb sentinel sits outside the named range, so the two color forms never
-	// collide in the canonical stream.
 	testing.expect(t, u64(RGB_COLOR_TAG) > u64(Draw_Palette.Gray))
 }
 
-// test_digest_distinguishes_palette_members pins the digest's color sensitivity
-// over the new members: a Draw_Rect identical except for its color member digests
-// differently for each of the nine members (the folded ordinal byte differs), so a
-// krognid Gray ground plane never digests the same as a White one. Conversely, a
-// White rect at v5 produces the SAME color byte it always did (ordinal 0), so an
-// existing all-White golden is byte-unchanged — asserted by the stable-ordinal
-// test above and reinforced here by White's distinctness from every new member.
 @(test)
 test_digest_distinguishes_palette_members :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -363,15 +254,6 @@ test_digest_distinguishes_palette_members :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(seen), len(members))
 }
 
-// --- v10 Color::Rgb digest fold (the Rgb rasterization determinism surface) -
-
-// test_digest_folds_rgb_color_stably_and_distinctly pins the Color::Rgb fold:
-// an Rgb-colored Draw_Rect folds DETERMINISTICALLY (two folds of the same
-// Rgb digest identically) and DISTINCTLY (a one-channel-bit divergence moves the
-// digest, and an Rgb never collides with a named color of any palette member). The
-// channels are raw Q32.32 Fixed off the kernel — no float (§10) — folded under the
-// reserved RGB_COLOR_TAG sentinel, so the Color::Rgb is inside the §20 comparison
-// surface bit-exactly.
 @(test)
 test_digest_folds_rgb_color_stably_and_distinctly :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -379,9 +261,9 @@ test_digest_folds_rgb_color_stably_and_distinctly :: proc(t: ^testing.T) {
 	at := Vec2{to_fixed(8), to_fixed(60)}
 	size := Vec2{to_fixed(4), to_fixed(16)}
 
-	r := fixed_div(FIXED_ONE, to_fixed(4)) // 0.25
-	g := fixed_div(FIXED_ONE, to_fixed(2)) // 0.5
-	b := fixed_div(to_fixed(3), to_fixed(4)) // 0.75
+	r := fixed_div(FIXED_ONE, to_fixed(4))
+	g := fixed_div(FIXED_ONE, to_fixed(2))
+	b := fixed_div(to_fixed(3), to_fixed(4))
 
 	rect_digest :: proc(version: World_Version, at, size: Vec2, color: Draw_Color) -> u64 {
 		cmds := make([]Draw_Cmd, 1, context.temp_allocator)
@@ -389,29 +271,19 @@ test_digest_folds_rgb_color_stably_and_distinctly :: proc(t: ^testing.T) {
 		return frame_digest(version, Draw_List{cmds = cmds}).digest
 	}
 
-	// STABILITY: the same Rgb folds bit-identically across two folds.
 	base := rect_digest(empty_version, at, size, rgb_color(r, g, b))
 	again := rect_digest(empty_version, at, size, rgb_color(r, g, b))
 	testing.expect_value(t, again, base)
 
-	// CHANNEL SENSITIVITY: a one-channel divergence (b 0.75 → 0.5) moves the digest.
 	moved := rect_digest(empty_version, at, size, rgb_color(r, g, g))
 	testing.expect(t, moved != base)
 
-	// NO NAMED COLLISION: an Rgb never aliases a named color (the sentinel tag), even
-	// when the named member is the visual nearest (Gray ≈ mid-channels).
 	gray := rect_digest(empty_version, at, size, named_color(.Gray))
 	testing.expect(t, base != gray)
 	white := rect_digest(empty_version, at, size, named_color(.White))
 	testing.expect(t, base != white)
 }
 
-// --- v4 payload / String sensitivity -----------------------------------------
-
-// fd_payload_world hand-builds a one-row world whose row carries a payload
-// variant column (`status`, an Option::Some boxing a String) and a String column
-// (`note`) — the two v4 arms. Parameterizing the texts lets a test pin that a
-// payload-only or String-only difference moves the digest.
 @(private = "file")
 fd_payload_world :: proc(status_text: string, note_text: string) -> World_Version {
 	payload := new(Value, context.temp_allocator)
@@ -428,11 +300,6 @@ fd_payload_world :: proc(status_text: string, note_text: string) -> World_Versio
 	return World_Version{tick = 1, tables = tables}
 }
 
-// test_digest_distinguishes_variant_payloads pins the v4 blindness fix: two
-// worlds whose only difference is a variant's BOXED PAYLOAD (the token is the
-// same Option::Some) digest differently — under the token-only fold they
-// collided, which is exactly how the snapshot codec's payload loss stayed
-// invisible to the acceptance harness. Same-payload worlds still digest equal.
 @(test)
 test_digest_distinguishes_variant_payloads :: proc(t: ^testing.T) {
 	saved := frame_digest(fd_payload_world("saved", "x"), nil)
@@ -443,10 +310,6 @@ test_digest_distinguishes_variant_payloads :: proc(t: ^testing.T) {
 	testing.expect_value(t, saved_again.digest, saved.digest)
 }
 
-// test_digest_distinguishes_string_columns pins the String half: two worlds
-// whose only difference is a String column's text digest differently — a String
-// is committed state (§03 primitive), so it must be inside the comparison
-// surface, not folded tag-less into nothing.
 @(test)
 test_digest_distinguishes_string_columns :: proc(t: ^testing.T) {
 	a := frame_digest(fd_payload_world("saved", "alpha"), nil)
@@ -454,10 +317,6 @@ test_digest_distinguishes_string_columns :: proc(t: ^testing.T) {
 	testing.expect(t, a.digest != b.digest)
 }
 
-// --- byte helpers -----------------------------------------------------------
-
-// slices_equal reports whether two byte slices are length- and content-equal —
-// the exact-equality the canonical-encoding assertions read.
 @(private = "file")
 slices_equal :: proc(a, b: []u8) -> bool {
 	if len(a) != len(b) {
@@ -471,9 +330,6 @@ slices_equal :: proc(a, b: []u8) -> bool {
 	return true
 }
 
-// contains_subsequence reports whether `needle` appears as a contiguous run in
-// `haystack` — the search the no-float test uses to confirm the raw fixed-point
-// bits are present and the float bits are absent.
 @(private = "file")
 contains_subsequence :: proc(haystack, needle: []u8) -> bool {
 	if len(needle) == 0 || len(needle) > len(haystack) {

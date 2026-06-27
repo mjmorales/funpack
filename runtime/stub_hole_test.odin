@@ -1,25 +1,7 @@
-// The §05 §2 typed-hole RUNTIME arms (the v7 `stub` carry): a loaded `stub` node
-// dispatches at tick time exactly like the compiler interpreter's
-// eval_stub_hole (funpack/evaluate.odin) — a `stub fallback` behavior ticks
-// its approximation expression live in the step's param-bound scope (P8: the
-// game stays playable under the hole), and a `stub bare` behavior FAILS
-// CLOSED: the instance folds nothing that tick, a defined no-value outcome,
-// never a trap. The fixture is HAND-WRITTEN artifact text per the
-// artifact-before-artifact pattern (runtime owns no funpack import; the
-// format doc alone is the contract) — the producer-real emission of these
-// same node bytes is pinned on the funpack side (emit_stub_test.odin's
-// amended-pong golden, since no committed spec example authors a pipelined
-// hole — the drift example's pipeline is empty).
 package funpack_runtime
 
 import "core:testing"
 
-// HOLE_ARTIFACT is the minimal holed program (the v7 `stub` carry, stamped at
-// the current schema version): a Counter thing stepped by a
-// fallback-holed behavior whose approximation is `self with { n: self.n + 1.0 }`
-// (so every tick advances n by exactly 1.0 in Q32.32), and an Idle thing
-// stepped by a bare typecheck-only hole (so no tick ever writes it). Both
-// behaviors occupy REAL flattened control steps — the pipelined-hole surface.
 HOLE_ARTIFACT :: "funpack-artifact 19\n" +
 	"[meta 2]\n" +
 	"project holes\n" +
@@ -54,8 +36,6 @@ HOLE_ARTIFACT :: "funpack-artifact 19\n" +
 	"[entrypoint 1]\n" +
 	"entrypoint main pipeline:Holes tick_hz:60 logical:160x120 bindings:bindings\n"
 
-// hole_time_resource is the fixed 60hz Time record the holed fold consumes —
-// the tick_test shape, local so this file stays self-contained.
 @(private = "file")
 hole_time_resource :: proc(allocator := context.allocator) -> Record_Value {
 	fields := make(map[string]Value, allocator)
@@ -63,8 +43,6 @@ hole_time_resource :: proc(allocator := context.allocator) -> Record_Value {
 	return Record_Value{type_name = "Time", fields = fields}
 }
 
-// load_hole_program loads the hand-written holed artifact, failing the test on
-// any refusal — the load is total or fail-closed, never partial.
 @(private = "file")
 load_hole_program :: proc(t: ^testing.T) -> (program: Program, ok: bool) {
 	loaded, err := load_program(HOLE_ARTIFACT, context.temp_allocator)
@@ -74,8 +52,6 @@ load_hole_program :: proc(t: ^testing.T) -> (program: Program, ok: bool) {
 	return loaded, true
 }
 
-// run_hole_ticks runs setup then n no-input ticks over the holed program — the
-// closed, input-fixed fold the determinism assertion repeats.
 @(private = "file")
 run_hole_ticks :: proc(program: ^Program, n: int, allocator := context.allocator) -> World_Version {
 	world := new_world(program^, allocator)
@@ -89,10 +65,6 @@ run_hole_ticks :: proc(program: ^Program, n: int, allocator := context.allocator
 
 @(test)
 test_load_stub_body_nodes :: proc(t: ^testing.T) {
-	// AC (loader): the v7-carried `stub` node loads as a first-class body statement —
-	// the fallback hole's body is one Stub node with the `fallback` form and
-	// its single approximation-expression child, the bare hole's one Stub
-	// node with the `bare` form and no child.
 	program, ok := load_hole_program(t)
 	if !ok {
 		return
@@ -119,8 +91,6 @@ test_load_stub_body_nodes :: proc(t: ^testing.T) {
 		testing.expect_value(t, len(bare.body[0].children), 0)
 	}
 
-	// An under-shaped fallback stub (a declared child that is absent) is a
-	// fail-closed refusal, never a partial body.
 	truncated := "funpack-artifact 19\n" +
 		"[behaviors 1]\n" +
 		"behavior approx_step on:Counter stage:control contract:Update 0 0 0 1\n" +
@@ -131,12 +101,6 @@ test_load_stub_body_nodes :: proc(t: ^testing.T) {
 
 @(test)
 test_stub_fallback_behavior_ticks_fallback_value :: proc(t: ^testing.T) {
-	// AC (the approximation runs live): a loaded fallback-holed behavior ticks
-	// producing the fallback value — Counter.n advances by exactly 1.0
-	// (Q32.32 bit-exact) per tick, the same value the compiler interpreter's
-	// eval_stub_hole computes — while the BARE-holed behavior fails closed:
-	// Idle.n never moves, the instance folds nothing, and the tick completes
-	// (a defined no-value outcome, never a trap).
 	program, ok := load_hole_program(t)
 	if !ok {
 		return
@@ -155,8 +119,6 @@ test_stub_fallback_behavior_ticks_fallback_value :: proc(t: ^testing.T) {
 	testing.expect(t, idle_ok)
 	testing.expect_value(t, idle_n.(Fixed), to_fixed(0))
 
-	// Three ticks accumulate the approximation: the fallback evaluates against
-	// the WORKING self each tick (the param-bound scope), not a stale spawn.
 	three := run_hole_ticks(&program, 3, context.temp_allocator)
 	counter3, _ := view_at(view_of_type(&three, "Counter"), 0)
 	n_after_three, _ := row_field(counter3, "n")
@@ -168,10 +130,6 @@ test_stub_fallback_behavior_ticks_fallback_value :: proc(t: ^testing.T) {
 
 @(test)
 test_stub_holed_fold_deterministic :: proc(t: ^testing.T) {
-	// AC (determinism): two independent 10-tick folds over the holed program
-	// commit BIT-IDENTICAL world versions — the stub dispatch is fixed-point
-	// only, so same inputs replay bit-identically (the same floor every
-	// intact-body fold stands on).
 	program, ok := load_hole_program(t)
 	if !ok {
 		return

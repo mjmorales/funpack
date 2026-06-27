@@ -1,23 +1,7 @@
-// §28 §5 capture → test acceptance for `capture_tick` — the whole-tick-twin
-// guard. capture_tick reads a recorded tick's committed pre-state (version
-// tick-1; tick 0's pre is the post-startup version) and post-state (version
-// tick) of a thing and renders a funpack `test` asserting the hand-rolled twin
-// reproduces the LIVE Id-ordered schedule: `assert twin([pre]) == [post]`. The
-// post rows are the live fold's committed output, so a twin that diverges (e.g.
-// a simultaneous map over the pre-snapshot) fails the assert — the mechanical
-// guard for the friction the determinism contract otherwise only warns about.
-//
-// The fixture is a synthetic two-Counter program whose `bump` behavior rewrites
-// every Counter's mark to 7 in one stage, plus three candidate twins: a `[T]`
-// form, a `View[T]` form, and a malformed `Int->Int` form (the refusal). The
-// twin BODY is never executed by capture_tick (it only reads the signature to
-// shape the rendered call), so a trivial `return xs` body suffices.
 package funpack_runtime
 
 import "core:testing"
 
-// tk_fields / tk_children heap-allocate a hand-built node's slices from the test
-// arena so a fixture node escapes its constructing frame (the interp_test mold).
 @(private = "file")
 tk_fields :: proc(tokens: ..string) -> []string {
 	out := make([]string, len(tokens), context.temp_allocator)
@@ -32,7 +16,6 @@ tk_children :: proc(nodes: ..Node) -> []Node {
 	return out
 }
 
-// tk_return wraps a value subtree in a `.Return` statement body of one node.
 @(private = "file")
 tk_return :: proc(value: Node, allocator := context.allocator) -> []Node {
 	body := make([]Node, 1, allocator)
@@ -40,10 +23,6 @@ tk_return :: proc(value: Node, allocator := context.allocator) -> []Node {
 	return body
 }
 
-// counter_tick_program builds the synthetic whole-tick fixture: a thing
-// `Counter { mark: Int }`, a `bump` stage rewriting every mark to 7, two
-// Counters seeded mark 0, and three candidate twins (the [T] form `mark_twin`,
-// the View[T] form `view_twin`, the malformed `wrong_twin(x: Int) -> Int`).
 @(private = "file")
 counter_tick_program :: proc(allocator := context.allocator) -> ^Program {
 	program := new(Program, allocator)
@@ -53,7 +32,6 @@ counter_tick_program :: proc(allocator := context.allocator) -> ^Program {
 	things := make([]Thing_Decl, 1, allocator)
 	things[0] = Thing_Decl{name = "Counter", fields = cfields}
 
-	// behavior bump on Counter: return Counter{mark: 7}
 	mark_rf := Node {
 		kind     = .Recfield,
 		fields   = tk_fields("mark"),
@@ -74,7 +52,6 @@ counter_tick_program :: proc(allocator := context.allocator) -> ^Program {
 		body     = tk_return(rec, allocator),
 	}
 
-	// three candidate twins; bodies (`return xs` / `return 0`) never run.
 	xs := Node{kind = .Name, fields = tk_fields("xs")}
 	functions := make([]Function_Decl, 3, allocator)
 	list_param := make([]Param_Decl, 1, allocator)
@@ -126,9 +103,6 @@ counter_tick_program :: proc(allocator := context.allocator) -> ^Program {
 	return program
 }
 
-// counter_tick_session runs the fixture for one tick: startup seeds two
-// Counters at mark 0, tick 0's `bump` rewrites both to 7 — so capture_tick at
-// tick 0 reads pre=[0,0] (post-startup) and post=[7,7] (committed).
 @(private = "file")
 counter_tick_session :: proc(allocator := context.allocator) -> Debug_Session {
 	program := counter_tick_program(allocator)
@@ -137,11 +111,6 @@ counter_tick_session :: proc(allocator := context.allocator) -> Debug_Session {
 	return open_debug_session(program, inputs, NO_SEED, allocator)
 }
 
-// THE ACCEPTANCE GOLDEN — the [T]-twin whole-tick capture, pinned byte-for-byte:
-// capture_tick renders `assert mark_twin([pre]) == [post]`, where pre is the
-// post-startup [0,0] and post is the live committed [7,7]. A twin that modeled
-// the tick as a simultaneous map over the pre-snapshot would NOT reproduce [7,7]
-// from a self-update fold, so the assert is the guard.
 @(test)
 test_capture_tick_pins_whole_tick_twin :: proc(t: ^testing.T) {
 	s := counter_tick_session()
@@ -154,9 +123,6 @@ test_capture_tick_pins_whole_tick_twin :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// A View[T] twin wraps the pre rows in View.of(…) — the param-shape projection:
-// the LHS reads `view_twin(View.of([pre]))`, the expected RHS stays the `[post]`
-// list the twin returns.
 @(test)
 test_capture_tick_view_twin_wraps_in_view_of :: proc(t: ^testing.T) {
 	s := counter_tick_session()
@@ -169,10 +135,6 @@ test_capture_tick_view_twin_wraps_in_view_of :: proc(t: ^testing.T) {
 	testing.expect_value(t, response, expected)
 }
 
-// Every unservable capture_tick is refused with a well-formed envelope, the
-// refusal TYPED toward the agent: an absent twin, a twin whose signature is not
-// `[T]/View[T] -> [T]`, an unknown thing, an out-of-range tick, and a missing
-// required arg each name their cause.
 @(test)
 test_capture_tick_refusals :: proc(t: ^testing.T) {
 	s := counter_tick_session()
@@ -208,8 +170,6 @@ test_capture_tick_refusals :: proc(t: ^testing.T) {
 	}
 }
 
-// capture_tick is observe-class: a capture leaves the canonical chain digest-pinned
-// bit-identical to an untouched reference — the §28 §2 warranty for the self-heal group.
 @(test)
 test_capture_tick_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 	s := counter_tick_session()
@@ -228,8 +188,6 @@ test_capture_tick_non_perturbing_digest_pin :: proc(t: ^testing.T) {
 	testing.expect_value(t, captured.session, baseline.session)
 }
 
-// contains_substring is the test's tiny substring check (avoids importing strings
-// for one call — the refusal/ok fragments are short literals).
 @(private = "file")
 contains_substring :: proc(haystack, needle: string) -> bool {
 	if len(needle) == 0 {

@@ -1,15 +1,7 @@
-// Dual-interpreter parity proof for engine.map: the runtime interpreter evaluates
-// the eight Map methods with the SAME insertion-ordered, immutable-rebuild
-// semantics funpack/evaluate.odin's eval_map_* does (the compiler side is pinned
-// in funpack/map_eval_test.odin). Map values are hand-built and the builtins /
-// method-form dispatch are driven over synthetic node forests, the
-// interp_combinators_test discipline.
 package funpack_runtime
 
 import "core:strconv"
 import "core:testing"
-
-// --- synthetic-node + value builders --------------------------------------
 
 @(private = "file")
 mr_name_node :: proc(name: string) -> Node {
@@ -26,8 +18,6 @@ mr_int_node :: proc(n: i64) -> Node {
 	return Node{kind = .Int, fields = fields}
 }
 
-// mr_call_node builds a `call` node: child[0] the callee `name`, children[1:] the
-// arg nodes — the free-call form get(m, k) / set(m, k, v).
 @(private = "file")
 mr_call_node :: proc(callee: string, args: ..Node) -> Node {
 	children := make([]Node, len(args) + 1, context.temp_allocator)
@@ -38,9 +28,6 @@ mr_call_node :: proc(callee: string, args: ..Node) -> Node {
 	return Node{kind = .Call, children = children}
 }
 
-// mr_method_call builds the §02 §4 method form `recv.method(args)`: a `call` whose
-// callee is a `field` node over the receiver, the args following. Routes through
-// eval -> eval_call -> eval_method_call -> eval_map_method.
 @(private = "file")
 mr_method_call :: proc(recv: Node, method: string, args: ..Node) -> Node {
 	field_fields := make([]string, 1, context.temp_allocator)
@@ -62,7 +49,6 @@ mr_interp :: proc() -> Interp {
 	return Interp{program = program, allocator = context.temp_allocator}
 }
 
-// mr_map builds a Map_Value from alternating key, value pairs in insertion order.
 @(private = "file")
 mr_map :: proc(pairs: ..Value) -> Value {
 	entries := make([]Map_Entry, len(pairs) / 2, context.temp_allocator)
@@ -84,7 +70,6 @@ mr_scope :: proc(bindings: ..struct {
 	return Env{names = names}
 }
 
-// mr_expect_some asserts a result is Option::Some carrying the expected i64/bool.
 @(private = "file")
 mr_expect_some_bool :: proc(t: ^testing.T, v: Value, want: bool) {
 	variant, ok := v.(Variant_Value)
@@ -101,13 +86,8 @@ mr_is_none :: proc(v: Value) -> bool {
 	return ok && variant.enum_type == "Option" && variant.case_name == "None"
 }
 
-// --- the map method fixtures ----------------------------------------------
-
 @(test)
 test_runtime_map_set_get_roundtrip :: proc(t: ^testing.T) {
-	// AC: set then get round-trips in the runtime — the dual of the compiler's
-	// test_map_set_get_roundtrip. set(empty, 1, true) yields a one-entry map; get(1)
-	// reads Some(true), get(2) reads None.
 	interp := mr_interp()
 	env := mr_scope({"m", mr_map()}, {"v", true})
 	set_node := mr_call_node("set", mr_name_node("m"), mr_int_node(1), mr_name_node("v"))
@@ -131,9 +111,6 @@ test_runtime_map_set_get_roundtrip :: proc(t: ^testing.T) {
 
 @(test)
 test_runtime_map_set_replaces_in_place :: proc(t: ^testing.T) {
-	// AC: re-setting an existing key updates its value without growing the map or
-	// moving the key — len stays 1, get reads the latest value (the in-place rebuild
-	// the compiler's test_map_set_replaces_in_place also pins).
 	interp := mr_interp()
 	env := mr_scope({"m", mr_map(i64(1), true)}, {"v", false})
 	set_node := mr_call_node("set", mr_name_node("m"), mr_int_node(1), mr_name_node("v"))
@@ -151,9 +128,6 @@ test_runtime_map_set_replaces_in_place :: proc(t: ^testing.T) {
 
 @(test)
 test_runtime_map_has_and_remove :: proc(t: ^testing.T) {
-	// AC: has is the membership predicate; remove drops the key and closes the gap,
-	// preserving insertion order among the rest (the compiler's
-	// test_map_has_membership / test_map_remove_closes_gap dual).
 	interp := mr_interp()
 	m := mr_map(i64(1), true, i64(2), false)
 	env := mr_scope({"m", m})
@@ -176,9 +150,6 @@ test_runtime_map_has_and_remove :: proc(t: ^testing.T) {
 
 @(test)
 test_runtime_map_keys_values_insertion_order :: proc(t: ^testing.T) {
-	// AC: keys() and values() project in INSERTION order, not sorted — a map built
-	// set(2) before set(1) yields keys [2, 1], values pairing positionally (the
-	// determinism contract; the compiler's test_map_keys_values_insertion_order dual).
 	interp := mr_interp()
 	env := mr_scope({"m", mr_map(i64(2), false, i64(1), true)})
 
@@ -200,9 +171,6 @@ test_runtime_map_keys_values_insertion_order :: proc(t: ^testing.T) {
 
 @(test)
 test_runtime_map_equality_is_positional :: proc(t: ^testing.T) {
-	// AC: values_equal is positional over the pairs — same order equal, the same
-	// entries in a different order NOT equal (the List model; the dual of the
-	// compiler's value_equal Map arm and test_map_equality_is_positional).
 	same_order := values_equal(mr_map(i64(1), true, i64(2), false), mr_map(i64(1), true, i64(2), false))
 	testing.expect(t, same_order)
 	diff_order := values_equal(mr_map(i64(1), true, i64(2), false), mr_map(i64(2), false, i64(1), true))
@@ -211,11 +179,6 @@ test_runtime_map_equality_is_positional :: proc(t: ^testing.T) {
 
 @(test)
 test_runtime_map_method_form_and_static_empty :: proc(t: ^testing.T) {
-	// AC: the method form m.get(k) dispatches through eval -> eval_method_call ->
-	// eval_map_method, and the idiomatic Map.empty() static constructor builds the
-	// empty map through eval_engine_constructor — the two reach the same value cores
-	// the free builtins do (the chaining idiom Map.empty().set(...).get(...) rests on
-	// this method dispatch).
 	interp := mr_interp()
 	env := mr_scope({"m1", mr_map(i64(1), true)})
 	method_get := mr_method_call(mr_name_node("m1"), "get", mr_int_node(1))
@@ -234,10 +197,6 @@ test_runtime_map_method_form_and_static_empty :: proc(t: ^testing.T) {
 
 @(test)
 test_runtime_map_cell_tile_record_keys :: proc(t: ^testing.T) {
-	// AC: the decision's canonical Map[Cell, Tile] — a record key uses values_equal
-	// (structural), so a Cell{x,y} key reads back its Tile and a different cell reads
-	// None, exactly as the compiler's test_map_cell_tile_keyed_state. This is the
-	// keyed-state shape gameplay (a stored dungeon floor) rests on.
 	interp := mr_interp()
 	cell00 := Record_Value {
 		type_name = "Cell",

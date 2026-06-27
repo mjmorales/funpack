@@ -1,56 +1,19 @@
-// The §28 control side of the introspection session — perturbing commands, so
-// every one of them FORKS (§28 §2): a control command never touches the
-// canonical committed chain; it lands on a Session_Branch, a new lineage off a
-// committed snapshot, marked non-warranted in every response. COW structural
-// sharing makes the fork a root-pointer copy, and the canonical-untouched
-// acceptance test (introspect_control_test.odin) digest-pins the trunk across a
-// full control battery — the §28 §1 observe/control theorem made mechanical.
-//
-// Control is §08's CQRS write side exposed as a DEBUG-ONLY path: `set`, `spawn`,
-// `despawn`, and `emit` go through the ORDINARY transaction shapes (new_tick_state →
-// working-table write / spawn-despawn batch / mailbox route → commit_tick_state at
-// the boundary), never an ad-hoc version mutation; `inject_input` feeds the §23
-// action-snapshot path through the SAME step_tick fold a live device feeds; and
-// `reload` reuses hot_reload_swap — the §09 §3 gated atomic swap — on the BRANCH
-// program, keeping last-good code on any refusal. Because these writes happen
-// OUTSIDE the normal own-blackboard/signal/command path, the branch lineage is
-// non-warranted by construction, which is exactly why it forks.
-//
-// Command payloads are funpack values as strings, decoded through the §28 DEBUG codec
-// (decode_default_value with human=true): the SAME source-literal spelling the observe
-// side renders (`Vec2(x=96.0,y=90.0)`, `110.0`), so an observed value pastes back
-// verbatim as a control payload, and an older raw Q32.32 payload still decodes (the dot
-// discriminates). A decode failure names the field, its type, and a sample literal
-// (value_decode_error) instead of a bare rejection.
 package funpack_runtime
 
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 
-// Session_Branch is one forked control lineage: the canonical tick it forked at,
-// its own program (the session's until a `reload` swaps the branch onto a
-// recompiled artifact), its committed head, and its forked Rng thread (seeded
-// runs). `ticks` counts the branch commits since the fork — the branch's own
-// logical time, continuing the canonical tick numbering it forked from.
 Session_Branch :: struct {
-	base_tick:       int, // the canonical tick the fork snapshotted (-1 = post-startup)
-	program_storage: Program, // owned program after a reload swap (unused before one)
-	program:         ^Program, // the branch's current program (session program until reload)
-	head:            World_Version, // the branch's committed head
-	ticks:           int, // branch commits since the fork
-	rng:             Rng, // the branch's forked Rng thread (seeded runs)
+	base_tick:       int,
+	program_storage: Program,
+	program:         ^Program,
+	head:            World_Version,
+	ticks:           int,
+	rng:             Rng,
 	has_rng:         bool,
 }
 
-// control_request dispatches one control command. The PERTURBING arms
-// (branch / inject_input / set / spawn / despawn / emit / reload) fork first (ensure_branch
-// — an implicit fork at the canonical head when no branch is live), perturb ONLY
-// the branch, and answer with the branch position plus `"warranted":false` (§28
-// §2: a control lineage is never warranted). `checkout` is the lone NON-perturbing
-// arm: it forks nothing and only switches which already-committed lineage observe
-// reads (§28 §2 active-lineage selector). The canonical chain is read-only
-// throughout — every arm forks or navigates, none mutates the trunk.
 control_request :: proc(
 	s: ^Debug_Session,
 	id: i64,
@@ -79,11 +42,6 @@ control_request :: proc(
 	return error_response(id, cmd, "unknown control command", allocator)
 }
 
-// fork_branch snapshots the canonical chain at `tick` into a fresh branch: the
-// committed version is the COW root (no copy — structural sharing), the Rng
-// thread is the retained state ENTERING tick+1 (so the branch's first fold draws
-// exactly what the canonical tick+1 would have), and the branch program starts
-// as the session program. Re-forking replaces any prior branch.
 @(private = "file")
 fork_branch :: proc(s: ^Debug_Session, tick: int) -> bool {
 	head, ok := session_version_at(s, tick)
@@ -104,15 +62,6 @@ fork_branch :: proc(s: ^Debug_Session, tick: int) -> bool {
 	return true
 }
 
-// ensure_branch makes a control command's implicit fork (friction-c8ce3627). When no
-// branch is live, it forks at the CURSOR'S CURRENT TICK if the timeline is loaded —
-// the cursor IS the agent's navigation position, so a `rewind to N -> control_spawn`
-// honors the rewound cursor and lands the edit at tick N (observable there, and with
-// the forward-fold advanceable), instead of silently anchoring to the recording end
-// and ignoring the rewind. When the timeline is NOT loaded (no cursor armed), it falls
-// back to the canonical head (the latest committed tick; -1 when the recorded run is
-// empty) — the prior behavior for a session that never navigated. A live branch is
-// kept — control commands chain on it.
 @(private = "file")
 ensure_branch :: proc(s: ^Debug_Session) {
 	if s.has_branch {
@@ -122,17 +71,11 @@ ensure_branch :: proc(s: ^Debug_Session) {
 	fork_branch(s, anchor)
 }
 
-// branch_logical_tick is the tick ordinal the NEXT branch fold represents — the
-// canonical numbering continued past the fork point, driving the branch's
-// per-tick Time derivation exactly as the canonical fold derives it.
 @(private = "file")
 branch_logical_tick :: proc(s: ^Debug_Session) -> int {
 	return s.branch.base_tick + 1 + s.branch.ticks
 }
 
-// control_ok_response renders a control success: the branch position object plus
-// the §28 §2 non-warranted mark, then any command-specific extra fields the
-// caller appended into `extras` (a pre-rendered `,"k":v` run, possibly empty).
 @(private = "file")
 control_ok_response :: proc(
 	s: ^Debug_Session,
@@ -153,10 +96,6 @@ control_ok_response :: proc(
 	return strings.to_string(b)
 }
 
-// control_branch is the explicit fork: snapshot the canonical chain at
-// args.tick (default: the canonical head) into a fresh branch — the git-like
-// "what if?" fork (§28 §2). Re-issuing `branch` re-forks, discarding the prior
-// branch lineage.
 @(private = "file")
 control_branch :: proc(
 	s: ^Debug_Session,
@@ -174,16 +113,6 @@ control_branch :: proc(
 	return control_ok_response(s, id, "branch", "", allocator)
 }
 
-// control_checkout switches the session's ACTIVE lineage (§28 §2: observe reads
-// the canonical chain by default, or the active branch once checked out). It is
-// the git-like `checkout` paired with `branch`'s fork: `branch` creates the
-// lineage, `checkout` makes it the one observe/time read WITHOUT a per-call
-// `branch` arg. The target is the live branch (default, or `target:"branch"`) or
-// `target:"canonical"`. Checking out the branch when NONE is live fails closed —
-// there is no such lineage to navigate to ("navigation among already-existing
-// lineages"). UNLIKE every other control command, checkout is NON-PERTURBING: it
-// forks nothing and mutates no recorded state, it only flips which already-
-// committed lineage the resolver reads, so the determinism warranty is untouched.
 @(private = "file")
 control_checkout :: proc(
 	s: ^Debug_Session,
@@ -209,9 +138,6 @@ control_checkout :: proc(
 	return error_response(id, "checkout", "unknown checkout target (branch|canonical)", allocator)
 }
 
-// checkout_ok_response renders the checkout success: the now-active lineage and
-// the lineage's warranty (the canonical trunk is warranted; a forked branch is
-// not, §28 §2). Field order is fixed — byte-stable for the session log.
 @(private = "file")
 checkout_ok_response :: proc(
 	s: ^Debug_Session,
@@ -229,13 +155,6 @@ checkout_ok_response :: proc(
 	return strings.to_string(b)
 }
 
-// control_inject_input feeds the §23 action-snapshot path on the branch: the
-// args describe one deterministic snapshot (pressed/held buttons, 1D values, 2D
-// axes — actions named by their `Enum::Variant` token, players by P1..P4), and
-// the branch folds `ticks` (default 1) full pipeline ticks through the SAME
-// step_tick seam a live device-fed run drives, threading the branch Rng. This
-// is the injected-device-queue determinism contract: the snapshot is the input,
-// the device is irrelevant.
 @(private = "file")
 control_inject_input :: proc(
 	s: ^Debug_Session,
@@ -269,16 +188,6 @@ control_inject_input :: proc(
 	return control_ok_response(s, id, "inject_input", "", allocator)
 }
 
-// build_input_snapshot assembles one §23 action snapshot from a request args object.
-// Actions resolve through the program's deterministic action registry (the same
-// minting a binding resolves through); analog values are Fixed raw-bit strings
-// (§16 §2.3). Returns a non-empty error string on the first unresolvable entry. It is
-// the SHARED snapshot vocabulary: the in-session `inject_input` control command
-// (control_inject_input above) AND the headless scripted-record path
-// (replay_scripted.odin, marshalled by the cmd-layer `record` tool) both build their
-// per-tick snapshot through this ONE proc, so a recorded segment and an injected tick
-// name actions, players, and analogs identically — package-visible (not file-private)
-// for exactly that cross-file reuse.
 build_input_snapshot :: proc(
 	program: ^Program,
 	args: json.Object,
@@ -329,10 +238,6 @@ build_input_snapshot :: proc(
 	return snapshot, ""
 }
 
-// injected_entry resolves one input-record object: `player` (P1..P4), `action`
-// (the registry's `Enum::Variant` token), and up to two Fixed raw-bit string
-// fields named by the callers (a 1D `value`, a 2D `x`/`y`). Unrequested analog
-// slots return Fixed(0).
 @(private = "file")
 injected_entry :: proc(
 	registry: Action_Registry,
@@ -380,7 +285,6 @@ injected_entry :: proc(
 	return resolved_player, def.id, analog[0], analog[1], ""
 }
 
-// parse_player maps the wire token onto the §23 PlayerId enum.
 @(private = "file")
 parse_player :: proc(name: string) -> (player: PlayerId, ok: bool) {
 	switch name {
@@ -396,16 +300,6 @@ parse_player :: proc(name: string) -> (player: PlayerId, ok: bool) {
 	return .P1, false
 }
 
-// control_value_matches_type guards the control decode against the §6 bare-token
-// fallback silently accepting a TYPE-MISMATCHED value. decode_default_value never
-// FAILS for a known-concrete declared type — an undecodable token drops to a bare string
-// column (the fallback the §6 artifact loader needs for unit-enum tokens against unknown
-// data decls) — so `set Ball.pos not-a-vec` would store a string into a Vec2 column and
-// report success. The control surface verifies the decoded arm matches the DECLARED type
-// and refuses on mismatch. It tightens ONLY the known-concrete types (Int/Fixed/Bool/
-// Vec2/Vec3/String/[T]/§3-data-record), where the footgun bites; an enum or §3-less
-// type keeps the loader's bare-token leniency (validating an enum case is the loader's
-// job, not this guard's), so no legitimate control payload regresses.
 @(private = "file")
 control_value_matches_type :: proc(program: ^Program, type_name: string, value: Field_Value) -> bool {
 	switch type_name {
@@ -436,17 +330,9 @@ control_value_matches_type :: proc(program: ^Program, type_name: string, value: 
 		record, ok := value.(Record_Value)
 		return ok && record.type_name == type_name
 	}
-	// An enum type or a type with no §3 Data_Decl: the legitimate column forms are a
-	// bare unit-variant token, a payload Variant_Value, or a Ref — the loader's
-	// bare-token domain, left untightened.
 	return true
 }
 
-// value_decode_error builds the §28 set/spawn decode-failure message that states the
-// expected encoding. A bare "does not decode" left the agent guessing the wire
-// form; this names the field, its declared type, and a SAMPLE LITERAL in the exact
-// source-literal spelling the surface now accepts (the inverse of the observe
-// projection), so the remedy is shown, not just the failure.
 @(private = "file")
 value_decode_error :: proc(field: string, field_type: string, allocator := context.allocator) -> string {
 	return fmt.aprintf(
@@ -458,10 +344,6 @@ value_decode_error :: proc(field: string, field_type: string, allocator := conte
 	)
 }
 
-// field_type_sample_literal returns a representative source-literal for a declared type
-// — the remedy half of value_decode_error. The scalar types get their canonical
-// spelling; the §10 vectors show the decimal-component constructor; an unknown type
-// falls back to the Fixed sample (the numeric reading control inputs most often carry).
 @(private = "file")
 field_type_sample_literal :: proc(field_type: string) -> string {
 	switch field_type {
@@ -482,13 +364,6 @@ field_type_sample_literal :: proc(field_type: string) -> string {
 	return "110.0"
 }
 
-// control_set forces one blackboard column on the branch — the debug-only write
-// outside the own-blackboard path (§28 §2), executed through the ORDINARY
-// transaction shape: a working tick state off the branch head, the row's map
-// replaced wholesale (the same replace-never-mutate discipline write_blackboard
-// keeps, so the prior version's aliased map is untouched), committed at the
-// boundary. The value decodes against the field's DECLARED type through the §28
-// debug codec (human=true: source-literal Fixed accepted).
 @(private = "file")
 control_set :: proc(
 	s: ^Debug_Session,
@@ -539,11 +414,6 @@ control_set :: proc(
 	return control_ok_response(s, id, "set", "", allocator)
 }
 
-// control_spawn mints one new instance on the branch through the ordinary
-// tick-boundary spawn batch: the blackboard is the thing's declared defaults
-// with the supplied field overrides (each decoded against its declared type),
-// queued and applied exactly as a behavior's [Spawn] emit lands. The minted Id
-// is answered so the agent can address the new row.
 @(private = "file")
 control_spawn :: proc(
 	s: ^Debug_Session,
@@ -601,15 +471,6 @@ control_spawn :: proc(
 	return control_ok_response(s, id, "spawn", extras, allocator)
 }
 
-// control_despawn removes one EXISTING instance on the branch — the inverse of
-// control_spawn — through the SAME tick-boundary batch (queue_despawn +
-// apply_spawn_batch, exactly as a behavior's [Despawn] emit lands at the
-// boundary, so no parallel removal path exists). It addresses a live row the way
-// `set` does — args.thing + args.instance, the Id observe rendered — and answers
-// that Id so the agent confirms which row left. The instance is pre-checked
-// against the working table because apply_spawn_batch treats an absent Id as a
-// silent no-op (population is fixed within a tick), so an unknown/already-absent
-// Id must refuse here rather than commit an empty batch.
 @(private = "file")
 control_despawn :: proc(
 	s: ^Debug_Session,
@@ -649,12 +510,6 @@ control_despawn :: proc(
 	return control_ok_response(s, id, "despawn", extras, allocator)
 }
 
-// control_emit injects one signal on the branch and folds a full pipeline tick
-// over it: the decoded signal record is pre-routed into the tick's mailbox (the
-// ordinary forward-routing shape), so every consumer of the type reads it THIS
-// tick exactly as it would read a producer's emission — then the tick commits at
-// the boundary. The injected snapshot is empty input; the branch Rng threads
-// through as ever.
 @(private = "file")
 control_emit :: proc(
 	s: ^Debug_Session,
@@ -678,9 +533,6 @@ control_emit :: proc(
 		return error_response(id, "emit", "signal value must be a record of the signal type", allocator)
 	}
 
-	// The ordinary transaction shape, with the mailbox pre-seeded: the injected
-	// record enters through route_signals — the same accumulator a producer's
-	// fold lands in — then the full pipeline folds over it and commits.
 	prior := branch.head
 	state := new_tick_state(prior, allocator, allocator)
 	if branch.has_rng {
@@ -702,22 +554,11 @@ control_emit :: proc(
 	return control_ok_response(s, id, "emit", "", allocator)
 }
 
-// decoded_record_as_value lifts a decoded signal record column into the
-// interpreter Value a mailbox carries — the same lift a consumer's signal-list
-// element takes.
 @(private = "file")
 decoded_record_as_value :: proc(record: Record_Value) -> Value {
 	return field_value_to_value(record)
 }
 
-// control_reload swaps the BRANCH onto a recompiled artifact through the §09 §3
-// gated atomic hot_reload_swap: the branch head migrates through the schema-diff
-// kernel and the branch program re-resolves behaviors against the new tables. A
-// refusal (load or migration) is answered as an error and the branch keeps its
-// last-good program and head untouched — never a partial swap. The canonical
-// chain and the session program are NEVER touched: a reload is a perturbation,
-// so it lives on the fork (§28 §2; hot-reload never ships in a warranted
-// session, §09 §3).
 @(private = "file")
 control_reload :: proc(
 	s: ^Debug_Session,
@@ -747,4 +588,3 @@ control_reload :: proc(
 	branch.ticks += 1
 	return control_ok_response(s, id, "reload", ",\"swapped\":true", allocator)
 }
-

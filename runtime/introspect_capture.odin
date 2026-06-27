@@ -1,32 +1,3 @@
-// The §28 §5 capture → test loop — the observe-class self-heal commands that
-// emit complete, idiomatic funpack `test "…" { … }` blocks, indistinguishable
-// from hand-written tests, ready to land in source as permanent regressions:
-//
-//   - `capture_test` extracts one behavior instance's (self, resources, inbound
-//     signals) at a recorded tick and pins its in-fold pure-step result.
-//   - `capture_tick` reads a recorded tick's committed pre-state (version
-//     tick-1) and post-state (version tick) of a thing and pins the WHOLE-TICK
-//     transition against a hand-rolled twin: `assert twin([pre]) == [post]`.
-//     The post-state is the LIVE Id-ordered schedule's committed output, so a
-//     twin modeling the tick as a simultaneous map (the false mental model that
-//     passes a green suite while diverging from the live fold) fails the assert
-//     — the mechanical guard the determinism contract otherwise only warns about.
-//
-// The exported text is funpack SOURCE, built from the deterministic
-// constructors the spec names: record literals `Type{field: value}` in
-// declared field order, `View.of([…])` for a View[T] read, the
-// `Input.empty().with_*` producer chain rebuilt from the RECORDED snapshot,
-// signal lists as plain record lists, Fixed as its exact dyadic decimal
-// (Q32.32 is base-2 fractional, so the decimal expansion terminates — no float
-// ever touches the render). The export is byte-stable — the same capture
-// always renders the same bytes — so the seeded-snake acceptance golden
-// (introspect_capture_test.odin) pins the exact exported text.
-//
-// A read with no deterministic source constructor (a threaded `rng: Rng`, a
-// `time: Time` resource) is REFUSED, never approximated: funpack source has no
-// literal for a mid-run Rng state, so a capture that would need one is not a
-// runnable test. The refusal names the param so the agent captures at a
-// constructible boundary instead.
 package funpack_runtime
 
 import "core:encoding/json"
@@ -34,11 +5,6 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 
-// capture_test_request serves one `capture_test` command: re-fold the recorded
-// tick with the observe tap armed (the same bounded re-fold trace runs), select
-// the behavior's captured step (args.instance; default the first instance in
-// fold order), and render the test block. Observe-class — the canonical chain
-// is read, never written.
 capture_test_request :: proc(
 	s: ^Debug_Session,
 	id: i64,
@@ -95,10 +61,6 @@ capture_test_request :: proc(
 	return strings.to_string(b)
 }
 
-// render_captured_test renders the funpack test block: a @doc naming the
-// provenance, a deterministic test name, and the one assert — the behavior's
-// step applied to the captured reads, compared against the in-fold result.
-// Returns a non-empty error naming the first unconstructible read or value.
 @(private = "file")
 render_captured_test :: proc(
 	s: ^Debug_Session,
@@ -137,14 +99,6 @@ render_captured_test :: proc(
 	return strings.to_string(b), ""
 }
 
-// capture_tick_request serves one `capture_tick` command: read the committed
-// pre-state (version tick-1; tick 0's pre is the post-startup version) and
-// post-state (version tick) of the target thing on the addressed lineage, and
-// render a funpack `test` asserting the hand-rolled whole-tick twin reproduces
-// the LIVE Id-ordered schedule — `assert twin([pre rows]) == [post rows]`.
-// Observe-class — the retained chain is read, never written. The pre/post rows
-// render through the same source constructors capture_test uses, so an
-// unconstructible column (a Ref, an anim value) is refused, never approximated.
 capture_tick_request :: proc(
 	s: ^Debug_Session,
 	id: i64,
@@ -176,8 +130,6 @@ capture_tick_request :: proc(
 	if pre_table == nil || post_table == nil {
 		return error_response(id, "capture_tick", "unknown thing", allocator)
 	}
-	// The twin shape is checked against a thing already confirmed present above, so
-	// an unknown thing reads as "unknown thing", not as a twin-return-type mismatch.
 	takes_view, twin_err := capture_tick_twin_shape(twin, thing, allocator)
 	if twin_err != "" {
 		return error_response(id, "capture_tick", twin_err, allocator)
@@ -209,10 +161,6 @@ capture_tick_request :: proc(
 	return strings.to_string(b)
 }
 
-// capture_tick_twin_shape validates the twin is a whole-tick fold over the
-// target thing: exactly one param typed `[T]` or `View[T]` (T = thing) and a
-// `[T]` return. takes_view is true when the param is `View[T]`, so the rendered
-// call wraps the pre rows in `View.of(…)`. A non-empty err names the violation.
 @(private = "file")
 capture_tick_twin_shape :: proc(
 	twin: ^Function_Decl,
@@ -252,11 +200,6 @@ capture_tick_twin_shape :: proc(
 	)
 }
 
-// render_captured_tick renders the whole-tick twin test block: a @doc naming the
-// provenance, a deterministic test name, and the one assert — the twin applied
-// to the committed pre rows, compared against the committed post rows (the live
-// schedule's Id-ordered output). Returns a non-empty error for the first
-// unconstructible column in either row set.
 @(private = "file")
 render_captured_tick :: proc(
 	program: ^Program,
@@ -299,10 +242,6 @@ render_captured_tick :: proc(
 	return strings.to_string(b), ""
 }
 
-// write_rows_source_list renders a committed row slice as a funpack `[T{…}, …]`
-// list literal — each row a record of the thing's declared fields, through the
-// same constructor renderer capture_test uses (write_source_value over a
-// List_Value of Record_Values). Refuses the first column with no source literal.
 @(private = "file")
 write_rows_source_list :: proc(
 	b: ^strings.Builder,
@@ -325,11 +264,6 @@ write_rows_source_list :: proc(
 	return write_source_value(b, program, List_Value{elements = elements}, list_hint, allocator)
 }
 
-// write_param_fixture renders one declared read as its deterministic source
-// constructor: `self` as the captured pre-eval blackboard record, a View[T] as
-// `View.of([…])` over the captured rows, a `[Signal]` as the captured inbound
-// list, and an Input as the producer chain rebuilt from the recorded snapshot.
-// A Rng or Time read has no source literal — refused by name.
 @(private = "file")
 write_param_fixture :: proc(
 	b: ^strings.Builder,
@@ -363,11 +297,6 @@ write_param_fixture :: proc(
 	return write_source_value(b, s.program, capture.env[param.name], param.type, allocator)
 }
 
-// write_input_fixture rebuilds the recorded snapshot as the §23 §5 producer
-// chain — `Input.empty()` plus one `.with_pressed/.with_held/.with_value/
-// .with_axis` per recorded entry, in sorted (player, action) order so the
-// chain is byte-stable. The producers are total over what a recorded snapshot
-// carries except a released-only edge, which no producer mints — refused.
 @(private = "file")
 write_input_fixture :: proc(
 	b: ^strings.Builder,
@@ -428,8 +357,6 @@ write_input_fixture :: proc(
 	return ""
 }
 
-// sort_player_actions orders snapshot keys by (player, action id) — the
-// deterministic producer-chain order (map iteration order is not).
 @(private = "file")
 sort_player_actions :: proc(keys: []Player_Action) {
 	slice.sort_by(keys, proc(a, b: Player_Action) -> bool {
@@ -440,8 +367,6 @@ sort_player_actions :: proc(keys: []Player_Action) {
 	})
 }
 
-// registry_action_name resolves an ActionId back to its `Enum::Variant` source
-// token — the inverse of the binding resolution lookup.
 @(private = "file")
 registry_action_name :: proc(registry: Action_Registry, action: ActionId) -> (name: string, ok: bool) {
 	for def in registry.defs {
@@ -452,11 +377,6 @@ registry_action_name :: proc(registry: Action_Registry, action: ActionId) -> (na
 	return "", false
 }
 
-// write_source_value renders one captured Value as funpack source. `type_hint`
-// is the DECLARED type at this position (a param/emit/field type), naming an
-// anonymous record (a `with` result, a row record) and the element type of a
-// `[T]` list; "" means no hint. Returns a non-empty error for a value with no
-// source literal (a Ref, a lambda, a tuple, an Rng, an anim value).
 @(private = "file")
 write_source_value :: proc(
 	b: ^strings.Builder,
@@ -519,10 +439,6 @@ write_source_value :: proc(
 			return ""
 		}
 		if record, is_record := v.payload^.(Record_Value); is_record && record.type_name == "" {
-			// A struct-variant payload: the brace literal attaches to the variant
-			// token (`Draw::Rect{at: …}`), no constructor name of its own. The enum
-			// decl's field order is not modeled here, so sorted names keep the
-			// render deterministic.
 			return write_source_record_body(b, program, record, allocator)
 		}
 		strings.write_string(b, "(")
@@ -537,10 +453,6 @@ write_source_value :: proc(
 	return "captured value has no funpack source literal: nil"
 }
 
-// write_source_record renders `Name{field: value, …}`. The constructor name is
-// the value's own type, or the type hint for an anonymous record. Fields walk
-// the program's DECLARED order (thing/data/signal lookup) — the idiomatic
-// hand-written order — falling back to sorted names for an undeclared shape.
 @(private = "file")
 write_source_record :: proc(
 	b: ^strings.Builder,
@@ -581,9 +493,6 @@ write_source_record :: proc(
 	return ""
 }
 
-// write_source_record_body renders the brace literal of a record with no
-// declared field list — a struct-variant payload or an undeclared shape — in
-// sorted field-name order (deterministic where no declaration orders it).
 @(private = "file")
 write_source_record_body :: proc(
 	b: ^strings.Builder,
@@ -613,8 +522,6 @@ write_source_record_body :: proc(
 	return ""
 }
 
-// source_decl_fields resolves a record constructor name onto its declared
-// field list — thing, data, or signal, the three record-shaped declarations.
 @(private = "file")
 source_decl_fields :: proc(program: ^Program, name: string) -> (fields: []Field_Decl, ok: bool) {
 	if thing := program_thing(program, name); thing != nil {
@@ -631,26 +538,12 @@ source_decl_fields :: proc(program: ^Program, name: string) -> (fields: []Field_
 	return nil, false
 }
 
-// write_source_fixed renders a Q32.32 value as its EXACT decimal literal —
-// `2.0`, `-0.5`, `0.00000000023283064365386962890625`. The fraction is dyadic
-// (denominator 2^32), so the base-10 expansion terminates within 32 digits;
-// the integer long-multiplication by 10 below extracts each digit with no
-// float anywhere. A `.` is always present (at least `.0`) — the funpack
-// lexeme that separates a Fixed literal from an Int.
-//
-// Package-visible because it is the ONE float-free Fixed→source-literal renderer the
-// runtime owns, shared by two readers: the capture-to-test exporter (here) AND the §28
-// debug projection (introspect.odin's observe renderers), so an inspect_draw_list /
-// inspect_signals / inspect_state value reads as `96.0`, not the raw Q32.32
-// bits. decode_fixed(human=true) is its exact inverse, closing the observe→control
-// round-trip. The committed `.artifact` wire format is unaffected — that is the
-// compiler's emit.odin, a separate product; this renderer never writes one.
 write_source_fixed :: proc(b: ^strings.Builder, value: Fixed) {
 	bits := i64(value)
 	magnitude: u64
 	if bits < 0 {
 		strings.write_string(b, "-")
-		magnitude = u64(~bits) + 1 // two's-complement negate without i64 overflow at min(i64)
+		magnitude = u64(~bits) + 1
 	} else {
 		magnitude = u64(bits)
 	}
@@ -667,8 +560,6 @@ write_source_fixed :: proc(b: ^strings.Builder, value: Fixed) {
 	}
 }
 
-// write_source_string renders a funpack string literal with the escapes the
-// lexer reads back (quote, backslash, newline, tab).
 @(private = "file")
 write_source_string :: proc(b: ^strings.Builder, text: string) {
 	strings.write_string(b, "\"")

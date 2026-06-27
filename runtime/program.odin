@@ -1,25 +1,7 @@
-// The in-memory game model the runtime executes over (docs/artifact-format.md
-// §17 step 4). `Program` is the loaded artifact: the enum/data/signal/thing
-// type descriptors, the function and behavior bodies (serialized checked-AST
-// node forests, §2.7), the one flattened pipeline total order (§11), the signal
-// routing map (§12), the fully-evaluated setup Spawn batch (§13, fixed literals
-// decoded bit-exact through the kernel), the binding table (§14), and the
-// entrypoint wiring (§15).
-//
-// `World` is the empty runtime substrate the sim executes over:
-// thing tables keyed by stable Id and the singleton row slots. This file
-// BUILDS the empty tables; it does NOT run setup or any tick — the spawn batch
-// is loaded into `Program.setup`, but applying it (and folding the pipeline)
-// belongs to the tick transaction.
 package funpack_runtime
 
-// --- Type descriptors (§5–§8) --------------------------------------------
-
-// Enum_Kind is the §03 §4 role kind ascribed to an enum, or None. The kind is
-// type-constitutive — only an Axis-kinded enum binds to an analog input (§23) —
-// so it travels with the enum in the artifact.
 Enum_Kind :: enum {
-	None, // `-` in the artifact
+	None,
 	Axis,
 	Button,
 	Collision_Layer,
@@ -28,7 +10,7 @@ Enum_Kind :: enum {
 
 Enum_Variant :: struct {
 	name:    string,
-	payload: string, // "unit", "tuple K", or "struct K" verbatim (pong is all unit)
+	payload: string,
 }
 
 Enum_Decl :: struct {
@@ -37,51 +19,42 @@ Enum_Decl :: struct {
 	variants: []Enum_Variant,
 }
 
-// Field_Decl is one declared field on a data/signal/thing: its name, its type
-// (a name; a generic is `Ctor[Arg]`), and its default. `has_default` carries
-// whether `default_encoded` is meaningful (the §6 `-` vs `=ENCODED` flag).
-// The migrate halves are the v8 [data] `migrate FROM WITH` carry — the §05 §6
-// rename/retype metadata the schema-diff kernel reads (schema_diff.odin); only
-// a [data] field ever carries them (the artifact emits the line nowhere else),
-// and the has_* flags discriminate absence exactly as has_default does.
 Field_Decl :: struct {
 	name:            string,
 	type:            string,
 	has_default:     bool,
-	default_encoded: string, // the raw `ENCODED` token after `=`, decoded by position
-	migrate_from:    string, // the §05 §6 prior key (v8 `migrate FROM …`); meaningful iff has_from
+	default_encoded: string,
+	migrate_from:    string,
 	has_from:        bool,
-	migrate_with:    string, // the §05 §6 conversion fn name (v8 `migrate … WITH`); meaningful iff has_with
+	migrate_with:    string,
 	has_with:        bool,
 }
 
 Data_Decl :: struct {
 	name:       string,
-	mutable:    bool, // true for `mut data` (§03 §7)
+	mutable:    bool,
 	fields:     []Field_Decl,
-	prior_name: string, // a renamed TYPE declaration's prior name (v8 decl-level `migrate FROM -`); meaningful iff has_prior
+	prior_name: string,
 	has_prior:  bool,
 }
 
 Signal_Decl :: struct {
 	name:   string,
-	fields: []Field_Decl, // mut is always false for a signal (§7)
+	fields: []Field_Decl,
 }
 
 Thing_Decl :: struct {
 	name:      string,
-	singleton: bool, // true for a singleton: a guaranteed-single-row thing (§06 §2)
-	gtags:     []string, // registered @gtag set, source order (§05 registry)
-	fields:    []Field_Decl, // the blackboard schema
+	singleton: bool,
+	gtags:     []string,
+	fields:    []Field_Decl,
 }
 
-// --- Function and behavior bodies (§9, §10) ------------------------------
-
 Function_Kind :: enum {
-	Fn, // a pure helper
-	Const, // a module-level `let`
-	Bindings, // the one §23 fn() -> Bindings
-	Startup, // the one §06 setup() -> [Spawn]
+	Fn,
+	Const,
+	Bindings,
+	Startup,
 }
 
 Param_Decl :: struct {
@@ -89,114 +62,67 @@ Param_Decl :: struct {
 	type: string,
 }
 
-// Function_Decl is a module-level fn/let/bindings/setup. The body is the carried
-// node forest (§2.7), so the runtime evaluates it from the artifact alone — a
-// const like BOARD or a Spawn that reads BOARD.w resolves against the
-// interpreted constant, no source needed.
 Function_Decl :: struct {
 	name:        string,
 	kind:        Function_Kind,
 	params:      []Param_Decl,
 	return_type: string,
-	span_module: string, // §15 module name — diagnostic provenance only
-	span_line:   int, // 1-based source line — diagnostic provenance only
-	body:        []Node, // body_count top-level statement subtrees, source order
+	span_module: string,
+	span_line:   int,
+	body:        []Node,
 }
 
-// --- State queries and their index requirements (§16, schema v9) ----------
-
-// Query_Index_Kind is the closed §05 §3 directive vocabulary: an `@index`
-// reverse/key lookup or a `@spatial` radius/nearest structure. The kind decides
-// which engine-maintained shape index.odin builds for the requirement.
 Query_Index_Kind :: enum {
 	Index,
 	Spatial,
 }
 
-// Index_Req is one declared §05 §3 index requirement carried on a query
-// (`index KIND THING FIELD`): the engine-maintained structure over THING's
-// FIELD column the runtime keeps current across committed versions. Several
-// queries may declare the same requirement; the maintainer dedupes to one
-// structure per distinct (kind, thing, field) — an index is a cache, a pure
-// function of state (§08 §3).
 Index_Req :: struct {
 	kind:  Query_Index_Kind,
-	thing: string, // the indexed thing's type name
-	field: string, // the indexed blackboard field on that thing
+	thing: string,
+	field: string,
 }
 
-// Query_Decl is one §08 §3 first-class query declaration: a read-only function
-// pure over (version, params), carried with its declared index requirements and
-// its body node forest so the runtime evaluates a query call from the artifact
-// alone. The body is a Block by grammar (never a stub subtree), and the spec's
-// within-tick memoization rides the tick state, not this descriptor.
 Query_Decl :: struct {
 	name:        string,
 	params:      []Param_Decl,
 	return_type: string,
-	indexes:     []Index_Req, // declared §05 §3 requirements, authored order
-	span_module: string, // §15 module name — diagnostic provenance only
-	span_line:   int, // 1-based source line — diagnostic provenance only
-	body:        []Node, // body_count top-level statement subtrees, source order
+	indexes:     []Index_Req,
+	span_module: string,
+	span_line:   int,
+	body:        []Node,
 }
 
-// Behavior_Decl is one transition keyed to its pipeline stage (§10). The stage
-// slot CONFERS the contract (§06 §6). `on_thing` is the blackboard this behavior
-// writes; params are step's reads, emits are step's writes (§06 §3).
 Behavior_Decl :: struct {
 	name:     string,
-	on_thing: string, // the owning thing whose blackboard step writes
-	stage:    string, // control/collision/scoring/render/startup
-	contract: string, // Update/Render/Ui/Audio/Startup (engine-closed, §06 §6)
+	on_thing: string,
+	stage:    string,
+	contract: string,
 	gtags:    []string,
-	params:   []Param_Decl, // step's parameters in order: self, resources, signals, views
-	emits:    []string, // step's emissions: blackboard type, signal lists, command lists
-	body:     []Node, // body_count step-body statement subtrees, source order
+	params:   []Param_Decl,
+	emits:    []string,
+	body:     []Node,
 }
 
-// --- Debug probes (§28 §4, schema v18) -----------------------------------
-
-// Probe_Kind is the closed §05 §5 / §28 §4 debug-directive family the [probes]
-// section carries: a `@break` predicate pause, a `@log` structured-value emit, a
-// `@watch` change-fire, or a `@trace` per-step transition record. It mirrors the
-// lowercased directive token the artifact's `probe KIND …` lead line carries (the
-// SAME token the §29 §2 index `debug` field uses), so one fixed vocabulary names a
-// probe on both surfaces. An unknown tag is a schema mismatch the loader refuses.
 Probe_Kind :: enum {
-	Break, // `@break(<pred>)`: pause when the predicate holds (fires breakpoint_hit)
-	Log, // `@log(<expr>)`: emit the structured, serialized value each step
-	Watch, // `@watch(<expr>)`: fire watch_fired when the value changes
-	Trace, // `@trace`: record the full per-step (in → out) transition (no body)
+	Break,
+	Log,
+	Watch,
+	Trace,
 }
 
-// Probe_Decl is one §28 §4 in-code debug directive lifted off the artifact: its
-// closed kind, the NAME of the declaration it is attached to (the §28 §2 "addressing
-// reuses index identity" target — a behavior, stage, or `data` field name the
-// runtime resolves the probe against), and its predicate/expression body as a §2.7
-// node forest (NEVER funpack source — §28 §2: the body is compiled funpack-side and
-// folded by THIS interpreter when the probe is honored). The body is exactly one
-// statement subtree for @break/@log/@watch (body_count 1) and empty for @trace
-// (body_count 0, no argument). The runtime honors each probe in a live debug
-// session; a release artifact carries none (the §29 §3 debug-directive ban refuses
-// a probed tree before emission, so the release [probes] tail is always empty).
 Probe_Decl :: struct {
 	kind:   Probe_Kind,
-	target: string, // the probed declaration's index-identity name (§28 §2)
-	body:   []Node, // body_count node-forest statement subtrees (1 for break/log/watch, 0 for trace)
+	target: string,
+	body:   []Node,
 }
 
-// --- Pipeline, routing, setup, bindings, entrypoint (§11–§15) ------------
-
-// Pipeline_Step is one position in the one total order (§11). `ordinal` is the
-// 0-based, contiguous, gap-free index a tick's fold visits this step at.
 Pipeline_Step :: struct {
 	ordinal:  int,
 	stage:    string,
 	behavior: string,
 }
 
-// Signal_Endpoint is a producer or consumer of a signal, by flattened-order
-// ordinal so forward flow is verifiable without re-deriving it (§12).
 Signal_Endpoint :: struct {
 	ordinal:  int,
 	behavior: string,
@@ -208,82 +134,54 @@ Signal_Route :: struct {
 	consumers: []Signal_Endpoint,
 }
 
-// Spawn_Field is one supplied field of a setup Spawn, decoded to its concrete
-// value: a Fixed through the kernel (bit-exact), an Int, an enum variant name,
-// a Vec2, OR a composite §6 token (a `Body(…)` record / a `[Layer::…]` list, the
-// engine-record forms yard's setup first reaches). The setup program carries NO
-// expressions (§13) — every field is a primitive-encoded value already, so no
-// initializer is interpreted here. A composite Record/List keeps its raw §6
-// `encoded` token because its nested field types resolve against the (not-yet-fully-
-// built) Program; spawn_field_to_value decodes it lazily through the SAME
-// decode_default_value machinery the §6 field-default path uses, once the Program
-// is available.
 Spawn_Value_Kind :: enum {
 	Int,
 	Fixed,
-	Variant, // a name-field enum variant like `Side::Left`
-	Vec2, // a nested `vec2 x_bits y_bits` record
-	Record, // a composite §6 record token like `Body(kind=…,…)` — decoded lazily
-	List, // a §6 list token like `[Layer::Wall,Layer::Crate]` — decoded lazily
+	Variant,
+	Vec2,
+	Record,
+	List,
 }
 
 Spawn_Field :: struct {
 	name:    string,
 	kind:    Spawn_Value_Kind,
-	int_val: i64, // Int
-	fixed:   Fixed, // Fixed (decoded through the kernel — never float)
-	variant: string, // Variant raw token (e.g. "Side::Left")
-	vec2_x:  Fixed, // Vec2 x component
-	vec2_y:  Fixed, // Vec2 y component
-	encoded: string, // Record/List raw §6 token, decoded lazily by field type
+	int_val: i64,
+	fixed:   Fixed,
+	variant: string,
+	vec2_x:  Fixed,
+	vec2_y:  Fixed,
+	encoded: string,
 }
 
-// Spawn_Command is one entry of the §13 [Spawn] batch: a thing type plus its
-// fields. The static setup bake evaluates the whole spawn, so it carries the
-// complete field set (defaults filled); the runtime still applies a thing's
-// Field_Decl default for any field a batch omits (a seeded-live or hand-built
-// artifact).
 Spawn_Command :: struct {
 	thing:  string,
 	fields: []Spawn_Field,
 }
 
-// Binding is one resolved §23 axis/button source map entry (§14). The device
-// source is kept as the builder-call token it was produced by — the only
-// device-aware data in the artifact.
 Binding :: struct {
-	kind:   string, // "axis" or "button"
-	player: string, // PlayerId P1..P4
-	action: string, // the enum variant the binding targets, e.g. "Steer::Move"
-	source: string, // the device builder call, e.g. "keys_axis(Key::W,Key::S)"
+	kind:   string,
+	player: string,
+	action: string,
+	source: string,
 }
 
-// Entrypoint is the §15 runtime wiring: pipeline ↔ tick ↔ logical ↔ bindings.
-// tick_hz is the single fixed tick rate (60 for pong); there are no multi-rate
-// ticks. logical_w/logical_h are the fixed logical draw space (§20 §3) in
-// integer world units — the extent the present pass scales and letterboxes to
-// the window.
 Entrypoint :: struct {
 	name:      string,
 	pipeline:  string,
 	tick_hz:   int,
 	logical_w: int,
 	logical_h: int,
-	bindings:  string, // the bindings function name
-	has_seed:  bool, // whether entrypoints.fcfg baked a `seed = N` config seed (§25 §60)
-	seed:      i64, // the baked config seed (raw integer, §10); 0 when has_seed is false
+	bindings:  string,
+	has_seed:  bool,
+	seed:      i64,
 }
 
-// Project_Meta is the §4 (project.fcfg) identity: name + version. No build clock,
-// no platform — those are build-driver concerns, not artifact fields.
 Project_Meta :: struct {
 	name:    string,
 	version: string,
 }
 
-// Program is the whole loaded artifact: every section's in-memory model, in the
-// order a tick will consult them. It owns its allocations (the loader's
-// allocator); the parsed node forests live for the program's lifetime.
 Program :: struct {
 	schema_version: int,
 	meta:           Project_Meta,
@@ -299,43 +197,13 @@ Program :: struct {
 	bindings:       []Binding,
 	entrypoint:     Entrypoint,
 	queries:        []Query_Decl,
-	tilemaps:       []Tile_Layer, // the §18 §3 baked tile layers (v12 [tilemaps], tilemap.odin)
-	// navs is the §12 baked nav graphs (v13 [nav], nav.odin). It is bake-static
-	// for path() — read straight from the Program, NOT folded per tick onto the
-	// World_Version COW chain like tilemaps. §12 §1's SetTile-driven nav
-	// re-derivation (dynamic terrain) is a separate story and would add the
-	// per-version table this field deliberately omits.
+	tilemaps:       []Tile_Layer,
 	navs:           []Nav_Graph,
-	// assets is the §19 baked sprite assets (v16 [assets], assets.odin): the
-	// decoded, content-addressed atlas/image PIXELS a textured Draw_Sprite{atlas,
-	// cell} resolves against. Bake-static like navs — read straight from the
-	// Program (asset_region), never folded per tick (a sprite atlas is immutable
-	// art, not committed world state). An asset-less game decodes to the empty set
-	// (the [assets 0] tail).
 	assets:         Asset_Set,
-	// probes is the §28 §4 in-code debug directives (v18 [probes], the new fixed §3
-	// section TAIL after [assets]). Each is a @break/@watch/@log/@trace lifted off
-	// the artifact with its predicate/expression body as a node forest the
-	// interpreter folds when the probe is HONORED in a live debug session
-	// (probes.odin). Bake-static like navs/assets — read straight from the Program,
-	// never folded per tick. A release artifact (or an in-code-probe-free dev build)
-	// decodes to the empty slice (the constant [probes 0] tail). Runtime CONSUMES
-	// the format; funpack DEFINES it (Lore #9).
 	probes:         []Probe_Decl,
-	// registry is the §23 action registry MEMOIZED off `enums` — a pure function of
-	// the program, minted ONCE by build_program at load (NOT a loaded §3 section).
-	// new_interp and build_bindings_table read this one copy instead of rebuilding
-	// the string-concat + map per tick / per session. A hand-built
-	// program that skips build_program leaves it zero (by_key nil); its readers then
-	// build a transient registry on the spot (interp.odin new_interp,
-	// bindings_resolve build_bindings_table). Reclaimed with the program — including
-	// across a hot-reload, where the new program mints its own from the new enums.
 	registry:       Action_Registry,
 }
 
-// program_query finds a §16 query declaration by name, or nil. The query call
-// surface (interp_call.odin) and the index maintainer (index.odin) both resolve
-// through this single bare-name lookup, mirroring program_function's contract.
 program_query :: proc(program: ^Program, name: string) -> ^Query_Decl {
 	for &query in program.queries {
 		if query.name == name {
@@ -345,46 +213,19 @@ program_query :: proc(program: ^Program, name: string) -> ^Query_Decl {
 	return nil
 }
 
-// --- The empty runtime substrate (§07 §4) --------------------------------
-
-// Thing_Id is a stable per-thing-type row identity. The runtime keys thing
-// tables by Id so iteration and Ref resolution are deterministic (the state
-// layer iterates a View[T] in stable-Id order, §08). Ids are dense and
-// monotonic within a table; this file creates the empty table — no row is
-// populated until setup runs in the tick transaction.
 Thing_Id :: distinct u32
 
-// Thing_Table is the empty per-thing-type row store keyed by Id. It carries the
-// type descriptor it was built from (its schema) and the next Id to mint. Rows
-// are added when setup spawns them, so `next_id` starts at 0 and
-// the table is empty here — this is the substrate, not a populated world.
 Thing_Table :: struct {
-	thing:     string, // the Thing_Decl.name this table holds rows of
-	singleton: bool, // mirrors the descriptor — a singleton is row-count-1 once spawned
-	next_id:   Thing_Id, // the next Id to mint when a row is spawned (0 in the empty world)
+	thing:     string,
+	singleton: bool,
+	next_id:   Thing_Id,
 }
 
-// World is the empty in-memory substrate: one Thing_Table per declared thing,
-// in the program's thing-declaration order. A singleton is an ordinary thing
-// table the spawn step will fill with exactly one row (pong models the score as
-// a once-spawned ordinary thing, so the singleton path is generic but unexercised
-// by pong). This file builds the empty tables; it runs neither
-// setup nor any tick.
-//
-// `tilemaps` is the §18 §4 DYNAMIC tile-state seed: an ALIAS of the program's
-// decoded [tilemaps] tables (a slice-header copy, no clone) that initial_version
-// lifts onto version -1, so tile state rides the COW version chain from tick 0.
-// The program's decoded tables stay pristine forever — a SetTile tick
-// copy-on-writes the touched layer's cells at commit (fold_tile_layers), never
-// mutates in place, which is what keeps every re-fold (replay, §28 refold,
-// control-class branches) reading its own version's terrain.
 World :: struct {
 	tables:   []Thing_Table,
 	tilemaps: []Tile_Layer,
 }
 
-// world_find_table returns the (mutable pointer to the) table holding rows of
-// the named thing, or nil when no such thing was declared.
 world_find_table :: proc(world: ^World, thing: string) -> ^Thing_Table {
 	for &table in world.tables {
 		if table.thing == thing {
@@ -394,10 +235,6 @@ world_find_table :: proc(world: ^World, thing: string) -> ^Thing_Table {
 	return nil
 }
 
-// new_world builds the empty thing/singleton tables from a loaded program — one
-// table per declared thing, keyed by Id, with no rows. This is the §07 §4
-// substrate the setup batch and the per-tick fold will execute over; it is
-// intentionally empty here.
 new_world :: proc(program: Program, allocator := context.allocator) -> World {
 	tables := make([]Thing_Table, len(program.things), allocator)
 	for thing, i in program.things {
@@ -407,7 +244,5 @@ new_world :: proc(program: Program, allocator := context.allocator) -> World {
 			next_id   = Thing_Id(0),
 		}
 	}
-	// The dynamic-tile seed ALIASES the program's decoded layers (COW: the
-	// first SetTile commit replaces the slice, never the bake's bytes).
 	return World{tables = tables, tilemaps = program.tilemaps}
 }

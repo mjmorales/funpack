@@ -1,42 +1,12 @@
-// The call and match halves of the interpreter (interp.odin): user-function and
-// engine-builtin application, and pattern matching over a scrutinee. Kept beside
-// the expression core so the value model and the dispatch that consumes it read
-// as one engine; the split is by surface (expression forms vs application/match),
-// not by layer.
-//
-// A `call` is one of three things, decided by its callee node: a method-style
-// `recv.method(args)` (a `field` callee — the §23 Input resource queries
-// `value`/`axis`/`pressed`/`released`/`held`, the record-intent `body.apply_impulse`
-// over a Body column, and the engine static constructor `Settings.defaults()`), an
-// engine builtin (the §08/§26 leaf combinators —
-// `abs`, `clamp`, the §10 `length`, `first`, `fold`, the §08 list set `prepend`/
-// `init`/`contains`/`map`/`filter`/`concat`/`is_empty`/`len`, the §26
-// `engine.grid.grid_cells`, `Spawn`,
-// a record constructor), or a user §9 helper (`advance`, `overlaps`, `add_goal`,
-// …) evaluated by binding its args to its params and folding its body. No float
-// (spec §10); every numeric path is the fixed.odin kernel.
-//
-// Match patterns span the closed §2.5 arm set: bare/binding variant arms, the
-// struct-field-pun `Enum::Case{f}` (yard's `Shape2::Box{size}`), tuple
-// destructure, and the wildcard.
 package funpack_runtime
 
 import "core:strings"
 
-// --- match ----------------------------------------------------------------
-
-// eval_match evaluates `match SCRUTINEE { arm => body, … }`: child[0] is the
-// scrutinee, the remaining children alternate arm/body. The FIRST arm whose
-// pattern matches the scrutinee wins; its body evaluates with the arm's binders
-// bound, in a fresh child scope. A match with no matching arm is ok=false (the
-// checked AST makes pong's matches exhaustive — Option has Some+None, Side has
-// Left+Right — so an unmatched scrutinee is a malformed body).
 eval_match :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	scrutinee, scrut_ok := eval(interp, &node.children[0], env)
 	if !scrut_ok {
 		return nil, false
 	}
-	// Children after the scrutinee pair up arm/body in source order.
 	i := 1
 	for i + 1 < len(node.children) {
 		arm := &node.children[i]
@@ -56,25 +26,12 @@ eval_match :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 	return nil, false
 }
 
-// arm_matches tests one arm's pattern against the scrutinee, binding the arm's
-// payload/positional binders into `scope` on a match. The closed pattern kinds
-// (§2.7 arm `pat` field): `bare_variant Enum Case` matches a variant by case name
-// with no binder; `variant_binds Enum Case BINDER_COUNT binders…` matches the case
-// and binds its payload (Option::Some(side) binds `side`, a `_` binder discards);
-// `wildcard - -` matches anything; `bare_binder - - 1 name` binds the WHOLE
-// scrutinee to `name` (snake's `next` tuple position); `tuple - - 0` destructures a
-// tuple scrutinee position-by-position, recursing into each positional sub-pattern
-// (a nested arm child). The recursion makes the nested `(Option::Some(cell), next)`
-// shape — a variant pattern inside a tuple pattern — match by the same per-position
-// arm test (§04 §1, snake's `match pick(free, rng)`).
 arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 	pat := arm.fields[0]
 	switch pat {
 	case "wildcard":
 		return true
 	case "bare_binder":
-		// A bare binder binds the whole position to its single binder name (a `_` is
-		// the wildcard, handled above). fields: pat, type, case, binder_count, name.
 		if len(arm.fields) >= 5 && arm.fields[4] != "_" {
 			scope.names[arm.fields[4]] = scrutinee
 		}
@@ -84,7 +41,6 @@ arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 		if !is_variant {
 			return false
 		}
-		// fields: pat, enum, case — match by case name (the enum is the same type).
 		return v.case_name == arm.fields[2]
 	case "variant_binds":
 		v, is_variant := scrutinee.(Variant_Value)
@@ -94,8 +50,6 @@ arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 		if v.case_name != arm.fields[2] {
 			return false
 		}
-		// fields: pat, enum, case, binder_count, binders… — bind the first binder
-		// to the variant's payload (pong's Some(x) binds one; `_` discards).
 		binder_count := 0
 		if n, n_ok := decode_int(arm.fields[3]); n_ok {
 			binder_count = int(n)
@@ -115,22 +69,6 @@ arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 	return false
 }
 
-// struct_arm_matches tests the §2.5 struct-field-pun pattern `Enum::Case{f, …}`
-// (yard's `Shape2::Box{size} => size`): it matches a struct-payload variant value
-// of the named case, then binds EACH named field of the pattern to the same-named
-// payload column (the pun — `{size}` binds `size` to `payload.size`, not the whole
-// payload). fields: pat, enum, case, field_count, field_names…  A `_` field name
-// discards; a payload missing a punned field is a non-match (the case carries no
-// such column). Distinct from variant_binds, which binds the WHOLE payload to one
-// binder rather than punning its struct fields.
-//
-// The scrutinee arrives in EITHER of the two shapes a struct-payload variant value
-// takes on this runtime: a Variant_Value whose payload is the struct Record_Value
-// (a hand-built or combinator-produced enum value), OR — the EMITTED form (seam #1)
-// — a `::`-named Record_Value the funpack emitter serializes a `Shape2::Box{size}`
-// expression into (a `record Type::Case` node, eval_record). struct_variant_payload
-// normalizes both to (case_name, payload columns), so a struct-pun arm matches a
-// struct-variant VALUE whether it was hand-built or emitted-and-loaded.
 struct_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 	case_name, payload, ok := struct_variant_payload(scrutinee)
 	if !ok {
@@ -160,12 +98,6 @@ struct_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 	return true
 }
 
-// struct_variant_payload normalizes a struct-payload variant value to its case name
-// and its payload columns, accepting both runtime shapes (seam #1): a Variant_Value
-// whose boxed payload is the struct Record_Value, and the EMITTED `::`-named
-// Record_Value (`Shape2::Box`) the funpack emitter produces for a struct-payload
-// variant expression. ok is false for any other value (a bare variant, a plain
-// record, a scalar) — a non-struct-variant scrutinee never matches a struct-pun arm.
 struct_variant_payload :: proc(scrutinee: Value) -> (case_name: string, columns: map[string]Value, ok: bool) {
 	#partial switch v in scrutinee {
 	case Variant_Value:
@@ -178,8 +110,6 @@ struct_variant_payload :: proc(scrutinee: Value) -> (case_name: string, columns:
 		}
 		return v.case_name, record.fields, true
 	case Record_Value:
-		// The emitted form: a `::`-named record IS the struct-variant value, its
-		// case the segment after `::` and its columns the record's own fields.
 		sep := strings.index(v.type_name, "::")
 		if sep < 0 {
 			return "", nil, false
@@ -189,15 +119,6 @@ struct_variant_payload :: proc(scrutinee: Value) -> (case_name: string, columns:
 	return "", nil, false
 }
 
-// tuple_arm_matches destructures a tuple scrutinee against a tuple pattern arm: the
-// arm's CHILDREN are its positional sub-pattern arms (one per tuple position), and
-// each child is tested against the scrutinee's element at the same position by a
-// recursive arm_matches. An arm matches only when its arity equals the scrutinee's
-// and EVERY position matches; binders from every position accumulate into the one
-// shared scope, so `(Option::Some(cell), next)` binds both `cell` (from the nested
-// variant arm) and `next` (from the bare-binder arm) for the body. A non-tuple
-// scrutinee, an arity mismatch, or any position miss is a non-match — the tick's
-// (Rng, [Spawn]) split and snake's pick-result match both route through here.
 tuple_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 	tuple, is_tuple := scrutinee.(Tuple_Value)
 	if !is_tuple {
@@ -217,13 +138,6 @@ tuple_arm_matches :: proc(scrutinee: Value, arm: ^Node, scope: ^Env) -> bool {
 	return true
 }
 
-// --- call -----------------------------------------------------------------
-
-// eval_call applies a call node. The callee (child[0]) decides the form: a
-// `field` callee is a method-style `recv.method(args)` (a resource query, a record
-// intent, or an engine static constructor — see eval_method_call); a `name` callee
-// is an engine builtin or a user §9 helper. Args are children[1:], evaluated
-// left-to-right so evaluation order is deterministic.
 eval_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	callee := &node.children[0]
 	switch callee.kind {
@@ -237,43 +151,18 @@ eval_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok:
 	return nil, false
 }
 
-// eval_method_call evaluates `recv.method(args)` — the resource-query, the
-// record-intent, and the engine static-constructor forms. The receiver is the
-// `field` callee's child; the method name is its field token. Two receiver
-// classes reach here: the Input snapshot (the §23 1D `value` / 2D `axis` analog
-// reads and the digital `pressed`/`released`/`held` Button reads) and a record
-// column carrying an intent method (yard's `body.apply_impulse(j)`, a Body record
-// receiver). A THIRD form has no value receiver at all — an engine static
-// constructor `Type.method()` (yard's `Settings.defaults()`) whose receiver is a
-// type name, resolved before the receiver is evaluated. An unknown receiver/
-// method is ok=false.
 eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	field_node := &node.children[0]
 	method := field_node.fields[0]
-	// An engine static constructor `Type.method()` has a TYPE-NAME receiver, not a
-	// value — intercept it before evaluating the receiver (a type name is not a
-	// local, so eval would fail-closed on it). The receiver child is the bare type
-	// name node.
 	recv_node := &field_node.children[0]
 	if recv_node.kind == .Name {
 		if ctor, is_ctor := eval_engine_constructor(interp, node, env, recv_node.fields[0], method); is_ctor {
 			return ctor, true
 		}
-		// The §22 §2 sustained-audio builder seed `Audio.track(key, clip)` is a
-		// TYPE-NAME static constructor that takes args — intercepted here (before the
-		// `Audio` name is evaluated as a local, which would fail-closed) the same way
-		// the no-arg engine constructors are. The .pitch/.gain/.bus/.at adders chain
-		// off the built record value (the value-receiver arm below).
 		if ctor, is_ctor := eval_audio_constructor(interp, recv_node.fields[0], method, node, env);
 		   is_ctor {
 			return ctor, true
 		}
-		// The §12 fixture nav builders `Nav.of(route)` / `Nav.fail(err)` are
-		// TYPE-NAME static constructors that take one arg — intercepted here (before
-		// the `Nav` name is evaluated as a local, which would fail-closed) the same
-		// way Audio.track is. They build the Nav_Value FIXTURE arm a behavior test
-		// queries; the ENGINE nav (a real graph) arrives as a NavHandle record, not
-		// through this constructor.
 		if ctor, is_ctor := eval_nav_constructor(interp, recv_node.fields[0], method, node, env);
 		   is_ctor {
 			return ctor, true
@@ -286,13 +175,6 @@ eval_method_call :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	return eval_value_receiver_method(interp, recv, method, node, env)
 }
 
-// eval_value_receiver_method dispatches a method call whose receiver is an already-
-// evaluated VALUE (the §22 type-name static-constructor forms are intercepted upstream
-// in eval_method_call before the receiver is evaluated). The arm order is load-bearing:
-// the resource/intent methods (Input snapshot reads, Body apply_impulse) resolve first,
-// then the value-typed receivers (Pose, Handle, Record, Nav fixture, Rng, View list,
-// Map) so a same-named member on another receiver never routes to the wrong arm. An
-// unknown receiver/method is ok=false.
 eval_value_receiver_method :: proc(
 	interp: ^Interp,
 	recv: Value,
@@ -317,10 +199,6 @@ eval_value_receiver_method :: proc(
 	case "apply_impulse":
 		return eval_apply_impulse(interp, recv, node, env)
 	}
-	// A §16 §7 value-method on a built anim value: Pose.set/get drive/read a bone
-	// (the receiver is a Pose chained from Pose.empty().set(...)), PartSet
-	// .bind/.mirror chain ops on the opaque handle. Tried after the resource/intent
-	// methods so an Input/Body receiver still resolves first.
 	if pose, is_pose := recv.(Pose_Value); is_pose {
 		return eval_pose_method(interp, node, env, pose, method)
 	}
@@ -328,61 +206,28 @@ eval_value_receiver_method :: proc(
 		return eval_handle_method(interp, node, env, handle, method)
 	}
 	if record, is_record := recv.(Record_Value); is_record {
-		// The §18 §4 tile queries on a level seam's TilemapHandle{name} record
-		// receiver — the dungeon's `map.tile_at(target)` calling convention
-		// (tilemap.odin). Keyed on the handle's declared type so a same-named
-		// member on another record never routes here.
 		if record.type_name == "TilemapHandle" {
 			if result, tm_ok, is_tilemap := eval_tilemap_method(interp, node, env, record, method);
 			   is_tilemap {
 				return result, tm_ok
 			}
 		}
-		// The §12 nav query on a level seam's NavHandle marker receiver —
-		// warren's `nav.path(self.pos, goal)` (nav.odin). Keyed on the handle's
-		// declared type so a same-named member on another record never routes
-		// here. path/reachable/nearest resolve over the loaded graph; engine los
-		// fails closed pending the [nav]-format occupancy decision (ADR
-		// 2026-06-11-engine-los-needs-occupancy-not-in-nav-format).
 		if record.type_name == "NavHandle" {
 			if result, nav_ok, is_nav := eval_nav_method(interp, node, env, record, method);
 			   is_nav {
 				return result, nav_ok
 			}
 		}
-		// The §12 Path.advance(pos, arrive): a path-follower steps one waypoint along
-		// a Path record value (route.advance in a chase fold). advance is a Path
-		// METHOD (spec engine.nav `fn advance(self: Path, …)`), NOT a Nav method, so
-		// it dispatches on the Path record receiver — beside the NavHandle/
-		// TilemapHandle record arms, keyed on the declared type so a same-named
-		// member on another record never routes here.
 		if record.type_name == "Path" && method == "advance" {
 			return eval_path_advance(interp, node, env, record)
 		}
-		// The §22 self-first adders chain off a built Audio record value
-		// (Audio.track(k, c).pitch(p).gain(g).bus(b)); a non-Audio receiver or a
-		// non-adder member falls through to ok=false.
 		if bent, is_audio := eval_audio_adder(interp, record, method, node, env); is_audio {
 			return bent, true
 		}
 	}
-	// The §12 fixture nav queries on a Nav.of/Nav.fail value (the Nav_Value arm,
-	// NOT the engine NavHandle record): nav.path/los/reachable/nearest. Dispatched
-	// by Value arm — the fixture answers its @doc-pinned stand-in semantics; the
-	// engine NavHandle record (above) answers the real-graph queries. The two
-	// never share a value.
 	if nav, is_nav := recv.(Nav_Value); is_nav {
 		return eval_nav_fixture_method(interp, nav, method, node, env)
 	}
-	// The §26 self-first RNG draws on a threaded Rng receiver — the GAMEPLAY-EVAL
-	// twin of funpack/evaluate.odin's eval_rng_method (the dual-interpreter parity
-	// surface, §10 bit-identity). next()/range(lo,hi)/chance(p)/split()/pick(items)
-	// each draw off the receiver Rng and return the threaded (value, next_rng) tuple
-	// the behavior body destructures with a tuple-pattern match. pick is self-first
-	// like the other five (ADR pick-is-self-first-uniform-rng-surface), so snake's
-	// `rng.pick(free)` lowers here as a §02 §4 method call. Tried after the
-	// resource/intent/handle/record/nav arms so a same-named member on another
-	// receiver still resolves first.
 	if rng, is_rng := recv.(Rng); is_rng {
 		switch method {
 		case "next":
@@ -397,15 +242,6 @@ eval_value_receiver_method :: proc(
 			return eval_rng_pick(interp, rng, node, env)
 		}
 	}
-	// The §08 View iteration + reference surface on a materialized View receiver
-	// (world.fun:24-33): a View.of(list) / a tick-passed view row set is a
-	// List_Value, so count/at/ref/resolve dispatch on it — the GAMEPLAY-EVAL twin
-	// of funpack/evaluate.odin's eval_view_count/at/ref/resolve (the dual-interpreter
-	// parity surface). count() reports the row count (Int); at(i) reads the i-th row
-	// in stable order as the bare element T; ref(i) mints an index-keyed Ref record;
-	// resolve(ref) reads a Ref back to Option[T] (None out of range — a despawned
-	// referent). Tried AFTER the resource/intent/handle/record/nav arms so a
-	// same-named member on another receiver still resolves first.
 	if list, is_list := recv.(List_Value); is_list {
 		switch method {
 		case "count":
@@ -418,23 +254,12 @@ eval_value_receiver_method :: proc(
 			return eval_view_resolve(interp, list, node, env)
 		}
 	}
-	// The §26 engine.map methods on a Map receiver — the method form of get/has/set/
-	// remove/keys/values/len (m.get(k), the chained Map.empty().set(...).get(...)).
-	// The funpack compiler reaches these by lowering UFCS to the free call; the
-	// runtime dispatches on the Map receiver here, sharing the same value cores so
-	// both interpreters agree. Tried after the other receiver arms so a same-named
-	// member on another receiver still resolves first.
 	if m, is_map := recv.(Map_Value); is_map {
 		return eval_map_method(interp, m, method, node, env)
 	}
 	return nil, false
 }
 
-// eval_view_count is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
-// eval_view_count — the §08 `count() -> Int` aggregate (world.fun:24): a
-// materialized View is a List_Value, so count() is its row count as an Int. No
-// argument (children[0] the callee); ok is false on a wrong arity (the typecheck
-// admits only the zero-arg form).
 eval_view_count :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 1 {
 		return nil, false
@@ -442,13 +267,6 @@ eval_view_count :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^En
 	return i64(len(view.elements)), true
 }
 
-// eval_view_at is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's eval_view_at —
-// the §08 `at(i) -> T` positional read (world.fun:27): the i-th row of a
-// materialized View in stable id order, the bare element T the `-> T` signature
-// returns (not an Option — the index surface, distinct from ref/resolve). The
-// index arg is children[1]. ok is false on a wrong arity, a non-Int index, or an
-// out-of-range index — fail-closed; a well-typed passing program indexes a present
-// row.
 eval_view_at :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -467,16 +285,6 @@ eval_view_at :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) 
 	return view.elements[index], true
 }
 
-// eval_view_ref is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's eval_view_ref
-// — the §08 `ref(i) -> Ref[T]` (the producer `switches.ref(0)`): a Record_Value
-// tagged "Ref" carrying its `index` as an Int, so it threads through a thing's
-// `gate: Ref[T]` field and a `with`-update exactly as a record does, and
-// eval_view_resolve reads the index back. The index is the materialized-view
-// position, NOT the engine Ref{thing, id} (a behavior-body view is a List_Value
-// with no row identity metadata — the fixture surface keys by index). Not
-// range-checked here — resolve handles an out-of-range ref as Option::None (a
-// despawned referent), so a ref outliving its row is a defined None, never a
-// fault. ok is false on a wrong arity or a non-Int index.
 eval_view_ref :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -494,13 +302,6 @@ eval_view_ref :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env)
 	return Record_Value{type_name = "Ref", fields = fields}, true
 }
 
-// eval_view_resolve is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
-// eval_view_resolve — the §08 `resolve(ref) -> Option[T]` over a materialized View
-// (`switches.resolve(self.gate)`): the Ref carries an `index` Int, and the View is
-// a List_Value, so resolve reads the element at that index as Option::Some when in
-// range or Option::None when out of range (the referent despawned — the gate
-// behavior's match covers None). The ref arg is children[1]. ok is false on a
-// wrong arity or a non-Ref argument (the typecheck admits only a Ref[T] here).
 eval_view_resolve :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -527,13 +328,6 @@ eval_view_resolve :: proc(interp: ^Interp, view: List_Value, node: ^Node, env: ^
 	return some_value(interp, view.elements[index]), true
 }
 
-// eval_audio_constructor lowers the §22 §2 sustained-audio seed
-// `Audio.track(key, clip)` reached as a type-name static method — it evaluates the
-// key (a String) and clip (a SoundHandle from sound(name)) args and builds the
-// keyed Audio record at the spec defaults (unity gain/pitch, Music bus, no
-// position) the adders chain onto. is_ctor is false for any (type, member) that is
-// not Audio.track, so a non-constructor `Type.method()` falls through to the
-// value-receiver dispatch. The builder/record shape lives in audio.odin.
 eval_audio_constructor :: proc(
 	interp: ^Interp,
 	type_name, member: string,
@@ -557,15 +351,6 @@ eval_audio_constructor :: proc(
 	return audio_track_value(interp, key, clip), true
 }
 
-// eval_apply_impulse evaluates `body.apply_impulse(j)` — yard's drive intent: a
-// new Body with the impulse Vec2 ACCUMULATED (the prior impulse plus j), every
-// other column carried unchanged. The receiver is the Body Record_Value column
-// (NOT the Input snapshot), and the write is a functional update — the base body
-// is read, never mutated, and a fresh record carries the summed impulse, so two
-// pushes sum (the §11 solver consumes and zeroes it next stage). A prior impulse
-// absent from the body reads VEC2_ZERO (the no-intent default), so the first push
-// of a tick accumulates onto zero. A non-Body receiver or a non-Vec2 argument is
-// ok=false (the intent is defined only over a Body and a vector).
 eval_apply_impulse :: proc(interp: ^Interp, recv: Value, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -596,15 +381,6 @@ eval_apply_impulse :: proc(interp: ^Interp, recv: Value, node: ^Node, env: ^Env)
 	return Record_Value{type_name = body.type_name, fields = merged}, true
 }
 
-// eval_engine_constructor resolves an engine static constructor `Type.method()`
-// to its canonical seed value: yard's `Settings.defaults()` → the factory-default
-// Settings, the §16 §7 anim builders Pose.empty()/blend()/layer() /
-// Skeleton.humanoid()/empty() / PartSet.empty() → the pose/handle seed values
-// (eval_anim_constructor, which needs the call node + env to evaluate blend/layer's
-// pose args). It is the engine-provided constructor surface the spec names: a
-// behavior reads these seeds, never authoring the engine internals. is_ctor is
-// false for any (type, method) pair that is not a recognized engine constructor, so
-// a non-constructor `recv.method()` falls through to the value-receiver dispatch.
 eval_engine_constructor :: proc(interp: ^Interp, node: ^Node, env: ^Env, type_name, method: string) -> (value: Value, is_ctor: bool) {
 	switch type_name {
 	case "Settings":
@@ -612,9 +388,6 @@ eval_engine_constructor :: proc(interp: ^Interp, node: ^Node, env: ^Env, type_na
 			return settings_defaults(interp), true
 		}
 	case "Map":
-		// §26 engine.map: the idiomatic `Map.empty()` static constructor, the
-		// Type-name twin of the bare `empty()` free call — both build the empty
-		// insertion-ordered map (dual-parity with the compiler's Map.empty branch).
 		if method == "empty" {
 			return Map_Value{}, true
 		}
@@ -622,13 +395,6 @@ eval_engine_constructor :: proc(interp: ^Interp, node: ^Node, env: ^Env, type_na
 	return eval_anim_constructor(interp, node, env, type_name, method)
 }
 
-// settings_defaults is the §24 factory-default Settings record `Settings.defaults()`
-// seeds a Menu with: the canonical preference layout the engine ships, with the
-// `access` sub-record carrying `reduce_motion: false` (the accessibility default
-// yard's toggle_motion flips). The record is the engine's, not the sim's — gameplay
-// never reads it back (the settings split, §24) — so the runtime owns this seed
-// shape rather than the artifact. Built in the evaluation arena so it outlives the
-// constructor call.
 settings_defaults :: proc(interp: ^Interp) -> Value {
 	access_fields := make(map[string]Value, interp.allocator)
 	access_fields["reduce_motion"] = false
@@ -639,16 +405,6 @@ settings_defaults :: proc(interp: ^Interp) -> Value {
 	return Record_Value{type_name = "Settings", fields = settings_fields}
 }
 
-// resolve_input_action resolves the (player, action) arg pair shared by the §23 §2
-// input reads input.value/axis/pressed/released/held(player, action). It applies the
-// arity guard, evaluates both args, asserts each is a Variant, maps the player name to a
-// PlayerId and the action variant to its stable ActionId through the program's memoized
-// action registry — keyed STRAIGHT off the action Variant's (enum_type, case_name) via
-// registry_find, with NO per-read "Enum::Case" concatenation. ok is false on
-// a bad arity, an eval failure, or a non-Variant arg — the caller returns ok=false.
-// resolved is false when the player or the action is unknown — the caller returns its own
-// snapshot default with ok=true so a behavior never faults on input. When resolved is true
-// the caller reads the snapshot through its own accessor (pressed/released/held/value/axis).
 resolve_input_action :: proc(
 	interp: ^Interp,
 	node: ^Node,
@@ -683,12 +439,6 @@ resolve_input_action :: proc(
 	return resolved_player, def.id, true, true
 }
 
-// eval_input_button evaluates a digital Button query `input.pressed/released/held(
-// player, action)` — the §23 §2 edge/level read snake's control stage turns on. It
-// resolves the (player, action) pair (resolve_input_action) and reads the snapshot
-// through the supplied reader (one of pressed/released/held), returning a Bool. An
-// unresolved player or action reads false (the snapshot default), mirroring
-// eval_input_value's zero default so a behavior never faults on input.
 eval_input_button :: proc(
 	interp: ^Interp,
 	node: ^Node,
@@ -708,10 +458,6 @@ eval_input_button :: proc(
 	return reader(interp.input, player, action), true
 }
 
-// eval_input_value evaluates `input.value(self.player, Steer::Move)`: resolve the
-// (player, action) pair (resolve_input_action) and read the snapshot's 1D analog value
-// (§23 §2). An unresolved player or action reads zero (the snapshot default), so a
-// behavior never faults on input.
 eval_input_value :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Value, ok: bool) {
 	player, action, resolved, args_ok := resolve_input_action(interp, node, env)
 	if !args_ok {
@@ -723,12 +469,6 @@ eval_input_value :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Va
 	return value(interp.input, player, action), true
 }
 
-// eval_input_axis evaluates `input.axis(self.player, Drive::Move)`: resolve the
-// (player, action) pair (resolve_input_action) and read the snapshot's 2D analog axis
-// (§23 §2), a Vec2 whose components are each in [-1, 1]. An unresolved player or action
-// reads VEC2_ZERO (the snapshot default), mirroring eval_input_value's zero default — a
-// behavior never faults on input. hunt's drive body multiplies this Vec2 by
-// P_SPEED*time.dt, so the 2D read is the player-move path.
 eval_input_axis :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Value, ok: bool) {
 	player, action, resolved, args_ok := resolve_input_action(interp, node, env)
 	if !args_ok {
@@ -740,9 +480,6 @@ eval_input_axis :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (result: Val
 	return axis(interp.input, player, action), true
 }
 
-// eval_named_call dispatches a `name(args)` call: an engine builtin first (the
-// closed set §07/§08 expose to a body), then a user §9 helper. An unresolved
-// name is ok=false.
 eval_named_call :: proc(
 	interp: ^Interp,
 	name: string,
@@ -760,10 +497,6 @@ eval_named_call :: proc(
 	case "first":
 		return builtin_first(interp, node, env)
 	case "find":
-		// find(xs, pred) is first's mandatory-predicate form — the first element
-		// the predicate accepts as Some, else None — so it lowers to the same
-		// builtin (builtin_first's predicate branch). Without this case gameplay
-		// `find` silently drops where the compiler evaluator (eval_find) admits it.
 		return builtin_first(interp, node, env)
 	case "fold":
 		return builtin_fold(interp, node, env)
@@ -796,9 +529,6 @@ eval_named_call :: proc(
 	case "to_fixed":
 		return builtin_to_fixed(interp, node, env)
 	case "to_int":
-		// to_int(Fixed) -> Int (the to_fixed inverse) truncates toward zero — the
-		// SAME kernel `trunc` lowers to, so it shares builtin_trunc rather than a
-		// byte-identical twin.
 		return builtin_trunc(interp, node, env)
 	case "dot":
 		return builtin_dot(interp, node, env)
@@ -867,24 +597,15 @@ eval_named_call :: proc(
 	case "Despawn":
 		return builtin_despawn(interp, node, env)
 	}
-	// A §16 query: the §08 §3 read-only declaration form — bound like a §9
-	// helper, but the result is within-tick memoized (query_eval.odin). The
-	// typechecker holds queries and fns in one name space (one name, one
-	// meaning), so the two lookups can never both match.
 	if query := program_query(interp.program, name); query != nil {
 		return eval_query_call(interp, query, node, env)
 	}
-	// A user §9 helper: bind its args to its params and fold its body.
 	if fn := program_function(interp.program, name); fn != nil {
 		return eval_user_call(interp, fn, node, env)
 	}
 	return nil, false
 }
 
-// eval_user_call applies a user §9 helper: evaluate each arg, bind it to the
-// matching param name in a fresh scope (the helper closes over no caller locals
-// — it sees only its params plus module consts), then fold the helper's body.
-// The arg count must match the param count (the checked AST guarantees it).
 eval_user_call :: proc(
 	interp: ^Interp,
 	fn: ^Function_Decl,
@@ -909,11 +630,6 @@ eval_user_call :: proc(
 	return eval_body(interp, fn.body, &scope)
 }
 
-// --- engine builtins ------------------------------------------------------
-
-// builtin_abs is the §10 absolute value over the kernel: |Fixed| / |Int|,
-// computed by saturating-negating a negative operand so it stays total at the
-// rails. Pong's overlaps() calls abs on a Fixed difference.
 builtin_abs :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -933,9 +649,6 @@ builtin_abs :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	return nil, false
 }
 
-// builtin_clamp is the §10 clamp over the kernel: clamp(x, lo, hi) on Fixed.
-// Pong's paddle_move clamps the paddle's y into the board, so x/lo/hi are all
-// Fixed; the kernel's fixed_clamp keeps the rule in one place.
 builtin_clamp :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 4 {
 		return nil, false
@@ -955,17 +668,6 @@ builtin_clamp :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	return fixed_clamp(x, lo, hi), true
 }
 
-// builtin_length is the §10 vector magnitude `length(v: Vec2) -> Fixed`:
-// sqrt(dot(v, v)) over the Q32.32 kernel through vec2_length, which routes
-// vec2_dot into fixed_sqrt (digit-by-digit binary restoring — bit-exact on a
-// perfect square, floor-rounded otherwise, no libm/float on the path, §10.5).
-// hunt's step_to reads `speed / length(delta)` and visible's perception
-// predicate reads `length(p.pos - from) <= SIGHT` (the Vec2 form). The surface
-// declares one overload per vector width (length(Vec2) -> Fixed AND length(Vec3)
-// -> Fixed), so the width is read off the runtime value (vec2_length / vec3_length,
-// both sqrt(dot(v, v)) over the kernel) — mirroring funpack/evaluate.odin's
-// `length` case. A non-vector arg is ok=false (fail-closed — the magnitude of a
-// scalar/list is undefined, never coerced).
 builtin_length :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -983,14 +685,6 @@ builtin_length :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value
 	return nil, false
 }
 
-// builtin_sin is the §10 transcendental `sin(angle: Fixed) -> Fixed`: the
-// fixed_sin polynomial (x − x³/6 + x⁵/120) over the saturating kernel, copied
-// verbatim from the funpack trig kernel so the bits are identical (the
-// determinism bet — pose-driven replay folds the SAME Q32.32 sin the funpack
-// evaluator does). The single arg is coerced through as_fixed (an Int angle
-// lifts to Fixed, matching funpack's eval_fixed_arg), so a Vec2/list/bool arg is
-// ok=false (fail-closed — the sine of a non-scalar is undefined). pose_idle/
-// pose_walk's sin terms and advance_gait's wrapped phase feed this builtin.
 builtin_sin :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1006,14 +700,6 @@ builtin_sin :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	return fixed_sin(angle), true
 }
 
-// builtin_cos is the §10 transcendental `cos(angle: Fixed) -> Fixed`: the
-// fixed_cos polynomial over the saturating kernel, copied verbatim from the
-// funpack trig kernel (trig.odin) so the bits are identical — the SAME
-// determinism bet builtin_sin rides. Mirrors funpack/evaluate.odin's `cos` case
-// (eval_fixed_arg → fixed_cos). The single arg coerces through as_fixed (an Int
-// angle lifts to Fixed, matching the surface's Fixed-only signature); a
-// non-scalar arg is ok=false (fail-closed — the cosine of a non-scalar is
-// undefined).
 builtin_cos :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1029,14 +715,6 @@ builtin_cos :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	return fixed_cos(angle), true
 }
 
-// builtin_sqrt is the §10 scalar square root `sqrt(x: Fixed) -> Fixed`: the
-// kernel's digit-by-digit integer sqrt (fixed_sqrt — bit-exact on a perfect
-// square, floor-rounded otherwise, no libm/float, §10.5), the SAME primitive
-// vec2_length/vec3_length route through. fixed_sqrt folds a non-positive arg to
-// zero (the saturating kernel's defined degenerate value), so the call is total.
-// A non-scalar arg is ok=false (fail-closed). funpack/evaluate.odin wires no
-// `sqrt` named-call case, so the runtime is the sole evaluator of this surface
-// name; the parity test pins the kernel any funpack `sqrt` impl must match.
 builtin_sqrt :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1052,16 +730,6 @@ builtin_sqrt :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	return fixed_sqrt(x), true
 }
 
-// builtin_max is the §10/§26 binary maximum `max(a, b) -> T`, kind-preserving over
-// the two surface overloads (max(Fixed, Fixed) -> Fixed AND max(Int, Int) -> Int)
-// — space-invaders' cannon_fire reads `max(self.cooldown - time.dt, 0.0)` (the
-// Fixed cooldown floor, the silent-step-drop bug this builtin closes) and the hud
-// reads `max(self.clock - 1, 0)` (an Int countdown). Mirrors funpack/evaluate.odin's
-// eval_max EXACTLY: the operands are NOT coerced across kinds (the surface admits
-// each overload only when the two sides already agree, spec §10), so the kind is
-// read off the actual runtime value — a Fixed pair compares on the raw Q32.32 bits,
-// an Int pair on the i64s — and a mixed or non-numeric pair is ok=false. The
-// >= tie-break (returns `a` on equality) matches eval_max bit-for-bit.
 builtin_max :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -1088,15 +756,6 @@ builtin_max :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	return nil, false
 }
 
-// builtin_compare is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
-// eval_compare — the spec-03 prelude total three-way comparison `compare(a, b) ->
-// Ordering`. It grounds Ord as the same ordered scalars `max`/`<`/`>` compare
-// (Fixed by its underlying Q32.32 integer ordering, Int directly), so no float
-// reaches a semantic path and the runtime fold is bit-identical to the compiler
-// eval. The args are children[1]/[2] (children[0] the callee). ok is false on a
-// wrong arity or a mixed/non-ordered pair (the typecheck-rejected forms — the
-// surface admits only a matching same-type pair, never compare(1, 2.0)). The
-// result is the prelude Ordering Variant_Value a match destructures.
 builtin_compare :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -1123,13 +782,6 @@ builtin_compare :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	return nil, false
 }
 
-// ordering_value maps a three-way i64 comparison onto the prelude Ordering enum
-// value (Less/Equal/Greater) — the bare-variant Variant_Value a `Ordering::Less`
-// literal lowers to (enum_type "Ordering", nil payload), so a compare result
-// matches and values_equal compares it structurally against a literal Ordering
-// variant. Mirrors funpack/evaluate.odin ordering_value (a different machine —
-// runtime interp vs funpack evaluate — satisfying the one §02 §5 contract by
-// mirrored behavior, never linked code).
 ordering_value :: proc(l, r: i64) -> Value {
 	case_name := "Equal"
 	if l < r {
@@ -1140,11 +792,6 @@ ordering_value :: proc(l, r: i64) -> Value {
 	return Variant_Value{enum_type = "Ordering", case_name = case_name}
 }
 
-// builtin_lerp is the §10 Tier-2 interpolation `lerp(a, b, t: Fixed) -> Fixed`:
-// a + (b - a) * t over the saturating kernel (fixed_lerp, bit-identical to the
-// funpack copy). Mirrors funpack/evaluate.odin's `lerp` case (three eval_fixed_arg
-// reads → fixed_lerp). Each arg coerces through as_fixed (an Int lifts to Fixed,
-// matching the Fixed-only surface signature); a non-scalar arg is ok=false.
 builtin_lerp :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 4 {
 		return nil, false
@@ -1164,13 +811,6 @@ builtin_lerp :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	return fixed_lerp(a, b, t), true
 }
 
-// builtin_floor is the §10 `floor(x: Fixed) -> Int`: the largest Int <= x,
-// rounding toward negative infinity (fixed_floor, an arithmetic right shift over
-// the raw two's-complement bits — bit-identical to the funpack copy). Mirrors
-// funpack/evaluate.odin's `floor` case. The RESULT IS AN Int (i64), not a Fixed
-// — the surface types trunc/floor/round as (Fixed) -> Int — so a downstream
-// numeric position reads the whole-unit count, never a Fixed. A non-scalar arg is
-// ok=false.
 builtin_floor :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	x, ok2 := eval_single_fixed_arg(interp, node, env)
 	if !ok2 {
@@ -1179,10 +819,6 @@ builtin_floor :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	return fixed_floor(x), true
 }
 
-// builtin_round is the §10 `round(x: Fixed) -> Int`: round to nearest, ties away
-// from zero (fixed_round — bit-identical to the funpack copy). Mirrors
-// funpack/evaluate.odin's `round` case; the result is an Int (i64). A non-scalar
-// arg is ok=false.
 builtin_round :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	x, ok2 := eval_single_fixed_arg(interp, node, env)
 	if !ok2 {
@@ -1191,10 +827,6 @@ builtin_round :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	return fixed_round(x), true
 }
 
-// builtin_trunc is the §10 `trunc(x: Fixed) -> Int`: round toward zero (drop the
-// fraction; fixed_trunc — bit-identical to the funpack copy). Mirrors
-// funpack/evaluate.odin's `trunc` case; the result is an Int (i64). A non-scalar
-// arg is ok=false.
 builtin_trunc :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	x, ok2 := eval_single_fixed_arg(interp, node, env)
 	if !ok2 {
@@ -1203,13 +835,6 @@ builtin_trunc :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	return fixed_trunc(x), true
 }
 
-// builtin_checked_div is the §10 `checked_div(a, b: Fixed) -> Option[Fixed]`: the
-// quotient as Option::Some, or Option::None when b == 0 (fixed_checked_div
-// surfaces the zero divisor instead of saturating — bit-identical to the funpack
-// copy). Mirrors funpack/evaluate.odin's `checked_div` case, returning the
-// RUNTIME Option representation (Variant_Value "Option"/"Some"|"None" via
-// some_value/none_value — the same Option a match arm destructures). Each arg
-// coerces through as_fixed; a non-scalar arg is ok=false.
 builtin_checked_div :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -1231,12 +856,6 @@ builtin_checked_div :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: 
 	return some_value(interp, quotient), true
 }
 
-// builtin_to_fixed is the spec-03 prelude conversion `to_fixed(n: Int) -> Fixed`:
-// the i64-to-Q32.32 lift (to_fixed in fixed.odin — bit-identical to the funpack
-// copy). Mirrors funpack/evaluate.odin's `to_fixed` case, which requires the arg
-// to be a genuine Int (the surface signature is (Int) -> Fixed): a non-Int arg is
-// ok=false. (NOT as_fixed here — to_fixed converts an Int, so an already-Fixed arg
-// is a type error the typechecker forbids, never a passthrough.)
 builtin_to_fixed :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -1252,11 +871,6 @@ builtin_to_fixed :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	return to_fixed(n), true
 }
 
-// builtin_dot is the §10 dot product `dot(a, b) -> Fixed`, one overload per vector
-// width (dot(Vec2, Vec2) -> Fixed AND dot(Vec3, Vec3) -> Fixed). Mirrors
-// funpack/evaluate.odin's `dot` case: the width is read off the actual runtime
-// value (a Vec2 pair routes vec2_dot, a Vec3 pair vec3_dot — both component-wise
-// over the saturating kernel), and a mixed-width or non-vector pair is ok=false.
 builtin_dot :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -1283,10 +897,6 @@ builtin_dot :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	return nil, false
 }
 
-// builtin_cross is the §10 cross product `cross(a, b: Vec3) -> Vec3`: Vec3-only
-// (the cross product has no 2D form — the surface declares the one overload).
-// Mirrors funpack/evaluate.odin's `cross` case (vec3_cross, component-wise over
-// the saturating kernel). A non-Vec3 arg is ok=false.
 builtin_cross :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -1304,16 +914,6 @@ builtin_cross :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	return vec3_cross(a3, b3), true
 }
 
-// builtin_normalize is the §10 unit-vector `normalize(v) -> v`, one overload per
-// vector width (normalize(Vec2) -> Vec2 AND normalize(Vec3) -> Vec3). The width is
-// read off the runtime value: a Vec2 routes vec2_normalize, a Vec3 vec3_normalize
-// (both scale v by 1/length over the kernel's checked-div, folding the zero vector
-// to the zero vector — the defined degenerate, no NaN, §10.5). The degenerate ok
-// flag is dropped HERE: the surface signature returns a plain Vec2/Vec3, not an
-// Option, so the zero vector normalizes to the zero vector (a total call). A
-// non-vector arg is ok=false. funpack/evaluate.odin wires no `normalize`
-// named-call case (and funpack/vector.odin has no vec*_normalize), so the runtime
-// is the sole evaluator of this surface name; the parity test pins it.
 builtin_normalize :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -1333,13 +933,6 @@ builtin_normalize :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Va
 	return nil, false
 }
 
-// eval_single_fixed_arg reads the one Fixed arg of a `name(x)` builtin call — the
-// shared front half of floor/round/trunc (each a (Fixed) -> Int reduction). The
-// arity is exactly one arg (two node children: callee + arg); the arg coerces
-// through as_fixed (an Int lifts to Fixed, matching the established sin/clamp
-// convention, though the Fixed-only surface signature means the lift is
-// unreachable for a typechecked program). A wrong arity or a non-scalar arg is
-// ok=false.
 eval_single_fixed_arg :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (x: Fixed, ok: bool) {
 	if len(node.children) != 2 {
 		return Fixed(0), false
@@ -1351,14 +944,6 @@ eval_single_fixed_arg :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (x: Fi
 	return as_fixed(arg)
 }
 
-// builtin_rot_x is the §16 §7 per-bone X-axis rotation builder `rot_x(angle: Fixed)
-// -> Transform`: a fixed-point angle (radians) into a Transform with the identity
-// translation, a quaternion rotating `angle` about the local X axis, and unit scale
-// — the leg/arm swing a pose generator drives a bone with. At angle 0 the quaternion
-// is the identity (sin(0)=0, cos(0)=1), so rot_x(0.0) is the rest transform, the
-// pose_walk zero-crossing the golden asserts. A non-scalar arg is ok=false
-// (fail-closed). transform_rot_x carries the kernel-copied quat math (pose.odin /
-// vector3.odin), so the bits match the funpack evaluator's rot_x bit-for-bit.
 builtin_rot_x :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1374,10 +959,6 @@ builtin_rot_x :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	return transform_rot_x(angle), true
 }
 
-// builtin_up is the §16 §7 per-bone vertical-offset builder `up(d: Fixed) ->
-// Transform`: a fixed-point displacement into a Transform translating by `d` along
-// the local +Y axis, with the identity rotation and unit scale — pose_idle's torso
-// breathing bob. A non-scalar arg is ok=false (fail-closed).
 builtin_up :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1393,18 +974,6 @@ builtin_up :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok
 	return transform_up(d), true
 }
 
-// builtin_mesh is the §19/§26 asset-handle constructor `mesh(name: String) ->
-// MeshHandle`: a single String asset name lowered into the typed handle value a
-// Model seam constant's literal builds — a Record_Value tagged "MeshHandle" with
-// the one `name` field set to the supplied String. So mesh("krognid_torso")
-// evaluates to the identical handle MeshHandle{name: "krognid_torso"} does, and the
-// PartSet bind reads its name through eval_mesh_name_arg (pose.odin). This MIRRORS
-// funpack/evaluate.odin's eval_asset_constructor (the closed-registry kind/name
-// validity is the build gate's, not this evaluator's — the runtime builds the value
-// the typecheck-passed reference names). Without it the artifact-path Rigged fold
-// fail-closes when draw_krognid's krognid_parts() body calls mesh(...). A non-String
-// arg, or the wrong arity, is ok=false (fail-closed). The sibling sound() asset
-// constructor (audio.odin builtin_sound) follows the identical shape.
 builtin_mesh :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -1422,11 +991,6 @@ builtin_mesh :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	return Record_Value{type_name = "MeshHandle", fields = fields}, true
 }
 
-// builtin_first is the §08 list combinator `first(list) -> Option[T]`: the head
-// of a list as Option::Some, or Option::None for the empty list. Pong's
-// paddle_bounce/serve match on first(...). When a lambda predicate is supplied
-// (`first(list, pred)`), the first element satisfying the predicate is returned
-// — paddle_bounce's `first(paddles, pad => overlaps(...))`.
 builtin_first :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1439,8 +1003,6 @@ builtin_first :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	if !elems_ok {
 		return nil, false
 	}
-	// With a predicate lambda, return the first element it accepts; without one,
-	// return the head.
 	if len(node.children) >= 3 {
 		pred_val, pred_ok := eval(interp, &node.children[2], env)
 		if !pred_ok {
@@ -1467,14 +1029,6 @@ builtin_first :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	return some_value(interp, elements[0]), true
 }
 
-// builtin_fold is the §08 list aggregate `fold(list, seed, f)`: fold f over the
-// list left-to-right from the seed, threading the accumulator. The combiner takes
-// two forms: a §9 helper NAME (pong's tally folds add_goal), or an INLINE binary
-// lambda `fn(acc, elem) { … }` (yard's on_persist_result folds a match over each
-// signal's result). A named callee resolves to the program function directly; any
-// other combiner node is evaluated and must yield a two-param Lambda_Value. Either
-// way the combiner is applied per element as f(acc, element); a combiner that is
-// neither a binary helper nor a binary lambda is ok=false.
 builtin_fold :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 4 {
 		return nil, false
@@ -1489,9 +1043,6 @@ builtin_fold :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 		return nil, false
 	}
 	combiner := &node.children[3]
-	// A bare-name combiner is a §9 helper resolved directly (pong's add_goal); any
-	// other combiner node evaluates to a binary lambda closure (yard's inline
-	// fn(m, r) over a signal's Result).
 	if combiner.kind == .Name {
 		fn := program_function(interp.program, combiner.fields[0])
 		if fn != nil && len(fn.params) == 2 {
@@ -1517,9 +1068,6 @@ builtin_fold :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	return acc, true
 }
 
-// fold_with_helper folds a two-param §9 helper over the elements left-to-right
-// from the seed, threading the accumulator as f(acc, element) — the named-combiner
-// branch of builtin_fold (pong's add_goal).
 fold_with_helper :: proc(
 	interp: ^Interp,
 	fn: ^Function_Decl,
@@ -1540,10 +1088,6 @@ fold_with_helper :: proc(
 	return acc, true
 }
 
-// builtin_prepend is the §08 list combinator `prepend(elem, list) -> [T]`: a new
-// list with `elem` at the front, then every element of `list` in order. Snake's
-// cells() prepends the head onto the body; the list is rebuilt fresh in the
-// evaluation arena (immutable data — the input list is never mutated, §08).
 builtin_prepend :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 3 {
 		return nil, false
@@ -1565,11 +1109,6 @@ builtin_prepend :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	return List_Value{elements = out}, true
 }
 
-// builtin_append is the §08 list combinator `append(list, item) -> [T]`: a new
-// list with every element of `list` in order then `item` at the back —
-// prepend's other-end twin (args[0] the list, args[1] the element). The list is
-// rebuilt fresh in the evaluation arena (immutable data — the input is never
-// mutated, §08).
 builtin_append :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 3 {
 		return nil, false
@@ -1591,9 +1130,6 @@ builtin_append :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value
 	return List_Value{elements = out}, true
 }
 
-// builtin_reverse is the §08 list combinator `reverse(list) -> [T]`: a new list
-// with the elements in reversed order. The list is rebuilt fresh in the
-// evaluation arena (immutable data — the input is never mutated, §08).
 builtin_reverse :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1613,10 +1149,6 @@ builtin_reverse :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	return List_Value{elements = out}, true
 }
 
-// builtin_init is the §08 list combinator `init(list) -> [T]`: a new list with
-// every element except the last. Snake's body_after drops the tail this way when
-// the snake is not growing. The empty list yields the empty list (total — never
-// a fault on a missing last element, §26 totality).
 builtin_init :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1639,10 +1171,6 @@ builtin_init :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	return List_Value{elements = out}, true
 }
 
-// builtin_contains is the §08 list combinator `contains(list, elem) -> Bool`:
-// true when any element of `list` structurally equals `elem` (§03 universal Eq).
-// Snake tests `contains(occ, c)` over Cell records and `contains(self.body,
-// self.head)`, so the membership is the deep record equality values_equal folds.
 builtin_contains :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 3 {
 		return nil, false
@@ -1664,11 +1192,6 @@ builtin_contains :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	return false, true
 }
 
-// builtin_map is the §08 list combinator `map(list, fn) -> [U]`: a new list
-// applying the unary lambda `fn` to each element in order. Snake projects food
-// rows to their cells and cells to draw rects this way. The lambda is applied
-// per element through apply_lambda; the result keeps the input's deterministic
-// order (§08 stable order — order is the source order, never an iteration order).
 builtin_map :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 3 {
 		return nil, false
@@ -1697,11 +1220,6 @@ builtin_map :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	return List_Value{elements = out}, true
 }
 
-// builtin_filter is the §08 list combinator `filter(list, pred) -> [T]`: a new
-// list of the elements the unary predicate lambda accepts, in order. Snake's
-// free-cell selection filters all_cells() by un-occupied, and detect_eat filters
-// foods by the head cell. The kept elements preserve the input's deterministic
-// order (§08 stable order).
 builtin_filter :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 3 {
 		return nil, false
@@ -1732,10 +1250,6 @@ builtin_filter :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value
 	return List_Value{elements = kept[:]}, true
 }
 
-// builtin_concat is the §08 list combinator `concat(a, b) -> [T]`: a new list of
-// every element of `a` followed by every element of `b`, both in order. Snake's
-// occupied() concatenates the snake's cells with the food cells. The two inputs
-// are read, never mutated; the join is fresh in the evaluation arena (§08).
 builtin_concat :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 3 {
 		return nil, false
@@ -1760,9 +1274,6 @@ builtin_concat :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value
 	return List_Value{elements = out}, true
 }
 
-// builtin_is_empty is the §08 list combinator `is_empty(list) -> Bool`: true
-// when the list has no elements. Snake gates grow/replenish/apply_death on an
-// empty signal list this way.
 builtin_is_empty :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1778,11 +1289,6 @@ builtin_is_empty :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	return len(elements) == 0, true
 }
 
-// builtin_len is the §08 list aggregate `len(list) -> Int`: the element count as
-// an Int (the i64 arm). Yard's tally folds this tick's deliveries into the running
-// count — `self.delivered + len(done)` — so the result lands on the Int rail the
-// `+` adds to a delivered count. A non-list arg is ok=false (the count of a
-// scalar is undefined, never coerced).
 builtin_len :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -1791,8 +1297,6 @@ builtin_len :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	if !list_ok {
 		return nil, false
 	}
-	// len is polymorphic over a Map (engine.map): the entry count. The list/view
-	// form is the as_elements branch below.
 	if m, is_map := list_val.(Map_Value); is_map {
 		return i64(len(m.entries)), true
 	}
@@ -1803,16 +1307,6 @@ builtin_len :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	return i64(len(elements)), true
 }
 
-// --- engine.map: the runtime Map[K, V] methods, the GAMEPLAY-EVAL twin of
-// funpack/evaluate.odin's eval_map_* (the dual-interpreter parity surface). The
-// free-call builtins (eval_named_call) and the method-form arm (eval_map_method,
-// from eval_method_call) share these value-level cores, so `get(m, k)` and
-// `m.get(k)` evaluate bit-identically — the "same function" guarantee. Insertion
-// order is preserved; nothing mutates (every op rebuilds a fresh arena slice). ---
-
-// map_find returns the index of the entry whose key value_equals `key`, or
-// found=false — the linear scan get/has/set/remove share. A key needs only the
-// structural Eq values_equal gives every value.
 map_find :: proc(m: Map_Value, key: Value) -> (index: int, found: bool) {
 	for entry, i in m.entries {
 		if values_equal(entry.key, key) {
@@ -1822,8 +1316,6 @@ map_find :: proc(m: Map_Value, key: Value) -> (index: int, found: bool) {
 	return -1, false
 }
 
-// map_get_value is the total keyed lookup get -> Option[V]: Some(value) on a key
-// hit, None on a miss.
 map_get_value :: proc(interp: ^Interp, m: Map_Value, key: Value) -> Value {
 	if i, found := map_find(m, key); found {
 		return some_value(interp, m.entries[i].value)
@@ -1831,9 +1323,6 @@ map_get_value :: proc(interp: ^Interp, m: Map_Value, key: Value) -> Value {
 	return none_value()
 }
 
-// map_set_value is set -> Map[K, V]: a fresh map with the key bound to the value,
-// replacing an existing key's value IN PLACE (keeping its position) or appending a
-// new key. The input map is never mutated.
 map_set_value :: proc(interp: ^Interp, m: Map_Value, key, val: Value) -> Map_Value {
 	if i, found := map_find(m, key); found {
 		out := make([]Map_Entry, len(m.entries), interp.allocator)
@@ -1847,9 +1336,6 @@ map_set_value :: proc(interp: ^Interp, m: Map_Value, key, val: Value) -> Map_Val
 	return Map_Value{entries = out}
 }
 
-// map_remove_value is remove -> Map[K, V]: a fresh map without the key, the gap
-// closed so insertion order is preserved among the rest. An absent key yields the
-// map unchanged (total).
 map_remove_value :: proc(interp: ^Interp, m: Map_Value, key: Value) -> Map_Value {
 	i, found := map_find(m, key)
 	if !found {
@@ -1861,7 +1347,6 @@ map_remove_value :: proc(interp: ^Interp, m: Map_Value, key: Value) -> Map_Value
 	return Map_Value{entries = out}
 }
 
-// map_keys_value is keys -> [K]: the keys as a list in insertion order.
 map_keys_value :: proc(interp: ^Interp, m: Map_Value) -> List_Value {
 	out := make([]Value, len(m.entries), interp.allocator)
 	for entry, i in m.entries {
@@ -1870,8 +1355,6 @@ map_keys_value :: proc(interp: ^Interp, m: Map_Value) -> List_Value {
 	return List_Value{elements = out}
 }
 
-// map_values_value is values -> [V]: the values as a list in the same insertion
-// order keys() projects, so keys()[i] and values()[i] pair.
 map_values_value :: proc(interp: ^Interp, m: Map_Value) -> List_Value {
 	out := make([]Value, len(m.entries), interp.allocator)
 	for entry, i in m.entries {
@@ -1880,8 +1363,6 @@ map_values_value :: proc(interp: ^Interp, m: Map_Value) -> List_Value {
 	return List_Value{elements = out}
 }
 
-// builtin_map_empty is the free `empty() -> Map[K, V]` constructor (the bare-call
-// form; Map.empty() static lands the same value through eval_engine_constructor).
 builtin_map_empty :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 1 {
 		return nil, false
@@ -1889,9 +1370,6 @@ builtin_map_empty :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Va
 	return Map_Value{}, true
 }
 
-// builtin_get is the free `get(source, key/i)`: a Map keyed lookup OR a list/view
-// index lookup, dispatched on the evaluated source — the dual-parity twin of the
-// compiler's eval_get, which handles both forms the same way.
 builtin_get :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -1918,7 +1396,6 @@ builtin_get :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, o
 	return some_value(interp, elements[i]), true
 }
 
-// builtin_map_has is the free `has(map, key) -> Bool` membership predicate.
 builtin_map_has :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -1936,7 +1413,6 @@ builtin_map_has :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	return found, true
 }
 
-// builtin_map_set is the free `set(map, key, value) -> Map[K, V]`.
 builtin_map_set :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 4 {
 		return nil, false
@@ -1954,7 +1430,6 @@ builtin_map_set :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	return map_set_value(interp, m, key, val), true
 }
 
-// builtin_map_remove is the free `remove(map, key) -> Map[K, V]`.
 builtin_map_remove :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -1971,7 +1446,6 @@ builtin_map_remove :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: V
 	return map_remove_value(interp, m, key), true
 }
 
-// builtin_map_keys is the free `keys(map) -> [K]`.
 builtin_map_keys :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -1987,7 +1461,6 @@ builtin_map_keys :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Val
 	return map_keys_value(interp, m), true
 }
 
-// builtin_map_values is the free `values(map) -> [V]`.
 builtin_map_values :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -2003,10 +1476,6 @@ builtin_map_values :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: V
 	return map_values_value(interp, m), true
 }
 
-// eval_map_method is the §02 §4 method form of the engine.map methods on a Map
-// receiver (m.get(k), m.set(k, v), Map.empty().set(...).get(...)) — the receiver
-// is already evaluated as `m`, the method args are node.children[1:]. It shares
-// the value-level cores with the free builtins, so the two forms agree.
 eval_map_method :: proc(interp: ^Interp, m: Map_Value, method: string, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	switch method {
 	case "len":
@@ -2054,14 +1523,6 @@ eval_map_method :: proc(interp: ^Interp, m: Map_Value, method: string, node: ^No
 	return nil, false
 }
 
-// builtin_grid_cells is the §26 `engine.grid.grid_cells(w, h, fn(x, y) -> Cell)
-// -> [Cell]`: every cell of a w×h grid in STABLE ROW-MAJOR order, built by the
-// supplied two-arg lambda. The order is driven by the loop indices — the outer
-// loop walks rows (y from 0), the inner loop walks columns within a row (x from
-// 0) — so the enumeration is machine-identical, never dependent on any map/hash
-// iteration (§08 stable order, §26 "stable row-major order"). Snake's all_cells()
-// folds free-cell selection through this; a non-positive extent yields the empty
-// list (total — no fault on a degenerate grid). No float: w/h are Ints (§10).
 builtin_grid_cells :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 4 {
 		return nil, false
@@ -2084,9 +1545,6 @@ builtin_grid_cells :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: V
 	count := (w > 0 && h > 0) ? int(w) * int(h) : 0
 	out := make([]Value, count, interp.allocator)
 	idx := 0
-	// Row-major: y is the outer (row) index, x the inner (column) index, so the
-	// list reads row 0 left-to-right, then row 1, …  The two indices fully order
-	// the output, independent of any map iteration.
 	for y in 0 ..< h {
 		for x in 0 ..< w {
 			cell, cell_ok := apply_two_arg_lambda(interp, lambda, x, y)
@@ -2100,15 +1558,6 @@ builtin_grid_cells :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: V
 	return List_Value{elements = out}, true
 }
 
-// builtin_neighbors is the §18 §4 stdlib engine.grid `neighbors(cell) -> [Cell]`:
-// the four orthogonally adjacent cells of the argument's own record type, in
-// ROW-MAJOR READING ORDER — (x, y-1) above, then (x-1, y) and (x+1, y) on the
-// row, then (x, y+1) below — the same y-outer order grid_cells enumerates, so a
-// fold over the open set is deterministic by construction. MIRRORS funpack
-// evaluate.odin's eval_neighbors (the dungeon's ooze filters this
-// list through in_bounds + enterable). The element type name echoes the
-// ARGUMENT's (the grid_cells discipline: the cell type is the caller's). A
-// non-cell argument is ok=false (fail-closed).
 builtin_neighbors :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -2132,11 +1581,6 @@ builtin_neighbors :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Va
 	return List_Value{elements = elements}, true
 }
 
-// builtin_in_bounds is the §18 §4 stdlib engine.grid `in_bounds(cell, size) ->
-// Bool`: whether the cell lies in the [0, size.x) × [0, size.y) grid — the
-// dungeon's open-neighbor gate beside `enterable`. MIRRORS funpack
-// evaluate.odin's eval_in_bounds. Either argument failing the cell shape is
-// ok=false (fail-closed).
 builtin_in_bounds :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -2154,10 +1598,6 @@ builtin_in_bounds :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Va
 	return x >= 0 && x < sx && y >= 0 && y < sy, true
 }
 
-// grid_cell_coords reads a `Cell{x, y}` record value into its integer cell
-// coordinates plus its OWN type name (the name neighbors echoes back onto the
-// elements it builds) — the runtime twin of funpack's tilemap_cell_coords.
-// ok=false for any non-record value or a record without two Int x/y columns.
 grid_cell_coords :: proc(arg: Value) -> (x, y: i64, type_name: string, ok: bool) {
 	record, is_record := arg.(Record_Value)
 	if !is_record {
@@ -2176,13 +1616,6 @@ grid_cell_coords :: proc(arg: Value) -> (x, y: i64, type_name: string, ok: bool)
 	return xi, yi, record.type_name, true
 }
 
-// builtin_or_else is the §26 prelude unwrap `or_else(option, fallback) -> T`:
-// the Some payload, or the fallback — the fold-then-default unwrap the
-// dungeon's hero_pos ends on. MIRRORS funpack evaluate.odin's eval_or_else:
-// the fallback expression evaluates ONLY on the None arm, so an or_else over a
-// Some never runs it — observationally identical in a pure language, and it
-// keeps a Some-carrying call evaluable even where the fallback is not. A
-// non-Option argument is ok=false (fail-closed).
 builtin_or_else :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -2197,10 +1630,6 @@ builtin_or_else :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	return eval(interp, &node.children[2], env)
 }
 
-// builtin_is_some is the §26 Option predicate `is_some(Option[T]) -> Bool`: the
-// presence bit read off the runtime Option (a Variant_Value tagged "Option" with
-// case "Some"/"None"). Mirrors funpack/evaluate.odin's eval_is_some; a non-Option
-// argument is ok=false.
 builtin_is_some :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -2212,10 +1641,6 @@ builtin_is_some :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Valu
 	return option.case_name == "Some", true
 }
 
-// runtime_option_arg evaluates one argument node and returns it as a runtime
-// Option (a Variant_Value tagged "Option"). ok=false for an unevaluable or
-// non-Option value — the one Option-unwrap the Option builtins (or_else, is_some)
-// share, taking the arg node so each caller keeps its own arity guard.
 runtime_option_arg :: proc(interp: ^Interp, arg: ^Node, env: ^Env) -> (option: Variant_Value, ok: bool) {
 	value, value_ok := eval(interp, arg, env)
 	if !value_ok {
@@ -2228,24 +1653,6 @@ runtime_option_arg :: proc(interp: ^Interp, arg: ^Node, env: ^Env) -> (option: V
 	return variant, true
 }
 
-// builtin_pick is the §26 seeded draw `pick(self: Rng, items: [T]) -> (Option[T],
-// Rng)` (snake's `rng.pick(free)`): it selects a uniform element of the list and
-// returns the THREADED pair — the drawn element boxed as `Option::Some(elem)` (or
-// `Option::None` for an empty list) and the ADVANCED Rng. The Rng is the first
-// argument (the receiver, children[1]) and the list the second (children[2]),
-// self-first like the other five draws and the rand.fun declaration. The draw is
-// never a silent advance (§04 §1): the Rng is consumed and its successor returned
-// even on the empty (None) arm, so the caller threads `next` forward exactly as
-// the kernel contract requires. The result is a `Tuple_Value{Option, Rng}` a
-// tuple-pattern match destructures into `(Option::Some(cell), next)` /
-// `(Option::None, next)`.
-//
-// None-arm boxing: None is a unit `Option::None` (nil payload) via none_value;
-// Some boxes the picked element via some_value (an arena-allocated payload). The
-// reduction is rand_bounded (Lemire multiply-shift) over the interpreter's element
-// slice, so the picked position is bit-identical to the kernel's parametric
-// rand_pick — the interpreter binds T to Value here rather than calling the
-// parametric kernel proc, keeping the boxing decision on the interpreter side.
 builtin_pick :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 3 {
 		return nil, false
@@ -2266,19 +1673,8 @@ builtin_pick :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	return rng_pick_reduce(interp, rng, elements), true
 }
 
-// rng_pick_reduce is the shared seeded-draw reduction both pick forms route
-// through — the bare free call `pick(rng, free)` (builtin_pick) and the self-first
-// method call `rng.pick(free)` (eval_rng_pick) — so the two call shapes are
-// bit-identical by construction, not by parallel maintenance. It boxes the drawn
-// element as `Option::Some` (or `Option::None` for an empty list) and threads the
-// ADVANCED Rng; the draw is never a silent advance (§04 §1: even the empty None
-// arm consumes the Rng and returns its successor). The index reduction is
-// rand_bounded (Lemire multiply-shift), the SAME reduction the kernel rand_pick
-// and the funpack-compiler eval_rand_pick use, so the picked position matches
-// across both interpreters (the §10 dual-interpreter parity floor).
 rng_pick_reduce :: proc(interp: ^Interp, rng: Rng, elements: []Value) -> Value {
 	if len(elements) == 0 {
-		// Empty draw: the None arm, yet the Rng still advances (no silent no-op).
 		_, advanced := rand_next(rng)
 		return pick_tuple(interp, none_value(), advanced)
 	}
@@ -2286,20 +1682,10 @@ rng_pick_reduce :: proc(interp: ^Interp, rng: Rng, elements: []Value) -> Value {
 	return pick_tuple(interp, some_value(interp, elements[index]), advanced)
 }
 
-// pick_tuple builds pick's `(Option, Rng)` return: the boxed Option in position 0,
-// the advanced Rng in position 1 — the exact positional shape snake's tuple-pattern
-// match `(Option::Some(cell), next)` destructures (§04 §1). It is the same
-// `(value, next_rng)` pair every draw returns, so it delegates to rng_draw_tuple (the
-// Rng advances to a Value arm) — one tuple-pair builder, not two.
 pick_tuple :: proc(interp: ^Interp, option: Value, advanced: Rng) -> Value {
 	return rng_draw_tuple(interp, option, advanced)
 }
 
-// rng_draw_tuple builds the `(value, next_rng)` threaded pair every §26 draw
-// returns (spec §04 §1): the drawn value in position 0, the advanced Rng in
-// position 1 — the positional shape a `(v, next)` tuple-pattern match
-// destructures. The two-element slice is arena-allocated so it outlives the call,
-// exactly like pick_tuple.
 rng_draw_tuple :: proc(interp: ^Interp, value: Value, advanced: Value) -> Value {
 	elements := make([]Value, 2, interp.allocator)
 	elements[0] = value
@@ -2307,10 +1693,6 @@ rng_draw_tuple :: proc(interp: ^Interp, value: Value, advanced: Value) -> Value 
 	return Tuple_Value{elements = elements}
 }
 
-// builtin_seed is the §26 free constructor `seed(n: Int) -> Rng`: it reads the
-// single Int argument and reinterprets it as the initial u64 RNG state through
-// rand_seed — a pure integer cast, no entropy, so the same seed always yields the
-// same stream (the determinism warranty). A non-Int argument is fail-closed.
 builtin_seed :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -2326,11 +1708,6 @@ builtin_seed :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, 
 	return rand_seed(n), true
 }
 
-// eval_rng_next is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's eval_rng_next
-// — the §26 `next(self) -> (Fixed, Rng)` draw: a uniform Fixed in [0, 1) plus the
-// advanced Rng, via the shared rand_next_fixed kernel (bit-identical to the
-// compiler, §10). No argument (children[0] is the callee). The result threads as
-// `(f, next)`.
 eval_rng_next :: proc(interp: ^Interp, rng: Rng, node: ^Node) -> (value: Value, ok: bool) {
 	if len(node.children) != 1 {
 		return nil, false
@@ -2339,11 +1716,6 @@ eval_rng_next :: proc(interp: ^Interp, rng: Rng, node: ^Node) -> (value: Value, 
 	return rng_draw_tuple(interp, drawn, advanced), true
 }
 
-// eval_rng_range is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
-// eval_rng_range — the §26 `range(self, lo, hi) -> (Int, Rng)` draw: a uniform Int
-// in [lo, hi) plus the advanced Rng, via the shared rand_range kernel (Lemire
-// reduction over the span, bit-identical to the compiler). The two Int args are
-// children[1]/children[2]; a non-Int bound is fail-closed.
 eval_rng_range :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 3 {
 		return nil, false
@@ -2362,11 +1734,6 @@ eval_rng_range :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (va
 	return rng_draw_tuple(interp, drawn, advanced), true
 }
 
-// eval_rng_chance is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
-// eval_rng_chance — the §26 `chance(self, p) -> (Bool, Rng)` draw: true with
-// probability p (a Fixed in [0, 1]) plus the advanced Rng, via the shared
-// rand_chance kernel (draw < p over exact Q32.32 ordering, bit-identical). The p
-// arg is children[1], coerced through as_fixed (an Int p promotes to Fixed).
 eval_rng_chance :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -2383,10 +1750,6 @@ eval_rng_chance :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (v
 	return rng_draw_tuple(interp, drawn, advanced), true
 }
 
-// eval_rng_split is the GAMEPLAY-EVAL twin of funpack/evaluate.odin's
-// eval_rng_split — the §26 `split(self) -> (Rng, Rng)`: two decorrelated streams
-// from one, via the shared rand_split kernel (two finalized splitmix64 draws as
-// the two seeds, bit-identical). No argument. The result threads as `(a, b)`.
 eval_rng_split :: proc(interp: ^Interp, rng: Rng, node: ^Node) -> (value: Value, ok: bool) {
 	if len(node.children) != 1 {
 		return nil, false
@@ -2395,13 +1758,6 @@ eval_rng_split :: proc(interp: ^Interp, rng: Rng, node: ^Node) -> (value: Value,
 	return rng_draw_tuple(interp, a, b), true
 }
 
-// eval_rng_pick is the GAMEPLAY-EVAL self-first form of the §26 draw `pick(self:
-// Rng, items: [T]) -> (Option[T], Rng)` — snake's `rng.pick(free)` lowered to a
-// §02 §4 method call. The Rng receiver is already evaluated (`rng`); the list is
-// the single method arg at children[1] (the field callee is children[0]). It
-// shares rng_pick_reduce with the bare free-call builtin_pick, so the
-// method-lowered form and the free-call form draw bit-identically — the same
-// Lemire reduction the kernel and the funpack-compiler twin use (§10 parity).
 eval_rng_pick :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) != 2 {
 		return nil, false
@@ -2417,13 +1773,6 @@ eval_rng_pick :: proc(interp: ^Interp, rng: Rng, node: ^Node, env: ^Env) -> (val
 	return rng_pick_reduce(interp, rng, elements), true
 }
 
-// builtin_spawn is the §02 §2 command-wrap `Spawn(thing_record)` — the tuple-payload
-// constructor a startup/behavior `[Spawn]` list carries (snake's `Spawn(Food{cell:
-// cell})`, `Spawn(snake)`). It evaluates its single argument (a thing record) and
-// returns that record VALUE directly: a Spawn command IS its wrapped blackboard, so
-// queue_commands reads the record's type_name as the thing to mint and its fields as
-// the new row. The wrap is a transparent carrier — it adds no value of its own, it
-// just marks the record as a spawn payload at the source level.
 builtin_spawn :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	if len(node.children) < 2 {
 		return nil, false
@@ -2431,25 +1780,10 @@ builtin_spawn :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value,
 	return eval(interp, &node.children[1], env)
 }
 
-// builtin_despawn is the §02 §2 command-wrap `Despawn()` — the self-despawn
-// command a behavior's `[Despawn]` list carries (snake's despawn_eaten emits
-// `[Despawn()]` to remove the eaten Food). The no-arg form despawns the behavior's
-// SELF row; it returns a marker Record_Value of type "Despawn" so the `[Despawn]`
-// list is non-empty and fold_behavior_result detects the despawn intent, then
-// queues a despawn of self_row at the tick boundary (§07 §4). The marker carries
-// no fields — the target is the self row the tick fold already knows, not a field
-// of this value (a future `Despawn(ref)` form would carry the Ref here).
 builtin_despawn :: proc(interp: ^Interp, node: ^Node, env: ^Env) -> (value: Value, ok: bool) {
 	return Record_Value{type_name = "Despawn", fields = make(map[string]Value, interp.allocator)}, true
 }
 
-// --- builtin support ------------------------------------------------------
-
-// as_elements reads a value as a list's elements: a List_Value yields its slice;
-// a View-of-thing value the interpreter never materializes as a list here, so a
-// non-list is ok=false. A behavior reads a View through its param binding (the
-// tick passes View rows as a List_Value), so first/fold over `paddles` see the
-// rows as elements.
 as_elements :: proc(interp: ^Interp, v: Value) -> (elements: []Value, ok: bool) {
 	list, is_list := v.(List_Value)
 	if !is_list {
@@ -2458,10 +1792,6 @@ as_elements :: proc(interp: ^Interp, v: Value) -> (elements: []Value, ok: bool) 
 	return list.elements, true
 }
 
-// apply_lambda applies a unary lambda closure to one argument: bind the arg to
-// the lambda's single param in a child of its captured scope, then evaluate the
-// body. A lambda whose arity is not one is a malformed application (ok=false) —
-// the unary combinators (first/map/filter) only ever hold a one-param closure.
 apply_lambda :: proc(interp: ^Interp, lambda: Lambda_Value, arg: Value) -> (value: Value, ok: bool) {
 	if len(lambda.params) != 1 {
 		return nil, false
@@ -2474,10 +1804,6 @@ apply_lambda :: proc(interp: ^Interp, lambda: Lambda_Value, arg: Value) -> (valu
 	return eval(interp, lambda.body, &scope)
 }
 
-// apply_two_arg_lambda applies a binary lambda closure to (a, b): bind both args
-// to the lambda's two params in order in a child of its captured scope, then
-// evaluate the body. grid_cells applies this with (x, y) per grid cell — the
-// only binary-lambda combinator. A lambda whose arity is not two is malformed.
 apply_two_arg_lambda :: proc(
 	interp: ^Interp,
 	lambda: Lambda_Value,
@@ -2498,9 +1824,6 @@ apply_two_arg_lambda :: proc(
 	return eval(interp, lambda.body, &scope)
 }
 
-// apply_two_arg applies a two-param §9 helper to (a, b) — the fold combiner shape
-// (add_goal(score, goal)). The args bind to the helper's two params in order in a
-// fresh scope, then the body folds.
 apply_two_arg :: proc(
 	interp: ^Interp,
 	fn: ^Function_Decl,
@@ -2515,16 +1838,12 @@ apply_two_arg :: proc(
 	return eval_body(interp, fn.body, &scope)
 }
 
-// some_value boxes a value as Option::Some(v) — the head/predicate-hit result of
-// first(). The payload is arena-allocated so the variant outlives the call.
 some_value :: proc(interp: ^Interp, v: Value) -> Value {
 	boxed := new(Value, interp.allocator)
 	boxed^ = v
 	return Variant_Value{enum_type = "Option", case_name = "Some", payload = boxed}
 }
 
-// none_value is the Option::None result of first() over an empty list / no
-// predicate hit. The None arm a behavior's match falls through to.
 none_value :: proc() -> Value {
 	return Variant_Value{enum_type = "Option", case_name = "None"}
 }

@@ -1,54 +1,3 @@
-// Two-machine bit-identity acceptance harness (spec §07 §4, §09 §5, §20, §28):
-// the milestone's determinism-target carrier. It proves, end to end and against
-// the REAL golden pong artifact, the three properties a deterministic-replay claim
-// rests on:
-//
-//   - LIVE-VS-REPLAY BIT-IDENTITY: a live pong run captured per-tick (the digest
-//     surface) and the production re-fold of its RECORDED log, captured the same
-//     way through the same identity-gated replay_capture driver, produce
-//     bit-identical per-tick AND session frame digests — the digest reads committed
-//     state, so substituting the input source (live resolution vs the recorded
-//     snapshot) changes nothing in the digests (§07 §4);
-//   - CROSS-BUILD GOLDEN RE-FOLD: a golden replay log committed under testdata/,
-//     re-folded on the CURRENT build, reproduces the committed expected session
-//     digest bit-identically — the honest, CI-runnable mechanical proxy for
-//     "identical on a second machine", since a different build re-folding the same
-//     committed log must reproduce the same committed digest (§09 §5 interpreter-as-
-//     ground-truth: input is the sole nondeterminism source, so the committed log
-//     plus the committed digest are the durable milestone regression fixtures);
-//   - GATE REPRODUCTION RECIPE: a true cross-hardware/second-build run is
-//     operator-gated, not CI-mechanizable — the operator runs the same golden
-//     re-fold on a second machine or an independently rebuilt binary and confirms
-//     the produced session digest equals the committed expected digest. The
-//     GOLDEN-FIXTURE REGENERATION + OPERATOR GATE recipe below documents both the
-//     regeneration command and the exact reproduction command.
-//
-// GOLDEN-FIXTURE REGENERATION (rebuild the committed log + expected digest):
-//
-//     FUNPACK_REGEN_GOLDEN=1 task -d runtime test
-//
-// That env var arms test_regenerate_golden_fixtures, which records the scripted
-// session (golden_session_inputs) through the production recorder against the
-// golden artifact's pinned identity, writes the byte-stable log to
-// testdata/pong_golden.replay, re-folds it through replay_capture, and writes the
-// produced session digest (decimal u64) to testdata/pong_golden.digest. Commit both
-// regenerated files. Regenerate ONLY when a deliberate change to the artifact, the
-// replay encoding, or the frame-digest encoding intentionally moves the digest — a
-// digest that moves without such a change is a determinism regression, not a stale
-// fixture.
-//
-// OPERATOR GATE — second-machine / second-build reproduction (verifies_by:gate):
-// on a second machine, or against an independently rebuilt binary, run
-//
-//     task -d runtime test
-//
-// and confirm test_committed_pong_log_reproduces_expected_digest PASSES. That
-// test re-folds the COMMITTED testdata/pong_golden.replay on the build under test
-// and asserts its session digest equals the COMMITTED testdata/pong_golden.digest —
-// so a passing run on the second machine is a bit-identical reproduction of the
-// committed digest. The committed fixtures are embedded with #load, so the
-// reproduction needs no funpack source and no cwd — only the runtime package and the
-// committed testdata/.
 package funpack_runtime
 
 import "core:os"
@@ -57,60 +6,19 @@ import "core:strconv"
 import "core:strings"
 import "core:testing"
 
-// GOLDEN_REPLAY_LOG is the committed golden pong replay log, embedded at compile
-// time the same hermetic way GOLDEN_ARTIFACT is — so the cross-build re-fold test
-// runs with no filesystem and no cwd, only the runtime package. It is the byte-
-// stable log golden_session_inputs records through the production recorder; the
-// regeneration test rewrites this file from the embedded artifact.
 GOLDEN_REPLAY_LOG := #load("testdata/pong_golden.replay", string)
 
-// GOLDEN_EXPECTED_DIGEST is the committed expected session digest of the golden
-// log's re-fold, embedded as a decimal u64 text fixture. A build that re-folds
-// GOLDEN_REPLAY_LOG must reproduce exactly this value; a divergence is the
-// determinism target failing, not a stale fixture. Parsed by parse_committed_digest.
 GOLDEN_EXPECTED_DIGEST := #load("testdata/pong_golden.digest", string)
 
-// GOLDEN_SESSION_TICKS is the scripted session length: long enough that the ball
-// crosses an edge and serves AND meets a paddle inside the contact rail, so the
-// recorded run folds the paddle-bounce + scoring + serve + signal-route paths, not
-// a straight-line advance — the same non-trivial shape the replay re-fold test
-// exercises.
 @(private = "file")
 GOLDEN_SESSION_TICKS :: 600
 
-// GOLDEN_STEER is pong's Steer::Move axis action — ActionId 0, the sole Axis
-// variant in the declaration walk. The scripted session drives the RIGHT paddle (P2)
-// through it so the paddle meets the ball inside the §65 overlaps contact rail, the
-// committed state evolves tick to tick, and the per-tick digests are distinct.
 @(private = "file")
 GOLDEN_STEER :: ActionId(0)
 
-// GOLDEN_STEER_TICKS is how long P2 holds Steer::Move at +1 (down) before releasing
-// it. With the right paddle spawned at y=60 and the §50 ball cycling through the P2
-// column (x=152) at y≈99 every ~69 ticks, holding down for this many ticks settles
-// the paddle near y≈99 (within the §65 ±9.5 y contact rail) BEFORE the ball first
-// arrives at tick 58, so the ball bounces off the paddle instead of sailing past at
-// |dy|≈40. Steering CONTINUOUSLY would overshoot to the y=120 floor clamp and miss;
-// holding then releasing parks the paddle in the return path. The exact value is
-// determinism-load-bearing: it fixes which committed state the golden digest folds,
-// and pong_probe_test pins the resulting paddle-bounce tick.
 @(private = "file")
 GOLDEN_STEER_TICKS :: 26
 
-// golden_session_inputs builds the scripted input session the golden fixtures are
-// generated from and the live-vs-replay test drives: P2 holds Steer::Move at +1
-// (down) for the first GOLDEN_STEER_TICKS, then releases it — the right paddle
-// drops into the ball's return path and holds, so the ball bounces off it (a
-// paddle_bounce tick the digest folds) AND off the idle left paddle on the rebound,
-// while still crossing an edge to score and serve. The SAME sequence drives the live
-// capture and is recorded for the re-fold, so the two captures must agree; it is
-// also the sole source the committed golden log is regenerated from, so the fixtures
-// stay reproducible from this one definition. (pong_probe_test pins the exact paddle-
-// bounce ticks this session produces — the provable coverage, not assumed.)
-//
-// Package-visible (not file-private) so pong_probe_test drives the EXACT same run
-// the golden harness records — the same shared-session discipline yard_session_inputs
-// follows, so the probe and the golden can never fork on the input script.
 golden_session_inputs :: proc(allocator := context.allocator) -> []Input {
 	inputs := make([]Input, GOLDEN_SESSION_TICKS, allocator)
 	for i in 0 ..< GOLDEN_SESSION_TICKS {
@@ -123,13 +31,6 @@ golden_session_inputs :: proc(allocator := context.allocator) -> []Input {
 	return inputs
 }
 
-// live_capture drives a golden pong session LIVE — restarting from setup and
-// stepping the tick loop once per scripted input — capturing each committed tick's
-// frame digest over the world state and its §20 draw-list, then folding the session
-// digest. It is the ground-truth capture the re-fold must reproduce; it drives the
-// SAME run_startup + step_tick + render_version seam the production re-fold capture
-// does, the only difference being that the input here is the live scripted snapshot
-// rather than one parsed from a recorded log.
 @(private = "file")
 live_capture :: proc(
 	program: ^Program,
@@ -138,8 +39,6 @@ live_capture :: proc(
 ) -> Frame_Capture {
 	world := new_world(program^, allocator)
 	version := run_startup(program, initial_version(world, allocator), allocator)
-	// Time binds through the one shared dt derivation (time_resource) — the same
-	// proc the re-fold binds through, so live and re-fold cannot fork on the clock.
 	time := time_resource(program.entrypoint.tick_hz, allocator)
 	per_tick := make([dynamic]Frame_Digest, 0, len(inputs), allocator)
 	for input in inputs {
@@ -150,12 +49,6 @@ live_capture :: proc(
 	return finish_capture(per_tick[:], allocator)
 }
 
-// record_golden_session records the scripted session through the production
-// recorder against the golden artifact's pinned identity and returns the finished
-// log bytes — the byte-stable record both the live-vs-replay test re-folds and the
-// regeneration test persists. The header pins the golden identity derived from the
-// real artifact bytes, so the log re-folds against the exact build it was recorded
-// for (§09 §5).
 @(private = "file")
 record_golden_session :: proc(
 	program: ^Program,
@@ -173,14 +66,6 @@ record_golden_session :: proc(
 
 @(test)
 test_live_run_and_refold_have_identical_digests :: proc(t: ^testing.T) {
-	// A live pong run and the production re-fold of its RECORDED log yield
-	// bit-identical per-tick AND session frame digests (§07 §4, §20). The live
-	// capture and the re-fold capture share only the artifact and the recorded
-	// snapshots — the re-fold substitutes nothing but the input source (the parsed
-	// log) — so equal per-tick digests prove every committed tick matched and an
-	// equal session digest is the whole-run summary of that match. The re-fold runs
-	// through the production replay_capture driver (identity-gated), not a test-only
-	// tick loop, so the harness exercises the real recorder → reader → driver path.
 	context.allocator = context.temp_allocator
 
 	live_program, ok := load_golden(t)
@@ -190,15 +75,12 @@ test_live_run_and_refold_have_identical_digests :: proc(t: ^testing.T) {
 	inputs := golden_session_inputs()
 	live := live_capture(&live_program, inputs)
 
-	// Record the scripted session, then read it back through the production parser —
-	// the re-fold re-feeds these parsed snapshots, never the live run's state.
 	log_bytes := record_golden_session(&live_program, inputs)
 	log, parse_ok := read_replay(log_bytes)
 	if !testing.expect(t, parse_ok) {
 		return
 	}
 
-	// Re-fold against a FRESH program load through the production capturing driver.
 	refold_program, refold_ok := load_golden(t)
 	if !refold_ok {
 		return
@@ -220,13 +102,6 @@ test_live_run_and_refold_have_identical_digests :: proc(t: ^testing.T) {
 
 @(test)
 test_committed_pong_log_reproduces_expected_digest :: proc(t: ^testing.T) {
-	// The COMMITTED golden replay log, re-folded on the CURRENT build, produces a
-	// session digest exactly equal to the COMMITTED expected digest fixture (§09 §5,
-	// §28). This is the cross-build two-machine proxy: input is the sole recorded
-	// nondeterminism source and the interpreter is the determinism ground truth, so a
-	// DIFFERENT build re-folding this SAME committed log must reproduce this SAME
-	// digest — a passing run on a second machine is a bit-identical reproduction. A
-	// divergence here is the determinism target failing, not a stale fixture.
 	context.allocator = context.temp_allocator
 
 	program, ok := load_golden(t)
@@ -251,11 +126,6 @@ test_committed_pong_log_reproduces_expected_digest :: proc(t: ^testing.T) {
 	testing.expect_value(t, result.capture.session, expected)
 }
 
-// parse_committed_digest reads the committed expected-digest fixture — a decimal
-// u64 with any trailing newline trimmed — into its u64 value. The fixture is a bare
-// decimal so a human can read the committed digest at a glance and a regeneration
-// writes it back the same way; ok is false on a malformed fixture so the test fails
-// closed rather than comparing against a zero default.
 @(private = "file")
 parse_committed_digest :: proc(text: string) -> (digest: u64, ok: bool) {
 	trimmed := strings.trim_space(text)
@@ -264,14 +134,6 @@ parse_committed_digest :: proc(text: string) -> (digest: u64, ok: bool) {
 
 @(test)
 test_regenerate_golden_fixtures :: proc(t: ^testing.T) {
-	// Regeneration is armed only by FUNPACK_REGEN_GOLDEN — a normal `task test` run
-	// SKIPS this, so the committed fixtures are never silently rewritten by an
-	// ordinary test pass; only a deliberate regeneration touches them. When armed, it
-	// records the scripted session through the production recorder, writes the
-	// byte-stable log to testdata/pong_golden.replay, re-folds it through the
-	// production capturing driver, and writes the produced session digest (decimal
-	// u64) to testdata/pong_golden.digest — both relative to the runtime/ cwd
-	// `task -d runtime test` runs from. Commit both regenerated files.
 	if os.get_env("FUNPACK_REGEN_GOLDEN", context.temp_allocator) == "" {
 		return
 	}

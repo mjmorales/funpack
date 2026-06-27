@@ -1,30 +1,8 @@
-// Per-tick RNG-threading acceptance (spec §04 §1, §07 §4, §26, §10): a synthetic
-// seeded-draw program — the shape snake's `replenish` + `setup` take — folds two
-// ticks deterministically through the SAME run_startup_seeded + step_tick seam the
-// production loop drives. The proof is two-fold and is THIS story's scoped floor:
-//
-//   1. DETERMINISM — re-running from the same seed + the same per-tick fold produces
-//      bit-identical committed state every run (the seeded population, every drawn
-//      Mote, and the final Rng all reproduce). A seed CHANGE diverges, so the seed is
-//      a genuine determinism input.
-//   2. THREADING — the Rng is advanced FORWARD across draws within and across ticks:
-//      each draw's next_rng is what the next draw observes (the fold-forward order
-//      §07 §4 enforces), never silently re-seeded. The advanced Rng read back at each
-//      tick boundary equals the kernel sequence threaded by hand.
-//
-// The artifact does not exist yet (it lands in wave 4), so the program is built by
-// hand — the same hand-built-node-forest strategy the kernel/interp surface tests
-// use. The program is `setup(rng) -> (Rng,[Spawn])` spawning one Spawner (an ordinary
-// setup-spawned single-instance thing, not a singleton) + one seeded Mote, and a
-// `seed_draw on Spawner` behavior `(self, rng) -> (Rng,[Spawn])` that draws a cell and
-// spawns a Mote each tick.
 package funpack_runtime
 
 import "core:strconv"
 import "core:strings"
 import "core:testing"
-
-// --- synthetic-program node builders (file-private) ------------------------
 
 @(private = "file")
 sr_fields :: proc(tokens: ..string) -> []string {
@@ -40,21 +18,16 @@ sr_children :: proc(nodes: ..Node) -> []Node {
 	return out
 }
 
-// sr_int builds an `int` literal node.
 @(private = "file")
 sr_int :: proc(value: string) -> Node {
 	return Node{kind = .Int, fields = sr_fields(value)}
 }
 
-// sr_name builds a `name` reference node.
 @(private = "file")
 sr_name :: proc(ident: string) -> Node {
 	return Node{kind = .Name, fields = sr_fields(ident)}
 }
 
-// sr_cell_list builds the fixed candidate-cell list `[0, 1, …, n-1]` the draw picks
-// from — a deterministic source pool standing in for snake's free-cell set. Each
-// element's `int` token is rendered through core:strconv (no hand-rolled itoa).
 @(private = "file")
 sr_cell_list :: proc(n: int) -> Node {
 	cells := make([dynamic]Node, 0, n, context.temp_allocator)
@@ -66,8 +39,6 @@ sr_cell_list :: proc(n: int) -> Node {
 	return Node{kind = .List, children = sr_children(..cells[:])}
 }
 
-// sr_mote_spawn builds `Spawn(Mote{cell: <cell_expr>})` — the command-wrapped record
-// a draw queues. cell_expr is the bound `cell` name in the Some arm.
 @(private = "file")
 sr_mote_spawn :: proc(cell_expr: Node) -> Node {
 	recfield := Node{kind = .Recfield, fields = sr_fields("cell"), children = sr_children(cell_expr)}
@@ -80,30 +51,19 @@ sr_mote_spawn :: proc(cell_expr: Node) -> Node {
 	return Node{kind = .Call, children = sr_children(spawn_callee, mote)}
 }
 
-// sr_spawner_spawn builds `Spawn(Spawner{})` — the no-field Spawner spawn setup mints
-// so the per-tick behavior has a row to fold over (an ordinary single-instance thing,
-// not a singleton).
 @(private = "file")
 sr_spawner_spawn :: proc() -> Node {
 	spawner := Node{kind = .Record, fields = sr_fields("Spawner", "0")}
 	return Node{kind = .Call, children = sr_children(sr_name("Spawn"), spawner)}
 }
 
-// sr_draw_match builds the body match common to setup and the behavior:
-//   match rng.pick(free) {
-//     (Option::Some(cell), next) => (next, <some_spawns>)
-//     (Option::None, next)       => (next, [])
-//   }
-// some_spawns is the `[Spawn …]` list for the hit arm; the miss arm spawns nothing.
 @(private = "file")
 sr_draw_match :: proc(some_spawns, none_spawns: Node) -> Node {
-	// Scrutinee: pick(rng, free) — self-first, the Rng receiver child then the list.
 	pick := Node {
 		kind     = .Call,
 		children = sr_children(sr_name("pick"), sr_name("rng"), sr_name("free")),
 	}
 
-	// Some arm pattern: tuple( variant_binds Option Some 1 cell , bare_binder - - 1 next ).
 	some_pat := Node {
 		kind     = .Arm,
 		fields   = sr_fields("tuple", "-", "-", "0"),
@@ -112,10 +72,8 @@ sr_draw_match :: proc(some_spawns, none_spawns: Node) -> Node {
 			Node{kind = .Arm, fields = sr_fields("bare_binder", "-", "-", "1", "next")},
 		),
 	}
-	// Some arm body: (next, some_spawns).
 	some_body := Node{kind = .Tuple, children = sr_children(sr_name("next"), some_spawns)}
 
-	// None arm pattern: tuple( variant_binds Option None 0 , bare_binder - - 1 next ).
 	none_pat := Node {
 		kind     = .Arm,
 		fields   = sr_fields("tuple", "-", "-", "0"),
@@ -124,7 +82,6 @@ sr_draw_match :: proc(some_spawns, none_spawns: Node) -> Node {
 			Node{kind = .Arm, fields = sr_fields("bare_binder", "-", "-", "1", "next")},
 		),
 	}
-	// None arm body: (next, none_spawns).
 	none_body := Node{kind = .Tuple, children = sr_children(sr_name("next"), none_spawns)}
 
 	return Node {
@@ -134,32 +91,19 @@ sr_draw_match :: proc(some_spawns, none_spawns: Node) -> Node {
 	}
 }
 
-// sr_let_free builds `let free = [0..<n]` — the candidate pool bound before the draw.
 @(private = "file")
 sr_let_free :: proc(n: int) -> Node {
 	return Node{kind = .Let, fields = sr_fields("free"), children = sr_children(sr_cell_list(n))}
 }
 
-// seeded_draw_program assembles the whole synthetic program: a setup-spawned Spawner
-// (an ordinary single-instance thing, NOT a singleton), a Mote thing with a `cell: Int`
-// column, the `seed_draw` per-tick behavior, the setup startup body, and a one-step
-// pipeline. Built entirely from hand node forests so the fold runs the real interpreter
-// without an artifact.
 @(private = "file")
 seeded_draw_program :: proc(pool: int) -> Program {
-	// --- things: Spawner (setup-spawned single instance, no columns) + Mote (cell: Int) ---
-	// Spawner is NOT a singleton: a singleton is engine-spawned before tick 0 and is
-	// NEVER setup-spawned (§08/§13, runtime Lore), but setup's body here spawns it via
-	// `Spawn(Spawner{})`, so it is an ordinary single-instance thing (the pong Scoreboard
-	// precedent). seed_draw folds over it through run_behavior_over_instances/View
-	// iteration, which never consults the singleton flag — the behavior runs regardless.
 	things := make([]Thing_Decl, 2, context.temp_allocator)
 	things[0] = Thing_Decl{name = "Spawner", singleton = false}
 	mote_fields := make([]Field_Decl, 1, context.temp_allocator)
 	mote_fields[0] = Field_Decl{name = "cell", type = "Int", has_default = true, default_encoded = "0"}
 	things[1] = Thing_Decl{name = "Mote", fields = mote_fields}
 
-	// --- setup body: let free; return match rng.pick(free) { … } ---
 	setup_some := Node {
 		kind     = .List,
 		children = sr_children(sr_spawner_spawn(), sr_mote_spawn(sr_name("cell"))),
@@ -173,9 +117,8 @@ seeded_draw_program :: proc(pool: int) -> Program {
 	setup_body[0] = sr_let_free(pool)
 	setup_body[1] = setup_return
 
-	// --- behavior body: let free; return match rng.pick(free) { … } ---
 	beh_some := Node{kind = .List, children = sr_children(sr_mote_spawn(sr_name("cell")))}
-	beh_none := Node{kind = .List} // empty [] spawn list on the None arm
+	beh_none := Node{kind = .List}
 	beh_return := Node {
 		kind     = .Return,
 		children = sr_children(sr_draw_match(beh_some, beh_none)),
@@ -184,7 +127,6 @@ seeded_draw_program :: proc(pool: int) -> Program {
 	beh_body[0] = sr_let_free(pool)
 	beh_body[1] = beh_return
 
-	// --- functions: the Startup setup body ---
 	functions := make([]Function_Decl, 1, context.temp_allocator)
 	setup_params := make([]Param_Decl, 1, context.temp_allocator)
 	setup_params[0] = Param_Decl{name = "rng", type = "Rng"}
@@ -196,7 +138,6 @@ seeded_draw_program :: proc(pool: int) -> Program {
 		body        = setup_body,
 	}
 
-	// --- behaviors: seed_draw on Spawner ---
 	behaviors := make([]Behavior_Decl, 1, context.temp_allocator)
 	beh_params := make([]Param_Decl, 2, context.temp_allocator)
 	beh_params[0] = Param_Decl{name = "self", type = "Spawner"}
@@ -212,7 +153,6 @@ seeded_draw_program :: proc(pool: int) -> Program {
 		body     = beh_body,
 	}
 
-	// --- pipeline: one executed step running seed_draw ---
 	pipeline := make([]Pipeline_Step, 1, context.temp_allocator)
 	pipeline[0] = Pipeline_Step{ordinal = 0, stage = "eat", behavior = "seed_draw"}
 
@@ -224,8 +164,6 @@ seeded_draw_program :: proc(pool: int) -> Program {
 	}
 }
 
-// sr_run runs setup (seeded) then n ticks, returning the final committed version and
-// the final advanced Rng — the closed seeded fold the determinism assertion repeats.
 @(private = "file")
 sr_run :: proc(
 	program: ^Program,
@@ -246,12 +184,6 @@ sr_run :: proc(
 	return version, current
 }
 
-// --- acceptance: deterministic seeded fold ---------------------------------
-
-// A synthetic seeded-draw program folds two ticks deterministically: two independent
-// runs from the SAME seed produce a bit-identical committed world AND an identical
-// final Rng — the determinism floor (§07 §4, §04 §1). The seed drives every draw, so
-// reproducing the seed reproduces the whole run.
 @(test)
 test_seeded_draw_two_ticks_deterministic :: proc(t: ^testing.T) {
 	program := seeded_draw_program(10)
@@ -262,16 +194,11 @@ test_seeded_draw_two_ticks_deterministic :: proc(t: ^testing.T) {
 	testing.expect(t, world_versions_equal(first, second))
 	testing.expect_value(t, first_rng.state, second_rng.state)
 
-	// The fold actually drew and spawned: setup spawns one Mote (seeded), each of the
-	// two ticks spawns one more — three Motes after two ticks, plus the Spawner.
 	motes := view_of_type(&first, "Mote")
 	testing.expect_value(t, view_count(motes), 3)
 	testing.expect_value(t, view_count(view_of_type(&first, "Spawner")), 1)
 }
 
-// A DIFFERENT seed yields a DIFFERENT committed world — so the seed is a genuine
-// determinism input, not ambient: changing it changes the recorded run identity. The
-// drawn cells diverge, so at least one Mote's cell differs run-to-run.
 @(test)
 test_seeded_draw_seed_change_diverges :: proc(t: ^testing.T) {
 	program := seeded_draw_program(10)
@@ -279,37 +206,23 @@ test_seeded_draw_seed_change_diverges :: proc(t: ^testing.T) {
 	seed42, _ := sr_run(&program, 42, 2, context.temp_allocator)
 	seed7, _ := sr_run(&program, 7, 2, context.temp_allocator)
 
-	// Same shape (3 Motes), different drawn cells — the worlds are NOT bit-identical.
 	testing.expect(t, !world_versions_equal(seed42, seed7))
 }
 
-// The Rng is THREADED FORWARD across draws within and across ticks: the final Rng a
-// run reports equals the seed advanced once per draw (setup + one per tick), threaded
-// by hand through the kernel — proving no draw silently re-seeds and the next draw
-// observes the prior draw's next_rng (§04 §1, fold-forward order §07 §4).
 @(test)
 test_seeded_draw_rng_threads_forward :: proc(t: ^testing.T) {
 	program := seeded_draw_program(10)
 	_, run_rng := sr_run(&program, 42, 2, context.temp_allocator)
 
-	// Hand-thread the kernel: one draw in setup, one per tick = three draws total.
-	// Each pick over a 10-element list advances by exactly one rand_bounded step.
 	hand := rand_seed(42)
 	for _ in 0 ..< 3 {
 		_, hand = rand_bounded(hand, 10)
 	}
 	testing.expect_value(t, run_rng.state, hand.state)
 
-	// The threaded Rng is NOT the seed (it advanced) — a positive divergence guard so
-	// a no-op threading bug (returning the seed unchanged) is caught.
 	testing.expect(t, run_rng.state != rand_seed(42).state)
 }
 
-// The drawn cells follow the GOLDEN bounded sequence: setup draws index 0 of the
-// seed-42 stream, tick 1 draws index 1, tick 2 draws index 2 — so each Mote's cell is
-// pinned to the kernel's bit-exact draw order, not a hand-guessed value. This is the
-// observable that ties the fold's draw order to the deterministic flattened-pipeline
-// order (§07 §4): the draws happen in setup-then-tick order, one per fold step.
 @(test)
 test_seeded_draw_cells_follow_golden_order :: proc(t: ^testing.T) {
 	program := seeded_draw_program(10)
@@ -318,9 +231,6 @@ test_seeded_draw_cells_follow_golden_order :: proc(t: ^testing.T) {
 	motes := view_of_type(&final, "Mote")
 	testing.expect_value(t, view_count(motes), 3)
 
-	// The pool is [0..<10] and pick selects pool[index] == index, so each Mote's cell
-	// IS the bounded index for its draw. Rows are Id-ascending in spawn order: setup's
-	// Mote (Id 0), tick-1's (Id 1), tick-2's (Id 2) — draws 0,1,2 of the golden stream.
 	for i in 0 ..< 3 {
 		row, _ := view_at(motes, i)
 		cell, present := row_field(row, "cell")
@@ -329,18 +239,12 @@ test_seeded_draw_cells_follow_golden_order :: proc(t: ^testing.T) {
 	}
 }
 
-// The None arm threads the Rng too: with an EMPTY candidate pool every draw misses,
-// spawns nothing, yet the Rng still advances each fold step — a draw is never a silent
-// no-op (§04 §1). After two ticks no Mote was spawned (None each time) but the Rng
-// advanced three times (setup + two ticks).
 @(test)
 test_seeded_draw_empty_pool_threads_but_spawns_nothing :: proc(t: ^testing.T) {
-	program := seeded_draw_program(0) // empty candidate pool → always the None arm
+	program := seeded_draw_program(0)
 	final, run_rng := sr_run(&program, 42, 2, context.temp_allocator)
 
-	// No Mote ever spawned — every draw took the None arm.
 	testing.expect_value(t, view_count(view_of_type(&final, "Mote")), 0)
-	// Yet the Rng advanced once per draw (empty pick advances via rand_next).
 	hand := rand_seed(42)
 	for _ in 0 ..< 3 {
 		_, hand = rand_next(hand)
@@ -348,15 +252,6 @@ test_seeded_draw_empty_pool_threads_but_spawns_nothing :: proc(t: ^testing.T) {
 	testing.expect_value(t, run_rng.state, hand.state)
 }
 
-// --- seedless setup + per-tick RNG: the unseeded-black-screen junction -------
-
-// per_tick_rng_program assembles a program whose SETUP IS SEEDLESS (`setup() ->
-// [Spawn]`, binds no Rng) but whose per-tick `seed_draw` behavior DRAWS from the Rng
-// — the deepseed black-screen shape. program_is_seeded is false (setup binds no Rng)
-// yet program_uses_rng is true (the behavior binds Rng), so the run carries a root
-// seed delivered per-tick even though setup never consumed one. It is
-// seeded_draw_program with the setup's Rng param + draw stripped: setup spawns the
-// Spawner unconditionally, the behavior is unchanged.
 @(private = "file")
 per_tick_rng_program :: proc(pool: int) -> Program {
 	things := make([]Thing_Decl, 2, context.temp_allocator)
@@ -365,7 +260,6 @@ per_tick_rng_program :: proc(pool: int) -> Program {
 	mote_fields[0] = Field_Decl{name = "cell", type = "Int", has_default = true, default_encoded = "0"}
 	things[1] = Thing_Decl{name = "Mote", fields = mote_fields}
 
-	// --- SEEDLESS setup body: return [Spawn(Spawner{})] (no rng param, no draw) ---
 	setup_return := Node {
 		kind     = .Return,
 		children = sr_children(Node{kind = .List, children = sr_children(sr_spawner_spawn())}),
@@ -373,7 +267,6 @@ per_tick_rng_program :: proc(pool: int) -> Program {
 	setup_body := make([]Node, 1, context.temp_allocator)
 	setup_body[0] = setup_return
 
-	// --- behavior body: let free; return match rng.pick(free) { … } (draws) ---
 	beh_some := Node{kind = .List, children = sr_children(sr_mote_spawn(sr_name("cell")))}
 	beh_none := Node{kind = .List}
 	beh_return := Node{kind = .Return, children = sr_children(sr_draw_match(beh_some, beh_none))}
@@ -381,7 +274,6 @@ per_tick_rng_program :: proc(pool: int) -> Program {
 	beh_body[0] = sr_let_free(pool)
 	beh_body[1] = beh_return
 
-	// --- functions: a SEEDLESS Startup setup returning a bare [Spawn] list ---
 	functions := make([]Function_Decl, 1, context.temp_allocator)
 	functions[0] = Function_Decl {
 		name        = "setup",
@@ -390,7 +282,6 @@ per_tick_rng_program :: proc(pool: int) -> Program {
 		body        = setup_body,
 	}
 
-	// --- behaviors: seed_draw on Spawner, BINDS rng (the per-tick draw) ---
 	behaviors := make([]Behavior_Decl, 1, context.temp_allocator)
 	beh_params := make([]Param_Decl, 2, context.temp_allocator)
 	beh_params[0] = Param_Decl{name = "self", type = "Spawner"}
@@ -412,10 +303,6 @@ per_tick_rng_program :: proc(pool: int) -> Program {
 	return Program{things = things, functions = functions, behaviors = behaviors, pipeline = pipeline}
 }
 
-// pr_run folds a seedless-setup uses_rng program from a root seed through the SAME
-// run_startup_rooted + step_tick(&rng) seam the live loop and the replay re-fold drive
-// — the path that closes the black-screen gap. Returns the final committed version and
-// the final root Rng.
 @(private = "file")
 pr_run :: proc(
 	program: ^Program,
@@ -435,34 +322,19 @@ pr_run :: proc(
 	return version, current
 }
 
-// THE BLACK-SCREEN JUNCTION: a program whose setup is seedless but whose per-tick
-// behavior draws (program_uses_rng=true, program_is_seeded=false). Gating the root
-// seed on program_is_seeded would classify it seedless and thread it no root Rng, so
-// its drawing behaviors would never fold and the world would stay empty (the deepseed
-// black screen). Gating on uses_rng and threading a root seed through
-// run_startup_rooted, the per-tick draws fold: setup spawns the Spawner, and each
-// tick's seed_draw spawns one Mote — a NON-EMPTY world that renders.
 @(test)
 test_per_tick_rng_seedless_setup_folds :: proc(t: ^testing.T) {
 	program := per_tick_rng_program(10)
 
-	// The classification that drives the live gate: draws RNG, but not in setup.
 	testing.expect(t, program_uses_rng(&program))
 	testing.expect(t, !program_is_seeded(&program))
 
 	final, _ := pr_run(&program, 42, 2, context.temp_allocator)
 
-	// Setup spawned the Spawner; each of the two ticks drew and spawned a Mote — the
-	// world is NON-EMPTY (2 Motes), the proof the per-tick draws actually folded.
 	testing.expect_value(t, view_count(view_of_type(&final, "Spawner")), 1)
 	testing.expect_value(t, view_count(view_of_type(&final, "Mote")), 2)
 }
 
-// The seedless-setup uses_rng fold is DETERMINISTIC: two runs from the same root seed
-// commit a bit-identical world — exactly the property the replay re-fold (run_startup_
-// rooted + step_tick over recorded snapshots) relies on to reproduce the run. A
-// different seed diverges, so the root seed is a genuine recorded determinism input
-// even though setup never consumed it.
 @(test)
 test_per_tick_rng_seedless_setup_deterministic :: proc(t: ^testing.T) {
 	program := per_tick_rng_program(10)
@@ -476,18 +348,8 @@ test_per_tick_rng_seedless_setup_deterministic :: proc(t: ^testing.T) {
 	testing.expect(t, !world_versions_equal(first, other))
 }
 
-// run_startup_rooted ROUTES by setup-seeding, not by the mere presence of a root seed:
-//   - SEEDED setup (seeded_draw_program — setup binds Rng): identical to
-//     run_startup_seeded(rand_seed(seed)) — setup draws and the returned Rng is
-//     advanced past the draw.
-//   - SEEDLESS setup (per_tick_rng_program): identical to run_startup, and the
-//     returned root Rng is rand_seed(seed) UNADVANCED — setup drew nothing, so tick 0
-//     starts from the bare seed.
-// This is the single decision point every re-fold site now shares (live, replay,
-// introspect), so pinning it pins them all.
 @(test)
 test_run_startup_rooted_routes_by_setup_seeding :: proc(t: ^testing.T) {
-	// Seeded-setup arm: rooted == run_startup_seeded.
 	seeded := seeded_draw_program(10)
 	sworld := new_world(seeded, context.temp_allocator)
 	sbase := initial_version(sworld, context.temp_allocator)
@@ -499,10 +361,8 @@ test_run_startup_rooted_routes_by_setup_seeding :: proc(t: ^testing.T) {
 	ref_v, ref_rng := run_startup_seeded(&seeded2, s2base, rand_seed(42), context.temp_allocator)
 	testing.expect(t, world_versions_equal(rooted_v, ref_v))
 	testing.expect_value(t, rooted_rng.state, ref_rng.state)
-	// Setup drew once, so the rooted Rng is NOT the bare seed.
 	testing.expect(t, rooted_rng.state != rand_seed(42).state)
 
-	// Seedless-setup arm: rooted == run_startup, Rng is the bare seed.
 	pertick := per_tick_rng_program(10)
 	pworld := new_world(pertick, context.temp_allocator)
 	pbase := initial_version(pworld, context.temp_allocator)
@@ -516,14 +376,6 @@ test_run_startup_rooted_routes_by_setup_seeding :: proc(t: ^testing.T) {
 	testing.expect_value(t, prooted_rng.state, rand_seed(42).state)
 }
 
-// --- seeded-detection: the Rng param, never mere Startup presence ----------
-
-// program_is_seeded keys on setup's Rng param, NOT on a Startup function existing:
-// snake's `setup(rng: Rng) -> (Rng, [Spawn])` is seeded; yard's and pong's seedless
-// `setup() -> [Spawn]` (their batches compile-time folded into program.setup) are
-// not. A Startup function alone tripping the live seed pick (§25 §60) is the
-// regression that committed an empty live yard world — only the engine singletons
-// spawned, every wall/pad/player/crate dropped.
 @(test)
 test_program_is_seeded_keys_on_rng_param :: proc(t: ^testing.T) {
 	snake, snake_err := load_program(GOLDEN_SNAKE_ARTIFACT, context.temp_allocator)
@@ -539,12 +391,6 @@ test_program_is_seeded_keys_on_rng_param :: proc(t: ^testing.T) {
 	testing.expect(t, !program_is_seeded(&pong))
 }
 
-// A SEEDLESS setup body routed down the seeded path must not lose the world: yard's
-// `setup() -> [Spawn]` returns a bare list, not the `(Rng, [Spawn])` tuple, so
-// run_startup_seeded falls back to the pre-evaluated program.setup batch with the
-// seed unadvanced — never silently dropping the spawns. The fallback's committed
-// image is BIT-IDENTICAL to the bare run_startup population (4 Walls, the Pad, the
-// Player, 3 Crates), so a misrouted seedless program still opens on a full world.
 @(test)
 test_run_startup_seeded_non_tuple_body_falls_back_to_batch :: proc(t: ^testing.T) {
 	program, err := load_program(YARD_ARTIFACT, context.temp_allocator)
@@ -558,10 +404,8 @@ test_run_startup_seeded_non_tuple_body_falls_back_to_batch :: proc(t: ^testing.T
 	testing.expect_value(t, view_count(view_of_type(&version, "Pad")), 1)
 	testing.expect_value(t, view_count(view_of_type(&version, "Player")), 1)
 	testing.expect_value(t, view_count(view_of_type(&version, "Crate")), 3)
-	// The fallback leaves the seed unadvanced — no draw happened.
 	testing.expect_value(t, rng.state, rand_seed(42).state)
 
-	// And the fallback IS the bare batch: the seeded-path image equals run_startup's.
 	bare_world := new_world(program, context.temp_allocator)
 	bare := run_startup(&program, initial_version(bare_world, context.temp_allocator), context.temp_allocator)
 	testing.expect(t, world_versions_equal(version, bare))
