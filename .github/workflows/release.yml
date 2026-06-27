@@ -513,7 +513,7 @@ jobs:
 
       - name: Create binary GitHub release
         if: steps.binbump.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.binbump.outputs.new_version }}
           name: v${{ steps.binbump.outputs.new_version }}
@@ -524,7 +524,7 @@ jobs:
 
       - name: Create plugin GitHub release
         if: steps.pluginbump.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: plugin-v${{ steps.pluginbump.outputs.new_version }}
           name: plugin-v${{ steps.pluginbump.outputs.new_version }}
@@ -592,7 +592,7 @@ jobs:
           tar -czf "${dist}.tar.gz" "$dist"
           echo "ASSET=${dist}.tar.gz" >> "$GITHUB_ENV"
       - name: Attach to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release.outputs.bin_tag }}
           files: ${{ env.ASSET }}
