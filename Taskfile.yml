@@ -63,6 +63,15 @@ tasks:
       - task: cmd-eir:binary
       - ./cmd/eir/eir dup --baseline eir/dup-baseline.json --exclude '*.gen.odin'
 
+  # The `eir comments` budget gate (./cmd/eir/eir comments --max-comments N) is NOT wired into
+  # `lint` yet: at any near-zero budget it red-lights ~all 428 files until the comment-removal
+  # sweep lands. It runs as a standalone tool and flips blocking per-directory as each area clears.
+  comments-sweep:
+    desc: Report files over the per-file comment budget (the comment-removal sweep target)
+    cmds:
+      - task: cmd-eir:binary
+      - ./cmd/eir/eir comments --exclude '*.gen.odin' {{.CLI_ARGS}}
+
   test:
     desc: Run every package's tests (all define-free — no SDL linked)
     cmds:

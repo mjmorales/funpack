@@ -141,6 +141,31 @@ lint_registry := []Lint {
 		args = cli.cli_range_args(0, 1),
 		run = run_dead_lint,
 	},
+	{
+		name = "comments",
+		short = "Gate per-file comment volume against a hard budget — comments are debt, encode intent in names/types/tests",
+		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report every file whose comment-line count exceeds the per-file budget (--max-comments, default 5). Comments poison agents: they consume context, drift out of sync with the code, and seed hallucinations, so the standard is near-zero — intent belongs in hyperdescriptive names, types, and tests, not prose. Every comment line counts (doc/lead blocks included; only `//+`-prefixed build constraints are exempt). Exits 1 when any file is over budget, 0 when the tree is clean. Prints a GNU-style diagnostic stream (`file:line:col: error: ... [comments]`) heaviest-file-first, or --json for a byte-stable diagnostic array.",
+		flags = []cli.Cli_Flag {
+			{
+				name = "exclude",
+				kind = .String,
+				usage = "Comma-separated glob list of paths to skip (e.g. 'cmd/funpack/mcp/corpus/,*.gen.odin')",
+			},
+			{
+				name = "max-comments",
+				kind = .Int,
+				usage = "Per-file comment-line budget; a file above it is flagged (the dial toward zero)",
+				default = DEFAULT_MAX_COMMENTS_PER_FILE,
+			},
+			{
+				name = "json",
+				kind = .Bool,
+				usage = "Emit the over-budget files as a byte-stable diagnostic JSON array instead of the human stream",
+			},
+		},
+		args = cli.cli_range_args(0, 1),
+		run = run_comments_lint,
+	},
 }
 
 // build_lint_subtree materializes the registry into cli.Cli_Command leaf nodes —
@@ -366,6 +391,41 @@ run_dead_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 		fmt.print(render_diagnostics_human(diags, scan))
 	}
 	return 0
+}
+
+// run_comments_lint handles `eir comments`: scan the optional [root] (default cwd) for Odin sources,
+// count each file's comment lines, and flag every file over the --max-comments budget. It is a hard
+// GATE — exit 1 when any file is over budget, 0 when the tree is clean, 2 on a usage error. All flags
+// are read up front, before the scan, so a heavy scan's temp churn can never corrupt the invocation
+// flag map the cli framework allocates in the shared temp allocator. The whole scan lives in one
+// growing arena freed on return.
+run_comments_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
+	exclude := cli.cli_flag_string(inv, "exclude")
+	budget := cli.cli_flag_int(inv, "max-comments")
+	want_json := cli.cli_flag_bool(inv, "json")
+
+	arena: vmem.Arena
+	if arena_err := vmem.arena_init_growing(&arena); arena_err != .None {
+		fmt.eprintln("eir comments: cannot initialize the scan arena")
+		return 2
+	}
+	defer vmem.arena_destroy(&arena)
+	scan := vmem.arena_allocator(&arena)
+
+	result, _, ok := load_lint_sources("comments", lint_root(inv), exclude, scan)
+	if !ok {
+		return 2
+	}
+
+	counts := count_comment_lines_per_file(result, scan)
+	diags := over_budget_diagnostics(counts, budget, .Error, scan)
+
+	if want_json {
+		fmt.println(render_diagnostics_json(diags, scan))
+	} else {
+		fmt.print(render_diagnostics_human(diags, scan))
+	}
+	return 1 if len(diags) > 0 else 0
 }
 
 // lint_root resolves the optional [root] positional a lint scans, defaulting to the
