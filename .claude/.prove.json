@@ -8,6 +8,7 @@
     "funpack": "funpack/",
     "runtime": "runtime/",
     "mcp": "mcp/",
+    "cli": "cli/",
     "eir": "cmd/eir/",
     "teams": "teams/",
     "contributors": "contributors/",

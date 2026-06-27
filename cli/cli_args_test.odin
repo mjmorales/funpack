@@ -1,16 +1,8 @@
-// Arity-validator tests: cli_args_check is total over the closed Cli_Args_Kind
-// set, so every kind is pinned at its boundary counts, and cli_args_expectation
-// renders an advisory phrase that names the rule.
 package cli
 
 import "core:strings"
 import "core:testing"
 
-// test_cli_args_check_each_kind pins the boundary behavior of every arity kind:
-// Arbitrary accepts any count, None only zero, Exact only its n, Minimum/Maximum
-// their half-open bound, and Range its inclusive interval. The off-by-one
-// neighbors (just below/above a bound) are the cases a verb's usage tier hinges
-// on, so they are asserted explicitly.
 @(test)
 test_cli_args_check_each_kind :: proc(t: ^testing.T) {
 	testing.expect(t, cli_args_check(Cli_Args{kind = .Arbitrary}, 0))
@@ -36,10 +28,6 @@ test_cli_args_check_each_kind :: proc(t: ^testing.T) {
 	testing.expect(t, !cli_args_check(cli_range_args(0, 1), 2))
 }
 
-// test_cli_args_expectation_phrases pins the advisory wording each kind renders
-// — the human body a Bad_Arg_Count error carries. Substring checks, since the
-// phrase is advisory (the machine contract is the exit code), but the count and
-// the pluralization must be right so the message reads true.
 @(test)
 test_cli_args_expectation_phrases :: proc(t: ^testing.T) {
 	testing.expect_value(t, cli_args_expectation(cli_no_args(), context.temp_allocator), "no args")
