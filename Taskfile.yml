@@ -58,18 +58,11 @@ tasks:
       - task: eir-gate
 
   eir-gate:
-    desc: eir gates — dup clone-debt ratchet (repo-wide) + comment budget over the swept trees
+    desc: eir gates — dup clone-debt ratchet (repo-wide) + the tree-wide per-file comment budget
     cmds:
       - task: cmd-eir:binary
       - ./cmd/eir/eir dup --baseline eir/dup-baseline.json --exclude '*.gen.odin'
-      # comment budget: only the swept trees are blocking-clean today; each directory is added
-      # here as the comment-removal sweep clears it, until the whole tree is under budget.
-      - ./cmd/eir/eir comments eir --max-comments 5
-      - ./cmd/eir/eir comments cmd/eir --max-comments 5
-      - ./cmd/eir/eir comments cli --max-comments 5
-      - ./cmd/eir/eir comments cmd/funpack --max-comments 5
-      - ./cmd/eir/eir comments runtime --max-comments 5
-      - ./cmd/eir/eir comments funpack --max-comments 5 --exclude '*.gen.odin'
+      - ./cmd/eir/eir comments . --max-comments 5 --exclude '*.gen.odin'
 
   comments-sweep:
     desc: Report files over the per-file comment budget (the comment-removal sweep target)
