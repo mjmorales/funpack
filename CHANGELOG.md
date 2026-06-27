@@ -7,6 +7,15 @@ This file is maintained automatically by the release workflow: every push to
 a version block here in the `chore(release)` commit. Edit older entries by hand
 only — the newest block is generated.
 
+## [0.29.0] - 2026-06-27
+
+### Features
+- feat(eir): add the comments per-file comment-budget lint (93c39da)
+- feat(funpack): bake setup() through the full evaluator (0b2c412)
+
+### Fixes
+- fix(eir): pre-warm the tokenizer keyword LUT to close the parallel-parse race (0f8c2ac)
+
 ## [0.28.0] - 2026-06-26
 
 ### Features
