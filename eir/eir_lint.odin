@@ -1,14 +1,3 @@
-// The eir lint HOST — a registry of repo-local source lints composed over the
-// domain-free cli framework. eir is the analog of cmd/funpack's compiler subtree:
-// a data-driven set of verb nodes the entry binary (cmd/eir) grafts onto its
-// root. Each lint is one Lint registry entry; build_lint_subtree turns the whole
-// registry into cli.Cli_Command nodes, so adding a lint is a new entry in
-// lint_registry and nothing else — never a hand-built command in the host or the
-// binary.
-//
-// dup (the first lint) is an AST DRY/clone checker. Its clone engine is wired in
-// a separate change; the registry shape is what survives that landing — only
-// run_dup_lint's body changes, never its registration or signature.
 package eir
 
 import "../cli"
@@ -17,14 +6,6 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 
-// Lint is one registry entry: the metadata build_lint_subtree turns into a
-// cli.Cli_Command leaf. name is the subcommand token (`eir <name>`), short/long
-// the help text, flags the lint's own local flags (each a cli.Cli_Flag — a lint
-// declares its flag surface alongside its arity, so the registry stays the single
-// source of a lint's whole CLI shape), args the positional-arity spec, and run the
-// handler. The registry — not the host or the binary — is the single source of
-// which lints exist, so `eir --help` lists exactly the registered set in
-// declaration order.
 Lint :: struct {
 	name:  string,
 	short: string,
@@ -34,20 +15,12 @@ Lint :: struct {
 	run:   cli.Cli_Run,
 }
 
-// lint_registry is the closed set of lints eir hosts, in the order `eir --help`
-// renders them. dup (the AST DRY checker) is the first; a second lint is one more
-// entry here. Static data — string literals, an arity spec, and a package-level
-// handler address — so it needs no allocation. The arity helpers (cli_range_args
-// &c.) are contextless, so they build the spec here at file scope.
 lint_registry := []Lint {
 	{
 		name = "dup",
 		short = "Report Type-1/Type-2 AST clones in the source tree (DRY checker)",
 		long = "Walk the Odin/funpack source tree from the optional [root] (default cwd) and report duplicated AST subtrees — Type-1 exact and Type-2 renamed clones — following the dup_class doctrine. Prints a leverage-ranked GNU-style diagnostic stream (`file:line:col: warning: ... [dup]`, extra sites as note: lines) by default, or --json for a byte-stable diagnostic array an agent can rank to the highest-leverage dedup target.",
 		flags = []cli.Cli_Flag {
-			// --exclude is a comma-separated glob list, not a repeatable flag: the cli
-			// framework rejects a second occurrence of one flag as Duplicate_Flag, so a
-			// multi-pattern exclude rides one string the lint splits on commas.
 			{
 				name = "exclude",
 				kind = .String,
@@ -69,9 +42,6 @@ lint_registry := []Lint {
 				kind = .Bool,
 				usage = "Emit the ranked clones as a byte-stable diagnostic JSON array instead of the human stream",
 			},
-			// --baseline turns dup from a report into a ratchet GATE: the scan is
-			// compared against the committed baseline file and the verb exits 1 on a
-			// debt rise. Its presence (a non-empty path) is the mode switch.
 			{
 				name = "baseline",
 				kind = .String,
@@ -168,11 +138,6 @@ lint_registry := []Lint {
 	},
 }
 
-// build_lint_subtree materializes the registry into cli.Cli_Command leaf nodes —
-// one per Lint, allocated in `allocator` so each has the stable address
-// cli_finalize threads parent pointers through. The entry binary uses the
-// returned slice directly as the eir root's subcommands; the order mirrors
-// lint_registry, keeping the help listing deterministic.
 build_lint_subtree :: proc(allocator := context.allocator) -> []^cli.Cli_Command {
 	nodes := make([dynamic]^cli.Cli_Command, 0, len(lint_registry), allocator)
 	for lint in lint_registry {
@@ -194,20 +159,6 @@ build_lint_subtree :: proc(allocator := context.allocator) -> []^cli.Cli_Command
 	return nodes[:]
 }
 
-// run_dup_lint handles `eir dup`: scan the optional [root] (default cwd) for Odin
-// sources under the flag-driven options and run the clone engine over the parsed trees.
-// Without --baseline it RENDERS the ranked report — the human diagnostic stream by default,
-// the byte-stable JSON under --json — and returns 0 even when clones are found, because a
-// bare report is informational, not a gate (exit contract {0 informational, 2 usage};
-// a non-resolvable [root] is the only non-zero report path). With --baseline it hands
-// the same scan to the ratchet gate, whose contract adds a 1 for a debt regression.
-// Parse failures are surfaced as a stderr note, never an abort: the scan reports over
-// what it could read.
-//
-// The whole scan — the loader's parse cache, every parsed tree and borrowed path
-// string, the clone classes, and the rendered report — lives in one growing arena
-// freed on return, so the load disposes in a single stroke (the loader's own
-// destroy frees its cache index within that arena).
 run_dup_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	arena: vmem.Arena
 	if arena_err := vmem.arena_init_growing(&arena); arena_err != .None {
@@ -254,15 +205,6 @@ run_dup_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	return 0
 }
 
-// run_dup_gate is the ratchet half of `eir dup`: --baseline makes the scan a GATE rather
-// than a report. --update-baseline re-snapshots the current debt to the file and exits 0
-// — the one deliberate way the ceiling moves, so the committed baseline diff is the audit
-// trail. Otherwise it compares the scan against the committed baseline and exits 1 when
-// debt rose above it, 0 at or below. A missing or malformed baseline, or a scan whose
-// options differ from the recorded ones, is a usage error (exit 2): the gate never
-// silently passes on a baseline it cannot trust, because a silent pass is worse than a
-// loud refusal for a tool whose whole job is to fail on regression. The gate's notes go
-// to stderr (stdout stays the report's channel), so a CI log reads the verdict plainly.
 @(private = "file")
 run_dup_gate :: proc(
 	path: string,
@@ -325,13 +267,6 @@ run_dup_gate :: proc(
 	return 0
 }
 
-// run_near_lint handles `eir near`: scan the optional [root] (default cwd) for Odin
-// sources, fingerprint every top-level declaration, and report the ranked near-miss PAIRS
-// at or above --similarity — the human diagnostic stream by default, byte-stable JSON under --json.
-// Like dup it is a REPORT, not a gate (exit contract {0 informational, 2 usage}): the near
-// tier is advisory and lives on a surface SEPARATE from the exact tier, so the exact
-// surface stays precision-pure. The whole scan — loader cache, parsed trees, fingerprints,
-// and the rendered report — lives in one growing arena freed on return.
 run_near_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	arena: vmem.Arena
 	if arena_err := vmem.arena_init_growing(&arena); arena_err != .None {
@@ -363,11 +298,6 @@ run_near_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	return 0
 }
 
-// run_dead_lint handles `eir dead`: scan the optional [root] (default cwd) and report the
-// file-private package-level declarations nothing in their file references — definitively
-// dead code. Like dup and near it is a REPORT (exit {0 informational, 2 usage}); a missing
-// `[root]` is the only non-zero path. The whole scan lives in one growing arena freed on
-// return.
 run_dead_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	arena: vmem.Arena
 	if arena_err := vmem.arena_init_growing(&arena); arena_err != .None {
@@ -393,12 +323,6 @@ run_dead_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	return 0
 }
 
-// run_comments_lint handles `eir comments`: scan the optional [root] (default cwd) for Odin sources,
-// count each file's comment lines, and flag every file over the --max-comments budget. It is a hard
-// GATE — exit 1 when any file is over budget, 0 when the tree is clean, 2 on a usage error. All flags
-// are read up front, before the scan, so a heavy scan's temp churn can never corrupt the invocation
-// flag map the cli framework allocates in the shared temp allocator. The whole scan lives in one
-// growing arena freed on return.
 run_comments_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	exclude := cli.cli_flag_string(inv, "exclude")
 	budget := cli.cli_flag_int(inv, "max-comments")
@@ -428,8 +352,6 @@ run_comments_lint :: proc(inv: ^cli.Cli_Invocation) -> int {
 	return 1 if len(diags) > 0 else 0
 }
 
-// lint_root resolves the optional [root] positional a lint scans, defaulting to the
-// current directory when none is given.
 @(private = "file")
 lint_root :: proc(inv: ^cli.Cli_Invocation) -> string {
 	if len(inv.args) > 0 {
@@ -438,13 +360,6 @@ lint_root :: proc(inv: ^cli.Cli_Invocation) -> string {
 	return "."
 }
 
-// load_lint_sources is the shared front half of every report lint: parse the --exclude
-// glob list, load the [root] tree through a fresh loader, and surface a parse-failure
-// count. `name` scopes the diagnostics to the calling lint. ok is false on an unresolvable
-// root (the caller returns exit 2). The parsed trees live in `allocator` (the caller's scan
-// arena) and outlive the loader, whose own destroy frees only its cache index — so the
-// returned Load_Result is valid until that arena is freed. The parsed exclude list is
-// returned too, because the dup gate records it in the baseline.
 @(private = "file")
 load_lint_sources :: proc(
 	name, root, exclude_flag: string,
@@ -472,10 +387,6 @@ load_lint_sources :: proc(
 	return result, excludes, true
 }
 
-// parse_exclude_flag splits the comma-separated --exclude value into the glob list
-// the loader prunes against, trimming surrounding whitespace and dropping empty
-// segments so a trailing comma or a stray space never yields an empty glob (which
-// would match nothing useful). An empty value yields nil — the "no excludes" case.
 @(private = "file")
 parse_exclude_flag :: proc(raw: string, allocator := context.allocator) -> []string {
 	if raw == "" {

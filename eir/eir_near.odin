@@ -1,68 +1,23 @@
-// The NEAR tier: Type-3 near-miss clone detection, reported on its own surface so the
-// precision-first exact tier (eir dup) stays untainted. Where the exact tier reports
-// subtrees whose canonical bytes are IDENTICAL, the near tier reports top-level
-// declarations whose canonical SUBTREE SETS overlap above a tunable cutoff — the
-// gapped/parameterized copy that shares most of its structure but diverges in a few
-// statements, which exact hashing can never collapse.
-//
-// A declaration's fingerprint is the weighted multiset of its PROPER-PART subtree
-// canon-hashes (canon_fingerprint, the SAME canonicalization the exact tier clusters on —
-// the near tier never re-walks the AST, so the two tiers cannot drift). "Proper part"
-// matters: a subtree larger than half the unit is an ancestor (the body block, the unit
-// root) that ALWAYS differs the moment any one statement does, so including it would let a
-// single-statement divergence crush an otherwise-near pair; capping shingles at unit/2
-// keeps the shared statement/expression blocks driving the score. Two declarations'
-// similarity is the weighted Jaccard of their fingerprints: overlap / union, each hash
-// weighted by its subtree's node_count so a larger shared block counts more than a tiny
-// one. Ubiquitous subtrees (the `if err != nil` idiom, a common literal) are stopword-
-// filtered by document frequency — they distinguish nothing, inflate every score, and
-// would explode the comparison, so dropping them sharpens precision AND bounds the work
-// to declarations that share DISTINCTIVE structure.
-//
-// Determinism: similarity is integer per-mille (overlap*1000/union — no float), each
-// pair is oriented a-before-b by span, and the final order is a total order over
-// (similarity desc, a-span, b-span). So the report is a pure function of the source set,
-// independent of map-iteration order, and byte-stable.
 package eir
 
 import "core:fmt"
 import "core:odin/ast"
 import "core:slice"
 
-// NEAR_SHINGLE_FLOOR is the subtree-size floor for a fingerprint: finer than the clone
-// floor (a near-miss is built from sub-proc blocks, not whole clones), but above bare
-// leaves whose recurrence is noise. Four nodes is roughly a small expression — the
-// smallest shingle that carries structure.
 NEAR_SHINGLE_FLOOR :: 4
 
-// NEAR_STOPWORD_DF is the document-frequency cap: a subtree hash present in more than this
-// many candidate declarations is an idiom, not a distinguishing feature, so it is excluded
-// from every fingerprint. The cap both lifts precision (two procs sharing only boilerplate
-// no longer score as near) and bounds pair generation (a stopword can seat at most this
-// many declarations in its inverted-index bucket).
 NEAR_STOPWORD_DF :: 24
 
-// NEAR_DEFAULT_MIN_NODES is the whole-declaration floor: a declaration smaller than this
-// is too small for a meaningful near-miss and is not a candidate. It mirrors the clone
-// tier's default so the two tiers scope to comparable units.
 NEAR_DEFAULT_MIN_NODES :: 30
 
-// NEAR_DEFAULT_SIMILARITY is the default cutoff in percent: a pair at or above it is
-// reported. Eighty percent admits a copy that diverges in roughly a fifth of its weighted
-// structure — gapped enough to be a near-miss, close enough to be a real dedup candidate.
 NEAR_DEFAULT_SIMILARITY :: 80
 
-// Near_Options configures one near-miss scan: the candidate declaration floor, the
-// similarity cutoff (percent, [1,100]), and whether literals fold (passed through to the
-// shared canonicalization so constant-only differences can collide).
 Near_Options :: struct {
 	min_nodes:      int,
 	similarity_pct: int,
 	fold_literals:  bool,
 }
 
-// near_default_options returns the engine defaults the verb runs with absent overriding
-// flags.
 near_default_options :: proc() -> Near_Options {
 	return Near_Options {
 		min_nodes      = NEAR_DEFAULT_MIN_NODES,
@@ -71,20 +26,12 @@ near_default_options :: proc() -> Near_Options {
 	}
 }
 
-// Hash_Weight is one fingerprint entry: a subtree canon-hash and its weight in a
-// declaration (occurrence count times the subtree's node_count). A fingerprint is a slice
-// of these sorted by hash, so two fingerprints intersect by a linear merge-join.
 @(private = "file")
 Hash_Weight :: struct {
 	hash:   u64,
 	weight: int,
 }
 
-// Near_Candidate is one top-level declaration eligible for comparison: its location and
-// test tag, its whole-declaration canon hash (so an exact-clone pair is excluded — that
-// belongs to the dup tier), its node_count (the unit size), and its post-stopword
-// fingerprint (weights sorted by hash) with the total weight (the self term of the
-// Jaccard union).
 @(private = "file")
 Near_Candidate :: struct {
 	path:         string,
@@ -98,9 +45,6 @@ Near_Candidate :: struct {
 	total_weight: int,
 }
 
-// Near_Site is one declaration's location in a reported pair: where it sits, its test tag,
-// its start column (the `file:line:col` point the diagnostic surface reports it by), and its
-// node_count, so a consumer can scope and size the near-miss.
 Near_Site :: struct {
 	path:       string,
 	is_test:    bool,
@@ -110,22 +54,12 @@ Near_Site :: struct {
 	node_count: int,
 }
 
-// Near_Pair is one reported near-miss: two declarations (oriented a-before-b by span) and
-// their similarity as integer per-mille (overlap*1000/union), so the report carries no
-// float and renders byte-stably.
 Near_Pair :: struct {
 	a:                   Near_Site,
 	b:                   Near_Site,
 	similarity_permille: int,
 }
 
-// find_near_clones runs the near tier over a Load_Result and returns the near-miss pairs
-// at or above the similarity cutoff, in a deterministic order. It fingerprints every
-// top-level declaration that meets the floor, stopword-filters by document frequency,
-// pairs only declarations that share a distinctive subtree (an inverted-index walk, not
-// an O(n^2) sweep), scores each pair by weighted Jaccard, drops exact clones and
-// below-cutoff pairs, and sorts the survivors. The result borrows the loader's path
-// strings; keep the loader alive while reading it.
 find_near_clones :: proc(
 	result: Load_Result,
 	opts: Near_Options,
@@ -133,8 +67,6 @@ find_near_clones :: proc(
 ) -> []Near_Pair {
 	candidates := collect_near_candidates(result, opts, context.temp_allocator)
 
-	// Document frequency over distinct candidate subtree hashes: a hash counted in N
-	// candidates' raw fingerprints has DF N. The stopword cap reads this.
 	df := make(map[u64]int, 256, context.temp_allocator)
 	for cand in candidates {
 		for hw in cand.weights {
@@ -142,9 +74,6 @@ find_near_clones :: proc(
 		}
 	}
 
-	// Re-derive each candidate's fingerprint without stopwords, then index the survivors.
-	// A candidate whose every shingle is a stopword keeps an empty fingerprint and simply
-	// never pairs (overlap 0) — correct, not special-cased.
 	index := make(map[u64][dynamic]int, 256, context.temp_allocator)
 	filtered := make([]Near_Candidate, len(candidates), context.temp_allocator)
 	for cand, ci in candidates {
@@ -168,9 +97,6 @@ find_near_clones :: proc(
 		filtered[ci] = c
 	}
 
-	// Candidate pairs: every (i<j) co-occurring in a non-stopword bucket, deduped. Only
-	// declarations sharing a distinctive subtree can clear the cutoff, so this is the
-	// whole comparison set — no full sweep.
 	seen := make(map[u64]bool, 1024, context.temp_allocator)
 	pairs := make([dynamic]Near_Pair, 0, 64, allocator)
 	for _, idxs in index {
@@ -199,15 +125,6 @@ find_near_clones :: proc(
 	return pairs[:]
 }
 
-// near_unit_node returns the subtree a top-level declaration is compared BY: a
-// `name :: <value>` declaration is compared by its VALUE (the proc literal, the
-// struct/enum type, the const expression) with the binding name excluded — exactly the
-// unit the exact tier identifies a clone by. So two renamed-identical procs have the
-// IDENTICAL unit (identical decl_hash) and are dropped as an exact clone the dup tier
-// already owns, never re-surfaced here as a 99%-near pair; only a genuine divergence in
-// the value yields a distinct unit and a sub-100% score. A multi-value or non-value
-// declaration (an import group, a foreign block) has no single name-excluded value, so it
-// is compared whole.
 @(private = "file")
 near_unit_node :: proc(decl: ^ast.Node) -> ^ast.Node {
 	if vd, ok := decl.derived.(^ast.Value_Decl); ok && len(vd.values) == 1 {
@@ -216,12 +133,6 @@ near_unit_node :: proc(decl: ^ast.Node) -> ^ast.Node {
 	return decl
 }
 
-// collect_near_candidates fingerprints every top-level declaration that meets the floor.
-// canon_fingerprint reuses the exact tier's canonicalization, so the near tier measures
-// similarity over the identical canonical form. The raw fingerprint aggregates duplicate
-// subtree hashes into one weighted entry (count * node_count) sorted by hash; document
-// frequency and the stopword cut happen in the caller, where the whole candidate set is
-// visible.
 @(private = "file")
 collect_near_candidates :: proc(
 	result: Load_Result,
@@ -243,11 +154,6 @@ collect_near_candidates :: proc(
 			if n < opts.min_nodes {
 				continue
 			}
-			// A shingle is a PROPER PART, not the near-whole: cap it at half the unit so the
-			// unit root and its body block — which always differ the moment any one
-			// statement does — never enter the fingerprint and drown a single-statement
-			// divergence. The shared statement/expression blocks below the cap drive the
-			// score instead, which is what makes two near-identical procs read as near.
 			shingle_cap := max(NEAR_SHINGLE_FLOOR, n / 2)
 			append(
 				&out,
@@ -267,12 +173,6 @@ collect_near_candidates :: proc(
 	return out[:]
 }
 
-// aggregate_weights folds a declaration's subtree list into one weighted entry per
-// distinct hash (weight = occurrences * node_count, the same for every occurrence since a
-// shared canon has a shared size), sorted by hash so two fingerprints merge-join. A
-// subtree larger than max_nodes is skipped — it is an ancestor, not a shingle (see the
-// shingle-cap rationale at the call site). The sort is what lets score_near_pair run in
-// linear time over the two sorted slices.
 @(private = "file")
 aggregate_weights :: proc(
 	subs: []Subtree_Fingerprint,
@@ -296,14 +196,6 @@ aggregate_weights :: proc(
 	return out
 }
 
-// score_near_pair computes the weighted Jaccard of two fingerprints and decides the pair.
-// An exact-clone pair (identical whole-declaration canon) is rejected — it is the dup
-// tier's, and keeping the surfaces disjoint is the whole point of a separate tier. The
-// merge-join over the hash-sorted weights sums the per-hash minimum as the overlap; the
-// union is total_a + total_b - overlap. The pair clears the cutoff when
-// overlap*100 >= similarity_pct*union (integer, no division), and the similarity is then
-// per-mille for the report. ok is false on an empty union (a stopword-emptied fingerprint)
-// or a below-cutoff score.
 @(private = "file")
 score_near_pair :: proc(
 	a, b: Near_Candidate,
@@ -349,10 +241,6 @@ score_near_pair :: proc(
 		true
 }
 
-// orient_sites canonicalizes a pair's orientation: the site with the smaller (path, line)
-// is `a`. A stable orientation makes the pair representation canonical, so the final sort
-// is a total order and the output is byte-stable regardless of which declaration the walk
-// reached first.
 @(private = "file")
 orient_sites :: proc(x, y: Near_Candidate) -> (lo, hi: Near_Site) {
 	sx := candidate_site(x)
@@ -363,7 +251,6 @@ orient_sites :: proc(x, y: Near_Candidate) -> (lo, hi: Near_Site) {
 	return sy, sx
 }
 
-// candidate_site projects a candidate onto the report's site record.
 @(private = "file")
 candidate_site :: proc(c: Near_Candidate) -> Near_Site {
 	return Near_Site {
@@ -376,16 +263,11 @@ candidate_site :: proc(c: Near_Candidate) -> Near_Site {
 	}
 }
 
-// site_less is the total order on sites by span, delegating to the shared span comparator
-// so the near surface orders identically to the clone surface.
 @(private = "file")
 site_less :: proc(a, b: Near_Site) -> bool {
 	return span_less(a.path, a.line_start, a.line_end, b.path, b.line_start, b.line_end)
 }
 
-// near_pair_less is the report order: highest similarity first, then the a-site span, then
-// the b-site span. Two distinct pairs cannot tie on all three (the two spans identify the
-// declarations), so this is a total order — the determinism the byte-stable JSON needs.
 @(private = "file")
 near_pair_less :: proc(a, b: Near_Pair) -> bool {
 	if a.similarity_permille != b.similarity_permille {
@@ -397,18 +279,11 @@ near_pair_less :: proc(a, b: Near_Pair) -> bool {
 	return site_less(a.b, b.b)
 }
 
-// sites_equal reports whether two sites name the same declaration (path + span).
 @(private = "file")
 sites_equal :: proc(a, b: Near_Site) -> bool {
 	return a.path == b.path && a.line_start == b.line_start && a.line_end == b.line_end
 }
 
-// near_diagnostics projects the near-miss pairs onto the shared diagnostic surface in their
-// reported order (similarity-descending): one Warning per pair, its primary location site a
-// and the counterpart attached as a `note:` related location. The message carries the
-// similarity percent and names the counterpart so the pair reads at a glance without the
-// related line. The diagnostics borrow the loader's path strings; keep the loader alive while
-// reading them. Allocated in `allocator`.
 near_diagnostics :: proc(pairs: []Near_Pair, allocator := context.allocator) -> []Diagnostic {
 	out := make([]Diagnostic, len(pairs), allocator)
 	for p, i in pairs {
@@ -439,7 +314,6 @@ near_diagnostics :: proc(pairs: []Near_Pair, allocator := context.allocator) -> 
 	return out
 }
 
-// format_permille renders an integer per-mille as a one-decimal percent: 853 -> "85.3%".
 @(private = "file")
 format_permille :: proc(permille: int) -> string {
 	return fmt.tprintf("%d.%d%%", permille / 10, permille % 10)

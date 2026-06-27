@@ -55,17 +55,18 @@ tasks:
       - task: eir:lint
       - task: cmd:lint
       - task: cmd-eir:lint
-      - task: dup-gate
+      - task: eir-gate
 
-  dup-gate:
-    desc: eir dup ratchet — fail if AST clone debt rose above eir/dup-baseline.json
+  eir-gate:
+    desc: eir gates — dup clone-debt ratchet (repo-wide) + comment budget over the swept trees
     cmds:
       - task: cmd-eir:binary
       - ./cmd/eir/eir dup --baseline eir/dup-baseline.json --exclude '*.gen.odin'
+      # comment budget: only the swept trees are blocking-clean today; each directory is added
+      # here as the comment-removal sweep clears it, until the whole tree is under budget.
+      - ./cmd/eir/eir comments eir --max-comments 5
+      - ./cmd/eir/eir comments cmd/eir --max-comments 5
 
-  # The `eir comments` budget gate (./cmd/eir/eir comments --max-comments N) is NOT wired into
-  # `lint` yet: at any near-zero budget it red-lights ~all 428 files until the comment-removal
-  # sweep lands. It runs as a standalone tool and flips blocking per-directory as each area clears.
   comments-sweep:
     desc: Report files over the per-file comment budget (the comment-removal sweep target)
     cmds:

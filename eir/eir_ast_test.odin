@@ -1,10 +1,3 @@
-// Parse + cache tests: the load layer's back half must (1) parse a good source to
-// a non-nil tree, (2) surface a broken source as a counted failure carrying its
-// partial tree — never a crash, never a silent drop, (3) serve a repeat load from
-// the cache instead of re-parsing, and (4) report parse failures alongside the
-// parsed set in discovery order. Fixtures are real temp files (built with the
-// helpers in eir_discover_test.odin) so the path-keyed cache is exercised end to
-// end.
 package eir
 
 import "core:path/filepath"
@@ -20,16 +13,11 @@ add :: proc(a, b: int) -> int {
 }
 `
 
-// BAD_SOURCE has a valid package header but an unterminated struct body, so the
-// parser reaches the header fine and then counts a syntax error in the body — the
-// case the bool return alone would miss but syntax_error_count catches.
 BAD_SOURCE :: `package bad
 
 Broken :: struct {
 `
 
-// test_load_file_parses_good_source pins the happy path: a valid source yields a
-// non-nil ast.File with its declarations and a clean error count.
 @(test)
 test_load_file_parses_good_source :: proc(t: ^testing.T) {
 	root := fixture_root("good")
@@ -50,9 +38,6 @@ test_load_file_parses_good_source :: proc(t: ^testing.T) {
 	}
 }
 
-// test_load_file_surfaces_parse_failure pins that a broken source is reported, not
-// dropped: ok is false, the partial tree is still returned, and its error count is
-// the signal — the loader never crashes on bad input.
 @(test)
 test_load_file_surfaces_parse_failure :: proc(t: ^testing.T) {
 	root := fixture_root("bad")
@@ -72,8 +57,6 @@ test_load_file_surfaces_parse_failure :: proc(t: ^testing.T) {
 	}
 }
 
-// test_load_file_caches_by_path pins the per-run cache: a repeat load of the same
-// path returns the first parse's tree (pointer-identical), never a re-parse.
 @(test)
 test_load_file_caches_by_path :: proc(t: ^testing.T) {
 	root := fixture_root("cache")
@@ -92,9 +75,6 @@ test_load_file_caches_by_path :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(l.cache), 1)
 }
 
-// test_load_dir_reports_failures_in_order pins the directory load: the parsed set
-// follows discovery order, the one broken file is counted and named in failures,
-// and every reported file carries a tree.
 @(test)
 test_load_dir_reports_failures_in_order :: proc(t: ^testing.T) {
 	root := fixture_root("loaddir")
