@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: arduino/setup-task@v2
         with:
           version: 3.x
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: arduino/setup-task@v2
         with:
           version: 3.x
@@ -137,7 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: arduino/setup-task@v2
         with:
           version: 3.x
@@ -178,7 +178,7 @@ jobs:
       plugin_version: ${{ steps.pluginbump.outputs.new_version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history for tag detection + changelog range
           # Don't persist the default GITHUB_TOKEN as a git auth header — the
@@ -551,7 +551,7 @@ jobs:
           - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
           - { runner: macos-latest,     os: macos, arch: arm64 }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Build the freshly-cut binary tag, not the main HEAD.
           ref: ${{ needs.release.outputs.bin_tag }}
@@ -629,7 +629,7 @@ jobs:
             echo "${plat//-/_}=$sha" >> "$GITHUB_OUTPUT"
           done
       - name: Check out the Homebrew tap
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: mjmorales/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
