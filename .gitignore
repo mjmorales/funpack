@@ -35,3 +35,12 @@ runtime/testdata/*.saves/
 # by the friction skill; the scrum tasks are the durable record, not these files.
 # Root-anchored: must NOT match .claude/skills/friction/ (the tracked skill).
 /friction/
+
+# native-debug session artifacts (.claude/skills/native-debug/scripts/debug-build.sh + LLDB):
+# debug-info binaries, macOS dSYM symbol bundles, and crash core dumps.
+*-debug
+*-debug.dSYM/
+core.[0-9]*
+
+# game-specific worklogs
+examples/overworld/WORKLOG.md
