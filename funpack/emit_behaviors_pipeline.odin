@@ -155,38 +155,53 @@ emit_endpoint :: proc(b: ^strings.Builder, role: string, endpoint: Signal_Endpoi
 // ───────────────────────────────────────────────────────────────────────────
 
 // emit_setup writes the Startup spawn batch (docs/artifact-format.md §13): one
-// `spawn THING field_count` per spawn in the setup() body's source list order, each
-// followed by one `set FIELD =ENCODED` per supplied field. The batch is fully
-// CONSTANT-FOLDED at compile time (setup_eval.odin resolve_setup_spawns) — yard's
-// setup() spawns through user helper fns (`crate_at(…)`, `wall_body(size)`) and
-// constructs engine Body records with §11 §2 defaults left implicit, so the emitter
-// inlines those calls and applies the omitted defaults BEFORE encoding. A scalar/
-// enum/Vec2 field keeps its §13 form; a composite engine record (a Body) and a list
-// take the §6 single-token nested form (encode_setup_field_value). The runtime then
-// spawns the initial population without interpreting an initializer.
+// `spawn THING field_count` per spawn in the setup() body's source list order,
+// each followed by one `set FIELD =ENCODED` per field of the spawned thing's
+// blackboard. The batch is EVALUATED at compile time through the full evaluator
+// (setup_values.odin resolve_setup_values, the same evaluate.odin surface
+// `funpack test` runs), so an idiomatic multi-statement constructor (`new_run`'s
+// `let` bindings over generate_floor's whole builtin/operator/match call tree)
+// bakes its real spawn; a fold that only inlines single-`return` helpers cannot,
+// and would bake an empty [setup] — a black screen. A top-level Vec2 keeps its
+// §13 spread; every other field encodes through the recursive §6 token form
+// (encode_setup_value_field). The runtime then spawns the initial population
+// without interpreting an initializer.
+//
+// A setup() that EXISTS but does not evaluate to a closed [Spawn] batch returns
+// Setup_Eval_Failed — the build GATE refuses loudly rather than emitting a
+// silently-empty [setup] (the black-screen failure mode). A module with no
+// setup() yields the empty `[setup 0]` batch, the legal no-startup game.
 //
 // A LEVEL-BACKED setup() — a lone call to a baked level's `<level>_spawns`
 // extern (dungeon/warren, schema v15) — folds the threaded bake's spawn list
-// instead (emit_level_setup.odin): the extern has no body to inline, but the
+// instead (emit_level_setup.odin): the extern has no body to evaluate, but the
 // batch it stands for is already a pure function of the tree, so the same §13
 // no-expressions contract holds.
-emit_setup :: proc(b: ^strings.Builder, ast: Ast, batches: []Level_Spawn_Batch, imported_things: []Thing_Node) {
-	if batch, found := level_setup_batch(ast, batches); found {
-		emit_level_setup(b, batch, ast.things, imported_things)
-		return
+emit_setup :: proc(b: ^strings.Builder, ctx: Eval_Ctx, batches: []Level_Spawn_Batch, imported_things: []Thing_Node) -> Emit_Error {
+	if batch, found := level_setup_batch(ctx.ast, batches); found {
+		emit_level_setup(b, batch, ctx.ast.things, imported_things)
+		return .None
 	}
-	spawns := resolve_setup_spawns(ast)
+	spawns, _, ok := resolve_setup_values(ctx)
+	if !ok {
+		return .Setup_Eval_Failed
+	}
 	emit_header(b, "setup", len(spawns))
 	for spawn in spawns {
 		strings.write_string(b, "spawn ")
 		strings.write_string(b, spawn.type_name)
 		strings.write_byte(b, ' ')
-		strings.write_int(b, len(spawn.fields))
+		strings.write_int(b, len(spawn.record.fields))
 		emit_line(b, "")
-		for field in spawn.fields {
-			emit_line(b, "set ", field.name, " =", encode_setup_field_value(field.value))
+		for field in spawn.record.fields {
+			encoded, enc_ok := encode_setup_value_field(field.value)
+			if !enc_ok {
+				return .Setup_Eval_Failed
+			}
+			emit_line(b, "set ", field.name, " =", encoded)
 		}
 	}
+	return .None
 }
 
 // single_return_list returns the list a body's single `return [list]` statement

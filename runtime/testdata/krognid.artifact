@@ -488,9 +488,12 @@ step 6 stage:render behavior:draw_krognid
 step 7 stage:audio behavior:locomotion
 [signal_routing 0]
 [setup 2]
-spawn Krognid 2
+spawn Krognid 5
 set player =PlayerId::P1
 set pos =Vec3(x=107374182400,y=0,z=107374182400)
+set intent =vec2 0 0
+set phase =0
+set speed =0
 spawn Field 0
 [bindings 4]
 bind axis P1 Drive::Strafe source:keys_axis(Key::A,Key::D)

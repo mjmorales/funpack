@@ -155,7 +155,49 @@ synthetic_data_decls :: proc(ast: Ast, imported: Imported_Decls) -> []Synthetic_
 	if uses_engine_type(ast, imported, "Path") {
 		append(&out, Synthetic_Data{name = "Path", fields = PATH_DATA_FIELDS})
 	}
+	if references_cell_type(ast, imported) && !declares_data_type(ast, imported, "Cell") {
+		append(&out, Synthetic_Data{name = "Cell", fields = CELL_DATA_FIELDS})
+	}
 	return out[:]
+}
+
+// CELL_DATA_FIELDS is the §8 projection of the imported structural stdlib record
+// engine.grid.Cell (`data Cell { x: Int, y: Int }`). A game that imports Cell
+// rather than declaring its own carries no user [data] decl for it, so the runtime
+// has no schema to type Cell's Int fields when it decodes a `Cell(x=N,y=N)` token —
+// it would lift the bare integers to raw Fixed bits (a 1/2^32-scaled coordinate).
+// Projecting Cell into [data] gives the runtime the same schema snake/dungeon get
+// from their own `data Cell` decl.
+@(rodata)
+CELL_DATA_FIELDS := []Synthetic_Field{{name = "x", type_name = "Int"}, {name = "y", type_name = "Int"}}
+
+// references_cell_type reports whether any field — own or imported — is typed Cell,
+// [Cell], or Option[Cell], the structural-stdlib forms a grid game stores. Kept a
+// closed wrapper set (not a substring scan) so CellCursor and other Cell-prefixed
+// types never false-match.
+references_cell_type :: proc(ast: Ast, imported: Imported_Decls) -> bool {
+	return(
+		uses_engine_type(ast, imported, "Cell") ||
+		uses_engine_type(ast, imported, "[Cell]") ||
+		uses_engine_type(ast, imported, "Option[Cell]") \
+	)
+}
+
+// declares_data_type reports whether a user (own or v15-imported) [data] decl
+// already names the type — the guard that keeps Cell's synthetic projection from
+// duplicating a game's own `data Cell` (snake, dungeon).
+declares_data_type :: proc(ast: Ast, imported: Imported_Decls, type_name: string) -> bool {
+	for decl in ast.datas {
+		if decl.name == type_name {
+			return true
+		}
+	}
+	for decl in imported.datas {
+		if decl.name == type_name {
+			return true
+		}
+	}
+	return false
 }
 
 // uses_engine_type reports whether any thing/singleton/data/signal field — the

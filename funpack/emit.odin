@@ -29,6 +29,13 @@ import "core:strings"
 // is itself a pure function of source, so the whole emission is.
 Emit_Input :: struct {
 	ast:          Ast,
+	// typed is the checked Typed_Ast (ast + resolved env + bindings) the §06
+	// [setup] bake EVALUATES setup() against (emit_setup → resolve_setup_values),
+	// the same surface `funpack test` evaluates a constructor through. Carried
+	// alongside `ast` because the evaluator needs the resolved record schemas and
+	// import bindings, not just the bare AST. A single-module game's typed.ast and
+	// the (ref-lowered) `ast` agree on every spawn-reachable fn/record.
+	typed:        Typed_Ast,
 	flat:         Flattened_Pipeline,
 	module:       string, // the §15 path-derived module name carried in [functions] spans
 	project:      Project_Identity,
@@ -105,6 +112,14 @@ Emit_Error :: enum {
 	// product — the same exit-2 compile class as the other emission floors (the
 	// build verb maps it to Compile_Failed), never a silently ambiguous artifact.
 	Whole_Module_Collision,
+	// Setup_Eval_Failed is the §06 [setup] bake's refusal: setup() is declared but
+	// does not EVALUATE to a closed [Spawn] batch (a spawn argument that fails the
+	// full evaluator, or a field whose value has no §13 token form). The build
+	// refuses before writing any product rather than emitting a silently-empty
+	// [setup] batch — the black-screen failure mode where a startup-spawned game
+	// renders nothing because nothing was spawned (the build verb maps it to
+	// Compile_Failed).
+	Setup_Eval_Failed,
 }
 
 // stage_emit is the single-source → artifact seam: it runs the full checked
@@ -222,6 +237,7 @@ stage_emit_indexed :: proc(
 	imported_fns = concat_function_records(imported_fns, whole_module_consts)
 	input := Emit_Input {
 		ast            = ast,
+		typed          = typed,
 		flat           = verdict.flat,
 		module         = module,
 		project        = project,
@@ -233,7 +249,7 @@ stage_emit_indexed :: proc(
 		level_spawns   = level_spawns,
 		assets         = assets,
 	}
-	return emit_artifact(input, allocator), .None
+	return emit_artifact(input, allocator)
 }
 
 // emit_artifact serializes the checked program to the versioned artifact bytes
@@ -243,7 +259,7 @@ stage_emit_indexed :: proc(
 // records. The returned string is the whole artifact, terminated by a single
 // trailing '\n' like every other line — byte-identical across emissions by
 // construction.
-emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> string {
+emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> (artifact: string, err: Emit_Error) {
 	b := strings.builder_make(allocator)
 	emit_line(&b, ARTIFACT_MAGIC, " ", encode_int(ARTIFACT_SCHEMA_VERSION, context.temp_allocator))
 
@@ -256,7 +272,10 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_behaviors(&b, input.ast, input.flat)
 	emit_pipeline_flattened(&b, input.flat)
 	emit_signal_routing(&b, input.flat)
-	emit_setup(&b, input.ast, input.level_spawns, input.imported_decls.things)
+	if setup_err := emit_setup(&b, setup_eval_ctx(input), input.level_spawns, input.imported_decls.things);
+	   setup_err != .None {
+		return "", setup_err
+	}
 	emit_bindings(&b, input.ast)
 	emit_entrypoint(&b, input.entrypoint)
 	emit_queries(&b, input.ast, input.module)
@@ -265,7 +284,27 @@ emit_artifact :: proc(input: Emit_Input, allocator := context.allocator) -> stri
 	emit_assets(&b, input.assets)
 	emit_probes(&b, input.ast)
 
-	return strings.to_string(b)
+	return strings.to_string(b), .None
+}
+
+// setup_eval_ctx builds the §06 [setup] bake's evaluation context off the checked
+// Typed_Ast — the resolved env and import bindings the full evaluator reads to
+// evaluate setup() (record schemas, builtin and const resolution). A fresh
+// Const_Visit guards a const-initializer cycle reachable from a setup helper. The
+// modules surface is the single-module default (nil): a setup() spawning through a
+// SIBLING user module's fn is the rare multi-module case the build gate refuses
+// (Setup_Eval_Failed) rather than mis-baking.
+setup_eval_ctx :: proc(input: Emit_Input) -> Eval_Ctx {
+	visit := new(Const_Visit, context.temp_allocator)
+	visit.active = make(map[string]bool, context.temp_allocator)
+	return Eval_Ctx {
+		ast      = input.typed.ast,
+		env      = input.typed.env,
+		bindings = input.typed.bindings,
+		modules  = nil,
+		module   = input.module,
+		visiting = visit,
+	}
 }
 
 // emit_line writes the concatenation of parts then the single LF terminator the

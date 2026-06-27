@@ -159,12 +159,16 @@ test_emit_krognid_thing_and_setup :: proc(t: ^testing.T) {
 
 	// The §13 setup batch: two spawns in source-list order — one Krognid at the board
 	// center (25.0 in raw Q32.32 is 107374182400) and the Field scene holder. The
-	// Krognid carries the two source-supplied fields; the §6 field defaults fill the
-	// rest at runtime spawn.
+	// setup() evaluator fills the §6 field defaults at bake time, so the Krognid
+	// carries its complete five-field set (the two source-supplied plus intent/phase/
+	// speed at their declared defaults), not just the authored pair.
 	testing.expect(t, artifact_has_line(artifact, "[setup 2]"))
-	testing.expect(t, artifact_has_line(artifact, "spawn Krognid 2"))
+	testing.expect(t, artifact_has_line(artifact, "spawn Krognid 5"))
 	testing.expect(t, artifact_has_line(artifact, "set player =PlayerId::P1"))
 	testing.expect(t, artifact_has_line(artifact, "set pos =Vec3(x=107374182400,y=0,z=107374182400)"))
+	testing.expect(t, artifact_has_line(artifact, "set intent =vec2 0 0"))
+	testing.expect(t, artifact_has_line(artifact, "set phase =0"))
+	testing.expect(t, artifact_has_line(artifact, "set speed =0"))
 	testing.expect(t, artifact_has_line(artifact, "spawn Field 0"))
 
 	// The §15 entrypoint logical:160x120 draw space, lifted from the entrypoints.fcfg

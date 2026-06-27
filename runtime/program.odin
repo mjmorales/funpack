@@ -239,8 +239,10 @@ Spawn_Field :: struct {
 }
 
 // Spawn_Command is one entry of the §13 [Spawn] batch: a thing type plus its
-// supplied fields. A field omitted in source (a default) is NOT carried — the
-// runtime applies the thing's Field_Decl default when setup spawns it.
+// fields. The static setup bake evaluates the whole spawn, so it carries the
+// complete field set (defaults filled); the runtime still applies a thing's
+// Field_Decl default for any field a batch omits (a seeded-live or hand-built
+// artifact).
 Spawn_Command :: struct {
 	thing:  string,
 	fields: []Spawn_Field,
